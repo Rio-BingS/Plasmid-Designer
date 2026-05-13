@@ -1,0 +1,44 @@
+[Unit]
+Description=Plasmid Designer Backend API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plasmid
+Group=plasmid
+WorkingDirectory=/opt/plasmid-designer/src/backend
+
+# Python 路径
+Environment=PYTHONPATH=/opt/plasmid-designer/src/backend
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+
+# 数据目录
+Environment=DATA_DIR=/opt/plasmid-designer/data
+Environment=VECTORS_DIR=/opt/plasmid-designer/data/vectors
+Environment=CODON_TABLES_DIR=/opt/plasmid-designer/data/codon_tables
+
+# 从 .env 文件加载额外环境变量
+EnvironmentFile=/opt/plasmid-designer/.env
+
+# 启动命令
+ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+# 重启策略
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# 日志
+SyslogIdentifier=plasmid-backend
+StandardOutput=journal
+StandardError=journal
+
+# 安全限制
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
