@@ -267,7 +267,7 @@ onUnmounted(() => {
 
         <div class="primers-toolbar">
           <span v-if="result.cloning_method === 'gene_synthesis'" class="oligo-summary">
-            共 {{ result.primers.length }} 条寡核苷酸（{{ result.primers.length / 2 }} 对，S/AS 成对）
+            共 {{ result.primers.length }} 条寡核苷酸（正反链交替重叠组装）
           </span>
           <span v-else class="oligo-summary">共 {{ result.primers.length }} 条引物</span>
           <button class="btn btn-secondary copy-all-btn" @click="copyAllPrimers">

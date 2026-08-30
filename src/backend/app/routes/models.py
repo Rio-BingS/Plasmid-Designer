@@ -50,7 +50,7 @@ class DesignOptions(BaseModel):
     # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
     oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")
     oligo_length_max: Optional[int] = Field(default=None, ge=30, le=120, description="寡核苷酸最长长度")
-    overlap_length: int = Field(default=20, ge=10, le=30, description="重叠区域长度(bp)")
+    overlap_length: int = Field(default=20, ge=10, le=40, description="相邻寡核苷酸/克隆片段重叠区长度(bp)")
     # Gibson：指定载体上的酶切位点用于定位同源重组位置（缺省为 MCS 起点）
     gibson_site: Optional[str] = Field(default=None, description="定位同源重组位置的酶切位点名称")
     # 密码子优化时需排除的限制酶位点（优化序列不含这些识别序列）

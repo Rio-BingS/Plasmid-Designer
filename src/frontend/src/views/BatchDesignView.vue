@@ -278,7 +278,7 @@ onUnmounted(() => {
         </div>
         <div class="form-group">
           <label class="form-label">重叠区域长度 (bp)</label>
-          <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="30" />
+          <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="40" />
         </div>
       </div>
       </div>

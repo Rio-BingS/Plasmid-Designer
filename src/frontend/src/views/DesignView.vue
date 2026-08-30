@@ -287,7 +287,8 @@ function loadExample() {
           </div>
           <div class="form-group">
             <label class="form-label">重叠区域长度 (bp)</label>
-            <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="30" />
+            <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="40" />
+            <p class="hint-text">相邻寡核苷酸共享的互补重叠区大小，GC 含量高的基因可适当加大</p>
           </div>
           <div class="form-group">
             <label class="form-label">排除的限制酶位点（可选）</label>
