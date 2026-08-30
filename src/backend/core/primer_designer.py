@@ -528,15 +528,17 @@ class PrimerDesigner:
         overlap_length: int = 20,
         primer_name: str = "synth"
     ) -> List[Primer]:
-        """设计全基因合成引物（重叠寡核苷酸组装）
+        """设计全基因合成寡核苷酸（正反链交替重叠组装）
 
-        将长序列拆分为多条重叠寡核苷酸，用于从头合成基因。
+        将目标基因拆分为正反链交替的重叠寡核苷酸：奇数号为正链片段，
+        偶数号为对应区域的反向互补链。相邻寡核苷酸通过 overlap 区域
+        退火互组装，无需模板即可拼出双链目标基因。
 
         Args:
             sequence: 目标基因序列
             oligo_length: 每条寡核苷酸长度 (默认60bp)
             overlap_length: 重叠区域长度 (默认20bp)
-            primer_name: 引物名称前缀
+            primer_name: 寡核苷酸名称前缀
 
         Returns:
             List[Primer] 合成寡核苷酸列表
@@ -553,16 +555,19 @@ class PrimerDesigner:
 
         while pos < len(sequence):
             end = min(pos + oligo_length, len(sequence))
-            oligo_seq = sequence[pos:end]
+            sense_seq = sequence[pos:end]
 
             # 跳过太短的片段（< overlap_length）
-            if len(oligo_seq) < overlap_length and oligo_num > 1:
+            if len(sense_seq) < overlap_length and oligo_num > 1:
                 break
+
+            is_sense = (oligo_num % 2 == 1)
+            # 偶数号取反向互补链，才能与上一条的正链 overlap 区域退火
+            oligo_seq = sense_seq if is_sense else self._reverse_complement(sense_seq)
 
             tm = self._calculate_tm(oligo_seq)
             gc = self._calculate_gc(oligo_seq)
 
-            is_forward = (oligo_num % 2 == 1)
             oligo = Primer(
                 name=f"{primer_name}_oligo{oligo_num:02d}",
                 sequence=oligo_seq,
@@ -572,8 +577,8 @@ class PrimerDesigner:
                 length=len(oligo_seq),
                 target_start=pos,
                 target_end=end,
-                notes=f"{'Forward' if is_forward else 'Reverse'} strand oligo, "
-                     f"overlap: {overlap_length}bp"
+                notes=f"{'Sense' if is_sense else 'Antisense'} strand oligo, "
+                     f"region {pos + 1}-{end}, overlap: {overlap_length}bp"
             )
             oligos.append(oligo)
 

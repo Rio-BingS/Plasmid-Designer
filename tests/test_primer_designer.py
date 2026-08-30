@@ -197,5 +197,51 @@ def test_primer_pair_output():
     assert 'reverse_seq' in order
 
 
+def test_synthesis_oligos_alternating_strands():
+    """全基因合成寡核苷酸：正反链交替、覆盖完整序列、相邻 overlap 互补可退火"""
+    designer = PrimerDesigner()
+
+    seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)
+    oligo_len, overlap = 60, 20
+    step = oligo_len - overlap
+
+    oligos = designer.design_synthesis_oligos(seq, oligo_len, overlap, "t")
+    assert oligos, "应至少产出一条寡核苷酸"
+
+    def rc(s: str) -> str:
+        return s.translate(str.maketrans("ATGC", "TACG"))[::-1]
+
+    # 奇数号为正链片段，偶数号为对应区域的反向互补链
+    for i, oligo in enumerate(oligos, start=1):
+        pos = (i - 1) * step
+        end = min(pos + oligo_len, len(seq))
+        sense = seq[pos:end]
+        if i % 2 == 1:
+            assert oligo.sequence == sense, f"oligo{i:02d} 应为正链片段"
+            assert "Sense" in oligo.notes
+        else:
+            assert oligo.sequence == rc(sense), f"oligo{i:02d} 应为反向互补链"
+            assert "Antisense" in oligo.notes
+
+    # 相邻寡核苷酸在 overlap 区域互补，可退火组装。
+    # (正链→反链)：共享区域位于 a 的尾部与 b 的尾部（反链上同区域在其 3' 端）
+    # (反链→正链)：共享区域位于 a 的头部与 b 的头部
+    for a, b in zip(oligos, oligos[1:]):
+        a_is_sense = "Sense" in a.notes
+        if a_is_sense:
+            assert rc(a.sequence[-overlap:]) == b.sequence[-overlap:], \
+                f"{a.name} 与 {b.name} 的 overlap 区域应互补"
+        else:
+            assert rc(a.sequence[:overlap]) == b.sequence[:overlap], \
+                f"{a.name} 与 {b.name} 的 overlap 区域应互补"
+
+    # 目标区域连续覆盖整条序列，相邻窗口滑动步长一致
+    assert oligos[0].target_start == 0
+    for a, b in zip(oligos, oligos[1:]):
+        assert b.target_start - a.target_start == step
+    assert oligos[-1].target_end == len(seq)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

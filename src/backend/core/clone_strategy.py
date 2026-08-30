@@ -832,7 +832,7 @@ class GeneSynthesisStrategy:
             insert_name=insert_name,
             vector_name=vector_name,
             steps=steps,
-            enzymes=["PCR Master Mix", "Gibson Assembly Master Mix"],
+            enzymes=["Overlapping oligo pool", "High-fidelity DNA polymerase"],
             expected_product_size=product_size,
             warnings=warnings_en,
             warnings_zh=warnings_zh
