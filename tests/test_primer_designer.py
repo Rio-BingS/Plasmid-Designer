@@ -197,50 +197,56 @@ def test_primer_pair_output():
     assert 'reverse_seq' in order
 
 
-def test_synthesis_oligos_alternating_strands():
-    """全基因合成寡核苷酸：正反链交替、覆盖完整序列、相邻 overlap 互补可退火"""
+def test_synthesis_oligos_paired_even_count():
+    """全基因合成寡核苷酸：每片成对给出正/反义链，总数为偶数，双链完全覆盖"""
     designer = PrimerDesigner()
 
     seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
            "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)
-    oligo_len, overlap = 60, 20
-    step = oligo_len - overlap
+    length_min, length_max, overlap = 40, 80, 20
 
-    oligos = designer.design_synthesis_oligos(seq, oligo_len, overlap, "t")
-    assert oligos, "应至少产出一条寡核苷酸"
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=length_min, oligo_length_max=length_max,
+        overlap_length=overlap, primer_name="t",
+    )
 
     def rc(s: str) -> str:
         return s.translate(str.maketrans("ATGC", "TACG"))[::-1]
 
-    # 奇数号为正链片段，偶数号为对应区域的反向互补链
-    for i, oligo in enumerate(oligos, start=1):
-        pos = (i - 1) * step
-        end = min(pos + oligo_len, len(seq))
-        sense = seq[pos:end]
-        if i % 2 == 1:
-            assert oligo.sequence == sense, f"oligo{i:02d} 应为正链片段"
-            assert "Sense" in oligo.notes
-        else:
-            assert oligo.sequence == rc(sense), f"oligo{i:02d} 应为反向互补链"
-            assert "Antisense" in oligo.notes
+    # 总数为偶数，且 S/AS 严格成对出现
+    assert len(oligos) % 2 == 0, "寡核苷酸总数应为偶数"
+    for i in range(0, len(oligos), 2):
+        s_oligo, as_oligo = oligos[i], oligos[i + 1]
+        assert "Sense" in s_oligo.notes and "Antisense" in as_oligo.notes
+        assert as_oligo.sequence == rc(s_oligo.sequence), \
+            f"{as_oligo.name} 应为 {s_oligo.name} 的反向互补链"
+        assert s_oligo.target_start == as_oligo.target_start
+        assert s_oligo.target_end == as_oligo.target_end
+        # 片段长度落在指定范围内（尾片并入时可略超上限）
+        assert length_min <= s_oligo.length <= length_max + overlap, \
+            f"{s_oligo.name} 长度 {s_oligo.length} 超出范围"
 
-    # 相邻寡核苷酸在 overlap 区域互补，可退火组装。
-    # (正链→反链)：共享区域位于 a 的尾部与 b 的尾部（反链上同区域在其 3' 端）
-    # (反链→正链)：共享区域位于 a 的头部与 b 的头部
-    for a, b in zip(oligos, oligos[1:]):
-        a_is_sense = "Sense" in a.notes
-        if a_is_sense:
-            assert rc(a.sequence[-overlap:]) == b.sequence[-overlap:], \
-                f"{a.name} 与 {b.name} 的 overlap 区域应互补"
-        else:
-            assert rc(a.sequence[:overlap]) == b.sequence[:overlap], \
-                f"{a.name} 与 {b.name} 的 overlap 区域应互补"
+    # 相邻片段共享 overlap 区域（正链意义下）
+    for i in range(0, len(oligos) - 2, 2):
+        cur, nxt = oligos[i], oligos[i + 2]
+        shared = cur.sequence[-overlap:]
+        assert nxt.sequence[:overlap] == shared, "相邻片段应共享重叠区"
 
-    # 目标区域连续覆盖整条序列，相邻窗口滑动步长一致
+    # 覆盖完整序列
     assert oligos[0].target_start == 0
-    for a, b in zip(oligos, oligos[1:]):
-        assert b.target_start - a.target_start == step
     assert oligos[-1].target_end == len(seq)
+
+
+def test_synthesis_oligos_short_sequence_single_pair():
+    """短序列（≤上限）只产生一对正反义寡核苷酸"""
+    designer = PrimerDesigner()
+    seq = "ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTTAAACCCGGG"
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80, overlap_length=20, primer_name="t",
+    )
+    assert len(oligos) == 2
+    assert oligos[0].sequence == seq
+    assert oligos[1].sequence == seq.translate(str.maketrans("ATGC", "TACG"))[::-1]
 
 
 if __name__ == "__main__":

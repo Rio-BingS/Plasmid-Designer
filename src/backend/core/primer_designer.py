@@ -600,66 +600,83 @@ class PrimerDesigner:
     def design_synthesis_oligos(
         self,
         sequence: str,
-        oligo_length: int = 60,
+        oligo_length_min: int = 40,
+        oligo_length_max: int = 80,
         overlap_length: int = 20,
         primer_name: str = "synth"
     ) -> List[Primer]:
-        """设计全基因合成寡核苷酸（正反链交替重叠组装）
+        """设计全基因合成寡核苷酸（成对正反链、双链完全覆盖）
 
-        将目标基因拆分为正反链交替的重叠寡核苷酸：奇数号为正链片段，
-        偶数号为对应区域的反向互补链。相邻寡核苷酸通过 overlap 区域
-        退火互组装，无需模板即可拼出双链目标基因。
+        将目标基因按均衡步长分片，每个片段同时给出正链与反义链
+        （反向互补）两条寡核苷酸：
+
+        - 寡核苷酸总数恒为偶数（每片 2 条）；
+        - 双链两条链均被完整覆盖，全部寡核苷酸退火后即可自组装；
+        - 相邻片段共享 overlap 区域；
+        - 单条长度落在 [oligo_length_min, oligo_length_max] 内
+          （尾片并入时可能略超上限）。
 
         Args:
             sequence: 目标基因序列
-            oligo_length: 每条寡核苷酸长度 (默认60bp)
-            overlap_length: 重叠区域长度 (默认20bp)
+            oligo_length_min: 单条寡核苷酸最短长度
+            oligo_length_max: 单条寡核苷酸最长长度
+            overlap_length: 相邻片段重叠区长度
             primer_name: 寡核苷酸名称前缀
 
         Returns:
-            List[Primer] 合成寡核苷酸列表
+            List[Primer] 成对寡核苷酸列表（每片 S/AS 两条）
         """
         sequence = sequence.upper()
-        step = oligo_length - overlap_length
+        seq_len = len(sequence)
+        max_span = oligo_length_max - overlap_length
+        if max_span <= 0:
+            raise ValueError("oligo_length_max 必须大于 overlap_length")
+        if seq_len == 0:
+            raise ValueError("序列为空")
 
-        if step <= 0:
-            raise ValueError("oligo_length must be greater than overlap_length")
+        # 最少分片数 + 均衡步长：保证片长 ≤ 上限且各片长度尽量均匀
+        n_tiles = max(1, math.ceil((seq_len - overlap_length) / max_span))
+        step = math.ceil((seq_len - overlap_length) / n_tiles)
 
         oligos = []
+        tile_num = 1
         pos = 0
-        oligo_num = 1
+        while pos < seq_len:
+            end = min(pos + step + overlap_length, seq_len)
+            # 尾片剩余不足一个重叠区时并入当前片段，避免碎片
+            if seq_len - end < overlap_length:
+                end = seq_len
+            sense = sequence[pos:end]
 
-        while pos < len(sequence):
-            end = min(pos + oligo_length, len(sequence))
-            sense_seq = sequence[pos:end]
-
-            # 跳过太短的片段（< overlap_length）
-            if len(sense_seq) < overlap_length and oligo_num > 1:
-                break
-
-            is_sense = (oligo_num % 2 == 1)
-            # 偶数号取反向互补链，才能与上一条的正链 overlap 区域退火
-            oligo_seq = sense_seq if is_sense else self._reverse_complement(sense_seq)
-
-            tm = self._calculate_tm(oligo_seq)
-            gc = self._calculate_gc(oligo_seq)
-
-            oligo = Primer(
-                name=f"{primer_name}_oligo{oligo_num:02d}",
-                sequence=oligo_seq,
+            sense_oligo = Primer(
+                name=f"{primer_name}_S{tile_num:02d}",
+                sequence=sense,
                 primer_type=PrimerType.SYNTHESIS_OLIGO,
-                tm=tm,
-                gc_content=gc,
-                length=len(oligo_seq),
+                tm=self._calculate_tm(sense),
+                gc_content=self._calculate_gc(sense),
+                length=len(sense),
                 target_start=pos,
                 target_end=end,
-                notes=f"{'Sense' if is_sense else 'Antisense'} strand oligo, "
-                     f"region {pos + 1}-{end}, overlap: {overlap_length}bp"
+                notes=f"Sense strand oligo, region {pos + 1}-{end}",
             )
-            oligos.append(oligo)
+            antisense_seq = self._reverse_complement(sense)
+            antisense_oligo = Primer(
+                name=f"{primer_name}_AS{tile_num:02d}",
+                sequence=antisense_seq,
+                primer_type=PrimerType.SYNTHESIS_OLIGO,
+                tm=self._calculate_tm(antisense_seq),
+                gc_content=self._calculate_gc(antisense_seq),
+                length=len(antisense_seq),
+                target_start=pos,
+                target_end=end,
+                notes=f"Antisense strand oligo (reverse complement), region {pos + 1}-{end}",
+            )
+            oligos.extend([sense_oligo, antisense_oligo])
 
+            if end >= seq_len:
+                break
             pos += step
-            oligo_num += 1
+            tile_num += 1
 
         return oligos
 

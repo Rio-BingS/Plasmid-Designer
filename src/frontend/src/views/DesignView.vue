@@ -28,7 +28,8 @@ const enzyme = ref('BsaI')
 // 双酶切：5'/3' 端分别选择限制酶
 const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
-const oligoLength = ref(60)
+const oligoLengthMin = ref(40)
+const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
 
 // 提交状态
@@ -68,7 +69,8 @@ async function handleSubmit() {
       gc_max: gcMax.value,
       homology_arm: homologyArm.value,
       enzyme: enzyme.value,
-      oligo_length: oligoLength.value,
+      oligo_length_min: oligoLengthMin.value,
+      oligo_length_max: oligoLengthMax.value,
       overlap_length: overlapLength.value,
       include_report: true,
       protocol_language: protocolLanguage.value
@@ -214,8 +216,16 @@ function loadExample() {
         <!-- 全基因合成参数 -->
         <div v-if="insertSource === 'gene_synthesis'" class="method-params">
           <div class="form-group">
-            <label class="form-label">寡核苷酸长度 (bp)</label>
-            <input v-model.number="oligoLength" type="number" class="form-input" min="40" max="100" />
+            <label class="form-label">寡核苷酸长度范围 (bp)</label>
+            <div class="range-inputs">
+              <input v-model.number="oligoLengthMin" type="number" class="form-input" min="20" max="100" placeholder="最短" />
+              <span>—</span>
+              <input v-model.number="oligoLengthMax" type="number" class="form-input" min="30" max="120" placeholder="最长" />
+            </div>
+            <p v-if="oligoLengthMin > oligoLengthMax" class="hint-text warning-text">
+              ⚠️ 最短长度不能大于最长长度
+            </p>
+            <p class="hint-text">算法会在该范围内均衡分片，每片同时给出正链与反义链</p>
           </div>
           <div class="form-group">
             <label class="form-label">重叠区域长度 (bp)</label>

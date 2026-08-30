@@ -22,7 +22,8 @@ export interface DesignRequest {
   /** 双酶切：restriction 方法 5'/3' 端限制酶 */
   enzyme_5?: string
   enzyme_3?: string
-  oligo_length?: number
+  oligo_length_min?: number
+  oligo_length_max?: number
   overlap_length?: number
   include_report: boolean
   protocol_language?: 'zh' | 'en'

@@ -156,10 +156,12 @@ def test_design_primers_gene_synthesis_with_cloning_pair():
     primers = design_primers_for_method(req, dna, vector=None, backbone="")
 
     names = [p.name for p in primers]
-    assert names[:2] == ["syn_oligo01", "syn_oligo02"]       # 87bp → 2 条组装 oligo
+    # 87bp、默认长度范围（60/60）→ 2 个片段 → 4 条成对寡核苷酸 + 1 对克隆引物
+    assert names[:4] == ["syn_S01", "syn_AS01", "syn_S02", "syn_AS02"]
     assert names[-2:] == ["syn_F", "syn_R"]                  # 末端为克隆引物对
     assert primers[-2].full_sequence.startswith("GGATCC")    # 5' 端 BamHI
     assert primers[-1].full_sequence.startswith("CTCGAG")    # 3' 端 XhoI（回文）
+    assert len(primers) % 2 == 0                             # 寡核苷酸总数为偶数
 
 
 def test_legacy_gene_synthesis_method_normalized():

@@ -315,10 +315,11 @@ def design_primers_for_method(
         return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
     if request.insert_source == "gene_synthesis":
-        # 全基因合成：重叠组装 oligo 覆盖完整插入片段
+        # 全基因合成：成对正反链重叠 oligo 覆盖完整插入片段（双链完全覆盖）
         oligos = designer.design_synthesis_oligos(
             optimized_dna,
-            oligo_length=request.oligo_length,
+            oligo_length_min=request.oligo_length_min or request.oligo_length,
+            oligo_length_max=request.oligo_length_max or request.oligo_length,
             overlap_length=request.overlap_length,
             primer_name=name,
         )

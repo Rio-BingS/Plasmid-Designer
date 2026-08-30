@@ -20,7 +20,8 @@ const optimizeCodons = ref(true)
 const targetSpecies = ref('ecoli')
 const gcMin = ref(40)
 const gcMax = ref(60)
-const oligoLength = ref(60)
+const oligoLengthMin = ref(40)
+const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
 const isSubmitting = ref(false)
 const availableVectors = ref<VectorInfo[]>([])
@@ -75,7 +76,8 @@ async function handleSubmit() {
       gc_min: gcMin.value,
       gc_max: gcMax.value,
       protocol_language: protocolLanguage.value,
-      oligo_length: oligoLength.value,
+      oligo_length_min: oligoLengthMin.value,
+      oligo_length_max: oligoLengthMax.value,
       overlap_length: overlapLength.value,
       ...(cloningMethod.value === 'restriction' ? { enzyme_5: enzyme5.value, enzyme_3: enzyme3.value } : {})
     })
@@ -270,8 +272,13 @@ onUnmounted(() => {
       <!-- 全基因合成参数 -->
       <div v-if="insertSource === 'gene_synthesis'" class="synth-params">
         <div class="form-group">
-          <label class="form-label">寡核苷酸长度 (bp)</label>
-          <input v-model.number="oligoLength" type="number" class="form-input" min="40" max="100" />
+          <label class="form-label">寡核苷酸长度范围 (bp)</label>
+          <div class="range-inputs">
+            <input v-model.number="oligoLengthMin" type="number" class="form-input" min="20" max="100" placeholder="最短" />
+            <span>—</span>
+            <input v-model.number="oligoLengthMax" type="number" class="form-input" min="30" max="120" placeholder="最长" />
+          </div>
+          <p class="hint-text">算法会在该范围内均衡分片，每片同时给出正链与反义链</p>
         </div>
         <div class="form-group">
           <label class="form-label">重叠区域长度 (bp)</label>

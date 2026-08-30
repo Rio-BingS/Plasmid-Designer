@@ -46,7 +46,10 @@ class DesignOptions(BaseModel):
     # 双酶切：restriction 方法 5'/3' 端分别用不同酶；缺省回落到 enzyme（兼容单酶切）
     enzyme_5: Optional[str] = Field(default=None, description="双酶切 5' 端限制酶")
     enzyme_3: Optional[str] = Field(default=None, description="双酶切 3' 端限制酶")
-    oligo_length: int = Field(default=60, ge=40, le=100, description="寡核苷酸长度(bp)")
+    oligo_length: int = Field(default=60, ge=40, le=100, description="[已废弃，改用 oligo_length_min/max] 未提供范围时的固定长度")
+    # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
+    oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")
+    oligo_length_max: Optional[int] = Field(default=None, ge=30, le=120, description="寡核苷酸最长长度")
     overlap_length: int = Field(default=20, ge=10, le=30, description="重叠区域长度(bp)")
     protocol_language: Literal["zh", "en"] = Field(default="zh", description="实验方案语言")
 
@@ -56,6 +59,13 @@ class DesignOptions(BaseModel):
             raise ValueError("gc_min 不能大于 gc_max")
         if self.overlap_length >= self.oligo_length:
             raise ValueError("overlap_length 必须小于 oligo_length")
+        # 寡核苷酸长度范围校验（未提供时回落到单一 oligo_length）
+        eff_min = self.oligo_length_min or self.oligo_length
+        eff_max = self.oligo_length_max or self.oligo_length
+        if eff_min > eff_max:
+            raise ValueError("oligo_length_min 不能大于 oligo_length_max")
+        if eff_max <= self.overlap_length:
+            raise ValueError("oligo_length_max 必须大于 overlap_length")
         # 兼容旧契约：旧客户端用 cloning_method=gene_synthesis 表达「插入片段由全基因合成获得」。
         # 合成方式与克隆方法正交，归一为 insert_source=gene_synthesis + 默认限制性克隆
         if self.cloning_method == CloningMethod.GENE_SYNTHESIS:
