@@ -273,6 +273,18 @@ class CodonOptimizer:
             optimize_level
         )
 
+        # GeneOptimizer 式变窗多参数精修（跳过 5' 起始区，保持 ramp 设计）
+        dna_sequence = self._sliding_window_refinement(
+            dna_sequence, amino_acid_sequence, all_avoid, gc_target
+        )
+
+        # 精修可能轻微移动 GC，做一次收尾平滑
+        gc_after = self._calculate_gc_content(dna_sequence)
+        if gc_after < gc_target[0] or gc_after > gc_target[1]:
+            dna_sequence = ''.join(self._smooth_gc(
+                list(dna_sequence), amino_acid_sequence, gc_target, all_avoid
+            ))
+
         # 计算指标
         cai = self._calculate_cai(dna_sequence, amino_acid_sequence)
         gc_content = self._calculate_gc_content(dna_sequence)
@@ -299,6 +311,76 @@ class CodonOptimizer:
             avoided_motifs=[m for m in all_avoid if m not in final_motifs],
             score=score,
         )
+
+    def _sliding_window_refinement(
+        self,
+        dna_seq: str,
+        aa_seq: str,
+        avoid_motifs: List[str],
+        gc_target: Tuple[float, float],
+        window: int = 4
+    ) -> str:
+        """GeneOptimizer (Raab 2010) 式变窗多参数精修。
+
+        长度为 window 的密码子窗口沿编码区滑动，每个窗口枚举同义变体
+        组合（当前位置 + 每位置频率前 2 的备选），按「窗口 CAI + GC 窗口
+        贴近度」取最优。不触碰 5' 翻译起始区（保持 translational ramp）。
+        """
+        from itertools import product as iproduct
+
+        dna = dna_seq
+        n = len(aa_seq)
+        if n <= window:
+            return dna
+        ramp_end = RAMP_CODONS
+
+        for start in range(ramp_end, n - window + 1):
+            pool = []
+            for i in range(start, start + window):
+                aa = aa_seq[i]
+                cur = dna[i * 3:(i + 1) * 3]
+                ranked = sorted(CODON_TABLE[aa], key=lambda c: -self.codon_freq.get(c, 0))
+                alts = [c for c in ranked if c != cur][:2]
+                pool.append([cur] + alts)
+
+            best_dna = dna
+            best_score = self._window_score(dna, start, window, gc_target)
+            for combo in iproduct(*pool):
+                candidate = dna[:start * 3] + ''.join(combo) + dna[(start + window) * 3:]
+                if candidate == dna:
+                    continue
+                if any(m in candidate for m in avoid_motifs):
+                    continue
+                if self._has_poly_x(candidate, 4):
+                    continue
+                s = self._window_score(candidate, start, window, gc_target)
+                if s > best_score + 1e-9:
+                    best_dna, best_score = candidate, s
+            dna = best_dna
+        return dna
+
+    def _window_score(
+        self,
+        dna: str,
+        start: int,
+        window: int,
+        gc_target: Tuple[float, float]
+    ) -> float:
+        """窗口评分：局部 CAI + GC 向目标中值的贴近度。"""
+        seq = dna[start * 3:(start + window) * 3]
+        ws = []
+        for i in range(0, len(seq), 3):
+            codon = seq[i:i + 3]
+            aa = AMINO_ACID_TABLE.get(codon)
+            if aa:
+                ws.append(self._w_value(codon, aa))
+        local_cai = (
+            math.exp(sum(math.log(max(w, 0.01)) for w in ws) / len(ws)) if ws else 1.0
+        )
+        gc = self._calculate_gc_content(seq)
+        mid = (gc_target[0] + gc_target[1]) / 2
+        gc_part = max(0.0, 1.0 - abs(gc - mid) / mid) if mid > 0 else 0.0
+        return local_cai + 0.3 * gc_part
 
     def _censor_motifs(self) -> List[str]:
         """按目标宿主返回需要审查的隐蔽调控 motif。"""

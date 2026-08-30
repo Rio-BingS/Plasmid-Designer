@@ -496,6 +496,16 @@ def run_design(
         # 4. 引物
         result.primers = design_primers_for_method(request, optimized_dna, vector, backbone)
 
+        # 4.1 全基因合成：交叉杂交审查（DNAWorks 式 3' 端匹配检查）
+        if request.insert_source == "gene_synthesis" and result.primers:
+            from core.primer_designer import PrimerDesigner
+            xh = PrimerDesigner().cross_hybridization_count(result.primers)
+            if xh:
+                result.warnings.append(
+                    f"警告：检测到 {xh} 处寡核苷酸间潜在交叉杂交（3' 端 12mer 匹配），"
+                    "建议调整 oligo 长度范围后重新设计"
+                )
+
         # 5. 克隆方案
         method_map = {
             CloningMethod.GIBSON: CM.GIBSON,

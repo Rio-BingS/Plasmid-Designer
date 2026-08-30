@@ -640,11 +640,23 @@ class PrimerDesigner:
             n_tiles += 1
         step = max(1, math.ceil((seq_len - overlap_length) / n_tiles))
 
-        oligos = []
+        # 初始等步分片
+        tiles = []
         pos = 0
-        oligo_num = 1
         while pos < seq_len:
             end = min(pos + step + overlap_length, seq_len)
+            tiles.append([pos, end])
+            if end >= seq_len:
+                break
+            pos += step
+
+        # DNAWorks 式 Tm 均一化：在长度范围内微调内部边界，
+        # 使相邻片对的 Tm 差尽量小（退火同步性更好，合成成功率更高）
+        tiles = self._tm_homogenize_boundaries(tiles, sequence, oligo_length_min, oligo_length_max)
+
+        oligos = []
+        oligo_num = 1
+        for pos, end in tiles:
             sense = sequence[pos:end]
 
             is_sense = oligo_num % 2 == 1
@@ -662,13 +674,99 @@ class PrimerDesigner:
                 notes=f"{'Sense' if is_sense else 'Antisense'} strand oligo, "
                      f"region {pos + 1}-{end}, overlap: {overlap_length}bp",
             ))
-
-            if end >= seq_len:
-                break
-            pos += step
             oligo_num += 1
 
         return oligos
+
+    def _tm_homogenize_boundaries(
+        self,
+        tiles: List[List[int]],
+        sequence: str,
+        length_min: int,
+        length_max: int,
+        rounds: int = 3,
+    ) -> List[List[int]]:
+        """DNAWorks 式边界微调：移动内部边界使相邻片对的 Tm 差最小。
+
+        每轮对每个内部边界尝试 ±1..±8 的移动（保持片长在
+        [length_min, length_max] 且相邻片仍有 overlap），取使
+        「相邻片 Tm 差绝对值之和」最小的组合。
+        """
+        tm_cache: Dict[int, float] = {}
+
+        def tile_tm(start: int, end: int) -> float:
+            key = (start, end)
+            if key not in tm_cache:
+                tm_cache[key] = self._calculate_tm(sequence[start:end])
+            return tm_cache[key]
+
+        def total_deviation(ts) -> float:
+            return sum(
+                abs(tile_tm(ts[i][0], ts[i][1]) - tile_tm(ts[i + 1][0], ts[i + 1][1]))
+                for i in range(len(ts) - 1)
+            )
+
+        tiles = [list(t) for t in tiles]
+        if len(tiles) < 3:
+            return tiles
+
+        for _ in range(rounds):
+            moved = False
+            for b in range(1, len(tiles) - 1):
+                current = total_deviation(tiles)
+                best_shift, best_dev = 0, current
+                # 边界 b 同时是 tiles[b-1] 的 end 与 tiles[b] 的 start
+                for shift in range(-8, 9):
+                    if shift == 0:
+                        continue
+                    trial = [list(t) for t in tiles]
+                    trial[b - 1][1] += shift
+                    trial[b][0] += shift
+                    ok = all(
+                        (t[1] - t[0]) >= length_min and (t[1] - t[0]) <= length_max
+                        for t in trial
+                    )
+                    # 相邻片仍需保持正向重叠
+                    ok = ok and all(
+                        trial[i + 1][0] < trial[i + 1][1] and trial[i][1] > trial[i + 1][0]
+                        for i in range(len(trial) - 1)
+                    )
+                    if not ok:
+                        continue
+                    dev = total_deviation(trial)
+                    if dev < best_dev - 1e-9:
+                        best_shift, best_dev = shift, dev
+                if best_shift != 0:
+                    tiles[b - 1][1] += best_shift
+                    tiles[b][0] += best_shift
+                    moved = True
+            if not moved:
+                break
+        return tiles
+
+    def cross_hybridization_count(
+        self,
+        oligos: List[Primer],
+        stem: int = 12,
+    ) -> int:
+        """交叉杂交计数：检查每条 oligo 的 3' 端 stem-mer 是否与其他
+        oligo 的互补序列匹配（非预期的二聚体位点，DNAWorks 式审查）。
+
+        Returns:
+            匹配次数（0 为理想；>0 建议调整长度范围后重新设计）
+        """
+        trans = str.maketrans("ATGC", "TAGC")
+        seqs = [o.sequence.upper() for o in oligos]
+        count = 0
+        for i, s in enumerate(seqs):
+            tail = s[-stem:]
+            rc_tail = tail.translate(trans)[::-1]
+            for j, t in enumerate(seqs):
+                if i == j:
+                    continue
+                if rc_tail in t:
+                    count += 1
+        return count
 
 
 def export_primers_to_excel(primer_pairs: List[PrimerPair], output_path: str) -> None:

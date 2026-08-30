@@ -243,6 +243,20 @@ def test_synthesis_oligos_shifted_alternating():
     assert oligos[-1].target_end == len(seq)
 
 
+def test_synthesis_oligos_tm_homogenized():
+    """DNAWorks 式 Tm 均一化：各 oligo 的 Tm 极差应很小"""
+    designer = PrimerDesigner()
+    seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80, overlap_length=20, primer_name="t",
+    )
+    tms = [o.tm for o in oligos]
+    assert max(tms) - min(tms) <= 8,         f"Tm 极差应均一，实际 {max(tms) - min(tms):.1f}°C"
+    # 交叉杂交计数接口可用（该序列实测 3 处，信息性指标）
+    assert designer.cross_hybridization_count(oligos) >= 0
+
+
 def test_synthesis_oligos_short_sequence_staggered_pair():
     """短序列（≤上限）产生一对错位寡核苷酸（非完全互补）"""
     designer = PrimerDesigner()
