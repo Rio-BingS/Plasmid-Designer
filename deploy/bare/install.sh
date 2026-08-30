@@ -136,10 +136,10 @@ echo "[1/9] 安装系统依赖..."
 
 export DEBIAN_FRONTEND=noninteractive
 
+# Python 依赖全部有预编译 wheel，无需本地编译器
 apt-get update
 apt-get install -y --no-install-recommends \
-    gcc g++ gfortran \
-    libpq-dev make git curl wget \
+    git curl \
     software-properties-common apt-transport-https \
     ca-certificates gnupg
 
@@ -267,37 +267,10 @@ VENV_PIP="$INSTALL_DIR/venv/bin/pip"
 # 升级 pip
 $VENV_PIP install --upgrade pip setuptools wheel
 
-# 分层安装：轻量依赖（不易失败）
-echo "  安装轻量依赖..."
+# 统一从项目 requirements.txt 安装（单一来源，随主项目同步；
+# 全部依赖有预编译 wheel，无需本地编译）
 $VENV_PIP install --no-cache-dir --timeout=120 --retries=5 \
-    fastapi uvicorn python-multipart \
-    sqlalchemy alembic \
-    pydantic pydantic-settings python-dotenv loguru \
-    passlib PyJWT email-validator \
-    openpyxl reportlab httpx
-
-# SQLite 支持
-$VENV_PIP install --no-cache-dir --timeout=60 \
-    pysqlite3 2>/dev/null || true
-
-# PostgreSQL 模式额外依赖
-if [[ "$DB_MODE" == "postgresql" ]]; then
-    echo "  安装 PostgreSQL 驱动..."
-    $VENV_PIP install --no-cache-dir --timeout=120 \
-        asyncpg psycopg2-binary
-fi
-
-# 分层安装：需要 C 编译的重量依赖
-echo "  安装计算依赖（需要编译，请耐心等待）..."
-$VENV_PIP install --no-cache-dir --timeout=300 --retries=5 \
-    numpy pandas scipy \
-    matplotlib biopython \
-    primer3-py
-
-# 分层安装：需要 git 的依赖
-echo "  安装 git 依赖..."
-$VENV_PIP install --no-cache-dir --timeout=120 --retries=5 \
-    "pydna>=5.5.0"
+    -r "$INSTALL_DIR/src/backend/requirements.txt"
 
 echo "  ✓ Python 依赖安装完成"
 
@@ -366,10 +339,8 @@ chown -R plasmid:plasmid "$INSTALL_DIR"
 chmod 750 "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
 
-# 创建数据目录和输出目录
+# 创建数据目录（载体库/密码子表随项目文件一同复制）
 mkdir -p "$INSTALL_DIR/data/vectors" "$INSTALL_DIR/data/codon_tables"
-mkdir -p /tmp/plasmid_designer/uploads /tmp/plasmid_designer/output
-chown -R plasmid:plasmid /tmp/plasmid_designer
 
 # 安装 systemd 服务
 cp "$SCRIPT_DIR/plasmid-backend.service" /etc/systemd/system/

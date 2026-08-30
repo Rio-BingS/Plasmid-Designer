@@ -5,7 +5,7 @@
 ## 环境要求
 
 - Ubuntu 20.04 LTS
-- 2GB+ RAM（编译 scipy/numpy 需要）
+- 1GB+ RAM（依赖均为预编译 wheel，无需编译）
 - 10GB+ 磁盘空间
 - root 权限（sudo）
 
@@ -52,7 +52,7 @@ sudo bash deploy/bare/install.sh --project-dir /home/user/plasmid
 
 ```bash
 sudo apt update
-sudo apt install -y gcc g++ gfortran libpq-dev make git curl \
+sudo apt install -y git curl \
     software-properties-common apt-transport-https ca-certificates gnupg
 ```
 
@@ -93,20 +93,9 @@ sudo useradd -r -s /bin/false plasmid
 sudo python3.11 -m venv /opt/plasmid-designer/venv
 sudo /opt/plasmid-designer/venv/bin/pip install --upgrade pip
 
-# 轻量依赖
+# 统一从项目 requirements.txt 安装（全部有预编译 wheel）
 sudo /opt/plasmid-designer/venv/bin/pip install \
-    fastapi uvicorn python-multipart \
-    sqlalchemy alembic \
-    pydantic pydantic-settings python-dotenv loguru \
-    passlib PyJWT email-validator \
-    openpyxl reportlab httpx
-
-# C 编译依赖（耗时较长）
-sudo /opt/plasmid-designer/venv/bin/pip install \
-    numpy pandas scipy matplotlib biopython primer3-py
-
-# Git 依赖
-sudo /opt/plasmid-designer/venv/bin/pip install "pydna>=5.5.0"
+    -r /opt/plasmid-designer/src/backend/requirements.txt
 ```
 
 ### 7. 构建前端
@@ -290,13 +279,12 @@ curl http://127.0.0.1:8000/health
 
 ### Python 依赖安装失败
 
-scipy/numpy 需要 C 编译器和 Fortran 编译器：
+依赖全部有预编译 wheel，正常无需编译。若个别包安装失败，多为网络超时，可重试或配置 pip 镜像源：
 
 ```bash
-sudo apt install -y gcc g++ gfortran libpq-dev make
+sudo /opt/plasmid-designer/venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    -r /opt/plasmid-designer/src/backend/requirements.txt
 ```
-
-如 primer3-py 编译失败，确认 `make` 已安装。如 pydna 安装失败，确认 `git` 已安装。
 
 ### 权限问题
 

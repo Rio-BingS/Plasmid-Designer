@@ -2,6 +2,9 @@
 Description=Plasmid Designer Backend API
 After=network.target
 Wants=network-online.target
+# 重启限流字段属于 [Unit] 段；放在 [Service] 会被 systemd 静默忽略
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -22,14 +25,13 @@ Environment=CODON_TABLES_DIR=/opt/plasmid-designer/data/codon_tables
 # 从 .env 文件加载额外环境变量
 EnvironmentFile=/opt/plasmid-designer/.env
 
-# 启动命令
-ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+# 单 worker：进程内限流器/缓存/内存镜像均按单进程设计，
+# 多 worker 会导致限流与缓存计数不一致
+ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 
 # 重启策略
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 # 日志
 SyslogIdentifier=plasmid-backend
