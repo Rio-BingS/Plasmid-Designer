@@ -111,6 +111,17 @@ async function handleCompatibilityCheck() {
   }
 }
 
+// 回文识别位点正反链各记一条，按 (酶, 位置) 去重避免表格重复行
+function dedupeSites(sites: any[]): any[] {
+  const seen = new Set<string>()
+  return (sites || []).filter(s => {
+    const key = `${s.enzyme}|${s.position}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 async function handleExport() {
   if (!sequence.value.trim()) return
   try {
@@ -164,12 +175,18 @@ async function handleExport() {
           <span class="stat-value">{{ result.sequence_length?.toLocaleString() || '-' }}</span>
           <span class="stat-label">序列长度 (bp)</span>
         </div>
+        <!-- 后端返回的 gc_content 已是百分数（如 47.71），不要乘 100 -->
         <div class="stat-card">
-          <span class="stat-value">{{ result.gc_content != null ? (result.gc_content * 100).toFixed(1) + '%' : '-' }}</span>
+          <span class="stat-value">{{ result.gc_content != null ? Number(result.gc_content).toFixed(1) + '%' : '-' }}</span>
           <span class="stat-label">GC 含量</span>
         </div>
         <div class="stat-card">
-          <span class="stat-value">{{ result.orf_count ?? '-' }}</span>
+          <span class="stat-value">{{ result.coding_potential != null ? Number(result.coding_potential).toFixed(1) : '-' }}</span>
+          <span class="stat-label">编码潜力 (%)</span>
+        </div>
+        <!-- 后端无 orf_count 字段，取 orfs 列表长度 -->
+        <div class="stat-card">
+          <span class="stat-value">{{ result.orfs?.length ?? '-' }}</span>
           <span class="stat-label">ORF 数量</span>
         </div>
         <div class="stat-card">
@@ -189,13 +206,15 @@ async function handleExport() {
       <div v-if="restrictionResult.sites?.length">
         <table class="data-table">
           <thead>
-            <tr><th>酶</th><th>序列</th><th>位置</th></tr>
+            <tr><th>酶</th><th>识别序列</th><th>位置</th><th>末端</th></tr>
           </thead>
           <tbody>
-            <tr v-for="site in restrictionResult.sites" :key="site.enzyme + site.position">
+            <!-- 后端字段：recognition_sequence / position / overhang_type -->
+            <tr v-for="site in dedupeSites(restrictionResult.sites)" :key="site.enzyme + site.position">
               <td>{{ site.enzyme }}</td>
-              <td class="mono">{{ site.sequence }}</td>
-              <td>{{ site.position }}</td>
+              <td class="mono">{{ site.recognition_sequence }}</td>
+              <td>{{ site.position }} - {{ site.end }}</td>
+              <td>{{ { '5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端' }[site.overhang_type] || '未知' }}</td>
             </tr>
           </tbody>
         </table>
@@ -209,7 +228,7 @@ async function handleExport() {
       <div v-if="orfResult.orfs?.length">
         <table class="data-table">
           <thead>
-            <tr><th>起始</th><th>终止</th><th>长度</th><th>起始密码子</th><th>终止密码子</th><th>框</th></tr>
+            <tr><th>起始</th><th>终止</th><th>长度</th><th>起始密码子</th><th>终止密码子</th><th>方向</th><th>完整</th></tr>
           </thead>
           <tbody>
             <tr v-for="orf in orfResult.orfs" :key="orf.start + '-' + orf.end">
@@ -217,8 +236,9 @@ async function handleExport() {
               <td>{{ orf.end }}</td>
               <td>{{ orf.length }} bp</td>
               <td>{{ orf.start_codon }}</td>
-              <td>{{ orf.stop_codon }}</td>
-              <td>{{ orf.frame }}</td>
+              <td>{{ orf.stop_codon || '—' }}</td>
+              <td>{{ orf.strand === '-' ? '反向链' : '正向链' }}</td>
+              <td>{{ orf.is_complete ? '✓' : '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -229,19 +249,34 @@ async function handleExport() {
     <!-- GC 结果 -->
     <div v-if="gcResult" class="results-section">
       <h2>GC 分析</h2>
+      <!-- 后端结构：total_gc_content(百分数) / total_regions / extreme_regions / distribution[] -->
       <div class="result-cards">
         <div class="stat-card">
-          <span class="stat-value">{{ gcResult.gc_content != null ? (gcResult.gc_content * 100).toFixed(1) + '%' : '-' }}</span>
+          <span class="stat-value">{{ gcResult.total_gc_content != null ? Number(gcResult.total_gc_content).toFixed(1) + '%' : '-' }}</span>
           <span class="stat-label">总体 GC</span>
         </div>
         <div class="stat-card">
-          <span class="stat-value">{{ gcResult.gc_min != null ? (gcResult.gc_min * 100).toFixed(1) + '%' : '-' }}</span>
-          <span class="stat-label">最低 GC</span>
+          <span class="stat-value">{{ gcResult.total_regions ?? '-' }}</span>
+          <span class="stat-label">分析窗口</span>
         </div>
         <div class="stat-card">
-          <span class="stat-value">{{ gcResult.gc_max != null ? (gcResult.gc_max * 100).toFixed(1) + '%' : '-' }}</span>
-          <span class="stat-label">最高 GC</span>
+          <span class="stat-value">{{ gcResult.extreme_regions ?? '-' }}</span>
+          <span class="stat-label">GC 异常区域</span>
         </div>
+      </div>
+      <div v-if="gcResult.distribution?.length" style="margin-top: 1rem; overflow-x: auto;">
+        <table class="data-table">
+          <thead>
+            <tr><th>窗口位置</th><th>GC 含量</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="w in gcResult.distribution" :key="w.start">
+              <td>{{ w.start }} - {{ w.end }}</td>
+              <td>{{ Number(w.gc_content).toFixed(1) }}%</td>
+              <td>{{ w.is_extreme ? '⚠️ 偏离' : '正常' }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
