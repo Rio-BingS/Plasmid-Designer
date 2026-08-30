@@ -122,6 +122,8 @@ RATE_LIMITS = {
     "auth": {"requests": 5, "window": 60},       # 5 登录尝试/分钟
     
     # 用户级别限制（已登录用户更高配额）
+    # 生效条件：request.state.user 由 AuthStateMiddleware（app/auth/middleware.py）
+    # 从 Bearer Token 解析写入；匿名请求仍按 IP 维度限流。
     "user_default": {"requests": 200, "window": 60},
     "user_design": {"requests": 30, "window": 60},
     "user_batch": {"requests": 10, "window": 60},

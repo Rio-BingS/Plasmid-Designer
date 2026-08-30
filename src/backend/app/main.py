@@ -3,6 +3,16 @@ Plasmid Designer - FastAPI 应用入口
 精简版：仅包含 app 创建、中间件、路由挂载、启动事件
 """
 
+import sys
+
+# Windows GBK 控制台下 print 表情/中文会抛 UnicodeEncodeError，统一转 UTF-8 并容错
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # pragma: no cover
+            pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -72,6 +82,15 @@ app.include_router(analysis_router)
 from app.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
 
+# 认证状态中间件：解析 Bearer Token 写入 request.state.user（用户级限流依赖该字段）。
+# add_middleware 后添加者为外层，因此必须位于 RateLimitMiddleware 之后才能先于其执行
+from app.auth.middleware import AuthStateMiddleware
+app.add_middleware(AuthStateMiddleware)
+
+# 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
+from app.middleware import setup_middleware
+setup_middleware(app)
+
 
 # ==================== 启动事件 ====================
 
@@ -81,13 +100,13 @@ async def startup():
     print(f"🧬 Plasmid Designer API v0.1.0")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
-    # 数据库模式下初始化表
-    if STORAGE_MODE == "database":
-        try:
-            from app.database import init_db
-            init_db()
-        except Exception as e:
-            print(f"⚠️ 数据库初始化失败: {e}")
+    # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
+    # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
+    try:
+        from app.database import init_db
+        init_db()
+    except Exception as e:
+        print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
 
 
 # ==================== 直接运行 ====================
