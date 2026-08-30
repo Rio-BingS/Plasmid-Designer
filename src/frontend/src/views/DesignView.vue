@@ -11,7 +11,9 @@ const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
 const sequence = ref('')
 const sequenceName = ref('insert')
 const vectorId = ref('pET-28a')
-const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction' | 'gene_synthesis'>('gibson')
+const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction'>('gibson')
+// 插入片段来源与克隆方法正交
+const insertSource = ref<'pcr' | 'gene_synthesis'>('pcr')
 const protocolLanguage = ref<'zh' | 'en'>('zh')
 
 // 密码子优化
@@ -23,6 +25,9 @@ const gcMax = ref(60)
 // 克隆参数
 const homologyArm = ref(20)
 const enzyme = ref('BsaI')
+// 双酶切：5'/3' 端分别选择限制酶
+const enzyme5 = ref('BamHI')
+const enzyme3 = ref('EcoRI')
 const oligoLength = ref(60)
 const overlapLength = ref(20)
 
@@ -41,10 +46,14 @@ async function handleSubmit() {
     error.value = '请输入序列'
     return
   }
-  
+  if (cloningMethod.value === 'restriction' && enzyme5.value === enzyme3.value) {
+    error.value = '双酶切请选择两种不同的限制酶'
+    return
+  }
+
   isSubmitting.value = true
   error.value = ''
-  
+
   try {
     const request: DesignRequest = {
       sequence: sequence.value,
@@ -52,6 +61,7 @@ async function handleSubmit() {
       sequence_name: sequenceName.value,
       vector_id: vectorId.value,
       cloning_method: cloningMethod.value,
+      insert_source: insertSource.value,
       optimize_codons: optimizeCodons.value,
       target_species: targetSpecies.value,
       gc_min: gcMin.value,
@@ -63,10 +73,14 @@ async function handleSubmit() {
       include_report: true,
       protocol_language: protocolLanguage.value
     }
-    
+    if (cloningMethod.value === 'restriction') {
+      request.enzyme_5 = enzyme5.value
+      request.enzyme_3 = enzyme3.value
+    }
+
     const result = await submitDesign(request)
     router.push(`/result/${result.design_id}`)
-    
+
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message || '提交失败，请重试'
   } finally {
@@ -173,6 +187,43 @@ function loadExample() {
         </div>
       </div>
       
+      <!-- 插入片段来源 -->
+      <div class="form-section">
+        <h2>插入片段来源</h2>
+
+        <div class="method-cards">
+          <div
+            class="method-card"
+            :class="{ active: insertSource === 'pcr' }"
+            @click="insertSource = 'pcr'"
+          >
+            <h3>PCR 引物设计</h3>
+            <p>从模板扩增插入片段，引物带克隆末端</p>
+          </div>
+
+          <div
+            class="method-card"
+            :class="{ active: insertSource === 'gene_synthesis' }"
+            @click="insertSource = 'gene_synthesis'"
+          >
+            <h3>全基因合成</h3>
+            <p>重叠寡核苷酸拼装目标基因</p>
+          </div>
+        </div>
+
+        <!-- 全基因合成参数 -->
+        <div v-if="insertSource === 'gene_synthesis'" class="method-params">
+          <div class="form-group">
+            <label class="form-label">寡核苷酸长度 (bp)</label>
+            <input v-model.number="oligoLength" type="number" class="form-input" min="40" max="100" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">重叠区域长度 (bp)</label>
+            <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="30" />
+          </div>
+        </div>
+      </div>
+
       <!-- 克隆方法 -->
       <div class="form-section">
         <h2>克隆方法</h2>
@@ -194,43 +245,34 @@ function loadExample() {
     </div>
 
     <div class="method-cards">
-          <div 
-            class="method-card" 
+          <div
+            class="method-card"
             :class="{ active: cloningMethod === 'gibson' }"
             @click="cloningMethod = 'gibson'"
           >
             <h3>Gibson Assembly</h3>
             <p>无疤痕连接，适合多片段组装</p>
           </div>
-          
-          <div 
-            class="method-card" 
+
+          <div
+            class="method-card"
             :class="{ active: cloningMethod === 'golden_gate' }"
             @click="cloningMethod = 'golden_gate'"
           >
             <h3>Golden Gate</h3>
             <p>标准化克隆，适合高通量</p>
           </div>
-          
-          <div 
-            class="method-card" 
+
+          <div
+            class="method-card"
             :class="{ active: cloningMethod === 'restriction' }"
             @click="cloningMethod = 'restriction'"
           >
             <h3>限制性酶切</h3>
-            <p>传统方法，简单可靠</p>
+            <p>传统双酶切，定向克隆</p>
           </div>
-
-      <div
-        class="method-card"
-        :class="{ active: cloningMethod === 'gene_synthesis' }"
-        @click="cloningMethod = 'gene_synthesis'"
-      >
-        <h3>全基因合成</h3>
-        <p>寡核苷酸拼接，从头合成</p>
-      </div>
         </div>
-        
+
         <!-- Gibson 参数 -->
         <div v-if="cloningMethod === 'gibson'" class="method-params">
           <div class="form-group">
@@ -238,7 +280,7 @@ function loadExample() {
             <input v-model.number="homologyArm" type="number" class="form-input" min="15" max="40" />
           </div>
         </div>
-        
+
         <!-- Golden Gate 参数 -->
         <div v-if="cloningMethod === 'golden_gate'" class="method-params">
           <div class="form-group">
@@ -251,31 +293,32 @@ function loadExample() {
           </div>
         </div>
 
-        <!-- 限制性酶切参数 -->
+        <!-- 限制性酶切参数（双酶切） -->
         <div v-if="cloningMethod === 'restriction'" class="method-params">
           <div class="form-group">
-            <label class="form-label">MCS 限制酶</label>
-            <select v-model="enzyme" class="form-select">
+            <label class="form-label">5' 端限制酶</label>
+            <select v-model="enzyme5" class="form-select">
               <option
                 v-for="enz in (availableEnzymes.length ? availableEnzymes : ['EcoRI', 'BamHI', 'HindIII', 'XhoI', 'NcoI', 'SalI'])"
-                :key="enz"
+                :key="'e5-' + enz"
                 :value="enz"
               >{{ enz }}</option>
             </select>
           </div>
+          <div class="form-group">
+            <label class="form-label">3' 端限制酶</label>
+            <select v-model="enzyme3" class="form-select">
+              <option
+                v-for="enz in (availableEnzymes.length ? availableEnzymes : ['EcoRI', 'BamHI', 'HindIII', 'XhoI', 'NcoI', 'SalI'])"
+                :key="'e3-' + enz"
+                :value="enz"
+              >{{ enz }}</option>
+            </select>
+          </div>
+          <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
+            ⚠️ 双酶切请选择两种不同的限制酶
+          </p>
         </div>
-
-      <!-- 全基因合成参数 -->
-      <div v-if="cloningMethod === 'gene_synthesis'" class="method-params">
-        <div class="form-group">
-          <label class="form-label">寡核苷酸长度 (bp)</label>
-          <input v-model.number="oligoLength" type="number" class="form-input" min="40" max="100" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">重叠区域长度 (bp)</label>
-          <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="30" />
-        </div>
-      </div>
       </div>
       
       <!-- 密码子优化 -->
@@ -470,6 +513,10 @@ h1 {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 0.35rem;
+}
+
+.warning-text {
+  color: #b45309;
 }
 
 .toggle-btn {

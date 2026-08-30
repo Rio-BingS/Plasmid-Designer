@@ -2,6 +2,8 @@
 
 export type SequenceType = 'amino_acid' | 'dna'
 export type CloningMethod = 'gibson' | 'golden_gate' | 'restriction' | 'gene_synthesis'
+// 插入片段来源（与克隆方法正交）：pcr=设计 PCR 扩增引物；gene_synthesis=设计重叠合成 oligo
+export type InsertSource = 'pcr' | 'gene_synthesis'
 export type DesignStatus = 'pending' | 'running' | 'completed' | 'failed'
 
 export interface DesignRequest {
@@ -10,12 +12,16 @@ export interface DesignRequest {
   sequence_name: string
   vector_id: string
   cloning_method: CloningMethod
+  insert_source?: InsertSource
   optimize_codons: boolean
   target_species: string
   gc_min: number
   gc_max: number
   homology_arm: number
   enzyme: string
+  /** 双酶切：restriction 方法 5'/3' 端限制酶 */
+  enzyme_5?: string
+  enzyme_3?: string
   oligo_length?: number
   overlap_length?: number
   include_report: boolean

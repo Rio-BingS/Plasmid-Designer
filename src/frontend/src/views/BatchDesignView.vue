@@ -10,7 +10,11 @@ const sequencesText = ref('')
 const sequenceNames = ref<string[]>([])
 const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
 const vectorId = ref('pET-28a')
-const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction' | 'gene_synthesis'>('gibson')
+const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction'>('gibson')
+// 插入片段来源与克隆方法正交
+const insertSource = ref<'pcr' | 'gene_synthesis'>('pcr')
+const enzyme5 = ref('BamHI')
+const enzyme3 = ref('EcoRI')
 const protocolLanguage = ref<'zh' | 'en'>('zh')
 const optimizeCodons = ref(true)
 const targetSpecies = ref('ecoli')
@@ -53,6 +57,9 @@ async function startPolling(id: string) {
 
 async function handleSubmit() {
   if (parsedSequences.value.length === 0) { error.value = '请输入至少一个序列'; return }
+  if (cloningMethod.value === 'restriction' && enzyme5.value === enzyme3.value) {
+    error.value = '双酶切请选择两种不同的限制酶'; return
+  }
   isSubmitting.value = true
   error.value = ''
   try {
@@ -62,6 +69,7 @@ async function handleSubmit() {
       sequence_type: sequenceType.value,
       vector_id: vectorId.value,
       cloning_method: cloningMethod.value,
+      insert_source: insertSource.value,
       optimize_codons: optimizeCodons.value,
       target_species: targetSpecies.value,
       gc_min: gcMin.value,
@@ -69,6 +77,7 @@ async function handleSubmit() {
       protocol_language: protocolLanguage.value,
       oligo_length: oligoLength.value,
       overlap_length: overlapLength.value,
+      ...(cloningMethod.value === 'restriction' ? { enzyme_5: enzyme5.value, enzyme_3: enzyme3.value } : {})
     })
     startPolling(result.batch_id)
   } catch (e: any) { error.value = e.response?.data?.detail || e.message || '提交失败'; isSubmitting.value = false }
@@ -184,12 +193,43 @@ onUnmounted(() => {
           </div>
           
           <div class="form-group">
+            <label class="form-label">插入片段来源</label>
+            <select v-model="insertSource" class="form-select">
+              <option value="pcr">PCR 引物设计</option>
+              <option value="gene_synthesis">全基因合成</option>
+            </select>
+          </div>
+
+          <div class="form-group">
             <label class="form-label">克隆方法</label>
             <select v-model="cloningMethod" class="form-select">
               <option value="gibson">Gibson Assembly</option>
               <option value="golden_gate">Golden Gate</option>
               <option value="restriction">限制性酶切</option>
-          <option value="gene_synthesis">全基因合成</option>
+            </select>
+          </div>
+
+          <div class="form-group" v-if="cloningMethod === 'restriction'">
+            <label class="form-label">5' 端限制酶</label>
+            <select v-model="enzyme5" class="form-select">
+              <option value="EcoRI">EcoRI</option>
+              <option value="BamHI">BamHI</option>
+              <option value="HindIII">HindIII</option>
+              <option value="XhoI">XhoI</option>
+              <option value="NcoI">NcoI</option>
+              <option value="SalI">SalI</option>
+            </select>
+          </div>
+
+          <div class="form-group" v-if="cloningMethod === 'restriction'">
+            <label class="form-label">3' 端限制酶</label>
+            <select v-model="enzyme3" class="form-select">
+              <option value="EcoRI">EcoRI</option>
+              <option value="BamHI">BamHI</option>
+              <option value="HindIII">HindIII</option>
+              <option value="XhoI">XhoI</option>
+              <option value="NcoI">NcoI</option>
+              <option value="SalI">SalI</option>
             </select>
           </div>
 
@@ -208,7 +248,7 @@ onUnmounted(() => {
           >English</button>
         </div>
       </div>
-          
+
           <div class="form-group" v-if="sequenceType === 'amino_acid'">
             <label class="form-label">目标物种</label>
             <select v-model="targetSpecies" class="form-select">
@@ -218,7 +258,7 @@ onUnmounted(() => {
               <option value="cho">CHO</option>
             </select>
           </div>
-          
+
           <div class="form-group" v-if="sequenceType === 'amino_acid'">
             <label class="checkbox-label">
               <input type="checkbox" v-model="optimizeCodons" />
@@ -228,7 +268,7 @@ onUnmounted(() => {
         </div>
 
       <!-- 全基因合成参数 -->
-      <div v-if="cloningMethod === 'gene_synthesis'" class="synth-params">
+      <div v-if="insertSource === 'gene_synthesis'" class="synth-params">
         <div class="form-group">
           <label class="form-label">寡核苷酸长度 (bp)</label>
           <input v-model.number="oligoLength" type="number" class="form-input" min="40" max="100" />
