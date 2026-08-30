@@ -129,3 +129,66 @@ def test_result_dataclass():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_five_prime_ramp_uses_medium_codons():
+    """v2：5' 翻译起始区使用中等频率密码子，ramp 之后回到最高频"""
+    from core.codon_optimizer import CodonOptimizer, RAMP_CODONS
+
+    opt = CodonOptimizer(species="ecoli")
+    aa = "L" * 40  # L 有 6 个同义密码子，ramp 效果可观察
+    result = opt.optimize(aa)
+
+    ramp_codon = result.dna_sequence[3:6]        # 第 2 个 L（ramp 区）
+    post_codon = result.dna_sequence[RAMP_CODONS * 3:RAMP_CODONS * 3 + 3]  # ramp 之后
+    assert ramp_codon != post_codon or len(set(c for c in ["CTA"])) == 0
+    # ramp 区不使用最高频密码子 CTG
+    assert ramp_codon != "CTG"
+    # ramp 之后回到最高频密码子
+    assert post_codon == "CTG"
+    # 翻译产物不变
+    from core.codon_optimizer import translate_dna
+    assert translate_dna(result.dna_sequence).rstrip("*") == aa
+
+
+def test_censor_motifs_auto_avoided():
+    """v2：隐蔽调控 motif（AATAAA 等）自动并入避让列表"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="human")
+    censor = opt._censor_motifs()
+    assert "AATAAA" in censor and "TATAAA" in censor
+
+    # 构造含 AATAAA（N=AAT + K=AAA）的起始 dna，迭代应将其移除
+    aa = "NK"
+    dna_list = list("AATAAA")
+    fixed = opt._iterative_optimization("AATAAA", aa, opt._censor_motifs(), (0.4, 0.6), "balanced")
+    assert "AATAAA" not in fixed
+
+
+def test_result_has_score_and_hairpin_reduction():
+    """v2：结果带综合评分；优化后 5' 发夹计数相对基线下降"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    aa = "MAAAAAAAAAGGGGGGGGSSSSSSSSS"
+
+    baseline = opt._initial_optimization(aa, use_ramp=True)
+    base_hair = opt._five_prime_hairpin_count(baseline)
+
+    result = opt.optimize(aa)
+    assert 0 <= result.score <= 100
+
+    hair = opt._five_prime_hairpin_count(result.dna_sequence)
+    assert hair < base_hair, f"优化应削减 5' 发夹计数（基线 {base_hair}，实际 {hair}）"
+
+
+def test_gc_smoothing_efficient():
+    """v2：GC 平滑后全局 GC 进入目标范围且 CAI 损失可控"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    aa = "A" * 30 + "D" * 10  # 富 AT/富 GC 混合
+    result = opt.optimize(aa)
+    assert 0.38 <= result.gc_content <= 0.62, f"GC {result.gc_content:.2f} 应进入目标范围附近"
+    assert result.cai >= 0.5

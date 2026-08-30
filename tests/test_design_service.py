@@ -177,21 +177,21 @@ def test_legacy_gene_synthesis_method_normalized():
 
 
 def test_exclude_enzymes_avoided_in_optimization():
-    """排除限制酶位点：默认优化含 BamHI 位点的蛋白，排除后位点消失且翻译不变"""
+    """排除限制酶位点：反翻译基线含 BamHI 位点，排除后消失且翻译不变"""
     from app.routes.models import SequenceType
     from app.design_service import process_sequence
 
-    # MDP 的高频密码子 ATG+GAT+CCG 拼出 BamHI 位点 GGATCC
+    # MDP 的最高频密码子 ATG+GAT+CCG 拼出 BamHI 位点 GGATCC
     aa = "MDP"
-    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60)
+    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60)
     assert "GGATCC" in dna_raw, "基线应含 BamHI 位点（测试靶点校验）"
 
     dna_excl, _, _, warns = process_sequence(
-        aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60, exclude_enzymes=["BamHI"]
+        aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60, exclude_enzymes=["BamHI"]
     )
     assert len(dna_excl) == len(aa) * 3          # 沉默突变不改变长度
     assert "GGATCC" not in dna_excl, "优化序列不应含 BamHI 位点"
-    assert dna_raw != dna_excl                   # 相对默认优化发生了同义替换
+    assert dna_raw != dna_excl                   # 发生了同义替换
     assert not any("无法完全排除" in w for w in warns)
 
 

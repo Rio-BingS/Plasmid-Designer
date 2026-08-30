@@ -1,12 +1,20 @@
 """
-密码子优化模块
+密码子优化模块（v2）
 
-实现多物种密码子优化，借鉴金斯瑞/明舟生物算法：
-1. CAI (Codon Adaptation Index) 最大化
-2. GC含量控制 (40-60%)
-3. 避免限制性酶切位点
-4. 避免二级结构区域
-5. mRNA稳定性优化
+在经典「CAI 最大化」基础上，按表达设计文献补齐以下策略：
+1. CAI 最大化（密码子适应性）
+2. GC 含量控制（全局 + 窗口），平滑按「单位 CAI 损失换取的 GC 调整量」效率进行
+3. 5' 翻译起始区（translational ramp，前 ~20 密码子）使用中等频率密码子，
+   避免高频/稀有聚集（Verma 2019; Tuller 2013）
+4. 5' 端 mRNA 发夹削弱（起始区稳定结构会抑制核糖体装载；Mauro 2014）
+5. 隐蔽调控 motif 审查（多聚腺苷化信号 AATAAA/ATTAAA、TATA box、
+   细菌 SD 序列 AGGAGG、poly-T 终止子成分）
+6. 用户自定义 motif 避让（限制酶位点等）
+
+参考：
+- Mauro & Chappell 2014, A critical analysis of codon optimization in human therapeutics
+- Verma et al. 2019, A short translational ramp determines the efficiency of protein synthesis
+- Tuller et al. 2013, Efficient translation initiation dictates codon usage at gene start
 """
 
 import re
@@ -26,6 +34,26 @@ class CodonOptimizationResult:
     gc_distribution: List[float]
     warnings: List[str]
     avoided_motifs: List[str]
+    score: float = 0.0  # 综合评分 (0-100)
+
+
+# 5' 翻译起始区参数（translational ramp，文献支持 15-30 密码子）
+RAMP_CODONS = 20
+FIVE_PRIME_WINDOW = 60   # 5' 结构检查窗口 (nt)
+HAIRPIN_STEM = 4         # 发夹茎最短 bp
+HAIRPIN_TOLERANCE = 1    # 5' 窗口允许的茎匹配数上限
+
+# 隐蔽调控 motif 审查表（按宿主类别）
+CENSOR_MOTIFS = {
+    "prokaryote": ["AGGAGG", "TATAAT", "TTTTTT"],   # SD 序列 / -10 区 / poly-T
+    "eukaryote": ["AATAAA", "ATTAAA", "TATAAA", "TTTTTT"],  # polyA 信号 / TATA / poly-T
+}
+HOST_CLASS = {
+    "ecoli": "prokaryote",
+    "human": "eukaryote",
+    "cho": "eukaryote",
+    "yeast": "eukaryote",
+}
 
 
 # 标准遗传密码表
@@ -220,40 +248,47 @@ class CodonOptimizer:
         """
         if avoid_motifs is None:
             avoid_motifs = []
-        
+
         # 验证输入
         amino_acid_sequence = amino_acid_sequence.upper().strip()
         valid_aa = set(CODON_TABLE.keys()) - {'*'}
         for aa in amino_acid_sequence:
             if aa not in valid_aa:
                 raise ValueError(f"无效的氨基酸代码: {aa}")
-        
-        # 初始优化：选择最高频密码子
-        dna_sequence = self._initial_optimization(amino_acid_sequence)
-        
+
+        # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重
+        censor = self._censor_motifs()
+        all_avoid = list(dict.fromkeys([m.upper() for m in avoid_motifs] + censor))
+
+        # 初始优化：5' 翻译起始区用中等频率密码子（translational ramp），
+        # 其余位置选最高频密码子
+        dna_sequence = self._initial_optimization(amino_acid_sequence, use_ramp=True)
+
         # 迭代优化
         dna_sequence = self._iterative_optimization(
-            dna_sequence, 
+            dna_sequence,
             amino_acid_sequence,
-            avoid_motifs,
+            all_avoid,
             gc_target,
             optimize_level
         )
-        
+
         # 计算指标
         cai = self._calculate_cai(dna_sequence, amino_acid_sequence)
         gc_content = self._calculate_gc_content(dna_sequence)
         gc_distribution = self._calculate_gc_distribution(dna_sequence)
-        
+
         # 检查并记录警告
         warnings = []
-        final_motifs = self._find_motifs(dna_sequence, avoid_motifs)
+        final_motifs = self._find_motifs(dna_sequence, all_avoid)
         if final_motifs:
             warnings.append(f"警告：序列中仍存在需要避免的motif: {final_motifs}")
-        
+
         if gc_content < gc_target[0] or gc_content > gc_target[1]:
             warnings.append(f"警告：GC含量 {gc_content:.1%} 超出目标范围 {gc_target[0]:.0%}-{gc_target[1]:.0%}")
-        
+
+        score = self._optimization_score(dna_sequence, cai, gc_content, gc_target, final_motifs)
+
         return CodonOptimizationResult(
             dna_sequence=dna_sequence,
             amino_acid_sequence=amino_acid_sequence,
@@ -261,21 +296,36 @@ class CodonOptimizer:
             gc_content=gc_content,
             gc_distribution=gc_distribution,
             warnings=warnings,
-            avoided_motifs=[m for m in avoid_motifs if m not in final_motifs]
+            avoided_motifs=[m for m in all_avoid if m not in final_motifs],
+            score=score,
         )
+
+    def _censor_motifs(self) -> List[str]:
+        """按目标宿主返回需要审查的隐蔽调控 motif。"""
+        host_class = HOST_CLASS.get((self.species or "").lower(), "eukaryote")
+        return list(CENSOR_MOTIFS.get(host_class, CENSOR_MOTIFS["eukaryote"]))
     
-    def _initial_optimization(self, aa_sequence: str) -> str:
-        """初始优化：为每个氨基酸选择最高频密码子"""
+    def _initial_optimization(self, aa_sequence: str, use_ramp: bool = False) -> str:
+        """初始密码子选择。
+
+        use_ramp=True 时，5' 翻译起始区（前 RAMP_CODONS 个密码子）使用
+        中等频率密码子（translational ramp：起始区避免高频/稀有聚集），
+        其余位置选最高频密码子。
+        """
         codons = []
-        for aa in aa_sequence:
+        for idx, aa in enumerate(aa_sequence):
             available_codons = CODON_TABLE.get(aa, [])
             if not available_codons:
                 raise ValueError(f"无法找到氨基酸 {aa} 的密码子")
-            
-            # 选择最高频密码子
-            best_codon = max(available_codons, key=lambda c: self.codon_freq.get(c, 0))
-            codons.append(best_codon)
-        
+
+            ranked = sorted(available_codons, key=lambda c: -self.codon_freq.get(c, 0))
+            if use_ramp and idx < RAMP_CODONS and len(ranked) > 1:
+                # 中等频率：排序后取中位（避开最高频与稀有密码子）
+                codon = ranked[len(ranked) // 2]
+            else:
+                codon = ranked[0]
+            codons.append(codon)
+
         return ''.join(codons)
     
     def _iterative_optimization(
@@ -288,51 +338,112 @@ class CodonOptimizer:
     ) -> str:
         """
         迭代优化序列
-        
-        策略：
-        1. 替换导致问题的密码子（motif冲突）
-        2. 平滑GC含量
-        3. 避免poly-X区域
+
+        策略（每轮按顺序）：
+        1. 移除 motif 冲突（用户自定义 + 隐蔽调控 motif）
+        2. 削弱 5' 端 mRNA 发夹（翻译起始区结构）
+        3. GC 平滑（效率导向的单点替换）
+        4. 打断 poly-X 连续碱基
         """
         dna_list = list(dna_seq)
-        
-        # 最大迭代次数
+
         max_iterations = {
             'aggressive': 100,
             'balanced': 50,
             'conservative': 20
         }.get(level, 50)
-        
+
         for iteration in range(max_iterations):
             improved = False
-            
+
             # 1. 检查并移除需要避免的motif
             for motif in avoid_motifs:
                 motif_pos = self._find_motif_position(''.join(dna_list), motif)
                 if motif_pos != -1:
-                    # 尝试替换该位置的密码子
                     new_seq = self._replace_codon_at_motif(
                         dna_list, aa_seq, motif_pos, motif
                     )
                     if new_seq:
                         dna_list = list(new_seq)
                         improved = True
-            
-            # 2. GC平滑（如果需要）
+
+            # 2. 5' 端发夹削弱（起始区稳定结构抑制翻译）
+            if self._five_prime_hairpin_count(''.join(dna_list)) > HAIRPIN_TOLERANCE:
+                new_list = self._reduce_five_prime_hairpins(dna_list, aa_seq, avoid_motifs)
+                if new_list != dna_list:
+                    dna_list = new_list
+                    improved = True
+
+            # 3. GC 平滑（如果需要）
             gc = self._calculate_gc_content(''.join(dna_list))
             if gc < gc_target[0] or gc > gc_target[1]:
-                dna_list = self._smooth_gc(dna_list, aa_seq, gc_target)
-                improved = True
-            
-            # 3. 避免poly-X (4个以上连续相同碱基)
+                new_list = self._smooth_gc(dna_list, aa_seq, gc_target, avoid_motifs)
+                if new_list != dna_list:
+                    dna_list = new_list
+                    improved = True
+
+            # 4. 避免poly-X (4个以上连续相同碱基)
             if self._has_poly_x(''.join(dna_list), 4):
-                dna_list = self._break_poly_x(dna_list, aa_seq)
-                improved = True
-            
+                new_list = self._break_poly_x(dna_list, aa_seq)
+                if new_list != dna_list:
+                    dna_list = new_list
+                    improved = True
+
             if not improved:
                 break
-        
+
         return ''.join(dna_list)
+
+    def _five_prime_hairpin_count(
+        self,
+        dna: str,
+        window: int = FIVE_PRIME_WINDOW,
+        stem: int = HAIRPIN_STEM
+    ) -> int:
+        """5' 端简化发夹计数：窗口内长度为 stem 的片段与其后
+        出现的反向互补序列的匹配数（0-based，翻译起始区近似结构打分）。"""
+        w = dna[:window]
+        trans = str.maketrans("ATGC", "TAGC")
+        count = 0
+        for i in range(0, len(w) - stem + 1):
+            seg = w[i:i + stem]
+            rc = seg.translate(trans)[::-1]
+            if rc in w[i + stem:]:
+                count += 1
+        return count
+
+    def _reduce_five_prime_hairpins(
+        self,
+        dna_list: List[str],
+        aa_seq: str,
+        avoid_motifs: List[str]
+    ) -> List[str]:
+        """尝试在 5' 区域做单点同义替换以降低发夹计数（取降低最多者）。"""
+        dna = ''.join(dna_list)
+        best_dna = dna
+        best_score = self._five_prime_hairpin_count(dna)
+
+        codon_span = min(len(aa_seq), FIVE_PRIME_WINDOW // 3 + 2)
+        for idx in range(codon_span):
+            aa = aa_seq[idx]
+            start = idx * 3
+            current = dna[start:start + 3]
+            for alt in CODON_TABLE.get(aa, []):
+                if alt == current:
+                    continue
+                candidate = dna[:start] + alt + dna[start + 3:]
+                s = self._five_prime_hairpin_count(candidate)
+                if s >= best_score:
+                    continue
+                if any(m in candidate for m in avoid_motifs):
+                    continue
+                if self._has_poly_x(candidate, 4):
+                    continue
+                best_dna, best_score = candidate, s
+
+        if best_score < self._five_prime_hairpin_count(dna):
+            return list(best_dna)
+        return dna_list
     
     def _find_motif_position(self, dna: str, motif: str) -> int:
         """查找motif位置，-1表示未找到"""
@@ -375,32 +486,78 @@ class CodonOptimizer:
         self,
         dna_list: List[str],
         aa_seq: str,
-        gc_target: Tuple[float, float]
+        gc_target: Tuple[float, float],
+        avoid_motifs: List[str] = ()
     ) -> List[str]:
-        """平滑GC含量"""
-        gc = self._calculate_gc_content(''.join(dna_list))
-        need_increase = gc < gc_target[0]
-        
-        # 找到GC含量可调整的密码子
-        for i, aa in enumerate(aa_seq):
-            current_codon = ''.join(dna_list[i*3:(i+1)*3])
-            current_gc = (current_codon.count('G') + current_codon.count('C')) / 3
-            
-            alternatives = CODON_TABLE[aa]
-            for alt_codon in sorted(alternatives, key=lambda c: -self.codon_freq.get(c, 0)):
-                alt_gc = (alt_codon.count('G') + alt_codon.count('C')) / 3
-                
-                # 根据需求选择
-                if need_increase and alt_gc > current_gc:
-                    for j, nt in enumerate(alt_codon):
-                        dna_list[i*3 + j] = nt
-                    break
-                elif not need_increase and alt_gc < current_gc:
-                    for j, nt in enumerate(alt_codon):
-                        dna_list[i*3 + j] = nt
-                    break
-        
+        """GC 平滑：每次选「单位 CAI 损失换取的 GC 调整量」最高的单个
+        同义替换，直到进入目标范围或无可行替换。相比一次全量替换，
+        该贪心策略把 CAI 损失控制到最小。"""
+        trans = str.maketrans("ATGC", "TAGC")
+        max_steps = min(len(aa_seq), 400)
+        motifs = [m.upper() for m in avoid_motifs]
+
+        for _ in range(max_steps):
+            dna = ''.join(dna_list)
+            gc = self._calculate_gc_content(dna)
+            if gc_target[0] <= gc <= gc_target[1]:
+                break
+            need_increase = gc < gc_target[0]
+
+            best = None  # (efficiency, codon_idx, alt)
+            for i, aa in enumerate(aa_seq):
+                start = i * 3
+                current = dna[start:start + 3]
+                cur_gc = (current.count('G') + current.count('C')) / 3
+                cur_w = self._w_value(current, aa)
+                for alt in CODON_TABLE.get(aa, []):
+                    if alt == current:
+                        continue
+                    alt_gc = (alt.count('G') + alt.count('C')) / 3
+                    if need_increase and alt_gc <= cur_gc:
+                        continue
+                    if not need_increase and alt_gc >= cur_gc:
+                        continue
+                    candidate = dna[:start] + alt + dna[start + 3:]
+                    if any(m in candidate for m in motifs):
+                        continue
+                    if self._has_poly_x(candidate, 4):
+                        continue
+                    alt_w = self._w_value(alt, aa)
+                    cai_loss = max(0.0, cur_w - alt_w)
+                    gc_gain = abs(alt_gc - cur_gc) / max(1, len(dna) // 3)
+                    eff = gc_gain / (cai_loss + 0.02)
+                    if best is None or eff > best[0]:
+                        best = (eff, i, alt)
+
+            if best is None:
+                break
+            _, idx, alt = best
+            dna_list[idx * 3:idx * 3 + 3] = list(alt)
+
         return dna_list
+
+    def _w_value(self, codon: str, aa: str) -> float:
+        """密码子的相对适应性 w = freq / max_freq(同义密码子)"""
+        max_f = max(self.codon_freq.get(c, 0) for c in CODON_TABLE.get(aa, [codon]))
+        if max_f <= 0:
+            return 0.01
+        return self.codon_freq.get(codon, 0.0) / max_f
+
+    def _optimization_score(
+        self,
+        dna: str,
+        cai: float,
+        gc: float,
+        gc_target: Tuple[float, float],
+        final_motifs: List[str]
+    ) -> float:
+        """综合评分 (0-100)：CAI、GC 达标度、5' 结构、motif 干净度加权。"""
+        mid = (gc_target[0] + gc_target[1]) / 2
+        half = max(1e-6, (gc_target[1] - gc_target[0]) / 2)
+        gc_part = max(0.0, 1.0 - abs(gc - mid) / (half * 1.5))
+        hair_part = max(0.0, 1.0 - self._five_prime_hairpin_count(dna) / 8)
+        motif_part = 1.0 / (1 + len(final_motifs))
+        return round(100 * (0.45 * cai + 0.25 * gc_part + 0.2 * hair_part + 0.1 * motif_part), 1)
     
     def _has_poly_x(self, dna: str, threshold: int) -> bool:
         """检查是否有连续相同碱基"""
