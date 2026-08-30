@@ -1,4 +1,8 @@
-"""载体库路由 — 从 main.py 提取"""
+"""载体库路由 — 从 main.py 提取
+
+读取走进程级 VectorLibrary 缓存（与 design_service 共享），
+写操作（删除/更新/上传/导入）后统一失效缓存。
+"""
 
 import os
 import yaml
@@ -9,13 +13,26 @@ from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse
 
-from app.config import settings, BACKEND_DIR
+from app.cache import cache
+from app.config import settings
+from app.design_service import get_vector_library, invalidate_vector_library_cache
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
     BatchImportRequest, PlasmidMapData
 )
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
+
+
+def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
+    """载体写操作后失效响应缓存（详情键 + 全部列表键）。"""
+    try:
+        if vector_id:
+            cache.backend.delete(f"vector:{vector_id}")
+        cache.backend.clear_pattern("vector_list:*")
+    except Exception:
+        # 缓存失效失败不影响写操作结果（TTL 兜底）
+        pass
 
 
 # ==================== 路由 ====================
@@ -26,10 +43,13 @@ async def list_vectors(
     host: Optional[str] = None
 ):
     """列出所有可用载体"""
-    from core.vector_library import VectorLibrary
+    filters = {"vector_type": vector_type, "host": host}
 
-    library = VectorLibrary()
-    library.load_from_directory(settings.VECTORS_DIR)
+    cached_list = cache.get_vector_list(filters)
+    if cached_list is not None:
+        return cached_list
+
+    library = get_vector_library()
 
     vectors = library.list_vectors(filter_type=vector_type)
 
@@ -54,24 +74,29 @@ async def list_vectors(
             mcs_enzymes=mcs_enzymes
         ))
 
+    try:
+        cache.cache_vector_list(filters, [v.model_dump(mode="json") for v in result])
+    except Exception:
+        pass
+
     return result
 
 
 @router.get("/{vector_id}", response_model=VectorInfo)
 async def get_vector(vector_id: str):
     """获取载体详情"""
-    from core.vector_library import VectorLibrary
+    cached_vector = cache.get_vector(vector_id)
+    if cached_vector is not None:
+        return cached_vector
 
-    library = VectorLibrary()
-    library.load_from_directory(settings.VECTORS_DIR)
-
+    library = get_vector_library()
     vector = library.get_vector(vector_id)
     if not vector:
         raise HTTPException(status_code=404, detail="Vector not found")
 
     mcs_enzymes = vector.mcs.get_unique_enzymes() if vector.mcs else []
 
-    return VectorInfo(
+    info = VectorInfo(
         id=vector.id,
         name=vector.name,
         source=vector.source,
@@ -83,6 +108,13 @@ async def get_vector(vector_id: str):
         features=[{"name": e.name, "type": e.element_type.value} for e in vector.elements],
         mcs_enzymes=mcs_enzymes
     )
+
+    try:
+        cache.cache_vector(vector_id, info.model_dump(mode="json"))
+    except Exception:
+        pass
+
+    return info
 
 
 @router.delete("/{vector_id}")
@@ -97,6 +129,8 @@ async def delete_vector(vector_id: str):
                 data = yaml.safe_load(f)
             if data and data.get('id') == vector_id:
                 os.remove(file_path)
+                invalidate_vector_library_cache()
+                _invalidate_vector_cache(vector_id)
                 return {"deleted": True, "vector_id": vector_id}
 
     raise HTTPException(status_code=404, detail="Vector not found")
@@ -140,16 +174,15 @@ async def update_vector(vector_id: str, request: VectorUpdateRequest):
     with open(vector_file, 'w', encoding='utf-8') as f:
         yaml.dump(data_orig, f, allow_unicode=True, default_flow_style=False)
 
+    invalidate_vector_library_cache()
+    _invalidate_vector_cache(vector_id)
     return {"updated": True, "vector_id": vector_id}
 
 
 @router.get("/{vector_id}/sequence")
 async def get_vector_sequence(vector_id: str, format: str = "fasta"):
     """获取载体序列（FASTA 或 GenBank 格式）"""
-    from core.vector_library import VectorLibrary
-
-    library = VectorLibrary()
-    library.load_from_directory(settings.VECTORS_DIR)
+    library = get_vector_library()
     vector = library.get_vector(vector_id)
 
     if not vector:
@@ -185,10 +218,7 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
 @router.get("/{vector_id}/map", response_model=PlasmidMapData)
 async def get_vector_map_data(vector_id: str):
     """获取载体图谱数据"""
-    from core.vector_library import VectorLibrary
-
-    library = VectorLibrary()
-    library.load_from_directory(settings.VECTORS_DIR)
+    library = get_vector_library()
     vector = library.get_vector(vector_id)
 
     if not vector:
@@ -237,6 +267,8 @@ async def import_vector_from_ncbi(query: str, limit: int = 5):
     output_dir = settings.VECTORS_DIR
     manager.export_to_yaml(output_dir)
 
+    invalidate_vector_library_cache()
+    _invalidate_vector_cache()
     return {"imported": count, "query": query}
 
 
@@ -251,6 +283,9 @@ async def import_vector_by_ncbi_id(seq_id: str):
     if success:
         output_dir = settings.VECTORS_DIR
         manager.export_to_yaml(output_dir)
+
+        invalidate_vector_library_cache()
+        _invalidate_vector_cache(f"ncbi_{seq_id}")
         return {"success": True, "seq_id": seq_id}
     return {"success": False, "error": "无法获取序列"}
 
@@ -301,25 +336,6 @@ async def preview_ncbi_vector(seq_id: str):
     )
 
 
-@router.post("/import/file")
-async def import_vector_from_file(file_path: str):
-    """从本地 GenBank 文件导入载体"""
-    from core.external_vector_importer import VectorLibraryManager
-
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=400, detail="File not found")
-
-    manager = VectorLibraryManager()
-    count = manager.import_from_genbank(file_path)
-
-    if count > 0:
-        output_dir = settings.VECTORS_DIR
-        manager.export_to_yaml(output_dir)
-        return {"imported": count, "file": file_path}
-
-    return {"imported": 0, "error": "No valid vectors found in file"}
-
-
 @router.post("/import/upload")
 async def upload_vector_file(file: UploadFile = File(...)):
     """上传并导入载体文件（GenBank/SnapGene）"""
@@ -355,6 +371,8 @@ async def upload_vector_file(file: UploadFile = File(...)):
         with open(output_file, 'w', encoding='utf-8') as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
+        invalidate_vector_library_cache()
+        _invalidate_vector_cache(vector.id)
         return {
             "success": True,
             "vector": {
@@ -372,7 +390,11 @@ async def upload_vector_file(file: UploadFile = File(...)):
 
 @router.post("/import/batch")
 async def batch_import_vectors(request: BatchImportRequest):
-    """批量导入载体"""
+    """批量导入载体
+
+    安全说明：file_paths 仅允许 DATA_DIR 目录内的文件，
+    防止通过任意服务器路径读取本地文件。
+    """
     from core.external_vector_importer import VectorLibraryManager
 
     manager = VectorLibraryManager()
@@ -389,14 +411,21 @@ async def batch_import_vectors(request: BatchImportRequest):
         except Exception as e:
             results["errors"].append(f"NCBI {seq_id}: {str(e)}")
 
-    # 导入文件
+    # 导入文件（仅限 DATA_DIR 内的路径）
+    allowed_root = os.path.abspath(settings.DATA_DIR)
     for file_path in request.file_paths:
         try:
-            count = manager.import_from_genbank(file_path)
+            abs_path = os.path.abspath(file_path)
+            if not abs_path.startswith(allowed_root + os.sep):
+                results["errors"].append(
+                    f"File {file_path}: 路径不在允许目录内（仅支持 DATA_DIR 下的文件）"
+                )
+                continue
+            count = manager.import_from_genbank(abs_path)
             if count > 0:
-                results["files"].append(file_path)
+                results["files"].append(abs_path)
             else:
-                results["errors"].append(f"File {file_path}: No valid vectors")
+                results["errors"].append(f"File {abs_path}: No valid vectors")
         except Exception as e:
             results["errors"].append(f"File {file_path}: {str(e)}")
 
@@ -404,6 +433,8 @@ async def batch_import_vectors(request: BatchImportRequest):
     if results["ncbi"] or results["files"]:
         output_dir = settings.VECTORS_DIR
         manager.export_to_yaml(output_dir)
+        invalidate_vector_library_cache()
+        _invalidate_vector_cache()
 
     return {
         "imported_ncbi": len(results["ncbi"]),

@@ -330,31 +330,42 @@ cache = CacheManager()
 # 装饰器：自动缓存函数结果
 def cached(prefix: str, ttl: int = DEFAULT_CACHE_TTL):
     """
-    缓存装饰器
-    
+    缓存装饰器（同步与 async 函数均支持）
+
     用法:
         @cached("my_function", ttl=3600)
         def my_function(arg1, arg2):
             return expensive_operation(arg1, arg2)
     """
+    import functools
+    import inspect
+
     def decorator(func):
-        def wrapper(*args, **kwargs):
-            # 生成缓存键
-            key = cache._generate_key(prefix, *args, **kwargs)
-            
-            # 尝试从缓存获取
+        key_func = lambda *args, **kwargs: cache._generate_key(prefix, *args, **kwargs)
+
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            key = key_func(*args, **kwargs)
             cached_result = cache.backend.get(key)
             if cached_result is not None:
                 logger.debug(f"缓存命中: {key}")
                 return cached_result
-            
-            # 执行函数
-            result = func(*args, **kwargs)
-            
-            # 缓存结果
+            result = await func(*args, **kwargs)
             cache.backend.set(key, result, ttl)
             logger.debug(f"缓存存储: {key}")
-            
             return result
-        return wrapper
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            key = key_func(*args, **kwargs)
+            cached_result = cache.backend.get(key)
+            if cached_result is not None:
+                logger.debug(f"缓存命中: {key}")
+                return cached_result
+            result = func(*args, **kwargs)
+            cache.backend.set(key, result, ttl)
+            logger.debug(f"缓存存储: {key}")
+            return result
+
+        return async_wrapper if inspect.iscoroutinefunction(func) else wrapper
     return decorator
