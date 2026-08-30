@@ -14,7 +14,8 @@ pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 pyyaml>=6.0
 passlib>=1.7.4
-bcrypt>=4.0.0
+# bcrypt 5.0 与 passlib 1.7.4 不兼容（移除 __about__ 探测、72 字节密码改为抛错）
+bcrypt>=4.0.0,<5
 PyJWT>=2.8.0
 email-validator>=2.1.0
 
