@@ -217,12 +217,30 @@ cd src/frontend
 npm run test:run
 ```
 
+## 模块接线状态
+
+> 2025 功能完整性核查后的如实标注，避免「代码存在但未生效」的误解。
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| 设计流水线 / 批量设计 / 载体库 / 认证 / 导出 | ✅ 已接线 | 前后端契约对齐 |
+| 序列分析 API（restriction-sites/orfs/gc-analysis/compatibility） | ✅ 已修复 | 统一为 JSON body 参数 |
+| 数据库持久化（STORAGE_MODE=database） | ✅ 已修复 | id 错位与字段回填问题已解决 |
+| JWT SECRET_KEY | ✅ 已修复 | 从环境变量读取，未设置时使用开发默认值并告警 |
+| 请求追踪/慢请求日志中间件 | ✅ 已接线 | main.py 调用 setup_middleware |
+| 缓存子系统（app/cache.py + cache_routes） | ✅ 已接线 | 设计结果（24h）/ 密码子优化（24h）/ 载体列表与详情（7天）/ 密码子表与酶表（7天）已接入读写，写操作统一失效；批量进度与 analysis POST 不缓存（状态频繁变化 / 键空间不可控），详见 docs/CACHE.md |
+| 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer Token 写入 request.state.user，匿名请求仍按 IP 限流 |
+| enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer / vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
+| output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但 HF 部署入口（deploy/hf-docker/main.py、deploy/hf-gradio/app.py）依赖它生成导出文件，删除前须确认 |
+| task_queue.py + celery/flower | ❌ 已移除 | 全库零引用，实际使用 FastAPI BackgroundTasks |
+| BioPython / primer3-py / pydna / pandas 等 | ❌ 已移除声明 | core 算法为纯 Python 标准库自研实现；requirements 已同步瘦身并补上实际缺失的 bcrypt、psycopg2-binary |
+
 ## 技术栈
 
 | 层 | 技术 |
 |----|------|
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router |
 | 后端 | FastAPI + Pydantic + SQLAlchemy + Redis |
-| 生物信息 | BioPython + Primer3-py + pydna |
+| 生物信息 | 纯 Python 标准库自研实现（无第三方生信依赖） |
 | 认证 | JWT (PyJWT) + bcrypt (passlib) |
 | 部署 | Docker Compose / HuggingFace Spaces |
