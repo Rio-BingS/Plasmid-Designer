@@ -35,12 +35,17 @@ class DesignOptions(BaseModel):
     sequence_type: SequenceType = Field(default=SequenceType.AMINO_ACID, description="序列类型")
     vector_id: str = Field(default="pET-28a", description="目标载体ID")
     cloning_method: CloningMethod = Field(default=CloningMethod.GIBSON, description="克隆方法")
+    # 插入片段来源与克隆方法正交：pcr=设计 PCR 扩增引物；gene_synthesis=设计重叠合成 oligo
+    insert_source: Literal["pcr", "gene_synthesis"] = Field(default="pcr", description="插入片段来源")
     optimize_codons: bool = Field(default=True, description="是否进行密码子优化")
     target_species: str = Field(default="ecoli", description="目标物种")
     gc_min: float = Field(default=40.0, ge=20, le=50)
     gc_max: float = Field(default=60.0, ge=50, le=80)
     homology_arm: int = Field(default=20, ge=15, le=40, description="Gibson同源臂长度")
-    enzyme: str = Field(default="BsaI", min_length=1, description="克隆酶")
+    enzyme: str = Field(default="BsaI", min_length=1, description="克隆酶（Golden Gate Type IIS 酶；restriction 单酶兼容回退）")
+    # 双酶切：restriction 方法 5'/3' 端分别用不同酶；缺省回落到 enzyme（兼容单酶切）
+    enzyme_5: Optional[str] = Field(default=None, description="双酶切 5' 端限制酶")
+    enzyme_3: Optional[str] = Field(default=None, description="双酶切 3' 端限制酶")
     oligo_length: int = Field(default=60, ge=40, le=100, description="寡核苷酸长度(bp)")
     overlap_length: int = Field(default=20, ge=10, le=30, description="重叠区域长度(bp)")
     protocol_language: Literal["zh", "en"] = Field(default="zh", description="实验方案语言")
@@ -51,6 +56,11 @@ class DesignOptions(BaseModel):
             raise ValueError("gc_min 不能大于 gc_max")
         if self.overlap_length >= self.oligo_length:
             raise ValueError("overlap_length 必须小于 oligo_length")
+        # 兼容旧契约：旧客户端用 cloning_method=gene_synthesis 表达「插入片段由全基因合成获得」。
+        # 合成方式与克隆方法正交，归一为 insert_source=gene_synthesis + 默认限制性克隆
+        if self.cloning_method == CloningMethod.GENE_SYNTHESIS:
+            self.insert_source = "gene_synthesis"
+            self.cloning_method = CloningMethod.RESTRICTION
         return self
 
 

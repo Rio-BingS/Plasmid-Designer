@@ -116,3 +116,59 @@ def test_golden_gate_completes():
     result = run_design("design_test003", req)
     assert result.status == DesignStatus.COMPLETED
     assert len(result.primers) == 2
+
+def _rc(s: str) -> str:
+    return s.translate(str.maketrans("ATGC", "TACG"))[::-1]
+
+
+def test_design_restriction_primers_double_digest():
+    """双酶切引物：5' 端加 enzyme_5 位点、3' 端酶位点反向互补在反向引物 5' 端"""
+    from core.primer_designer import PrimerDesigner
+
+    designer = PrimerDesigner()
+    seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG")
+    pair = designer.design_restriction_primers(seq, "BamHI", "EcoRI", "t")
+
+    assert pair.forward.sequence.startswith("GGATCC")          # BamHI 位点在 5' 端
+    assert pair.forward.sequence.endswith(seq[:20])            # 后接插入片段 5' 退火区
+    assert pair.reverse.sequence.startswith("GAATTC")          # EcoRI 回文，rc 即本身
+    assert pair.reverse.sequence.endswith(_rc(seq[-20:]))      # 后接插入片段 3' 端反向互补
+    assert pair.product_size == len(seq)
+
+
+def test_design_primers_gene_synthesis_with_cloning_pair():
+    """来源=全基因合成：产出组装 oligo 组 + 带双酶切末端的组装后扩增引物"""
+    from app.routes.models import CloningMethod, DesignRequest, SequenceType
+    from app.design_service import design_primers_for_method
+
+    dna = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG")
+    req = DesignRequest(
+        sequence=dna,
+        sequence_type=SequenceType.DNA,
+        sequence_name="syn",
+        cloning_method=CloningMethod.RESTRICTION,
+        insert_source="gene_synthesis",
+        enzyme_5="BamHI",
+        enzyme_3="XhoI",
+    )
+    primers = design_primers_for_method(req, dna, vector=None, backbone="")
+
+    names = [p.name for p in primers]
+    assert names[:2] == ["syn_oligo01", "syn_oligo02"]       # 87bp → 2 条组装 oligo
+    assert names[-2:] == ["syn_F", "syn_R"]                  # 末端为克隆引物对
+    assert primers[-2].full_sequence.startswith("GGATCC")    # 5' 端 BamHI
+    assert primers[-1].full_sequence.startswith("CTCGAG")    # 3' 端 XhoI（回文）
+
+
+def test_legacy_gene_synthesis_method_normalized():
+    """旧契约兼容：cloning_method=gene_synthesis 归一为合成来源 + 限制性克隆"""
+    from app.routes.models import CloningMethod, DesignRequest
+
+    req = DesignRequest(
+        sequence="MKVLWAALLVTFLAGCDDAKRVRELTY",
+        cloning_method=CloningMethod.GENE_SYNTHESIS,
+    )
+    assert req.insert_source == "gene_synthesis"
+    assert req.cloning_method == CloningMethod.RESTRICTION

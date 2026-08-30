@@ -297,7 +297,83 @@ class PrimerDesigner:
             product_size=product_size,
             annealing_temp=annealing_temp
         )
-    
+
+    def design_restriction_primers(
+        self,
+        sequence: str,
+        enzyme_5: str,
+        enzyme_3: str,
+        primer_name: str = "res",
+        anneal_length: int = 20
+    ) -> PrimerPair:
+        """设计双酶切克隆引物
+
+        正向引物 5' 端加 enzyme_5 识别位点，反向引物 5' 端加 enzyme_3
+        位点的反向互补链；退火区取自插入片段两端。Tm 按退火区计算。
+
+        Args:
+            sequence: 插入片段序列
+            enzyme_5: 5' 端限制酶名称
+            enzyme_3: 3' 端限制酶名称
+            primer_name: 引物名称前缀
+            anneal_length: 退火区长度 (默认20bp，超过插入片段长度时自动收缩)
+
+        Returns:
+            PrimerPair 双酶切引物对
+        """
+        from core.sequence_analysis import RESTRICTION_ENZYMES
+
+        seq = sequence.upper()
+        site5 = RESTRICTION_ENZYMES.get(enzyme_5, (None,))[0]
+        site3 = RESTRICTION_ENZYMES.get(enzyme_3, (None,))[0]
+        if not site5 or not site3:
+            missing = enzyme_5 if not site5 else enzyme_3
+            raise ValueError(f"未知限制酶: {missing}")
+
+        anneal = min(anneal_length, len(seq))
+        if anneal < 6:
+            raise ValueError(f"插入片段过短 ({len(seq)}bp)，无法设计双酶切引物")
+
+        fwd_anneal = seq[:anneal]
+        rev_anneal = self._reverse_complement(seq[-anneal:])
+        forward_seq = site5 + fwd_anneal
+        reverse_seq = self._reverse_complement(site3) + rev_anneal
+
+        tm_f = self._calculate_tm(fwd_anneal)
+        tm_r = self._calculate_tm(rev_anneal)
+
+        forward = Primer(
+            name=f"{primer_name}_F",
+            sequence=forward_seq,
+            primer_type=PrimerType.PRIMER,
+            tm=tm_f,
+            gc_content=self._calculate_gc(forward_seq),
+            length=len(forward_seq),
+            target_start=0,
+            target_end=anneal,
+            notes=f"Restriction cloning (double digest): {enzyme_5} site at 5', "
+                  f"annealing {anneal}bp, Tm on annealing region"
+        )
+        reverse = Primer(
+            name=f"{primer_name}_R",
+            sequence=reverse_seq,
+            primer_type=PrimerType.PRIMER,
+            tm=tm_r,
+            gc_content=self._calculate_gc(reverse_seq),
+            length=len(reverse_seq),
+            target_start=len(seq) - anneal,
+            target_end=len(seq),
+            notes=f"Restriction cloning (double digest): {enzyme_3} site (rc) at 5', "
+                  f"annealing {anneal}bp, Tm on annealing region"
+        )
+
+        return PrimerPair(
+            forward=forward,
+            reverse=reverse,
+            product_size=len(seq),
+            annealing_temp=min(tm_f, tm_r) - 5
+        )
+
     def _design_forward_primer(
         self,
         template: str,

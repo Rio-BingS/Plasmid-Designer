@@ -269,53 +269,64 @@ def design_primers_for_method(
     vector,
     backbone: str,
 ) -> List[PrimerInfo]:
+    """按「插入片段来源 × 克隆方法」设计引物/寡核苷酸。
+
+    - 来源=PCR：产出带克隆末端的扩增引物对（末端形态由克隆方法决定）
+    - 来源=全基因合成：产出重叠组装 oligo 组 + 带克隆末端的
+      组装后扩增引物对（用于拼装完成后的扩增加克隆末端）
+    """
     from core.primer_designer import PrimerDesigner
 
     designer = PrimerDesigner()
     name = request.sequence_name or "insert"
     primers: List[PrimerInfo] = []
 
-    if request.cloning_method == CloningMethod.GIBSON:
-        insert_pos = vector.mcs.start - 1 if vector and vector.mcs and vector.mcs.start else 100
-        insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
-        pair = designer.design_gibson_primers(
-            optimized_dna,
-            backbone if backbone else "N" * 5000,
-            insert_pos,
-            homology_arm=request.homology_arm,
-            primer_name=name,
-        )
-        primers = [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
+    def _cloning_pair() -> List[PrimerInfo]:
+        """按克隆方法设计带对应末端的引物对"""
+        if request.cloning_method == CloningMethod.GIBSON:
+            insert_pos = vector.mcs.start - 1 if vector and vector.mcs and vector.mcs.start else 100
+            insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
+            pair = designer.design_gibson_primers(
+                optimized_dna,
+                backbone if backbone else "N" * 5000,
+                insert_pos,
+                homology_arm=request.homology_arm,
+                primer_name=name,
+            )
+            return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
-    elif request.cloning_method == CloningMethod.GOLDEN_GATE:
-        oh5, oh3 = derive_gg_overhangs(vector, request.enzyme)
-        pair = designer.design_golden_gate_primers(
-            optimized_dna,
-            enzyme_name=request.enzyme,
-            overhang_seq_5=oh5,
-            overhang_seq_3=oh3,
-            primer_name=name,
-        )
-        primers = [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
+        if request.cloning_method == CloningMethod.GOLDEN_GATE:
+            oh5, oh3 = derive_gg_overhangs(vector, request.enzyme)
+            pair = designer.design_golden_gate_primers(
+                optimized_dna,
+                enzyme_name=request.enzyme,
+                overhang_seq_5=oh5,
+                overhang_seq_3=oh3,
+                primer_name=name,
+            )
+            return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
-    elif request.cloning_method == CloningMethod.GENE_SYNTHESIS:
+        # restriction：双酶切（5'/3' 端可用不同酶；未提供时回落到单酶 enzyme）
+        enzyme_5 = request.enzyme_5 or request.enzyme
+        enzyme_3 = request.enzyme_3 or request.enzyme
+        pair = designer.design_restriction_primers(
+            optimized_dna, enzyme_5, enzyme_3, primer_name=name
+        )
+        return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
+
+    if request.insert_source == "gene_synthesis":
+        # 全基因合成：重叠组装 oligo 覆盖完整插入片段
         oligos = designer.design_synthesis_oligos(
             optimized_dna,
             oligo_length=request.oligo_length,
             overlap_length=request.overlap_length,
             primer_name=name,
         )
-        primers = [_primer_to_info(o) for o in oligos]
-
+        primers.extend(_primer_to_info(o) for o in oligos)
+        # 组装完成后用带克隆末端的引物扩增出可克隆的插入片段
+        primers.extend(_cloning_pair())
     else:
-        # restriction / default PCR — 若有酶信息，在 notes 中标注
-        pair = designer.design_pcr_primers(optimized_dna, primer_name=name)
-        extra = f"Restriction enzyme: {request.enzyme}" if request.enzyme else ""
-        infos = [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
-        if extra:
-            for info in infos:
-                info.notes = (info.notes + "; " if info.notes else "") + extra
-        primers = infos
+        primers = _cloning_pair()
 
     return primers
 
@@ -446,8 +457,8 @@ def run_design(
             }
         elif request.cloning_method == CloningMethod.RESTRICTION:
             strategy_kwargs = {
-                "enzyme_5": request.enzyme,
-                "enzyme_3": request.enzyme,
+                "enzyme_5": request.enzyme_5 or request.enzyme,
+                "enzyme_3": request.enzyme_3 or request.enzyme,
             }
         elif request.cloning_method == CloningMethod.GENE_SYNTHESIS:
             strategy_kwargs = {
