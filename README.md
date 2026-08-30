@@ -224,6 +224,7 @@ npm run test:run
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | 设计流水线 / 批量设计 / 载体库 / 认证 / 导出 | ✅ 已接线 | 前后端契约对齐 |
+| 密码子优化 v2 与合成 oligo 设计 | ✅ 已实现 | 5' translational ramp、发夹削弱、隐蔽 motif 审查、变窗精修（GeneOptimizer 式）、Tm 均一化分片、错位交替 oligo、综合评分；插入片段来源与克隆方法正交，限制性克隆支持双酶切。算法路线图（含暂缓项）见 docs/ALGORITHM_ROADMAP.md |
 | 序列分析 API（restriction-sites/orfs/gc-analysis/compatibility） | ✅ 已修复 | 统一为 JSON body 参数 |
 | 数据库持久化（STORAGE_MODE=database） | ✅ 已修复 | id 错位与字段回填问题已解决 |
 | JWT SECRET_KEY | ✅ 已修复 | 从环境变量读取，未设置时使用开发默认值并告警 |
