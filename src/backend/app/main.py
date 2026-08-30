@@ -25,7 +25,7 @@ from app.storage import STORAGE_MODE
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API",
-    version="0.1.0"
+    version="2.0.0"
 )
 
 # ==================== 中间件 ====================
@@ -46,7 +46,7 @@ async def root():
     """API 根路径"""
     return {
         "name": "Plasmid Designer API",
-        "version": "0.1.0",
+        "version": "2.0.0",
         "status": "running",
         "storage_mode": STORAGE_MODE
     }
@@ -97,7 +97,7 @@ setup_middleware(app)
 @app.on_event("startup")
 async def startup():
     """应用启动时初始化"""
-    print(f"🧬 Plasmid Designer API v0.1.0")
+    print(f"🧬 Plasmid Designer API v2.0.0")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；

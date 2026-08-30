@@ -46,7 +46,7 @@ CODON_TABLES_DIR = os.path.join(DATA_DIR, "codon_tables")
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API (HF Spaces 版)",
-    version="0.1.0",
+    version="2.0.0",
 )
 
 # CORS
@@ -161,7 +161,7 @@ def _get_vector_library() -> VectorLibrary:
 
 @app.get("/")
 async def root():
-    return {"name": "Plasmid Designer API", "version": "0.1.0", "status": "running"}
+    return {"name": "Plasmid Designer API", "version": "2.0.0", "status": "running"}
 
 
 @app.get("/health")

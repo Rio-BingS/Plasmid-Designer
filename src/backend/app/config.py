@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # 应用信息
     APP_NAME: str = "Plasmid Designer"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "2.0.0"
     DEBUG: bool = True
 
     # 服务器配置
