@@ -42,7 +42,7 @@ const editSaving = ref(false)
 const downloadingId = ref('')
 
 // NCBI 搜索
-const activeTab = ref<'local' | 'ncbi'>'local')
+const activeTab = ref<'local' | 'ncbi'>('local')
 const ncbiQuery = ref('')
 const ncbiResults = ref<any[]>([])
 const ncbiSearching = ref(false)
@@ -128,7 +128,7 @@ async function saveEdit() {
     await updateVector(editingVector.value.id, {
       name: editForm.value.name,
       description: editForm.value.description,
-      vector_type: editForm.value.name,
+      vector_type: editForm.value.vector_type,
       host: editForm.value.host.split(',').map(s => s.trim()).filter(Boolean),
       antibiotic_resistance: editForm.value.antibiotic_resistance.split(',').map(s => s.trim()).filter(Boolean),
       copy_number: editForm.value.copy_number
@@ -159,10 +159,7 @@ async function downloadSequence(vectorId: string, format: string, event: Event) 
   event.stopPropagation()
   try {
     downloadingId.value = vectorId
-    const content = await getVectorSequence,
-  searchNcbi,
-  previewNcbi,
-  importFromNcbiId(vectorId, format)
+    const content = await getVectorSequence(vectorId, format)
     const ext = format === 'genbank' ? 'gb' : 'fasta'
     const blob = new Blob([content], { type: 'text/plain' })
     const url = window.URL.createObjectURL(blob)
@@ -237,6 +234,12 @@ onMounted(() => {
       </div>
     </div>
 
+    <div class="source-tabs">
+      <button class="source-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地载体</button>
+      <button class="source-tab" :class="{ active: activeTab === 'ncbi' }" @click="activeTab = 'ncbi'">NCBI 搜索</button>
+    </div>
+
+    <div v-if="activeTab === 'local'">
     <div class="filters">
       <select v-model="filterType" @change="loadVectors" class="form-select">
         <option value="">所有类型</option>

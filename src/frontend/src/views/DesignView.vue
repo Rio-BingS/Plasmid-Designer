@@ -68,7 +68,7 @@ async function handleSubmit() {
     router.push(`/result/${result.design_id}`)
     
   } catch (e: any) {
-    error.value = e.message || '提交失败，请重试'
+    error.value = e.response?.data?.detail || e.message || '提交失败，请重试'
   } finally {
     isSubmitting.value = false
   }
@@ -76,20 +76,35 @@ async function handleSubmit() {
 
 // 示例序列
 onMounted(async () => {
-  // 加载载体列表
   try {
     availableVectors.value = await getVectors()
+    if (availableVectors.value.length && !availableVectors.value.find(v => v.id === vectorId.value)) {
+      vectorId.value = availableVectors.value[0].id
+    }
   } catch (e) { console.warn('Failed to load vectors:', e) }
 
-  // 加载密码子表
   try {
     codonTables.value = await getCodonTables()
+    if (codonTables.value.length) {
+      const match = codonTables.value.find(t =>
+        (t.species || t.id || '').toLowerCase().includes(targetSpecies.value)
+      )
+      if (!match && codonTables.value[0]) {
+        const s = (codonTables.value[0].species || codonTables.value[0].id || 'ecoli').toLowerCase()
+        if (s.includes('human') || s.includes('homo')) targetSpecies.value = 'human'
+        else if (s.includes('yeast') || s.includes('cerevisiae')) targetSpecies.value = 'yeast'
+        else if (s.includes('cho')) targetSpecies.value = 'cho'
+        else targetSpecies.value = 'ecoli'
+      }
+    }
   } catch (e) { console.warn('Failed to load codon tables:', e) }
 
-  // 加载酶列表
   try {
     const enzymeData = await getEnzymes()
     availableEnzymes.value = Object.keys(enzymeData.enzymes || {})
+    if (availableEnzymes.value.length && !availableEnzymes.value.includes(enzyme.value)) {
+      enzyme.value = availableEnzymes.value[0]
+    }
   } catch (e) { console.warn('Failed to load enzymes:', e) }
 })
 
@@ -146,8 +161,14 @@ function loadExample() {
         <div class="form-group">
           <label class="form-label">目标载体</label>
           <select v-model="vectorId" class="form-select">
-            <option value="pET-28a">pET-28a(+) - E.coli 表达载体</option>
-            <option value="pCDNA3.1">pcDNA3.1 - 哺乳动物表达载体</option>
+            <option v-if="!availableVectors.length" value="pET-28a">pET-28a(+) - E.coli 表达载体</option>
+            <option
+              v-for="v in availableVectors"
+              :key="v.id"
+              :value="v.id"
+            >
+              {{ v.name }}{{ v.host?.length ? ` - ${v.host.join('/')}` : '' }}
+            </option>
           </select>
         </div>
       </div>
@@ -230,6 +251,20 @@ function loadExample() {
           </div>
         </div>
 
+        <!-- 限制性酶切参数 -->
+        <div v-if="cloningMethod === 'restriction'" class="method-params">
+          <div class="form-group">
+            <label class="form-label">MCS 限制酶</label>
+            <select v-model="enzyme" class="form-select">
+              <option
+                v-for="enz in (availableEnzymes.length ? availableEnzymes : ['EcoRI', 'BamHI', 'HindIII', 'XhoI', 'NcoI', 'SalI'])"
+                :key="enz"
+                :value="enz"
+              >{{ enz }}</option>
+            </select>
+          </div>
+        </div>
+
       <!-- 全基因合成参数 -->
       <div v-if="cloningMethod === 'gene_synthesis'" class="method-params">
         <div class="form-group">
@@ -261,7 +296,11 @@ function loadExample() {
               <option value="ecoli">E. coli</option>
               <option value="human">Human</option>
               <option value="yeast">Yeast</option>
+              <option value="cho">CHO</option>
             </select>
+            <p v-if="codonTables.length" class="hint-text">
+              可用密码子表: {{ codonTables.map(t => t.name || t.id).join(', ') }}
+            </p>
           </div>
           
           <div class="form-group">
@@ -425,6 +464,12 @@ h1 {
   border: 2px solid var(--border-color);
   border-radius: 0.5rem;
   overflow: hidden;
+}
+
+.hint-text {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.35rem;
 }
 
 .toggle-btn {

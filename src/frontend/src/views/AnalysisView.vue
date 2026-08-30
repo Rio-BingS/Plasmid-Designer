@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSequence, getExportFormats, exportAllFormats, checkCompatibility, getEnzymes } from '@/api'
 
+const route = useRoute()
 const sequence = ref('')
 const sequenceType = ref('dna')
 const loading = ref(false)
@@ -27,10 +29,15 @@ const compatibilityResult = ref<any>(null)
 const compatibilityLoading = ref(false)
 const availableAnalysisEnzymes = ref<string[]>([])
 
-const const exportFormat = ref('genbank')
+const exportFormat = ref('genbank')
 const exportLoading = ref(false)
 
 onMounted(async () => {
+  const q = route.query.sequence
+  if (typeof q === 'string' && q.trim()) {
+    sequence.value = q.trim()
+    sequenceType.value = 'dna'
+  }
   try { exportFormats.value = await getExportFormats() } catch (e) { /* fallback to hardcoded */ }
   try {
     const enzymeData = await getEnzymes()

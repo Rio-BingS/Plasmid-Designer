@@ -10,7 +10,7 @@ const invalidateType = ref<'design' | 'vector'>('design')
 const invalidateLoading = ref(false)
 const cacheHealth = ref<any>(null)
 
-const const message = ref('')
+const message = ref('')
 
 async function handleInvalidate() {
   if (!invalidateId.value.trim()) return
@@ -24,7 +24,7 @@ async function handleInvalidate() {
     message.value = invalidateType.value === 'design' ? '设计缓存已失效' : '载体缓存已失效'
     invalidateId.value = ''
   } catch (e: any) {
-    message.value = '失效操作失败: ' + e.message
+    message.value = '失效操作失败: ' + (e.response?.data?.detail || e.message)
   } finally {
     invalidateLoading.value = false
   }
@@ -38,13 +38,12 @@ async function loadCacheHealth() {
   }
 }
 
-async function loadCacheInfo()
-  loadCacheHealth() {
+async function loadCacheInfo() {
   try {
     loading.value = true
     cacheInfo.value = await getCacheInfo()
   } catch (e: any) {
-    message.value = `获取缓存信息失败: ${e.message}`
+    message.value = `获取缓存信息失败: ${e.response?.data?.detail || e.message}`
   } finally {
     loading.value = false
   }
@@ -57,9 +56,9 @@ async function handleClearCache() {
     await clearCache()
     message.value = '缓存已清除'
     await loadCacheInfo()
-  loadCacheHealth()
+    await loadCacheHealth()
   } catch (e: any) {
-    message.value = `清除失败: ${e.message}`
+    message.value = `清除失败: ${e.response?.data?.detail || e.message}`
   } finally {
     clearing.value = false
   }

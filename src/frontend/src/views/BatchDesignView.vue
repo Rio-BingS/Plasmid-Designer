@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable } from '@/types'
 import { submitBatchDesign, getBatchProgress, downloadBatchResults, getBatchReport, getVectors, getCodonTables } from '@/api'
@@ -27,11 +27,7 @@ const error = ref('')
 const batchReport = ref<any>(null)
 
 const parsedSequences = computed(() => {
-  const lines = sequencesText.value.split(/
----+
-|
-
-+/).filter(s => s.trim())
+  const lines = sequencesText.value.split(/\n---+\n|\n\s*\n/).filter(s => s.trim())
   return lines.map(s => s.trim())
 })
 
@@ -75,20 +71,25 @@ async function handleSubmit() {
       overlap_length: overlapLength.value,
     })
     startPolling(result.batch_id)
-  } catch (e: any) { error.value = e.message || '提交失败'; isSubmitting.value = false }
+  } catch (e: any) { error.value = e.response?.data?.detail || e.message || '提交失败'; isSubmitting.value = false }
 }
 
 onMounted(async () => {
-  try { availableVectors.value = await getVectors() } catch (e) { console.warn('Failed to load vectors:', e) }
+  try {
+    availableVectors.value = await getVectors()
+    if (availableVectors.value.length && !availableVectors.value.find(v => v.id === vectorId.value)) {
+      vectorId.value = availableVectors.value[0].id
+    }
+  } catch (e) { console.warn('Failed to load vectors:', e) }
   try { codonTables.value = await getCodonTables() } catch (e) { console.warn('Failed to load codon tables:', e) }
 })
 
 function loadExamples() {
-  sequencesText.value = 'MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR
----
-MGVSGAVPKLFVGKTLYFSVFCFVCCFQVVSLSYAYVTLPIAVMVVCTFQQSRQGAAKIF
----
-MNSLWNSTSSSFFRQIFQSIYLCLLGISSVLSQVYILSSQQNKVFQKAFYYSLLKTFQG'
+  sequencesText.value = [
+    'MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR',
+    'MGVSGAVPKLFVGKTLYFSVFCFVCCFQVVSLSYAYVTLPIAVMVVCTFQQSRQGAAKIF',
+    'MNSLWNSTSSSFFRQIFQSIYLCLLGISSVLSQVYILSSQQNKVFQKAFYYSLLKTFQG',
+  ].join('\n---\n')
   sequenceType.value = 'amino_acid'
 }
 
@@ -112,6 +113,19 @@ async function fetchBatchReport() {
   try { batchReport.value = await getBatchReport(batchId.value) }
   catch (e) { console.warn('Failed to fetch batch report:', e) }
 }
+
+function resetBatch() {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+  batchId.value = ''
+  progress.value = null
+  batchReport.value = null
+  isSubmitting.value = false
+  error.value = ''
+}
+
+onUnmounted(() => {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+})
 </script>
 <template>
   <div class="batch-design-page">
@@ -160,9 +174,12 @@ async function fetchBatchReport() {
           <div class="form-group">
             <label class="form-label">目标载体</label>
             <select v-model="vectorId" class="form-select">
-              <option value="pET-28a">pET-28a(+)</option>
-              <option value="pcDNA3.1">pcDNA3.1</option>
-              <option value="pGEX-4T-1">pGEX-4T-1</option>
+              <option v-if="!availableVectors.length" value="pET-28a">pET-28a(+)</option>
+              <option
+                v-for="v in availableVectors"
+                :key="v.id"
+                :value="v.id"
+              >{{ v.name }}</option>
             </select>
           </div>
           
@@ -198,6 +215,7 @@ async function fetchBatchReport() {
               <option value="ecoli">E. coli</option>
               <option value="human">Human</option>
               <option value="yeast">Yeast</option>
+              <option value="cho">CHO</option>
             </select>
           </div>
           
@@ -308,6 +326,9 @@ async function fetchBatchReport() {
           </button>
           <button class="btn btn-secondary" @click="handleDownloadBatch">
             下载所有结果 (ZIP)
+          </button>
+          <button class="btn btn-secondary" @click="resetBatch">
+            新建批量任务
           </button>
         </div>
       </div>

@@ -38,6 +38,10 @@ export interface DesignResult {
   status: DesignStatus
   input_sequence: string
   optimized_sequence?: string
+  construct_sequence?: string
+  construct_features?: { name: string; type: string; start: number; end: number; strand?: string; description?: string }[]
+  insert_start?: number
+  insert_end?: number
   cai?: number
   gc_content?: number
   vector_id: string
@@ -70,4 +74,5 @@ export interface CodonTable {
   id: string
   name: string
   file: string
+  species?: string
 }

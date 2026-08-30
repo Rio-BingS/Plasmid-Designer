@@ -30,14 +30,13 @@ const activeTab = ref<'map' | 'sequence' | 'features'>('map')
 
 const vectorId = computed(() => route.params.id as string)
 
-async function loadVectorMap()
-  loadVectorInfo() {
+async function loadVectorMap() {
   try {
     loading.value = true
     const data = await getVectorMapData(vectorId.value)
     mapData.value = data
   } catch (e: any) {
-    error.value = e.message || 'Failed to load vector data'
+    error.value = e.response?.data?.detail || e.message || 'Failed to load vector data'
   } finally {
     loading.value = false
   }

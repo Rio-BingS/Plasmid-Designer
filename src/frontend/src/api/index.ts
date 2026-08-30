@@ -263,8 +263,15 @@ export async function exportSequence(sequence: string, features: any[], format: 
   link.remove()
 }
 
+// 酶信息（对应后端 GET /analysis/enzymes 返回结构）
+export interface EnzymeInfo {
+  recognition_sequence: string
+  cut_type: string
+  is_type_iis: boolean
+}
+
 // 获取可用酶列表
-export async function getEnzymes(): Promise<string[]> {
+export async function getEnzymes(): Promise<{ total: number; enzymes: Record<string, EnzymeInfo> }> {
   const response = await api.get('/analysis/enzymes')
   return response.data
 }
@@ -336,14 +343,16 @@ export async function exportAllFormats(
   link.remove()
 }
 
-// 克隆兼容性检查
+// 克隆兼容性检查（JSON body，与后端 CompatibilityRequest 对齐）
 export async function checkCompatibility(
   insertSequence: string,
   vectorSequence: string,
   enzymes: string[]
 ): Promise<any> {
-  const response = await api.post('/analysis/compatibility', null, {
-    params: { insert_sequence: insertSequence, vector_sequence: vectorSequence, enzymes }
+  const response = await api.post('/analysis/compatibility', {
+    insert_sequence: insertSequence,
+    vector_sequence: vectorSequence,
+    enzymes
   })
   return response.data
 }
@@ -375,11 +384,5 @@ export async function getRateLimitStatus(): Promise<any> {
 // 速率限制 — 配置
 export async function getRateLimitConfig(): Promise<any> {
   const response = await api.get('/rate-limit/config')
-  return response.data
-}
-
-// 载体 — 本地文件路径导入
-export async function importFromFile(filePath: string): Promise<any> {
-  const response = await api.post('/vectors/import/file', null, { params: { file_path: filePath } })
   return response.data
 }

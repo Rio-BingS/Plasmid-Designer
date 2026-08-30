@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
 import PlasmidMap from '@/components/PlasmidMap.vue'
@@ -8,37 +9,44 @@ const props = defineProps<{
   designId: string
 }>()
 
+const router = useRouter()
 const result = ref<DesignResult | null>(null)
 const mapData = ref<any>(null)
 const showMap = ref(false)
 const loading = ref(true)
 const error = ref('')
 
-// 轮询状态
 let pollInterval: number | null = null
+
+function apiError(e: any): string {
+  const d = e.response?.data?.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) return d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
+  return e.message || '请求失败'
+}
 
 async function fetchResult() {
   try {
     const data = await getDesign(props.designId)
     result.value = data
-    
-    // 如果还在进行中，继续轮询
+
     if (data.status === 'pending' || data.status === 'running') {
       if (!pollInterval) {
         pollInterval = window.setInterval(fetchResult, 2000)
       }
-    } else {
-      // 完成，停止轮询
-      if (pollInterval) {
-        clearInterval(pollInterval)
-        pollInterval = null
-      }
+    } else if (pollInterval) {
+      clearInterval(pollInterval)
+      pollInterval = null
     }
-    
+
     loading.value = false
   } catch (e: any) {
-    error.value = e.message
+    error.value = apiError(e)
     loading.value = false
+    if (pollInterval) {
+      clearInterval(pollInterval)
+      pollInterval = null
+    }
   }
 }
 
@@ -46,7 +54,7 @@ async function handleDownloadGenbank() {
   try {
     await downloadGenbank(props.designId)
   } catch (e: any) {
-    alert('下载失败: ' + e.message)
+    alert('下载失败: ' + apiError(e))
   }
 }
 
@@ -54,11 +62,10 @@ async function handleDownloadPrimers() {
   try {
     await downloadPrimers(props.designId)
   } catch (e: any) {
-    alert('下载失败: ' + e.message)
+    alert('下载失败: ' + apiError(e))
   }
 }
 
-// 序列格式化（每60bp换行，每10bp加空格）
 function formatSequence(seq: string): string {
   if (!seq) return ''
   const lines = []
@@ -67,17 +74,14 @@ function formatSequence(seq: string): string {
     const groups = chunk.match(/.{1,10}/g)
     lines.push((groups || []).join(' '))
   }
-  return lines.join('
-')
+  return lines.join('\n')
 }
 
-// 复制序列到剪贴板
 async function copySequence() {
   if (!result.value?.optimized_sequence) return
   try {
     await navigator.clipboard.writeText(result.value.optimized_sequence)
   } catch {
-    // fallback
     const textarea = document.createElement('textarea')
     textarea.value = result.value.optimized_sequence
     document.body.appendChild(textarea)
@@ -97,8 +101,24 @@ async function fetchMapData() {
   }
 }
 
+function goAnalyze() {
+  const seq = result.value?.optimized_sequence || result.value?.input_sequence || ''
+  router.push({ path: '/analysis', query: seq ? { sequence: seq } : {} })
+}
+
+function goRedesign() {
+  router.push('/design')
+}
+
 onMounted(() => {
   fetchResult()
+})
+
+onUnmounted(() => {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
 })
 </script>
 
@@ -158,8 +178,12 @@ onMounted(() => {
               <span class="metric-value">{{ result.gc_content?.toFixed(1) || 'N/A' }}%</span>
             </div>
             <div class="metric-card">
-              <span class="metric-label">最终长度</span>
+              <span class="metric-label">构建体长度</span>
               <span class="metric-value">{{ result.final_length?.toLocaleString() || 'N/A' }} bp</span>
+            </div>
+            <div v-if="result.insert_start && result.insert_end" class="metric-card">
+              <span class="metric-label">插入区间</span>
+              <span class="metric-value">{{ result.insert_start }}-{{ result.insert_end }}</span>
             </div>
           </div>
         </div>
@@ -226,7 +250,7 @@ onMounted(() => {
                 <td>{{ primer.length }} bp</td>
                 <td>{{ primer.tm.toFixed(1) }}°C</td>
                 <td>{{ primer.gc_content.toFixed(1) }}%</td>
-                <td class="notes-cell">{{ primer.notes ||  }}</td>
+                <td class="notes-cell">{{ primer.notes || '' }}</td>
               </tr>
             </tbody>
           </table>
@@ -242,15 +266,17 @@ onMounted(() => {
                 <th>长度</th>
                 <th>Tm</th>
                 <th>GC%</th>
+                <th>备注</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="primer in result.primers" :key="primer.name">
                 <td>{{ primer.name }}</td>
-                <td class="sequence-cell">{{ primer.sequence }}</td>
+                <td class="sequence-cell">{{ primer.full_sequence || primer.sequence }}</td>
                 <td>{{ primer.length }} bp</td>
                 <td>{{ primer.tm.toFixed(1) }}°C</td>
                 <td>{{ primer.gc_content.toFixed(1) }}%</td>
+                <td class="notes-cell">{{ primer.notes || '' }}</td>
               </tr>
             </tbody>
           </table>
@@ -289,6 +315,12 @@ onMounted(() => {
             </button>
             <button @click="handleDownloadPrimers" class="btn btn-secondary">
               📋 下载引物订单表
+            </button>
+            <button @click="goAnalyze" class="btn btn-secondary">
+              🔍 分析插入序列
+            </button>
+            <button @click="goRedesign" class="btn btn-secondary">
+              🔄 新建设计
             </button>
           </div>
         </div>
