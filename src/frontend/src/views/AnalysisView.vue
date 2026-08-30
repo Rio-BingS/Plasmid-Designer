@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSequence, getExportFormats, exportAllFormats, checkCompatibility, getEnzymes } from '@/api'
+import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSequence, getExportFormats, exportAllFormats, checkCompatibility, getEnzymes, simulateDigest } from '@/api'
+import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const route = useRoute()
 const sequence = ref('')
@@ -28,6 +29,17 @@ const compatibilityEnzymes = ref('')
 const compatibilityResult = ref<any>(null)
 const compatibilityLoading = ref(false)
 const availableAnalysisEnzymes = ref<string[]>([])
+const availableAnalysisEnzymeMap = ref<Record<string, { recognition_sequence?: string }>>({})
+// 限制性位点：酶筛选（空 = 全部酶）
+const selectedRestrictionEnzymes = ref<string[]>([])
+// 酶切消化模拟
+const digestEnzymes = ref<string[]>([])
+const digestResult = ref<any>(null)
+const digestLoading = ref(false)
+// ORF
+const orfMinLength = ref(100)
+
+const isAminoAcid = computed(() => sequenceType.value === 'amino_acid')
 
 const exportFormat = ref('genbank')
 const exportLoading = ref(false)
@@ -41,6 +53,7 @@ onMounted(async () => {
   try { exportFormats.value = await getExportFormats() } catch (e) { /* fallback to hardcoded */ }
   try {
     const enzymeData = await getEnzymes()
+    availableAnalysisEnzymeMap.value = enzymeData.enzymes || {}
     availableAnalysisEnzymes.value = Object.keys(enzymeData.enzymes || {})
   } catch (e) { /* fallback */ }
 })
@@ -60,10 +73,13 @@ async function runAnalysis() {
 }
 
 async function runRestrictionAnalysis() {
-  if (!sequence.value.trim()) return
+  if (!sequence.value.trim() || isAminoAcid.value) return
   try {
     loading.value = true
-    restrictionResult.value = await findRestrictionSites(sequence.value)
+    restrictionResult.value = await findRestrictionSites(
+      sequence.value,
+      selectedRestrictionEnzymes.value.length ? selectedRestrictionEnzymes.value : undefined
+    )
     activeSection.value = 'restriction'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -73,15 +89,27 @@ async function runRestrictionAnalysis() {
 }
 
 async function runORFPrediction() {
-  if (!sequence.value.trim()) return
+  if (!sequence.value.trim() || isAminoAcid.value) return
   try {
     loading.value = true
-    orfResult.value = await predictORFs(sequence.value)
+    orfResult.value = await predictORFs(sequence.value, orfMinLength.value)
     activeSection.value = 'orf'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function runDigest() {
+  if (!sequence.value.trim() || isAminoAcid.value || !digestEnzymes.value.length) return
+  try {
+    digestLoading.value = true
+    digestResult.value = await simulateDigest(sequence.value, digestEnzymes.value)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || e.message
+  } finally {
+    digestLoading.value = false
   }
 }
 
@@ -159,10 +187,13 @@ async function handleExport() {
         <button class="btn btn-primary" :disabled="!sequence.trim() || loading" @click="runAnalysis">
           {{ loading ? '分析中...' : '🔍 综合分析' }}
         </button>
-        <button class="btn btn-secondary" :disabled="!sequence.trim()" @click="runRestrictionAnalysis">✂️ 限制性位点</button>
-        <button class="btn btn-secondary" :disabled="!sequence.trim()" @click="runORFPrediction">🧬 ORF 预测</button>
+        <button class="btn btn-secondary" :disabled="!sequence.trim() || isAminoAcid" title="仅对 DNA 序列可用" @click="runRestrictionAnalysis">✂️ 限制性位点</button>
+        <button class="btn btn-secondary" :disabled="!sequence.trim() || isAminoAcid" title="仅对 DNA 序列可用" @click="runORFPrediction">🧬 ORF 预测</button>
         <button class="btn btn-secondary" :disabled="!sequence.trim()" @click="runGCAnalysis">📊 GC 分析</button>
       </div>
+      <p v-if="isAminoAcid" class="hint-text warning-text">
+        ⚠️ 限制性位点与 ORF 预测仅对 DNA 序列有意义，请将序列类型切换为 DNA
+      </p>
     </div>
 
     <div v-if="error" class="error-msg">{{ error }}</div>
@@ -203,6 +234,23 @@ async function handleExport() {
     <!-- 限制性位点结果 -->
     <div v-if="restrictionResult" class="results-section">
       <h2>限制性位点</h2>
+
+      <div class="digest-filter">
+        <label class="digest-label">筛选酶（留空 = 全部常用酶）</label>
+        <EnzymeAutocomplete
+          v-model="selectedRestrictionEnzymes"
+          :enzymes="availableAnalysisEnzymeMap"
+          multiple
+          placeholder="输入以搜索要分析的酶…"
+        />
+      </div>
+
+      <!-- 单一位点酶（适合克隆） -->
+      <div v-if="restrictionResult.unique_sites?.length" class="unique-sites">
+        <span class="unique-label">单一位点酶（适合克隆）：</span>
+        <span v-for="u in restrictionResult.unique_sites" :key="u" class="unique-chip">{{ u }}</span>
+      </div>
+
       <div v-if="restrictionResult.sites?.length">
         <table class="data-table">
           <thead>
@@ -220,15 +268,56 @@ async function handleExport() {
         </table>
       </div>
       <p v-else class="empty-text">未检测到限制性位点</p>
+
+      <!-- 酶切消化模拟 -->
+      <div class="digest-sim">
+        <h3>酶切消化模拟</h3>
+        <div class="digest-filter">
+          <label class="digest-label">消化酶（1-6 个）</label>
+          <EnzymeAutocomplete
+            v-model="digestEnzymes"
+            :enzymes="availableAnalysisEnzymeMap"
+            multiple
+            placeholder="输入以搜索消化用酶…"
+          />
+        </div>
+        <button
+          class="btn btn-secondary"
+          :disabled="digestLoading || !digestEnzymes.length || isAminoAcid"
+          @click="runDigest"
+        >{{ digestLoading ? '模拟中...' : '🧪 模拟完全消化' }}</button>
+
+        <div v-if="digestResult?.fragments?.length" style="margin-top: 0.75rem; overflow-x: auto;">
+          <table class="data-table">
+            <thead>
+              <tr><th>片段</th><th>起</th><th>止</th><th>大小 (bp)</th><th>切割酶</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(f, i) in digestResult.fragments" :key="i">
+                <td>#{{ i + 1 }}</td>
+                <td>{{ f.start }}</td>
+                <td>{{ f.end }}</td>
+                <td><strong>{{ f.size }}</strong></td>
+                <td>{{ f.cut_by?.join(', ') || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="hint-text">片段按线性完全消化近似（粘性末端差异未计入）；各片段大小可用于预测电泳条带</p>
+        </div>
+        <p v-else-if="digestResult" class="empty-text">{{ digestResult.message || '未产生片段' }}</p>
+      </div>
     </div>
 
     <!-- ORF 结果 -->
     <div v-if="orfResult" class="results-section">
       <h2>ORF 预测</h2>
+      <p class="hint-text" style="margin-bottom: 0.75rem;">
+        提示：ORF 数为 0 时可尝试调低最小长度（当前 {{ orfMinLength }} bp）
+      </p>
       <div v-if="orfResult.orfs?.length">
         <table class="data-table">
           <thead>
-            <tr><th>起始</th><th>终止</th><th>长度</th><th>起始密码子</th><th>终止密码子</th><th>方向</th><th>完整</th></tr>
+            <tr><th>起始</th><th>终止</th><th>长度</th><th>起始密码子</th><th>终止密码子</th><th>方向</th><th>完整</th><th>蛋白序列</th></tr>
           </thead>
           <tbody>
             <tr v-for="orf in orfResult.orfs" :key="orf.start + '-' + orf.end">
@@ -239,6 +328,9 @@ async function handleExport() {
               <td>{{ orf.stop_codon || '—' }}</td>
               <td>{{ orf.strand === '-' ? '反向链' : '正向链' }}</td>
               <td>{{ orf.is_complete ? '✓' : '—' }}</td>
+              <td class="mono orf-protein" :title="orf.protein_sequence">
+                {{ orf.protein_sequence?.slice(0, 40) }}{{ (orf.protein_sequence?.length || 0) > 40 ? '…' : '' }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -355,6 +447,22 @@ h2 { font-size: 1.25rem; margin-bottom: 1rem; }
 .data-table th, .data-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 0.875rem; }
 .data-table th { background: var(--bg-secondary); font-weight: 600; }
 .mono { font-family: monospace; }
+.orf-protein { max-width: 260px; word-break: break-all; }
+.digest-filter { margin-bottom: 0.6rem; }
+.digest-label { display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem; }
+.digest-sim { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px dashed var(--border-color); }
+.digest-sim h3 { font-size: 1rem; margin-bottom: 0.6rem; }
+.unique-sites { margin: 0.5rem 0 0.75rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.unique-label { font-size: 0.8rem; color: var(--text-secondary); }
+.unique-chip {
+  padding: 0.12rem 0.5rem;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+}
+.warning-text { color: #b45309; }
 .empty-text { color: var(--text-secondary); font-size: 0.875rem; }
 .export-section { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: var(--shadow); }
 .export-row { display: flex; gap: 0.75rem; align-items: center; }

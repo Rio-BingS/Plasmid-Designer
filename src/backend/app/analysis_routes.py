@@ -49,6 +49,12 @@ class ORFRequest(BaseModel):
     min_length: int = Field(default=150, ge=1, description="最小 ORF 长度（碱基数）")
 
 
+class DigestRequest(BaseModel):
+    """酶切消化模拟请求"""
+    sequence: str = Field(..., description="DNA 序列")
+    enzymes: List[str] = Field(..., min_length=1, max_length=6, description="用于模拟消化的酶（1-6 个）")
+
+
 class GCAnalysisRequest(BaseModel):
     """GC 含量分析请求"""
     sequence: str = Field(..., description="DNA 序列")
@@ -199,6 +205,77 @@ async def find_orfs(request: ORFRequest) -> Dict:
             }
             for orf in orfs
         ]
+    }
+
+
+@router.post("/digest")
+async def simulate_digest(request: DigestRequest) -> Dict:
+    """
+    酶切消化模拟（线性 DNA 完全消化）
+
+    按所选酶的切割位置切分序列，返回各片段的起止与大小，
+    用于预测电泳条带。
+    """
+    from core.sequence_analysis import RESTRICTION_ENZYMES, RestrictionSiteAnalyzer
+
+    seq = request.sequence.upper()
+    analyzer = RestrictionSiteAnalyzer()
+
+    cuts = []
+    enzymes_with_sites = []
+    for enzyme in request.enzymes:
+        if enzyme not in RESTRICTION_ENZYMES:
+            raise HTTPException(status_code=400, detail=f"未知限制酶: {enzyme}")
+        sites = analyzer.find_sites(seq, [enzyme])
+        if sites:
+            enzymes_with_sites.append(enzyme)
+        # 同一识别位点的正反链记录（粘性末端两个切点）合并为一个物理切割点，
+        # 取正链切割位置——消化模拟按每识别位点一个边界计
+        seen_regions = set()
+        for s in sites:
+            region = (s.recognition_start, s.recognition_end)
+            if region in seen_regions:
+                continue
+            seen_regions.add(region)
+            same_region = [x for x in sites
+                           if (x.recognition_start, x.recognition_end) == region]
+            cut = next((x.cut_position for x in same_region if x.strand == "+"),
+                       same_region[0].cut_position)
+            cuts.append((cut, enzyme))
+
+    if not cuts:
+        return {
+            "total_fragments": 0,
+            "fragments": [],
+            "enzymes_with_sites": [],
+            "message": "所选酶在序列中均无切割位点",
+        }
+
+    cuts.sort(key=lambda x: x[0])
+    fragments = []
+    prev = 0
+    for pos, enzyme in cuts:
+        if pos <= prev:
+            continue  # 同一位置多种酶切割合并为同一边界
+        fragments.append({
+            "start": prev + 1,
+            "end": pos,
+            "size": pos - prev,
+            "cut_by": [e for p, e in cuts if p == pos],
+        })
+        prev = pos
+    if len(seq) - prev > 0:
+        fragments.append({
+            "start": prev + 1,
+            "end": len(seq),
+            "size": len(seq) - prev,
+            "cut_by": [],
+        })
+
+    return {
+        "total_fragments": len(fragments),
+        "fragments": fragments,
+        "enzymes_with_sites": enzymes_with_sites,
     }
 
 

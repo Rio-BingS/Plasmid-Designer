@@ -234,6 +234,15 @@ export async function predictORFs(sequence: string, minLength: number = 100): Pr
   return response.data
 }
 
+// 酶切消化模拟（线性完全消化，返回片段大小）
+export async function simulateDigest(sequence: string, enzymes: string[]): Promise<any> {
+  const response = await api.post('/analysis/digest', {
+    sequence,
+    enzymes
+  })
+  return response.data
+}
+
 // GC 分析
 export async function analyzeGC(sequence: string, windowSize: number = 100): Promise<any> {
   const response = await api.post('/analysis/gc-analysis', {

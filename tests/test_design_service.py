@@ -227,3 +227,57 @@ def test_gibson_site_anchor_resolves_cut_position():
                          cloning_method=CloningMethod.GIBSON)
     # 未指定位点时回落到 MCS 起点
     assert resolve_gibson_insert_pos(req2, vector) == vector.mcs.start - 1
+
+
+def test_digest_simulation_fragments():
+    """/analysis/digest：EcoRI+HindIII 双酶切应产生 3 个片段"""
+    from fastapi.testclient import TestClient
+    from app.analysis_routes import router
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    # ATG + GAATTC(EcoRI) + 中段 12bp + AAGCTT(HindIII) + TAA
+    seq = "ATG" + "GAATTC" + "ACGTACGTACGT" + "AAGCTT" + "TAA"
+    resp = client.post("/api/analysis/digest", json={"sequence": seq, "enzymes": ["EcoRI", "HindIII"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_fragments"] == 3
+    sizes = [f["size"] for f in data["fragments"]]
+    # EcoRI 切在 3+6=9（切割偏移 1，简化为识别位末端附近），片段按切割点划分
+    assert sizes[0] < sizes[1] or sizes[0] < sizes[2]
+    assert sum(sizes) == len(seq)  # 片段拼接应还原全长
+    assert set(data["enzymes_with_sites"]) == {"EcoRI", "HindIII"}
+
+
+def test_digest_no_sites_message():
+    """所选酶无切割位点时返回提示"""
+    from fastapi.testclient import TestClient
+    from app.analysis_routes import router
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    resp = client.post("/api/analysis/digest", json={"sequence": "ATGAAATTT", "enzymes": ["EcoRI"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_fragments"] == 0
+    assert "无切割位点" in data["message"]
+
+
+def test_digest_unknown_enzyme_rejected():
+    """未知酶返回 400"""
+    from fastapi.testclient import TestClient
+    from app.analysis_routes import router
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    resp = client.post("/api/analysis/digest", json={"sequence": "ATG", "enzymes": ["NotAnEnzyme"]})
+    assert resp.status_code == 400
