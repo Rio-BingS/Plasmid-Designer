@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignRequest, VectorInfo, CodonTable } from '@/types'
 import { submitDesign, getVectors, getCodonTables, getEnzymes } from '@/api'
@@ -28,9 +28,18 @@ const enzyme = ref('BsaI')
 // 双酶切：5'/3' 端分别选择限制酶
 const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
+// Gibson：定位同源重组位置的酶切位点（缺省 MCS 起点）
+const gibsonSite = ref('')
+// 全基因合成：需从优化序列排除的限制酶（逗号分隔）
+const excludeEnzymesText = ref('')
 const oligoLengthMin = ref(40)
 const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
+
+// 当前载体的 MCS 酶列表（供 Gibson 定位位点选择）
+const currentVectorMcsEnzymes = computed(() =>
+  availableVectors.value.find(v => v.id === vectorId.value)?.mcs_enzymes || []
+)
 
 // 提交状态
 // 动态选项
@@ -78,6 +87,19 @@ async function handleSubmit() {
     if (cloningMethod.value === 'restriction') {
       request.enzyme_5 = enzyme5.value
       request.enzyme_3 = enzyme3.value
+    }
+    if (cloningMethod.value === 'gibson' && gibsonSite.value) {
+      request.gibson_site = gibsonSite.value
+    }
+    if (insertSource.value === 'gene_synthesis') {
+      const enzymes = excludeEnzymesText.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean)
+      const unknown = enzymes.filter(e => !availableEnzymes.value.includes(e))
+      if (unknown.length) {
+        error.value = `未知的限制酶: ${unknown.join(', ')}（可用: ${availableEnzymes.value.join(', ')}）`
+        isSubmitting.value = false
+        return
+      }
+      if (enzymes.length) request.exclude_enzymes = enzymes
     }
 
     const result = await submitDesign(request)
@@ -231,6 +253,15 @@ function loadExample() {
             <label class="form-label">重叠区域长度 (bp)</label>
             <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="30" />
           </div>
+          <div class="form-group">
+            <label class="form-label">排除的限制酶位点（可选）</label>
+            <input
+              v-model="excludeEnzymesText"
+              class="form-input"
+              placeholder="例如: EcoRI, BamHI, XhoI"
+            />
+            <p class="hint-text">逗号分隔。密码子优化将避开这些识别位点，保证优化后的序列不含它们</p>
+          </div>
         </div>
       </div>
 
@@ -288,6 +319,18 @@ function loadExample() {
           <div class="form-group">
             <label class="form-label">同源臂长度 (bp)</label>
             <input v-model.number="homologyArm" type="number" class="form-input" min="15" max="40" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">定位酶切位点（可选）</label>
+            <select v-model="gibsonSite" class="form-select">
+              <option value="">自动（MCS 起点）</option>
+              <option
+                v-for="enz in currentVectorMcsEnzymes"
+                :key="enz"
+                :value="enz"
+              >{{ enz }}</option>
+            </select>
+            <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
           </div>
         </div>
 

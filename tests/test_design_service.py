@@ -174,3 +174,56 @@ def test_legacy_gene_synthesis_method_normalized():
     )
     assert req.insert_source == "gene_synthesis"
     assert req.cloning_method == CloningMethod.RESTRICTION
+
+
+def test_exclude_enzymes_avoided_in_optimization():
+    """排除限制酶位点：默认优化含 BamHI 位点的蛋白，排除后位点消失且翻译不变"""
+    from app.routes.models import SequenceType
+    from app.design_service import process_sequence
+
+    # MDP 的高频密码子 ATG+GAT+CCG 拼出 BamHI 位点 GGATCC
+    aa = "MDP"
+    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60)
+    assert "GGATCC" in dna_raw, "基线应含 BamHI 位点（测试靶点校验）"
+
+    dna_excl, _, _, warns = process_sequence(
+        aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60, exclude_enzymes=["BamHI"]
+    )
+    assert len(dna_excl) == len(aa) * 3          # 沉默突变不改变长度
+    assert "GGATCC" not in dna_excl, "优化序列不应含 BamHI 位点"
+    assert dna_raw != dna_excl                   # 相对默认优化发生了同义替换
+    assert not any("无法完全排除" in w for w in warns)
+
+
+def test_exclude_enzymes_dna_input_warns_only():
+    """DNA 输入无法沉默突变：只做存在性检查并告警"""
+    from app.routes.models import SequenceType
+    from app.design_service import process_sequence
+
+    dna = "ATG" + "GAATTC" + "TAA"
+    _, _, _, warns = process_sequence(
+        dna, SequenceType.DNA, False, "ecoli", 40, 60, exclude_enzymes=["EcoRI"]
+    )
+    assert any("仍包含需排除的位点" in w for w in warns)
+
+
+def test_gibson_site_anchor_resolves_cut_position():
+    """Gibson 定位位点：解析为该酶切位点的切割位置（0-based）"""
+    from app.routes.models import CloningMethod, DesignRequest
+    from app.design_service import resolve_gibson_insert_pos, get_vector_library
+
+    vector = get_vector_library().get_vector("pET-28a")
+    assert vector and vector.mcs and vector.mcs.sites, "pET-28a 应含 MCS 位点"
+
+    target = next(s for s in vector.mcs.sites if s.cut_position_5)
+    req = DesignRequest(
+        sequence="MKVLWAALLVTFLAGCDDAKRVRELTY",
+        cloning_method=CloningMethod.GIBSON,
+        gibson_site=target.enzyme_name,
+    )
+    assert resolve_gibson_insert_pos(req, vector) == target.cut_position_5 - 1
+
+    req2 = DesignRequest(sequence="MKVLWAALLVTFLAGCDDAKRVRELTY",
+                         cloning_method=CloningMethod.GIBSON)
+    # 未指定位点时回落到 MCS 起点
+    assert resolve_gibson_insert_pos(req2, vector) == vector.mcs.start - 1

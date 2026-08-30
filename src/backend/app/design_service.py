@@ -210,22 +210,49 @@ def process_sequence(
     target_species: str,
     gc_min: float,
     gc_max: float,
+    exclude_enzymes: Optional[List[str]] = None,
 ) -> Tuple[str, Optional[float], Optional[float], List[str]]:
-    """处理输入序列 → DNA；返回 (dna, cai, gc, warnings)。"""
+    """处理输入序列 → DNA；返回 (dna, cai, gc, warnings)。
+
+    exclude_enzymes: 需要从优化序列中排除的限制酶名称（密码子优化时避让
+    其识别位点）；仅对氨基酸输入有效，DNA 输入只做存在性检查。
+    """
     from core.codon_optimizer import CodonOptimizer
+    from core.sequence_analysis import RESTRICTION_ENZYMES
 
     seq = sequence.upper().replace("\n", "").replace(" ", "")
     warnings: List[str] = []
+    exclude_enzymes = [e for e in (exclude_enzymes or []) if e]
+
+    # 酶名合法性检查，取识别序列作为避让 motif
+    motifs: List[str] = []
+    unknown: List[str] = []
+    for enzyme in exclude_enzymes:
+        entry = RESTRICTION_ENZYMES.get(enzyme)
+        if entry and entry[0]:
+            motifs.append(entry[0].upper())
+        else:
+            unknown.append(enzyme)
+    if unknown:
+        warnings.append(f"忽略未知限制酶: {', '.join(unknown)}")
 
     if sequence_type == SequenceType.DNA:
+        if motifs:
+            found = [m for m in motifs if m in seq]
+            if found:
+                warnings.append(
+                    f"警告：DNA 输入无法做沉默突变，仍包含需排除的位点: {', '.join(found)}"
+                )
         return seq, None, None, warnings
 
     optimizer = CodonOptimizer(species=target_species)
     if optimize_codons:
-        # 密码子优化结果缓存（24h TTL）：同 (序列, 物种, GC 区间) 直接复用
+        # 密码子优化结果缓存（24h TTL）：同 (序列, 物种, GC 区间, 排除酶) 直接复用
+        cache_key_enzymes = sorted(exclude_enzymes)
         try:
             cached_opt = cache.get_codon_optimization(
-                sequence=seq, species=target_species, gc_min=gc_min, gc_max=gc_max
+                sequence=seq, species=target_species, gc_min=gc_min, gc_max=gc_max,
+                exclude_enzymes=cache_key_enzymes,
             )
         except Exception:
             cached_opt = None
@@ -237,13 +264,24 @@ def process_sequence(
                 list(cached_opt["warnings"]),
             )
 
-        result = optimizer.optimize(seq, gc_target=(gc_min / 100, gc_max / 100))
+        result = optimizer.optimize(
+            seq,
+            gc_target=(gc_min / 100, gc_max / 100),
+            avoid_motifs=motifs,
+        )
+        if motifs:
+            kept = [m for m in motifs if m in result.dna_sequence]
+            if kept:
+                warnings.append(
+                    f"警告：经密码子优化仍无法完全排除的位点: {', '.join(kept)}"
+                )
         try:
             cache.cache_codon_optimization(
                 sequence=seq,
                 species=target_species,
                 gc_min=gc_min,
                 gc_max=gc_max,
+                exclude_enzymes=cache_key_enzymes,
                 result={
                     "dna_sequence": result.dna_sequence,
                     "cai": result.cai,
@@ -257,10 +295,31 @@ def process_sequence(
 
     # 不优化：按物种频率忠实反翻译（最高频密码子，不做 GC 迭代）
     dna = optimizer.back_translate(seq)
+    if motifs:
+        # 反翻译同样尝试沉默突变去除位点
+        dna = optimizer.optimize(seq, gc_target=(gc_min / 100, gc_max / 100), avoid_motifs=motifs).dna_sequence
+        warnings.append("未启用密码子优化，已按需做位点避让的最优密码子反翻译")
+        kept = [m for m in motifs if m in dna]
+        if kept:
+            warnings.append(f"警告：仍无法完全排除的位点: {', '.join(kept)}")
+    else:
+        warnings.append("未启用密码子优化，使用物种最优密码子反翻译")
     cai = optimizer._calculate_cai(dna, seq)
     gc = optimizer._calculate_gc_content(dna) * 100
-    warnings.append("未启用密码子优化，使用物种最优密码子反翻译")
     return dna, cai, gc, warnings
+
+
+def resolve_gibson_insert_pos(request: DesignRequest, vector) -> int:
+    """解析 Gibson 同源重组位置（0-based）。
+
+    指定 gibson_site 时取该酶切位点在载体上的切割位置（用于定位重组区），
+    缺省为 MCS 起点。
+    """
+    if request.gibson_site and vector and vector.mcs:
+        for site in vector.mcs.sites:
+            if site.enzyme_name == request.gibson_site and site.cut_position_5:
+                return max(0, site.cut_position_5 - 1)  # 1-based → 0-based
+    return vector.mcs.start - 1 if vector and vector.mcs and vector.mcs.start else 100
 
 
 def design_primers_for_method(
@@ -284,7 +343,7 @@ def design_primers_for_method(
     def _cloning_pair() -> List[PrimerInfo]:
         """按克隆方法设计带对应末端的引物对"""
         if request.cloning_method == CloningMethod.GIBSON:
-            insert_pos = vector.mcs.start - 1 if vector and vector.mcs and vector.mcs.start else 100
+            insert_pos = resolve_gibson_insert_pos(request, vector)
             insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
             pair = designer.design_gibson_primers(
                 optimized_dna,
@@ -369,7 +428,7 @@ def run_design(
     )
 
     try:
-        # 1. 序列处理
+        # 1. 序列处理（含排除限制酶位点避让）
         optimized_dna, cai, gc, seq_warnings = process_sequence(
             request.sequence,
             request.sequence_type,
@@ -377,6 +436,7 @@ def run_design(
             request.target_species,
             request.gc_min,
             request.gc_max,
+            exclude_enzymes=request.exclude_enzymes,
         )
         result.optimized_sequence = optimized_dna
         result.cai = cai
@@ -446,7 +506,7 @@ def run_design(
         strategy_kwargs: Dict = {}
         if request.cloning_method == CloningMethod.GIBSON:
             strategy_kwargs = {
-                "insert_position": vector.mcs.start - 1 if vector and vector.mcs else 0,
+                "insert_position": resolve_gibson_insert_pos(request, vector),
                 "homology_arm": request.homology_arm,
             }
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:

@@ -203,29 +203,32 @@ class CacheManager:
     # ==================== 密码子优化缓存 ====================
     
     def cache_codon_optimization(
-        self, 
-        sequence: str, 
+        self,
+        sequence: str,
         species: str,
         gc_min: float,
         gc_max: float,
-        result: Dict
+        result: Dict,
+        exclude_enzymes: Optional[List[str]] = None
     ) -> bool:
-        """缓存密码子优化结果"""
+        """缓存密码子优化结果（exclude_enzymes 参与缓存键）"""
         key = self._generate_key(
             "codon_opt",
             sequence=sequence,
             species=species,
             gc_min=gc_min,
-            gc_max=gc_max
+            gc_max=gc_max,
+            exclude_enzymes=sorted(exclude_enzymes or []),
         )
         return self.backend.set(key, result, DESIGN_CACHE_TTL)
-    
+
     def get_codon_optimization(
         self,
         sequence: str,
         species: str,
         gc_min: float,
-        gc_max: float
+        gc_max: float,
+        exclude_enzymes: Optional[List[str]] = None
     ) -> Optional[Dict]:
         """获取缓存的密码子优化结果"""
         key = self._generate_key(
@@ -233,7 +236,8 @@ class CacheManager:
             sequence=sequence,
             species=species,
             gc_min=gc_min,
-            gc_max=gc_max
+            gc_max=gc_max,
+            exclude_enzymes=sorted(exclude_enzymes or []),
         )
         return self.backend.get(key)
     

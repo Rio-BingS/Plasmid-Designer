@@ -66,6 +66,44 @@ async function handleDownloadPrimers() {
   }
 }
 
+// ===== 引物复制 =====
+const copiedName = ref('')
+
+function copyText(text: string) {
+  const fallback = () => {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch { /* 忽略 */ }
+    document.body.removeChild(ta)
+  }
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(fallback)
+  } else {
+    fallback()
+  }
+}
+
+function primerRowText(p: any): string {
+  return `${p.name}\t${p.full_sequence || p.sequence}`
+}
+
+function copyPrimer(p: any) {
+  copyText(primerRowText(p))
+  copiedName.value = p.name
+  setTimeout(() => { if (copiedName.value === p.name) copiedName.value = '' }, 1200)
+}
+
+function copyAllPrimers() {
+  const primers = result.value?.primers || []
+  copyText(primers.map(primerRowText).join('\n'))
+  copiedName.value = '__all__'
+  setTimeout(() => { if (copiedName.value === '__all__') copiedName.value = '' }, 1200)
+}
+
 function formatSequence(seq: string): string {
   if (!seq) return ''
   const lines = []
@@ -227,60 +265,46 @@ onUnmounted(() => {
         <h2 v-if="result.cloning_method === 'gene_synthesis'">寡核苷酸设计</h2>
         <h2 v-else>引物设计</h2>
 
-        <!-- 全基因合成：寡核苷酸表格 -->
-        <div v-if="result.cloning_method === 'gene_synthesis'" class="primers-table">
-          <div class="oligo-summary">
-            <span>共 {{ result.primers.length }} 条寡核苷酸</span>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>序列</th>
-                <th>长度</th>
-                <th>Tm</th>
-                <th>GC%</th>
-                <th>备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="primer in result.primers" :key="primer.name">
-                <td>{{ primer.name }}</td>
-                <td class="sequence-cell">{{ primer.sequence }}</td>
-                <td>{{ primer.length }} bp</td>
-                <td>{{ primer.tm.toFixed(1) }}°C</td>
-                <td>{{ primer.gc_content.toFixed(1) }}%</td>
-                <td class="notes-cell">{{ primer.notes || '' }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="primers-toolbar">
+          <span v-if="result.cloning_method === 'gene_synthesis'" class="oligo-summary">
+            共 {{ result.primers.length }} 条寡核苷酸（{{ result.primers.length / 2 }} 对，S/AS 成对）
+          </span>
+          <span v-else class="oligo-summary">共 {{ result.primers.length }} 条引物</span>
+          <button class="btn btn-secondary copy-all-btn" @click="copyAllPrimers">
+            {{ copiedName === '__all__' ? '✓ 已复制' : '📋 复制全部（名称+序列）' }}
+          </button>
         </div>
 
-        <!-- 其他克隆方法：引物对表格 -->
-        <div v-else class="primers-table">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>序列</th>
-                <th>长度</th>
-                <th>Tm</th>
-                <th>GC%</th>
-                <th>备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="primer in result.primers" :key="primer.name">
-                <td>{{ primer.name }}</td>
-                <td class="sequence-cell">{{ primer.full_sequence || primer.sequence }}</td>
-                <td>{{ primer.length }} bp</td>
-                <td>{{ primer.tm.toFixed(1) }}°C</td>
-                <td>{{ primer.gc_content.toFixed(1) }}%</td>
-                <td class="notes-cell">{{ primer.notes || '' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>序列</th>
+              <th>长度</th>
+              <th>Tm</th>
+              <th>GC%</th>
+              <th>备注</th>
+              <th>复制</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="primer in result.primers" :key="primer.name">
+              <td class="name-cell">{{ primer.name }}</td>
+              <td class="sequence-cell">{{ primer.full_sequence || primer.sequence }}</td>
+              <td>{{ primer.length }} bp</td>
+              <td>{{ primer.tm.toFixed(1) }}°C</td>
+              <td>{{ primer.gc_content.toFixed(1) }}%</td>
+              <td class="notes-cell">{{ primer.notes || '' }}</td>
+              <td>
+                <button
+                  class="copy-row-btn"
+                  :title="`复制 ${primer.name} 的名称和序列`"
+                  @click="copyPrimer(primer)"
+                >{{ copiedName === primer.name ? '✓' : '📋' }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
         <!-- 验证结果 -->
         <div class="result-section">
@@ -444,6 +468,46 @@ onUnmounted(() => {
 .sequence-cell {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
+  word-break: break-all;
+  max-width: 320px;
+}
+
+.primers-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.oligo-summary {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.copy-all-btn {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.copy-row-btn {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.copy-row-btn:hover {
+  background: var(--bg-secondary);
+}
+
+.name-cell {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .sequence-toolbar {
