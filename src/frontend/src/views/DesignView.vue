@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignRequest, VectorInfo, CodonTable } from '@/types'
 import { submitDesign, getVectors, getCodonTables, getEnzymes } from '@/api'
+import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const router = useRouter()
 
@@ -30,8 +31,8 @@ const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
 // Gibson：定位同源重组位置的酶切位点（缺省 MCS 起点）
 const gibsonSite = ref('')
-// 全基因合成：需从优化序列排除的限制酶（逗号分隔）
-const excludeEnzymesText = ref('')
+// 全基因合成：需从优化序列排除的限制酶（多选）
+const excludeEnzymes = ref<string[]>([])
 const oligoLengthMin = ref(40)
 const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
@@ -46,6 +47,47 @@ const currentVectorMcsEnzymes = computed(() =>
 const availableVectors = ref<VectorInfo[]>([])
 const codonTables = ref<CodonTable[]>([])
 const availableEnzymes = ref<string[]>([])
+const availableEnzymeMap = ref<Record<string, { recognition_sequence?: string; is_type_iis?: boolean }>>({})
+
+// API 不可用时的兜底酶表（名称 → 识别序列）
+const FALLBACK_ENZYME_MAP: Record<string, { recognition_sequence: string }> = {
+  EcoRI: { recognition_sequence: 'GAATTC' }, BamHI: { recognition_sequence: 'GGATCC' },
+  HindIII: { recognition_sequence: 'AAGCTT' }, XhoI: { recognition_sequence: 'CTCGAG' },
+  NcoI: { recognition_sequence: 'CCATGG' }, SalI: { recognition_sequence: 'GTCGAC' },
+  NotI: { recognition_sequence: 'GCGGCCGC' }, XbaI: { recognition_sequence: 'TCTAGA' },
+  PstI: { recognition_sequence: 'CTGCAG' }, SmaI: { recognition_sequence: 'CCCGGG' },
+  NdeI: { recognition_sequence: 'CATATG' }, NdeII: { recognition_sequence: 'GATC' },
+  SpeI: { recognition_sequence: 'ACTAGT' }, KpnI: { recognition_sequence: 'GGTACC' },
+  SacI: { recognition_sequence: 'GAGCTC' },
+  BsaI: { recognition_sequence: 'GGTCTC' }, BsmBI: { recognition_sequence: 'CGTCTC' },
+  BbsI: { recognition_sequence: 'GAAGAC' },
+}
+
+// 全局酶表（API 失败时回退兜底表）
+const enzymeMap = computed(() =>
+  Object.keys(availableEnzymeMap.value).length ? availableEnzymeMap.value : FALLBACK_ENZYME_MAP
+)
+
+// Golden Gate：仅 Type IIS 酶
+const ggEnzymeMap = computed(() => {
+  const out: Record<string, { recognition_sequence: string }> = {}
+  for (const [name, meta] of Object.entries(enzymeMap.value)) {
+    if (meta.is_type_iis) out[name] = { recognition_sequence: meta.recognition_sequence || '' }
+  }
+  if (!Object.keys(out).length) {
+    for (const k of ['BsaI', 'BsmBI', 'BbsI']) out[k] = { ...FALLBACK_ENZYME_MAP[k] }
+  }
+  return out
+})
+
+// Gibson 定位：仅当前载体 MCS 上存在的酶
+const gibsonMcsMap = computed(() => {
+  const out: Record<string, { recognition_sequence: string }> = {}
+  for (const name of currentVectorMcsEnzymes.value) {
+    out[name] = { recognition_sequence: enzymeMap.value[name]?.recognition_sequence || '' }
+  }
+  return out
+})
 
 const isSubmitting = ref(false)
 const error = ref('')
@@ -91,15 +133,8 @@ async function handleSubmit() {
     if (cloningMethod.value === 'gibson' && gibsonSite.value) {
       request.gibson_site = gibsonSite.value
     }
-    if (insertSource.value === 'gene_synthesis') {
-      const enzymes = excludeEnzymesText.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean)
-      const unknown = enzymes.filter(e => !availableEnzymes.value.includes(e))
-      if (unknown.length) {
-        error.value = `未知的限制酶: ${unknown.join(', ')}（可用: ${availableEnzymes.value.join(', ')}）`
-        isSubmitting.value = false
-        return
-      }
-      if (enzymes.length) request.exclude_enzymes = enzymes
+    if (insertSource.value === 'gene_synthesis' && excludeEnzymes.value.length) {
+      request.exclude_enzymes = excludeEnzymes.value
     }
 
     const result = await submitDesign(request)
@@ -139,6 +174,7 @@ onMounted(async () => {
 
   try {
     const enzymeData = await getEnzymes()
+    availableEnzymeMap.value = enzymeData.enzymes || {}
     availableEnzymes.value = Object.keys(enzymeData.enzymes || {})
     if (availableEnzymes.value.length && !availableEnzymes.value.includes(enzyme.value)) {
       enzyme.value = availableEnzymes.value[0]
@@ -255,12 +291,8 @@ function loadExample() {
           </div>
           <div class="form-group">
             <label class="form-label">排除的限制酶位点（可选）</label>
-            <input
-              v-model="excludeEnzymesText"
-              class="form-input"
-              placeholder="例如: EcoRI, BamHI, XhoI"
-            />
-            <p class="hint-text">逗号分隔。密码子优化将避开这些识别位点，保证优化后的序列不含它们</p>
+            <EnzymeAutocomplete v-model="excludeEnzymes" :enzymes="enzymeMap" multiple placeholder="输入以搜索要排除的酶…" />
+            <p class="hint-text">密码子优化将避开这些识别位点，保证优化后的序列不含它们</p>
           </div>
         </div>
       </div>
@@ -322,14 +354,11 @@ function loadExample() {
           </div>
           <div class="form-group">
             <label class="form-label">定位酶切位点（可选）</label>
-            <select v-model="gibsonSite" class="form-select">
-              <option value="">自动（MCS 起点）</option>
-              <option
-                v-for="enz in currentVectorMcsEnzymes"
-                :key="enz"
-                :value="enz"
-              >{{ enz }}</option>
-            </select>
+            <EnzymeAutocomplete
+              v-model="gibsonSite"
+              :enzymes="gibsonMcsMap"
+              placeholder="搜索；留空为自动（MCS 起点）"
+            />
             <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
           </div>
         </div>
@@ -338,11 +367,7 @@ function loadExample() {
         <div v-if="cloningMethod === 'golden_gate'" class="method-params">
           <div class="form-group">
             <label class="form-label">Type IIS 酶</label>
-            <select v-model="enzyme" class="form-select">
-              <option value="BsaI">BsaI</option>
-              <option value="BsmBI">BsmBI</option>
-              <option value="BbsI">BbsI</option>
-            </select>
+            <EnzymeAutocomplete v-model="enzyme" :enzymes="ggEnzymeMap" placeholder="搜索 Type IIS 酶…" />
           </div>
         </div>
 
@@ -350,23 +375,11 @@ function loadExample() {
         <div v-if="cloningMethod === 'restriction'" class="method-params">
           <div class="form-group">
             <label class="form-label">5' 端限制酶</label>
-            <select v-model="enzyme5" class="form-select">
-              <option
-                v-for="enz in (availableEnzymes.length ? availableEnzymes : ['EcoRI', 'BamHI', 'HindIII', 'XhoI', 'NcoI', 'SalI'])"
-                :key="'e5-' + enz"
-                :value="enz"
-              >{{ enz }}</option>
-            </select>
+            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="搜索 5' 端限制酶…" />
           </div>
           <div class="form-group">
             <label class="form-label">3' 端限制酶</label>
-            <select v-model="enzyme3" class="form-select">
-              <option
-                v-for="enz in (availableEnzymes.length ? availableEnzymes : ['EcoRI', 'BamHI', 'HindIII', 'XhoI', 'NcoI', 'SalI'])"
-                :key="'e3-' + enz"
-                :value="enz"
-              >{{ enz }}</option>
-            </select>
+            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="搜索 3' 端限制酶…" />
           </div>
           <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
             ⚠️ 双酶切请选择两种不同的限制酶

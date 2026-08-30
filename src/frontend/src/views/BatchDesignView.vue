@@ -2,7 +2,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, getBatchReport, getVectors, getCodonTables } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, getBatchReport, getVectors, getCodonTables, getEnzymes } from '@/api'
+import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const router = useRouter()
 
@@ -15,6 +16,14 @@ const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction'>('gibson')
 const insertSource = ref<'pcr' | 'gene_synthesis'>('pcr')
 const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
+const availableEnzymeMap = ref<Record<string, { recognition_sequence?: string; is_type_iis?: boolean }>>({})
+const enzymeMap = computed(() =>
+  Object.keys(availableEnzymeMap.value).length ? availableEnzymeMap.value : {
+    EcoRI: { recognition_sequence: 'GAATTC' }, BamHI: { recognition_sequence: 'GGATCC' },
+    HindIII: { recognition_sequence: 'AAGCTT' }, XhoI: { recognition_sequence: 'CTCGAG' },
+    NcoI: { recognition_sequence: 'CCATGG' }, SalI: { recognition_sequence: 'GTCGAC' },
+  }
+)
 const protocolLanguage = ref<'zh' | 'en'>('zh')
 const optimizeCodons = ref(true)
 const targetSpecies = ref('ecoli')
@@ -87,6 +96,7 @@ async function handleSubmit() {
 
 onMounted(async () => {
   try {
+    try { availableEnzymeMap.value = (await getEnzymes()).enzymes || {} } catch { /* 兜底表 */ }
     availableVectors.value = await getVectors()
     if (availableVectors.value.length && !availableVectors.value.find(v => v.id === vectorId.value)) {
       vectorId.value = availableVectors.value[0].id
@@ -213,26 +223,12 @@ onUnmounted(() => {
 
           <div class="form-group" v-if="cloningMethod === 'restriction'">
             <label class="form-label">5' 端限制酶</label>
-            <select v-model="enzyme5" class="form-select">
-              <option value="EcoRI">EcoRI</option>
-              <option value="BamHI">BamHI</option>
-              <option value="HindIII">HindIII</option>
-              <option value="XhoI">XhoI</option>
-              <option value="NcoI">NcoI</option>
-              <option value="SalI">SalI</option>
-            </select>
+            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="搜索 5' 端限制酶…" />
           </div>
 
           <div class="form-group" v-if="cloningMethod === 'restriction'">
             <label class="form-label">3' 端限制酶</label>
-            <select v-model="enzyme3" class="form-select">
-              <option value="EcoRI">EcoRI</option>
-              <option value="BamHI">BamHI</option>
-              <option value="HindIII">HindIII</option>
-              <option value="XhoI">XhoI</option>
-              <option value="NcoI">NcoI</option>
-              <option value="SalI">SalI</option>
-            </select>
+            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="搜索 3' 端限制酶…" />
           </div>
 
       <div class="form-group">
