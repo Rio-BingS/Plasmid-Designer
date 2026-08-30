@@ -9,11 +9,15 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import sys
-sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
+from pathlib import Path
+
+BACKEND = Path(__file__).resolve().parents[1] / "src" / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
 from app.database.models import Base, UserDB
 from app.database import get_db
-from app.auth.jwt_auth_db import (
+from app.auth.jwt_auth import (
     hash_password, verify_password, create_access_token, decode_token,
     User, UserCreate, UserLogin
 )

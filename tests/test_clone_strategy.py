@@ -79,7 +79,9 @@ def test_restriction_strategy():
     assert "EcoRI" in strategy.enzymes
     assert "XhoI" in strategy.enzymes
     assert len(strategy.warnings) > 0
-    assert "Restriction" in strategy.to_protocol()
+    # 协议默认输出中文；英文标题含方法名 Restriction
+    assert "限制性酶切" in strategy.to_protocol()
+    assert "Restriction" in strategy.to_protocol(language="en")
 
 
 def test_cloning_step():
@@ -101,9 +103,12 @@ def test_cloning_step():
 
 def test_strategy_to_protocol():
     """测试策略转协议"""
+    # 注意：使用关键字参数。第 4 个位置参数是 description_zh，
+    # 按旧签名用位置传列表会导致中文协议渲染崩溃。
     steps = [
-        CloningStep(1, "PCR", "Amplify", [], {}, "1h"),
-        CloningStep(2, "Digest", "Cut vector", ["Enzyme"], {"Temp": "37°C"}, "2h"),
+        CloningStep(step_number=1, action="PCR", description="Amplify", duration="1h"),
+        CloningStep(step_number=2, action="Digest", description="Cut vector",
+                    reagents=["Enzyme"], conditions={"Temp": "37°C"}, duration="2h"),
     ]
     
     strategy = CloningStrategy(

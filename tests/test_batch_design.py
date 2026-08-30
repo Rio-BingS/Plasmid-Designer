@@ -4,11 +4,9 @@
 
 import pytest
 from datetime import datetime
-import sys
 
-sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
-
-from app.main import BatchDesignRequest, BatchDesignStatus, BatchProgressResponse
+# 路径注入由 conftest.py 统一完成
+from app.routes.models import BatchDesignRequest, BatchDesignStatus, BatchProgressResponse
 from app.database.models import BatchJobDB, BatchDesignDB, DesignDB
 
 
