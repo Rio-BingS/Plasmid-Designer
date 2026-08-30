@@ -1,29 +1,13 @@
 # Web Framework
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
-
-# Bioinformatics Core
-biopython>=1.83
-
-# Sequence Analysis
-numpy>=1.26.0
-pandas>=2.2.0
-
-# File Processing
-openpyxl>=3.1.2
-reportlab>=4.0.8
-matplotlib>=3.8.0
 
 # Utilities
 pydantic>=2.5.0
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
 pyyaml>=6.0
-loguru>=0.7.2
 
-# 注意: HF Spaces Docker 模式不包含以下依赖:
-# - sqlalchemy / asyncpg / alembic  (PostgreSQL, 不可用)
-# - redis / celery / flower        (Redis/Celery, 不可用)
-# - primer3-py / pydna             (可选, 核心功能不依赖)
-# 后端 main.py 中的数据库/Redis/Celery 相关代码会被跳过或降级
+# 注意:
+# - 核心引擎（core/）为纯 Python 标准库实现，仅依赖 pyyaml
+# - HF Spaces Docker 模式无数据库/Redis，相关依赖不在此声明
+# - biopython / numpy / pandas / openpyxl / reportlab / matplotlib /
+#   pydantic-settings / python-dotenv / loguru 均无代码引用，已移除

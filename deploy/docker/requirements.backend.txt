@@ -5,37 +5,20 @@ python-multipart>=0.0.6
 
 # Database
 sqlalchemy>=2.0.25
-asyncpg>=0.29.0
-alembic>=1.13.0
+psycopg2-binary>=2.9.9
 redis>=5.0.1
-
-# Bioinformatics Core
-biopython>=1.83
-# primer3-py 和 pydna 需要 C 编译环境，如果构建失败可注释掉
-primer3-py>=2.0.3
-pydna>=5.5.0
-
-# Sequence Analysis
-numpy>=1.26.0
-pandas>=2.2.0
-# scipy 依赖 numpy 编译，需要 g++
-scipy>=1.12.0
-
-# File Processing
-openpyxl>=3.1.2
-reportlab>=4.0.8
-matplotlib>=3.8.0
 
 # Utilities
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
-loguru>=0.7.2
+pyyaml>=6.0
 passlib>=1.7.4
+bcrypt>=4.0.0
 PyJWT>=2.8.0
 email-validator>=2.1.0
 
-# Testing (构建时不需要，但保留兼容性)
-pytest>=7.4.0
-pytest-asyncio>=0.23.0
-httpx>=0.26.0
+# 说明：核心生信算法（core/）为纯 Python 标准库实现，仅需 pyyaml。
+# 此前声明的 biopython / primer3-py / pydna / numpy / pandas / scipy /
+# openpyxl / reportlab / matplotlib / asyncpg / alembic / loguru 均
+# 无代码引用，已移除（镜像体积显著减小）。

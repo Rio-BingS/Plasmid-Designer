@@ -3,41 +3,24 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# Database
+# Database（STORAGE_MODE=database 时使用；本地开发默认 SQLite，无需额外驱动）
 sqlalchemy>=2.0.25
-asyncpg>=0.29.0
-alembic>=1.13.0
+psycopg2-binary>=2.9.9
 redis>=5.0.1
 
-# Task Queue
-celery>=5.3.6
-flower>=2.0.0
-
-# Bioinformatics Core
-biopython>=1.83
-primer3-py>=2.0.3
-pydna>=6.0.0
-
-# Sequence Analysis
-numpy>=1.26.0
-pandas>=2.2.0
-scipy>=1.12.0
-
-# File Processing
-openpyxl>=3.1.2
-reportlab>=4.0.8
-matplotlib>=3.8.0
-
 # Utilities
+pyyaml>=6.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
-loguru>=0.7.2
 passlib>=1.7.4
+bcrypt>=4.0.0
 PyJWT>=2.8.0
 email-validator>=2.1.0
 
 # Testing
 pytest>=7.4.0
-pytest-asyncio>=0.23.0
 httpx>=0.26.0
+
+# 说明：核心生信算法（core/）为纯 Python 标准库实现，
+# 不依赖 BioPython / primer3-py / pydna / numpy / pandas / scipy 等第三方库。

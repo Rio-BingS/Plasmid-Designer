@@ -2,17 +2,17 @@
 gradio>=5.0.0,<7.0.0
 huggingface_hub>=0.26.0,<2.0.0
 
-# Web Framework (Gradio 内部使用)
+# Web Framework (uvicorn 直接启动 Gradio 应用)
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 
 # 绘图 (GC分布图)
 matplotlib>=3.8.0
 
-# 核心依赖
-biopython>=1.83
-numpy>=1.26.0
-pandas>=2.2.0
+# Utilities
 pydantic>=2.5.0
-pydantic-settings>=2.0.0
 pyyaml>=6.0
+
+# 说明：核心引擎（core/）为纯 Python 标准库实现，仅依赖 pyyaml；
+# biopython / numpy / pandas / pydantic-settings 均无代码引用，已移除
+# （numpy 由 matplotlib 传递安装）。
