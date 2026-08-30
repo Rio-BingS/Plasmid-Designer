@@ -82,42 +82,122 @@ class CodonOptimizer:
     
     def _load_codon_frequency(self, species: str) -> Dict[str, float]:
         """
-        加载物种特异性密码子使用频率表
-        
-        Returns:
-            Dict[codon, relative_frequency] 频率值已归一化 (0-1)
+        加载物种特异性密码子使用频率表。
+        优先从 data/codon_tables/*.yaml 读取，失败则回退内置 E. coli 表。
         """
-        # E. coli 密码子使用频率 (Kazusa 数据库)
-        # 这里使用简化版本，实际应从数据库加载
+        from pathlib import Path
+
         ecoli_freq = {
-            'TTT': 0.58, 'TTC': 0.42,  # P
-            'TTA': 0.14, 'TTG': 0.13, 'CTT': 0.12, 'CTC': 0.10, 'CTA': 0.04, 'CTG': 0.47,  # L
-            'ATT': 0.49, 'ATC': 0.39, 'ATA': 0.12,  # I
-            'ATG': 1.00,  # M
-            'GTT': 0.28, 'GTC': 0.20, 'GTA': 0.17, 'GTG': 0.35,  # V
-            'TCT': 0.17, 'TCC': 0.15, 'TCA': 0.14, 'TCG': 0.14, 'AGT': 0.16, 'AGC': 0.25,  # S
-            'CCT': 0.18, 'CCC': 0.13, 'CCA': 0.20, 'CCG': 0.49,  # P
-            'ACT': 0.19, 'ACC': 0.40, 'ACA': 0.17, 'ACG': 0.25,  # T
-            'GCT': 0.18, 'GCC': 0.26, 'GCA': 0.23, 'GCG': 0.33,  # A
-            'TAT': 0.59, 'TAC': 0.41,  # Y
-            'CAT': 0.57, 'CAC': 0.43,  # H
-            'CAA': 0.34, 'CAG': 0.66,  # Q
-            'AAT': 0.49, 'AAC': 0.51,  # N
-            'AAA': 0.74, 'AAG': 0.26,  # K
-            'GAT': 0.63, 'GAC': 0.37,  # D
-            'GAA': 0.68, 'GAG': 0.32,  # E
-            'TGT': 0.46, 'TGC': 0.54,  # C
-            'TGG': 1.00,  # W
-            'CGT': 0.36, 'CGC': 0.36, 'CGA': 0.07, 'CGG': 0.11, 'AGA': 0.07, 'AGG': 0.04,  # R
-            'GGT': 0.35, 'GGC': 0.37, 'GGA': 0.13, 'GGG': 0.15,  # G
-            'TAA': 0.61, 'TAG': 0.09, 'TGA': 0.30,  # *
+            'TTT': 0.58, 'TTC': 0.42,
+            'TTA': 0.14, 'TTG': 0.13, 'CTT': 0.12, 'CTC': 0.10, 'CTA': 0.04, 'CTG': 0.47,
+            'ATT': 0.49, 'ATC': 0.39, 'ATA': 0.12,
+            'ATG': 1.00,
+            'GTT': 0.28, 'GTC': 0.20, 'GTA': 0.17, 'GTG': 0.35,
+            'TCT': 0.17, 'TCC': 0.15, 'TCA': 0.14, 'TCG': 0.14, 'AGT': 0.16, 'AGC': 0.25,
+            'CCT': 0.18, 'CCC': 0.13, 'CCA': 0.20, 'CCG': 0.49,
+            'ACT': 0.19, 'ACC': 0.40, 'ACA': 0.17, 'ACG': 0.25,
+            'GCT': 0.18, 'GCC': 0.26, 'GCA': 0.23, 'GCG': 0.33,
+            'TAT': 0.59, 'TAC': 0.41,
+            'CAT': 0.57, 'CAC': 0.43,
+            'CAA': 0.34, 'CAG': 0.66,
+            'AAT': 0.49, 'AAC': 0.51,
+            'AAA': 0.74, 'AAG': 0.26,
+            'GAT': 0.63, 'GAC': 0.37,
+            'GAA': 0.68, 'GAG': 0.32,
+            'TGT': 0.46, 'TGC': 0.54,
+            'TGG': 1.00,
+            'CGT': 0.36, 'CGC': 0.36, 'CGA': 0.07, 'CGG': 0.11, 'AGA': 0.07, 'AGG': 0.04,
+            'GGT': 0.35, 'GGC': 0.37, 'GGA': 0.13, 'GGG': 0.15,
+            'TAA': 0.61, 'TAG': 0.09, 'TGA': 0.30,
         }
-        
-        if species == "ecoli":
-            return ecoli_freq
-        
-        # 默认返回 E. coli 表
+
+        yaml_freq = self._load_codon_frequency_from_yaml(species)
+        if yaml_freq:
+            return yaml_freq
         return ecoli_freq
+
+    def _load_codon_frequency_from_yaml(self, species: str) -> Optional[Dict[str, float]]:
+        """从 data/codon_tables 加载 YAML 频率表。"""
+        try:
+            import yaml
+            from pathlib import Path
+        except ImportError:
+            return None
+
+        species_key = (species or "ecoli").lower().strip()
+        aliases = {
+            "ecoli": ["ecoli", "e.coli", "e_coli", "escherichia", "k12", "ecoli_k12"],
+            "human": ["human", "homo", "sapiens", "h_sapiens"],
+            "yeast": ["yeast", "cerevisiae", "s_cerevisiae", "scerevisiae"],
+            "cho": ["cho", "cricetulus", "hamster"],
+        }
+
+        # 解析表目录
+        candidates = []
+        try:
+            from app.config import settings
+            candidates.append(Path(settings.CODON_TABLES_DIR))
+        except Exception:
+            pass
+        # 相对项目路径回退
+        here = Path(__file__).resolve()
+        candidates.append(here.parents[3] / "data" / "codon_tables")  # .../project/data
+        candidates.append(here.parents[2] / "data" / "codon_tables")
+
+        table_dir = next((p for p in candidates if p and p.is_dir()), None)
+        if not table_dir:
+            return None
+
+        # 文件名匹配
+        files = list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))
+        if not files:
+            return None
+
+        def score_file(path: Path) -> int:
+            stem = path.stem.lower()
+            text = stem
+            # 精确别名
+            for key, names in aliases.items():
+                if species_key == key or any(a in species_key for a in names):
+                    if any(a in stem for a in names) or key in stem:
+                        return 100
+            if species_key in stem:
+                return 50
+            return 0
+
+        ranked = sorted(files, key=score_file, reverse=True)
+        if score_file(ranked[0]) == 0 and species_key not in ("ecoli", "e.coli"):
+            # 无匹配时不强制用错误物种表
+            return None
+
+        target = ranked[0]
+        if score_file(target) == 0:
+            # ecoli 默认：优先 Ecoli*
+            ecoli_files = [f for f in files if "ecoli" in f.stem.lower() or "coli" in f.stem.lower()]
+            target = ecoli_files[0] if ecoli_files else files[0]
+
+        try:
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return None
+
+        freq: Dict[str, float] = {}
+        for k, v in data.items():
+            if isinstance(k, str) and len(k) == 3 and k.upper() in AMINO_ACID_TABLE:
+                try:
+                    freq[k.upper()] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        return freq or None
+
+    def back_translate(self, amino_acid_sequence: str) -> str:
+        """不进行迭代优化，仅按频率表选最优密码子反翻译。"""
+        amino_acid_sequence = amino_acid_sequence.upper().strip()
+        valid_aa = set(CODON_TABLE.keys()) - {'*'}
+        for aa in amino_acid_sequence:
+            if aa not in valid_aa:
+                raise ValueError(f"无效的氨基酸代码: {aa}")
+        return self._initial_optimization(amino_acid_sequence)
     
     def optimize(
         self,
@@ -330,27 +410,46 @@ class CodonOptimizer:
         return False
     
     def _break_poly_x(self, dna_list: List[str], aa_seq: str) -> List[str]:
-        """打破poly-X区域"""
-        dna = ''.join(dna_list)
-        
+        """尝试替换覆盖同聚核苷酸区的同义密码子，并保证算法终止。"""
         for nt in 'ATGC':
             pattern = nt * 4
-            while pattern in dna:
-                pos = dna.find(pattern)
-                codon_idx = pos // 3
-                
-                if codon_idx < len(aa_seq):
-                    aa = aa_seq[codon_idx]
-                    current = ''.join(dna_list[codon_idx*3:(codon_idx+1)*3])
-                    
-                    for alt in CODON_TABLE[aa]:
-                        if alt != current:
-                            for j, n in enumerate(alt):
-                                dna_list[codon_idx*3 + j] = n
-                            break
-                
+            max_replacements = max(1, len(aa_seq) * 2)
+
+            for _ in range(max_replacements):
                 dna = ''.join(dna_list)
-        
+                pos = dna.find(pattern)
+                if pos < 0:
+                    break
+
+                run_end = pos
+                while run_end < len(dna) and dna[run_end] == nt:
+                    run_end += 1
+
+                first_codon = pos // 3
+                last_codon = min(len(aa_seq) - 1, (run_end - 1) // 3)
+                changed = False
+
+                for codon_idx in range(first_codon, last_codon + 1):
+                    aa = aa_seq[codon_idx]
+                    start = codon_idx * 3
+                    current = ''.join(dna_list[start:start + 3])
+                    alternatives = sorted(
+                        (c for c in CODON_TABLE[aa] if c != current),
+                        key=lambda c: self.codon_freq.get(c, 0),
+                        reverse=True,
+                    )
+                    for alternative in alternatives:
+                        candidate = dna[:start] + alternative + dna[start + 3:]
+                        if candidate.count(pattern) < dna.count(pattern):
+                            dna_list[start:start + 3] = alternative
+                            changed = True
+                            break
+                    if changed:
+                        break
+
+                if not changed:
+                    break
+
         return dna_list
     
     def _calculate_cai(self, dna_seq: str, aa_seq: str) -> float:
@@ -426,9 +525,6 @@ def translate_dna(dna_sequence: str) -> str:
 
 
 def reverse_translate(aa_sequence: str, species: str = "ecoli") -> str:
-    """
-    将氨基酸序列反向翻译为DNA序列（使用最优密码子）
-    """
+    """将氨基酸序列反向翻译为DNA序列（物种最优密码子，不做额外优化）。"""
     optimizer = CodonOptimizer(species)
-    result = optimizer.optimize(aa_sequence)
-    return result.dna_sequence
+    return optimizer.back_translate(aa_sequence)

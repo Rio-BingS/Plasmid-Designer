@@ -1,7 +1,7 @@
 """
 序列分析和导出 API 路由
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
@@ -20,6 +20,7 @@ from core.export_formats import (
     create_export_data_from_design,
     create_export_data_from_vector
 )
+from app.cache import cached
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -29,10 +30,37 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 class SequenceAnalysisRequest(BaseModel):
     """序列分析请求"""
     sequence: str = Field(..., description="DNA 序列")
+    sequence_type: str = Field(default="dna", description="序列类型（dna/amino_acid，当前分析均按 DNA 处理）")
     check_restriction: bool = Field(default=True, description="是否检测限制性位点")
     check_orf: bool = Field(default=True, description="是否预测 ORF")
     check_gc: bool = Field(default=True, description="是否分析 GC 含量")
     enzymes: Optional[List[str]] = Field(default=None, description="要检测的酶列表")
+
+
+class RestrictionSitesRequest(BaseModel):
+    """限制性酶切位点请求（body 传递，避免长序列进入 URL）"""
+    sequence: str = Field(..., description="DNA 序列")
+    enzymes: Optional[List[str]] = Field(default=None, description="要检测的酶列表，默认全部常用酶")
+
+
+class ORFRequest(BaseModel):
+    """ORF 预测请求"""
+    sequence: str = Field(..., description="DNA 序列")
+    min_length: int = Field(default=150, ge=1, description="最小 ORF 长度（碱基数）")
+
+
+class GCAnalysisRequest(BaseModel):
+    """GC 含量分析请求"""
+    sequence: str = Field(..., description="DNA 序列")
+    window_size: int = Field(default=100, ge=1, description="滑动窗口大小")
+    step_size: int = Field(default=50, ge=1, description="步长")
+
+
+class CompatibilityRequest(BaseModel):
+    """克隆兼容性检查请求"""
+    insert_sequence: str = Field(..., description="插入片段序列")
+    vector_sequence: str = Field(..., description="载体序列")
+    enzymes: List[str] = Field(..., description="计划使用的酶列表")
 
 
 class ExportRequest(BaseModel):
@@ -109,22 +137,18 @@ async def analyze_sequence(request: SequenceAnalysisRequest) -> Dict:
 
 
 @router.post("/restriction-sites")
-async def find_restriction_sites(
-    sequence: str,
-    enzymes: Optional[List[str]] = Query(None)
-) -> Dict:
+async def find_restriction_sites(request: RestrictionSitesRequest) -> Dict:
     """
     查找限制性酶切位点
-    
+
     Args:
-        sequence: DNA 序列
-        enzymes: 要检测的酶列表（可选，默认检测所有常用酶）
-    
+        request: JSON body，含 sequence 与可选 enzymes
+
     Returns:
         发现的限制性位点列表
     """
     analyzer = RestrictionSiteAnalyzer()
-    sites = analyzer.find_sites(sequence, enzymes)
+    sites = analyzer.find_sites(request.sequence, request.enzymes)
     
     return {
         "total": len(sites),
@@ -140,27 +164,23 @@ async def find_restriction_sites(
             }
             for site in sites
         ],
-        "unique_sites": list(analyzer.find_unique_sites(sequence).keys())
+        "unique_sites": list(analyzer.find_unique_sites(request.sequence).keys())
     }
 
 
 @router.post("/orfs")
-async def find_orfs(
-    sequence: str,
-    min_length: int = Query(150, description="最小 ORF 长度")
-) -> Dict:
+async def find_orfs(request: ORFRequest) -> Dict:
     """
     预测开放阅读框 (ORF)
-    
+
     Args:
-        sequence: DNA 序列
-        min_length: 最小 ORF 长度（碱基数）
-    
+        request: JSON body，含 sequence 与 min_length
+
     Returns:
         ORF 列表（按长度排序）
     """
-    predictor = ORFPredictor(min_length=min_length)
-    orfs = predictor.find_orfs(sequence)
+    predictor = ORFPredictor(min_length=request.min_length)
+    orfs = predictor.find_orfs(request.sequence)
     
     return {
         "total": len(orfs),
@@ -183,24 +203,18 @@ async def find_orfs(
 
 
 @router.post("/gc-analysis")
-async def analyze_gc(
-    sequence: str,
-    window_size: int = Query(100, description="窗口大小"),
-    step_size: int = Query(50, description="步长")
-) -> Dict:
+async def analyze_gc(request: GCAnalysisRequest) -> Dict:
     """
     GC 含量分析
-    
+
     Args:
-        sequence: DNA 序列
-        window_size: 滑动窗口大小
-        step_size: 步长
-    
+        request: JSON body，含 sequence / window_size / step_size
+
     Returns:
         GC 含量分布
     """
-    analyzer = GCAnalyzer(window_size=window_size, step_size=step_size)
-    total_gc, regions = analyzer.analyze(sequence)
+    analyzer = GCAnalyzer(window_size=request.window_size, step_size=request.step_size)
+    total_gc, regions = analyzer.analyze(request.sequence)
     
     extremes = [r for r in regions if r.is_extreme]
     
@@ -340,64 +354,114 @@ async def export_all_formats(request: ExportRequest):
     )
 
 
+def _export_response(data, format: str, filename_base: str):
+    """统一构建导出响应（文本或二进制内容）。"""
+    content, mime_type = ExportManager.export(data, format)
+    extensions = {
+        "genbank": ".gb",
+        "snapgene": ".dna",
+        "benchling": ".json",
+        "fasta": ".fasta",
+        "sbol": ".json"
+    }
+    filename = f"{filename_base}{extensions.get(format, '.txt')}"
+    if isinstance(content, bytes):
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type=mime_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    return PlainTextResponse(
+        content=content,
+        media_type=mime_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @router.get("/design/{design_id}/export")
 async def export_design(design_id: str, format: str = "genbank"):
     """
-    导出设计结果
-    
+    导出设计结果为指定格式
+
     Args:
         design_id: 设计任务 ID
-        format: 导出格式
+        format: genbank / snapgene / benchling / fasta / sbol
     """
-    # 这里需要从数据库获取设计结果
-    # 简化实现，返回示例
-    raise HTTPException(status_code=501, detail="请使用 /api/export 端点")
+    from app.routes.design_routes import _load
+
+    result = _load(design_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Design not found")
+
+    data = create_export_data_from_design(result.model_dump(mode="json"))
+    try:
+        return _export_response(data, format, design_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/vector/{vector_id}/export")
 async def export_vector(vector_id: str, format: str = "genbank"):
     """
-    导出载体序列
-    
+    导出载体序列为指定格式
+
     Args:
         vector_id: 载体 ID
-        format: 导出格式
+        format: genbank / snapgene / benchling / fasta / sbol
     """
-    # 这里需要从数据库获取载体数据
-    # 简化实现，返回示例
-    raise HTTPException(status_code=501, detail="请使用 /api/export 端点")
+    from app.design_service import get_vector_library
+
+    vector = get_vector_library().get_vector(vector_id)
+    if not vector:
+        raise HTTPException(status_code=404, detail="Vector not found")
+
+    data = create_export_data_from_vector({
+        "name": vector.name,
+        "sequence": vector.sequence,
+        "description": vector.description or "",
+        "features": [
+            {
+                "name": e.name,
+                "type": e.element_type.value,
+                "start": e.start,
+                "end": e.end,
+                "strand": e.strand or "+",
+                "description": e.description or "",
+            }
+            for e in vector.elements
+        ],
+    })
+    try:
+        return _export_response(data, format, vector_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ==================== 克隆兼容性检查 ====================
 
 @router.post("/compatibility")
-async def check_cloning_compatibility(
-    insert_sequence: str,
-    vector_sequence: str,
-    enzymes: List[str]
-) -> Dict:
+async def check_cloning_compatibility(request: CompatibilityRequest) -> Dict:
     """
     检查克隆兼容性
-    
+
     Args:
-        insert_sequence: 插入片段序列
-        vector_sequence: 载体序列
-        enzymes: 计划使用的酶列表
-    
+        request: JSON body，含 insert_sequence / vector_sequence / enzymes
+
     Returns:
         兼容性分析结果
     """
     analyzer = SequenceAnalyzer()
     result = analyzer.check_cloning_compatibility(
-        insert_sequence,
-        vector_sequence,
-        enzymes
+        request.insert_sequence,
+        request.vector_sequence,
+        request.enzymes
     )
-    
+
     return result
 
 
 @router.get("/enzymes")
+@cached("analysis_enzymes", ttl=604800)  # 酶表为静态数据，缓存 7 天
 async def list_enzymes() -> Dict:
     """获取支持的酶列表"""
     from core.sequence_analysis import RESTRICTION_ENZYMES

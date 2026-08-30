@@ -61,11 +61,12 @@ def create_design(
     vector_id: str = "pET-28a",
     cloning_method: str = "gibson",
     user_id: Optional[str] = None,
+    id: Optional[str] = None,
     **kwargs
 ) -> DesignDB:
-    """创建设计任务"""
+    """创建设计任务（可指定既有 design_id，供存储层双写复用）"""
     design = DesignDB(
-        id=f"design_{uuid.uuid4().hex[:12]}",
+        id=id or f"design_{uuid.uuid4().hex[:12]}",
         user_id=user_id,
         input_sequence=input_sequence,
         sequence_type=sequence_type,
@@ -150,10 +151,10 @@ def add_error(db: Session, design_id: str, message: str) -> DesignErrorDB:
 
 # ==================== 批量任务 CRUD ====================
 
-def create_batch_job(db: Session, total: int, user_id: Optional[str] = None) -> BatchJobDB:
-    """创建批量任务"""
+def create_batch_job(db: Session, total: int, user_id: Optional[str] = None, id: Optional[str] = None) -> BatchJobDB:
+    """创建批量任务（可指定既有 batch_id，供存储层双写复用）"""
     batch = BatchJobDB(
-        id=f"batch_{uuid.uuid4().hex[:12]}",
+        id=id or f"batch_{uuid.uuid4().hex[:12]}",
         user_id=user_id,
         total=total
     )

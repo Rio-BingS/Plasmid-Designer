@@ -26,6 +26,7 @@ class ElementType(Enum):
     MCS = "multiple_cloning_site"
     GENE = "gene"
     ENHANCER = "enhancer"
+    REGULATORY = "regulatory"  # 调控区（如 lac operator）
     SIGNALLING_PEPTIDE = "signalling_peptide"
     OTHER = "other"
 

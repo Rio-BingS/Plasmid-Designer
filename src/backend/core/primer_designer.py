@@ -413,27 +413,36 @@ class PrimerDesigner:
         return best_primer
     
     def _check_primer_quality(self, seq: str) -> bool:
-        """检查引物质量"""
+        """检查引物质量（含自互补/发夹近似）"""
         # GC含量
         gc = self._calculate_gc(seq)
         if gc < self.gc_min or gc > self.gc_max:
             return False
-        
+
         # Tm
         tm = self._calculate_tm(seq)
         if tm < self.tm_min or tm > self.tm_max:
             return False
-        
+
         # Poly-X
         for base in 'ATGC':
             if base * self.max_poly_x in seq:
                 return False
-        
+
         # 3'端稳定性（避免G/C超过3个）
         gc_at_3prime = sum(1 for b in seq[-5:] if b in 'GC')
         if gc_at_3prime > 4:
             return False
-        
+
+        # 自身互补过强
+        if self._max_self_complementarity(seq) > self.max_self_comp:
+            return False
+
+        # 3' 端二聚体风险：末 4bp 与自身反向互补
+        tail = seq[-4:]
+        if tail == self._reverse_complement(tail):
+            return False
+
         return True
     
     def _score_primer(self, seq: str) -> float:

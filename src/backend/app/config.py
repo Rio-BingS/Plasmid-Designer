@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: str = "postgresql://user:password@localhost/plasmid_designer"
 
+    # JWT 密钥 — 生产环境必须通过环境变量 SECRET_KEY 设置，否则使用开发默认值
+    SECRET_KEY: str = "dev-insecure-secret-key-change-me"
+
     # Redis 配置
     REDIS_URL: str = "redis://localhost:6379/0"
 

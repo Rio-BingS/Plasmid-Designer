@@ -14,15 +14,21 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 import jwt
-import secrets
+import logging
 
+from app.config import settings
 from app.database import get_db
 from app.database.crud import get_user_by_id, get_user_by_email
 
-# 配置
-SECRET_KEY = secrets.token_urlsafe(32)  # 生产环境应从配置文件读取
+# 配置 — 密钥来自环境变量/配置；未设置时使用开发默认值并告警
+SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
+
+if SECRET_KEY == "dev-insecure-secret-key-change-me":
+    logging.getLogger("plasmid_designer.auth").warning(
+        "SECRET_KEY 未配置，正在使用开发默认值——重启后所有令牌失效，生产环境必须设置环境变量 SECRET_KEY"
+    )
 
 # 密码加密
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

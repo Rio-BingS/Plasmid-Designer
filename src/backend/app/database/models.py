@@ -15,10 +15,13 @@ DATABASE_URL = os.getenv(
     "sqlite:///./plasmid_designer.db"
 )
 
+# check_same_thread 是 SQLite 专用参数，其他方言（如 PostgreSQL）不接受
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+
 # 创建引擎
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False}  # SQLite 需要
+    connect_args=_connect_args
 )
 
 # 会话工厂
@@ -143,6 +146,7 @@ class BatchJobDB(Base):
     completed = Column(Integer, default=0)
     failed = Column(Integer, default=0)
     status = Column(String(20), default="pending")
+    errors = Column(Text, default="[]")  # JSON 数组字符串
     
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)

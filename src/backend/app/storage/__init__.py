@@ -2,7 +2,8 @@
 
 import os
 
-STORAGE_MODE = os.environ.get("STORAGE_MODE", "database")  # "memory" 或 "database"
+# 默认 memory，避免未配置数据库时阻塞设计主路径；生产可设 STORAGE_MODE=database
+STORAGE_MODE = os.environ.get("STORAGE_MODE", "memory")
 
 _design_store = None
 _batch_store = None

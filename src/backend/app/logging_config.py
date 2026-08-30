@@ -4,6 +4,7 @@
 """
 
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -11,9 +12,15 @@ from logging.handlers import RotatingFileHandler
 import json
 from typing import Any, Dict
 
-# 日志目录
-LOG_DIR = Path("/tmp/plasmid_designer/logs")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+# 日志目录：跨平台默认（backend/logs/），可用环境变量 PLASMID_LOG_DIR 覆盖；
+# 创建失败时降级为仅控制台日志，不阻断应用启动
+LOG_DIR: Path | None = Path(
+    os.getenv("PLASMID_LOG_DIR", str(Path(__file__).resolve().parent.parent / "logs"))
+)
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    LOG_DIR = None
 
 
 class StructuredFormatter(logging.Formatter):
@@ -84,36 +91,40 @@ def setup_logging(
     console_handler.setFormatter(RequestFormatter())
     logger.addHandler(console_handler)
     
-    # 文件处理器（带轮转）
-    file_handler = RotatingFileHandler(
-        LOG_DIR / log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding="utf-8"
-    )
-    file_handler.setLevel(logging.DEBUG)
-    
-    if enable_json:
-        file_handler.setFormatter(StructuredFormatter())
-    else:
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
-    
-    logger.addHandler(file_handler)
-    
-    # 错误日志单独文件
-    error_handler = RotatingFileHandler(
-        LOG_DIR / "errors.log",
-        maxBytes=10 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8"
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(StructuredFormatter())
-    logger.addHandler(error_handler)
-    
+    # 文件处理器（带轮转）—— 目录不可用时跳过，仅保留控制台输出
+    if LOG_DIR is not None:
+        file_handler = RotatingFileHandler(
+            LOG_DIR / log_file,
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,
+            encoding="utf-8"
+        )
+        file_handler.setLevel(logging.DEBUG)
+
+        if enable_json:
+            file_handler.setFormatter(StructuredFormatter())
+        else:
+            file_handler.setFormatter(logging.Formatter(
+                "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            ))
+
+        logger.addHandler(file_handler)
+
+        # 错误日志单独文件
+        try:
+            error_handler = RotatingFileHandler(
+                LOG_DIR / "errors.log",
+                maxBytes=10 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8"
+            )
+            error_handler.setLevel(logging.ERROR)
+            error_handler.setFormatter(StructuredFormatter())
+            logger.addHandler(error_handler)
+        except OSError:
+            pass
+
     return logger
 
 
