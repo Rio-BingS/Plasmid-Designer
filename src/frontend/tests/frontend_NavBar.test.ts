@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
+import { createPinia, setActivePinia } from 'pinia'
 import NavBar from '@/components/NavBar.vue'
 import * as api from '@/api'
 
-// Mock API
+// Mock API —— NavBar 挂载时 authStore.initFromStorage() 会调用 verifyToken，
+// 必须提供有效返回，否则 checkAuth 走 clearAuth 分支清空登录态
 vi.mock('@/api', () => ({
   getCurrentUser: vi.fn(),
   login: vi.fn(),
-  register: vi.fn()
+  register: vi.fn(),
+  verifyToken: vi.fn(() =>
+    Promise.resolve({ valid: true, user: { username: 'testuser', email: 'test@example.com' } })
+  ),
+  logout: vi.fn()
 }))
 
 const router = createRouter({
@@ -24,6 +30,7 @@ const router = createRouter({
 describe('NavBar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setActivePinia(createPinia())
     localStorage.clear()
   })
 
@@ -39,12 +46,13 @@ describe('NavBar', () => {
     await router.isReady()
     
     const links = wrapper.findAll('.nav-link')
-    expect(links.length).toBe(4)
-    
+    expect(links.length).toBe(5)
+
     expect(links[0].text()).toContain('首页')
     expect(links[1].text()).toContain('设计')
     expect(links[2].text()).toContain('批量设计')
     expect(links[3].text()).toContain('载体库')
+    expect(links[4].text()).toContain('序列分析')
   })
 
   it('shows login button when user is not logged in', async () => {

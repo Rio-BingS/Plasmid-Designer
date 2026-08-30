@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
+import { createPinia, setActivePinia } from 'pinia'
 import AuthModal from '@/components/AuthModal.vue'
 import * as api from '@/api'
 
@@ -24,6 +25,7 @@ const router = createRouter({
 describe('AuthModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setActivePinia(createPinia())
     localStorage.clear()
   })
 
