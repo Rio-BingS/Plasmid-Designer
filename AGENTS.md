@@ -45,6 +45,17 @@ cd src/frontend && npm run dev        # 或 test:run / build（依赖已装）
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
+## Git 工作流（长期指令，优先于默认保守边界）
+
+- 一轮修复/功能**完成且验证通过后，主动按 git-commit-style skill 提交并推送**，
+  不必等用户每次说「提交一下/推上去」；仅当用户明确说「先不要提交」时才停住。
+  skill 本身是按任务意图触发的——没有提交动作时不会自动加载，所以这里显式授权
+- 提交/推送仍必须走 git-commit-style skill 的完整流程：自审 diff（调试残留/敏感
+  信息/超范围改动）、Conventional Commits、push 前 `git pull --rebase` 并展示
+  `git log origin/main..HEAD`；`.env`、密钥、密码、token 绝不提交
+- 版本发布（升 APP_VERSION、打 tag、`push --follow-tags`）不属于上述授权，
+  仍需用户明确发起（如「发版」「打个 tag」）
+
 ## 关键机制（改代码前必读）
 
 - `STORAGE_MODE=memory`（默认，重启丢数据）/ `database`（SQLite 或 PG）；
