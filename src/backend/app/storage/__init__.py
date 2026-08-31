@@ -2,8 +2,9 @@
 
 import os
 
-# 默认 memory，避免未配置数据库时阻塞设计主路径；生产可设 STORAGE_MODE=database
-STORAGE_MODE = os.environ.get("STORAGE_MODE", "memory")
+# 默认 database（SQLite，DATABASE_URL 默认值见 config.py），与 README 一致；
+# HF 等无持久化场景可显式设 STORAGE_MODE=memory（KNOWN_ISSUES 2.4 附带）
+STORAGE_MODE = os.environ.get("STORAGE_MODE", "database")
 
 _design_store = None
 _batch_store = None

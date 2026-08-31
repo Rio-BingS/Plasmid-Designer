@@ -7,13 +7,21 @@ from sqlalchemy import create_engine, Column, String, DateTime, Float, Boolean, 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
-import os
+from pathlib import Path
 
-# 数据库路径
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./plasmid_designer.db"
-)
+from app.config import settings
+
+# 数据库连接串 — 单一来源 settings.DATABASE_URL（读 .env / 环境变量）。
+# 此前此处用 os.getenv 直读进程环境变量、不读 .env，导致 .env 里的 DATABASE_URL
+# 对实际建库静默不生效（KNOWN_ISSUES 2.4）
+DATABASE_URL = settings.DATABASE_URL
+
+# SQLite 库文件所在目录不存在时自动创建（默认位于 DATA_DIR 下）
+if DATABASE_URL.startswith("sqlite"):
+    _db_file = DATABASE_URL.split("///", 1)[-1].split("?")[0]
+    _db_parent = Path(_db_file).parent
+    if str(_db_parent) not in ("", "."):
+        _db_parent.mkdir(parents=True, exist_ok=True)
 
 # check_same_thread 是 SQLite 专用参数，其他方言（如 PostgreSQL）不接受
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}

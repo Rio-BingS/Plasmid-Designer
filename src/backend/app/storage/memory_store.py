@@ -9,6 +9,9 @@ from .base import DesignStoreBase, BatchStoreBase
 class MemoryDesignStore(DesignStoreBase):
     """基于 dict 的内存设计存储"""
 
+    # 条目上限：达到上限按写入顺序淘汰最旧条目，防止长期运行内存只涨不降（KNOWN_ISSUES 2.2）
+    MAX_ENTRIES = 1_000
+
     def __init__(self):
         self._store: Dict[str, Dict[str, Any]] = {}
 
@@ -21,6 +24,8 @@ class MemoryDesignStore(DesignStoreBase):
             self._store[design_id]["warnings"] = []
         if "errors" not in self._store[design_id]:
             self._store[design_id]["errors"] = []
+        while len(self._store) > self.MAX_ENTRIES:
+            self._store.pop(next(iter(self._store)))
 
     def get(self, design_id: str) -> Optional[Dict[str, Any]]:
         return self._store.get(design_id)
@@ -55,6 +60,9 @@ class MemoryDesignStore(DesignStoreBase):
 class MemoryBatchStore(BatchStoreBase):
     """基于 dict 的内存批量任务存储"""
 
+    # 条目上限：达到上限按写入顺序淘汰最旧条目（KNOWN_ISSUES 2.2）
+    MAX_ENTRIES = 500
+
     def __init__(self):
         self._store: Dict[str, Dict[str, Any]] = {}
 
@@ -64,6 +72,8 @@ class MemoryBatchStore(BatchStoreBase):
             self._store[batch_id]["results"] = []
         if "errors" not in self._store[batch_id]:
             self._store[batch_id]["errors"] = []
+        while len(self._store) > self.MAX_ENTRIES:
+            self._store.pop(next(iter(self._store)))
 
     def get(self, batch_id: str) -> Optional[Dict[str, Any]]:
         return self._store.get(batch_id)

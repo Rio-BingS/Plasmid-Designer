@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import yaml
 import tempfile
 import shutil
@@ -12,6 +13,7 @@ from typing import List, Optional, Dict
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.cache import cache
 from app.config import settings
@@ -33,6 +35,16 @@ def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
     except Exception:
         # 缓存失效失败不影响写操作结果（TTL 兜底）
         pass
+
+
+def _safe_filename(name: str) -> str:
+    """输出文件名白名单过滤：仅保留字母/数字/点/下划线/连字符。
+
+    此前上传载体用 vector.name.replace('/', '_') 拼 YAML 文件名，
+    未过滤反斜杠等字符，Windows 下可构成路径分隔（KNOWN_ISSUES 3.3）。
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return cleaned or "vector"
 
 
 # ==================== 路由 ====================
@@ -258,14 +270,20 @@ async def get_vector_map_data(vector_id: str):
 
 @router.post("/import/ncbi")
 async def import_vector_from_ncbi(query: str, limit: int = 5):
-    """从 NCBI 搜索并导入载体"""
+    """从 NCBI 搜索并导入载体
+
+    NCBI 请求（单次超时 30s、限速间隔 0.6s）与 YAML 导出均为阻塞调用，
+    移交线程池执行，避免阻塞事件循环导致导入期间全站无响应（KNOWN_ISSUES 2.1）。
+    """
     from core.external_vector_importer import VectorLibraryManager
 
-    manager = VectorLibraryManager()
-    count = manager.import_from_ncbi(query, limit=limit)
+    def _import() -> int:
+        manager = VectorLibraryManager()
+        count = manager.import_from_ncbi(query, limit=limit)
+        manager.export_to_yaml(settings.VECTORS_DIR)
+        return count
 
-    output_dir = settings.VECTORS_DIR
-    manager.export_to_yaml(output_dir)
+    count = await run_in_threadpool(_import)
 
     invalidate_vector_library_cache()
     _invalidate_vector_cache()
@@ -274,16 +292,19 @@ async def import_vector_from_ncbi(query: str, limit: int = 5):
 
 @router.post("/import/ncbi-id")
 async def import_vector_by_ncbi_id(seq_id: str):
-    """通过 NCBI 序列 ID 直接导入载体"""
+    """通过 NCBI 序列 ID 直接导入载体（阻塞调用移交线程池，见 /import/ncbi 说明）"""
     from core.external_vector_importer import VectorLibraryManager
 
-    manager = VectorLibraryManager()
-    success = manager.import_from_ncbi_id(seq_id)
+    def _import() -> bool:
+        manager = VectorLibraryManager()
+        success = manager.import_from_ncbi_id(seq_id)
+        if success:
+            manager.export_to_yaml(settings.VECTORS_DIR)
+        return success
+
+    success = await run_in_threadpool(_import)
 
     if success:
-        output_dir = settings.VECTORS_DIR
-        manager.export_to_yaml(output_dir)
-
         invalidate_vector_library_cache()
         _invalidate_vector_cache(f"ncbi_{seq_id}")
         return {"success": True, "seq_id": seq_id}
@@ -296,7 +317,7 @@ async def search_ncbi_vectors(query: str, limit: int = 10):
     from core.external_vector_importer import NCBIClient
 
     client = NCBIClient()
-    ids = client.search(query, limit=limit)
+    ids = await run_in_threadpool(client.search, query, limit=limit)
 
     results = [{"id": seq_id, "url": f"https://www.ncbi.nlm.nih.gov/nuccore/{seq_id}"} for seq_id in ids]
     return {"query": query, "count": len(results), "results": results}
@@ -308,7 +329,7 @@ async def preview_ncbi_vector(seq_id: str):
     from core.external_vector_importer import NCBIClient
 
     client = NCBIClient()
-    vector = client.fetch_genbank(seq_id)
+    vector = await run_in_threadpool(client.fetch_genbank, seq_id)
 
     if not vector:
         raise HTTPException(status_code=404, detail="Vector not found on NCBI")
@@ -342,7 +363,7 @@ async def upload_vector_file(file: UploadFile = File(...)):
     from core.external_vector_importer import GenBankImporter
 
     # 检查文件类型
-    filename = file.filename.lower()
+    filename = (file.filename or "").lower()
     if not (filename.endswith('.gb') or filename.endswith('.gbk') or filename.endswith('.dna')):
         raise HTTPException(status_code=400, detail="Unsupported file format. Use .gb, .gbk, or .dna")
 
@@ -353,13 +374,15 @@ async def upload_vector_file(file: UploadFile = File(...)):
 
     try:
         importer = GenBankImporter()
-        vector = importer.import_file(tmp_path)
+        # GenBank 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）
+        vector = await run_in_threadpool(importer.import_file, tmp_path)
 
-        # 保存到载体库
+        # 保存到载体库——文件名经白名单过滤，防止 vector.name 携带
+        # 路径分隔符（此前仅过滤 `/`，Windows 下 `\` 未过滤）构成写入路径注入
         output_dir = settings.VECTORS_DIR
         os.makedirs(output_dir, exist_ok=True)
 
-        output_file = os.path.join(output_dir, f"{vector.name.replace('/', '_')}.yaml")
+        output_file = os.path.join(output_dir, f"{_safe_filename(vector.name)}.yaml")
         data = {
             'id': vector.id,
             'name': vector.name,
@@ -388,13 +411,9 @@ async def upload_vector_file(file: UploadFile = File(...)):
         os.unlink(tmp_path)
 
 
-@router.post("/import/batch")
-async def batch_import_vectors(request: BatchImportRequest):
-    """批量导入载体
-
-    安全说明：file_paths 仅允许 DATA_DIR 目录内的文件，
-    防止通过任意服务器路径读取本地文件。
-    """
+def _run_batch_import(request: BatchImportRequest) -> Dict:
+    """批量导入的同步实现：NCBI 拉取与 GenBank 解析均为阻塞调用，
+    由端点移交线程池执行（KNOWN_ISSUES 2.1）。"""
     from core.external_vector_importer import VectorLibraryManager
 
     manager = VectorLibraryManager()
@@ -431,8 +450,21 @@ async def batch_import_vectors(request: BatchImportRequest):
 
     # 导出
     if results["ncbi"] or results["files"]:
-        output_dir = settings.VECTORS_DIR
-        manager.export_to_yaml(output_dir)
+        manager.export_to_yaml(settings.VECTORS_DIR)
+
+    return results
+
+
+@router.post("/import/batch")
+async def batch_import_vectors(request: BatchImportRequest):
+    """批量导入载体
+
+    安全说明：file_paths 仅允许 DATA_DIR 目录内的文件，
+    防止通过任意服务器路径读取本地文件。
+    """
+    results = await run_in_threadpool(_run_batch_import, request)
+
+    if results["ncbi"] or results["files"]:
         invalidate_vector_library_cache()
         _invalidate_vector_cache()
 

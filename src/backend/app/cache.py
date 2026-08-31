@@ -5,6 +5,8 @@ Redis 缓存模块 - 设计结果缓存
 import json
 import hashlib
 import os
+import time
+from threading import Lock
 from typing import Optional, Any, Dict, List
 from datetime import datetime
 import logging
@@ -118,64 +120,116 @@ class RedisCache(CacheBackend):
 
 class MemoryCache(CacheBackend):
     """内存缓存实现（备用方案）"""
-    
+
+    # 条目上限：写入时顺带清理过期项，仍超限则按到期时间淘汰最早的。
+    # 此前仅惰性过期（再次访问才删），无人再查的 key 会永久驻留（KNOWN_ISSUES 2.2）
+    MAX_ENTRIES = 5_000
+
     def __init__(self):
         self._cache: Dict[str, Dict[str, Any]] = {}
+        self._lock = Lock()
         logger.info("使用内存缓存")
-    
+
+    def _evict_under_lock(self, now: float) -> None:
+        """清理已过期条目并在超限时淘汰最早到期者；必须在持有 _lock 时调用。"""
+        expired = [k for k, e in self._cache.items() if e["expires_at"] <= now]
+        for k in expired:
+            del self._cache[k]
+        if len(self._cache) > self.MAX_ENTRIES:
+            overflow = len(self._cache) - self.MAX_ENTRIES
+            for k, _ in sorted(self._cache.items(), key=lambda kv: kv[1]["expires_at"])[:overflow]:
+                del self._cache[k]
+
     def get(self, key: str) -> Optional[Any]:
-        entry = self._cache.get(key)
-        if entry:
-            if datetime.now().timestamp() < entry["expires_at"]:
-                return entry["value"]
-            else:
+        now = datetime.now().timestamp()
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry:
+                if now < entry["expires_at"]:
+                    return entry["value"]
                 del self._cache[key]
         return None
-    
+
     def set(self, key: str, value: Any, ttl: int = DEFAULT_CACHE_TTL) -> bool:
-        self._cache[key] = {
-            "value": value,
-            "expires_at": datetime.now().timestamp() + ttl
-        }
+        now = datetime.now().timestamp()
+        with self._lock:
+            self._cache[key] = {
+                "value": value,
+                "expires_at": now + ttl
+            }
+            if len(self._cache) > self.MAX_ENTRIES:
+                self._evict_under_lock(now)
         return True
-    
+
     def delete(self, key: str) -> bool:
-        if key in self._cache:
-            del self._cache[key]
-            return True
-        return False
-    
-    def exists(self, key: str) -> bool:
-        entry = self._cache.get(key)
-        if entry:
-            if datetime.now().timestamp() < entry["expires_at"]:
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
                 return True
-            else:
+        return False
+
+    def exists(self, key: str) -> bool:
+        now = datetime.now().timestamp()
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry:
+                if now < entry["expires_at"]:
+                    return True
                 del self._cache[key]
         return False
-    
+
     def clear_pattern(self, pattern: str) -> int:
-        """清除匹配模式的所有键（简化实现）"""
+        """清除匹配模式的所有键"""
         import fnmatch
-        keys_to_delete = [
-            k for k in self._cache.keys() 
-            if fnmatch.fnmatch(k, pattern)
-        ]
-        for key in keys_to_delete:
-            del self._cache[key]
+        with self._lock:
+            keys_to_delete = [
+                k for k in self._cache.keys()
+                if fnmatch.fnmatch(k, pattern)
+            ]
+            for key in keys_to_delete:
+                del self._cache[key]
         return len(keys_to_delete)
 
 
 class CacheManager:
     """缓存管理器"""
-    
+
+    # Redis 初始连接失败回退内存后，间隔多久重试升级回 Redis（KNOWN_ISSUES 3.4）
+    REDIS_RETRY_SECONDS = 60
+
     def __init__(self, use_redis: bool = REDIS_ENABLED):
-        if use_redis:
-            self.backend = RedisCache()
-            if not self.backend.available:
-                self.backend = MemoryCache()
-        else:
-            self.backend = MemoryCache()
+        self._use_redis = use_redis
+        self._backend: Optional[CacheBackend] = None
+        self._redis_retry_at: Optional[float] = None
+
+    @property
+    def backend(self) -> CacheBackend:
+        """延迟初始化缓存后端。
+
+        此前模块导入时即连接 Redis：容器启动顺序中 Redis 晚于后端就绪时，
+        会永久回退内存缓存直到重启。现改为首次使用时才连接；若届时 Redis
+        仍不可用，先回退内存并按 REDIS_RETRY_SECONDS 周期重试升级。
+        """
+        now = time.monotonic()
+        if self._backend is None:
+            if self._use_redis:
+                redis_backend = RedisCache()
+                if redis_backend.available:
+                    self._backend = redis_backend
+                else:
+                    self._backend = MemoryCache()
+                    self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
+            else:
+                self._backend = MemoryCache()
+        elif self._redis_retry_at is not None and now >= self._redis_retry_at:
+            redis_backend = RedisCache()
+            if redis_backend.available:
+                self._backend = redis_backend
+                self._redis_retry_at = None
+                logger.info("Redis 恢复可用，缓存后端已从内存切换回 Redis")
+            else:
+                self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
+        return self._backend
     
     def _generate_key(self, prefix: str, *args, **kwargs) -> str:
         """生成缓存键"""

@@ -3,6 +3,8 @@
 防止 API 滥用，支持多种限制策略
 """
 import time
+import ipaddress
+from functools import lru_cache
 from typing import Dict, Optional, Callable
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import APIKeyHeader
@@ -27,10 +29,30 @@ class RateLimitExceeded(HTTPException):
 
 class InMemoryRateLimiter:
     """内存速率限制器"""
-    
+
+    # key 总量上限：防止伪造 IP 无限制造新 key 撑爆内存（KNOWN_ISSUES 1.2/2.2）
+    MAX_TRACKED_KEYS = 10_000
+
     def __init__(self):
         self._requests: Dict[str, list] = defaultdict(list)
         self._lock = Lock()
+
+    def _prune_keys_locked(self, now: float) -> None:
+        """key 数量超限时回收内存：先删整段无活跃记录的 key，
+        仍超限则淘汰「最近一次活跃时间」最旧的 key。必须在持有 self._lock 时调用。"""
+        if len(self._requests) <= self.MAX_TRACKED_KEYS:
+            return
+        # 超过最长窗口（upload 的 3600s）无活跃记录的 key 已完全过期，可整体删除
+        for key in [k for k, ts in self._requests.items() if not ts or ts[-1] <= now - 3600]:
+            del self._requests[key]
+        if len(self._requests) > self.MAX_TRACKED_KEYS:
+            overflow = len(self._requests) - self.MAX_TRACKED_KEYS
+            ordered = sorted(
+                self._requests.items(),
+                key=lambda item: item[1][-1] if item[1] else 0.0,
+            )
+            for key, _ in ordered[:overflow]:
+                del self._requests[key]
     
     def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
         """
@@ -62,6 +84,7 @@ class InMemoryRateLimiter:
             
             # 记录请求
             self._requests[key].append(now)
+            self._prune_keys_locked(now)
             return True, 0
     
     def get_remaining(self, key: str, max_requests: int, window_seconds: int) -> int:
@@ -133,12 +156,44 @@ RATE_LIMITS = {
 limiter = InMemoryRateLimiter()
 
 
+@lru_cache(maxsize=4096)
+def _is_trusted_proxy(host: str) -> bool:
+    """socket 直连对端为回环/私网地址时视为可信前置代理（nginx 位于 docker 内网/本机）。
+
+    公网客户端直连后端时，其自带的 X-Real-IP / X-Forwarded-For 一律不采信，
+    防止伪造请求头获得全新限流 key 绕过限流（KNOWN_ISSUES 1.2）。
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
 def get_client_ip(request: Request) -> str:
-    """获取客户端 IP"""
-    forwarded = request.headers.get("X-Forwarded-For")
+    """获取客户端 IP（限流维度）。
+
+    仅当对端是可信内网代理时才采信 X-Real-IP——nginx.conf 中
+    `proxy_set_header X-Real-IP $remote_addr` 强制覆写，客户端无法伪造；
+    X-Forwarded-For 只取最后一段（由本机代理追加的那段）。
+    对端为公网地址时直接使用 socket 对端地址。
+    """
+    client_host = request.client.host if request.client else "unknown"
+    if not _is_trusted_proxy(client_host):
+        return client_host
+
+    real_ip = request.headers.get("X-Real-IP", "").strip()
+    if real_ip:
+        try:
+            ipaddress.ip_address(real_ip)
+            return real_ip
+        except ValueError:
+            pass  # 非法值视为未提供，继续走 XFF / 对端地址
+
+    forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+        return forwarded.split(",")[-1].strip()
+    return client_host
 
 
 def get_user_id(request: Request) -> Optional[str]:

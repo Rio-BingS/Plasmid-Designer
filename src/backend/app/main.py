@@ -13,6 +13,8 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:  # pragma: no cover
             pass
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -20,20 +22,46 @@ from datetime import datetime
 from app.config import settings
 from app.storage import STORAGE_MODE
 
+# ==================== 生命周期 ====================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动/关停生命周期（替代已弃用的 @app.on_event）"""
+    print(f"🧬 Plasmid Designer API v2.0.0")
+    print(f"📦 Storage mode: {STORAGE_MODE}")
+
+    # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
+    # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
+    try:
+        from app.database import init_db
+        init_db()
+    except Exception as e:
+        print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
+
+    yield
+
+
 # ==================== 创建应用 ====================
 
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # ==================== 中间件 ====================
 
+# CORS 来源接线 settings.CORS_ORIGINS（.env / 环境变量，支持逗号分隔或 JSON 数组），
+# 生产环境务必配置具体域名而非通配
+_cors_origins = settings.CORS_ORIGINS or ["*"]
+_allow_all_origins = "*" in _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境需要限制
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
+    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
+    allow_credentials=not _allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -90,23 +118,6 @@ app.add_middleware(AuthStateMiddleware)
 # 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
 from app.middleware import setup_middleware
 setup_middleware(app)
-
-
-# ==================== 启动事件 ====================
-
-@app.on_event("startup")
-async def startup():
-    """应用启动时初始化"""
-    print(f"🧬 Plasmid Designer API v2.0.0")
-    print(f"📦 Storage mode: {STORAGE_MODE}")
-
-    # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
-    # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
-    try:
-        from app.database import init_db
-        init_db()
-    except Exception as e:
-        print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
 
 
 # ==================== 直接运行 ====================

@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import io
@@ -90,9 +91,13 @@ async def analyze_sequence(request: SequenceAnalysisRequest) -> Dict:
     - 限制性酶切位点
     - ORF 预测
     - GC 含量分析
+
+    长序列分析为 CPU 密集计算，移交线程池执行，避免阻塞事件循环
+    导致单核机器全站卡死（KNOWN_ISSUES 2.1）。
     """
     analyzer = SequenceAnalyzer()
-    result = analyzer.analyze(
+    result = await run_in_threadpool(
+        analyzer.analyze,
         sequence=request.sequence,
         check_restriction=request.check_restriction,
         check_orf=request.check_orf,
@@ -154,8 +159,11 @@ async def find_restriction_sites(request: RestrictionSitesRequest) -> Dict:
         发现的限制性位点列表
     """
     analyzer = RestrictionSiteAnalyzer()
-    sites = analyzer.find_sites(request.sequence, request.enzymes)
-    
+    sites = await run_in_threadpool(analyzer.find_sites, request.sequence, request.enzymes)
+    unique_sites = await run_in_threadpool(
+        lambda: list(analyzer.find_unique_sites(request.sequence).keys())
+    )
+
     return {
         "total": len(sites),
         "sites": [
@@ -170,7 +178,7 @@ async def find_restriction_sites(request: RestrictionSitesRequest) -> Dict:
             }
             for site in sites
         ],
-        "unique_sites": list(analyzer.find_unique_sites(request.sequence).keys())
+        "unique_sites": unique_sites
     }
 
 
@@ -186,7 +194,7 @@ async def find_orfs(request: ORFRequest) -> Dict:
         ORF 列表（按长度排序）
     """
     predictor = ORFPredictor(min_length=request.min_length)
-    orfs = predictor.find_orfs(request.sequence)
+    orfs = await run_in_threadpool(predictor.find_orfs, request.sequence)
     
     return {
         "total": len(orfs),
@@ -226,7 +234,7 @@ async def simulate_digest(request: DigestRequest) -> Dict:
     for enzyme in request.enzymes:
         if enzyme not in RESTRICTION_ENZYMES:
             raise HTTPException(status_code=400, detail=f"未知限制酶: {enzyme}")
-        sites = analyzer.find_sites(seq, [enzyme])
+        sites = await run_in_threadpool(analyzer.find_sites, seq, [enzyme])
         if sites:
             enzymes_with_sites.append(enzyme)
         # 同一识别位点的正反链记录（粘性末端两个切点）合并为一个物理切割点，
@@ -291,7 +299,7 @@ async def analyze_gc(request: GCAnalysisRequest) -> Dict:
         GC 含量分布
     """
     analyzer = GCAnalyzer(window_size=request.window_size, step_size=request.step_size)
-    total_gc, regions = analyzer.analyze(request.sequence)
+    total_gc, regions = await run_in_threadpool(analyzer.analyze, request.sequence)
     
     extremes = [r for r in regions if r.is_extreme]
     
@@ -362,8 +370,8 @@ async def export_sequence(request: ExportRequest):
     )
     
     try:
-        content, mime_type = ExportManager.export(export_data, request.format)
-        
+        content, mime_type = await run_in_threadpool(ExportManager.export, export_data, request.format)
+
         # 确定文件扩展名
         extensions = {
             "genbank": ".gb",
@@ -420,8 +428,8 @@ async def export_all_formats(request: ExportRequest):
         is_circular=request.is_circular
     )
     
-    zip_content = ExportManager.export_all(export_data)
-    
+    zip_content = await run_in_threadpool(ExportManager.export_all, export_data)
+
     return StreamingResponse(
         io.BytesIO(zip_content),
         media_type="application/zip",
@@ -472,7 +480,7 @@ async def export_design(design_id: str, format: str = "genbank"):
 
     data = create_export_data_from_design(result.model_dump(mode="json"))
     try:
-        return _export_response(data, format, design_id)
+        return await run_in_threadpool(_export_response, data, format, design_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -509,7 +517,7 @@ async def export_vector(vector_id: str, format: str = "genbank"):
         ],
     })
     try:
-        return _export_response(data, format, vector_id)
+        return await run_in_threadpool(_export_response, data, format, vector_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -528,7 +536,8 @@ async def check_cloning_compatibility(request: CompatibilityRequest) -> Dict:
         兼容性分析结果
     """
     analyzer = SequenceAnalyzer()
-    result = analyzer.check_cloning_compatibility(
+    result = await run_in_threadpool(
+        analyzer.check_cloning_compatibility,
         request.insert_sequence,
         request.vector_sequence,
         request.enzymes

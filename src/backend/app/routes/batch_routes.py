@@ -1,6 +1,7 @@
 """批量设计路由 — 复用 DesignService.run_design"""
 
 import io
+import logging
 import uuid
 import zipfile
 from datetime import datetime
@@ -28,6 +29,8 @@ from app.storage import get_batch_store
 
 router = APIRouter(prefix="/api/design/batch", tags=["batch"])
 
+logger = logging.getLogger(__name__)
+
 batch_jobs: Dict[str, BatchDesignStatus] = {}
 
 
@@ -36,8 +39,10 @@ def _persist_batch(job: BatchDesignStatus) -> None:
     try:
         store = get_batch_store()
         store.save(job.batch_id, job.model_dump(mode="json"))
-    except Exception:
-        pass
+    except Exception as e:
+        # 持久化失败不中断批量任务，但必须留痕——database 模式下丢持久化意味着
+        # 重启后任务无法恢复，静默吞掉会掩盖存储层故障（KNOWN_ISSUES 3.1）
+        logger.warning("批量任务 %s 持久化失败: %s", job.batch_id, e)
 
 
 def _load_batch(batch_id: str) -> BatchDesignStatus | None:

@@ -71,5 +71,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Start command
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Start command — shell 形式以在容器启动时读取 BACKEND_WORKERS（docker-compose.yml 已注入）。
+# 单核小机器建议单 worker：多 worker 会使进程内限流/缓存配额翻倍，
+# memory 模式下批量进度查询可能落到另一 worker 返回 404
+CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "${BACKEND_WORKERS:-1}"
