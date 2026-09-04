@@ -268,7 +268,7 @@ class CacheManager:
         """缓存密码子优化结果（exclude_enzymes 参与缓存键）"""
         key = self._generate_key(
             "codon_opt",
-            algo="v2",  # 算法升级时递增，避免命中旧版本结果
+            algo="v2.1",  # 算法升级时递增，避免命中旧版本结果（v2.1：修复反向互补映射错误）
             sequence=sequence,
             species=species,
             gc_min=gc_min,
@@ -288,7 +288,7 @@ class CacheManager:
         """获取缓存的密码子优化结果"""
         key = self._generate_key(
             "codon_opt",
-            algo="v2",
+            algo="v2.1",
             sequence=sequence,
             species=species,
             gc_min=gc_min,

@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-08-31）
 
-- pytest **121 通过**；前端 vitest **42 通过**；冒烟 **20 通过**；GitHub main 已同步
+- pytest **126 通过**（2026-09-04 修复反向互补映射 bug 后）；前端 vitest **42 通过**；冒烟 **20 通过**；GitHub main 已同步
 - 版本 v2.0.0（tag）；远程 https://github.com/gui123a1/Plasmid-Designer
 - 未竟事项：分析页「双酶消化模拟」UI 全流程曾因会话中断未走完最后一步
   （后端 /analysis/digest 已有 4 个单测覆盖，EcoRI 单酶 UI 实测通过）
