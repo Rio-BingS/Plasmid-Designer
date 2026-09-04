@@ -652,9 +652,11 @@ def map_data_from_result(result: DesignResult) -> Dict:
                 "description": "Optimized insert",
             }
         ]
+    from core.enzyme_sites import find_enzyme_sites
     return {
         "name": result.vector_name or "Construct",
         "length": len(construct) or result.final_length or 0,
         "sequence": construct,
         "features": features,
+        "enzyme_sites": find_enzyme_sites(construct) if construct else [],
     }

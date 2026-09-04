@@ -14,6 +14,9 @@ const mockContext = {
   moveTo: vi.fn(),
   lineTo: vi.fn(),
   closePath: vi.fn(),
+  setTransform: vi.fn(),
+  measureText: vi.fn(() => ({ width: 50 })),
+  canvas: null,
   set lineWidth(value: number) {},
   set strokeStyle(value: string) {},
   set fillStyle(value: string) {},
@@ -59,8 +62,9 @@ describe('PlasmidMap', () => {
     })
     
     const canvas = wrapper.find('canvas')
-    expect(canvas.attributes('width')).toBe('500')
-    expect(canvas.attributes('height')).toBe('500')
+    // 默认 560x560（draw 中按 dpr 设置实际像素，jsdom dpr=1）
+    expect((canvas.element as HTMLCanvasElement).width).toBe(560)
+    expect((canvas.element as HTMLCanvasElement).height).toBe(560)
   })
 
   it('accepts custom width and height', () => {
@@ -73,8 +77,8 @@ describe('PlasmidMap', () => {
     })
     
     const canvas = wrapper.find('canvas')
-    expect(canvas.attributes('width')).toBe('600')
-    expect(canvas.attributes('height')).toBe('400')
+    expect((canvas.element as HTMLCanvasElement).width).toBe(600)
+    expect((canvas.element as HTMLCanvasElement).height).toBe(400)
   })
 
   it('renders legend with feature types', () => {

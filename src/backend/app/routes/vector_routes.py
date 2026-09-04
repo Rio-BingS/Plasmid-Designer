@@ -258,11 +258,15 @@ async def get_vector_map_data(vector_id: str):
             "description": "Multiple Cloning Site"
         })
 
+    from core.enzyme_sites import find_enzyme_sites
+
     return PlasmidMapData(
         name=vector.name,
         length=vector.length,
-        sequence=vector.sequence[:1000] if len(vector.sequence) > 1000 else vector.sequence,
-        features=features
+        # 序列视图需要完整序列（量级 ~10kb，无需截断）
+        sequence=vector.sequence,
+        features=features,
+        enzyme_sites=find_enzyme_sites(vector.sequence),
     )
 
 

@@ -230,9 +230,20 @@ class BatchImportRequest(BaseModel):
 
 # ==================== 质粒图谱 ====================
 
+class EnzymeSite(BaseModel):
+    """酶切位点（1-based）"""
+    name: str
+    position: int
+    strand: str = "+"
+    cut_fwd: int
+    cut_rev: int
+    overhang: Optional[str] = None
+
+
 class PlasmidMapData(BaseModel):
     """质粒图谱数据"""
     name: str
     length: int
     sequence: Optional[str] = None
     features: List[Dict] = []
+    enzyme_sites: List[EnzymeSite] = Field(default_factory=list)
