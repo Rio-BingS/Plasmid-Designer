@@ -3,22 +3,17 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import type { VectorInfo } from '@/types'
 import PlasmidMap from '@/components/PlasmidMap.vue'
+import type { PlasmidFeature, EnzymeSite } from '@/components/PlasmidMap.vue'
+import SequenceView from '@/components/SequenceView.vue'
+import SequencingPanel from '@/components/SequencingPanel.vue'
 import { getVectorMapData, getVectorSequence, getVector } from '@/api'
-
-interface PlasmidFeature {
-  name: string
-  type: string
-  start: number
-  end: number
-  strand: string
-  description?: string
-}
 
 interface MapData {
   name: string
   length: number
   sequence?: string
   features: PlasmidFeature[]
+  enzyme_sites?: EnzymeSite[]
 }
 
 const route = useRoute()
@@ -26,7 +21,10 @@ const mapData = ref<MapData | null>(null)
 const loading = ref(true)
 const error = ref('')
 const selectedFeature = ref<PlasmidFeature | null>(null)
-const activeTab = ref<'map' | 'sequence' | 'features'>('map')
+const activeTab = ref<'map' | 'sequence' | 'features' | 'sequencing'>('map')
+const seqHighlight = ref<{ start: number; end: number } | null>(null)
+const sequenceViewRef = ref<InstanceType<typeof SequenceView> | null>(null)
+const mapRef = ref<InstanceType<typeof PlasmidMap> | null>(null)
 
 const vectorId = computed(() => route.params.id as string)
 
@@ -55,6 +53,25 @@ function formatSequence(seq: string | undefined, lineLength: number = 60): strin
 
 function selectFeature(feature: PlasmidFeature) {
   selectedFeature.value = selectedFeature.value === feature ? null : feature
+}
+
+// 环形图点击特征 → 线性视图定位 + 高亮区间
+function onMapFeatureSelect(feature: PlasmidFeature | null) {
+  selectedFeature.value = feature
+  if (feature) {
+    seqHighlight.value = { start: feature.start, end: feature.end }
+    sequenceViewRef.value?.scrollTo(feature.start)
+  } else {
+    seqHighlight.value = null
+  }
+}
+
+// 点击酶切位点 → 定位并高亮识别序列（按 cut 位置回找识别位点）
+function onEnzymeClick(site: EnzymeSite) {
+  const pos = site.cut_fwd
+  const siteLen = 6
+  seqHighlight.value = { start: Math.max(1, pos - siteLen), end: pos }
+  sequenceViewRef.value?.scrollTo(Math.max(1, pos - siteLen))
 }
 
 const vectorInfo = ref<VectorInfo | null>(null)
@@ -134,18 +151,43 @@ async function downloadSeq(format: string) {
   >
     🧬 序列
   </button>
+  <button
+    :class="['tab', { active: activeTab === 'sequencing' }]"
+    @click="activeTab = 'sequencing'"
+  >
+    🔬 测序分析
+  </button>
 </div>
 
       <!-- 图谱视图 -->
       <div v-if="activeTab === 'map'" class="map-view">
-        <div class="map-container">
-          <PlasmidMap
-            :name="mapData.name"
-            :length="mapData.length"
-            :features="mapData.features"
-            :width="450"
-            :height="450"
-          />
+        <div class="map-column">
+          <div class="map-container">
+            <PlasmidMap
+              ref="mapRef"
+              :name="mapData.name"
+              :length="mapData.length"
+              :features="mapData.features"
+              :enzyme-sites="mapData.enzyme_sites || []"
+              :sequence="mapData.sequence"
+              :width="520"
+              :height="520"
+              @feature-select="onMapFeatureSelect"
+              @enzyme-click="onEnzymeClick"
+            />
+          </div>
+
+          <!-- SnapGene 风格线性序列视图（与环形图联动） -->
+          <div v-if="mapData.sequence" class="seq-view-container">
+            <SequenceView
+              ref="sequenceViewRef"
+              :sequence="mapData.sequence"
+              :features="mapData.features"
+              :enzyme-sites="mapData.enzyme_sites || []"
+              :highlight="seqHighlight"
+              :height="300"
+            />
+          </div>
         </div>
         
         <!-- 特征列表（侧边） -->
@@ -219,6 +261,10 @@ async function downloadSeq(format: string) {
           </div>
           <pre class="sequence-display">{{ formatSequence(mapData.sequence) }}</pre>
         </div>
+      </div>
+      <!-- 测序分析 -->
+      <div v-if="activeTab === 'sequencing'" class="sequencing-view">
+        <SequencingPanel :reference-id="vectorId" mode="vector" />
       </div>
     </div>
   </div>
@@ -410,6 +456,26 @@ async function downloadSeq(format: string) {
   text-align: center;
   padding: 3rem;
   color: var(--text-secondary);
+}
+
+.map-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.seq-view-container {
+  background: white;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 0.75rem;
+}
+
+.sequencing-view {
+  background: white;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
 }
 
 @media (max-width: 768px) {

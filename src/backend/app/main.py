@@ -96,6 +96,7 @@ from app.auth.routes import router as auth_router
 from app.cache_routes import router as cache_router
 from app.rate_limit_routes import router as rate_limit_router
 from app.analysis_routes import router as analysis_router
+from app.routes.sequencing_routes import router as sequencing_router
 
 app.include_router(design_router)
 app.include_router(batch_router)
@@ -105,6 +106,7 @@ app.include_router(auth_router)
 app.include_router(cache_router)
 app.include_router(rate_limit_router)
 app.include_router(analysis_router)
+app.include_router(sequencing_router)
 
 # 速率限制中间件
 from app.rate_limit import RateLimitMiddleware

@@ -47,6 +47,11 @@ RUN pip install --no-cache-dir --timeout=300 --retries=5 \
 # 第三层: 需要 git 的依赖（pydna 最新版为 5.x）
 RUN pip install --no-cache-dir --timeout=120 --retries=5 "pydna>=5.5.0"
 
+# Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
+# 下载预编译二进制；失败不阻断构建（管线会自动降级为内置实现）
+ARG TRACY_VERSION=v0.9.1
+RUN curl -fsSL -o /usr/local/bin/tracy       "https://github.com/gear-genomics/tracy/releases/download/${TRACY_VERSION}/tracy-${TRACY_VERSION}-linux-amd64"       && chmod +x /usr/local/bin/tracy || echo "WARN: tracy download failed, Sanger deconvolution disabled"
+
 # Copy application code
 COPY src/backend/ ./backend/
 COPY data/ ./data/

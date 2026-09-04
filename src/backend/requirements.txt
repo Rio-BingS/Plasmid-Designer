@@ -19,9 +19,13 @@ bcrypt>=4.0.0,<5
 PyJWT>=2.8.0
 email-validator>=2.1.0
 
+# Sanger 测序分析（比对核心 + ab1 解析主路径 Bio.SeqIO("abi")；
+# 无 Biopython 时回退内置纯标准库解析器）
+biopython>=1.81
+
 # Testing
 pytest>=7.4.0
 httpx>=0.26.0
 
-# 说明：核心生信算法（core/）为纯 Python 标准库实现，
-# 不依赖 BioPython / primer3-py / pydna / numpy / pandas / scipy 等第三方库。
+# 说明：核心设计算法（core/ 设计主线）为纯 Python 标准库实现；
+# Sanger 测序分析（core/sanger/）使用 biopython 做比对。

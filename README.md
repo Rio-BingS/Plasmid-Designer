@@ -178,6 +178,25 @@ STORAGE_MODE=database
 | POST | `/api/analysis/export` | 单格式导出 |
 | POST | `/api/analysis/export/all` | 全格式导出 (ZIP) |
 
+### Sanger 测序分析
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个）对设计构建体全自动测序验证 |
+| POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体 |
+| GET | `/api/sequencing/analyses/{id}` | 分析结果（结论/突变表/共识序列/覆盖率） |
+| GET | `/api/sequencing/analyses/{id}/trace/{read_index}` | 单条 read 峰图数据（四通道） |
+| GET | `/api/sequencing/analyses/{id}/consensus/export` | 导出拼接结果（fasta / genbank） |
+| DELETE | `/api/sequencing/analyses/{id}` | 删除分析记录 |
+
+全自动管线（`core/sanger/`）：ABIF 解析（主路径 Bio.SeqIO "abi"，无 Biopython 时回退内置解析器）
+→ Q 值末端修剪 → 双向比对自动判向（Biopython PairwiseAligner）→ 多 read 共识拼接（质量加权投票）
+→ 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增）→ 自动结论。
+疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
+（Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
+分析记录为进程级内存存储（重启失效）。质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）
+为 SnapGene 风格双视图，图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置 ~48 种常用酶扫描生成。
+
 ### 认证
 
 | 方法 | 端点 | 说明 |

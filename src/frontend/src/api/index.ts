@@ -395,3 +395,108 @@ export async function getRateLimitConfig(): Promise<any> {
   const response = await api.get('/rate-limit/config')
   return response.data
 }
+
+// ==================== Sanger 测序分析 ====================
+
+export interface SequencingVariant {
+  ref_pos: number
+  read_pos?: number
+  type: string
+  ref_base: string
+  alt_base: string
+  length: number
+  quality?: number
+  read_q?: number
+  support_reads?: number
+  read?: string
+  features?: { name: string; type: string }[]
+  codon_change?: string | null
+  aa_change?: string | null
+  frameshift?: boolean
+  enzyme_sites_lost?: string[]
+  enzyme_sites_gained?: string[]
+}
+
+export interface SequencingAnalysis {
+  analysis_id: string
+  sample_name: string
+  created_at: string
+  engine: string
+  conclusion: string
+  reads: {
+    index: number
+    filename: string
+    sample_name?: string
+    raw_length: number
+    trimmed_length: number
+    mean_q: number
+    direction: string
+    ref_start: number
+    ref_end: number
+    identity: number
+    mixed_positions: number[]
+  }[]
+  variants: SequencingVariant[]
+  consensus: { sequence: string; covered_ranges: [number, number][]; coverage_percent: number }
+  coverage_ranges: [number, number][]
+  mixed_detected: Record<string, number[]>
+  decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
+  errors: { filename: string; error: string }[]
+  reference_length: number
+  features: { name: string; type: string; start: number; end: number }[]
+}
+
+export interface ReadTrace {
+  filename: string
+  bases: string
+  quality: number[]
+  channels: Record<'A' | 'T' | 'G' | 'C', number[]>
+  peak_indices: number[]
+}
+
+export async function analyzeDesignSequencing(
+  designId: string,
+  files: File[],
+  minQ = 20,
+  allowDecompose = true
+): Promise<SequencingAnalysis> {
+  const form = new FormData()
+  files.forEach((f) => form.append('files', f))
+  form.append('min_q', String(minQ))
+  form.append('allow_decompose', String(allowDecompose))
+  const response = await api.post(`/designs/${designId}/sequencing/analyze`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000
+  })
+  return response.data
+}
+
+export async function analyzeVectorSequencing(
+  vectorId: string,
+  files: File[],
+  minQ = 20,
+  allowDecompose = true
+): Promise<SequencingAnalysis> {
+  const form = new FormData()
+  files.forEach((f) => form.append('files', f))
+  form.append('min_q', String(minQ))
+  form.append('allow_decompose', String(allowDecompose))
+  const response = await api.post(`/vectors/${vectorId}/sequencing/analyze`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000
+  })
+  return response.data
+}
+
+export async function getReadTrace(analysisId: string, readIndex: number): Promise<ReadTrace> {
+  const response = await api.get(`/sequencing/analyses/${analysisId}/trace/${readIndex}`)
+  return response.data
+}
+
+export async function exportConsensus(analysisId: string, format: string): Promise<string> {
+  const response = await api.get(`/sequencing/analyses/${analysisId}/consensus/export?format=${format}`, {
+    responseType: 'text',
+    transformResponse: [(data) => data]
+  })
+  return response.data
+}

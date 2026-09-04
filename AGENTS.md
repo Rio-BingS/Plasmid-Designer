@@ -12,7 +12,7 @@ Plasmid Designer：自动化质粒构建设计平台。输入氨基酸/DNA 序�
 ## 技术栈与代码地图
 
 ```
-src/backend/                FastAPI（纯标准库算法，无生信三方依赖）
+src/backend/                FastAPI（设计主线纯标准库；Sanger 分析用 biopython）
   app/main.py               入口 ~120 行（仅组装：CORS/中间件/路由/启动）
   app/routes/               design|batch|vector|codon|analysis 路由 + models.py（共享 Pydantic 契约）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
@@ -23,13 +23,24 @@ src/backend/                FastAPI（纯标准库算法，无生信三方依赖
   core/sequence_analysis.py 酶切位点/ORF/GC 分析器；RESTRICTION_ENZYMES 表
   core/clone_strategy.py    克隆方案文本生成；core/export_formats.py 多格式导出
   core/vector_library.py    载体库（data/vectors/*.yaml）
+  core/enzyme_sites.py      ★ 内置 ~48 种常用限制酶表，扫描序列生成图谱酶切位点
+  core/sanger/              ★ Sanger 测序全自动管线：abif_reader（SeqIO abi 主路径 +
+                            内置解析器回退）/ aligner（PairwiseAligner 双向判向）/
+                            annotator（突变→特征/氨基酸/移码/酶切位点注释）/
+                            pipeline（修剪→比对→共识投票→自动结论；可选 tracy 解卷积）
 src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api → 8000）
   src/api/index.ts          全部后端调用（axios，40+ 函数）——改后端契约必同步这里
   src/views/AnalysisView.vue 序列分析页（位点/ORF/GC/消化模拟/兼容性/导出）
   src/components/EnzymeAutocomplete.vue 可搜索酶选择器（单/多选，全站推广）
+  src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas：wrap特征/双向箭头/
+                                     弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
+  src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
+  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/峰图/共识导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（121 用例）+ 前端 vitest 文件已移至 src/frontend/tests
+tests/                      后端 pytest（147 用例，含 test_sanger_pipeline/test_enzyme_sites/
+                            test_sequencing_routes；tests/abif_utils.py 合成 ab1 生成器）
+                            + 前端 vitest（44 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -87,9 +98,14 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
   （conftest.py 会重新注入正确路径）
 
-## 当前状态（2026-08-31）
+## 当前状态（2026-09-05）
 
-- pytest **126 通过**（2026-09-04 修复反向互补映射 bug 后）；前端 vitest **42 通过**；冒烟 **20 通过**；GitHub main 已同步
+- pytest **147 通过**；前端 vitest **44 通过**；浏览器实测 + 视觉验收通过
+- 新增（2026-09-05）：SnapGene 风格图谱（PlasmidMap 重写 + SequenceView 线性视图联动）；
+  Sanger 测序全自动分析（core/sanger/ + sequencing_routes + SequencingPanel，依赖 biopython，
+  可选 tracy 解卷积；分析记录为进程内存存储）。注意：内置载体 YAML 无序列（0bp），
+  测序验证主入口在设计结果页（参考=构建体序列），载体入口仅对已上传/导入的有序列载体可用
+- 旧状态：2026-09-04 pytest 126 / vitest 42；冒烟 20 通过；GitHub main 已同步
 - 版本 v2.0.0（tag）；远程 https://github.com/gui123a1/Plasmid-Designer
 - 未竟事项：分析页「双酶消化模拟」UI 全流程曾因会话中断未走完最后一步
   （后端 /analysis/digest 已有 4 个单测覆盖，EcoRI 单酶 UI 实测通过）

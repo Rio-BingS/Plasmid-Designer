@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
 import PlasmidMap from '@/components/PlasmidMap.vue'
+import SequenceView from '@/components/SequenceView.vue'
+import SequencingPanel from '@/components/SequencingPanel.vue'
 
 const props = defineProps<{
   designId: string
@@ -254,10 +256,25 @@ onUnmounted(() => {
             :length="mapData.length"
             :sequence="mapData.sequence"
             :features="mapData.features"
-            :width="450"
-            :height="450"
+            :enzyme-sites="mapData.enzyme_sites || []"
+            :width="520"
+            :height="520"
           />
         </div>
+        <div v-if="mapData.sequence" class="seq-view-container">
+          <SequenceView
+            :sequence="mapData.sequence"
+            :features="mapData.features"
+            :enzyme-sites="mapData.enzyme_sites || []"
+            :height="280"
+          />
+        </div>
+      </div>
+
+      <!-- Sanger 测序验证 -->
+      <div v-if="showMap && result.status === 'completed'" class="result-section">
+        <h2>Sanger 测序验证</h2>
+        <SequencingPanel :reference-id="result.design_id" mode="design" />
       </div>
 
       <!-- 引物信息 -->
@@ -624,5 +641,12 @@ onUnmounted(() => {
   margin-bottom: 0.75rem;
   font-size: 0.875rem;
   color: var(--text-secondary);
+}
+.seq-view-container {
+  margin-top: 1rem;
+  border: 1px solid var(--border-color, #eee);
+  border-radius: 10px;
+  padding: 0.5rem;
+  background: #fff;
 }
 </style>
