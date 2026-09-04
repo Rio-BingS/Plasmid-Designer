@@ -273,3 +273,27 @@ def test_synthesis_oligos_short_sequence_staggered_pair():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_cross_hybridization_detects_unexpected_match():
+    """回归：反向互补曾用错误的 maketrans("ATGC","TAGC")，交叉杂交检查恒为 0。
+    正确实现应检出非预期 oligo 间的 3' 端互补匹配。"""
+    designer = PrimerDesigner()
+    a = Primer("a", "ACGTACGTACGT" + "AAAAAAAAAAAA", PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 24, target_start=0, target_end=24)
+    tail = a.sequence[-12:]
+    rc_tail = tail.translate(str.maketrans("ATGC", "TACG"))[::-1]
+    b = Primer("b", rc_tail + "GGCGGCGGCGG", PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 24, target_start=100, target_end=124)
+    assert designer.cross_hybridization_count([a, b]) >= 1
+
+
+def test_cross_hybridization_ignores_designed_adjacent_overlap():
+    """相邻 oligo 的目标区域重叠，其 overlap 退火是预期配对，不应计入交叉杂交"""
+    designer = PrimerDesigner()
+    shared = "CCCCCCCCCCCC"
+    a = Primer("a", "A" * 20 + shared, PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 32, target_start=0, target_end=32)
+    b = Primer("b", designer._reverse_complement("T" * 12 + shared + "G" * 8),
+               PrimerType.SYNTHESIS_OLIGO, 60, 50, 32, target_start=20, target_end=52)
+    assert designer.cross_hybridization_count([a, b]) == 0

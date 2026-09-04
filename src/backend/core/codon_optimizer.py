@@ -485,7 +485,7 @@ class CodonOptimizer:
         """5' 端简化发夹计数：窗口内长度为 stem 的片段与其后
         出现的反向互补序列的匹配数（0-based，翻译起始区近似结构打分）。"""
         w = dna[:window]
-        trans = str.maketrans("ATGC", "TAGC")
+        trans = str.maketrans("ATGC", "TACG")
         count = 0
         for i in range(0, len(w) - stem + 1):
             seg = w[i:i + stem]
@@ -574,7 +574,6 @@ class CodonOptimizer:
         """GC 平滑：每次选「单位 CAI 损失换取的 GC 调整量」最高的单个
         同义替换，直到进入目标范围或无可行替换。相比一次全量替换，
         该贪心策略把 CAI 损失控制到最小。"""
-        trans = str.maketrans("ATGC", "TAGC")
         max_steps = min(len(aa_seq), 400)
         motifs = [m.upper() for m in avoid_motifs]
 

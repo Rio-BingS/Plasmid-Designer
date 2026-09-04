@@ -160,17 +160,22 @@ def assemble_construct(vector, insert_dna: str, insert_name: str = "insert") -> 
     )
 
 
-def derive_gg_overhangs(vector, enzyme_name: str) -> Tuple[str, str]:
-    """从载体 MCS 推导 Golden Gate 4bp overhang，无法推导时回退默认值。"""
+def derive_gg_overhangs(vector, enzyme_name: str) -> Tuple[str, str, bool]:
+    """从载体 MCS 推导 Golden Gate 4bp overhang。
+
+    返回 (5' overhang, 3' overhang, 是否成功从载体推导)。
+    无法推导时回退默认值 AATG/GCTT 并置 derived=False（调用方应告警，
+    用户需自行确认 overhang 与阅读框/载体衔接）。
+    """
     if vector and vector.mcs and vector.mcs.sites:
         unique = [s for s in vector.mcs.sites if s.is_unique and s.overhang]
         if len(unique) >= 2:
             return (unique[0].overhang[:4].upper().ljust(4, "A")[:4],
-                    unique[-1].overhang[:4].upper().ljust(4, "A")[:4])
+                    unique[-1].overhang[:4].upper().ljust(4, "A")[:4], True)
         if len(unique) == 1:
             oh = unique[0].overhang[:4].upper().ljust(4, "A")[:4]
-            return oh, _DEFAULT_GG_OVERHANGS[1]
-    return _DEFAULT_GG_OVERHANGS
+            return oh, _DEFAULT_GG_OVERHANGS[1], False
+    return _DEFAULT_GG_OVERHANGS[0], _DEFAULT_GG_OVERHANGS[1], False
 
 
 def _primer_to_info(p, include_overhang: bool = True) -> PrimerInfo:
@@ -355,7 +360,7 @@ def design_primers_for_method(
             return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
         if request.cloning_method == CloningMethod.GOLDEN_GATE:
-            oh5, oh3 = derive_gg_overhangs(vector, request.enzyme)
+            oh5, oh3, _derived = derive_gg_overhangs(vector, request.enzyme)
             pair = designer.design_golden_gate_primers(
                 optimized_dna,
                 enzyme_name=request.enzyme,
@@ -496,6 +501,13 @@ def run_design(
         # 4. 引物
         result.primers = design_primers_for_method(request, optimized_dna, vector, backbone)
 
+        # 4.0 Gibson：骨架含 N 占位时同源臂不可信，明确告警
+        if request.cloning_method == CloningMethod.GIBSON and "N" in backbone:
+            result.warnings.append(
+                "警告：载体骨架序列不完整（含 N 占位碱基），Gibson 同源臂基于占位序列生成，"
+                "不可直接合成；请先提供完整载体序列"
+            )
+
         # 4.1 全基因合成：交叉杂交审查（DNAWorks 式 3' 端匹配检查）
         if request.insert_source == "gene_synthesis" and result.primers:
             from core.primer_designer import PrimerDesigner
@@ -520,7 +532,12 @@ def run_design(
                 "homology_arm": request.homology_arm,
             }
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:
-            overhang_5, overhang_3 = derive_gg_overhangs(vector, request.enzyme)
+            overhang_5, overhang_3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
+            if not gg_derived:
+                result.warnings.append(
+                    "警告：无法从载体 MCS 推导 Golden Gate overhang，"
+                    f"已回退默认值 {overhang_5}/{overhang_3}，请自行确认 overhang 与阅读框及载体衔接"
+                )
             strategy_kwargs = {
                 "enzyme": request.enzyme,
                 "overhang_5": overhang_5,

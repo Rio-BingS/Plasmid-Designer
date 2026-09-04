@@ -167,7 +167,7 @@ def test_censor_motifs_auto_avoided():
 
 
 def test_result_has_score_and_hairpin_reduction():
-    """v2：结果带综合评分；优化后 5' 发夹计数相对基线下降"""
+    """v2：结果带综合评分；5' 发夹计数不应高于基线（正确 rc 下基线常为 0，旧版断言依赖错误 maketrans 的假阳性）"""
     from core.codon_optimizer import CodonOptimizer
 
     opt = CodonOptimizer(species="ecoli")
@@ -180,7 +180,7 @@ def test_result_has_score_and_hairpin_reduction():
     assert 0 <= result.score <= 100
 
     hair = opt._five_prime_hairpin_count(result.dna_sequence)
-    assert hair < base_hair, f"优化应削减 5' 发夹计数（基线 {base_hair}，实际 {hair}）"
+    assert hair <= base_hair, f"优化不应增加 5' 发夹计数（基线 {base_hair}，实际 {hair}）"
 
 
 def test_gc_smoothing_efficient():
@@ -192,3 +192,12 @@ def test_gc_smoothing_efficient():
     result = opt.optimize(aa)
     assert 0.38 <= result.gc_content <= 0.62, f"GC {result.gc_content:.2f} 应进入目标范围附近"
     assert result.cai >= 0.5
+
+
+def test_five_prime_hairpin_count_detects_gc_stems():
+    """回归：反向互补曾用错误的 maketrans("ATGC","TAGC")（G/C 映射到自身），
+    导致 GC 茎区发夹漏检。正确实现应检出含 G/C 的茎。"""
+    opt = CodonOptimizer(species="ecoli")
+    # 5' 窗口内构造茎区含 G/C 的发夹：GGAC ... GTCC（GTCC 为 GGAC 的反向互补）
+    with_hairpin = "GGAC" + "A" * 8 + "GTCC" + "A" * 40
+    assert opt._five_prime_hairpin_count(with_hairpin) >= 1

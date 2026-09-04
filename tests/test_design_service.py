@@ -14,6 +14,9 @@ from app.design_service import (
     run_design,
     generate_genbank_from_result,
     map_data_from_result,
+    derive_gg_overhangs,
+    get_vector_library,
+    ensure_vector_backbone,
 )
 from core.codon_optimizer import CodonOptimizer
 from core.vector_library import Vector, MCS, CloningSite, VectorElement, ElementType
@@ -281,3 +284,36 @@ def test_digest_unknown_enzyme_rejected():
 
     resp = client.post("/api/analysis/digest", json={"sequence": "ATG", "enzymes": ["NotAnEnzyme"]})
     assert resp.status_code == 400
+
+
+def test_gg_overhang_fallback_flagged_in_warnings():
+    """回归：Golden Gate overhang 无法从 MCS 推导时应回退默认值并给出警告"""
+    req = DesignRequest(
+        sequence="ATGAAAGTGCTG",
+        sequence_type=SequenceType.DNA,
+        cloning_method=CloningMethod.GOLDEN_GATE,
+        enzyme="BsaI",
+        vector_id="pET-28a",
+    )
+    result = run_design("design_test_gg_fb", req)
+    assert result.status == DesignStatus.COMPLETED
+    oh5, oh3, derived = derive_gg_overhangs(get_vector_library().get_vector("pET-28a"), "BsaI")
+    if not derived:
+        assert any("overhang" in w and "回退" in w for w in result.warnings)
+
+
+def test_gibson_placeholder_backbone_warns():
+    """回归：载体骨架含 N 占位时，Gibson 同源臂不可信，应在 warnings 中明确告警"""
+    from app.design_service import run_design as _rd
+    req = DesignRequest(
+        sequence="ATGAAAGTGCTGTAA",
+        sequence_type=SequenceType.DNA,
+        cloning_method=CloningMethod.GIBSON,
+        vector_id="pET-28a",
+    )
+    result = _rd("design_test_gibson_n", req)
+    assert result.status == DesignStatus.COMPLETED
+    vector = get_vector_library().get_vector("pET-28a")
+    backbone = ensure_vector_backbone(vector)
+    if "N" in backbone:
+        assert any("N 占位" in w for w in result.warnings)

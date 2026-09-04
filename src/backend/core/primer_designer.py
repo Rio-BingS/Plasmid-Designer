@@ -752,10 +752,13 @@ class PrimerDesigner:
         """交叉杂交计数：检查每条 oligo 的 3' 端 stem-mer 是否与其他
         oligo 的互补序列匹配（非预期的二聚体位点，DNAWorks 式审查）。
 
+        目标区域重叠的 oligo 对（全基因合成的相邻片）经设计本就通过
+        overlap 区退火，属预期配对，不计入交叉杂交。
+
         Returns:
             匹配次数（0 为理想；>0 建议调整长度范围后重新设计）
         """
-        trans = str.maketrans("ATGC", "TAGC")
+        trans = str.maketrans("ATGC", "TACG")
         seqs = [o.sequence.upper() for o in oligos]
         count = 0
         for i, s in enumerate(seqs):
@@ -763,6 +766,10 @@ class PrimerDesigner:
             rc_tail = tail.translate(trans)[::-1]
             for j, t in enumerate(seqs):
                 if i == j:
+                    continue
+                # 预期配对：两条 oligo 的目标区域重叠（相邻片的 overlap 退火）
+                ti, tj = oligos[i], oligos[j]
+                if ti.target_start < tj.target_end and tj.target_start < ti.target_end:
                     continue
                 if rc_tail in t:
                     count += 1
