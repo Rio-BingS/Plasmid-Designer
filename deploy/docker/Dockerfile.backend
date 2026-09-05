@@ -1,51 +1,30 @@
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# 使用腾讯云镜像源加速 apt
-RUN sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-    sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list 2>/dev/null || true
-
-# Install system dependencies
-# gcc/g++/gfortran: 编译 scipy/numpy C/Fortran 扩展
-# libpq-dev: asyncpg 编译依赖
-# git: pydna 版本检测依赖
-# make: primer3-py 编译依赖
+# System dependencies — curl: 健康检查 + tracy 下载。
+# 注意：依赖清单必须与 requirements.backend.txt 一致，不要在此手工罗列包名
+# （此前手工列表与清单脱节，缺 pyyaml 导致容器启动即崩）。
+# 全部依赖均有官方 wheel，无需 gcc 等编译工具链
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    gfortran \
-    libpq-dev \
     curl \
-    git \
-    make \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
 RUN groupadd -r plasmid && useradd -r -g plasmid plasmid
 
-# 使用腾讯云 PyPI 镜像加速 pip 安装
-RUN pip config set global.index-url https://mirrors.cloud.tencent.com/pypi/simple/ && \
-    pip config set global.trusted-host mirrors.cloud.tencent.com
+# PyPI 镜像可覆盖：国内构建传 --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple。
+# 默认官方源——此前硬编码国内镜像，海外 VPS 构建频繁断流
+ARG PIP_INDEX_URL=https://pypi.org/simple/
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 
-# Install Python dependencies — 分层安装，利用 Docker 缓存
-# 第一层: 轻量依赖（不易失败的包）
+# Install Python dependencies（唯一来源 = requirements.backend.txt）
 COPY deploy/docker/requirements.backend.txt ./requirements.txt
-RUN pip install --no-cache-dir --timeout=120 --retries=5 \
-    fastapi uvicorn python-multipart \
-    sqlalchemy asyncpg alembic redis \
-    pydantic pydantic-settings python-dotenv loguru \
-    passlib PyJWT email-validator \
-    openpyxl reportlab httpx
+RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
-# 第二层: 需要 C 编译的重量依赖
-RUN pip install --no-cache-dir --timeout=300 --retries=5 \
-    numpy pandas scipy \
-    matplotlib biopython \
-    primer3-py
-
-# 第三层: 需要 git 的依赖（pydna 最新版为 5.x）
-RUN pip install --no-cache-dir --timeout=120 --retries=5 "pydna>=5.5.0"
+# biopython：Sanger 测序分析（ab1 解析 + 序列比对）。其余 numpy/pandas/scipy/
+# matplotlib/primer3-py/pydna 等后端代码均未 import，不再安装（拖慢构建且徒增失败面）
+RUN pip install --no-cache-dir --timeout=300 --retries=5 "biopython>=1.81"
 
 # Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
 # 下载预编译二进制；失败不阻断构建（管线会自动降级为内置实现）

@@ -4,7 +4,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 # 项目根目录：src/backend 的父级，即 plasmid-designer-v2/
@@ -51,21 +50,21 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "/tmp/plasmid_designer/uploads"
     OUTPUT_DIR: str = "/tmp/plasmid_designer/output"
 
-    # CORS — 支持 JSON 数组或逗号分隔两种写法（如 "https://a.com,https://b.com"）。
-    # main.py 据此接线 CORSMiddleware；生产环境务必配置具体域名而非通配
-    CORS_ORIGINS: list = ["*"]
+    # CORS — 支持 "*"、逗号分隔（"https://a.com,https://b.com"）或 JSON 数组（'["*"]'）三种写法，
+    # 解析见 cors_origins_list。此处必须声明为 str：pydantic-settings 会对 list/dict 等
+    # "复杂类型" 字段先做 JSON 解码再进 field_validator，环境变量传 "*" 会直接 SettingsError，
+    # validator 根本没有机会执行（2026-09 VPS 部署踩坑）
+    CORS_ORIGINS: str = "*"
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def _parse_cors_origins(cls, v):
-        if isinstance(v, str):
-            v = v.strip()
-            if not v:
-                return ["*"]
-            if v.startswith("["):
-                return json.loads(v)
-            return [item.strip() for item in v.split(",") if item.strip()]
-        return v
+    @property
+    def cors_origins_list(self) -> list:
+        """解析 CORS_ORIGINS 为来源列表，main.py 据此接线 CORSMiddleware"""
+        v = (self.CORS_ORIGINS or "").strip()
+        if not v:
+            return ["*"]
+        if v.startswith("["):
+            return json.loads(v)
+        return [item.strip() for item in v.split(",") if item.strip()]
 
     class Config:
         env_file = ".env"

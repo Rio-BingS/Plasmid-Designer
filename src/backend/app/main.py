@@ -52,9 +52,9 @@ app = FastAPI(
 
 # ==================== 中间件 ====================
 
-# CORS 来源接线 settings.CORS_ORIGINS（.env / 环境变量，支持逗号分隔或 JSON 数组），
+# CORS 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或 JSON 数组），
 # 生产环境务必配置具体域名而非通配
-_cors_origins = settings.CORS_ORIGINS or ["*"]
+_cors_origins = settings.cors_origins_list
 _allow_all_origins = "*" in _cors_origins
 app.add_middleware(
     CORSMiddleware,

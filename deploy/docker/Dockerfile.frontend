@@ -3,8 +3,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# 使用腾讯云 npm 镜像加速
-RUN npm config set registry https://mirrors.cloud.tencent.com/npm/
+# npm 镜像可覆盖：国内构建传 --build-arg NPM_REGISTRY=https://registry.npmmirror.com。
+# 默认官方源——硬编码国内镜像会拖垮海外 VPS 构建
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set registry ${NPM_REGISTRY}
 
 # Copy dependency files
 COPY src/frontend/package*.json ./
@@ -20,9 +22,6 @@ RUN npm run build
 
 # Production stage
 FROM nginx:alpine
-
-# 使用腾讯云 apk 镜像加速 (Alpine 包管理)
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.cloud.tencent.com/g' /etc/apk/repositories
 
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html

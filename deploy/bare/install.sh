@@ -214,8 +214,8 @@ if [[ "$DB_MODE" == "postgresql" ]]; then
         echo "  数据库 $PG_DB 已存在，跳过创建"
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB TO $PG_USER;"
 
-    # 初始化表结构
-    sudo -u postgres psql -d "$PG_DB" -f "$SCRIPT_DIR/../docker/init.sql" 2>/dev/null || true
+    # 表结构由应用启动时 init_db()（SQLAlchemy create_all）自动创建；
+    # 不再手动执行 init.sql——其手工 DDL 已与 ORM 模型漂移，会导致写库失败
 
     echo "  ✓ PostgreSQL 已配置"
     echo "    用户: $PG_USER"
