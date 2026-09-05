@@ -638,7 +638,7 @@ deploy/
 │   ├── Dockerfile.frontend
 │   ├── docker-compose.yml
 │   ├── nginx.conf
-│   ├── init.sql
+│   ├── requirements.backend.txt
 │   └── .env.example
 ├── hf-gradio/               # Gradio 模式 (HF Spaces)
 │   ├── app.py               # Gradio 入口 (5 Tab)

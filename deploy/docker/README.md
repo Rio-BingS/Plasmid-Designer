@@ -80,8 +80,9 @@ chmod +x ../scripts/deploy.sh
 脚本会自动: 创建 `.env` → 生成随机密钥 → 构建镜像 → 启动服务 → 健康检查
 
 部署完成后访问:
-- **前端**: `http://你的服务器IP`
-- **后端 API**: `http://你的服务器IP:8000/docs`
+- **前端**: `http://你的服务器IP`（FRONTEND_PORT 改过则加端口）
+- **API 文档**: `http://你的服务器IP/docs`（由前端 nginx 代理）
+- **后端直连**: 仅本机 `http://localhost:${BACKEND_PORT:-8000}/docs`（绑定回环，不对公网暴露）
 
 ---
 
@@ -110,11 +111,15 @@ cat .env
 ```bash
 # .env 文件内容
 DB_USER=plasmid
-DB_PASSWORD=plasmid_secure_2026    # 生产环境请改为强密码
-SECRET_KEY=<自动生成的64位hex>      # 不要用默认值
+DB_PASSWORD=plasmid_secure_2026    # 生产环境请改为强密码（deploy.sh 自动随机化）
+REDIS_PASSWORD=plasmid_redis_2026  # 同上，deploy.sh 自动随机化
+SECRET_KEY=<自动生成的64位hex>      # 不要用默认值（deploy.sh 自动生成）
 DEBUG=false
 LOG_LEVEL=INFO
+STORAGE_MODE=database
 FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
+BACKEND_PORT=8000                  # 后端仅绑定 127.0.0.1；宿主机 8000 被占用时改为 18000 等
+CORS_ORIGINS=*                     # 支持 "*"、逗号分隔或 JSON 数组；生产建议具体域名
 ```
 
 ### 4.2 构建镜像
@@ -126,11 +131,8 @@ cd /root/plasmid-designer-v2/deploy/docker
 # 构建所有镜像（首次约 5-10 分钟）
 docker compose build
 
-# 如果构建缓慢，可先配置国内镜像源
-# 在 Dockerfile.frontend 中 npm install 前添加:
-#   RUN npm config set registry https://registry.npmmirror.com
-# 在 Dockerfile.backend 中 pip install 前添加:
-#   RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 海外服务器用默认官方源即可；国内机器构建缓慢时用 build-arg 切换国内镜像:
+#   docker compose build #     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple #     --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 ```
 
 ### 4.3 启动服务
@@ -148,25 +150,28 @@ docker compose ps
 ```
 NAME               STATUS          PORTS
 plasmid-frontend   Up (healthy)    0.0.0.0:80->80/tcp
-plasmid-backend    Up (healthy)    0.0.0.0:8000->8000/tcp
-plasmid-db         Up (healthy)    0.0.0.0:5432->5432/tcp
-plasmid-redis      Up (healthy)    0.0.0.0:6379->6379/tcp
+plasmid-backend    Up (healthy)    127.0.0.1:8000->8000/tcp（仅本机可达）
+plasmid-db         Up (healthy)    127.0.0.1:5432->5432/tcp（仅本机可达）
+plasmid-redis      Up (healthy)    127.0.0.1:6379->6379/tcp（仅本机可达）
 ```
 
 ### 4.4 验证部署
 
 ```bash
-# 测试后端
+# 测试后端（仅本机回环可达）
 curl http://localhost:8000/health
-# 返回: {"status":"healthy","timestamp":"..."}
+# 返回: {"status":"healthy","timestamp":"...","storage_mode":"database"}
 
 # 测试前端
 curl -I http://localhost
 # 返回: HTTP/1.1 200 OK
 
+# 验证数据库表已由应用自动创建（应列出 designs/users 等表）
+docker compose exec db psql -U plasmid -d plasmid_designer -c "\dt"
+
 # 浏览器打开
 # http://你的服务器IP → 看到设计界面
-# http://你的服务器IP:8000/docs → 看到 API 文档
+# http://你的服务器IP/docs → API 文档（前端 nginx 代理）
 ```
 
 ---
@@ -185,13 +190,8 @@ ls /root/plasmid-designer-v2/src/backend/app/main.py
 ls /root/plasmid-designer-v2/src/frontend/package.json
 ls /root/plasmid-designer-v2/data/vectors/
 
-# 2. npm install 超时 → 配置国内镜像
-# 编辑 Dockerfile.frontend，在 RUN npm install 前添加:
-# RUN npm config set registry https://registry.npmmirror.com
-
-# 3. pip install 超时 → 配置国内镜像
-# 编辑 Dockerfile.backend，在 RUN pip install 前添加:
-# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 2. npm/pip 超时（国内机器）→ build-arg 切换国内镜像，无需改 Dockerfile:
+# docker compose build #   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple #   --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 ```
 
 ### ❌ 问题 2: 容器启动后立即退出
@@ -208,8 +208,8 @@ docker compose ps -a
 ### ❌ 问题 3: 前端页面空白 / API 报 502
 
 ```bash
-# 检查后端是否正常
-curl http://localhost:8000/health
+# 检查后端是否正常（默认 BACKEND_PORT=8000，改过则替换）
+curl http://localhost:${BACKEND_PORT:-8000}/health
 
 # 如果后端不正常
 docker compose logs --tail=50 backend
@@ -249,6 +249,9 @@ sudo kill <占用进程PID>
 echo "FRONTEND_PORT=8080" >> .env
 docker compose up -d
 # 然后访问 http://你的服务器IP:8080
+#
+# 宿主机 8000 被其他应用占用时（后端启动报 address already in use）:
+echo "BACKEND_PORT=18000" >> .env   # 后端仅绑 127.0.0.1，不影响前端经内部网络访问
 ```
 
 ### ❌ 问题 6: 数据库连接失败
@@ -355,7 +358,7 @@ nano /root/plasmid-designer-v2/deploy/docker/.env
 # 只开放必要端口，不要暴露数据库和 Redis
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-# 不要开放: 8000, 5432, 6379
+# 不要开放: 8000(后端), 5432(db), 6379(redis) —— 三者均已只绑 127.0.0.1
 sudo ufw enable
 ```
 
@@ -386,8 +389,7 @@ deploy/docker/
 ├── Dockerfile.backend       # 后端镜像 (Python 3.11)
 ├── Dockerfile.frontend      # 前端镜像 (Node 构建 + Nginx 运行)
 ├── nginx.conf               # Nginx 反向代理
-├── init.sql                 # 数据库建表脚本
-├── requirements.backend.txt # Python 依赖
+├── requirements.backend.txt # Python 依赖（镜像唯一依赖来源，勿在 Dockerfile 手工罗列）
 ├── .env.example             # 环境变量模板
 └── README.md                # 本文档
 ```
