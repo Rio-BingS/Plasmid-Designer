@@ -24,6 +24,7 @@ class ElementType(Enum):
     RESISTANCE = "resistance"
     TAG = "tag"
     MCS = "multiple_cloning_site"
+    CDS = "CDS"          # 编码序列（GenBank 惯用大写，与设计管线/前端一致）
     GENE = "gene"
     ENHANCER = "enhancer"
     REGULATORY = "regulatory"  # 调控区（如 lac operator）
@@ -165,9 +166,18 @@ class VectorLibrary:
         # 解析元件
         elements = []
         for elem_data in data.get('features', []):
+            raw_type = (elem_data.get('type') or 'other').strip()
+            try:
+                element_type = ElementType(raw_type)
+            except ValueError:
+                # 大小写归一后重试；仍未知则降级为 other，避免单条脏数据拒载整个文件
+                try:
+                    element_type = ElementType(raw_type.lower())
+                except ValueError:
+                    element_type = ElementType.OTHER
             elem = VectorElement(
                 name=elem_data['name'],
-                element_type=ElementType(elem_data.get('type', 'other')),
+                element_type=element_type,
                 start=elem_data['start'],
                 end=elem_data['end'],
                 sequence=elem_data.get('sequence', ''),
