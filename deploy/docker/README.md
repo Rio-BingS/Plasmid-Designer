@@ -381,6 +381,40 @@ docker compose restart frontend
 
 ---
 
+## 九、绑定域名 / HTTPS（可选）
+
+应用容器只监听内部端口，域名与 HTTPS 由宿主机 nginx 反向代理完成。示例为 Cloudflare
+代理模式（证书用 Cloudflare Origin CA，浏览器信任由 Cloudflare 边缘提供）：
+
+1. DNS 添加 A 记录（如 `plasmid` → 服务器 IP，开启橙色云代理）
+2. 宿主机 nginx 新增 server 块（`/etc/nginx/sites-available/`），反代到前端容器端口：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name plasmid.example.com;
+    ssl_certificate     /etc/ssl/xxx/origin.pem;   # 覆盖该子域的证书
+    ssl_certificate_key /etc/ssl/xxx/origin.key;
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;          # FRONTEND_PORT 对应端口
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;   # 前置 nginx 需自行完成真实 IP 解析
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+3. `nginx -t && nginx -s reload`
+4. `.env` 中把 `CORS_ORIGINS` 收紧为具体来源（如 `["https://plasmid.example.com"]`）后重启 backend
+
+> 限流按真实客户端 IP 计：宿主机 nginx 解析真实 IP（Cloudflare 场景用
+> `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 仅对
+> 内网可信来源透传该头，直连防伪造。
+
+---
+
 ## 目录结构参考
 
 ```
