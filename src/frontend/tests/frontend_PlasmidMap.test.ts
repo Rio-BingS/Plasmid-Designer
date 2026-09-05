@@ -62,9 +62,9 @@ describe('PlasmidMap', () => {
     })
     
     const canvas = wrapper.find('canvas')
-    // 默认 560x560（draw 中按 dpr 设置实际像素，jsdom dpr=1）
-    expect((canvas.element as HTMLCanvasElement).width).toBe(560)
-    expect((canvas.element as HTMLCanvasElement).height).toBe(560)
+    // 默认 620x620（draw 中按 dpr 设置实际像素，jsdom dpr=1）
+    expect((canvas.element as HTMLCanvasElement).width).toBe(620)
+    expect((canvas.element as HTMLCanvasElement).height).toBe(620)
   })
 
   it('accepts custom width and height', () => {

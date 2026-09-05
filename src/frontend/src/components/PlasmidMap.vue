@@ -1,9 +1,14 @@
 <script setup lang="ts">
 /**
- * SnapGene 风格环形质粒图谱（Canvas 高清自绘）
- * - 特征弧：支持跨起点 wrap、正负链方向箭头、弧外名称标签自动分轨避让
- * - 酶切位点：骨架内侧刻度 + 酶名标签错开布局
- * - 自适应主/次刻度、hover/选中、滚轮缩放、PNG 导出（expose exportPng）
+ * SnapGene 风格环形质粒图谱 v2（Canvas 高清自绘）
+ *
+ * 渲染层次（外→内）：
+ *   特征名标签（彩色多轨避让 + 引线）→ 位置刻度/数字 → 特征弧带
+ *   （填充扇环 + 方向箭头，重叠特征自动向外分层）→ 序列骨架圆 →
+ *   内侧酶切位点刻度 + 酶名多轨（单一酶切位点蓝色优先）→ 中心名称/长度
+ *
+ * 交互：hover/选中高亮 + tooltip、滚轮缩放、单一/全部酶切位点切换、
+ *       PNG 2x 重渲染导出（expose exportPng）、selectFeature（expose）
  */
 import { ref, onMounted, computed, watch } from 'vue'
 
@@ -24,6 +29,7 @@ export interface EnzymeSite {
   cut_fwd: number
   cut_rev: number
   overhang?: string | null
+  recognition?: string | null
 }
 
 interface Props {
@@ -37,10 +43,10 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  width: 560,
-  height: 560,
-  features: () => [],
-  enzymeSites: () => []
+  width: 620,
+  height: 620,
+  features: () => [] as PlasmidFeature[],
+  enzymeSites: () => [] as EnzymeSite[]
 })
 
 const emit = defineEmits<{
@@ -54,19 +60,38 @@ const selectedFeature = ref<PlasmidFeature | null>(null)
 const hoveredSite = ref<EnzymeSite | null>(null)
 const zoom = ref(1)
 const tooltip = ref<{ x: number; y: number } | null>(null)
+const uniqueOnly = ref(true)
 
+// ==================== 配色（对齐 SnapGene 默认观感） ====================
 const featureColors: Record<string, string> = {
-  promoter: '#FF6B6B',
-  terminator: '#4ECDC4',
-  CDS: '#45B7D1',
-  gene: '#45B7D1',
-  origin: '#96CEB4',
-  resistance: '#F2C94C',
-  tag: '#DDA0DD',
-  MCS: '#FFA500',
-  multiple_cloning_site: '#FFA500',
-  rep_origin: '#96CEB4',
-  other: '#CCCCCC'
+  promoter: '#E8656B',
+  terminator: '#2FA98C',
+  CDS: '#4E79C7',
+  gene: '#4E79C7',
+  origin: '#8FBF6B',
+  rep_origin: '#8FBF6B',
+  resistance: '#E8B93E',
+  tag: '#B07FD8',
+  MCS: '#E8923D',
+  multiple_cloning_site: '#E8923D',
+  other: '#9AA5B1'
+}
+
+const BLUE_UNIQUE = '#2B54C4'   // 单一酶切位点（SnapGene 蓝）
+const BLUE_MULTI = '#93A3BD'    // 多位点酶
+const FONT = 'Helvetica, Arial, sans-serif'
+
+function featureColor(f: PlasmidFeature): string {
+  return f.color || featureColors[f.type] || featureColors.other
+}
+
+/** 颜色加深（amount 0~1） */
+function darken(hex: string, amount: number): string {
+  const n = parseInt(hex.slice(1), 16)
+  const r = Math.round(((n >> 16) & 255) * (1 - amount))
+  const g = Math.round(((n >> 8) & 255) * (1 - amount))
+  const b = Math.round((n & 255) * (1 - amount))
+  return `rgb(${r},${g},${b})`
 }
 
 const plasmidLength = computed(() => props.length || props.sequence?.length || 5000)
@@ -81,23 +106,89 @@ const arcSegments = computed<ArcSeg[]>(() => {
   const L = plasmidLength.value
   const segs: ArcSeg[] = []
   for (const f of props.features) {
-    const s = Math.min(Math.max(f.start, 1), L)
-    const e = Math.min(Math.max(f.end, 1), L)
+    // 越界坐标按环形取模（兼容注释坐标超出序列长度的数据）
+    const s = ((Math.round(f.start) - 1) % L + L) % L + 1
+    const e = ((Math.round(f.end) - 1) % L + L) % L + 1
     if (e >= s) segs.push({ feature: f, from: s, to: e })
     else { segs.push({ feature: f, from: s, to: L }); segs.push({ feature: f, from: 1, to: e }) }
   }
   return segs
 })
 
+// 酶切事件去重（正反链识别同一位置只显示一次）
+const dedupedSites = computed<EnzymeSite[]>(() => {
+  const seen = new Set<string>()
+  return props.enzymeSites.filter((s) => {
+    const key = `${s.name}@${s.position}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+})
+
+// 每个酶名的识别位点数（判断"单一酶切位点"）
+const siteCountByName = computed<Map<string, number>>(() => {
+  const m = new Map<string, Set<number>>()
+  for (const s of props.enzymeSites) {
+    if (!m.has(s.name)) m.set(s.name, new Set())
+    m.get(s.name)!.add(s.position)
+  }
+  const out = new Map<string, number>()
+  for (const [k, v] of m) out.set(k, v.size)
+  return out
+})
+
+const shownSites = computed<EnzymeSite[]>(() => {
+  if (!uniqueOnly.value) return dedupedSites.value
+  const counts = siteCountByName.value
+  return dedupedSites.value.filter((s) => (counts.get(s.name) || 0) === 1)
+})
+
+// 图例：仅显示图中实际出现的类型
+const legendTypes = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  for (const f of props.features) {
+    const t = featureColors[f.type] ? f.type : 'other'
+    out[t] = f.color || featureColors[t]
+  }
+  return out
+})
+
 // ==================== 几何工具 ====================
 const TAU = Math.PI * 2
 function posToAngle(p: number, L: number): number {
-  // 1 bp 在 12 点钟方向，顺时针增加
+  // 1 bp 在 12 点钟方向，顺时针增加；p 可超出 [1, L]（用于连续弧端点）
   return ((p - 1) / L) * TAU - Math.PI / 2
 }
 function circDist(a: number, b: number): number {
   const d = Math.abs(a - b) % TAU
   return d > Math.PI ? TAU - d : d
+}
+function angleInSeg(a: number, a1: number, a2: number): boolean {
+  // a1/a2 为未归一化弧端（a2 > a1），a 已归一化到 [0, TAU)
+  const rel = ((a - a1) % TAU + TAU) % TAU
+  return rel <= a2 - a1
+}
+
+// 特征 → 弧带分层（重叠的特征向外错开一层）
+const LANE_W = 13
+function assignLanes(L: number): Map<PlasmidFeature, number> {
+  const laneEnds: Array<Array<[number, number]>> = []
+  const map = new Map<PlasmidFeature, number>()
+  const items = [...props.features].sort((a, b) => a.start - b.start)
+  for (const f of items) {
+    const s = ((Math.round(f.start) - 1) % L + L) % L + 1
+    let e = ((Math.round(f.end) - 1) % L + L) % L + 1
+    if (e < s) e += L
+    let lane = 0
+    for (;; lane++) {
+      const ends = laneEnds[lane] || (laneEnds[lane] = [])
+      if (!ends.some(([fs, fe]) => s < fe && fs < e)) break
+    }
+    laneEnds[lane].push([s, e])
+    map.set(f, lane)
+  }
+  return map
 }
 
 interface PlacedLabel { track: number; mid: number; halfWidth: number }
@@ -113,199 +204,252 @@ function placeLabel(mid: number, textWidth: number, radius: number, occupied: Pl
   return null
 }
 
-// ==================== 绘制 ====================
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s
+}
+
+// ==================== 渲染 ====================
+interface Geom { cx: number; cy: number; Rtick: number; maxLane: number; band: number; laneMap: Map<PlasmidFeature, number> }
+let geom: Geom = { cx: 0, cy: 0, Rtick: 0, maxLane: 0, band: 13, laneMap: new Map() }
+
+function arcCenterRadius(Rtick: number, lane: number, band: number): number {
+  return Rtick - 8 - lane * LANE_W - band / 2
+}
+
+/** 完整渲染一帧。scale 为最终渲染放大倍数（导出 PNG 时传 2×zoom 以重采样） */
+function render(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number) {
+  const L = plasmidLength.value
+
+  // 布局：按最长特征名动态留白，避免标签溢出画布
+  ctx.font = `11.5px ${FONT}`
+  let longest = 0
+  for (const f of props.features) longest = Math.max(longest, ctx.measureText(truncate(f.name, 20)).width)
+  const margin = 100 + Math.min(48, Math.max(0, longest - 70))
+
+  const laneMap = assignLanes(L)
+  const maxLane = laneMap.size ? Math.max(...laneMap.values()) : 0
+  const band = Math.max(12, Math.min(15, L / 500))
+  const cx = w / 2
+  const cy = h / 2
+  const Rtick = Math.min(w, h) / 2 - margin - maxLane * LANE_W // 特征弧带最外缘
+  geom = { cx, cy, Rtick, maxLane, band, laneMap }
+
+  drawBackbone(ctx, cx, cy, Rtick, band, maxLane)
+  drawTicks(ctx, cx, cy, L, Rtick)
+  drawSegments(ctx, cx, cy, L, Rtick, band, laneMap)
+  drawEnzymeLayer(ctx, cx, cy, L)
+  drawPositionNumbers(ctx, cx, cy, L, Rtick)
+  drawFeatureLabels(ctx, cx, cy, L, Rtick, laneMap)
+  drawCenterInfo(ctx, cx, cy, props.name || 'Plasmid', L)
+  void scale
+}
+
 function draw() {
   const canvas = canvasRef.value
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   if (!ctx) return
 
-  const L = plasmidLength.value
   const scale = zoom.value
   const dpr = window.devicePixelRatio || 1
   const w = props.width
   const h = props.height
-  canvas.width = w * dpr
-  canvas.height = h * dpr
+
+  // 背衬按最终渲染分辨率建立（缩放后依然清晰）
+  canvas.width = w * dpr * scale
+  canvas.height = h * dpr * scale
   canvas.style.width = `${w * scale}px`
   canvas.style.height = `${h * scale}px`
-
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0)
   ctx.clearRect(0, 0, w, h)
   ctx.fillStyle = '#FFFFFF'
   ctx.fillRect(0, 0, w, h)
 
-  const cx = w / 2
-  const cy = h / 2
-  const labelSpace = 90
-  const R = Math.min(w, h) / 2 - labelSpace          // 特征环外半径
-  const band = Math.max(14, Math.min(22, L / 400))   // 特征环厚度
-  const Ri = R - band                                 // 内半径（酶位点层）
-  const rm = R - band / 2                             // 特征弧中线半径
-
-  drawBackbone(ctx, cx, cy, Ri, R)
-  drawTicks(ctx, cx, cy, L, R, Ri)
-  drawSegments(ctx, cx, cy, L, rm, band, R)
-  drawEnzymeLayer(ctx, cx, cy, L, Ri)
-  drawFeatureLabels(ctx, cx, cy, L, rm, band, R)
-  drawCenterInfo(ctx, cx, cy, props.name || 'Plasmid', L)
+  render(ctx, w, h, dpr * scale)
 }
 
-function drawBackbone(ctx: CanvasRenderingContext2D, cx: number, cy: number, Ri: number, R: number) {
+/** 序列骨架圆：未被特征覆盖处可见的灰色细圆 */
+function drawBackbone(ctx: CanvasRenderingContext2D, cx: number, cy: number, Rtick: number, band: number, maxLane: number) {
   ctx.beginPath()
-  ctx.arc(cx, cy, (R + Ri) / 2, 0, TAU)
-  ctx.strokeStyle = '#DDDDDD'
-  ctx.lineWidth = R - Ri
+  ctx.arc(cx, cy, arcCenterRadius(Rtick, maxLane, band), 0, TAU)
+  ctx.strokeStyle = '#C9CDD3'
+  ctx.lineWidth = 2.5
   ctx.stroke()
 }
 
-function drawTicks(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, R: number, Ri: number) {
-  // 自适应主刻度步长
-  const steps = [50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000]
-  const step = steps.find((s) => L / s <= 10) || 50000
+/** 填充扇环特征弧：箭头在 5'→3' 前进方向（+ 顺时针 / − 逆时针） */
+function drawSegments(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number,
+  Rtick: number, band: number, laneMap: Map<PlasmidFeature, number>
+) {
+  for (const seg of arcSegments.value) {
+    const f = seg.feature
+    const lane = laneMap.get(f) || 0
+    const rm = arcCenterRadius(Rtick, lane, band)
+    const rO = rm + band / 2
+    const rI = rm - band / 2
+    const a1 = posToAngle(seg.from, L)
+    const a2 = posToAngle(seg.to + 1, L) // to+1 可为 L+1，posToAngle 对超界连续
+    const color = featureColor(f)
+    const active = hoveredFeature.value === f || selectedFeature.value === f
+
+    const span = a2 - a1
+    const plus = f.strand !== '-'
+    const arrowA = Math.min((band * 0.95) / rm, span / 2)
+
+    ctx.beginPath()
+    if (span > arrowA * 2.4) {
+      if (plus) {
+        // 主体外弧 a1 → aBase，箭头尖在 a2，内弧折回
+        const aBase = a2 - arrowA
+        ctx.arc(cx, cy, rO, a1, aBase)
+        ctx.lineTo(cx + Math.cos(a2) * rm, cy + Math.sin(a2) * rm)
+        ctx.arc(cx, cy, rI, aBase, a1, true)
+      } else {
+        // 箭头尖在 a1（逆时针前进）：外弧 aBase → a2，径向边折入内弧，回到 aBase 后引向尖端
+        const aBase = a1 + arrowA
+        ctx.arc(cx, cy, rO, aBase, a2)
+        ctx.lineTo(cx + Math.cos(a2) * rI, cy + Math.sin(a2) * rI)
+        ctx.arc(cx, cy, rI, a2, aBase, true)
+        ctx.lineTo(cx + Math.cos(a1) * rm, cy + Math.sin(a1) * rm)
+      }
+    } else {
+      ctx.arc(cx, cy, rO, a1, a2)
+      ctx.arc(cx, cy, rI, a2, a1, true)
+    }
+    ctx.closePath()
+    ctx.fillStyle = color
+    ctx.fill()
+    ctx.strokeStyle = darken(color, active ? 0.38 : 0.24)
+    ctx.lineWidth = active ? 1.8 : 1
+    if (active) { ctx.shadowColor = color; ctx.shadowBlur = 9 }
+    ctx.stroke()
+    ctx.shadowBlur = 0
+  }
+}
+
+/** 位置刻度（特征弧带外侧） */
+function drawTicks(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, Rtick: number) {
+  const steps = [50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000, 50000]
+  const step = steps.find((s) => L / s <= 12) || 100000
   const minor = step / 5
-  ctx.font = '10px Arial, sans-serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
 
   for (let p = 1; p <= L; p += minor) {
     const isMajor = (p - 1) % step === 0
     const a = posToAngle(p, L)
-    const rOut = R + (isMajor ? 6 : 3)
+    const r1 = Rtick + (isMajor ? 2 : 5)
+    const r2 = r1 + (isMajor ? 7 : 3)
     ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(a) * rOut, cy + Math.sin(a) * rOut)
-    ctx.lineTo(cx + Math.cos(a) * (rOut + (isMajor ? 5 : 2)), cy + Math.sin(a) * (rOut + (isMajor ? 5 : 2)))
-    ctx.strokeStyle = isMajor ? '#888' : '#CCC'
+    ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1)
+    ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2)
+    ctx.strokeStyle = isMajor ? '#9AA0A8' : '#D5D8DC'
     ctx.lineWidth = 1
     ctx.stroke()
-    if (isMajor) {
-      const lr = R + 20
-      ctx.fillStyle = '#666'
-      ctx.fillText(formatNumber(p - 1), cx + Math.cos(a) * lr, cy + Math.sin(a) * lr)
-    }
   }
-  void Ri
 }
 
-function drawSegments(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, rm: number, band: number, R: number) {
-  for (const seg of arcSegments.value) {
-    const f = seg.feature
-    const a1 = posToAngle(seg.from, L)
-    const a2 = posToAngle(seg.to + 1 > L ? L + 1 : seg.to + 1, L)
-    const color = f.color || featureColors[f.type] || featureColors.other
-    const active = hoveredFeature.value === f || selectedFeature.value === f
-
-    ctx.beginPath()
-    ctx.arc(cx, cy, rm, a1, a2)
-    ctx.strokeStyle = color
-    ctx.lineWidth = band + (active ? 3 : 0)
-    ctx.lineCap = 'butt'
-    if (active) { ctx.shadowColor = color; ctx.shadowBlur = 8 }
-    ctx.stroke()
-    ctx.shadowBlur = 0
-
-    // 方向箭头：+ 链指向弧末端（顺时针方向），- 链指向弧起点（逆时针方向）
-    const arcLen = seg.to - seg.from + 1
-    if (arcLen > 40) {
-      const dir = f.strand === '-' ? -1 : 1
-      const tipA = dir > 0 ? a2 : a1
-      const baseA = tipA - dir * (12 / rm)
-      const tip = { x: cx + Math.cos(tipA) * rm, y: cy + Math.sin(tipA) * rm }
-      ctx.beginPath()
-      ctx.moveTo(tip.x, tip.y)
-      ctx.lineTo(cx + Math.cos(baseA) * (rm - band / 2 - 1), cy + Math.sin(baseA) * (rm - band / 2 - 1))
-      ctx.lineTo(cx + Math.cos(baseA) * (rm + band / 2 + 1), cy + Math.sin(baseA) * (rm + band / 2 + 1))
-      ctx.closePath()
-      ctx.fillStyle = color
-      ctx.fill()
-    }
-  }
-  void R
-}
-
-function drawFeatureLabels(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, rm: number, band: number, R: number) {
-  const occupied: PlacedLabel[] = []
-  ctx.font = '11px Arial, sans-serif'
+function drawPositionNumbers(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, Rtick: number) {
+  const steps = [100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000, 50000]
+  const step = steps.find((s) => L / s <= 10) || 100000
+  ctx.font = `10px ${FONT}`
+  ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-
-  const labels = props.features
-    .map((f) => ({ f, mid: angleMid(f, L) }))
-    .map(({ f, mid }) => ({ f, mid, tw: ctx.measureText(f.name).width }))
-    .sort((a, b) => a.mid - b.mid)
-
-  for (const { f, mid, tw } of labels) {
-    const track = placeLabel(mid, tw + 16, R + 12, occupied, 3)
-    if (track === null) continue
-    const color = f.color || featureColors[f.type] || featureColors.other
-    const active = hoveredFeature.value === f || selectedFeature.value === f
-    const rLabel = R + 12 + track * 15
-
-    // 引线：从弧外缘沿径向到标签轨道
-    ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(mid) * (R + band * 0 + 4), cy + Math.sin(mid) * (R + 4))
-    ctx.lineTo(cx + Math.cos(mid) * rLabel, cy + Math.sin(mid) * rLabel)
-    ctx.strokeStyle = active ? '#333' : color
-    ctx.lineWidth = active ? 2 : 1.2
-    ctx.stroke()
-
-    ctx.fillStyle = active ? '#111' : '#333'
-    ctx.textAlign = Math.cos(mid) >= 0 ? 'left' : 'right'
-    const px = cx + Math.cos(mid) * (rLabel + 4)
-    const py = cy + Math.sin(mid) * (rLabel + 4)
-    ctx.fillText(f.name, px, py)
+  ctx.fillStyle = '#8A8F98'
+  const rNum = Rtick + 18
+  for (let p = 1; p <= L; p += step) {
+    const a = posToAngle(p, L)
+    ctx.fillText(formatNumber(p - 1), cx + Math.cos(a) * rNum, cy + Math.sin(a) * rNum)
   }
-  void rm
 }
 
 function angleMid(f: PlasmidFeature, L: number): number {
-  const s = Math.min(Math.max(f.start, 1), L)
-  let e = Math.min(Math.max(f.end, 1), L)
+  const s = ((Math.round(f.start) - 1) % L + L) % L + 1
+  let e = ((Math.round(f.end) - 1) % L + L) % L + 1
   if (e < s) e += L
   return posToAngle((s + e) / 2 % (L + 1), L)
 }
 
-function drawEnzymeLayer(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number, Ri: number) {
-  if (!props.enzymeSites.length) return
-  // 同名酶去重（正反链识别同一位置只显示一次）
-  const seen = new Set<string>()
-  const sites = props.enzymeSites.filter((s) => {
-    const key = `${s.name}@${s.position}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-
-  const tickLen = 6
+/** 特征名标签：弧外多轨避让 + 彩色引线 */
+function drawFeatureLabels(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number,
+  Rtick: number, laneMap: Map<PlasmidFeature, number>
+) {
   const occupied: PlacedLabel[] = []
-  ctx.font = '9px Arial, sans-serif'
+  ctx.font = `11.5px ${FONT}`
+  ctx.textBaseline = 'middle'
 
+  const labels = props.features
+    .map((f) => {
+      const text = truncate(f.name, 20)
+      return { f, mid: angleMid(f, L), text, tw: ctx.measureText(text).width }
+    })
+    .sort((a, b) => a.mid - b.mid)
+
+  for (const { f, mid, text, tw } of labels) {
+    const track = placeLabel(mid, tw + 18, Rtick + 36, occupied, 4)
+    if (track === null) continue
+    const color = featureColor(f)
+    const active = hoveredFeature.value === f || selectedFeature.value === f
+    const rLabel = Rtick + 36 + track * 14
+
+    // 引线：从特征弧外缘沿径向到标签轨道
+    const lane = laneMap.get(f) || 0
+    const rFrom = Rtick - 6 - lane * LANE_W
+    ctx.beginPath()
+    ctx.moveTo(cx + Math.cos(mid) * rFrom, cy + Math.sin(mid) * rFrom)
+    ctx.lineTo(cx + Math.cos(mid) * rLabel, cy + Math.sin(mid) * rLabel)
+    ctx.strokeStyle = active ? '#333' : darken(color, 0.1)
+    ctx.lineWidth = active ? 1.6 : 1
+    ctx.stroke()
+
+    ctx.fillStyle = active ? '#111' : darken(color, 0.22)
+    ctx.font = active ? `bold 11.5px ${FONT}` : `11.5px ${FONT}`
+    ctx.textAlign = Math.cos(mid) >= 0 ? 'left' : 'right'
+    ctx.fillText(text, cx + Math.cos(mid) * (rLabel + 4), cy + Math.sin(mid) * (rLabel + 4))
+    ctx.font = `11.5px ${FONT}`
+  }
+}
+
+/** 内侧酶切位点：切割刻度 + 酶名多轨（单一酶切位点蓝色优先显示） */
+function drawEnzymeLayer(ctx: CanvasRenderingContext2D, cx: number, cy: number, L: number) {
+  const sites = shownSites.value
+  if (!sites.length) return
+  const counts = siteCountByName.value
+  const band = geom.band
+  const innerEdge = arcCenterRadius(geom.Rtick, geom.maxLane, band) - band / 2
+  const tickLen = 6
+
+  ctx.font = `9.5px ${FONT}`
   const enriched = sites.map((s) => {
     const a = posToAngle(s.cut_fwd, L)
-    return { s, a, tw: ctx.measureText(s.name).width }
+    return { s, a, tw: ctx.measureText(s.name).width, unique: (counts.get(s.name) || 0) === 1 }
   })
 
-  for (const { a } of enriched) {
-    // 刻度线
+  // 切割刻度线
+  for (const { a, unique } of enriched) {
     ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(a) * (Ri - 2), cy + Math.sin(a) * (Ri - 2))
-    ctx.lineTo(cx + Math.cos(a) * (Ri - 2 - tickLen), cy + Math.sin(a) * (Ri - 2 - tickLen))
-    ctx.strokeStyle = '#555'
-    ctx.lineWidth = 1
+    ctx.moveTo(cx + Math.cos(a) * (innerEdge - 1), cy + Math.sin(a) * (innerEdge - 1))
+    ctx.lineTo(cx + Math.cos(a) * (innerEdge - 1 - tickLen), cy + Math.sin(a) * (innerEdge - 1 - tickLen))
+    ctx.strokeStyle = unique ? BLUE_UNIQUE : BLUE_MULTI
+    ctx.lineWidth = unique ? 1.3 : 1
     ctx.stroke()
   }
 
-  // 酶名标签：内圈分轨避让，放不下则省略（tooltip 兜底）
-  for (const { s, a, tw } of [...enriched].sort((x, y) => x.a - y.a)) {
-    const track = placeLabel(a, tw + 8, Ri - 20, occupied, 2)
+  // 酶名：单一位点优先进入避让队列；放不下省略（tooltip 兜底）
+  const ordered = [...enriched].sort((x, y) => (Number(y.unique) - Number(x.unique)) || (x.a - y.a))
+  const occupied: PlacedLabel[] = []
+  for (const { s, a, tw, unique } of ordered) {
+    if (!unique && uniqueOnly.value) continue // 仅单一模式：多位点酶只画刻度
+    const track = placeLabel(a, tw + 10, innerEdge - 18, occupied, 4)
     if (track === null) continue
-    const r = Ri - 20 - track * 12
+    const r = innerEdge - 18 - track * 11.5
     ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(a) * (Ri - 2 - tickLen), cy + Math.sin(a) * (Ri - 2 - tickLen))
+    ctx.moveTo(cx + Math.cos(a) * (innerEdge - 1 - tickLen), cy + Math.sin(a) * (innerEdge - 1 - tickLen))
     ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
-    ctx.strokeStyle = '#BBB'
+    ctx.strokeStyle = unique ? 'rgba(43,84,196,0.35)' : 'rgba(147,163,189,0.4)'
     ctx.lineWidth = 0.8
     ctx.stroke()
-    ctx.fillStyle = '#555'
+    ctx.fillStyle = hoveredSite.value === s ? '#111' : unique ? BLUE_UNIQUE : BLUE_MULTI
     ctx.textAlign = Math.cos(a) >= 0 ? 'left' : 'right'
     ctx.fillText(s.name, cx + Math.cos(a) * (r + 3), cy + Math.sin(a) * (r + 3))
   }
@@ -314,85 +458,93 @@ function drawEnzymeLayer(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
 function drawCenterInfo(ctx: CanvasRenderingContext2D, cx: number, cy: number, name: string, L: number) {
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.font = 'bold 15px Arial, sans-serif'
-  ctx.fillStyle = '#333'
-  ctx.fillText(name.length > 18 ? name.slice(0, 17) + '…' : name, cx, cy - 10)
-  ctx.font = '12px Arial, sans-serif'
-  ctx.fillStyle = '#777'
+  ctx.font = `bold 16px ${FONT}`
+  ctx.fillStyle = '#2B2F36'
+  ctx.fillText(truncate(name, 20), cx, cy - 11)
+  ctx.font = `12px ${FONT}`
+  ctx.fillStyle = '#7A7F87'
   ctx.fillText(`${L} bp`, cx, cy + 10)
 }
 
 function formatNumber(num: number): string {
-  if (num >= 10000) return `${(num / 1000).toFixed(0)}k`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}k`
+  if (num >= 10000) return `${(num / 1000).toFixed(1).replace(/\.0$/, '')}k`
   return String(num)
 }
 
 // ==================== 交互 ====================
 function hitTest(x: number, y: number): { feature: PlasmidFeature | null; site: EnzymeSite | null } {
   const L = plasmidLength.value
-  const w = props.width
-  const h = props.height
-  const cx = w / 2
-  const cy = h / 2
-  const R = Math.min(w, h) / 2 - 90
-  const band = Math.max(14, Math.min(22, L / 400))
-  const Ri = R - band
+  const { cx, cy, Rtick, maxLane, band, laneMap } = geom
   const dx = x - cx
   const dy = y - cy
   const dist = Math.sqrt(dx * dx + dy * dy)
+  const angle = (Math.atan2(dy, dx) + TAU) % TAU
 
-  // 特征环命中
-  if (dist >= Ri - 2 && dist <= R + 2) {
-    let angle = Math.atan2(dy, dx) + Math.PI / 2
-    if (angle < 0) angle += TAU
-    const pos = 1 + (angle / TAU) * L
-    for (const f of props.features) {
-      const s = Math.min(f.start, L)
-      const e = Math.min(f.end, L)
-      const inRange = e >= s ? pos >= s && pos <= e + 1 : pos >= s || pos <= e + 1
-      if (inRange) return { feature: f, site: null }
+  // 特征弧带命中：从最外层向内逐层判定
+  if (dist >= arcCenterRadius(Rtick, maxLane, band) - band / 2 - 3 && dist <= Rtick - 4) {
+    const segs = [...arcSegments.value].sort(
+      (p, q) => (laneMap.get(q.feature) || 0) - (laneMap.get(p.feature) || 0)
+    )
+    for (const seg of segs) {
+      const lane = laneMap.get(seg.feature) || 0
+      const rm = arcCenterRadius(Rtick, lane, band)
+      if (dist < rm - band / 2 - 2 || dist > rm + band / 2 + 2) continue
+      const a1u = posToAngle(seg.from, L)
+      const a2u = posToAngle(seg.to + 1, L)
+      const a1n = ((a1u % TAU) + TAU) % TAU
+      if (angleInSeg(angle, a1n, a1n + (a2u - a1u))) {
+        return { feature: seg.feature, site: null }
+      }
     }
   }
 
-  // 酶位点命中（内侧标签区，按屏幕像素半径 8px 判定）
-  for (const s of props.enzymeSites) {
-    const a = posToAngle(s.cut_fwd, L)
-    const r = Ri - 20
-    const sx = cx + Math.cos(a) * r
-    const sy = cy + Math.sin(a) * r
-    if ((sx - x) ** 2 + (sy - y) ** 2 < 100) return { feature: null, site: s }
+  // 酶位点命中：内区按角度就近判定（像素距离阈值 14px）
+  if (dist < arcCenterRadius(Rtick, maxLane, band) - band / 2) {
+    let best: { s: EnzymeSite; px: number } | null = null
+    for (const s of shownSites.value) {
+      const sa = posToAngle(s.cut_fwd, L)
+      const d = circDist(angle, ((sa % TAU) + TAU) % TAU) * Math.max(dist, 30)
+      if (d < 14 && (!best || d < best.px)) best = { s, px: d }
+    }
+    if (best) return { feature: null, site: best.s }
   }
   return { feature: null, site: null }
+}
+
+function toCanvasXY(event: MouseEvent): { x: number; y: number } {
+  const canvas = canvasRef.value!
+  const rect = canvas.getBoundingClientRect()
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * props.width,
+    y: ((event.clientY - rect.top) / rect.height) * props.height
+  }
 }
 
 function handleMouseMove(event: MouseEvent) {
   const canvas = canvasRef.value
   if (!canvas) return
   const rect = canvas.getBoundingClientRect()
-  // canvas 被 CSS 缩放，换算回内部坐标
-  const x = ((event.clientX - rect.left) / rect.width) * props.width
-  const y = ((event.clientY - rect.top) / rect.height) * props.height
-
+  const { x, y } = toCanvasXY(event)
   const { feature, site } = hitTest(x, y)
+  const changed = feature !== hoveredFeature.value || site !== hoveredSite.value
   hoveredFeature.value = feature
   hoveredSite.value = site
   canvas.style.cursor = feature || site ? 'pointer' : 'default'
-  tooltip.value = feature || site ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : null
+  tooltip.value = feature || site
+    ? { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    : null
+  if (changed) draw()
 }
 
 function handleMouseLeave() {
   hoveredFeature.value = null
   hoveredSite.value = null
   tooltip.value = null
+  draw()
 }
 
 function handleClick(event: MouseEvent) {
-  const canvas = canvasRef.value
-  if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = ((event.clientX - rect.left) / rect.width) * props.width
-  const y = ((event.clientY - rect.top) / rect.height) * props.height
+  const { x, y } = toCanvasXY(event)
   const { feature, site } = hitTest(x, y)
 
   if (site) { emit('enzyme-click', site); return }
@@ -418,23 +570,42 @@ function selectFeature(feature: PlasmidFeature | null) {
   selectedFeature.value = feature
   draw()
 }
+
+/** PNG 导出：离屏画布按 2× 分辨率完整重渲染（非位图放大） */
 function exportPng() {
-  const canvas = canvasRef.value
-  if (!canvas) return
+  const w = props.width
+  const h = props.height
+  const out = document.createElement('canvas')
+  out.width = w * 2
+  out.height = h * 2
+  const octx = out.getContext('2d')
+  if (!octx) return
+  octx.setTransform(2, 0, 0, 2, 0, 0)
+  octx.fillStyle = '#FFFFFF'
+  octx.fillRect(0, 0, w, h)
+  render(octx, w, h, 2)
   const link = document.createElement('a')
   link.download = `${(props.name || 'plasmid').replace(/[^\w-]+/g, '_')}-map.png`
-  link.href = canvas.toDataURL('image/png')
+  link.href = out.toDataURL('image/png')
   link.click()
 }
 defineExpose({ selectFeature, exportPng })
 
-watch(() => [props.features, props.enzymeSites, props.sequence, props.length, props.name], draw, { deep: true })
+watch(() => [props.features, props.enzymeSites, props.sequence, props.length, props.name, uniqueOnly.value], draw, { deep: true })
 watch(zoom, draw)
 onMounted(draw)
 </script>
 
 <template>
   <div class="plasmid-map-container">
+    <div class="map-toolbar">
+      <div class="seg-control">
+        <button :class="{ active: uniqueOnly }" @click="uniqueOnly = true">仅单一酶切位点</button>
+        <button :class="{ active: !uniqueOnly }" @click="uniqueOnly = false">全部位点</button>
+      </div>
+      <button class="tool-btn" @click="exportPng">⬇ 导出 PNG</button>
+    </div>
+
     <canvas
       ref="canvasRef"
       @mousemove="handleMouseMove"
@@ -447,11 +618,11 @@ onMounted(draw)
     <div
       v-if="(hoveredFeature || hoveredSite) && tooltip"
       class="feature-tooltip"
-      :style="{ left: Math.min(tooltip.x + 14, width - 180) + 'px', top: tooltip.y + 14 + 'px' }"
+      :style="{ left: Math.min(tooltip.x + 14, width - 200) + 'px', top: tooltip.y + 14 + 'px' }"
     >
       <template v-if="hoveredFeature">
         <div class="tooltip-header">
-          <span class="tooltip-type" :style="{ backgroundColor: featureColors[hoveredFeature.type] || '#CCC' }">
+          <span class="tooltip-type" :style="{ backgroundColor: featureColor(hoveredFeature) }">
             {{ hoveredFeature.type }}
           </span>
           <span class="tooltip-name">{{ hoveredFeature.name }}</span>
@@ -459,25 +630,26 @@ onMounted(draw)
         <div class="tooltip-details">
           <span>{{ hoveredFeature.start }} - {{ hoveredFeature.end }} bp</span>
           <span>({{ hoveredFeature.end - hoveredFeature.start + 1 }} bp)</span>
-          <span v-if="hoveredFeature.strand" class="tooltip-strand">{{ hoveredFeature.strand }} 链</span>
+          <span v-if="hoveredFeature.strand" class="tooltip-strand">{{ hoveredFeature.strand === '-' ? '反向链' : '正向链' }}</span>
         </div>
         <div v-if="hoveredFeature.description" class="tooltip-desc">{{ hoveredFeature.description }}</div>
       </template>
       <template v-else-if="hoveredSite">
         <div class="tooltip-header">
-          <span class="tooltip-type" style="background-color: #6C7A89"> enzyme </span>
+          <span class="tooltip-type" style="background-color: #2B54C4"> enzyme </span>
           <span class="tooltip-name">{{ hoveredSite.name }}</span>
         </div>
         <div class="tooltip-details">
-          <span>位置 {{ hoveredSite.cut_fwd }}</span>
+          <span>切点 {{ hoveredSite.cut_fwd }}</span>
+          <span v-if="hoveredSite.recognition">识别序列 {{ hoveredSite.recognition }}</span>
           <span v-if="hoveredSite.overhang">{{ hoveredSite.overhang === '5prime' ? "5' overhang" : hoveredSite.overhang === '3prime' ? "3' overhang" : 'blunt' }}</span>
         </div>
       </template>
     </div>
 
     <!-- 特征图例 -->
-    <div class="legend">
-      <div v-for="(color, type) in featureColors" :key="type" class="legend-item">
+    <div v-if="Object.keys(legendTypes).length" class="legend">
+      <div v-for="(color, type) in legendTypes" :key="type" class="legend-item">
         <span class="legend-color" :style="{ backgroundColor: color }"></span>
         <span class="legend-label">{{ type }}</span>
       </div>
@@ -492,6 +664,50 @@ onMounted(draw)
   display: flex;
   flex-direction: column;
   align-items: center;
+}
+
+.map-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.seg-control {
+  display: flex;
+  border: 1px solid #D9DDE3;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.seg-control button {
+  border: none;
+  background: #fff;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #667085;
+  cursor: pointer;
+}
+
+.seg-control button.active {
+  background: #4E79C7;
+  color: #fff;
+}
+
+.tool-btn {
+  border: 1px solid #D9DDE3;
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #667085;
+  cursor: pointer;
+}
+
+.tool-btn:hover {
+  background: #F4F6F8;
 }
 
 canvas {
@@ -539,7 +755,7 @@ canvas {
   flex-wrap: wrap;
 }
 
-.tooltip-strand { color: #45B7D1; }
+.tooltip-strand { color: #4E79C7; }
 .tooltip-desc {
   margin-top: 4px;
   font-size: 11px;
@@ -551,9 +767,9 @@ canvas {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 16px;
-  padding: 12px;
-  background: #F5F5F5;
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: #F6F7F9;
   border-radius: 6px;
 }
 

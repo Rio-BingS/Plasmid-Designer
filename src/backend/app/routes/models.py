@@ -238,6 +238,7 @@ class EnzymeSite(BaseModel):
     cut_fwd: int
     cut_rev: int
     overhang: Optional[str] = None
+    recognition: Optional[str] = None
 
 
 class PlasmidMapData(BaseModel):

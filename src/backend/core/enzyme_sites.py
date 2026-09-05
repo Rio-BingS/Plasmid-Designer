@@ -121,6 +121,7 @@ def find_enzyme_sites(
                     "cut_fwd": ((cut_fwd - 1) % seq_len) + 1,
                     "cut_rev": ((cut_rev - 1) % seq_len) + 1,
                     "overhang": enzyme["overhang"],
+                    "recognition": site,
                 })
 
     results.sort(key=lambda r: (r["position"], r["name"]))
