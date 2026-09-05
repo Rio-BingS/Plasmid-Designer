@@ -98,13 +98,20 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
   （conftest.py 会重新注入正确路径）
 
-## 当前状态（2026-09-05）
+## 当前状态（2026-09-06）
 
-- pytest **147 通过**；前端 vitest **44 通过**；浏览器实测 + 视觉验收通过
-- 新增（2026-09-05）：SnapGene 风格图谱（PlasmidMap 重写 + SequenceView 线性视图联动）；
-  Sanger 测序全自动分析（core/sanger/ + sequencing_routes + SequencingPanel，依赖 biopython，
-  可选 tracy 解卷积；分析记录为进程内存存储）。注意：内置载体 YAML 无序列（0bp），
-  测序验证主入口在设计结果页（参考=构建体序列），载体入口仅对已上传/导入的有序列载体可用
+- pytest **158 通过**（含 test_vector_data 数据守门 6 项）；前端 vitest **44 通过**；vite build 通过
+- 新增（2026-09-06）：PlasmidMap v2 重写（填充式特征弧+重叠分层+方向箭头、外侧标签多轨、
+  内侧单一酶切位点蓝色多轨、PNG 2x 导出、坐标环形取模）；SequenceView v2（酶名两档错层+
+  切点标记、识别序列底纹、翻译按链分置、特征条重叠分层）；**测序分析拆为独立模块**
+  （/sequencing 路由 + SequencingView：参考序列选择器/历史分析列表；VectorDetailView 与
+  ResultView 改为深链跳转入口）；后端新增 GET /api/sequencing/analyses 列表接口与
+  EnzymeSite.recognition 字段；**载体库数据准确性**：data/vectors 9 载体全部替换为真实
+  序列+注释（SnapGene 官方库直链 + NCBI L09137/U78872），YAML 带 data_provenance 血统，
+  scripts/fetch_vector_sequences.py 为刷新管线（含自检），ElementType 补 CDS、加载器未知
+  类型降级 other
+- 2026-09-05：SnapGene 风格图谱初版 + Sanger 测序全自动分析（core/sanger/ +
+  sequencing_routes + SequencingPanel，依赖 biopython，可选 tracy 解卷积；分析记录为进程内存存储）
 - 旧状态：2026-09-04 pytest 126 / vitest 42；冒烟 20 通过；GitHub main 已同步
 - 版本 v2.0.0（tag）；远程 https://github.com/gui123a1/Plasmid-Designer
 - 未竟事项：分析页「双酶消化模拟」UI 全流程曾因会话中断未走完最后一步

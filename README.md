@@ -184,6 +184,7 @@ STORAGE_MODE=database
 |------|------|------|
 | POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个）对设计构建体全自动测序验证 |
 | POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体 |
+| GET | `/api/sequencing/analyses` | 历史分析列表（摘要，时间倒序） |
 | GET | `/api/sequencing/analyses/{id}` | 分析结果（结论/突变表/共识序列/覆盖率） |
 | GET | `/api/sequencing/analyses/{id}/trace/{read_index}` | 单条 read 峰图数据（四通道） |
 | GET | `/api/sequencing/analyses/{id}/consensus/export` | 导出拼接结果（fasta / genbank） |
@@ -194,8 +195,21 @@ STORAGE_MODE=database
 → 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增）→ 自动结论。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
-分析记录为进程级内存存储（重启失效）。质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）
-为 SnapGene 风格双视图，图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置 ~48 种常用酶扫描生成。
+分析记录为进程级内存存储（重启失效）。前端测序分析为独立模块（`/sequencing` 路由，
+`SequencingView.vue`）：选择参考序列（载体库 / 设计结果 ID）→ 上传 .ab1 一键分析 →
+历史分析查看/删除；设计结果页与载体详情页通过深链跳转（`?mode=vector|design&ref=<id>`）。
+质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
+（重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
+高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。
+图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置 ~48 种常用酶扫描生成（含识别序列）。
+
+**载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
+每个文件含 `data_provenance` 血统块（来源/地址/抓取日期）。数据来源：
+- [SnapGene Plasmid Library](https://www.snapgene.com/plasmids)（pET 系列 / pcDNA3.1 / pGEX-4T-1 / pFastBac1 / pYES2 / pLVX 等商业载体，官方整理注释）
+- NCBI GenBank（pUC19 = L09137，pGEX-6P-1 = U78872）
+刷新管线：`python scripts/fetch_vector_sequences.py data/vectors`（自检失败不写入）。
+`tests/test_vector_data.py` 守门：序列/特征坐标/类型词表/血统记录/mcs 位点命中/旗舰载体
+长度与权威记录交叉核对。
 
 ### 认证
 
