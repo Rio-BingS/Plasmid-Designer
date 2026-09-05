@@ -5,7 +5,6 @@ import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
 import PlasmidMap from '@/components/PlasmidMap.vue'
 import SequenceView from '@/components/SequenceView.vue'
-import SequencingPanel from '@/components/SequencingPanel.vue'
 
 const props = defineProps<{
   designId: string
@@ -17,6 +16,10 @@ const mapData = ref<any>(null)
 const showMap = ref(false)
 const loading = ref(true)
 const error = ref('')
+
+function goToSequencing() {
+  router.push({ path: '/sequencing', query: { mode: 'design', ref: props.designId } })
+}
 
 let pollInterval: number | null = null
 
@@ -257,8 +260,8 @@ onUnmounted(() => {
             :sequence="mapData.sequence"
             :features="mapData.features"
             :enzyme-sites="mapData.enzyme_sites || []"
-            :width="520"
-            :height="520"
+            :width="620"
+            :height="620"
           />
         </div>
         <div v-if="mapData.sequence" class="seq-view-container">
@@ -271,10 +274,13 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Sanger 测序验证 -->
-      <div v-if="showMap && result.status === 'completed'" class="result-section">
-        <h2>Sanger 测序验证</h2>
-        <SequencingPanel :reference-id="result.design_id" mode="design" />
+      <!-- Sanger 测序验证（独立模块） -->
+      <div v-if="result.status === 'completed'" class="result-section sequencing-entry">
+        <div>
+          <h2>Sanger 测序验证</h2>
+          <p class="seq-entry-hint">上传 .ab1 测序文件，验证构建体序列是否与设计一致（比对、拼接、突变注释、峰图）</p>
+        </div>
+        <button class="btn btn-secondary" @click="goToSequencing">前往测序分析 →</button>
       </div>
 
       <!-- 引物信息 -->
@@ -434,6 +440,19 @@ onUnmounted(() => {
   font-size: 1.125rem;
   margin-bottom: 1rem;
   color: var(--primary-color);
+}
+
+.sequencing-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.seq-entry-hint {
+  color: var(--text-secondary, #888);
+  font-size: 0.85rem;
+  margin: 0;
 }
 
 .metrics-grid {

@@ -500,3 +500,29 @@ export async function exportConsensus(analysisId: string, format: string): Promi
   })
   return response.data
 }
+
+export interface SequencingAnalysisSummary {
+  analysis_id: string
+  sample_name: string
+  created_at: string
+  engine: string
+  conclusion: string
+  read_count: number
+  variant_count: number
+  coverage_percent: number
+  reference_length: number
+}
+
+export async function listSequencingAnalyses(): Promise<SequencingAnalysisSummary[]> {
+  const response = await api.get('/sequencing/analyses')
+  return response.data
+}
+
+export async function getSequencingAnalysis(analysisId: string): Promise<SequencingAnalysis> {
+  const response = await api.get(`/sequencing/analyses/${analysisId}`)
+  return response.data
+}
+
+export async function deleteSequencingAnalysis(analysisId: string): Promise<void> {
+  await api.delete(`/sequencing/analyses/${analysisId}`)
+}

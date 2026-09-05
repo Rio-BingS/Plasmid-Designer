@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
 import PlasmidMap from '@/components/PlasmidMap.vue'
 import type { PlasmidFeature, EnzymeSite } from '@/components/PlasmidMap.vue'
 import SequenceView from '@/components/SequenceView.vue'
-import SequencingPanel from '@/components/SequencingPanel.vue'
 import { getVectorMapData, getVectorSequence, getVector } from '@/api'
 
 interface MapData {
@@ -17,16 +16,21 @@ interface MapData {
 }
 
 const route = useRoute()
+const router = useRouter()
 const mapData = ref<MapData | null>(null)
 const loading = ref(true)
 const error = ref('')
 const selectedFeature = ref<PlasmidFeature | null>(null)
-const activeTab = ref<'map' | 'sequence' | 'features' | 'sequencing'>('map')
+const activeTab = ref<'map' | 'sequence' | 'features'>('map')
 const seqHighlight = ref<{ start: number; end: number } | null>(null)
 const sequenceViewRef = ref<InstanceType<typeof SequenceView> | null>(null)
 const mapRef = ref<InstanceType<typeof PlasmidMap> | null>(null)
 
 const vectorId = computed(() => route.params.id as string)
+
+function goToSequencing() {
+  router.push({ path: '/sequencing', query: { mode: 'vector', ref: vectorId.value } })
+}
 
 async function loadVectorMap() {
   try {
@@ -127,7 +131,10 @@ async function downloadSeq(format: string) {
       <!-- 头部信息 -->
       <div class="header">
         <router-link to="/vectors" class="back-link">← 返回载体库</router-link>
-        <h1>{{ mapData.name }}</h1>
+        <div class="header-row">
+          <h1>{{ mapData.name }}</h1>
+          <button class="btn btn-secondary seq-link-btn" @click="goToSequencing">🔬 测序验证</button>
+        </div>
         <p class="subtitle">{{ mapData.length.toLocaleString() }} bp</p>
       </div>
 
@@ -151,12 +158,6 @@ async function downloadSeq(format: string) {
   >
     🧬 序列
   </button>
-  <button
-    :class="['tab', { active: activeTab === 'sequencing' }]"
-    @click="activeTab = 'sequencing'"
-  >
-    🔬 测序分析
-  </button>
 </div>
 
       <!-- 图谱视图 -->
@@ -170,8 +171,8 @@ async function downloadSeq(format: string) {
               :features="mapData.features"
               :enzyme-sites="mapData.enzyme_sites || []"
               :sequence="mapData.sequence"
-              :width="520"
-              :height="520"
+              :width="620"
+              :height="620"
               @feature-select="onMapFeatureSelect"
               @enzyme-click="onEnzymeClick"
             />
@@ -262,10 +263,6 @@ async function downloadSeq(format: string) {
           <pre class="sequence-display">{{ formatSequence(mapData.sequence) }}</pre>
         </div>
       </div>
-      <!-- 测序分析 -->
-      <div v-if="activeTab === 'sequencing'" class="sequencing-view">
-        <SequencingPanel :reference-id="vectorId" mode="vector" />
-      </div>
     </div>
   </div>
 </template>
@@ -292,6 +289,16 @@ async function downloadSeq(format: string) {
 
 .header {
   margin-bottom: 2rem;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.seq-link-btn {
+  white-space: nowrap;
 }
 
 .back-link {
@@ -469,13 +476,6 @@ async function downloadSeq(format: string) {
   border-radius: 12px;
   box-shadow: var(--shadow);
   padding: 0.75rem;
-}
-
-.sequencing-view {
-  background: white;
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  padding: 1.5rem;
 }
 
 @media (max-width: 768px) {

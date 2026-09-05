@@ -60,7 +60,8 @@ function goToBatch() {
       <RouterLink to="/design" class="nav-link">设计</RouterLink>
       <RouterLink to="/batch" class="nav-link">批量设计</RouterLink>
       <RouterLink to="/vectors" class="nav-link">载体库</RouterLink>
-      <RouterLink to="/analysis" class="nav-link">序列分析</RouterLink>
+      <RouterLink to="/sequencing" class="nav-link">测序分析</RouterLink>
+      <RouterLink to="/analysis" class="nav-link">序列工具</RouterLink>
     </div>
     
     <div class="nav-user">

@@ -3,16 +3,31 @@
  * Sanger 测序全自动分析面板
  * 上传 .ab1 → 一键分析 → 总览结论 / 覆盖率 / 突变表 / 峰图 / 共识序列导出
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   analyzeDesignSequencing, analyzeVectorSequencing, getReadTrace, exportConsensus,
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
 } from '@/api'
 
 const props = defineProps<{
-  referenceId: string
+  referenceId?: string
   mode: 'vector' | 'design'
+  /** 外部注入的已完成分析（历史回看），注入后直接展示结果 */
+  preset?: SequencingAnalysis | null
 }>()
+
+const emit = defineEmits<{
+  (e: 'analyzed', analysis: SequencingAnalysis): void
+}>()
+
+watch(() => props.preset, (p) => {
+  if (p) {
+    analysis.value = p
+    errorMsg.value = ''
+    trace.value = null
+    highlightedPos.value = null
+  }
+})
 
 // ==================== 上传与分析 ====================
 const files = ref<File[]>([])
@@ -45,7 +60,8 @@ async function runAnalysis() {
   analysis.value = null
   try {
     const fn = props.mode === 'design' ? analyzeDesignSequencing : analyzeVectorSequencing
-    analysis.value = await fn(props.referenceId, files.value, minQ.value, allowDecompose.value)
+    analysis.value = await fn(props.referenceId || '', files.value, minQ.value, allowDecompose.value)
+    emit('analyzed', analysis.value)
   } catch (e: any) {
     errorMsg.value = e.response?.data?.detail || e.message || '分析失败'
   } finally {

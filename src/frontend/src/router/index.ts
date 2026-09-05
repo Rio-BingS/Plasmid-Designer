@@ -6,6 +6,7 @@ import VectorsView from '@/views/VectorsView.vue'
 import VectorDetailView from '@/views/VectorDetailView.vue'
 import BatchDesignView from '@/views/BatchDesignView.vue'
 import AnalysisView from '@/views/AnalysisView.vue'
+import SequencingView from '@/views/SequencingView.vue'
 import CacheView from '@/views/CacheView.vue'
 
 const router = createRouter({
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: '/vectors', name: 'vectors', component: VectorsView },
     { path: '/vectors/:id', name: 'vector-detail', component: VectorDetailView, props: true },
     { path: '/analysis', name: 'analysis', component: AnalysisView },
+    { path: '/sequencing', name: 'sequencing', component: SequencingView },
     { path: '/cache', name: 'cache', component: CacheView }
   ]
 })

@@ -75,6 +75,15 @@ def test_full_sequencing_flow(client, completed_design):
     got = client.get(f"/api/sequencing/analyses/{analysis_id}").json()
     assert got["analysis_id"] == analysis_id
 
+    # 历史列表端点（含刚完成的分析，删除后消失）
+    listing = client.get("/api/sequencing/analyses").json()
+    ids = [item["analysis_id"] for item in listing]
+    assert analysis_id in ids
+    item = next(i for i in listing if i["analysis_id"] == analysis_id)
+    assert item["read_count"] >= 1
+    assert item["reference_length"] == len(ref)
+    assert "coverage_percent" in item and "conclusion" in item
+
     # 峰图端点
     trace = client.get(f"/api/sequencing/analyses/{analysis_id}/trace/0").json()
     assert set(trace["channels"].keys()) == {"A", "T", "G", "C"}

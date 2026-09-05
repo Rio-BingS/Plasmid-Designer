@@ -172,6 +172,26 @@ async def analyze_vector_sequencing(
     )
 
 
+@router.get("/sequencing/analyses")
+async def list_analyses():
+    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细）"""
+    items = sorted(_ANALYSES.values(), key=lambda r: r["created_at"], reverse=True)
+    return [
+        {
+            "analysis_id": r["analysis_id"],
+            "sample_name": r.get("sample_name", ""),
+            "created_at": r["created_at"],
+            "engine": r["engine"],
+            "conclusion": r["conclusion"],
+            "read_count": len(r["reads"]),
+            "variant_count": len(r["variants"]),
+            "coverage_percent": r["consensus"]["coverage_percent"],
+            "reference_length": len(r["reference"]),
+        }
+        for r in items
+    ]
+
+
 @router.get("/sequencing/analyses/{analysis_id}")
 async def get_analysis(analysis_id: str):
     """获取分析结果（不含峰图原始数据）"""

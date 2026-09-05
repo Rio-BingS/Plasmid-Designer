@@ -46,13 +46,14 @@ describe('NavBar', () => {
     await router.isReady()
     
     const links = wrapper.findAll('.nav-link')
-    expect(links.length).toBe(5)
+    expect(links.length).toBe(6)
 
     expect(links[0].text()).toContain('首页')
     expect(links[1].text()).toContain('设计')
     expect(links[2].text()).toContain('批量设计')
     expect(links[3].text()).toContain('载体库')
-    expect(links[4].text()).toContain('序列分析')
+    expect(links[4].text()).toContain('测序分析')
+    expect(links[5].text()).toContain('序列工具')
   })
 
   it('shows login button when user is not logged in', async () => {
