@@ -260,6 +260,78 @@ def _try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
         return None
 
 
+def _normalize_indel(ref: str, v: Dict) -> Dict:
+    """indel 归一化为最左最简表示（Tan 2015，bcftools norm/GATK 同款算法）
+
+    同一 indel 在重复/同聚物区可被比对到多个等价位置：不同 read（或不同
+    basecaller）报告的 anchor 常差 1-3bp，不归一化则无法按 key 合并印证，
+    支持数被人为分裂。左移不改变其序列效果（数学等价），替换变体原样返回。
+    """
+    if v.get("type") == "insertion":
+        seq = v["alt_base"].upper()
+        pos = int(v["ref_pos"])  # anchor：插入点左侧参考位置（1-based）
+        # 等价左移：插入点右侧第一位参考碱基 == 插入序列末位 → 整体左移一位
+        while pos >= 1 and pos < len(ref) and ref[pos - 1] == seq[-1]:
+            seq = seq[-1] + seq[:-1]
+            pos -= 1
+        return {**v, "ref_pos": pos, "alt_base": seq}
+    if v.get("type") == "deletion":
+        pos = int(v["ref_pos"])
+        length = int(v.get("length") or 1)
+        seq = ref[pos - 1:pos - 1 + length]
+        # 等价左移：删除区间的上一位参考碱基 == 删除序列末位 → 整体左移一位
+        while pos >= 2 and ref[pos - 2] == seq[-1]:
+            seq = ref[pos - 2] + seq[:-1]
+            pos -= 1
+        return {**v, "ref_pos": pos}
+    return v
+
+
+def _normalize_indel_all(ref: str, variants: List[Dict]) -> List[Dict]:
+    return [_normalize_indel(ref, v) for v in variants]
+
+
+def _variant_key(v: Dict) -> Tuple[int, str, str]:
+    """归一化后的合并 key：同一 indel 无论被哪个 caller/read 报在哪一等价位都聚合"""
+    return (int(v["ref_pos"]), v.get("type", ""), v.get("alt_base", "").upper())
+
+
+def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
+    """tracy basecall 重新 basecall（现代 caller，对峰压缩区/indel 更强）
+
+    tracy 是正式发表的 Sanger 分析工具（BMC Bioinformatics 2020），其 basecall
+    与 ABI 内嵌 caller 相互独立——一致即为交叉印证，给出"独立第二意见"。
+    返回 (bases, quality)；tracy 不可用或失败返回 None。
+    """
+    tracy = shutil.which(TRACY_BIN) or (TRACY_BIN if os.path.isfile(TRACY_BIN) else None)
+    if not tracy:
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "read.ab1")
+            out = os.path.join(td, "bc.fastq")
+            with open(src, "wb") as fh:
+                fh.write(ab1_bytes)
+            proc = subprocess.run(
+                [tracy, "basecall", "-f", "fastq", "-o", out, src],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0 or not os.path.isfile(out):
+                return None
+            with open(out) as fh:
+                lines = [ln.strip() for ln in fh if ln.strip()]
+            # FASTQ 4 行：@primary / seq / + / qual（tracy 输出 primary 序列）
+            if len(lines) < 4:
+                return None
+            bases = lines[1].upper()
+            qual = [ord(c) - 33 for c in lines[3]]
+            if not bases or len(qual) < len(bases) or not all(q >= 0 for q in qual[: len(bases)]):
+                return None
+            return bases, qual[: len(bases)]
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _build_consensus(reference: str, read_results: List[Dict],
                      skip_keys: Optional[set] = None) -> Dict:
     """按参考坐标逐位质量加权投票生成共识序列
@@ -769,11 +841,28 @@ def analyze(
 
         aln = align_read(trimmed, ref, trimmed_q)
 
-        # 变体附加质量值
+        # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
+        # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
+        aln["variants"] = _normalize_indel_all(ref, aln["variants"])
         for v in aln["variants"]:
             rp = v.get("read_pos") or 1
             qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
             v["quality"] = trimmed_q[qi]
+
+        # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
+        cross = _try_tracy_basecall(blob)
+        used_tracy = cross is not None
+        cross_variants: List[Dict] = []
+        if used_tracy:
+            cb, cq = cross
+            if len(cb) >= MIN_WINDOW:
+                cs, ce = _trim_by_quality(cb, cq, min_q)
+                caln = align_read(cb[cs:ce], ref, cq[cs:ce])
+                for v in caln["variants"]:
+                    rp = v.get("read_pos") or 1
+                    qi = min(max(rp - 1, 0), len(cq[cs:ce]) - 1)
+                    v["quality"] = cq[cs:ce][qi]
+                cross_variants = _normalize_indel_all(ref, caln["variants"])
 
         mixed_positions = _detect_mixed_positions(
             trimmed, read["trace"],
@@ -800,9 +889,10 @@ def analyze(
             "trace": read["trace"],
             "peak_indices": read["peak_indices"],
             "trimmed_peaks": trimmed_peaks,
+            "cross_variants": cross_variants if used_tracy else None,
         })
 
-    # 合并全部变体 → 注释 → 汇总
+    # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
     all_variants: List[Dict] = []
     for r in read_results:
         for v in r["alignment"]["variants"]:
@@ -811,7 +901,7 @@ def analyze(
     # 按 (ref_pos, type, alt) 去重合并（多 read 支持计数）
     merged: Dict[Tuple, Dict] = {}
     for v in all_variants:
-        key = (v["ref_pos"], v["type"], v.get("alt_base", ""))
+        key = _variant_key(v)
         if key in merged:
             merged[key]["support_reads"] += 1
             merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
@@ -837,6 +927,20 @@ def analyze(
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence
         )
+
+    # tracy 交叉印证：独立 basecall 报出同一（归一化后）变体 → 低置信升为中，
+    # 中/高置信保持并标记。印证只证明两个 caller 的 call 一致，不能证明样品
+    # 纯一（混合克隆时两个 caller 都会 call 出主序列），因此不直接升到高。
+    corrob_keys: set = set()
+    for r in read_results:
+        for cv in r.get("cross_variants") or []:
+            corrob_keys.add(_variant_key(cv))
+    if corrob_keys:
+        for v in variants:
+            if _variant_key(v) in corrob_keys:
+                v["corroborated_by_basecall"] = True
+                if v.get("confidence") == "low":
+                    v["confidence"] = "medium"
 
     # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
     # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
@@ -884,10 +988,11 @@ def analyze(
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
+    any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
 
     return {
         "reads": [
-            {k: v for k, v in r.items() if k not in ("trace", "peak_indices")}
+            {k: v for k, v in r.items() if k not in ("trace", "peak_indices", "cross_variants")}
             for r in read_results
         ],
         # 峰图原始数据（与 reads 同序）：四通道 + 碱基 + 质量 + 峰位置
@@ -909,5 +1014,5 @@ def analyze(
         "conclusion": conclusion,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "errors": errors,
-        "engine": "internal+biopython",
+        "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
     }

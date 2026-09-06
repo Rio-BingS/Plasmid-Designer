@@ -699,3 +699,68 @@ def test_mixed_signal_yields_to_clear_insertion_peak():
     assert _variant_confidence(v, {21}, ev) == "medium"
     # 无峰证据的 mixed 位点依旧低置信
     assert _variant_confidence(v, {21}, None) == "low"
+
+
+# ---------- indel 归一化（Tan 2015）与 tracy basecall 交叉印证 ----------
+
+def test_normalize_indel_left_aligns_homopolymer():
+    """同聚物/重复区的等价 indel 归一化到最左表示：不同 anchor 聚合为同一事件"""
+    from core.sanger.pipeline import _normalize_indel, _variant_key
+    ref = "ACGT" * 100 + "AAAA" + "ACGT" * 100          # 同聚物 AAAA 在 401-404
+    base = 401
+    # 同聚物内任意位置的 1bp 缺失/插入都是同一事件
+    for pos in (401, 402, 403, 404):
+        d = _normalize_indel(ref, {"ref_pos": pos, "type": "deletion",
+                                   "ref_base": "A", "alt_base": "-", "length": 1})
+        assert d["ref_pos"] == base
+        i = _normalize_indel(ref, {"ref_pos": pos, "type": "insertion",
+                                   "ref_base": "-", "alt_base": "A", "length": 1})
+        assert i["ref_pos"] == base - 1  # 插入 anchor：最左 A 之前
+        assert _variant_key(d) == _variant_key(
+            _normalize_indel(ref, {"ref_pos": 403, "type": "deletion",
+                                   "ref_base": "A", "alt_base": "-", "length": 1}))
+    # 重复区多碱基插入：相位对齐的等价 anchor（B 后）左移到最左（T 后）并循环移位；
+    # 相位错开的 anchor（A 后，如 9）不等价于 4，保持原位
+    ref2 = "ACGT" + "ABABAB" + "TTTT"
+    ins = _normalize_indel(ref2, {"ref_pos": 6, "type": "insertion",
+                                  "ref_base": "-", "alt_base": "AB", "length": 2})
+    assert (ins["ref_pos"], ins["alt_base"]) == (4, "AB")
+    ins9 = _normalize_indel(ref2, {"ref_pos": 9, "type": "insertion",
+                                   "ref_base": "-", "alt_base": "AB", "length": 2})
+    assert ins9["ref_pos"] == 9  # 相位错开：插入 AABBA... 不等价于 T-ABABAB...，不左移
+    # 非重复区变体原样保留
+    same = _normalize_indel(ref, {"ref_pos": 100, "type": "substitution",
+                                  "ref_base": "A", "alt_base": "G", "length": 1})
+    assert same["ref_pos"] == 100
+
+
+def test_tracy_basecall_corroboration(monkeypatch, reference):
+    """独立 basecaller 报出同一（归一化后）变体：低置信升中并打印证标记"""
+    import core.sanger.pipeline as P
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"             # read 内替换 → 低 Q 判低
+    seq = "".join(seg)
+    q = [45] * 400
+    q[50] = 12                                            # 变异位低 Q
+    result = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    v = result["variants"][0]
+    assert v["confidence"] == "low" and "corroborated_by_basecall" not in v
+
+    # tracy 重 basecall 输出同一序列 → 报出同一变体（跨 caller 印证）
+    cross = P._try_tracy_basecall  # 保留引用防误删
+    monkeypatch.setattr(P, "_try_tracy_basecall", lambda blob: (seq, [40] * len(seq)))
+    result2 = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    v2 = result2["variants"][0]
+    assert v2.get("corroborated_by_basecall") is True
+    assert v2["confidence"] == "medium"
+    assert result2["engine"] == "internal+biopython+tracy-basecall"
+
+
+def test_tracy_unavailable_degrades_gracefully(reference):
+    """无 tracy 环境：不做交叉印证，管线照常（其余行为与现状一致）"""
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"
+    seq = "".join(seg)
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400))], reference, [])
+    assert result["engine"] == "internal+biopython"
+    assert result["variants"]

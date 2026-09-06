@@ -455,6 +455,8 @@ export interface SequencingVariant {
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
   confidence?: string
+  /** 独立 basecaller（tracy）重 basecall 后报出同一变体：跨 caller 印证 */
+  corroborated_by_basecall?: boolean
   /** 峰级证据：替换为突变峰占比/信噪比，插入为插入峰强度比（相对邻峰） */
   peak_evidence?: {
     mutant_pct?: number | null
