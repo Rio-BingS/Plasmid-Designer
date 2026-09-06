@@ -747,6 +747,21 @@ def _build_cds_reports(
                 main = f"{len(aa_diffs)} 处氨基酸替换（{preview}）"
             else:
                 main = f"翻译产物与设计不同（长度 {len(ref_prot)} → {len(alt_prot)} aa）"
+            if synonymous and (aa_diffs or inframe_ins or inframe_del):
+                main += f"；另有 {synonymous} 处同义突变（蛋白不变）"
+            # 移码/提前终止下蛋白层面的比对不再可靠，但确证的碱基替换仍需列出——
+            # 它们是真实存在的序列差异（如重新挑克隆时需要一并确认）
+            if frameshifts or stop_idx >= 0:
+                confirmed_subs = [
+                    v for v in confirmed
+                    if v.get("type") == "substitution" and start <= v["ref_pos"] <= end
+                ]
+                if confirmed_subs:
+                    preview = "、".join(
+                        f"{v['ref_pos']} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
+                        for v in confirmed_subs[:4]
+                    ) + ("等" if len(confirmed_subs) > 4 else "")
+                    main += f"；另有 {len(confirmed_subs)} 处确证的碱基替换（{preview}）"
             main = f"{name} 蛋白与设计不一致：{main}"
         # 待复核提示：低置信变异未计入以上判定，告知其潜在影响
         if pending:
