@@ -270,7 +270,7 @@ def test_cds_report_identical(reference):
     assert cr["protein_identical"] is True
     assert cr["ref_protein_length"] == 49  # ATG..TAA 去掉终止后 49 aa
     assert cr["frameshift_count"] == 0
-    assert "翻译产物与参考一致" in cr["verdict"]
+    assert "与设计一致" in cr["verdict"]
 
 
 def test_cds_report_frameshift(reference):
@@ -282,10 +282,9 @@ def test_cds_report_frameshift(reference):
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is False
     assert cr["frameshift_count"] == 1
-    # HGVS 风格：一致前缀 + 第一个受影响氨基酸的 fs 描述
-    assert "前 10 aa 与参考一致" in cr["verdict"]
-    assert "自第 11 aa 起阅读框改变" in cr["verdict"]
-    assert "fs" in cr["verdict"]
+    # 主句：变异位置 + 移码起点，一条因果链（该合成序列移码后无内部终止）
+    assert "70 处的缺失" in cr["verdict"]
+    assert "自第 11 位起移码" in cr["verdict"]
     # 移码区的“替换”属于噪声，不应列出
     assert cr["aa_changes"] == []
 
@@ -300,7 +299,7 @@ def test_cds_report_insertion_boundaries():
     cr1 = analyze([("f.ab1", make_ab1(seg_before, [40] * len(seg_before)))], ref, feats)["cds_reports"][0]
     assert cr1["frameshift_count"] == 0
     assert cr1["protein_identical"] is True
-    assert "翻译产物与参考一致" in cr1["verdict"]
+    assert "与设计一致" in cr1["verdict"]
 
     # CDS 首碱基之后的 1bp 插入：移码，HGVS fs 描述
     seg_in = ref[:41] + "T" + ref[41:190]
@@ -308,7 +307,7 @@ def test_cds_report_insertion_boundaries():
     assert cr2["frameshift_count"] == 1
     assert cr2["protein_identical"] is False
     assert "移码" in cr2["verdict"]
-    assert "fs" in cr2["verdict"]
+    assert "41 处的插入" in cr2["verdict"]  # 主句直接给出变异位置
     assert cr2["aa_changes"] == []  # 移码区不列错义清单
 
 
@@ -345,7 +344,7 @@ def test_cds_report_uncovered_and_reverse_strand():
     result2 = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats_rev)
     cr = result2["cds_reports"][0]
     assert cr["protein_identical"] is True
-    assert cr["verdict"].startswith("CDS 完整覆盖")
+    assert cr["verdict"].startswith("CDS 已完整覆盖")
 
 
 def test_cds_report_synonymous_mutation(reference):
@@ -373,7 +372,7 @@ def test_cds_report_inframe_deletion(reference):
     assert cr["frameshift_count"] == 0
     assert cr["protein_identical"] is False
     assert cr["alt_protein_length"] == cr["ref_protein_length"] - 1
-    assert "框内插入/缺失 3 bp" in cr["verdict"]
+    assert "框内缺失 3 bp" in cr["verdict"]
 
 
 def test_cds_report_start_lost(reference):
@@ -579,7 +578,7 @@ def test_cds_report_ignores_low_confidence_variants():
     assert cr["protein_identical"] is False
     assert cr["frameshift_count"] == 0
     assert cr["pending_low_confidence"] == 2
-    assert "未计入判定" in cr["verdict"] and "人工核对峰图" in cr["verdict"]
+    assert "未计入判定" in cr["verdict"] and "核对峰图" in cr["verdict"]
     assert "Y5H" in "".join(cr["aa_changes"])  # 错义来自确证替换（第 5 aa Tyr→His）
 
 
@@ -605,8 +604,8 @@ def test_low_quality_indel_not_in_verdict_nor_consensus(reference):
     assert cr["frameshift_count"] == 0
     assert cr["protein_identical"] is True
     assert cr["pending_low_confidence"] == 1
-    assert "另有 1 处低置信变异" in cr["verdict"]
-    assert "人工核对峰图" in cr["verdict"]
+    assert "另有 1 处低置信差异" in cr["verdict"]
+    assert "核对峰图" in cr["verdict"]
     # 自动结论的差异行也带低置信度提示
     assert any("低置信度" in line for line in result["conclusion"].splitlines())
 
@@ -752,7 +751,8 @@ def test_tracy_basecall_corroboration(monkeypatch, reference):
     result2 = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
     v2 = result2["variants"][0]
     assert v2.get("corroborated_by_basecall") is True
-    assert v2["confidence"] == "medium"
+    # 印证仅标记、不改置信度：两个 caller 读同一信号，错误相关不构成独立证据
+    assert v2["confidence"] == "low"
     assert result2["engine"] == "internal+biopython+tracy-basecall"
 
 

@@ -711,70 +711,60 @@ def _build_cds_reports(
         if synonymous:
             consequences.append("synonymous_variant")
 
+        # 结论主句：一句话因果链（哪个位置的什么变异 → 什么后果），面向实验员可直接行动
+        name = base["name"]
         if protein_identical:
-            parts = [f"翻译产物与参考一致（{len(ref_prot)} aa，蛋白层面完全比对）"]
+            main = (
+                f"已测区域蛋白与设计一致（{len(ref_prot)} aa）" if cov_pct < 99
+                else f"{name} 蛋白与设计一致（{len(ref_prot)} aa）"
+            )
             if synonymous:
-                parts[0] += f"；存在 {synonymous} 处同义突变（DNA 变、蛋白不变）"
+                main += f"；另有 {synonymous} 处同义突变（DNA 变、蛋白不变）"
         else:
-            parts = ["翻译产物与参考不一致"]
-            prefix = f"前 {first_diff} aa 与参考一致" if first_diff > 0 else "自第 1 aa 起即存在差异"
-            details: List[str] = []
-            if stop_idx >= 0:
-                details.append(
-                    f"无义突变使翻译提前终止于第 {stop_idx + 1} aa（产物 {len(alt_prot)} aa，参考 {len(ref_prot)} aa）"
-                )
-            if start_lost:
-                details.append(f"起始密码子改变（{ref_o[:3]} → {alt_o[:3]}）")
-            if stop_lost:
-                details.append("终止密码子丢失，翻译将读穿至下游")
-            if frameshifts:
-                # HGVS：fs 位点 1 号计新阅读框，终止给出 fsTerN；3 字符氨基酸码
-                if first_diff < len(ref_prot) and first_diff < len(alt_prot):
-                    ter = stop_idx + 1 - first_diff if stop_idx >= 0 else None
-                    fs = (
-                        f"p.{seq3(ref_prot[first_diff])}{first_diff + 1}{seq3(alt_prot[first_diff])}fs"
-                        + (f"Ter{ter}" if ter and ter > 0 else "")
-                    )
+            fs0 = frameshifts[0] if frameshifts else None
+            if fs0 is not None:
+                kind = "插入" if fs0.get("type") == "insertion" else "缺失"
+                vlen = int(fs0.get("length") or 1)
+                main = f"{fs0['ref_pos']} 处的{kind}{'' if vlen == 1 else f' {vlen}bp'}使阅读框自第 {first_diff + 1} 位起移码"
+                if stop_idx >= 0:
+                    main += f"，翻译在第 {stop_idx + 1} 位提前终止（产物 {len(alt_prot)} aa，设计为 {len(ref_prot)} aa）"
                 else:
-                    fs = ""
-                details.append(
-                    f"{len(frameshifts)} 处移码使自第 {first_diff + 1} aa 起阅读框改变"
-                    + (f"（{fs}）" if fs else "")
-                    + "，其后产物不可与参考逐位比对"
-                )
+                    main += "，其后氨基酸序列与设计不再对应"
+                if len(frameshifts) > 1:
+                    main += f"（共 {len(frameshifts)} 处移码）"
+            elif stop_idx >= 0:
+                main = f"翻译在第 {stop_idx + 1} 位提前终止（产物 {len(alt_prot)} aa，设计为 {len(ref_prot)} aa）"
+            elif start_lost:
+                main = f"起始密码子改变（{ref_o[:3]} → {alt_o[:3]}），翻译可能无法正常起始"
+            elif stop_lost:
+                main = "终止密码子丢失，翻译将读穿至下游"
+            elif inframe_ins or inframe_del:
+                n_bp = sum(int(v.get("length") or 1) for v in indels
+                           if int(v.get("length") or 1) % 3 == 0)
+                main = f"阅读框内{'插入' if inframe_ins else '缺失'} {n_bp} bp，自第 {first_diff + 1} 位起氨基酸序列改变"
+            elif aa_diffs:
+                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
+                main = f"{len(aa_diffs)} 处氨基酸替换（{preview}）"
             else:
-                if inframe_ins or inframe_del:
-                    n_bp = sum(int(v.get("length") or 1) for v in in_cds
-                               if v.get("type") in ("insertion", "deletion")
-                               and int(v.get("length") or 1) % 3 == 0)
-                    details.append(f"框内插入/缺失 {n_bp} bp（阅读框保持）")
-                if len(alt_prot) != len(ref_prot):
-                    details.append(f"翻译产物长度改变（{len(ref_prot)} → {len(alt_prot)} aa）")
-                if aln["gap_residues"]:
-                    details.append(f"存在 {aln['gap_residues']} 个残基的插入/缺失")
-                if aa_diffs:
-                    preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
-                    details.append(f"错义替换 {len(aa_diffs)} 处（{preview}）")
-                if synonymous:
-                    details.append(f"另有 {synonymous} 处同义突变")
-            parts.append(prefix + ("；" + "；".join(details) if details else ""))
-        verdict = "；".join(parts)
-        verdict = (
-            f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证），已测区域{verdict}"
-            if cov_pct < 99
-            else f"CDS 完整覆盖，{verdict}"
-        )
-        verdict += frame_note
-        # 待复核提示：低置信变异不计入上述判定，但需告知用户其潜在影响
+                main = f"翻译产物与设计不同（长度 {len(ref_prot)} → {len(alt_prot)} aa）"
+            main = f"{name} 蛋白与设计不一致：{main}"
+        # 待复核提示：低置信变异未计入以上判定，告知其潜在影响
         if pending:
             worst_q = max(int(v.get("read_q") or 0) for v in pending)
-            # 假设待复核变异全部为真：按 确证+待复核 重建并与仅按确证的产物对比
             would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
-            hint = "若证实为真将改变翻译产物" if would_change else "经核对其不改变翻译产物判定"
-            verdict += (
-                f"；另有 {len(pending)} 处低置信变异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
-                f"（{hint}），建议人工核对峰图"
-            )
+            if would_change:
+                main += (
+                    f"。另有 {len(pending)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
+                    "——若为真蛋白还会改变，建议核对峰图"
+                )
+            else:
+                main += f"。另有 {len(pending)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声），不影响以上判定"
+        verdict = (
+            f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证）。{main}"
+            if cov_pct < 99
+            else f"CDS 已完整覆盖。{main}"
+        )
+        verdict += frame_note
         reports.append({
             **base,
             "coverage_status": "full" if cov_pct >= 99 else "partial",
@@ -928,9 +918,9 @@ def analyze(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence
         )
 
-    # tracy 交叉印证：独立 basecall 报出同一（归一化后）变体 → 低置信升为中，
-    # 中/高置信保持并标记。印证只证明两个 caller 的 call 一致，不能证明样品
-    # 纯一（混合克隆时两个 caller 都会 call 出主序列），因此不直接升到高。
+    # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
+    # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
+    # 构成独立证据。是否真实仍由峰级证据、多 read 支持与 Q 值决定。
     corrob_keys: set = set()
     for r in read_results:
         for cv in r.get("cross_variants") or []:
@@ -939,8 +929,6 @@ def analyze(
         for v in variants:
             if _variant_key(v) in corrob_keys:
                 v["corroborated_by_basecall"] = True
-                if v.get("confidence") == "low":
-                    v["confidence"] = "medium"
 
     # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
     # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）

@@ -299,7 +299,7 @@ function confTitle(v: { confidence?: string; corroborated_by_basecall?: boolean;
     peak = `峰级证据：插入峰强度为邻峰的 ${Math.round(ev.insertion_peak_ratio * 100)}%（≥60% 说明插入峰真实存在，Q 值在峰压缩区偏低属正常）`
   }
   if (v.corroborated_by_basecall) {
-    peak += (peak ? '；' : '') + '独立 basecaller（tracy）重 basecall 报出同一变异，交叉印证'
+    peak += (peak ? '；' : '') + 'tracy 重 basecall 也报出此变异（同一测序信号的两个读出，仅供参考）'
   }
   if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
