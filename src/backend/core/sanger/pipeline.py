@@ -129,6 +129,9 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
             alt = best_key[1:]
             cons_index = len(consensus_chars)
             consensus_chars.extend(list(alt))
+            # 插入只新增碱基，紧跟其后的参考碱基必须保留，
+            # 否则共识序列会悄悄吞掉插入位点右侧的参考碱基
+            consensus_chars.append(reference[pos - 1].upper())
             diffs.append({
                 "ref_pos": pos, "ref_base": "-", "cons_base": alt, "cons_index": cons_index,
             })
@@ -154,6 +157,136 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
         "coverage_percent": round(coverage * 100, 2),
         "diffs": diffs,
     }
+
+
+def _build_cds_reports(
+    ref: str, features: List[Dict], variants: List[Dict], consensus: Dict
+) -> List[Dict]:
+    """CDS 级别测序结论：覆盖完整性 + 共识重建 CDS 的翻译产物与参考逐位比对
+
+    回答“整段 CDS 测序结果有没有问题”：
+    - 覆盖：CDS 区间与共识覆盖区间求交，未覆盖部分按参考填充、不参与判定；
+    - 蛋白：从共识差异重建 CDS 序列（按链方向翻译），与参考翻译逐位比对，
+      给出一致/不一致、移码数、无义提前终止位置与氨基酸替换清单。
+    """
+    from Bio.Seq import Seq
+
+    diff_by_pos: Dict[int, Dict] = {}
+    for d in consensus.get("diffs", []):
+        diff_by_pos[d["ref_pos"]] = d  # 每个参考位置至多一条共识差异
+    covered_ranges = consensus.get("covered_ranges", [])
+
+    def _span_coverage(start: int, end: int) -> float:
+        cov = 0
+        for s, e in covered_ranges:
+            lo, hi = max(s, start), min(e, end)
+            if hi >= lo:
+                cov += hi - lo + 1
+        length = end - start + 1
+        return round(cov / length * 100, 1) if length else 0.0
+
+    def _rebuild(start: int, end: int) -> str:
+        """参考区间 [start, end] 的共识序列（替换/插入/缺失已应用，参考方向）"""
+        out: List[str] = []
+        for pos in range(start, end + 1):
+            d = diff_by_pos.get(pos)
+            if d is None:
+                out.append(ref[pos - 1])
+            elif d["cons_base"] == "-":
+                continue  # 缺失：该参考碱基被删
+            elif d["ref_base"] == "-":
+                out.extend(d["cons_base"])  # 插入锚定在 pos 之前
+                out.append(ref[pos - 1])
+            else:
+                out.append(d["cons_base"])  # 替换
+        return "".join(out)
+
+    def _translate(seq: str, strand: str) -> str:
+        s = str(Seq(seq).reverse_complement()) if strand == "-" else seq
+        s = s[:len(s) - len(s) % 3]  # 移码可能留下不足整密码子的尾部
+        prot = str(Seq(s).translate(table=11))
+        return prot[:-1] if prot.endswith("*") else prot  # 去掉末尾终止密码子
+
+    reports: List[Dict] = []
+    for f in features or []:
+        if f.get("type") != "CDS":
+            continue
+        start, end = int(f["start"]), int(f["end"])
+        if start < 1 or end > len(ref) or start > end:
+            continue
+        strand = f.get("strand") or "+"
+        cov_pct = _span_coverage(start, end)
+        base = {
+            "name": f.get("name") or "CDS",
+            "start": start,
+            "end": end,
+            "strand": strand,
+            "covered_percent": cov_pct,
+            "coverage_status": "full" if cov_pct >= 99 else ("uncovered" if cov_pct <= 0 else "partial"),
+        }
+        if cov_pct <= 0:
+            reports.append({
+                **base,
+                "ref_protein_length": None,
+                "alt_protein_length": None,
+                "protein_identical": None,
+                "premature_stop_aa": None,
+                "frameshift_count": 0,
+                "aa_changes": [],
+                "verdict": "未被测序覆盖，无法判定，建议补充覆盖该区域的引物",
+            })
+            continue
+
+        ref_prot = _translate(ref[start - 1:end], strand)
+        alt_prot_raw = _translate(_rebuild(start, end), strand)
+        stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
+        alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
+
+        in_cds = [v for v in variants if start <= v["ref_pos"] <= end]
+        frameshifts = [v for v in in_cds if v.get("frameshift")]
+        protein_identical = ref_prot == alt_prot_raw
+
+        aa_diffs: List[str] = []
+        if not protein_identical and stop_idx < 0 and len(ref_prot) == len(alt_prot):
+            aa_diffs = [
+                f"{a}{i + 1}{b}"
+                for i, (a, b) in enumerate(zip(ref_prot, alt_prot)) if a != b
+            ]
+
+        if protein_identical:
+            parts = [f"翻译产物与参考一致（{len(ref_prot)} aa）"]
+        else:
+            parts = []
+            if stop_idx >= 0:
+                parts.append(f"无义突变使翻译提前终止于第 {stop_idx + 1} 位氨基酸")
+            if len(alt_prot) != len(ref_prot):
+                parts.append(f"翻译产物长度改变（{len(ref_prot)} → {len(alt_prot)} aa）")
+            if frameshifts:
+                parts.append(f"移码 {len(frameshifts)} 处")
+            if aa_diffs:
+                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
+                parts.append(f"氨基酸替换 {len(aa_diffs)} 处（{preview}）")
+            if not parts:
+                parts.append("存在氨基酸差异")
+            parts.insert(0, "翻译产物与参考不一致")
+        verdict = "；".join(parts)
+        verdict = (
+            f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证），已测区域{verdict}"
+            if cov_pct < 99
+            else f"CDS 完整覆盖，{verdict}"
+        )
+        reports.append({
+            **base,
+            "coverage_status": "full" if cov_pct >= 99 else "partial",
+            "ref_protein_length": len(ref_prot),
+            "alt_protein_length": len(alt_prot),
+            "protein_identical": protein_identical,
+            "premature_stop_aa": stop_idx + 1 if stop_idx >= 0 else None,
+            "frameshift_count": len(frameshifts),
+            "aa_changes": aa_diffs[:10],
+            "verdict": verdict,
+        })
+    return reports
 
 
 def analyze(
@@ -254,7 +387,13 @@ def analyze(
         len(ref),
     )
 
-    # 自动结论
+    cds_reports = _build_cds_reports(ref, features, variants, consensus)
+
+    # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
+    cds_lines = [
+        f"【{cr['name']} CDS】{cr['verdict']}"
+        for cr in cds_reports if cr["coverage_status"] != "uncovered"
+    ]
     if not read_results:
         conclusion = "没有可分析的测序文件"
     elif not variants:
@@ -262,9 +401,11 @@ def analyze(
             f"构建序列与设计一致：{len(read_results)} 条 read 全部匹配，"
             f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
         )
+        conclusion += "\n" + "\n".join(cds_lines) if cds_lines else ""
     else:
         lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
         lines.extend(summarize_severity(variants))
+        lines.extend(cds_lines)
         if consensus["coverage_percent"] < 95:
             lines.append(f"注意：仍有 {100 - consensus['coverage_percent']:.1f}% 区域未被测序覆盖，建议补充引物")
         conclusion = "\n".join(lines)
@@ -291,6 +432,7 @@ def analyze(
         "variants": variants,
         "consensus": consensus,
         "coverage_ranges": coverage_ranges,
+        "cds_reports": cds_reports,
         "conclusion": conclusion,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "errors": errors,

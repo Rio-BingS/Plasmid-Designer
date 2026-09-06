@@ -415,6 +415,23 @@ export interface ConsensusDiff {
   cons_index?: number
 }
 
+/** CDS 级别测序结论：覆盖完整性 + 共识重建翻译产物与参考比对 */
+export interface CdsReport {
+  name: string
+  start: number
+  end: number
+  strand: string
+  covered_percent: number
+  coverage_status: 'full' | 'partial' | 'uncovered'
+  ref_protein_length: number | null
+  alt_protein_length: number | null
+  protein_identical: boolean | null
+  premature_stop_aa: number | null
+  frameshift_count: number
+  aa_changes: string[]
+  verdict: string
+}
+
 export interface SequencingVariant {
   ref_pos: number
   read_pos?: number
@@ -462,6 +479,7 @@ export interface SequencingAnalysis {
     diffs?: ConsensusDiff[]
   }
   coverage_ranges: [number, number][]
+  cds_reports?: CdsReport[]
   mixed_detected: Record<string, number[]>
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
   errors: { filename: string; error: string }[]

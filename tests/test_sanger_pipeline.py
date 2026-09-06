@@ -13,7 +13,9 @@ from abif_utils import make_ab1  # noqa: E402
 from core.sanger.abif_reader import extract_read, parse_abif, AbiParseError  # noqa: E402
 from core.sanger.annotator import annotate_variant  # noqa: E402
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
-from core.sanger.pipeline import analyze, _trim_by_quality  # noqa: E402
+from core.sanger.pipeline import (  # noqa: E402
+    analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
+)
 
 
 @pytest.fixture(scope="module")
@@ -228,3 +230,92 @@ def test_deletion_spanning_site_reported_lost():
     annotate_variant(v, [], ref)
     assert v["enzyme_sites_lost"] == ["BsaHI"]
     assert v["enzyme_sites_gained"] == []
+
+
+# ==================== 共识插入保留右侧碱基 ====================
+
+def test_consensus_insertion_keeps_following_reference_base():
+    """插入位点的共识序列必须保留紧跟其后的参考碱基（长度 = 参考长度 + 插入长度）"""
+    ref = "ACGTACGTAC" * 5
+    read = {
+        "mean_q": 40,
+        "alignment": {
+            "ref_start": 5, "ref_end": 20,
+            "variants": [{"ref_pos": 7, "type": "insertion", "ref_base": "-", "alt_base": "GGG", "length": 3}],
+        },
+    }
+    c = _build_consensus(ref, [read])
+    assert len(c["sequence"]) == len(ref) + 3
+    d = c["diffs"][0]
+    assert d["cons_base"] == "GGG"
+    assert c["sequence"][d["cons_index"]:d["cons_index"] + 3] == "GGG"
+    assert c["sequence"][d["cons_index"] + 3] == ref[7]  # 参考位置 8 的碱基仍在
+
+
+# ==================== CDS 级别测序结论 ====================
+
+def _cds_reference():
+    """40bp 前导 + 150bp CDS（ATG + 48 个无终止密码子 + TAA）+ 40bp 尾部"""
+    cds = "ATG" + "GCTTTCGGATAC" * 12 + "TAA"
+    return "ACGT" * 10 + cds + "ACGT" * 10, 41, 190
+
+
+def test_cds_report_identical(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["coverage_status"] == "full"
+    assert cr["protein_identical"] is True
+    assert cr["ref_protein_length"] == 49  # ATG..TAA 去掉终止后 49 aa
+    assert cr["frameshift_count"] == 0
+    assert "翻译产物与参考一致" in cr["verdict"]
+
+
+def test_cds_report_frameshift(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = ref[40:190]
+    mutated = seg[:29] + seg[30:]  # 删 CDS 内 1bp（ref pos 70）→ 移码
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is False
+    assert cr["frameshift_count"] == 1
+    assert "移码 1 处" in cr["verdict"]
+    assert ("翻译产物长度改变" in cr["verdict"]) or ("氨基酸替换" in cr["verdict"])
+
+
+def test_cds_report_premature_stop(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[54] = "G"  # 第 5 个编码子 TAC→TAG（ref pos 55）：无义突变
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is False
+    assert cr["premature_stop_aa"] == 5
+    assert "提前终止" in cr["verdict"]
+
+
+def test_cds_report_partial_coverage(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref[:120], [40] * 120))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["coverage_status"] == "partial"
+    assert "未验证" in cr["verdict"]
+
+
+def test_cds_report_uncovered_and_reverse_strand():
+    ref, start, end = _cds_reference()
+    # 未覆盖：CDS 无 read 覆盖
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref[:40], [40] * 40))], ref, feats)
+    assert result["cds_reports"][0]["coverage_status"] == "uncovered"
+
+    # 反向链 CDS：read 覆盖且干净 → 翻译一致
+    feats_rev = [{"name": "R", "type": "CDS", "start": start, "end": end, "strand": "-"}]
+    result2 = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats_rev)
+    cr = result2["cds_reports"][0]
+    assert cr["protein_identical"] is True
+    assert cr["verdict"].startswith("CDS 完整覆盖")

@@ -308,4 +308,46 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
     expect((wrapper.vm as any).alignReadIdx).toBe(1)
   })
+
+  it('renders CDS-level sequencing verdicts with coverage badges', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      cds_reports: [
+        {
+          name: 'MX', start: 5007, end: 6929, strand: '+',
+          covered_percent: 100, coverage_status: 'full',
+          ref_protein_length: 640, alt_protein_length: 640,
+          protein_identical: true, premature_stop_aa: null,
+          frameshift_count: 0, aa_changes: [],
+          verdict: 'CDS 完整覆盖，翻译产物与参考一致（640 aa）',
+        },
+        {
+          name: 'KanR', start: 1200, end: 2066, strand: '-',
+          covered_percent: 62.5, coverage_status: 'partial',
+          ref_protein_length: 288, alt_protein_length: 271,
+          protein_identical: false, premature_stop_aa: 33,
+          frameshift_count: 2, aa_changes: ['F11S', 'G12D', 'Y13T', 'A14L', 'F15S', 'T16P'],
+          verdict: '翻译产物与参考不一致；移码 2 处',
+        },
+      ],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('编码区（CDS）测序结论')
+    expect(wrapper.findAll('.cds-dot.pass').length).toBe(1)
+    expect(wrapper.findAll('.cds-dot.fail').length).toBe(1)
+    expect(wrapper.find('.cds-cov.full').text()).toBe('完整覆盖')
+    expect(wrapper.find('.cds-cov.partial').text()).toBe('覆盖 62.5%')
+    const detail = wrapper.find('.cds-detail').text()
+    expect(detail).toContain('提前终止于第 33 aa')
+    expect(detail).toContain('移码 2 处')
+    expect(detail).toContain('蛋白长度 288 → 271 aa')
+    expect(detail).toContain('F11S、G12D、Y13T、A14L、F15S…')
+
+    // 没有 CDS 报告时整卡隐藏（如 FASTA 参考）
+    const w2 = mount(SequencingPanel, { props: { preset: mockAnalysis } })
+    await w2.vm.$nextTick()
+    expect(w2.text()).not.toContain('编码区（CDS）测序结论')
+  })
 })

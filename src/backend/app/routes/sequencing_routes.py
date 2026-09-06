@@ -308,6 +308,7 @@ def _summary(record: Dict) -> Dict:
         "variants": record["variants"],
         "consensus": record["consensus"],
         "coverage_ranges": record["coverage_ranges"],
+        "cds_reports": record.get("cds_reports", []),
         "mixed_detected": record.get("mixed_detected", {}),
         "decomposed_alleles": record.get("decomposed_alleles", {}),
         "errors": record["errors"],

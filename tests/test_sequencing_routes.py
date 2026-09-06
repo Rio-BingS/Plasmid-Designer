@@ -68,6 +68,7 @@ def test_full_sequencing_flow(client, completed_design):
     assert data["variants"][0]["type"] == "substitution"
     assert data["conclusion"]
     assert data["consensus"]["sequence"]
+    assert "cds_reports" in data
 
     # 逐列对齐视图 + 共识差异位（人工核对证据）
     av = data["reads"][0]["alignment_view"]

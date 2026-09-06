@@ -256,6 +256,13 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
   chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
 }
 
+/** CDS 结论卡的覆盖标签 */
+function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
+  if (c.coverage_status === 'uncovered') return '未覆盖'
+  if (c.coverage_status === 'full') return '完整覆盖'
+  return `覆盖 ${c.covered_percent}%`
+}
+
 // ==================== 匹配简图（SnapGene 风格线性图谱） ====================
 // 上方 read 深红块状箭头（方向见箭头），中间刻度轴（绿段=已测覆盖、轴上红块=变异），
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
@@ -766,6 +773,28 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
       </div>
 
+      <!-- CDS 编码区测序结论：整段编码序列是否与参考一致 -->
+      <div class="conclusion-card cds-card" v-if="analysis.cds_reports?.length">
+        <h4 class="section-title">编码区（CDS）测序结论</h4>
+        <div v-for="c in analysis.cds_reports" :key="c.name + c.start" class="cds-row">
+          <span class="cds-dot" :class="c.protein_identical === null ? 'na' : (c.protein_identical ? 'pass' : 'fail')"></span>
+          <div class="cds-main">
+            <p class="cds-name">
+              {{ c.name }}
+              <span class="cds-coord">{{ c.start }}-{{ c.end }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
+              <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
+            </p>
+            <p class="cds-verdict">{{ c.verdict }}</p>
+            <p class="cds-detail" v-if="c.protein_identical === false">
+              <span v-if="c.premature_stop_aa">无义突变：翻译提前终止于第 {{ c.premature_stop_aa }} aa</span>
+              <span v-if="c.frameshift_count">移码 {{ c.frameshift_count }} 处</span>
+              <span v-if="c.ref_protein_length != null && c.alt_protein_length != null && c.ref_protein_length !== c.alt_protein_length">蛋白长度 {{ c.ref_protein_length }} → {{ c.alt_protein_length }} aa</span>
+              <span v-if="c.aa_changes?.length">氨基酸替换（{{ c.aa_changes.slice(0, 5).join('、') }}{{ c.aa_changes.length > 5 ? '…' : '' }}）</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
       <div class="map-box" v-if="analysis.reads.length">
         <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span></h4>
@@ -1021,6 +1050,20 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 }
 .conclusion-card.ok { background: #F0FAF2; border-color: #BFE5C8; }
 .conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
+.cds-card { margin-top: 0.75rem; }
+.cds-row { display: flex; gap: 0.6rem; padding: 0.5rem 0; border-top: 1px dashed #E8E8E8; }
+.cds-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: none; }
+.cds-dot.pass { background: #2E9E44; }
+.cds-dot.fail { background: #C0392B; }
+.cds-dot.na { background: #BBB; }
+.cds-name { font-weight: 600; margin: 0; }
+.cds-coord { font-weight: 400; color: #888; font-size: 0.78rem; font-family: Consolas, monospace; }
+.cds-cov { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; }
+.cds-cov.full { background: #E5F5E9; color: #227A36; }
+.cds-cov.partial { background: #FCF3DC; color: #9A6D00; }
+.cds-cov.uncovered { background: #EEE; color: #777; }
+.cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
+.cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
 .conclusion-meta { display: flex; gap: 1.5rem; font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }
 .coverage-bar {
   position: relative; height: 14px; background: #EEE; border-radius: 7px; overflow: hidden;
