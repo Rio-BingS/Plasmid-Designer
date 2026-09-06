@@ -102,6 +102,20 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-07）
 
+- 新增（2026-09-07）**账号体系**：三层角色（管理员/普通用户/匿名访客，管理员不受任何
+  开关限制）+ 站点开关（site_settings 单行表 + app/site_settings.py 读侧 3s TTL 缓存）：
+  ①开放注册；②注册邮箱验证（6 位码哈希存储、10 分钟有效、60s 重发冷却，
+  EmailVerificationDB 表；users 表 init_db 轻量迁移补 email_verified 列并回填存量用户，
+  登录未验证账号返回 verify_token 引导补验证）；③功能开放矩阵（app/features.py 六个
+  功能键 design/batch/vectors/sequencing/analysis/codon × 匿名/用户两组，默认全开放保持
+  旧行为；前端 NavBar 过滤 + 路由守卫 + ForbiddenView，后端 require_feature 路由依赖
+  app/gating.py 兜底拦截）；管理员引导 ADMIN_EMAIL/ADMIN_PASSWORD（app/auth/bootstrap.py，
+  存在则提升、缺省不动作）；邮件渠道 app/mailer.py：console（默认，验证码进日志）/
+  smtp（QQ/163/Gmail 授权码）/resend（免费 3000/月）/brevo（免费 300/天）；
+  /api/admin/settings+/api/admin/users（app/admin_routes.py，仅管理员；自我保护：不能
+  禁用/删除自己、不能移除最后一位管理员）；前端 /admin 面板 AdminView（开关+功能矩阵+
+  用户管理）+ AuthModal 验证码步骤（注册关闭提示、重发倒计时）；测试
+  tests/test_account_system.py 18 项（独立内存库+get_db override+限流打桩）
 - 新增（2026-09-07）**批量测序独立网页入口**：归组/结论逻辑从批量脚本抽到
   core/sanger/batch.py（load_excel 支持 bytes、match_files 文件项兼容 name/path、
   excel_conclusion 两端同口径），脚本改为复用；后端新增 POST /api/sequencing/analyze-batch
@@ -110,8 +124,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   前端新增 /sequencing/batch 路由 + BatchSequencingView + 导航「批量测序」，
   查看详情深链 /sequencing?history=<id>（SequencingView 新增该参数回看载入）；
   单样品入口 /sequencing 保持不变
-- pytest **244 通过**（含 test_sequencing_batch 7 项、test_batch_sequencing 11 项、
-  test_vector_data 数据守门 6 项、CDS 测序结论/峰级证据/ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **74 通过**；vite build 通过
+- pytest **262 通过**（含 test_account_system 18 项、test_sequencing_batch 7 项、
+  test_batch_sequencing 11 项、test_vector_data 数据守门 6 项、CDS 测序结论/峰级证据/
+  ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **81 通过**；vite build 通过
 - 新增（2026-09-07）**批量测序整理分析脚本**（scripts/batch_sequencing_report.py）：离线批处理
   "Excel 信息表 + 测序结果文件夹"——引物列填测序文件名（分号分隔）匹配 .ab1、质粒名称匹配
   参考图谱（.dna/.gb/.fasta）；同一质粒文件【复制】到 <数据目录>/测序分析/<质粒名>/（原件

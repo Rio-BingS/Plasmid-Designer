@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { RouterLink, useRouter } from 'vue-router'
 import AuthModal from './AuthModal.vue'
@@ -17,10 +17,24 @@ onMounted(() => {
 })
 
 // Watch store changes
-import { watch } from 'vue'
 watch(() => authStore.user, (newUser) => {
   user.value = newUser
 })
+
+// 功能导航项：按站点配置过滤（siteConfig 未加载完成时 featureAllowed 放行全部）
+const navItems = [
+  { to: '/', label: '首页', feature: null },
+  { to: '/design', label: '设计', feature: 'design' },
+  { to: '/batch', label: '批量设计', feature: 'batch' },
+  { to: '/vectors', label: '载体库', feature: 'vectors' },
+  { to: '/sequencing', label: '测序分析', feature: 'sequencing' },
+  { to: '/sequencing/batch', label: '批量测序', feature: 'sequencing' },
+  { to: '/analysis', label: '序列工具', feature: 'analysis' }
+]
+
+const visibleNavItems = computed(() =>
+  navItems.filter((item) => item.feature === null || authStore.featureAllowed(item.feature))
+)
 
 function handleAuthClick() {
   if (user.value) {
@@ -56,12 +70,9 @@ function goToBatch() {
     </div>
     
     <div class="nav-links">
-      <RouterLink to="/" class="nav-link">首页</RouterLink>
-      <RouterLink to="/design" class="nav-link">设计</RouterLink>
-      <RouterLink to="/batch" class="nav-link">批量设计</RouterLink>
-      <RouterLink to="/vectors" class="nav-link">载体库</RouterLink>
-      <RouterLink to="/sequencing" class="nav-link">测序分析</RouterLink>
-      <RouterLink to="/analysis" class="nav-link">序列工具</RouterLink>
+      <RouterLink v-for="item in visibleNavItems" :key="item.to" :to="item.to" class="nav-link">
+        {{ item.label }}
+      </RouterLink>
     </div>
     
     <div class="nav-user">
@@ -76,8 +87,14 @@ function goToBatch() {
             {{ user.email }}
           </div>
           <div class="dropdown-divider"></div>
-          <RouterLink to="/batch" class="dropdown-item" @click="goToBatch">
+          <RouterLink v-if="authStore.isAdmin" to="/admin" class="dropdown-item">
+            ⚙️ 站点管理
+          </RouterLink>
+          <RouterLink v-if="authStore.featureAllowed('batch')" to="/batch" class="dropdown-item" @click="goToBatch">
             📦 批量设计
+          </RouterLink>
+          <RouterLink v-if="authStore.featureAllowed('sequencing')" to="/sequencing/batch" class="dropdown-item">
+            🧬 批量测序
           </RouterLink>
           <button class="dropdown-item logout-btn" @click="handleLogout">
             🚪 退出登录

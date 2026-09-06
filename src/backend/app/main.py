@@ -38,6 +38,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
 
+    # 管理员引导：配置了 ADMIN_EMAIL/ADMIN_PASSWORD 时创建或提升管理员
+    try:
+        from app.auth.bootstrap import bootstrap_admin
+        action = bootstrap_admin()
+        if action == "created":
+            print(f"✅ 已创建管理员账号 {settings.ADMIN_EMAIL}")
+        elif action == "promoted":
+            print(f"✅ 已将现有用户 {settings.ADMIN_EMAIL} 提升为管理员")
+    except Exception as e:
+        print(f"⚠️ 管理员引导失败: {e}")
+
     yield
 
 
@@ -88,6 +99,8 @@ async def health_check():
 
 # ==================== 挂载路由 ====================
 
+from fastapi import Depends
+
 from app.routes.design_routes import router as design_router
 from app.routes.batch_routes import router as batch_router
 from app.routes.vector_routes import router as vector_router
@@ -97,16 +110,21 @@ from app.cache_routes import router as cache_router
 from app.rate_limit_routes import router as rate_limit_router
 from app.analysis_routes import router as analysis_router
 from app.routes.sequencing_routes import router as sequencing_router
+from app.admin_routes import router as admin_router
+from app.gating import require_feature
 
-app.include_router(design_router)
-app.include_router(batch_router)
-app.include_router(vector_router)
-app.include_router(codon_router)
+# 功能门控：site_settings 中各层级功能开关在此落到 API（管理员不受限）；
+# 前端导航/路由已按 site-config 隐藏，此处兜底防绕过前端直连
+app.include_router(design_router, dependencies=[Depends(require_feature("design"))])
+app.include_router(batch_router, dependencies=[Depends(require_feature("batch"))])
+app.include_router(vector_router, dependencies=[Depends(require_feature("vectors"))])
+app.include_router(codon_router, dependencies=[Depends(require_feature("codon"))])
 app.include_router(auth_router)
 app.include_router(cache_router)
 app.include_router(rate_limit_router)
-app.include_router(analysis_router)
-app.include_router(sequencing_router)
+app.include_router(analysis_router, dependencies=[Depends(require_feature("analysis"))])
+app.include_router(sequencing_router, dependencies=[Depends(require_feature("sequencing"))])
+app.include_router(admin_router)
 
 # 速率限制中间件
 from app.rate_limit import RateLimitMiddleware

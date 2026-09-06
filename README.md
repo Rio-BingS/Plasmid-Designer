@@ -250,15 +250,46 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 `tests/test_vector_data.py` 守门：序列/特征坐标/类型词表/血统记录/mcs 位点命中/旗舰载体
 长度与权威记录交叉核对。
 
-### 认证
+### 认证与账号体系
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/auth/register` | 用户注册 |
-| POST | `/api/auth/login` | 用户登录 |
+| POST | `/api/auth/register` | 用户注册（受注册开关/邮箱验证开关控制） |
+| POST | `/api/auth/login` | 用户登录（未验证邮箱时返回 verify_token 引导补验证） |
+| POST | `/api/auth/verify-email` | 提交 6 位邮箱验证码完成注册并登录 |
+| POST | `/api/auth/resend-verification` | 重发验证码（60 秒冷却） |
+| GET | `/api/auth/site-config` | 公开站点配置（注册开关/功能开放范围，前端渲染依据） |
 | POST | `/api/auth/logout` | 用户登出 |
 | GET | `/api/auth/me` | 获取当前用户 |
 | GET | `/api/auth/verify` | 验证令牌 |
+| GET/PUT | `/api/admin/settings` | 站点设置（仅管理员）：注册开关、邮箱验证开关、功能开放矩阵 |
+| GET | `/api/admin/users` | 用户列表（仅管理员） |
+| PUT/DELETE | `/api/admin/users/{id}` | 角色/启用/验证标记、删除（仅管理员） |
+
+**账号体系（角色 + 站点开关 + 功能门控）**：用户分三层——管理员（`is_admin`，不受任何开关
+限制）、普通登录用户、未登录访客。管理员通过 `/admin` 面板控制：
+- **开放注册**：关闭后新用户无法注册，已有账号不受影响；
+- **注册邮箱验证**：开启后注册需输入邮箱收到的 6 位验证码（哈希存储、10 分钟有效、
+  60 秒重发冷却），验证成功即登录；存量账号自动回填为已验证，不会被锁死；
+- **功能开放矩阵**：六个功能键（design 引物/序列设计、batch 批量设计、vectors 载体库、
+  sequencing 测序分析、analysis 序列工具、codon 密码子表）按「未登录访客 / 普通用户」
+  两组分别勾选——前端隐藏导航入口并拦截直链路由，后端在 API 层同步拒绝（`require_feature`
+  路由依赖，见 `app/gating.py`）。默认全开放（保持既有行为），由管理员自行收紧。
+存储于 `site_settings` 单行表（`app/site_settings.py`，读侧 3 秒 TTL 缓存）；
+功能键注册表在 `app/features.py`。自我保护：不能禁用/删除自己，不能移除最后一位管理员。
+
+**管理员引导**：设置环境变量 `ADMIN_EMAIL` + `ADMIN_PASSWORD`（可选 `ADMIN_USERNAME`，
+默认 admin），启动时该邮箱用户不存在则自动创建为管理员、已存在则提升为管理员；
+不配置则不动作。
+
+**邮件发送渠道**（`app/mailer.py`，环境变量 `MAIL_PROVIDER`）：
+- `console`（默认）：验证码打进后端日志，零配置，适合开发与试用；
+- `smtp`：任意邮箱服务商 SMTP（QQ/163/Gmail/Outlook 授权码等，零额外注册），
+  配 `SMTP_HOST/PORT/USER/PASSWORD`（465 端口 `SMTP_SSL=true`，587 端口设 false）；
+- `resend`：[Resend](https://resend.com) API，免费 3000 封/月（100 封/天），
+  邮箱注册、无需信用卡，配 `RESEND_API_KEY`；
+- `brevo`：[Brevo](https://www.brevo.com) API，免费 300 封/天，邮箱注册、无需信用卡，
+  配 `BREVO_API_KEY`。
 
 ### 缓存 & 速率限制
 

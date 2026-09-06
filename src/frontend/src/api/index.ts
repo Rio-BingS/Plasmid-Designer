@@ -322,6 +322,82 @@ export async function logout(): Promise<any> {
   return response.data
 }
 
+// 公开站点配置（注册开关/邮箱验证开关/各级别可用功能）
+export interface SiteConfig {
+  registration_open: boolean
+  email_verification_required: boolean
+  tier: 'anonymous' | 'user' | 'admin'
+  features: { anonymous: string[]; user: string[] }
+  effective_features: string[]
+}
+
+export async function getSiteConfig(): Promise<SiteConfig> {
+  const response = await api.get('/auth/site-config')
+  return response.data
+}
+
+// 提交注册邮箱验证码（成功返回登录令牌）
+export async function verifyEmail(verifyToken: string, code: string): Promise<any> {
+  const response = await api.post('/auth/verify-email', { verify_token: verifyToken, code })
+  return response.data
+}
+
+// 重发注册验证码（60 秒冷却）
+export async function resendVerification(verifyToken: string): Promise<any> {
+  const response = await api.post('/auth/resend-verification', { verify_token: verifyToken })
+  return response.data
+}
+
+// ==================== 管理员 ====================
+
+export interface AdminSettings {
+  registration_open: boolean
+  email_verification_required: boolean
+  anonymous_features: string[]
+  user_features: string[]
+  feature_keys: string[]
+  feature_labels: Record<string, string>
+  mail_provider: string
+  mail_from: string
+}
+
+export interface AdminUserInfo {
+  id: string
+  email: string
+  username: string
+  is_admin: boolean
+  is_active: boolean
+  email_verified: boolean
+  created_at: string | null
+}
+
+export async function getAdminSettings(): Promise<AdminSettings> {
+  const response = await api.get('/admin/settings')
+  return response.data
+}
+
+export async function updateAdminSettings(patch: Partial<AdminSettings>): Promise<AdminSettings> {
+  const response = await api.put('/admin/settings', patch)
+  return response.data
+}
+
+export async function listAdminUsers(): Promise<AdminUserInfo[]> {
+  const response = await api.get('/admin/users')
+  return response.data
+}
+
+export async function updateAdminUser(
+  userId: string,
+  patch: { is_admin?: boolean; is_active?: boolean; email_verified?: boolean }
+): Promise<AdminUserInfo> {
+  const response = await api.put(`/admin/users/${userId}`, patch)
+  return response.data
+}
+
+export async function deleteAdminUser(userId: string): Promise<void> {
+  await api.delete(`/admin/users/${userId}`)
+}
+
 // 获取导出格式列表
 export async function getExportFormats(): Promise<any[]> {
   const response = await api.get('/analysis/export/formats')
@@ -584,6 +660,7 @@ export async function getSequencingAnalysis(analysisId: string): Promise<Sequenc
 export async function deleteSequencingAnalysis(analysisId: string): Promise<void> {
   await api.delete(`/sequencing/analyses/${analysisId}`)
 }
+
 // ==================== 批量测序分析（独立入口，与单样品 /sequencing/analyze 平级） ====================
 
 export interface SequencingBatchItem {

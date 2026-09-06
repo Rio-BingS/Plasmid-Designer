@@ -26,6 +26,20 @@ services:
       - STORAGE_MODE=${STORAGE_MODE:-database}
       - BACKEND_WORKERS=${BACKEND_WORKERS:-1}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # 管理员账号引导（启动时创建/提升管理员，见 .env.example）
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # 邮件发送（注册邮箱验证码，见 .env.example）
+      - MAIL_PROVIDER=${MAIL_PROVIDER:-console}
+      - MAIL_FROM=${MAIL_FROM:-Plasmid Designer <no-reply@localhost>}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_SSL=${SMTP_SSL:-true}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - BREVO_API_KEY=${BREVO_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

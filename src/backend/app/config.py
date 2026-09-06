@@ -56,6 +56,28 @@ class Settings(BaseSettings):
     # validator 根本没有机会执行（2026-09 VPS 部署踩坑）
     CORS_ORIGINS: str = "*"
 
+    # ==================== 管理员引导 ====================
+    # 启动时若数据库中不存在该邮箱的用户，则自动创建为管理员（并视为已验证邮箱）；
+    # 已存在则提升为管理员。不设置则不创建（默认开发环境不变）
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+
+    # ==================== 邮件发送（注册邮箱验证码） ====================
+    # console: 验证码打到后端日志（开发默认，无需任何外部服务）
+    # smtp:    任意邮箱服务商的 SMTP（QQ/163/Gmail 授权码等，零额外注册）
+    # resend:  https://resend.com 免费 3000 封/月（100/天），邮箱注册无需信用卡
+    # brevo:   https://www.brevo.com 免费 300 封/天，邮箱注册无需信用卡
+    MAIL_PROVIDER: str = "console"
+    MAIL_FROM: str = "Plasmid Designer <no-reply@localhost>"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_SSL: bool = True  # 465 端口用 SSL；587 STARTTLS 时设 false
+    RESEND_API_KEY: str = ""
+    BREVO_API_KEY: str = ""
+
     @property
     def cors_origins_list(self) -> list:
         """解析 CORS_ORIGINS 为来源列表，main.py 据此接线 CORSMiddleware"""

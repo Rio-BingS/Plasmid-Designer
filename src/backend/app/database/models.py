@@ -44,17 +44,53 @@ Base = declarative_base()
 class UserDB(Base):
     """用户表"""
     __tablename__ = "users"
-    
+
     id = Column(String(50), primary_key=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(100), nullable=False)
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
+    # 注册邮箱验证状态；历史用户经 init_db 迁移回填为 True，不会被新开关锁死
+    email_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # 关联
     designs = relationship("DesignDB", back_populates="user")
+
+
+# ==================== 站点设置模型 ====================
+
+class SiteSettingsDB(Base):
+    """站点设置（单行表，管理员可改）
+
+    功能开关（anonymous_features / user_features）为 JSON 数组字符串，
+    键值含义见 app/features.py 的 FEATURE_REGISTRY
+    """
+    __tablename__ = "site_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    registration_open = Column(Boolean, default=True)
+    email_verification_required = Column(Boolean, default=False)
+    anonymous_features = Column(Text, nullable=False, default="[]")
+    user_features = Column(Text, nullable=False, default="[]")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ==================== 邮箱验证码模型 ====================
+
+class EmailVerificationDB(Base):
+    """注册邮箱验证码（哈希存储，10 分钟有效，一次性）"""
+    __tablename__ = "email_verifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), ForeignKey("users.id"), nullable=False, index=True)
+    email = Column(String(255), nullable=False)
+    code_hash = Column(String(128), nullable=False)
+    purpose = Column(String(30), nullable=False, default="register")
+    expires_at = Column(DateTime, nullable=False)
+    consumed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ==================== 设计任务模型 ====================
@@ -226,8 +262,28 @@ def get_db():
 
 def init_db():
     """初始化数据库"""
+    _migrate_users_table()
     Base.metadata.create_all(bind=engine)
     print("✅ 数据库表已创建")
+
+
+def _migrate_users_table():
+    """users 表轻量迁移：create_all 只建新表不改旧表，email_verified 列
+    是后加的，需手工 ALTER 补列；历史用户回填为已验证（邮箱验证开关打开时
+    才会校验该字段，回填保证存量账号不被新开关锁死）"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "email_verified" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("UPDATE users SET email_verified = TRUE"))
+    print("✅ users 表已迁移：新增 email_verified 列（存量用户回填为已验证）")
 
 
 def drop_db():

@@ -62,6 +62,7 @@ class User(UserBase):
     id: str
     is_active: bool = True
     is_admin: bool = False
+    email_verified: bool = True
     created_at: Optional[datetime] = None
 
 
@@ -120,6 +121,31 @@ def decode_token(token: str) -> Optional[TokenData]:
         return None
 
 
+# ==================== 邮箱验证令牌（purpose 限定，不能当登录令牌用） ====================
+
+VERIFY_TOKEN_EXPIRE_MINUTES = 30
+
+
+def create_verify_token(user_id: str) -> str:
+    """邮箱验证流程令牌：30 分钟有效，仅用于 verify-email / resend 接口"""
+    expire = datetime.utcnow() + timedelta(minutes=VERIFY_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": user_id, "purpose": "verify_email", "exp": expire, "iat": datetime.utcnow()}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_verify_token(token: str) -> Optional[str]:
+    """校验验证令牌，返回 user_id；签名/过期/用途不符均返回 None"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+    if payload.get("purpose") != "verify_email" or not payload.get("sub"):
+        return None
+    return payload["sub"]
+
+
 # ==================== 辅助函数 ====================
 
 def db_user_to_user(db_user) -> User:
@@ -130,6 +156,8 @@ def db_user_to_user(db_user) -> User:
         username=db_user.username,
         is_active=db_user.is_active,
         is_admin=db_user.is_admin,
+        # 旧库迁移前列可能不存在（迁移由 init_db 保证先于请求发生）
+        email_verified=getattr(db_user, "email_verified", True),
         created_at=db_user.created_at
     )
 

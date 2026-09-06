@@ -9,7 +9,8 @@ import uuid
 
 from .models import (
     UserDB, DesignDB, PrimerDB, DesignWarningDB, DesignErrorDB,
-    BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB
+    BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB,
+    SiteSettingsDB, EmailVerificationDB
 )
 
 
@@ -20,7 +21,8 @@ def create_user(
     email: str,
     username: str,
     hashed_password: str,
-    is_admin: bool = False
+    is_admin: bool = False,
+    email_verified: bool = False
 ) -> UserDB:
     """创建用户"""
     user = UserDB(
@@ -28,7 +30,8 @@ def create_user(
         email=email,
         username=username,
         hashed_password=hashed_password,
-        is_admin=is_admin
+        is_admin=is_admin,
+        email_verified=email_verified
     )
     db.add(user)
     db.commit()
@@ -49,6 +52,99 @@ def get_user_by_id(db: Session, user_id: str) -> Optional[UserDB]:
 def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[UserDB]:
     """获取用户列表"""
     return db.query(UserDB).offset(skip).limit(limit).all()
+
+
+def update_user(db: Session, user_id: str, **fields) -> Optional[UserDB]:
+    """更新用户指定字段（仅允许角色/状态/验证标记）"""
+    allowed = {"is_admin", "is_active", "email_verified"}
+    user = get_user_by_id(db, user_id)
+    if user is None:
+        return None
+    for k, v in fields.items():
+        if k in allowed:
+            setattr(user, k, v)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def delete_user(db: Session, user_id: str) -> bool:
+    """删除用户（其设计任务的 user_id 置空，保留设计记录）"""
+    user = get_user_by_id(db, user_id)
+    if user is None:
+        return False
+    db.query(DesignDB).filter(DesignDB.user_id == user_id).update({"user_id": None})
+    db.delete(user)
+    db.commit()
+    return True
+
+
+def count_admins(db: Session) -> int:
+    """在任管理员数量（防止把最后一个管理员降级）"""
+    return db.query(UserDB).filter(UserDB.is_admin == True, UserDB.is_active == True).count()  # noqa: E712
+
+
+# ==================== 站点设置 CRUD ====================
+
+SETTINGS_ID = 1
+
+
+def get_site_settings_row(db: Session) -> SiteSettingsDB:
+    """取站点设置单行，不存在则按模型默认值创建"""
+    row = db.query(SiteSettingsDB).filter(SiteSettingsDB.id == SETTINGS_ID).first()
+    if row is None:
+        row = SiteSettingsDB(id=SETTINGS_ID)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def save_site_settings_row(db: Session, row: SiteSettingsDB) -> SiteSettingsDB:
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+# ==================== 邮箱验证码 CRUD ====================
+
+def create_email_verification(
+    db: Session,
+    user_id: str,
+    email: str,
+    code_hash: str,
+    expires_at: datetime,
+    purpose: str = "register"
+) -> EmailVerificationDB:
+    """写入新验证码，并把该用户旧的同用途验证码作废（同时实现重发时限判断的干净基线）"""
+    db.query(EmailVerificationDB).filter(
+        EmailVerificationDB.user_id == user_id,
+        EmailVerificationDB.purpose == purpose,
+        EmailVerificationDB.consumed == False,  # noqa: E712
+    ).update({"consumed": True})
+    row = EmailVerificationDB(
+        user_id=user_id, email=email, code_hash=code_hash,
+        purpose=purpose, expires_at=expires_at,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_latest_email_verification(db: Session, user_id: str, purpose: str = "register") -> Optional[EmailVerificationDB]:
+    """最近一条未消费的验证码（校验时使用；重发冷却按 created_at）"""
+    return db.query(EmailVerificationDB).filter(
+        EmailVerificationDB.user_id == user_id,
+        EmailVerificationDB.purpose == purpose,
+        EmailVerificationDB.consumed == False,  # noqa: E712
+    ).order_by(EmailVerificationDB.id.desc()).first()
+
+
+def consume_email_verification(db: Session, row: EmailVerificationDB) -> None:
+    row.consumed = True
+    db.commit()
 
 
 # ==================== 设计任务 CRUD ====================
