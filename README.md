@@ -200,10 +200,15 @@ Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考�
 → 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增）→ 自动结论。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
-分析记录为进程级内存存储（重启失效）。前端测序分析为独立模块（`/sequencing` 路由，
-`SequencingView.vue`）：把参考序列文件与 .ab1 放在同一文件夹一起拖入/选择（自动按类型分类）→
-一键分析 → 历史分析查看/删除；设计结果页与载体详情页通过深链跳转
-（`?mode=vector|design&ref=<id>`），进入时自动下载对应 GenBank 预填参考序列。
+分析记录为进程级内存存储（重启失效）。
+
+**结果页内可直接核对准确性，无需导出到其他软件**：每条 read 附带逐列比对视图
+（read vs 参考逐碱基对照，错配红底、插入缺失、低质量 Q<20 橙色提示；反向 read 以参考
+方向展示）；点击差异行同时精确定位峰图对应碱基（按 read_pos 映射，含 indel 不偏移）
+与比对列；共识序列高亮显示与参考不同的位点（测序投票写入处）。前端测序分析为独立模块
+（`/sequencing` 路由，`SequencingView.vue`）：把参考序列文件与 .ab1 放在同一文件夹一起
+拖入/选择（自动按类型分类）→ 一键分析 → 历史分析查看/删除；设计结果页与载体详情页通过
+深链跳转（`?mode=vector|design&ref=<id>`），进入时自动下载对应 GenBank 预填参考序列。
 质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
 （重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
 高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。

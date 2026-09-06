@@ -4,7 +4,7 @@
 由比对坐标推导错配 / 插入 / 缺失列表。
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from Bio.Align import PairwiseAligner
 
@@ -30,13 +30,17 @@ def _get_aligner() -> PairwiseAligner:
     return _ALIGNER
 
 
-def align_read(read: str, reference: str) -> Dict:
+def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -> Dict:
     """将 read（自动判向）比对到参考序列
 
-    返回 {direction: '+'/'-', ref_start, ref_end, score, identity, variants}
+    返回 {direction: '+'/'-', ref_start, ref_end, score, identity, variants, aligned}
     variants: [{ref_pos(1-based), read_pos, type: substitution|insertion|deletion,
                 ref_base, alt_base, length}]
     坐标为正向参考链 1-based；insertion 的 ref_pos 为插入点左侧参考位置。
+    aligned 为逐列对齐视图（供前端人工核对）：ref_aligned/read_aligned 等长字符串，
+    '-' 表示该列在对方序列中缺失（插入/缺失）；read 一律以参考方向展示（反向
+    read 显示反向互补碱基）；q_aligned 为逐列 Q 值（gap 列为 0，反向 read 的
+    Q 顺序随碱基一起反转，与原始 read 质量一一对应）。
     """
     ref_up = reference.upper()
     read_up = read.upper()
@@ -54,7 +58,8 @@ def align_read(read: str, reference: str) -> Dict:
 
     if best is None:
         return {"direction": "+", "ref_start": 0, "ref_end": 0, "score": 0.0,
-                "identity": 0.0, "variants": []}
+                "identity": 0.0, "variants": [],
+                "aligned": {"ref_start": 0, "ref_aligned": "", "read_aligned": "", "q_aligned": []}}
 
     score, direction, query, aln = best
     # coordinates: [[ref块起,ref块止,...],[read块起,read块止,...]]
@@ -62,6 +67,10 @@ def align_read(read: str, reference: str) -> Dict:
     variants: List[Dict] = []
     matches = 0
     compared = 0
+
+    ref_chars: List[str] = []
+    read_chars: List[str] = []
+    read_qi: List[int] = []  # 每列 read 碱基在 query 内的索引；gap 列为 -1
 
     for k in range(coords.shape[1] - 1):
         rs, re_ = int(coords[0][k]), int(coords[0][k + 1])
@@ -79,6 +88,9 @@ def align_read(read: str, reference: str) -> Dict:
                     "alt_base": read_block,
                     "length": len(read_block),
                 })
+                ref_chars.extend("-" * len(read_block))
+                read_chars.extend(read_block)
+                read_qi.extend(range(qs, qe))
             else:  # 参考有而 read 无 → deletion
                 variants.append({
                     "ref_pos": rs + 1,
@@ -88,9 +100,15 @@ def align_read(read: str, reference: str) -> Dict:
                     "alt_base": "-",
                     "length": len(ref_block),
                 })
+                ref_chars.extend(ref_block)
+                read_chars.extend("-" * len(ref_block))
+                read_qi.extend([-1] * len(ref_block))
             continue
         for i, (rb, qb) in enumerate(zip(ref_block, read_block)):
             compared += 1
+            ref_chars.append(rb)
+            read_chars.append(qb)
+            read_qi.append(qs + i)
             if rb == qb:
                 matches += 1
             else:
@@ -106,6 +124,17 @@ def align_read(read: str, reference: str) -> Dict:
     identity = matches / compared if compared else 0.0
     ref_start = int(coords[0][0]) + 1
     ref_end = int(coords[0][-1])
+
+    # 逐列 Q 值：反向 read 的 query 为 revcomp，原始 read 索引 = len-1-query 索引
+    q_aligned: List[int] = []
+    if quality is not None:
+        nq = len(quality)
+        for qi in read_qi:
+            if qi < 0 or qi >= nq:
+                q_aligned.append(0)
+            else:
+                q_aligned.append(quality[qi] if direction == "+" else quality[nq - 1 - qi])
+
     return {
         "direction": direction,
         "ref_start": ref_start,
@@ -114,6 +143,12 @@ def align_read(read: str, reference: str) -> Dict:
         "identity": round(identity, 4),
         "variants": variants,
         "aligned_read_len": int(coords[1][-1]) - int(coords[1][0]),
+        "aligned": {
+            "ref_start": ref_start,
+            "ref_aligned": "".join(ref_chars),
+            "read_aligned": "".join(read_chars),
+            "q_aligned": q_aligned,
+        },
     }
 
 

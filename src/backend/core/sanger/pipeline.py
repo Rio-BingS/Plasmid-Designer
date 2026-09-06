@@ -114,7 +114,8 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
                 if 0 <= idx < L:
                     votes[idx][f"+{v['alt_base'].upper()}"] = weight + 5
 
-    consensus_chars = []
+    consensus_chars: List[str] = []
+    diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
     covered: List[bool] = []
     for pos in range(1, L + 1):
         cell = votes[pos - 1]
@@ -125,11 +126,23 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
         covered.append(True)
         best_key = max(cell.items(), key=lambda kv: kv[1])[0]
         if best_key.startswith("+"):
-            consensus_chars.append(best_key[1:])
+            alt = best_key[1:]
+            cons_index = len(consensus_chars)
+            consensus_chars.extend(list(alt))
+            diffs.append({
+                "ref_pos": pos, "ref_base": "-", "cons_base": alt, "cons_index": cons_index,
+            })
         elif best_key == "-":
-            pass  # deletion：跳过该参考碱基
+            diffs.append({
+                "ref_pos": pos, "ref_base": reference[pos - 1].upper(), "cons_base": "-",
+            })
         else:
             consensus_chars.append(best_key)
+            if best_key != reference[pos - 1].upper():
+                diffs.append({
+                    "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
+                    "cons_base": best_key, "cons_index": len(consensus_chars) - 1,
+                })
 
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
@@ -139,6 +152,7 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
         "sequence": "".join(consensus_chars),
         "covered_ranges": covered_ranges,
         "coverage_percent": round(coverage * 100, 2),
+        "diffs": diffs,
     }
 
 
@@ -180,7 +194,7 @@ def analyze(
         trimmed_q = quality[s:e]
         mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
 
-        aln = align_read(trimmed, ref)
+        aln = align_read(trimmed, ref, trimmed_q)
 
         # 变体附加质量值
         for v in aln["variants"]:

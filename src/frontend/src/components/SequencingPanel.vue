@@ -4,7 +4,7 @@
  * 参考序列文件（.gb/.fasta/.dna）与 .ab1 放同一文件夹一起导入 →
  * 一键分析 → 总览结论 / 覆盖率 / 突变表 / 峰图 / 共识序列导出
  */
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   analyzeSequencingFiles, getReadTrace, exportConsensus,
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
@@ -154,6 +154,82 @@ const coverageSegments = computed(() => {
   return a.coverage_ranges.map(([s, e]) => ({ left: ((s - 1) / L) * 100, width: ((e - s + 1) / L) * 100 }))
 })
 
+// ==================== 比对校验（Read vs Reference 逐碱基核对） ====================
+// 注意：必须在下方 preset 的 immediate watch 之前声明（watch 回调引用 focusCol）
+const ALIGN_CHUNK = 60   // 每行显示列数
+const alignReadIdx = ref(0)
+const focusCol = ref<number | null>(null)  // 点击差异行后高亮的全局列号
+const chunkEls: Record<number, HTMLElement | null> = {}
+const alignBox = ref<HTMLElement | null>(null)
+
+const currentRead = computed(() => analysis.value?.reads[alignReadIdx.value] || null)
+const alignmentView = computed(() => currentRead.value?.alignment_view || null)
+
+interface AlnCol { ref: string; read: string; q: number; mm: boolean; indel: boolean; refPos: number }
+
+const alignmentCols = computed<AlnCol[]>(() => {
+  const av = alignmentView.value
+  if (!av) return []
+  const cols: AlnCol[] = []
+  let refPos = av.ref_start
+  for (let i = 0; i < av.ref_aligned.length; i++) {
+    const rb = av.ref_aligned[i]
+    const qb = av.read_aligned[i]
+    const col: AlnCol = { ref: rb, read: qb, q: av.q_aligned?.[i] ?? 0, mm: false, indel: false, refPos: 0 }
+    if (rb !== '-') col.refPos = refPos++
+    col.indel = rb === '-' || qb === '-'
+    col.mm = !col.indel && rb !== qb
+    cols.push(col)
+  }
+  return cols
+})
+
+const alignmentChunks = computed(() => {
+  const cols = alignmentCols.value
+  const out: { startCol: number; cols: AlnCol[] }[] = []
+  for (let i = 0; i < cols.length; i += ALIGN_CHUNK) {
+    out.push({ startCol: i, cols: cols.slice(i, i + ALIGN_CHUNK) })
+  }
+  return out
+})
+
+function setChunkRef(i: number, el: unknown) {
+  chunkEls[i] = (el as HTMLElement) || null
+}
+
+function selectAlignRead(i: number) {
+  alignReadIdx.value = i
+  focusCol.value = null
+}
+
+function chunkStartPos(chunk: { cols: AlnCol[] }): string {
+  const first = chunk.cols.find((c) => c.refPos)
+  return first ? String(first.refPos) : '—'
+}
+
+function qLabel(c: AlnCol): string {
+  if (c.read === '-') return '—'
+  return c.q > 0 ? String(c.q) : '·'
+}
+
+/** 定位到指定参考位置的列；插入差异（afterGap）锚定在左翼参考位置之后 */
+function focusAlignmentAt(refPos: number, afterGap: boolean) {
+  const cols = alignmentCols.value
+  let anchor = -1
+  for (let i = 0; i < cols.length; i++) {
+    if (cols[i].refPos === refPos && cols[i].ref !== '-') { anchor = i; break }
+  }
+  if (anchor < 0) return
+  let target = anchor
+  if (afterGap) {
+    target = anchor + 1
+    while (target < cols.length && cols[target].ref === '-') target++
+    target = Math.min(target, cols.length - 1)
+  }
+  focusCol.value = target
+  chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+}
+
 // ==================== 峰图 ====================
 const traceCanvas = ref<HTMLCanvasElement | null>(null)
 const traceWrap = ref<HTMLDivElement | null>(null)
@@ -162,7 +238,7 @@ const trace = ref<ReadTrace | null>(null)
 const traceLoading = ref(false)
 const traceStart = ref(0)        // 显示窗口起始碱基（0-based）
 const traceSpan = ref(60)        // 窗口碱基数
-const highlightedPos = ref<number | null>(null) // 1-based 参考位置高亮
+const highlightReadIdx = ref<number | null>(null) // 高亮的 read 碱基（0-based，精确坐标）
 
 // 历史回看：注入已完成分析后直接展示（immediate 覆盖挂载时即带 preset 的场景）
 watch(() => props.preset, (p) => {
@@ -170,7 +246,8 @@ watch(() => props.preset, (p) => {
     analysis.value = p
     errorMsg.value = ''
     trace.value = null
-    highlightedPos.value = null
+    highlightReadIdx.value = null
+    focusCol.value = null
   }
 }, { immediate: true })
 
@@ -179,6 +256,7 @@ const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: 
 async function loadTrace(readIndex: number) {
   activeRead.value = readIndex
   traceLoading.value = true
+  highlightReadIdx.value = null
   try {
     trace.value = await getReadTrace(analysis.value!.analysis_id, readIndex)
     traceStart.value = 0
@@ -269,17 +347,13 @@ function drawTrace() {
     }
   }
 
-  // 高亮变异位置（参考坐标近似映射到 read 窗口）
-  if (highlightedPos.value) {
-    const rp = highlightedPos.value
-    const aln = analysis.value?.reads[activeRead.value]
-    if (aln && rp >= aln.ref_start && rp <= aln.ref_end) {
-      const readIdx = rp - aln.ref_start // 近似：无 indel 时成立
-      if (readIdx >= start && readIdx < end) {
-        const x = left + (readIdx - start) * colW
-        ctx.fillStyle = 'rgba(255, 220, 0, 0.25)'
-        ctx.fillRect(x, peakTop, colW, h - peakTop)
-      }
+  // 高亮变异位置（read_pos 精确坐标，含 indel 也准确）
+  if (highlightReadIdx.value != null) {
+    const readIdx = highlightReadIdx.value
+    if (readIdx >= start && readIdx < end) {
+      const x = left + (readIdx - start) * colW
+      ctx.fillStyle = 'rgba(255, 220, 0, 0.25)'
+      ctx.fillRect(x, peakTop, colW, h - peakTop)
     }
   }
 
@@ -308,22 +382,44 @@ function traceZoom(factor: number) {
 async function jumpToVariant(v: SequencingVariant) {
   if (!analysis.value) return
   const read = analysis.value.reads.find((r) => r.filename === (v.read || r.filename)) || analysis.value.reads[0]
-  if (activeRead.value !== read.index) await loadTrace(read.index)
-  highlightedPos.value = v.ref_pos
-  const aln = read
-  const readIdx = v.ref_pos - aln.ref_start
+  if (!trace.value || activeRead.value !== read.index) await loadTrace(read.index)
   const t = trace.value
+  // 精确定位：read_pos 是该 read 修剪后序列内的 1-based 位置（有 indel 也准确）
+  const readIdx = v.read_pos ? v.read_pos - 1 : v.ref_pos - read.ref_start
   if (t && readIdx >= 0 && readIdx < t.bases.length) {
     traceStart.value = Math.max(0, readIdx - Math.floor(traceSpan.value / 2))
   }
+  highlightReadIdx.value = readIdx >= 0 ? readIdx : null
+  // 比对视图同步定位到该差异列
+  alignReadIdx.value = read.index
+  await nextTick()
+  focusAlignmentAt(v.ref_pos, v.type === 'insertion')
   nextDraw()
 }
 
+function showAlignment(i: number) {
+  selectAlignRead(i)
+  nextTick(() => alignBox.value?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }))
+}
+
 // ==================== 共识序列 ====================
-const consensusView = computed(() => {
+/** 分段渲染：与参考不同的位点高亮（cons_index 精确对应共识序列下标） */
+const consensusSegments = computed(() => {
   const a = analysis.value
-  if (!a) return ''
-  return a.consensus.sequence.replace(/(.{60})/g, '$1\n')
+  if (!a) return []
+  const seq = a.consensus.sequence
+  const diffAt = new Set<number>()
+  for (const d of a.consensus.diffs || []) {
+    if (d.cons_index != null) diffAt.add(d.cons_index)
+  }
+  const out: { text: string; diff: boolean }[] = []
+  for (let i = 0; i < seq.length; i++) {
+    const d = diffAt.has(i)
+    const last = out[out.length - 1]
+    if (last && last.diff === d) last.text += seq[i]
+    else out.push({ text: seq[i], diff: d })
+  }
+  return out
 })
 
 async function downloadConsensus(format: string) {
@@ -426,7 +522,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       <!-- Read 摘要 -->
       <table class="seq-table" v-if="analysis.reads.length">
         <thead>
-          <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>一致性</th><th>峰图</th></tr>
+          <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>一致性</th><th>证据查看</th></tr>
         </thead>
         <tbody>
           <tr v-for="r in analysis.reads" :key="r.index">
@@ -436,7 +532,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             <td>{{ r.trimmed_length }} bp</td>
             <td>{{ r.mean_q }}</td>
             <td>{{ (r.identity * 100).toFixed(1) }}%</td>
-            <td><button class="mini-btn" @click="loadTrace(r.index)">查看</button></td>
+            <td>
+              <button class="mini-btn" @click="loadTrace(r.index)">峰图</button>
+              <button class="mini-btn" @click="showAlignment(r.index)">比对</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -469,6 +568,52 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- 比对校验：read vs 参考逐碱基核对（差异/插入缺失/低质量一目了然） -->
+      <div class="align-box" ref="alignBox" v-if="analysis.reads.length">
+        <div class="trace-toolbar">
+          <h4 class="section-title">比对校验<span v-if="currentRead"> — {{ currentRead.filename }}</span></h4>
+          <div class="aln-read-picker" v-if="analysis.reads.length > 1">
+            <button v-for="r in analysis.reads" :key="r.index" class="mini-btn"
+                    :class="{ active: alignReadIdx === r.index }" @click="selectAlignRead(r.index)">
+              {{ r.filename }}
+            </button>
+          </div>
+        </div>
+        <p class="aln-legend" v-if="alignmentView && currentRead">
+          {{ currentRead.direction === '-' ? '反向 read（以参考方向展示，即测序碱基的反向互补）' : '正向 read' }}
+          · 参考区间 {{ currentRead.ref_start }}-{{ currentRead.ref_end }}
+          · 一致性 {{ (currentRead.identity * 100).toFixed(1) }}%
+          · <span class="lg-mm">红底 = 与参考不同</span>
+          · <span class="lg-q">橙字 = Q&lt;20 低质量</span>
+          · — = 插入/缺失
+        </p>
+        <div class="aln-scroll" v-if="alignmentChunks.length">
+          <div v-for="(chunk, ci) in alignmentChunks" :key="ci" class="aln-chunk" :ref="(el) => setChunkRef(ci, el)">
+            <div class="aln-row ruler">
+              <span class="aln-lbl">{{ chunkStartPos(chunk) }}</span>
+              <span v-for="(c, i) in chunk.cols" :key="i" class="cell"
+                    :class="{ tick: c.refPos && c.refPos % 10 === 0 }">{{ c.refPos && c.refPos % 10 === 0 ? (c.refPos % 10) : '' }}</span>
+            </div>
+            <div class="aln-row">
+              <span class="aln-lbl">参考</span>
+              <span v-for="(c, i) in chunk.cols" :key="i" class="cell mono"
+                    :class="{ gap: c.ref === '-', focus: focusCol === chunk.startCol + i }">{{ c.ref }}</span>
+            </div>
+            <div class="aln-row">
+              <span class="aln-lbl">Read</span>
+              <span v-for="(c, i) in chunk.cols" :key="i" class="cell mono"
+                    :class="{ gap: c.read === '-', mm: c.mm, indel: c.indel && c.read !== '-', qLow: c.read !== '-' && c.q > 0 && c.q < 20, focus: focusCol === chunk.startCol + i }">{{ c.read }}</span>
+            </div>
+            <div class="aln-row q-row">
+              <span class="aln-lbl">Q</span>
+              <span v-for="(c, i) in chunk.cols" :key="i" class="cell qcell"
+                    :class="{ qLow: c.read !== '-' && c.q > 0 && c.q < 20, gap: c.read === '-' }">{{ qLabel(c) }}</span>
+            </div>
+          </div>
+        </div>
+        <p v-else class="hint">该 read 无对齐数据</p>
       </div>
 
       <!-- 解卷积结果 -->
@@ -507,7 +652,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             <button class="mini-btn" @click="downloadConsensus('genbank')">导出 GenBank</button>
           </div>
         </div>
-        <pre class="consensus-pre">{{ consensusView }}</pre>
+        <pre class="consensus-pre"><span v-for="(s, i) in consensusSegments" :key="i" :class="{ 'cons-diff': s.diff }">{{ s.text }}</span></pre>
+        <p v-if="analysis.consensus.diffs?.length" class="hint cons-hint">
+          黄色高亮 = 共识序列与参考不同的位点（由测序证据投票写入，点击上方差异明细可核对峰图与比对）
+        </p>
       </div>
     </template>
   </div>
@@ -600,4 +748,33 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
   background: var(--bg-secondary, #f9f9f9); padding: 0.75rem; border-radius: 6px;
   max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
+.cons-diff { background: #FFF3B8; border-radius: 2px; padding: 0 1px; }
+.cons-hint { margin-top: 0.4rem; }
+
+/* ==================== 比对校验视图 ==================== */
+.align-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
+.aln-read-picker { display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: flex-end; }
+.aln-read-picker .mini-btn.active { background: #2E9E44; color: #fff; border-color: #2E9E44; }
+.aln-legend { font-size: 0.78rem; color: #777; margin: 0.4rem 0 0.5rem; }
+.lg-mm { color: #C0392B; font-weight: 600; }
+.lg-q { color: #E67E22; font-weight: 600; }
+.aln-scroll { overflow-x: auto; }
+.aln-chunk { display: block; padding: 0.1rem 0.5rem 0.3rem 0; border-bottom: 1px dashed #ECECEC; }
+.aln-chunk:last-child { border-bottom: none; }
+.aln-row { display: flex; align-items: baseline; white-space: nowrap; line-height: 1.5; }
+.aln-lbl {
+  display: inline-block; width: 120px; flex-shrink: 0;
+  font-size: 0.7rem; color: #999; text-align: right; padding-right: 8px;
+  font-family: Consolas, monospace;
+}
+.cell { display: inline-block; width: 11px; text-align: center; font-size: 11px; line-height: 1.5; }
+.cell.mono { font-family: Consolas, monospace; }
+.ruler .cell { font-size: 9px; color: #B8B8B8; }
+.q-row .qcell { font-size: 7.5px; color: #999; }
+.cell.gap { color: #C8C8C8; }
+.cell.mm { background: #FDE8E8; color: #C0392B; font-weight: 700; border-radius: 2px; }
+.cell.indel { background: #FDE8E8; color: #C0392B; border-radius: 2px; }
+.cell.qLow { color: #E67E22; }
+.qcell.qLow { color: #E67E22; font-weight: 700; }
+.cell.focus { outline: 2px solid #F1C40F; outline-offset: -1px; background: rgba(241, 196, 15, 0.18); }
 </style>

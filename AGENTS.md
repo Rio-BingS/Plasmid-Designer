@@ -35,12 +35,13 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
   src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas：wrap特征/双向箭头/
                                      弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
   src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
-  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/峰图/共识导出
+  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对校验视图
+                                     （逐列 read vs 参考+Q 值）/峰图/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（147 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（171 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes；tests/abif_utils.py 合成 ab1 生成器）
-                            + 前端 vitest（54 用例，src/frontend/tests）
+                            + 前端 vitest（59 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -100,7 +101,14 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-06）
 
-- pytest **166 通过**（含 test_vector_data 数据守门 6 项、test_reference_parser 8 项）；前端 vitest **55 通过**；vite build 通过
+- pytest **171 通过**（含 test_vector_data 数据守门 6 项、test_reference_parser 8 项）；前端 vitest **59 通过**；vite build 通过
+- 新增（2026-09-06 三次补充）**比对校验视图**（页内核对测序结果，不再需要导出到其他软件）：
+  aligner.align_read 输出逐列对齐 `aligned`（ref_aligned/read_aligned 等长带 gap、read 以
+  参考方向展示、q_aligned 逐列 Q 反向 read 随碱基反转）；_summary 每条 read 带 alignment_view；
+  consensus 新增 `diffs`（与参考差异位+cons_index）；前端「比对校验」区块（60 列分块、错配红底/
+  插缺/低 Q 橙字、read 切换 chip、点击差异行定位到对应列）+ 峰图高亮改用 read_pos 精确坐标
+  （原来 ref_pos-ref_start 在有 indel 时偏移）+ 峰图未加载时点差异行会自动加载 + 共识序列
+  黄色高亮差异位
 - 测序页导入重构（2026-09-06 二次补充）：**「选择参考序列」区块整体移除**（设计数据不持久、
   载体对比场景少，参考序列改为随 .ab1 一起上传）——参考文件（.gb/.gbk/.fasta/.fa/.fna/.dna）
   与 .ab1 放同一文件夹拖入/选择即可，面板自动按扩展名分类（忽略无关文件、提示多余参考）；

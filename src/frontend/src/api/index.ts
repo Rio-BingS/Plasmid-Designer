@@ -398,6 +398,23 @@ export async function getRateLimitConfig(): Promise<any> {
 
 // ==================== Sanger 测序分析 ====================
 
+/** 逐列对齐视图：read 与参考的原始比对证据（供人工核对）
+ *  ref_aligned/read_aligned 等长，'-' 为该列缺失（插入/缺失）；read 以参考方向展示 */
+export interface AlignmentView {
+  ref_start: number
+  ref_aligned: string
+  read_aligned: string
+  q_aligned: number[]
+}
+
+/** 共识序列与参考的差异位；cons_base '-' 表示缺失，ref_base '-' 表示插入 */
+export interface ConsensusDiff {
+  ref_pos: number
+  ref_base: string
+  cons_base: string
+  cons_index?: number
+}
+
 export interface SequencingVariant {
   ref_pos: number
   read_pos?: number
@@ -435,9 +452,15 @@ export interface SequencingAnalysis {
     ref_end: number
     identity: number
     mixed_positions: number[]
+    alignment_view?: AlignmentView | null
   }[]
   variants: SequencingVariant[]
-  consensus: { sequence: string; covered_ranges: [number, number][]; coverage_percent: number }
+  consensus: {
+    sequence: string
+    covered_ranges: [number, number][]
+    coverage_percent: number
+    diffs?: ConsensusDiff[]
+  }
   coverage_ranges: [number, number][]
   mixed_detected: Record<string, number[]>
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>

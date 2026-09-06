@@ -69,6 +69,15 @@ def test_full_sequencing_flow(client, completed_design):
     assert data["conclusion"]
     assert data["consensus"]["sequence"]
 
+    # 逐列对齐视图 + 共识差异位（人工核对证据）
+    av = data["reads"][0]["alignment_view"]
+    assert av and av["ref_aligned"]
+    assert len(av["ref_aligned"]) == len(av["read_aligned"]) == len(av["q_aligned"])
+    assert av["ref_aligned"].replace("-", "") in ref
+    diffs = data["consensus"]["diffs"]
+    assert len(diffs) == 1 and diffs[0]["ref_pos"] == data["variants"][0]["ref_pos"]
+    assert data["consensus"]["sequence"][diffs[0]["cons_index"]] == diffs[0]["cons_base"]
+
     analysis_id = data["analysis_id"]
 
     # 结果摘要端点

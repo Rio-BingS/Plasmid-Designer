@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SequencingPanel from '@/components/SequencingPanel.vue'
-import type { SequencingAnalysis } from '@/api'
+import type { SequencingAnalysis, AlignmentView, ReadTrace } from '@/api'
 
 vi.mock('@/api', () => ({
   analyzeSequencingFiles: vi.fn(),
@@ -9,7 +9,7 @@ vi.mock('@/api', () => ({
   exportConsensus: vi.fn()
 }))
 
-import { analyzeSequencingFiles } from '@/api'
+import { analyzeSequencingFiles, getReadTrace } from '@/api'
 
 const mockAnalysis: SequencingAnalysis = {
   analysis_id: 'seq_test1',
@@ -34,6 +34,27 @@ const mockAnalysis: SequencingAnalysis = {
   errors: [],
   reference_length: 5000,
   features: []
+}
+
+/** 100 列对齐：col 5 一处错配（参考 A → read G，Q=12 低质量） */
+function makeAlignmentView(): AlignmentView {
+  const ref = 'ACGTA'.repeat(20)
+  const read = ref.split('')
+  read[5] = 'G'
+  return {
+    ref_start: 101,
+    ref_aligned: ref,
+    read_aligned: read.join(''),
+    q_aligned: Array.from({ length: 100 }, (_, i) => (i === 5 ? 12 : 40))
+  }
+}
+
+const mockTrace: ReadTrace = {
+  filename: 'r1.ab1',
+  bases: 'ACGTACGTAC',
+  quality: [40, 40, 40, 40, 40, 12, 40, 40, 40, 40],
+  channels: { A: [], T: [], G: [], C: [] },
+  peak_indices: []
 }
 
 function makeFile(name: string, content = 'x'): File {
@@ -109,5 +130,76 @@ describe('SequencingPanel', () => {
     const wrapper = mount(SequencingPanel, { props: { preset: mockAnalysis } })
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('共检出 1 处差异')
+  })
+
+  it('renders alignment view with mismatch and low-Q highlighting', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      reads: [{ ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() }],
+      variants: [{
+        ...mockAnalysis.variants[0],
+        ref_pos: 106, // col 5 → 参考位置 101+5
+        read: 'r1.ab1',
+        read_pos: 6,
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('比对校验')
+    // 唯一错配列红底高亮，且该列 Q<20 橙色提示
+    expect(wrapper.findAll('.cell.mm').length).toBe(1)
+    const qLow = wrapper.findAll('.cell.qLow')
+    expect(qLow.length).toBeGreaterThanOrEqual(2) // read 行 + Q 行
+    expect(wrapper.text()).toContain('红底 = 与参考不同')
+    // 该 read 无峰图数据时比对区仍正常展示参考行
+    expect(wrapper.find('.aln-scroll').exists()).toBe(true)
+  })
+
+  it('clicking a variant row focuses the alignment column and requests trace', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const analysis = {
+      ...mockAnalysis,
+      reads: [{ ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() }],
+      variants: [{
+        ...mockAnalysis.variants[0],
+        ref_pos: 106,
+        read: 'r1.ab1',
+        read_pos: 6,
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('.seq-table.clickable tbody tr').trigger('click')
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 0)
+    // 参考行与 read 行的对应列同时获得焦点高亮
+    expect(wrapper.findAll('.cell.focus').length).toBe(2)
+    vi.unstubAllGlobals()
+  })
+
+  it('highlights consensus positions that differ from reference', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      consensus: {
+        ...mockAnalysis.consensus,
+        diffs: [{ ref_pos: 3, ref_base: 'G', cons_base: 'A', cons_index: 2 }],
+      },
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.cons-diff').length).toBe(1)
+    expect(wrapper.text()).toContain('黄色高亮 = 共识序列与参考不同的位点')
+  })
+
+  it('shows fallback hint when a read has no alignment view', async () => {
+    const wrapper = mount(SequencingPanel, { props: { preset: mockAnalysis } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('该 read 无对齐数据')
   })
 })

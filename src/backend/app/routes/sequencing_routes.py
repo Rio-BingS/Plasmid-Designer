@@ -295,6 +295,8 @@ def _summary(record: Dict) -> Dict:
             "ref_end": r["alignment"]["ref_end"],
             "identity": r["alignment"]["identity"],
             "mixed_positions": r.get("mixed_positions", []),
+            # 逐列对齐视图（read 与参考的原始证据，供人工核对）
+            "alignment_view": r["alignment"].get("aligned"),
         })
     return {
         "analysis_id": record["analysis_id"],

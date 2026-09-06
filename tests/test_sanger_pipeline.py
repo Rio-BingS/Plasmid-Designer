@@ -114,3 +114,81 @@ def test_analyze_reports_errors():
     result = analyze([("bad.ab1", b"junk")], "ACGT" * 100, [])
     assert result["reads"] == []
     assert result["errors"][0]["filename"] == "bad.ab1"
+
+
+# ==================== 逐列对齐视图（人工核对证据） ====================
+
+def test_aligner_aligned_strings_forward(reference):
+    """正向 read：逐列字符串无 gap，Q 与原始质量一一对应"""
+    seg = list(reference[500:1100])
+    seg[20] = "A" if seg[20] != "A" else "G"
+    q = list(range(10, 10 + 600))
+    r = align_read("".join(seg), reference, q)
+    a = r["aligned"]
+    assert a["ref_start"] == 501
+    assert "-" not in a["ref_aligned"] and "-" not in a["read_aligned"]
+    assert len(a["ref_aligned"]) == len(a["read_aligned"]) == len(a["q_aligned"]) == 600
+    assert a["ref_aligned"] == reference[500:1100]
+    mismatches = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if rb != qb]
+    assert len(mismatches) == 1
+    # 正向：Q 逐列对应原始质量
+    assert a["q_aligned"] == q
+
+
+def test_aligner_aligned_strings_reverse(reference):
+    """反向 read：以参考方向展示（反向互补），Q 随碱基一起反转"""
+    seg = reference[700:1300]
+    q = list(range(10, 10 + len(seg)))
+    r = align_read(revcomp(seg), reference, q)
+    assert r["direction"] == "-"
+    a = r["aligned"]
+    assert a["read_aligned"] == seg  # 完美匹配：展示串即参考片段
+    assert a["q_aligned"] == q[::-1]
+
+
+def test_aligner_aligned_strings_deletion_gap(reference):
+    """缺失列：read 侧为 gap，Q = 0"""
+    seg = reference[500:1100]
+    mutated = seg[:100] + seg[105:]  # 删除参考 601-605
+    r = align_read(mutated, reference, [40] * len(mutated))
+    dels = [v for v in r["variants"] if v["type"] == "deletion"]
+    assert len(dels) == 1 and dels[0]["length"] == 5
+    a = r["aligned"]
+    assert a["ref_aligned"].replace("-", "") == reference[500:1100]
+    gaps = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if qb == "-"]
+    assert len(gaps) == 5
+    assert all(a["q_aligned"][i] == 0 for i in gaps)
+
+
+def test_aligner_aligned_strings_insertion_gap(reference):
+    """插入列：参考侧为 gap"""
+    seg = list(reference[500:1100])
+    seg[250:250] = ["T", "T", "T"]
+    r = align_read("".join(seg), reference, [40] * 603)
+    a = r["aligned"]
+    gaps = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if rb == "-"]
+    assert len(gaps) == 3
+    assert all(a["read_aligned"][i] == "T" for i in gaps)
+
+
+def test_pipeline_alignment_view_and_consensus_diffs(reference):
+    """端到端：每条 read 带对齐视图；共识差异位恰好等于真突变"""
+    features = [{"name": "GFP", "type": "CDS", "start": 501, "end": 1100, "strand": "+"}]
+    seg = list(reference[500:1000])
+    seg[50] = "A" if seg[50] != "A" else "G"  # ref_pos 551
+    b1 = make_ab1("".join(seg), [40] * 500)
+    b2 = make_ab1(revcomp(reference[900:1400]), [40] * 500)
+    result = analyze([("f.ab1", b1), ("r.ab1", b2)], reference, features)
+    assert len(result["variants"]) == 1
+
+    for r in result["reads"]:
+        a = r["alignment"]["aligned"]
+        assert len(a["ref_aligned"]) == len(a["read_aligned"]) == len(a["q_aligned"])
+        assert a["ref_aligned"].replace("-", "") == reference[a["ref_start"] - 1:r["alignment"]["ref_end"]]
+
+    diffs = result["consensus"]["diffs"]
+    assert len(diffs) == 1
+    d = diffs[0]
+    assert d["ref_pos"] == 551
+    assert d["cons_base"] == result["variants"][0]["alt_base"]
+    assert result["consensus"]["sequence"][d["cons_index"]] == d["cons_base"]
