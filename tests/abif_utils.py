@@ -9,9 +9,13 @@ import struct
 
 
 def make_ab1(bases, quals, traces=None):
-    """bases: 碱基字符串; quals: phred 质量列表; traces: 4 个通道强度列表"""
+    """bases: 碱基字符串; quals: phred 质量列表; traces: 4 个通道强度列表
+
+    默认 trace 模拟真实通道：碱基对应主通道 100、其余通道 4（本底）。
+    等强度通道会让峰级证据把每个位点都判成 50/50 混合，失真。
+    """
     if traces is None:
-        traces = [[100] * len(bases)] * 4
+        traces = [[100 if b == ch else 4 for b in bases] for ch in "ATGC"]
     entries = [
         (b"PBAS", 2, 2, 1, len(bases), bases.encode()),
         (b"PCON", 2, 2, 1, len(quals), bytes(quals)),

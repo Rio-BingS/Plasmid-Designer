@@ -42,18 +42,81 @@ def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float]:
     return "B", q20_ratio
 
 
-def _variant_confidence(v: Dict, mixed_positions: set) -> str:
-    """变异置信度分级（Mutation Surveyor 置信评分的简化口径）
+def _peak_snr(trace: Dict[str, List[int]], base: str, pk: int,
+              half_window: int = 2) -> Optional[float]:
+    """变体碱基通道的信噪比（Mutation Surveyor S/N 要素的工程近似）
 
-    - 变异位点落在该 read 的混合峰列表 → 低（疑似杂合/混合，须人工看峰）
-    - 多 read 支持且平均 Q≥25 → 高
-    - 单 read：Q≥40 高；25–39 中；<25 低
+    峰高取变体位点窗口内该通道最大值；噪声本底取该通道全轨迹中位数。
+    """
+    ch = trace.get(base) or []
+    n = len(ch)
+    if n == 0 or pk < 0 or pk >= n:
+        return None
+    lo, hi = max(0, pk - half_window), min(n, pk + half_window + 1)
+    peak = max(ch[lo:hi])
+    rest = ch[:lo] + ch[hi:]
+    if not rest:
+        return None
+    noise = sorted(rest)[len(rest) // 2]
+    return round(peak / noise, 1) if noise > 0 else None
+
+
+def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
+                           read_pos: Optional[int], ref_base: str,
+                           alt_base: str) -> Optional[Dict]:
+    """替换变体的峰级证据（仅替换；indel 无对应单通道，返回 None）
+
+    - mutant_pct = 100 × alt 峰面积 / (alt + ref 峰面积)（Mutation Surveyor 峰强比公式）：
+      ~100% 为纯合真实突变，~50% 为混合双峰；
+    - snr：alt 通道峰高 / 全轨迹本底中位数。
+    """
+    if not ref_base or not alt_base or len(ref_base) != 1 or len(alt_base) != 1:
+        return None
+    if alt_base not in "ACGT" or ref_base not in "ACGT":
+        return None
+    if not trace or not peak_indices or read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
+        return None
+    pk = peak_indices[read_pos - 1]
+    n = min(len(v) for v in trace.values())
+    if n == 0 or pk is None or pk < 0 or pk >= n:
+        return None
+    lo, hi = _peak_window(peak_indices, read_pos - 1, n)
+    areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
+    alt_a, ref_a = areas.get(alt_base, 0), areas.get(ref_base, 0)
+    mutant_pct = round(100 * alt_a / (alt_a + ref_a), 1) if alt_a + ref_a > 0 else None
+    return {"mutant_pct": mutant_pct, "snr": _peak_snr(trace, alt_base, pk)}
+
+
+def _variant_confidence(v: Dict, mixed_positions: set,
+                        evidence: Optional[Dict] = None) -> str:
+    """变异置信度分级（Mutation Surveyor 评分要素：峰强比 + 信噪比 + Q 值 + 多 read 支持）
+
+    - 混合峰信号（次级峰占比 >30%，或峰级突变占比落在 30-70%）→ 低：疑似混合/杂合
+    - 信噪比 < 5（突变峰接近本底）→ 低
+    - 突变峰占比 ≥80% 且信号强，Q≥40（或多 read 支持 Q≥30）→ 高
+    - 无峰证据（indel / trace 缺失）时退回 Q + 支持数口径；indel 假阳性率远高于
+      替换（同聚物滑移、错配区比对补偿），单 read 低质量 indel 的门槛为 Q30
     """
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
         return "low"
     q = v.get("read_q") or 0
     support = v.get("support_reads") or 1
-    if q < 25:
+    if evidence is not None:
+        mp = evidence.get("mutant_pct")
+        snr = evidence.get("snr")
+        if mp is not None and mp < 70:
+            return "low"  # 突变通道弱于参考通道（<30 疑似误读）或与参考通道相当（30-70 双峰混合）
+        if snr is not None and snr < 5:
+            return "low"  # 突变峰淹没在本底附近
+        clean = mp is None or mp >= 80
+        loud = snr is None or snr >= 10
+        if clean and loud and (q >= 40 or (support >= 2 and q >= 30)):
+            return "high"
+        if q >= 25:
+            return "medium"
+        return "low"
+    floor = 30 if v.get("type") in ("insertion", "deletion") else 25
+    if q < floor:
         return "medium" if support >= 2 else "low"
     if q >= 40:
         return "high"
@@ -86,18 +149,38 @@ def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, i
     return (s, e)
 
 
+def _peak_window(peak_indices: List[int], i: int, n: int,
+                 default_half: int = 6) -> Tuple[int, int]:
+    """第 i 个碱基峰在 trace 数据中的取样窗口 [lo, hi)
+
+    PLOC 峰坐标是 trace 数据点坐标（每碱基占多个采样点，非碱基索引）。
+    半宽取相邻峰间距的一半（覆盖本峰面积、不跨入邻峰）；间距为 1
+    （每碱基单采样点，常见于合成数据）时退化为单点窗口。
+    """
+    pk = peak_indices[i]
+    gaps = []
+    if i > 0:
+        gaps.append(max(1, pk - peak_indices[i - 1]))
+    if i + 1 < len(peak_indices):
+        gaps.append(max(1, peak_indices[i + 1] - pk))
+    half = min(default_half, min(gaps) // 2) if gaps else default_half
+    lo, hi = max(0, pk - half), min(n, pk + half + 1)
+    return lo, max(lo + 1, hi)
+
+
 def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
                             peak_indices: List[int]) -> List[int]:
     """检测疑似混合/杂合位点：次级通道峰面积占主峰比例过高"""
     mixed = []
+    n = min(len(v) for v in trace.values()) if trace else 0
     for i, base in enumerate(bases):
         if base not in "ACGT" or i >= len(peak_indices):
             continue
         pk = peak_indices[i]
-        window = range(max(0, pk - 2), min(min(len(v) for v in trace.values()), pk + 3))
-        areas = {}
-        for b in "ACGT":
-            areas[b] = sum(trace[b][j] for j in window)
+        if pk is None or pk < 0 or pk >= n:
+            continue
+        lo, hi = _peak_window(peak_indices, i, n)
+        areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
         sorted_a = sorted(areas.values(), reverse=True)
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
@@ -132,12 +215,17 @@ def _try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
         return None
 
 
-def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
+def _build_consensus(reference: str, read_results: List[Dict],
+                     skip_keys: Optional[set] = None) -> Dict:
     """按参考坐标逐位质量加权投票生成共识序列
 
     每个 read 以其平均质量为权重为覆盖区间内的参考碱基投票；
     变体（替换/缺失/插入）以 权重+5 的票修正对应位点——单 read 覆盖区
     即以该 read 为准（模拟人工核对），多 read 覆盖时孤立低质量差异被压制。
+
+    skip_keys：{(ref_pos, type, alt_base)} 低置信变体集合。这些调用不写入
+    共识——共识序列代表当前证据下的最佳猜测构建体，疑似测序噪声只在变体
+    清单中列出供人工核对，不应固化进共识。
     """
     L = len(reference)
     votes: List[Dict[str, int]] = [{} for _ in range(L)]
@@ -150,6 +238,8 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
                 base = reference[pos - 1].upper()
                 votes[pos - 1][base] = votes[pos - 1].get(base, 0) + weight
         for v in aln["variants"]:
+            if skip_keys and (v["ref_pos"], v["type"], v.get("alt_base", "")) in skip_keys:
+                continue
             if v["type"] == "substitution":
                 idx = v["ref_pos"] - 1
                 if 0 <= idx < L:
@@ -210,6 +300,57 @@ def _build_consensus(reference: str, read_results: List[Dict]) -> Dict:
     }
 
 
+_ALT_STARTS = ("ATG", "GTG", "TTG", "ATT", "CTG", "ATC", "ATA")  # 细菌起始密码子
+_STOP_CODONS = {"TAA", "TAG", "TGA"}
+
+
+def _find_orf(ref: str, start: int, end: int, strand: str) -> Optional[Dict]:
+    """在特征区间内寻找最佳开放阅读框（ORF），返回参考坐标 {orf_start, orf_end}
+
+    手动标注/导入的 CDS 特征边界常有 1-3bp 偏差（如起点多含上游碱基），
+    直接按特征起点取框翻译会整体错位、连起始密码子判定都失效。
+    枚举区间内三个阅读框：优先“起始密码子→终止密码子”完整的 ORF
+    （ATG 优先于替代起始），其次起始→区间末端的开放框，取最长者。
+    """
+    win = ref[start - 1:end]
+    if strand == "-":
+        from Bio.Seq import Seq
+        win = str(Seq(win).reverse_complement())
+    N = len(win)
+    best: Optional[Tuple[tuple, int, int]] = None  # (score, a, b) win 内 0-based 半开 [a,b)
+
+    def consider(a: int, b: int, has_stop: bool):
+        nonlocal best
+        atg = win[a:a + 3] == "ATG"
+        # 长度主导：真实 CDS 通常是区间内最长开放框，防止随机短完整 ORF 反超
+        score = (b - a, atg, has_stop)
+        if best is None or score > best[0]:
+            best = (score, a, b)
+
+    for frame in range(3):
+        i = frame
+        while i + 3 <= N:
+            if win[i:i + 3] in _ALT_STARTS:
+                j = i
+                stop_found = False
+                while j + 3 <= N:
+                    if win[j:j + 3] in _STOP_CODONS:
+                        consider(i, j + 3, True)
+                        stop_found = True
+                        break
+                    j += 3
+                if not stop_found:
+                    consider(i, N, False)  # 有起始但区间内无终止：开放框
+            i += 3
+    if best is None:
+        return None
+    _, a, b = best
+    if strand == "-":
+        # 反向互补空间 [a,b) → 参考坐标：位置 i（0-based）对应参考 end-i（1-based）
+        return {"orf_start": end - b + 1, "orf_end": end - a}
+    return {"orf_start": start + a, "orf_end": start + b - 1}
+
+
 def _build_cds_reports(
     ref: str, features: List[Dict], variants: List[Dict], consensus: Dict
 ) -> List[Dict]:
@@ -217,12 +358,15 @@ def _build_cds_reports(
 
     回答“整段 CDS 测序结果有没有问题”：
     - 覆盖：CDS 区间与共识覆盖区间求交，未覆盖部分按参考填充、不参与判定；
+    - 编码区校正：特征边界偏差（1-3bp 很常见）时自动对齐区间内最佳 ORF，
+      以真实编码区翻译，避免阅读框整体错位；
+    - 嵌套去重：被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论；
     - 蛋白：从共识差异重建 CDS 序列（按链方向翻译），与参考翻译逐位比对，
       给出一致/不一致、移码数、无义提前终止位置与氨基酸替换清单。
     """
     from Bio.Seq import Seq
 
-    ALT_START_CODONS = {"GTG", "TTG", "ATT", "CTG", "ATC", "ATA"}  # 细菌替代起始
+    ALT_START_CODONS = set(_ALT_STARTS)
 
     def _translate(seq: str, strand: str) -> str:
         s = str(Seq(seq).reverse_complement()) if strand == "-" else seq
@@ -232,9 +376,6 @@ def _build_cds_reports(
             prot = "M" + prot[1:]  # 细菌替代起始密码子按惯例显示为 M
         return prot[:-1] if prot.endswith("*") else prot  # 去掉末尾终止密码子
 
-    diff_by_pos: Dict[int, Dict] = {}
-    for d in consensus.get("diffs", []):
-        diff_by_pos[d["ref_pos"]] = d  # 每个参考位置至多一条共识差异
     covered_ranges = consensus.get("covered_ranges", [])
 
     def _span_coverage(start: int, end: int) -> float:
@@ -246,23 +387,23 @@ def _build_cds_reports(
         length = end - start + 1
         return round(cov / length * 100, 1) if length else 0.0
 
-    def _rebuild(start: int, end: int) -> str:
-        """参考区间 [start, end] 的共识序列（替换/插入/缺失已应用，参考方向）"""
+    def _rebuild_from_variants(start: int, end: int, vs: List[Dict]) -> str:
+        """按变体列表重建区间核酸（anchor 语义：插入位于 ref_pos 与 ref_pos+1 之间）"""
+        subs = {v["ref_pos"]: v["alt_base"] for v in vs if v["type"] == "substitution"}
+        dels: set = set()
+        for v in vs:
+            if v["type"] == "deletion":
+                dels.update(range(v["ref_pos"], v["ref_pos"] + int(v.get("length") or 1)))
+        ins_at: Dict[int, List[str]] = {}
+        for v in vs:
+            if v["type"] == "insertion" and start <= v["ref_pos"] < end:
+                ins_at.setdefault(v["ref_pos"], []).append(v["alt_base"])
         out: List[str] = []
         for pos in range(start, end + 1):
-            d = diff_by_pos.get(pos)
-            if d is None:
-                out.append(ref[pos - 1])
-            elif d["cons_base"] == "-":
-                continue  # 缺失：该参考碱基被删
-            elif d["ref_base"] == "-":
-                # 插入位于 pos 与 pos-1 之间：仅当插入点严格落在 CDS 内部才影响该 CDS；
-                # 紧贴起点之前（pos == start）的插入不改变 CDS 自身序列
-                if start < pos <= end:
-                    out.extend(d["cons_base"])
-                out.append(ref[pos - 1])
-            else:
-                out.append(d["cons_base"])  # 替换
+            if pos not in dels:
+                out.append(subs.get(pos) or ref[pos - 1])
+            for alt in ins_at.get(pos, []):
+                out.append(alt)
         return "".join(out)
 
     def _protein_alignment(ref_prot: str, alt_prot: str) -> Dict:
@@ -317,18 +458,38 @@ def _build_cds_reports(
         }
 
     reports: List[Dict] = []
-    for f in features or []:
-        if f.get("type") != "CDS":
+    # 嵌套去重：被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论
+    cds_feats = [f for f in (features or []) if f.get("type") == "CDS"]
+    nested_ids = {
+        id(f)
+        for f in cds_feats
+        for g in cds_feats
+        if g is not f
+        and int(g["start"]) <= int(f["start"]) and int(f["end"]) <= int(g["end"])
+        and (int(g["end"]) - int(g["start"])) > (int(f["end"]) - int(f["start"]))
+    }
+    for f in cds_feats:
+        if id(f) in nested_ids:
             continue
-        start, end = int(f["start"]), int(f["end"])
-        if start < 1 or end > len(ref) or start > end:
+        feat_start, feat_end = int(f["start"]), int(f["end"])
+        if feat_start < 1 or feat_end > len(ref) or feat_start > feat_end:
             continue
         strand = f.get("strand") or "+"
+        # 编码区校正：特征边界常有 1-3bp 偏差（如起点多含上游碱基），
+        # 对齐区间内最佳 ORF 后再翻译，此后 start/end 均指真实编码区
+        orf = _find_orf(ref, feat_start, feat_end, strand)
+        start, end = (orf["orf_start"], orf["orf_end"]) if orf else (feat_start, feat_end)
+        if orf and (start, end) != (feat_start, feat_end):
+            shift = f"起点相差 {abs(start - feat_start)} bp" if start != feat_start \
+                else f"终点相差 {abs(end - feat_end)} bp"
+            frame_note = (
+                f"（特征标注 {feat_start}-{feat_end} 与实际编码区 {start}-{end} {shift}，已按编码区翻译）"
+            )
+        elif (end - start + 1) % 3:
+            frame_note = f"（注意：该特征长度 {end - start + 1} bp 不是 3 的倍数，翻译按参考阅读框截断）"
+        else:
+            frame_note = ""
         cov_pct = _span_coverage(start, end)
-        frame_note = (
-            "" if (end - start + 1) % 3 == 0
-            else f"（注意：该特征长度 {end - start + 1} bp 不是 3 的倍数，翻译按参考阅读框截断）"
-        )
         base = {
             "name": f.get("name") or "CDS",
             "start": start,
@@ -348,15 +509,12 @@ def _build_cds_reports(
                 "aa_changes": [],
                 "consequences": [],
                 "synonymous_count": 0,
+                "pending_low_confidence": 0,
                 "verdict": "未被测序覆盖，无法判定，建议补充覆盖该区域的引物",
             })
             continue
 
         ref_prot = _translate(ref[start - 1:end], strand)
-        alt_nt_full = _rebuild(start, end)
-        alt_prot_raw = _translate(alt_nt_full, strand)
-        stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
-        alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
 
         # 变体是否影响该 CDS：替换/缺失按碱基区间与 CDS 相交判定；
         # 插入发生在 ref_pos 与 ref_pos+1 之间，插入点严格落在 CDS 内部
@@ -370,8 +528,16 @@ def _build_cds_reports(
             return start <= v["ref_pos"] <= end
 
         in_cds = [v for v in variants if _affects(v)]
-        indels = [v for v in in_cds if v.get("type") in ("insertion", "deletion")]
-        # 移码自判定：影响该 CDS 的 indel 长度非 3 的倍数即为移码
+        # 置信度分层：低置信变异（峰级证据/Q 值不支持，疑似测序噪声）不计入
+        # 确证判定，单独提示待复核——避免噪声推翻整段 CDS 结论
+        confirmed = [v for v in in_cds if v.get("confidence", "high") != "low"]
+        pending = [v for v in in_cds if v.get("confidence", "high") == "low"]
+        alt_nt_full = _rebuild_from_variants(start, end, confirmed)
+        alt_prot_raw = _translate(alt_nt_full, strand)
+        stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
+        alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
+        indels = [v for v in confirmed if v.get("type") in ("insertion", "deletion")]
+        # 移码自判定：影响该 CDS 的确证 indel 长度非 3 的倍数即为移码
         #（不依赖全局注释——注释器只看变体自身所在特征，会漏掉边界插入）
         frameshifts = [v for v in indels if int(v.get("length") or 1) % 3 != 0]
         inframe_ins = sum(1 for v in indels if v["type"] == "insertion" and int(v.get("length") or 1) % 3 == 0)
@@ -397,10 +563,10 @@ def _build_cds_reports(
             and (len(alt_o_codons) < 3 or alt_o_codons[-3:] not in stop_codons)
         )
 
-        # CDS 区间内的 DNA 替换数（用于同义突变统计）
+        # CDS 区间内的 DNA 替换数（确证变体，用于同义突变统计）
         dna_subs = sum(
-            1 for pos, d in diff_by_pos.items()
-            if start <= pos <= end and d["ref_base"] != "-" and d["cons_base"] != "-"
+            1 for v in confirmed
+            if v.get("type") == "substitution" and start <= v["ref_pos"] <= end
         )
 
         aln = _protein_alignment(ref_prot, alt_prot)
@@ -482,6 +648,16 @@ def _build_cds_reports(
             else f"CDS 完整覆盖，{verdict}"
         )
         verdict += frame_note
+        # 待复核提示：低置信变异不计入上述判定，但需告知用户其潜在影响
+        if pending:
+            worst_q = max(int(v.get("read_q") or 0) for v in pending)
+            # 假设待复核变异全部为真：按 确证+待复核 重建并与仅按确证的产物对比
+            would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
+            hint = "若证实为真将改变翻译产物" if would_change else "经核对其不改变翻译产物判定"
+            verdict += (
+                f"；另有 {len(pending)} 处低置信变异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
+                f"（{hint}），建议人工核对峰图"
+            )
         reports.append({
             **base,
             "coverage_status": "full" if cov_pct >= 99 else "partial",
@@ -493,6 +669,7 @@ def _build_cds_reports(
             "aa_changes": aa_diffs[:10],
             "consequences": consequences,
             "synonymous_count": synonymous,
+            "pending_low_confidence": len(pending),
             "verdict": verdict,
         })
     return reports
@@ -554,8 +731,14 @@ def analyze(
             v["quality"] = trimmed_q[qi]
 
         mixed_positions = _detect_mixed_positions(
-            trimmed, read["trace"], [p - s for p in read["peak_indices"] if s <= p < e]
+            trimmed, read["trace"],
+            [read["peak_indices"][i] for i in range(s, min(e, len(read["peak_indices"])))],
         )
+        # 变体 read_pos 基于 trimmed 碱基（1-based）；峰坐标保持 trace 数据点坐标系，
+        # 与 PLOC 一致，供混合检测与峰级证据按相邻峰窗口取样
+        trimmed_peaks = [
+            read["peak_indices"][i] for i in range(s, min(e, len(read["peak_indices"])))
+        ]
 
         read_results.append({
             "filename": filename,
@@ -571,6 +754,7 @@ def analyze(
             "mixed_positions": mixed_positions,
             "trace": read["trace"],
             "peak_indices": read["peak_indices"],
+            "trimmed_peaks": trimmed_peaks,
         })
 
     # 合并全部变体 → 注释 → 汇总
@@ -592,12 +776,30 @@ def analyze(
     variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
     variants = annotate_variants(variants, features, ref)
 
-    # 变异置信度（Mutation Surveyor 式评估的简化口径）
+    # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
+    by_read = {r["filename"]: r for r in read_results}
     mixed_by_read = {r["filename"]: set(r["mixed_positions"]) for r in read_results}
     for v in variants:
-        v["confidence"] = _variant_confidence(v, mixed_by_read.get(v.get("read", ""), set()))
+        src = by_read.get(v.get("read", ""))
+        evidence = None
+        if src is not None:
+            evidence = _variant_peak_evidence(
+                src["trace"], src["trimmed_peaks"], v.get("read_pos"),
+                v.get("ref_base", ""), v.get("alt_base", ""),
+            )
+            if evidence is not None:
+                v["peak_evidence"] = evidence
+        v["confidence"] = _variant_confidence(
+            v, mixed_by_read.get(v.get("read", ""), set()), evidence
+        )
 
-    consensus = _build_consensus(ref, read_results)
+    # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
+    # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
+    low_keys = {
+        (v["ref_pos"], v["type"], v.get("alt_base", ""))
+        for v in variants if v.get("confidence") == "low"
+    }
+    consensus = _build_consensus(ref, read_results, skip_keys=low_keys)
 
     coverage_ranges = merge_coverage(
         [(r["alignment"]["ref_start"], r["alignment"]["ref_end"]) for r in read_results],

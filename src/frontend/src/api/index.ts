@@ -432,6 +432,8 @@ export interface CdsReport {
   /** Sequence Ontology 标准后果词表（与 VEP/snpEff/bcftools csq 对齐） */
   consequences?: string[]
   synonymous_count?: number
+  /** 低置信（疑似测序噪声）未计入判定的变体数 */
+  pending_low_confidence?: number
   verdict: string
 }
 
@@ -453,6 +455,8 @@ export interface SequencingVariant {
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
   confidence?: string
+  /** 替换变体的峰级证据（Mutation Surveyor 式）：突变峰占比% / 信噪比 */
+  peak_evidence?: { mutant_pct?: number | null; snr?: number | null }
 }
 
 export interface SequencingAnalysis {

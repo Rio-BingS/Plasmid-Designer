@@ -289,6 +289,17 @@ function soLevel(t: string): string {
   return 'low'
 }
 
+/** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比） */
+function confTitle(v: { confidence?: string; peak_evidence?: { mutant_pct?: number | null; snr?: number | null } }): string {
+  const ev = v.peak_evidence
+  const peak = ev && ev.mutant_pct != null
+    ? `峰级证据：突变峰占比 ${ev.mutant_pct}%，信噪比 ${ev.snr ?? '—'}`
+    : ''
+  if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
+  if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
+  return `高置信${peak ? '：' + peak : ''}`
+}
+
 // ==================== 匹配简图（SnapGene 风格线性图谱） ====================
 // 上方 read 深红块状箭头（方向见箭头），中间刻度轴（绿段=已测覆盖、轴上红块=变异），
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
@@ -813,6 +824,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               <span class="cds-coord">{{ c.start }}-{{ c.end }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
               <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
               <span v-for="t in c.consequences ?? []" :key="t" class="cds-so" :class="soLevel(t)">{{ SO_LABELS[t] ?? t }}</span>
+              <span v-if="c.pending_low_confidence" class="cds-so mid"
+                    title="低置信变异（疑似测序噪声）未计入本结论，见结论末尾待复核说明">待复核 {{ c.pending_low_confidence }} 处</span>
             </p>
             <p class="cds-verdict">{{ c.verdict }}</p>
             <p class="cds-detail" v-if="c.protein_identical === false">
@@ -940,7 +953,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               <td>{{ v.read_q ?? '-' }}</td>
               <td>
                 <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
-                      :title="v.confidence === 'low' ? '低置信：变异位有混合峰信号或 Q 值偏低，务必人工核对峰图' : (v.confidence === 'medium' ? '中置信：建议峰图复核' : '高置信')">
+                      :title="confTitle(v)">
                   {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
                 </span>
                 <span v-else>-</span>

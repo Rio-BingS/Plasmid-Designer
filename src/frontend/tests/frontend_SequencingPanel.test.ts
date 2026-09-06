@@ -374,9 +374,41 @@ describe('SequencingPanel', () => {
     // happy-dom 的 querySelector 对复合类选择器（.a.b）不可靠，用单类选择器断言
     expect(wrapper.find('.conf-low').text()).toBe('低')
     // 覆盖缺口提示（按长度排序，取最长 3 段）
-    console.log('DEBUG confChip:', wrapper.html().includes('conf-chip'), '| confLow:', wrapper.html().includes('conf-low'), '| rowGFP:', wrapper.html().includes('GFP'))
     const gaps = wrapper.find('.coverage-gaps').text()
     expect(gaps).toContain('覆盖缺口 2 段')
     expect(gaps).toContain('600-4900（4301bp）')
+  })
+
+  it('shows peak evidence in confidence tooltip and pending CDS chip', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      variants: [{
+        ...mockAnalysis.variants[0],
+        confidence: 'high',
+        peak_evidence: { mutant_pct: 99.6, snr: 250 },
+      }],
+      cds_reports: [{
+        ...mockAnalysis.cds_reports?.[0],
+        name: 'MX', start: 5075, end: 6877, strand: '+',
+        coverage_status: 'full', covered_percent: 100,
+        ref_protein_length: 600, alt_protein_length: 600, protein_identical: true,
+        premature_stop_aa: null, frameshift_count: 0, aa_changes: [],
+        consequences: [], synonymous_count: 1,
+        pending_low_confidence: 5,
+        verdict: 'CDS 完整覆盖，翻译产物与参考一致；另有 5 处低置信变异未计入判定（经核对其不改变翻译产物判定），建议人工核对峰图',
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    // 置信度 tooltip 附峰级证据
+    expect(wrapper.find('.conf-high').attributes('title')).toContain('突变峰占比 99.6%')
+    expect(wrapper.find('.conf-high').attributes('title')).toContain('信噪比 250')
+    // CDS 卡：绿色（一致）+ 待复核徽章
+    expect(wrapper.findAll('.cds-dot.pass').length).toBe(1)
+    const pending = wrapper.findAll('.cds-so.mid').find((w) => w.text().includes('待复核'))
+    expect(pending).toBeTruthy()
+    expect(pending!.text()).toContain('5 处')
+    expect(wrapper.find('.cds-verdict').text()).toContain('未计入判定')
   })
 })

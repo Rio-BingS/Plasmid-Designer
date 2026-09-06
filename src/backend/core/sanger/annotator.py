@@ -62,7 +62,10 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
             aa_ref = CODON_TABLE.get(codon_ref, "x")
             aa_alt = CODON_TABLE.get("".join(mut_codon).upper(), "x")
             variant["codon_change"] = f"{codon_ref}>{''.join(mut_codon).upper()}"
-            variant["aa_change"] = f"{feat.get('name', 'CDS')}:{aa_ref}{offset // 3 + 1}{aa_alt}"
+            if aa_alt != aa_ref:
+                variant["aa_change"] = f"{feat.get('name', 'CDS')}:{aa_ref}{offset // 3 + 1}{aa_alt}"
+            elif aa_ref != "x":
+                variant["synonymous"] = True  # 同义：DNA 变、蛋白不变，不算氨基酸改变
         elif variant["type"] in ("insertion", "deletion"):
             variant["frameshift"] = variant["length"] % 3 != 0
 
@@ -120,14 +123,19 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
     for v in variants:
         loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
         if v.get("frameshift"):
-            notes.append(f"位置 {v['ref_pos']} {v['type']}（{loc}）导致移码")
+            note = f"位置 {v['ref_pos']} {v['type']}（{loc}）导致移码"
         elif v.get("aa_change"):
-            notes.append(f"位置 {v['ref_pos']} 氨基酸改变 {v['aa_change']}（{loc}）")
+            note = f"位置 {v['ref_pos']} 氨基酸改变 {v['aa_change']}（{loc}）"
+        elif v.get("synonymous"):
+            note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）同义突变（蛋白不变）"
         elif v["type"] == "substitution":
-            notes.append(f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）")
+            note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）"
         else:
             kind = "插入" if v["type"] == "insertion" else "缺失"
-            notes.append(f"位置 {v['ref_pos']} {kind} {v['length']}bp（{loc}）")
+            note = f"位置 {v['ref_pos']} {kind} {v['length']}bp（{loc}）"
+        if v.get("confidence") == "low":
+            note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
+        notes.append(note)
         if v.get("enzyme_sites_lost"):
             notes.append(f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}")
         if v.get("enzyme_sites_gained"):

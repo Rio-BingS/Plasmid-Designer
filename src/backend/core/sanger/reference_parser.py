@@ -131,7 +131,9 @@ def _from_snapgene(data: bytes) -> Tuple[str, List[Dict]]:
     features: List[Dict] = []
     for f in d.get("features") or []:
         try:
-            start, end = int(f["start"]), int(f["end"])
+            # snapgene_reader 返回 0-based 半开区间 [start, end)：
+            # start 比文件里的 1-based 坐标小 1，end 保持 1-based 含端点
+            start, end = int(f["start"]) + 1, int(f["end"])
         except (KeyError, TypeError, ValueError):
             continue
         if start > end:
