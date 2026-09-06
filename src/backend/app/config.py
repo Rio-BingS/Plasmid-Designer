@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # 应用信息
     APP_NAME: str = "Plasmid Designer"
-    APP_VERSION: str = "2.0.0"
+    APP_VERSION: str = "2.1.0"
     # 生产环境保持 False；开发调试时通过 .env / 环境变量显式打开
     DEBUG: bool = False
 

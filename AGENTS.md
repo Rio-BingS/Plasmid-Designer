@@ -124,7 +124,8 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   前端新增 /sequencing/batch 路由 + BatchSequencingView + 导航「批量测序」，
   查看详情深链 /sequencing?history=<id>（SequencingView 新增该参数回看载入）；
   单样品入口 /sequencing 保持不变
-- pytest **262 通过**（含 test_account_system 18 项、test_sequencing_batch 7 项、
+- pytest **247 通过**（含 test_account_system 18 项、test_docker_requirements_sync 3 项、
+  test_sequencing_batch 7 项、
   test_batch_sequencing 11 项、test_vector_data 数据守门 6 项、CDS 测序结论/峰级证据/
   ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **81 通过**；vite build 通过
 - 新增（2026-09-07）**批量测序整理分析脚本**（scripts/batch_sequencing_report.py）：离线批处理

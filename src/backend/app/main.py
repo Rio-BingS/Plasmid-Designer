@@ -27,7 +27,7 @@ from app.storage import STORAGE_MODE
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动/关停生命周期（替代已弃用的 @app.on_event）"""
-    print(f"🧬 Plasmid Designer API v2.0.0")
+    print(f"🧬 Plasmid Designer API v{settings.APP_VERSION}")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API",
-    version="2.1.0",
+    version=settings.APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -85,7 +85,7 @@ async def root():
     """API 根路径"""
     return {
         "name": "Plasmid Designer API",
-        "version": "2.1.0",
+        "version": settings.APP_VERSION,
         "status": "running",
         "storage_mode": STORAGE_MODE
     }
