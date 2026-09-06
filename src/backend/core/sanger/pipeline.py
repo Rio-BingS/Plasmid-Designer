@@ -339,8 +339,10 @@ def _build_cds_reports(
         alt_o = _orient(alt_nt_full)
         alt_o_codons = alt_o[:len(alt_o) - len(alt_o) % 3]
         start_lost = ref_o[:3] in start_codons and alt_o[:3] not in start_codons
+        # 移码下整个下游阅读框已改变，参考终止密码子无从谈起，不报 stop_lost
         stop_lost = (
-            len(ref_o) >= 3 and ref_o[-3:] in stop_codons
+            not frameshifts
+            and len(ref_o) >= 3 and ref_o[-3:] in stop_codons
             and (len(alt_o_codons) < 3 or alt_o_codons[-3:] not in stop_codons)
         )
 
