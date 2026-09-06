@@ -4,17 +4,16 @@ import SequencingPanel from '@/components/SequencingPanel.vue'
 import type { SequencingAnalysis } from '@/api'
 
 vi.mock('@/api', () => ({
-  analyzeVectorSequencing: vi.fn(),
-  analyzeDesignSequencing: vi.fn(),
+  analyzeSequencingFiles: vi.fn(),
   getReadTrace: vi.fn(),
   exportConsensus: vi.fn()
 }))
 
-import { analyzeVectorSequencing } from '@/api'
+import { analyzeSequencingFiles } from '@/api'
 
 const mockAnalysis: SequencingAnalysis = {
   analysis_id: 'seq_test1',
-  sample_name: 'pET-28a',
+  sample_name: 'my_construct',
   created_at: '2026-01-01T00:00:00',
   engine: 'internal+biopython',
   conclusion: '共检出 1 处差异（覆盖 12.0%）',
@@ -37,30 +36,78 @@ const mockAnalysis: SequencingAnalysis = {
   features: []
 }
 
+function makeFile(name: string, content = 'x'): File {
+  return new File([content], name, { type: 'application/octet-stream' })
+}
+
 describe('SequencingPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('renders upload area initially', () => {
-    const wrapper = mount(SequencingPanel, { props: { referenceId: 'v1', mode: 'vector' } })
+  it('renders upload area initially with nothing staged', () => {
+    const wrapper = mount(SequencingPanel)
     expect(wrapper.text()).toContain('Sanger 测序结果验证')
     expect(wrapper.text()).toContain('开始自动分析')
+    expect(wrapper.text()).toContain('尚未选择文件')
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeDefined()
   })
 
-  it('renders full analysis result', async () => {
-    vi.mocked(analyzeVectorSequencing).mockResolvedValue(mockAnalysis)
-    const wrapper = mount(SequencingPanel, { props: { referenceId: 'v1', mode: 'vector' } })
+  it('classifies mixed folder files into reference / reads / ignored', async () => {
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([
+      makeFile('r1.ab1'),
+      makeFile('construct.gb'),
+      makeFile('notes.txt'),
+      makeFile('second.dna'),
+      makeFile('r2.ab1'),
+    ])
+    await wrapper.vm.$nextTick()
 
-    // 直接调用内部状态：模拟上传后分析完成
-    ;(wrapper.vm as any).analysis = await analyzeVectorSequencing('v1', [])
+    const text = wrapper.text()
+    expect(text).toContain('construct.gb')      // 参考序列
+    expect(text).toContain('测序文件 × 2')       // 两个 .ab1
+    expect(text).toContain('r1.ab1')
+    expect(text).toContain('r2.ab1')
+    expect(text).toContain('已忽略无关文件')      // notes.txt
+    expect(text).toContain('已忽略多余的参考文件') // second.dna
+    // 参考与 reads 齐备，不应出现缺失提示，分析按钮可用
+    expect(text).not.toContain('还差')
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeUndefined()
+  })
+
+  it('stages initialReference prop automatically (deep link)', async () => {
+    const ref = makeFile('design_x.gb')
+    const wrapper = mount(SequencingPanel, { props: { initialReference: ref } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('design_x.gb')
+    expect(wrapper.text()).toContain('还差 .ab1 测序文件')
+  })
+
+  it('runs analysis with reference + reads via generic endpoint', async () => {
+    vi.mocked(analyzeSequencingFiles).mockResolvedValue(mockAnalysis)
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('construct.gb'), makeFile('r1.ab1')])
+    ;(wrapper.vm as any).runAnalysis()
     await flushPromises()
+
+    expect(analyzeSequencingFiles).toHaveBeenCalledTimes(1)
+    const [ref, reads, minQ, decompose] = vi.mocked(analyzeSequencingFiles).mock.calls[0]
+    expect(ref.name).toBe('construct.gb')
+    expect(reads.map((f: File) => f.name)).toEqual(['r1.ab1'])
+    expect(minQ).toBe(20)
+    expect(decompose).toBe(true)
 
     const text = wrapper.text()
     expect(text).toContain('共检出 1 处差异')
-    expect(text).toContain('12%')          // 覆盖率
-    expect(text).toContain('EcoRI')        // 破坏酶切位点
-    expect(text).toContain('GFP:K5E')      // 氨基酸变化
-    expect(text).toContain('导出 FASTA')    // 共识导出
+    expect(text).toContain('EcoRI')
+    expect(text).toContain('GFP:K5E')
+    expect(text).toContain('导出 FASTA')
+  })
+
+  it('shows historical analysis when preset injected', async () => {
+    const wrapper = mount(SequencingPanel, { props: { preset: mockAnalysis } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('共检出 1 处差异')
   })
 })

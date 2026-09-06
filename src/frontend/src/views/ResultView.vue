@@ -3,7 +3,6 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
-import { recordRecentDesign } from '@/utils/recentDesigns'
 import PlasmidMap from '@/components/PlasmidMap.vue'
 import SequenceView from '@/components/SequenceView.vue'
 
@@ -35,16 +34,6 @@ async function fetchResult() {
   try {
     const data = await getDesign(props.designId)
     result.value = data
-
-    // 完成态记录到「最近设计」，供测序分析页快速选择参考序列
-    if (data.status === 'completed') {
-      recordRecentDesign({
-        design_id: data.design_id,
-        vector_name: data.vector_name || '',
-        length: data.final_length ?? data.construct_sequence?.length ?? 0,
-        time: data.created_at,
-      })
-    }
 
     if (data.status === 'pending' || data.status === 'running') {
       if (!pollInterval) {

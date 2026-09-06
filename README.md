@@ -182,7 +182,8 @@ STORAGE_MODE=database
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个）对设计构建体全自动测序验证 |
+| POST | `/api/sequencing/analyze` | 上传参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）+ .ab1（可多个）全自动测序验证 |
+| POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个），参考序列取设计构建体 |
 | POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体 |
 | GET | `/api/sequencing/analyses` | 历史分析列表（摘要，时间倒序） |
 | GET | `/api/sequencing/analyses/{id}` | 分析结果（结论/突变表/共识序列/覆盖率） |
@@ -190,14 +191,19 @@ STORAGE_MODE=database
 | GET | `/api/sequencing/analyses/{id}/consensus/export` | 导出拼接结果（fasta / genbank） |
 | DELETE | `/api/sequencing/analyses/{id}` | 删除分析记录 |
 
+通用上传端点（`core/sanger/reference_parser.py`）按扩展名解析参考文件：GenBank/FASTA 用
+Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考文件的特征表，
+样品名取参考文件名主干。
+
 全自动管线（`core/sanger/`）：ABIF 解析（主路径 Bio.SeqIO "abi"，无 Biopython 时回退内置解析器）
 → Q 值末端修剪 → 双向比对自动判向（Biopython PairwiseAligner）→ 多 read 共识拼接（质量加权投票）
 → 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增）→ 自动结论。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
 分析记录为进程级内存存储（重启失效）。前端测序分析为独立模块（`/sequencing` 路由，
-`SequencingView.vue`）：选择参考序列（载体库 / 设计结果 ID）→ 上传 .ab1 一键分析 →
-历史分析查看/删除；设计结果页与载体详情页通过深链跳转（`?mode=vector|design&ref=<id>`）。
+`SequencingView.vue`）：把参考序列文件与 .ab1 放在同一文件夹一起拖入/选择（自动按类型分类）→
+一键分析 → 历史分析查看/删除；设计结果页与载体详情页通过深链跳转
+（`?mode=vector|design&ref=<id>`），进入时自动下载对应 GenBank 预填参考序列。
 质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
 （重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
 高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。

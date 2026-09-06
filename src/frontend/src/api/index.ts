@@ -454,38 +454,38 @@ export interface ReadTrace {
   peak_indices: number[]
 }
 
-export async function analyzeDesignSequencing(
-  designId: string,
-  files: File[],
+/** 通用测序分析：参考序列文件（.gb/.fasta/.dna）+ .ab1 测序文件一起上传 */
+export async function analyzeSequencingFiles(
+  reference: File,
+  reads: File[],
   minQ = 20,
   allowDecompose = true
 ): Promise<SequencingAnalysis> {
   const form = new FormData()
-  files.forEach((f) => form.append('files', f))
+  form.append('reference', reference, reference.name)
+  reads.forEach((f) => form.append('reads', f))
   form.append('min_q', String(minQ))
   form.append('allow_decompose', String(allowDecompose))
-  const response = await api.post(`/designs/${designId}/sequencing/analyze`, form, {
+  const response = await api.post('/sequencing/analyze', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000
   })
   return response.data
 }
 
-export async function analyzeVectorSequencing(
-  vectorId: string,
-  files: File[],
-  minQ = 20,
-  allowDecompose = true
-): Promise<SequencingAnalysis> {
-  const form = new FormData()
-  files.forEach((f) => form.append('files', f))
-  form.append('min_q', String(minQ))
-  form.append('allow_decompose', String(allowDecompose))
-  const response = await api.post(`/vectors/${vectorId}/sequencing/analyze`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000
+/** 取设计结果的 GenBank 文件（测序页深链自动带入参考序列用） */
+export async function fetchDesignGenbankFile(designId: string): Promise<File> {
+  const response = await api.get(`/design/${designId}/download/genbank`, { responseType: 'blob' })
+  return new File([response.data], `${designId}.gb`, { type: 'application/octet-stream' })
+}
+
+/** 取载体库载体的 GenBank 文件（测序页深链自动带入参考序列用） */
+export async function fetchVectorGenbankFile(vectorId: string): Promise<File> {
+  const response = await api.get(`/vectors/${vectorId}/sequence`, {
+    params: { format: 'genbank' },
+    responseType: 'blob'
   })
-  return response.data
+  return new File([response.data], `${vectorId}.gb`, { type: 'application/octet-stream' })
 }
 
 export async function getReadTrace(analysisId: string, readIndex: number): Promise<ReadTrace> {

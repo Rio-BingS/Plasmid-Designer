@@ -1,10 +1,11 @@
 """Sanger 测序全自动分析路由
 
-上传一个或多个 .ab1 文件 → 全自动管线（解析→修剪→比对→拼接→注释）→
-结果含自动结论、突变表、共识序列与峰图数据。
+上传参考序列文件（.gb/.fasta/.dna，与 .ab1 放同一文件夹一起导入）→
+全自动管线（解析→修剪→比对→拼接→注释）→ 结果含自动结论、突变表、
+共识序列与峰图数据。
 
-参考序列来源二选一：
-- 设计结果（POST /api/designs/{design_id}/sequencing/analyze，主路径）
+另保留两个按 ID 取参考的便捷端点：
+- 设计结果（POST /api/designs/{design_id}/sequencing/analyze）
 - 载体库中有序列的载体（POST /api/vectors/{vector_id}/sequencing/analyze）
 
 分析记录为进程级内存存储（会话级数据，重启后失效；trace 数据体积大，
@@ -123,6 +124,34 @@ async def _analyze_endpoint(
         del _ANALYSES[oldest]
 
     return _summary(record)
+
+
+@router.post("/sequencing/analyze")
+async def analyze_sequencing_upload(
+    reference: UploadFile = File(..., description="参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）"),
+    reads: List[UploadFile] = File(..., description="一个或多个 .ab1 测序文件"),
+    min_q: int = Form(default=20, ge=5, le=40, description="末端修剪质量阈值"),
+    allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
+):
+    """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
+
+    样品名取参考文件名主干，特征注释直接来自参考文件（GenBank/SnapGene 特征表）。
+    """
+    from core.sanger.reference_parser import parse_reference, ReferenceParseError
+
+    ref_name = reference.filename or "reference.gb"
+    ref_bytes = await reference.read()
+    if not ref_bytes:
+        raise HTTPException(status_code=400, detail="参考文件为空")
+    try:
+        ref_seq, features = await run_in_threadpool(parse_reference, ref_name, ref_bytes)
+    except ReferenceParseError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if len(ref_seq) < 50:
+        raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
+
+    sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
+    return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q, allow_decompose)
 
 
 @router.post("/designs/{design_id}/sequencing/analyze")

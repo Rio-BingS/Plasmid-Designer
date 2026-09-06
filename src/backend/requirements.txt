@@ -22,6 +22,8 @@ email-validator>=2.1.0
 # Sanger 测序分析（比对核心 + ab1 解析主路径 Bio.SeqIO("abi")；
 # 无 Biopython 时回退内置纯标准库解析器）
 biopython>=1.81
+# 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
+snapgene-reader>=0.1.23
 
 # Testing
 pytest>=7.4.0

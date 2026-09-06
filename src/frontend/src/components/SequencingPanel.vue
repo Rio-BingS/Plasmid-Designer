@@ -1,17 +1,18 @@
 <script setup lang="ts">
 /**
  * Sanger 测序全自动分析面板
- * 上传 .ab1 → 一键分析 → 总览结论 / 覆盖率 / 突变表 / 峰图 / 共识序列导出
+ * 参考序列文件（.gb/.fasta/.dna）与 .ab1 放同一文件夹一起导入 →
+ * 一键分析 → 总览结论 / 覆盖率 / 突变表 / 峰图 / 共识序列导出
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
-  analyzeDesignSequencing, analyzeVectorSequencing, getReadTrace, exportConsensus,
+  analyzeSequencingFiles, getReadTrace, exportConsensus,
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
 } from '@/api'
 
 const props = defineProps<{
-  referenceId?: string
-  mode: 'vector' | 'design'
+  /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
+  initialReference?: File | null
   /** 外部注入的已完成分析（历史回看），注入后直接展示结果 */
   preset?: SequencingAnalysis | null
 }>()
@@ -20,47 +21,123 @@ const emit = defineEmits<{
   (e: 'analyzed', analysis: SequencingAnalysis): void
 }>()
 
-watch(() => props.preset, (p) => {
-  if (p) {
-    analysis.value = p
-    errorMsg.value = ''
-    trace.value = null
-    highlightedPos.value = null
-  }
-})
+// ==================== 文件导入与分类 ====================
+const REFERENCE_EXTS = ['gb', 'gbk', 'genbank', 'fasta', 'fa', 'fna', 'dna']
 
-// ==================== 上传与分析 ====================
-const files = ref<File[]>([])
+const referenceFile = ref<File | null>(null)
+const reads = ref<File[]>([])
+const ignoredNames = ref<string[]>([])   // 既非参考也非 .ab1 的文件
+const conflictNames = ref<string[]>([])  // 多余的参考文件
+const fileError = ref('')
+
+function fileExt(name: string): string {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
+}
+
+function addFiles(list: File[] | FileList | null | undefined) {
+  if (!list) return
+  ignoredNames.value = []
+  conflictNames.value = []
+  fileError.value = ''
+  for (const f of Array.from(list)) {
+    const ext = fileExt(f.name)
+    if (ext === 'ab1') {
+      reads.value.push(f)
+    } else if (REFERENCE_EXTS.includes(ext)) {
+      if (referenceFile.value) conflictNames.value.push(f.name)
+      else referenceFile.value = f
+    } else {
+      ignoredNames.value.push(f.name)
+    }
+  }
+}
+
+/** 从设计结果页/载体页深链进入时自动带入参考序列 */
+watch(() => props.initialReference, (f) => {
+  if (f) referenceFile.value = f
+}, { immediate: true })
+
+// ==================== 拖拽导入（支持整个文件夹） ====================
+const dragOver = ref(false)
+
+interface FsEntry {
+  isFile: boolean
+  isDirectory: boolean
+  file: (cb: (f: File) => void, err?: (e: unknown) => void) => void
+  createReader: () => { readEntries: (cb: (entries: FsEntry[]) => void, err?: (e: unknown) => void) => void }
+}
+
+function onDrop(e: DragEvent) {
+  dragOver.value = false
+  const dt = e.dataTransfer
+  if (!dt) return
+  // webkitGetAsEntry 必须在事件处理同步阶段调用，先收集再异步遍历
+  const entries: FsEntry[] = []
+  const plainFiles: File[] = []
+  for (const item of Array.from(dt.items || [])) {
+    const entry = (item as unknown as { webkitGetAsEntry?: () => FsEntry | null }).webkitGetAsEntry?.()
+    if (entry) entries.push(entry)
+    else {
+      const f = item.getAsFile()
+      if (f) plainFiles.push(f)
+    }
+  }
+  if (entries.length) {
+    walkEntries(entries).then((files) => addFiles(files))
+  } else {
+    addFiles(dt.files)
+  }
+}
+
+async function walkEntries(entries: FsEntry[]): Promise<File[]> {
+  const out: File[] = []
+  async function walk(entry: FsEntry) {
+    if (entry.isFile) {
+      const f = await new Promise<File | null>((res) => entry.file(res, () => res(null)))
+      if (f) out.push(f)
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader()
+      let batch: FsEntry[] = []
+      do {
+        batch = await new Promise<FsEntry[]>((res) => reader.readEntries(res, () => res([])))
+        for (const child of batch) await walk(child)
+      } while (batch.length)
+    }
+  }
+  for (const e of entries) await walk(e)
+  return out
+}
+
+function onFilePick(e: Event) {
+  addFiles((e.target as HTMLInputElement).files)
+  ;(e.target as HTMLInputElement).value = ''
+}
+function onFolderPick(e: Event) {
+  addFiles((e.target as HTMLInputElement).files)
+  ;(e.target as HTMLInputElement).value = ''
+}
+function removeRead(i: number) { reads.value.splice(i, 1) }
+function clearReference() { referenceFile.value = null }
+
+// ==================== 分析 ====================
 const minQ = ref(20)
 const allowDecompose = ref(true)
 const analyzing = ref(false)
 const analysis = ref<SequencingAnalysis | null>(null)
 const errorMsg = ref('')
-const dragOver = ref(false)
 
-function onDrop(e: DragEvent) {
-  dragOver.value = false
-  addFiles(e.dataTransfer?.files)
-}
-function onFilePick(e: Event) {
-  addFiles((e.target as HTMLInputElement).files)
-}
-function addFiles(list: FileList | null | undefined) {
-  if (!list) return
-  for (const f of Array.from(list)) {
-    if (f.name.toLowerCase().endsWith('.ab1')) files.value.push(f)
-  }
-}
-function removeFile(i: number) { files.value.splice(i, 1) }
+const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0)
 
 async function runAnalysis() {
-  if (!files.value.length) return
+  if (!referenceFile.value || !reads.value.length) return
   analyzing.value = true
   errorMsg.value = ''
   analysis.value = null
   try {
-    const fn = props.mode === 'design' ? analyzeDesignSequencing : analyzeVectorSequencing
-    analysis.value = await fn(props.referenceId || '', files.value, minQ.value, allowDecompose.value)
+    analysis.value = await analyzeSequencingFiles(
+      referenceFile.value, reads.value, minQ.value, allowDecompose.value
+    )
     emit('analyzed', analysis.value)
   } catch (e: any) {
     errorMsg.value = e.response?.data?.detail || e.message || '分析失败'
@@ -86,6 +163,16 @@ const traceLoading = ref(false)
 const traceStart = ref(0)        // 显示窗口起始碱基（0-based）
 const traceSpan = ref(60)        // 窗口碱基数
 const highlightedPos = ref<number | null>(null) // 1-based 参考位置高亮
+
+// 历史回看：注入已完成分析后直接展示（immediate 覆盖挂载时即带 preset 的场景）
+watch(() => props.preset, (p) => {
+  if (p) {
+    analysis.value = p
+    errorMsg.value = ''
+    trace.value = null
+    highlightedPos.value = null
+  }
+}, { immediate: true })
 
 const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: '#222222', C: '#2456C8' }
 
@@ -265,25 +352,53 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       @drop.prevent="onDrop"
     >
       <p class="upload-title">🔬 Sanger 测序结果验证</p>
-      <p class="upload-hint">拖入或选择一个或多个 .ab1 文件，系统自动完成解析、修剪、比对、拼接与突变注释</p>
-      <label class="upload-btn">
-        选择 AB1 文件
-        <input type="file" multiple accept=".ab1" @change="onFilePick" hidden />
-      </label>
-      <div v-if="files.length" class="file-list">
-        <span v-for="(f, i) in files" :key="i" class="file-chip">
-          {{ f.name }} ({{ (f.size / 1024).toFixed(0) }}KB)
-          <button class="file-remove" @click="removeFile(i)">×</button>
-        </span>
+      <p class="upload-hint">
+        把<b>参考序列文件</b>（图谱 .gb / .fasta / .dna）与 <b>.ab1 测序文件</b>放在同一个文件夹，
+        拖入文件夹或选择文件，系统自动识别并完成解析、修剪、比对、拼接与突变注释
+      </p>
+      <div class="upload-btns">
+        <label class="upload-btn">
+          选择文件
+          <input type="file" multiple accept=".ab1,.gb,.gbk,.genbank,.fasta,.fa,.fna,.dna" @change="onFilePick" hidden />
+        </label>
+        <label class="upload-btn secondary">
+          选择文件夹
+          <input type="file" multiple webkitdirectory @change="onFolderPick" hidden />
+        </label>
       </div>
+
+      <div v-if="referenceFile || reads.length" class="staged-files">
+        <div v-if="referenceFile" class="ref-staged">
+          <span class="stage-label">参考序列</span>
+          <span class="file-chip ref">🧬 {{ referenceFile.name }}<button class="file-remove" title="移除参考" @click="clearReference">×</button></span>
+        </div>
+        <div v-if="reads.length" class="reads-staged">
+          <span class="stage-label">测序文件 × {{ reads.length }}</span>
+          <span v-for="(f, i) in reads" :key="i" class="file-chip">
+            {{ f.name }} ({{ (f.size / 1024).toFixed(0) }}KB)
+            <button class="file-remove" @click="removeRead(i)">×</button>
+          </span>
+        </div>
+        <p v-if="conflictNames.length" class="stage-note">已忽略多余的参考文件：{{ conflictNames.join('、') }}（一次只能分析一个参考序列）</p>
+        <p v-if="ignoredNames.length" class="stage-note">已忽略无关文件：{{ ignoredNames.slice(0, 5).join('、') }}{{ ignoredNames.length > 5 ? ' 等' : '' }}</p>
+      </div>
+      <p v-else class="stage-empty">尚未选择文件：需要 1 个参考序列文件 + 至少 1 个 .ab1</p>
+      <p v-if="fileError" class="error-msg">{{ fileError }}</p>
+
       <details class="advanced">
         <summary>高级参数</summary>
         <label>末端修剪 Q 阈值 <input type="number" v-model.number="minQ" min="5" max="40" /></label>
         <label><input type="checkbox" v-model="allowDecompose" /> 混合样品自动解卷积（需 tracy）</label>
       </details>
-      <button class="analyze-btn" :disabled="!files.length || analyzing" @click="runAnalysis">
+      <button class="analyze-btn" :disabled="!canAnalyze || analyzing" @click="runAnalysis">
         {{ analyzing ? '分析中…' : '开始自动分析' }}
       </button>
+      <p v-if="!referenceFile && reads.length" class="hint-missing">
+        还差参考序列文件（.gb / .fasta / .dna）
+      </p>
+      <p v-if="referenceFile && !reads.length" class="hint-missing">
+        还差 .ab1 测序文件
+      </p>
       <p v-if="errorMsg" class="error-msg">{{ errorMsg }}</p>
     </div>
 
@@ -410,11 +525,23 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .upload-area.drag { border-color: var(--primary-color, #45B7D1); background: rgba(69,183,209,0.05); }
 .upload-title { font-weight: 600; margin-bottom: 0.25rem; }
 .upload-hint { font-size: 0.85rem; color: var(--text-secondary, #888); margin-bottom: 0.75rem; }
+.upload-btns { display: flex; gap: 0.6rem; justify-content: center; margin-bottom: 0.75rem; }
 .upload-btn {
   display: inline-block; padding: 0.5rem 1.2rem; background: var(--primary-color, #45B7D1);
   color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.9rem;
 }
-.file-list { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; margin-top: 0.75rem; }
+.upload-btn.secondary { background: var(--text-secondary, #8aa0b4); }
+
+.staged-files {
+  display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start;
+  max-width: 640px; margin: 0 auto; text-align: left;
+}
+.stage-label { flex-shrink: 0; font-size: 0.8rem; color: var(--text-secondary, #888); margin-right: 0.5rem; }
+.ref-staged, .reads-staged { display: flex; flex-wrap: wrap; align-items: center; }
+.file-chip.ref { background: #F0FAF2; border: 1px solid #BFE5C8; }
+.stage-note { font-size: 0.78rem; color: #B26A00; margin: 0; }
+.stage-empty { font-size: 0.85rem; color: var(--text-secondary, #999); margin: 0.25rem 0 0; }
+.hint-missing { font-size: 0.8rem; color: #B26A00; margin: 0.35rem 0 0; }
 .file-chip {
   background: var(--bg-secondary, #f5f5f5); padding: 0.25rem 0.6rem; border-radius: 999px;
   font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.35rem;

@@ -201,17 +201,29 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
         raise HTTPException(status_code=404, detail="Vector not found")
 
     if format.lower() == "genbank":
-        # 生成 GenBank 格式
-        lines = [f"LOCUS {vector.name[:16]:<16} {len(vector.sequence)} bp DNA"]
-        lines.append(f"DEFINITION {vector.description}")
-        lines.append(f"ACCESSION {vector.id}")
-        lines.append("FEATURES Location/Qualifiers")
+        # 生成 Biopython 可解析的标准 GenBank（测序页深链会把该文件作为参考序列传回）
+        from datetime import datetime
+        date_str = datetime.now().strftime("%d-%b-%Y").upper()
+        seq_upper = vector.sequence.upper()
+        lines = [
+            f"LOCUS       {vector.name[:16].replace(' ', '_'):<16} {len(seq_upper)} bp    DNA     circular SYN {date_str}",
+            f"DEFINITION  {vector.name}.",
+            f"ACCESSION   {vector.id}",
+            "SOURCE      .",
+            "FEATURES             Location/Qualifiers",
+            f"     source          1..{len(seq_upper)}",
+            '                     /organism="synthetic construct"',
+        ]
         for elem in vector.elements:
-            lines.append(f" {elem.element_type.value:<12} {elem.start}..{elem.end}")
+            ftype = (elem.element_type.value or "misc_feature")[:15]
+            loc = f"complement({elem.start}..{elem.end})" if elem.strand == "-" else f"{elem.start}..{elem.end}"
+            lines.append(f"     {ftype:<15} {loc}")
+            lines.append(f'                     /label="{elem.name}"')
+            if elem.description:
+                lines.append(f'                     /note="{elem.description[:80]}"')
         lines.append("ORIGIN")
-        seq = vector.sequence.upper()
-        for i in range(0, len(seq), 60):
-            chunk = seq[i:i + 60]
+        for i in range(0, len(seq_upper), 60):
+            chunk = seq_upper[i:i + 60]
             groups = ' '.join([chunk[j:j + 10] for j in range(0, len(chunk), 10)])
             lines.append(f"{i + 1:>9} {groups}")
         lines.append("//")
