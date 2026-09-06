@@ -268,4 +268,30 @@ describe('SequencingPanel', () => {
     expect(w2.text()).toContain('mine.gb')
     expect(w2.text()).not.toContain('还差参考序列文件')
   })
+
+  it('renders alignment overview map with direction bars and diff dots', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      reads: [
+        { ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() },
+        { ...mockAnalysis.reads[0], index: 1, filename: 'r2.ab1', direction: '-', ref_start: 300, ref_end: 400, alignment_view: makeAlignmentView() },
+      ],
+      variants: [{ ...mockAnalysis.variants[0], ref_pos: 106, read: 'r1.ab1', read_pos: 6 }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.map-box').exists()).toBe(true)
+    expect(wrapper.findAll('.map-bar-fwd').length).toBe(1)
+    expect(wrapper.findAll('.map-bar-rev').length).toBe(1)
+    // 每条 read 的对齐视图各有 1 处错配 → 各 1 个差异点
+    expect(wrapper.findAll('.map-dot').length).toBe(2)
+    // 参考条上方的合并差异标记
+    expect(wrapper.findAll('.map-var-tick').length).toBe(1)
+
+    // 点击 read 条带 → 比对校验切换到该 read
+    await wrapper.find('.map-bar-rev').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect((wrapper.vm as any).alignReadIdx).toBe(1)
+  })
 })

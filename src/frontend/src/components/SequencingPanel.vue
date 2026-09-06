@@ -256,6 +256,77 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
   chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
 }
 
+// ==================== 匹配简图（多 read 落位一览） ====================
+const MAP_W = 1000        // viewBox 宽度
+const MAP_GUTTER = 150    // 左侧文件名栏宽
+const MAP_ROW_H = 22      // 每行高度
+const MAP_BAR_H = 10      // 条带高度
+const MAP_TOP = 34        // 参考行 + 刻度占用的顶部高度
+
+type MapRead = SequencingAnalysis['reads'][number] & { diffs: number[] }
+
+/** 该 read 全部差异（替换/插入/缺失）在参考上的位置 */
+function readDiffPositions(r: SequencingAnalysis['reads'][number]): number[] {
+  const av = r.alignment_view
+  if (!av) return []
+  const out = new Set<number>()
+  let pos = av.ref_start
+  for (let i = 0; i < av.ref_aligned.length; i++) {
+    const rb = av.ref_aligned[i]
+    const qb = av.read_aligned[i]
+    if (rb !== '-') {
+      if (qb === '-' || qb !== rb) out.add(pos)
+      pos++
+    } else if (qb !== '-') {
+      out.add(Math.max(1, pos - 1))  // 插入列：记在左翼参考位置
+    }
+  }
+  return [...out].sort((x, y) => x - y)
+}
+
+/** 按落位排序的 read 行（附差异位置） */
+const mapRows = computed<MapRead[]>(() => {
+  const a = analysis.value
+  if (!a) return []
+  return [...a.reads]
+    .sort((x, y) => x.ref_start - y.ref_start || x.index - y.index)
+    .map((r) => ({ ...r, diffs: readDiffPositions(r) }))
+})
+
+const mapHeight = computed(() => MAP_TOP + mapRows.value.length * MAP_ROW_H + 4)
+const mapScale = computed(() => {
+  const a = analysis.value
+  return a ? (MAP_W - 10 - MAP_GUTTER) / a.reference_length : 0
+})
+
+function mapX(pos: number): number {
+  return MAP_GUTTER + (pos - 1) * mapScale.value
+}
+
+function mapRowY(i: number): number {
+  return MAP_TOP + i * MAP_ROW_H
+}
+
+/** 参考条覆盖段（灰底上叠加绿色已测段） */
+const mapCovered = computed(() => analysis.value?.coverage_ranges ?? [])
+
+/** 参考条坐标刻度（首/25%/50%/75%/尾） */
+const mapTicks = computed(() => {
+  const a = analysis.value
+  if (!a) return []
+  const L = a.reference_length
+  const ticks = [{ pos: 1, label: '1' }]
+  for (const f of [0.25, 0.5, 0.75]) {
+    ticks.push({ pos: Math.round(L * f), label: String(Math.round(L * f)) })
+  }
+  ticks.push({ pos: L, label: String(L) })
+  return ticks
+})
+
+function shortName(name: string): string {
+  return name.length > 18 ? name.slice(0, 17) + '…' : name
+}
+
 // ==================== 峰图 ====================
 const traceCanvas = ref<HTMLCanvasElement | null>(null)
 const traceWrap = ref<HTMLDivElement | null>(null)
@@ -547,6 +618,46 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
       </div>
 
+      <!-- 匹配简图：多 read 在参考上的落位与差异一览 -->
+      <div class="map-box" v-if="analysis.reads.length">
+        <h4 class="section-title">匹配简图<span class="map-sub">（每条 read 的落位与差异；点击条带看比对，点击红块看峰图）</span></h4>
+        <svg class="map-svg" :viewBox="`0 0 ${MAP_W} ${mapHeight}`" preserveAspectRatio="xMidYMid meet" role="img">
+          <!-- 刻度网格线 -->
+          <line v-for="t in mapTicks" :key="'g' + t.pos" :x1="mapX(t.pos)" :x2="mapX(t.pos)"
+                y1="27" :y2="mapHeight - 4" class="map-grid" />
+          <!-- 参考条（灰底 + 绿色已覆盖段） -->
+          <text :x="MAP_GUTTER - 8" y="15" text-anchor="end" class="map-label">参考</text>
+          <rect :x="MAP_GUTTER" y="9" :width="MAP_W - 10 - MAP_GUTTER" height="6" rx="3" class="map-ref-bg" />
+          <rect v-for="(seg, i) in mapCovered" :key="'c' + i" :x="mapX(seg[0])" y="9"
+                :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="6" class="map-ref-cov" />
+          <!-- 刻度数字 -->
+          <text v-for="(t, i) in mapTicks" :key="'t' + t.pos" :x="mapX(t.pos)" y="24"
+                :text-anchor="i === 0 ? 'start' : (i === mapTicks.length - 1 ? 'end' : 'middle')"
+                class="map-tick">{{ t.label }}</text>
+          <!-- 合并后的差异标记（参考条上方红块，点击跳峰图） -->
+          <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
+            <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
+            <rect :x="mapX(v.ref_pos) - 2" y="1" width="4" height="7" rx="1" class="map-var-tick" />
+          </g>
+          <!-- read 行 -->
+          <g v-for="(r, i) in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
+            <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击查看逐碱基比对</title>
+            <text :x="MAP_GUTTER - 8" :y="mapRowY(i) + MAP_BAR_H / 2 + 3.5" text-anchor="end" class="map-label">
+              {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
+            </text>
+            <rect :x="mapX(r.ref_start)" :y="mapRowY(i)"
+                  :width="Math.max(2, (r.ref_end - r.ref_start + 1) * mapScale)" :height="MAP_BAR_H" rx="3"
+                  :class="r.direction === '+' ? 'map-bar-fwd' : 'map-bar-rev'" />
+            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="mapRowY(i) + MAP_BAR_H / 2" r="2.4" class="map-dot" />
+          </g>
+        </svg>
+        <p class="map-legend hint">
+          <span class="lg-fwd">━ 正向</span> · <span class="lg-rev">━ 反向</span> ·
+          <span class="lg-dot">○ 差异位点</span> · <span class="lg-cov">▮</span> 参考条绿段 = 已测序覆盖 ·
+          <span class="lg-var">▮</span> 红块 = 差异（点击跳峰图）
+        </p>
+      </div>
+
       <!-- Read 摘要 -->
       <table class="seq-table" v-if="analysis.reads.length">
         <thead>
@@ -810,4 +921,27 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .cell.qLow { color: #E67E22; }
 .qcell.qLow { color: #E67E22; font-weight: 700; }
 .cell.focus { outline: 2px solid #F1C40F; outline-offset: -1px; background: rgba(241, 196, 15, 0.18); }
+
+/* ==================== 匹配简图 ==================== */
+.map-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
+.map-sub { font-size: 0.75rem; color: #999; font-weight: 400; }
+.map-svg { width: 100%; height: auto; display: block; user-select: none; }
+.map-label { font-size: 11px; fill: #666; font-family: Consolas, monospace; }
+.map-tick { font-size: 9px; fill: #AAA; }
+.map-grid { stroke: #F0F0F0; stroke-width: 1; stroke-dasharray: 3 3; }
+.map-ref-bg { fill: #E7E7E7; }
+.map-ref-cov { fill: #7DC98C; }
+.map-row { cursor: pointer; }
+.map-bar-fwd { fill: #2E9E44; opacity: 0.85; }
+.map-bar-rev { fill: #2456C8; opacity: 0.8; }
+.map-row:hover .map-bar-fwd, .map-row:hover .map-bar-rev { opacity: 1; }
+.map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.2; pointer-events: none; }
+.map-var { cursor: pointer; }
+.map-var-tick { fill: #C0392B; }
+.map-var:hover .map-var-tick { fill: #E74C3C; }
+.lg-fwd { color: #2E9E44; font-weight: 600; }
+.lg-rev { color: #2456C8; font-weight: 600; }
+.lg-dot { color: #C0392B; font-weight: 600; }
+.lg-cov { color: #7DC98C; }
+.lg-var { color: #C0392B; }
 </style>
