@@ -25,6 +25,8 @@ const emit = defineEmits<{
 const REFERENCE_EXTS = ['gb', 'gbk', 'genbank', 'fasta', 'fa', 'fna', 'dna']
 
 const referenceFile = ref<File | null>(null)
+const autoFilledRef = ref(false)     // 当前参考是否为深链自动带入（用户显式选择可随时顶掉）
+const replacedAutoName = ref('')     // 被用户文件替换掉的深链参考名（提示用）
 const reads = ref<File[]>([])
 const ignoredNames = ref<string[]>([])   // 既非参考也非 .ab1 的文件
 const conflictNames = ref<string[]>([])  // 多余的参考文件
@@ -39,23 +41,36 @@ function addFiles(list: File[] | FileList | null | undefined) {
   if (!list) return
   ignoredNames.value = []
   conflictNames.value = []
+  replacedAutoName.value = ''
   fileError.value = ''
   for (const f of Array.from(list)) {
     const ext = fileExt(f.name)
     if (ext === 'ab1') {
       reads.value.push(f)
     } else if (REFERENCE_EXTS.includes(ext)) {
-      if (referenceFile.value) conflictNames.value.push(f.name)
-      else referenceFile.value = f
+      if (referenceFile.value && !autoFilledRef.value) {
+        conflictNames.value.push(f.name)
+      } else {
+        // 深链自动带入的参考让位给用户文件里的参考（显式操作优先，无需手动清除）
+        if (autoFilledRef.value) replacedAutoName.value = referenceFile.value?.name || ''
+        referenceFile.value = f
+        autoFilledRef.value = false
+      }
     } else {
       ignoredNames.value.push(f.name)
     }
   }
 }
 
-/** 从设计结果页/载体页深链进入时自动带入参考序列 */
+/** 深链进入时自动带入；深链消失（如点导航回普通 /sequencing）时清掉自动带入的，手动选择的不受影响 */
 watch(() => props.initialReference, (f) => {
-  if (f) referenceFile.value = f
+  if (f) {
+    referenceFile.value = f
+    autoFilledRef.value = true
+  } else if (autoFilledRef.value) {
+    referenceFile.value = null
+    autoFilledRef.value = false
+  }
 }, { immediate: true })
 
 // ==================== 拖拽导入（支持整个文件夹） ====================
@@ -119,7 +134,7 @@ function onFolderPick(e: Event) {
 }
 function removeRead(i: number) { reads.value.splice(i, 1) }
 function clearReads() { reads.value = [] }
-function clearReference() { referenceFile.value = null }
+function clearReference() { referenceFile.value = null; autoFilledRef.value = false }
 
 // ==================== 分析 ====================
 const minQ = ref(20)
@@ -488,6 +503,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           </span>
         </div>
         <p v-if="conflictNames.length" class="stage-note">已忽略多余的参考文件：{{ conflictNames.join('、') }}（一次只能分析一个参考序列）</p>
+        <p v-if="replacedAutoName" class="stage-note">已用文件里的参考替换深链带入的 {{ replacedAutoName }}</p>
         <p v-if="ignoredNames.length" class="stage-note">已忽略无关文件：{{ ignoredNames.slice(0, 5).join('、') }}{{ ignoredNames.length > 5 ? ' 等' : '' }}</p>
       </div>
       <p v-else class="stage-empty">尚未选择文件：需要 1 个参考序列文件 + 至少 1 个 .ab1</p>

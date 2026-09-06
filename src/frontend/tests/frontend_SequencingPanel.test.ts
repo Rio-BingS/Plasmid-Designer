@@ -234,4 +234,38 @@ describe('SequencingPanel', () => {
     const [, , minQ] = vi.mocked(analyzeSequencingFiles).mock.calls[0]
     expect(minQ).toBe(60)
   })
+
+  it('user reference file replaces the deep-link auto-filled one', async () => {
+    const auto = makeFile('pET-21a.gb')
+    const wrapper = mount(SequencingPanel, { props: { initialReference: auto } })
+    await wrapper.vm.$nextTick()
+
+    ;(wrapper.vm as any).addFiles([makeFile('my_ref.gb'), makeFile('a.ab1')])
+    await wrapper.vm.$nextTick()
+
+    // 用户文件里的参考直接顶掉深链带入的，不再要求手动清除
+    expect(wrapper.text()).toContain('my_ref.gb')
+    expect(wrapper.text()).toContain('已用文件里的参考替换深链带入的 pET-21a.gb')
+    expect(wrapper.text()).not.toContain('已忽略多余的参考文件')
+    expect(wrapper.text()).not.toContain('还差')
+  })
+
+  it('clears auto-filled reference when deep link disappears, keeps manual one', async () => {
+    const wrapper = mount(SequencingPanel, { props: { initialReference: makeFile('pET-21a.gb') } })
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({ initialReference: null })
+    await wrapper.vm.$nextTick()
+    // 深链带入的参考随参数消失清空，回到空白状态
+    expect(wrapper.text()).toContain('尚未选择文件')
+    expect(wrapper.text()).not.toContain('pET-21a.gb')
+
+    // 手动选择的参考不受影响
+    const w2 = mount(SequencingPanel)
+    ;(w2.vm as any).addFiles([makeFile('mine.gb')])
+    await w2.vm.$nextTick()
+    await w2.setProps({ initialReference: null })
+    await w2.vm.$nextTick()
+    expect(w2.text()).toContain('mine.gb')
+    expect(w2.text()).not.toContain('还差参考序列文件')
+  })
 })

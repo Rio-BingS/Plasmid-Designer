@@ -5,7 +5,7 @@
  *    从设计结果页 / 载体页跳转（?mode=design|vector&ref=ID）时自动带入参考序列
  * ② 历史分析（查看 / 删除）
  */
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   fetchDesignGenbankFile, fetchVectorGenbankFile,
@@ -17,26 +17,41 @@ import SequencingPanel from '@/components/SequencingPanel.vue'
 const route = useRoute()
 
 // ==================== 深链预填参考序列 ====================
+// 仅 ?mode=design|vector&ref=ID 时带入；无参数时清空——普通 /sequencing
+// 始终是空白状态（组件被路由复用时也不残留上一次的自动参考）
 const initialReference = ref<File | null>(null)
 const stageError = ref('')
 const staging = ref(false)
 
-onMounted(async () => {
+async function loadReferenceFromRoute() {
   const refId = route.query.ref as string
   const mode = route.query.mode as string
-  if (refId) {
-    staging.value = true
-    try {
-      initialReference.value = mode === 'vector'
-        ? await fetchVectorGenbankFile(refId)
-        : await fetchDesignGenbankFile(refId)
-    } catch {
-      stageError.value = '未能自动带入参考序列（可能已过期），请手动上传参考文件'
-    } finally {
-      staging.value = false
-    }
+  if (!refId) {
+    initialReference.value = null
+    stageError.value = ''
+    return
   }
+  staging.value = true
+  stageError.value = ''
+  try {
+    initialReference.value = mode === 'vector'
+      ? await fetchVectorGenbankFile(refId)
+      : await fetchDesignGenbankFile(refId)
+  } catch {
+    stageError.value = '未能自动带入参考序列（可能已过期），请手动上传参考文件'
+  } finally {
+    staging.value = false
+  }
+}
+
+onMounted(() => {
+  loadReferenceFromRoute()
   refreshHistory()
+})
+
+// 组件被复用（如从深链 URL 点导航回普通 /sequencing）时同步清空
+watch(() => route.query.ref, () => {
+  if (route.path === '/sequencing') loadReferenceFromRoute()
 })
 
 // ==================== 历史分析 ====================
