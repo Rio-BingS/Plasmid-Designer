@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -74,7 +74,7 @@ async def root():
     """API 根路径"""
     return {
         "name": "Plasmid Designer API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "storage_mode": STORAGE_MODE
     }
