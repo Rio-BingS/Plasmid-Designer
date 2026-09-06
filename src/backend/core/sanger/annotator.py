@@ -66,16 +66,34 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
         elif variant["type"] in ("insertion", "deletion"):
             variant["frameshift"] = variant["length"] % 3 != 0
 
-    # 酶切位点变化：在变体附近 ±14bp 窗口比较参考与突变序列
+    # 酶切位点变化：在变体附近 ±14bp 窗口比较参考与突变序列。
+    # 插入/缺失会使下游位点整体平移 delta，直接按 (名称, 位置) 对比会把"平移"
+    # 误报成 破坏+新增，故同名配对时允许下游位点按 delta 平移。
     alt_seq = _apply_variant(ref, variant)
     lo = max(0, ref_pos - 15)
     hi = min(L, ref_pos + 15)
     ref_sites = find_enzyme_sites(ref[lo:hi])
     alt_sites = find_enzyme_sites(alt_seq[lo:hi])
-    ref_names = {(x["name"], x["position"]) for x in ref_sites}
-    alt_names = {(x["name"], x["position"]) for x in alt_sites}
-    lost = sorted({n for n, _ in ref_names - alt_names})
-    gained = sorted({n for n, _ in alt_names - ref_names})
+    delta = len(alt_seq) - len(ref)  # indel 引起的下游坐标偏移量（替换为 0）
+    junction = ref_pos - 1 - lo      # 变异起点在窗口内的 0-based 下标
+    ref_shift_floor = junction + max(0, -delta)  # 参考侧受平移影响的位点起点
+    alt_shift_floor = junction + max(0, delta)   # 突变侧受平移影响的位点起点
+    ref_pos_by_name: Dict[str, set] = {}
+    for s in ref_sites:
+        ref_pos_by_name.setdefault(s["name"], set()).add(s["position"])
+    alt_pos_by_name: Dict[str, set] = {}
+    for s in alt_sites:
+        alt_pos_by_name.setdefault(s["name"], set()).add(s["position"])
+
+    def _preserved(name: str, pos: int, from_ref: bool) -> bool:
+        if from_ref:
+            cands = alt_pos_by_name.get(name, set())
+            return pos in cands or (pos > ref_shift_floor and pos + delta in cands)
+        cands = ref_pos_by_name.get(name, set())
+        return pos in cands or (pos > alt_shift_floor and pos - delta in cands)
+
+    lost = sorted({s["name"] for s in ref_sites if not _preserved(s["name"], s["position"], True)})
+    gained = sorted({s["name"] for s in alt_sites if not _preserved(s["name"], s["position"], False)})
     variant["enzyme_sites_lost"] = lost
     variant["enzyme_sites_gained"] = gained
     return variant

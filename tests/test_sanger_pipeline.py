@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from abif_utils import make_ab1  # noqa: E402
 from core.sanger.abif_reader import extract_read, parse_abif, AbiParseError  # noqa: E402
+from core.sanger.annotator import annotate_variant  # noqa: E402
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
 from core.sanger.pipeline import analyze, _trim_by_quality  # noqa: E402
 
@@ -192,3 +193,30 @@ def test_pipeline_alignment_view_and_consensus_diffs(reference):
     assert d["ref_pos"] == 551
     assert d["cons_base"] == result["variants"][0]["alt_base"]
     assert result["consensus"]["sequence"][d["cons_index"]] == d["cons_base"]
+
+
+# ==================== 酶切位点注释（indel 位移配对） ====================
+
+def _base_variant(**kw):
+    v = {"ref_pos": 1, "read_pos": 1, "type": "substitution",
+         "ref_base": "A", "alt_base": "T", "length": 1}
+    v.update(kw)
+    return v
+
+
+def test_deletion_shifts_downstream_site_not_reported():
+    """缺失使下游 BsaHI(GAYG) 位点整体平移：不应误报为 破坏+新增"""
+    ref = "A" * 15 + "GACG" + "C" * 15   # BsaHI 位于 16-19
+    v = _base_variant(ref_pos=13, type="deletion", length=3, ref_base="AAA", alt_base="-")
+    annotate_variant(v, [], ref)
+    assert v["enzyme_sites_lost"] == []
+    assert v["enzyme_sites_gained"] == []
+
+
+def test_deletion_spanning_site_reported_lost():
+    """删除覆盖识别序列本体：正确报破坏，且不误报新增"""
+    ref = "A" * 15 + "GACG" + "C" * 15
+    v = _base_variant(ref_pos=17, type="deletion", length=3, ref_base="ACG", alt_base="-")
+    annotate_variant(v, [], ref)
+    assert v["enzyme_sites_lost"] == ["BsaHI"]
+    assert v["enzyme_sites_gained"] == []

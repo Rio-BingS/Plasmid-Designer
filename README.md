@@ -197,7 +197,7 @@ Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考�
 
 全自动管线（`core/sanger/`）：ABIF 解析（主路径 Bio.SeqIO "abi"，无 Biopython 时回退内置解析器）
 → Q 值末端修剪 → 双向比对自动判向（Biopython PairwiseAligner）→ 多 read 共识拼接（质量加权投票）
-→ 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增）→ 自动结论。
+→ 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增；插入缺失下游的位点按平移配对，不误报为破坏+新增）→ 自动结论。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
 分析记录为进程级内存存储（重启失效）。
