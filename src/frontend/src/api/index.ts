@@ -584,3 +584,48 @@ export async function getSequencingAnalysis(analysisId: string): Promise<Sequenc
 export async function deleteSequencingAnalysis(analysisId: string): Promise<void> {
   await api.delete(`/sequencing/analyses/${analysisId}`)
 }
+// ==================== 批量测序分析（独立入口，与单样品 /sequencing/analyze 平级） ====================
+
+export interface SequencingBatchItem {
+  plasmid: string
+  /** analyzed=已分析 / no_reads=只有图谱 / no_reference=缺图谱 / failed=分析失败 / not_found=无文件 */
+  status: 'analyzed' | 'no_reads' | 'no_reference' | 'failed' | 'not_found'
+  conclusion: string
+  analysis_id?: string | null
+  reference_name?: string | null
+  reference_length?: number | null
+  read_count: number
+  /** 确证差异数（低置信噪声不计入） */
+  variant_count: number
+  /** 低置信（疑似测序噪声）变异数 */
+  pending_count: number
+  coverage_percent?: number | null
+}
+
+export interface SequencingBatchResult {
+  batch_id: string
+  created_at: string
+  min_q: number
+  /** true=按信息表引物列/质粒名归组；false=按图谱文件名包含关系归组 */
+  excel_mode: boolean
+  items: SequencingBatchItem[]
+  unmatched: { filename: string; reason: string }[]
+  ignored_files: string[]
+}
+
+/** 批量测序分析：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表一次上传 */
+export async function analyzeSequencingBatch(
+  files: File[],
+  excel: File | null,
+  minQ = 20
+): Promise<SequencingBatchResult> {
+  const form = new FormData()
+  files.forEach((f) => form.append('files', f))
+  if (excel) form.append('excel', excel, excel.name)
+  form.append('min_q', String(minQ))
+  const response = await api.post('/sequencing/analyze-batch', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000
+  })
+  return response.data
+}

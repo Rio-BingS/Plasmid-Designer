@@ -184,7 +184,8 @@ STORAGE_MODE=database
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/sequencing/analyze` | 上传参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）+ .ab1（可多个）全自动测序验证 |
+| POST | `/api/sequencing/analyze` | 上传参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）+ .ab1（可多个）全自动测序验证（单样品入口） |
+| POST | `/api/sequencing/analyze-batch` | 批量入口：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表，按质粒归组逐个分析，返回每质粒一句话结论 |
 | POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个），参考序列取设计构建体 |
 | POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体 |
 | GET | `/api/sequencing/analyses` | 历史分析列表（摘要，时间倒序） |
@@ -207,14 +208,22 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
 分析记录为进程级内存存储（重启失效）。
 
-**批量离线整理与分析**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
-结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
-测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
-扫描文件夹中的 .ab1 与参考图谱（.dna/.gb/.fasta），按引物列文件名与质粒名称自动匹配，
-把同一质粒的文件【复制】到 `<数据文件夹>/测序分析/<质粒名>/`——原始文件不移动、不删除、
-不覆盖（重名副本加序号，`整理清单.csv` 记录原始路径与 MD5 保证可追溯），逐质粒运行
-全自动分析管线生成 `测序分析报告.md` + `分析结果.json`，并把一句话结论回填 Excel
-"测序结果"列（原表先备份到输出目录）。
+**批量分析**：归组与结论逻辑在 `core/sanger/batch.py`，网页与脚本两端共用：
+
+- **网页入口**（`/sequencing/batch`，`BatchSequencingView.vue`）：把整个交付文件夹
+  （.ab1 + 图谱，可多质粒混在一起）+ 可选 Excel 信息表一次上传，按质粒归组逐个跑
+  全自动管线，结果表给出每质粒一句话结论（合格/不合格/缺图谱…）与覆盖、确证差异
+  数；成功分析的质粒注册为标准分析记录，「查看详情」深链到 `/sequencing?history=<id>`
+  进入逐碱基核对。不上传信息表时按「测序文件名包含图谱文件名」归组（图谱名互为前缀
+  时取最长包含，仍无法唯一归组的列入未匹配清单）。
+- **离线脚本**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
+  结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
+  测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
+  扫描文件夹中的 .ab1 与参考图谱（.dna/.gb/.fasta），按引物列文件名与质粒名称自动匹配，
+  把同一质粒的文件【复制】到 `<数据文件夹>/测序分析/<质粒名>/`——原始文件不移动、不删除、
+  不覆盖（重名副本加序号，`整理清单.csv` 记录原始路径与 MD5 保证可追溯），逐质粒运行
+  全自动分析管线生成 `测序分析报告.md` + `分析结果.json`，并把一句话结论回填 Excel
+  "测序结果"列（原表先备份到输出目录）。
 
 ```bash
 python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \

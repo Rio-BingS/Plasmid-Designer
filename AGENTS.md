@@ -27,7 +27,8 @@ src/backend/                FastAPI（设计主线纯标准库；Sanger 分析�
   core/sanger/              ★ Sanger 测序全自动管线：abif_reader（SeqIO abi 主路径 +
                             内置解析器回退）/ aligner（PairwiseAligner 双向判向）/
                             annotator（突变→特征/氨基酸/移码/酶切位点注释）/
-                            pipeline（修剪→比对→共识投票→自动结论；可选 tracy 解卷积）
+                            pipeline（修剪→比对→共识投票→自动结论；可选 tracy 解卷积）/
+                            batch（批量归组与一句话结论，网页批量端点与离线脚本共用）
 src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api → 8000）
   src/api/index.ts          全部后端调用（axios，40+ 函数）——改后端契约必同步这里
   src/views/AnalysisView.vue 序列分析页（位点/ORF/GC/消化模拟/兼容性/导出）
@@ -101,7 +102,16 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-07）
 
-- pytest **219 通过**（含 test_batch_sequencing 11 项、test_vector_data 数据守门 6 项、test_reference_parser 10 项、CDS 测序结论 13 项、峰级证据/ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **70 通过**；vite build 通过
+- 新增（2026-09-07）**批量测序独立网页入口**：归组/结论逻辑从批量脚本抽到
+  core/sanger/batch.py（load_excel 支持 bytes、match_files 文件项兼容 name/path、
+  excel_conclusion 两端同口径），脚本改为复用；后端新增 POST /api/sequencing/analyze-batch
+  （整个交付文件夹 + 可选信息表 → 按质粒归组逐个跑管线出一句话结论；无信息表时按
+  图谱名包含关系归组、取最长包含解决 MX/MX2 前缀歧义；成功者注册进标准分析记录）；
+  前端新增 /sequencing/batch 路由 + BatchSequencingView + 导航「批量测序」，
+  查看详情深链 /sequencing?history=<id>（SequencingView 新增该参数回看载入）；
+  单样品入口 /sequencing 保持不变
+- pytest **244 通过**（含 test_sequencing_batch 7 项、test_batch_sequencing 11 项、
+  test_vector_data 数据守门 6 项、CDS 测序结论/峰级证据/ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **74 通过**；vite build 通过
 - 新增（2026-09-07）**批量测序整理分析脚本**（scripts/batch_sequencing_report.py）：离线批处理
   "Excel 信息表 + 测序结果文件夹"——引物列填测序文件名（分号分隔）匹配 .ab1、质粒名称匹配
   参考图谱（.dna/.gb/.fasta）；同一质粒文件【复制】到 <数据目录>/测序分析/<质粒名>/（原件

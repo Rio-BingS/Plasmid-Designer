@@ -113,6 +113,17 @@ function onAnalyzed() {
   refreshHistory()
 }
 
+// 批量测序页「查看详情」深链：/sequencing?history=<analysis_id> 直接载入该记录；
+// 参数消失（如点导航回普通 /sequencing）时退出回看状态
+watch(() => route.query.history, (hid) => {
+  if (route.path !== '/sequencing') return
+  if (typeof hid === 'string' && hid) {
+    viewHistory(hid)
+  } else if (viewingHistory.value) {
+    stopHistoryView()
+  }
+}, { immediate: true })
+
 function formatTime(iso: string): string {
   return (iso || '').replace('T', ' ').slice(0, 16)
 }

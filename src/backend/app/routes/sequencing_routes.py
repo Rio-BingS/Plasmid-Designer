@@ -4,6 +4,11 @@
 全自动管线（解析→修剪→比对→拼接→注释）→ 结果含自动结论、突变表、
 共识序列与峰图数据。
 
+- POST /api/sequencing/analyze：单样品入口（1 个参考序列 + 它的 .ab1）
+- POST /api/sequencing/analyze-batch：批量入口（Excel 信息表/整个交付文件夹
+  里的多个质粒，逐质粒归组分析，返回每质粒一句话结论；逻辑与
+  scripts/batch_sequencing_report.py 共用 core/sanger/batch.py）
+
 另保留两个按 ID 取参考的便捷端点：
 - 设计结果（POST /api/designs/{design_id}/sequencing/analyze）
 - 载体库中有序列的载体（POST /api/vectors/{vector_id}/sequencing/analyze）
@@ -23,7 +28,11 @@ from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.design_service import get_vector_library
+from core.sanger.batch import (
+    REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_files, norm_stem,
+)
 from core.sanger.pipeline import analyze, _try_tracy_decompose
+from core.sanger.reference_parser import parse_reference
 
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
@@ -32,6 +41,8 @@ _ANALYSES: Dict[str, Dict] = {}
 MAX_FILE_SIZE = 20 * 1024 * 1024      # 单文件 20MB
 MAX_FILES = 24                        # 单次最多 24 条 read
 MAX_STORED = 50                       # 内存最多保留 50 次分析
+MAX_BATCH_FILES = 200                 # 批量单次最多 200 个文件
+MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
 
 
 def _get_analysis(analysis_id: str) -> Dict:
@@ -91,6 +102,26 @@ def _run_full_analysis(
     return result
 
 
+def _register_analysis(sample_name: str, reference: str, features: List[Dict], result: Dict) -> str:
+    """把一次完整分析写入内存存储（单样品与批量共用），返回 analysis_id"""
+    analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
+    record = {
+        "analysis_id": analysis_id,
+        "sample_name": sample_name,
+        "reference": reference.upper(),
+        "features": features,
+        "created_at": datetime.now().isoformat(),
+        **result,
+    }
+    # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
+    record["_trace_data"] = {i: t for i, t in enumerate(result.get("traces", []))}
+    _ANALYSES[analysis_id] = record
+    if len(_ANALYSES) > MAX_STORED:
+        oldest = sorted(_ANALYSES.items(), key=lambda kv: kv[1]["created_at"])[0][0]
+        del _ANALYSES[oldest]
+    return analysis_id
+
+
 async def _analyze_endpoint(
     reference: str,
     sample_name: str,
@@ -107,23 +138,8 @@ async def _analyze_endpoint(
         _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose
     )
 
-    analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
-    record = {
-        "analysis_id": analysis_id,
-        "sample_name": sample_name,
-        "reference": reference.upper(),
-        "features": features,
-        "created_at": datetime.now().isoformat(),
-        **result,
-    }
-    # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
-    record["_trace_data"] = {i: t for i, t in enumerate(result.get("traces", []))}
-    _ANALYSES[analysis_id] = record
-    if len(_ANALYSES) > MAX_STORED:
-        oldest = sorted(_ANALYSES.items(), key=lambda kv: kv[1]["created_at"])[0][0]
-        del _ANALYSES[oldest]
-
-    return _summary(record)
+    analysis_id = _register_analysis(sample_name, reference, features, result)
+    return _summary(_ANALYSES[analysis_id])
 
 
 @router.post("/sequencing/analyze")
@@ -152,6 +168,191 @@ async def analyze_sequencing_upload(
 
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q, allow_decompose)
+
+
+# ---------------------------------------------------------------- 批量分析（独立入口）
+
+
+def _group_batch_uploads(
+    reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]]
+):
+    """把上传的 reads/refs 归组到各质粒
+
+    reads/refs 每项：{"name", "ext", "stem", "bytes"}。
+    带信息表（rows 非 None）时与离线脚本同一实现（core.sanger.match_files：
+    引物列→reads、质粒名称→图谱）；无信息表时按包含关系归组——每个图谱
+    自成一个质粒，测序文件名主干包含且仅包含一个图谱主干时归入该质粒。
+
+    返回 (ordered_names, per_plasmid, unmatched)：
+    per_plasmid: 质粒名 -> {"reference": {"file","how"}|None, "reads": [{"file","how"}]}
+    """
+    if rows is not None:
+        per_plasmid, unmatched = match_files(rows, reads + refs)
+        ordered = [r["name"] for r in rows]
+        ordered += [n for n in per_plasmid if n not in set(ordered)]
+        return ordered, per_plasmid, unmatched
+
+    per_plasmid: Dict[str, Dict] = {}
+    unmatched: List[Dict] = []
+    for r in refs:
+        raw_stem = r["name"][: r["name"].rfind(".")]
+        if norm_stem(raw_stem) in {norm_stem(k) for k in per_plasmid}:
+            unmatched.append({"file": r, "reason": "已存在同名图谱，本文件未采用"})
+            continue
+        per_plasmid[raw_stem] = {
+            "reference": {"file": r, "how": "文件名即质粒名"},
+            "reads": [],
+        }
+    for f in reads:
+        cands = {k: norm_stem(k) for k in per_plasmid if norm_stem(k) and norm_stem(k) in f["stem"]}
+        if not cands:
+            unmatched.append({"file": f, "reason": "文件名不包含任何图谱名"})
+            continue
+        # 图谱名互为前缀时（MX 与 MX2）取最长包含（最具体者），仍有并列才放弃
+        best_len = max(len(v) for v in cands.values())
+        best = sorted(k for k, v in cands.items() if len(v) == best_len)
+        if len(best) > 1:
+            unmatched.append({"file": f,
+                              "reason": f"文件名同时包含多个图谱名（{'、'.join(best)[:80]}），无法唯一归组"})
+        else:
+            per_plasmid[best[0]]["reads"].append({"file": f, "how": "文件名包含图谱名"})
+    return list(per_plasmid.keys()), per_plasmid, unmatched
+
+
+def _run_batch(
+    reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
+    ignored: List[str], min_q: int,
+) -> Dict:
+    """同步执行批量分析（调用方负责移交线程池）：归组 → 逐质粒跑管线 → 一句话结论"""
+    if len(reads) + len(refs) > MAX_BATCH_FILES:
+        raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
+
+    ordered, per_plasmid, unmatched = _group_batch_uploads(reads, refs, rows)
+    if len(ordered) > MAX_BATCH_PLASMIDS:
+        raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
+
+    items: List[Dict] = []
+    for plasmid in ordered:
+        slot = per_plasmid[plasmid]
+        ref_file = slot["reference"]
+        n_reads = len(slot["reads"])
+        item = {
+            "plasmid": plasmid,
+            "status": "analyzed",
+            "conclusion": "",
+            "analysis_id": None,
+            "reference_name": ref_file["file"]["name"] if ref_file else None,
+            "reference_length": None,
+            "read_count": n_reads,
+            "variant_count": 0,
+            "pending_count": 0,
+            "coverage_percent": None,
+        }
+        if ref_file is None and n_reads == 0:
+            item["status"] = "not_found"
+            item["conclusion"] = "未在文件夹中找到该质粒的测序文件或图谱"
+            items.append(item)
+            continue
+
+        res = None
+        if ref_file and n_reads:
+            try:
+                ref_seq, features = parse_reference(
+                    ref_file["file"]["name"], ref_file["file"]["bytes"])
+                if len(ref_seq) < 50:
+                    raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
+                ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in slot["reads"]]
+                res = analyze(ab1s, ref_seq, features, min_q=min_q)
+                item["analysis_id"] = _register_analysis(plasmid, ref_seq, features, res)
+                item["reference_length"] = len(ref_seq)
+                confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
+                item["variant_count"] = len(confirmed)
+                item["pending_count"] = len(res["variants"]) - len(confirmed)
+                item["coverage_percent"] = res["consensus"]["coverage_percent"]
+            except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
+                item["status"] = "failed"
+                item["conclusion"] = f"分析失败：{e}"
+                items.append(item)
+                continue
+
+        if ref_file and n_reads == 0:
+            item["status"] = "no_reads"
+            item["conclusion"] = "已找到参考图谱，但未匹配到它的测序文件（.ab1）"
+        elif ref_file is None:
+            item["status"] = "no_reference"
+            item["conclusion"] = excel_conclusion(plasmid, None, n_reads, False)
+        else:
+            item["conclusion"] = excel_conclusion(plasmid, res, n_reads, True)
+        items.append(item)
+
+    return {
+        "batch_id": f"seqbatch_{uuid.uuid4().hex[:12]}",
+        "created_at": datetime.now().isoformat(),
+        "min_q": min_q,
+        "excel_mode": rows is not None,
+        "items": items,
+        "unmatched": [
+            {"filename": u["file"].get("name") or str(u["file"]["path"].name),
+             "reason": u["reason"]}
+            for u in unmatched
+        ],
+        "ignored_files": ignored,
+    }
+
+
+@router.post("/sequencing/analyze-batch")
+async def analyze_sequencing_batch(
+    files: List[UploadFile] = File(..., description="测序结果文件：.ab1 与参考图谱（.dna/.gb/.fasta 等），可多质粒混在一起"),
+    excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果）；缺省时按图谱文件名包含关系归组"),
+    min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
+):
+    """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
+
+    测序公司交付的「信息表 + 一批 .ab1/.dna」一次上传，按质粒归组后逐个
+    跑全自动管线；每个质粒返回一句话结论（与离线脚本同一口径），成功者
+    同时注册为标准分析记录（analysis_id 可进历史列表与详情页）。
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="请上传测序结果文件")
+
+    reads: List[Dict] = []
+    refs: List[Dict] = []
+    ignored: List[str] = []
+    for f in files:
+        name = f.filename or "unnamed"
+        blob = await f.read()
+        if len(blob) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail=f"文件过大（>20MB）: {name}")
+        if name.startswith("~$") or not blob:
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        entry = {
+            "name": name, "ext": ext, "bytes": blob,
+            "stem": norm_stem(os.path.splitext(os.path.basename(name))[0]),
+        }
+        if ext in READ_EXTS:
+            reads.append(entry)
+        elif ext in REF_EXTS:
+            refs.append(entry)
+        else:
+            ignored.append(name)
+
+    if not reads and not refs:
+        raise HTTPException(
+            status_code=400,
+            detail="未找到可用的测序文件（.ab1）或参考图谱（.dna/.gb/.fasta）")
+
+    excel_rows = None
+    if excel is not None:
+        excel_bytes = await excel.read()
+        if not excel_bytes:
+            raise HTTPException(status_code=400, detail="信息表文件为空")
+        try:
+            _, _, _, excel_rows = await run_in_threadpool(load_excel, excel_bytes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    return await run_in_threadpool(_run_batch, reads, refs, excel_rows, ignored, min_q)
 
 
 @router.post("/designs/{design_id}/sequencing/analyze")
