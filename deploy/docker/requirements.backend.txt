@@ -23,4 +23,6 @@ email-validator>=2.1.0
 # Sanger 测序分析（core/sanger/）使用 biopython（Dockerfile 第二层安装）。
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
 snapgene-reader>=0.1.23
+# 批量测序归组解析 Excel 信息表（core/sanger/batch.py，离线脚本与网页版共用）
+openpyxl>=3.1.0
 # primer3-py / pydna / pandas / scipy 等无代码引用，未纳入。
