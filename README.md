@@ -199,6 +199,7 @@ Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考�
 → Q 值末端修剪 → 双向比对自动判向（Biopython PairwiseAligner）→ 多 read 共识拼接（质量加权投票）
 → 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增；插入缺失下游的位点按平移配对，不误报为破坏+新增）→ 自动结论。
 末端修剪 Q 阈值合法范围 0–60（默认 20，可在高级参数中调整）。
+每条 read 给出 A/B/C 质量评级（Q20 比例/长度/N 碱基，ClinQC 口径），每处差异给出高/中/低置信度（支持 read 数、变异位 Q 值、混合峰信号——Mutation Surveyor 式评估的简化口径），覆盖缺口按长度排序列出并提示从已测区边缘设计引物补测。
 CDS 测序结论：按共识序列（单倍型）重建每段 CDS 并翻译，与参考蛋白做 BLOSUM62 全局比对，给出「完整覆盖 + 翻译产物一致 / 移码 / 无义提前终止 / 起始或终止密码子丢失 / 框内插入缺失 / 错义与同义」的整段判定，后果标注 Sequence Ontology 标准词表（stop_gained、frameshift_variant 等，与 VEP/snpEff/bcftools csq 对齐），移码按 HGVS 描述（p.XxxNxxfsTerN）；未覆盖区域按参考填充并明确标注未验证。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。

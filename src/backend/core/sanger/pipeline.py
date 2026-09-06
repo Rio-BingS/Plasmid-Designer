@@ -24,6 +24,57 @@ MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
 MIN_WINDOW = 50          # 修剪后最短保留长度
 
 
+def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float]:
+    """Read 质量评级（ClinQC/Mutation Surveyor 类工具的 QC 口径）
+
+    A：Q20 比例 ≥90%、修剪后 ≥400bp、无 N
+    C：Q20 比例 <70% 或修剪后 <100bp
+    B：其余
+    返回 (等级, Q20 比例)
+    """
+    q20 = sum(1 for q in trimmed_q if q >= 20)
+    q20_ratio = round(q20 / len(trimmed_q), 3) if trimmed_q else 0.0
+    n_count = trimmed.upper().count("N")
+    if q20_ratio >= 0.9 and len(trimmed) >= 400 and n_count == 0:
+        return "A", q20_ratio
+    if q20_ratio < 0.7 or len(trimmed) < 100:
+        return "C", q20_ratio
+    return "B", q20_ratio
+
+
+def _variant_confidence(v: Dict, mixed_positions: set) -> str:
+    """变异置信度分级（Mutation Surveyor 置信评分的简化口径）
+
+    - 变异位点落在该 read 的混合峰列表 → 低（疑似杂合/混合，须人工看峰）
+    - 多 read 支持且平均 Q≥25 → 高
+    - 单 read：Q≥40 高；25–39 中；<25 低
+    """
+    if v.get("read_pos") and v["read_pos"] in mixed_positions:
+        return "low"
+    q = v.get("read_q") or 0
+    support = v.get("support_reads") or 1
+    if q < 25:
+        return "medium" if support >= 2 else "low"
+    if q >= 40:
+        return "high"
+    return "high" if support >= 2 else "medium"
+
+
+def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
+                   min_len: int = 100, cap: int = 10) -> List[Dict]:
+    """覆盖缺口（未覆盖区间）按长度降序，供补测建议"""
+    gaps: List[Dict] = []
+    prev = 0
+    for s, e in covered_ranges:
+        if s - prev - 1 >= min_len:
+            gaps.append({"start": prev + 1, "end": s - 1, "length": s - prev - 1})
+        prev = max(prev, e)
+    if length - prev >= min_len:
+        gaps.append({"start": prev + 1, "end": length, "length": length - prev})
+    gaps.sort(key=lambda g: -g["length"])
+    return gaps[:cap]
+
+
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
     """返回保留区间 [start, end)（0-based）：去除两端质量低于阈值的碱基"""
     n = len(bases)
@@ -492,6 +543,7 @@ def analyze(
             })
             continue
         mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
+        grade, q20_ratio = _read_grade(trimmed, trimmed_q)
 
         aln = align_read(trimmed, ref, trimmed_q)
 
@@ -511,6 +563,8 @@ def analyze(
             "raw_length": len(bases),
             "trimmed_length": len(trimmed),
             "mean_q": round(mean_q, 1),
+            "grade": grade,
+            "q20_ratio": q20_ratio,
             "trimmed_bases": trimmed,
             "trimmed_quality": trimmed_q,
             "alignment": aln,
@@ -538,12 +592,18 @@ def analyze(
     variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
     variants = annotate_variants(variants, features, ref)
 
+    # 变异置信度（Mutation Surveyor 式评估的简化口径）
+    mixed_by_read = {r["filename"]: set(r["mixed_positions"]) for r in read_results}
+    for v in variants:
+        v["confidence"] = _variant_confidence(v, mixed_by_read.get(v.get("read", ""), set()))
+
     consensus = _build_consensus(ref, read_results)
 
     coverage_ranges = merge_coverage(
         [(r["alignment"]["ref_start"], r["alignment"]["ref_end"]) for r in read_results],
         len(ref),
     )
+    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref))
 
     cds_reports = _build_cds_reports(ref, features, variants, consensus)
 
@@ -565,7 +625,14 @@ def analyze(
         lines.extend(summarize_severity(variants))
         lines.extend(cds_lines)
         if consensus["coverage_percent"] < 95:
-            lines.append(f"注意：仍有 {100 - consensus['coverage_percent']:.1f}% 区域未被测序覆盖，建议补充引物")
+            gap_hint = ""
+            if coverage_gaps:
+                g = coverage_gaps[0]
+                gap_hint = (
+                    f"；共 {len(coverage_gaps)} 段未覆盖缺口（最大 {g['start']}-{g['end']}，{g['length']}bp），"
+                    "建议从已测区边缘设计引物补测"
+                )
+            lines.append(f"注意：仍有 {100 - consensus['coverage_percent']:.1f}% 区域未被测序覆盖，建议补充引物{gap_hint}")
         conclusion = "\n".join(lines)
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
@@ -590,6 +657,7 @@ def analyze(
         "variants": variants,
         "consensus": consensus,
         "coverage_ranges": coverage_ranges,
+        "coverage_gaps": coverage_gaps,
         "cds_reports": cds_reports,
         "conclusion": conclusion,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},

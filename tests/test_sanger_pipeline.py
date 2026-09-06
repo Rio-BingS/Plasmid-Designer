@@ -15,6 +15,7 @@ from core.sanger.annotator import annotate_variant  # noqa: E402
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
 from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
+    _read_grade, _variant_confidence, _coverage_gaps,
 )
 
 
@@ -397,3 +398,58 @@ def test_cds_report_stop_lost(reference):
     cr = result["cds_reports"][0]
     assert "stop_lost" in cr["consequences"]
     assert "终止密码子丢失" in cr["verdict"]
+
+
+# ==================== read 质量评级 / 变异置信度 / 覆盖缺口 ====================
+
+def test_read_grade_levels():
+    q40 = [40] * 500
+    assert _read_grade("ACGT" * 125, q40)[0] == "A"
+    seg = "ACGT" * 30 + "N" * 4           # 含 N：降为 B
+    grade, _ = _read_grade(seg, [40] * len(seg))
+    assert grade == "B"
+    low_q = [18] * 100                     # Q20 比例 0 → C
+    assert _read_grade("ACGT" * 25, low_q)[0] == "C"
+    assert _read_grade("ACGT" * 5, [40] * 20)[0] == "C"  # 过短
+    assert _read_grade("ACGT" * 25, [40] * 80 + [15] * 20)[0] == "B"  # Q20 比例 0.8
+
+
+def test_variant_confidence_levels():
+    base = {"read_pos": 10, "read_q": 42, "support_reads": 1}
+    assert _variant_confidence(dict(base), set()) == "high"
+    assert _variant_confidence(dict(base, read_q=30), set()) == "medium"
+    assert _variant_confidence(dict(base, read_q=15), set()) == "low"
+    assert _variant_confidence(dict(base, support_reads=2, read_q=30), set()) == "high"
+    assert _variant_confidence(dict(base, support_reads=2, read_q=15), set()) == "medium"
+    # 变异位有混合峰信号：无条件降为低
+    assert _variant_confidence(dict(base), {10}) == "low"
+
+
+def test_coverage_gaps_complement():
+    gaps = _coverage_gaps([(150, 300), (350, 500)], 700, min_len=50)
+    spans = [(g["start"], g["end"]) for g in gaps]
+    # 301-349 仅 49bp < min_len 50，被过滤
+    assert (1, 149) in spans and (501, 700) in spans and (301, 349) not in spans
+    assert all(g["length"] >= 50 for g in gaps)
+    # 不足 min_len 的缺口被过滤，且按长度降序
+    assert gaps[0]["length"] >= gaps[-1]["length"]
+
+
+def _real_traces(bases, main=1000, minor=30):
+    """带主次峰落差的四通道信号，避免平峰被混合检测整条标记"""
+    return [[main if b == ch else minor for b in bases] for ch in "ATGC"]
+
+
+def test_analyze_reports_grade_confidence_and_gaps(reference):
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"
+    seq = "".join(seg)
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400, _real_traces(seq)))], reference, [])
+    r = result["reads"][0]
+    assert r["grade"] in ("A", "B", "C")
+    assert 0 <= r["q20_ratio"] <= 1
+    # 合成平峰 trace 会把大量位置标记为混合峰，这里只验证字段与分级合法性
+    assert result["variants"][0]["confidence"] in ("high", "medium", "low")
+    # 参考 2000bp 只测了 100-500：应有长缺口
+    assert result["coverage_gaps"]
+    assert result["coverage_gaps"][0]["length"] >= 100

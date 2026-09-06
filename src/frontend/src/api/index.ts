@@ -452,6 +452,7 @@ export interface SequencingVariant {
   frameshift?: boolean
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
+  confidence?: string
 }
 
 export interface SequencingAnalysis {
@@ -473,6 +474,8 @@ export interface SequencingAnalysis {
     identity: number
     mixed_positions: number[]
     alignment_view?: AlignmentView | null
+    grade?: string
+    q20_ratio?: number
   }[]
   variants: SequencingVariant[]
   consensus: {
@@ -482,6 +485,7 @@ export interface SequencingAnalysis {
     diffs?: ConsensusDiff[]
   }
   coverage_ranges: [number, number][]
+  coverage_gaps?: { start: number; end: number; length: number }[]
   cds_reports?: CdsReport[]
   mixed_detected: Record<string, number[]>
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>

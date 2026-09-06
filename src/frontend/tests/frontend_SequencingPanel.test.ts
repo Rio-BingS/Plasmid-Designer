@@ -356,4 +356,27 @@ describe('SequencingPanel', () => {
     await w2.vm.$nextTick()
     expect(w2.text()).not.toContain('编码区（CDS）测序结论')
   })
+
+  it('shows read quality grades, variant confidence and coverage gaps', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      reads: [{ ...mockAnalysis.reads[0], grade: 'A', q20_ratio: 0.98 }],
+      variants: [{ ...mockAnalysis.variants[0], confidence: 'low' }],
+      coverage_gaps: [{ start: 600, end: 4900, length: 4301 }, { start: 4950, end: 5000, length: 51 }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    // read 表质量评级（含 Q20 tooltip）
+    expect(wrapper.find('.grade-chip').text()).toBe('A')
+    expect(wrapper.find('.grade-chip').attributes('title')).toContain('98%')
+    // 变异表置信度分级
+    // happy-dom 的 querySelector 对复合类选择器（.a.b）不可靠，用单类选择器断言
+    expect(wrapper.find('.conf-low').text()).toBe('低')
+    // 覆盖缺口提示（按长度排序，取最长 3 段）
+    console.log('DEBUG confChip:', wrapper.html().includes('conf-chip'), '| confLow:', wrapper.html().includes('conf-low'), '| rowGFP:', wrapper.html().includes('GFP'))
+    const gaps = wrapper.find('.coverage-gaps').text()
+    expect(gaps).toContain('覆盖缺口 2 段')
+    expect(gaps).toContain('600-4900（4301bp）')
+  })
 })

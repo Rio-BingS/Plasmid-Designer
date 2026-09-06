@@ -256,6 +256,13 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
   chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
 }
 
+/** 覆盖缺口摘要（取最长 3 段展示） */
+const gapSummary = computed(() => {
+  const gs = analysis.value?.coverage_gaps ?? []
+  const parts = gs.slice(0, 3).map((g) => `${g.start}-${g.end}（${g.length}bp）`)
+  return parts.join('、') + (gs.length > 3 ? ' 等' : '')
+})
+
 /** CDS 结论卡的覆盖标签 */
 function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
   if (c.coverage_status === 'uncovered') return '未覆盖'
@@ -790,6 +797,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           ></div>
         </div>
         <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
+        <p class="coverage-gaps" v-if="analysis.coverage_gaps?.length">
+          覆盖缺口 {{ analysis.coverage_gaps.length }} 段（按长度排序）：{{ gapSummary }} —— 建议从已测区边缘设计引物补测
+        </p>
       </div>
 
       <!-- CDS 编码区测序结论：整段编码序列是否与参考一致 -->
@@ -878,7 +888,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       <!-- Read 摘要 -->
       <table class="seq-table" v-if="analysis.reads.length">
         <thead>
-          <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>一致性</th><th>证据查看</th></tr>
+          <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>质量</th><th>一致性</th><th>证据查看</th></tr>
         </thead>
         <tbody>
           <tr v-for="r in analysis.reads" :key="r.index">
@@ -887,6 +897,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             <td>{{ r.ref_start }} - {{ r.ref_end }}</td>
             <td>{{ r.trimmed_length }} bp</td>
             <td>{{ r.mean_q }}</td>
+            <td>
+              <span v-if="r.grade" class="grade-chip" :class="'grade-' + r.grade"
+                    :title="r.q20_ratio != null ? `Q20 比例 ${(r.q20_ratio * 100).toFixed(0)}%` : ''">
+                {{ r.grade }}
+              </span>
+              <span v-else>-</span>
+            </td>
             <td>{{ (r.identity * 100).toFixed(1) }}%</td>
             <td>
               <button class="mini-btn" @click="loadTrace(r.index)">峰图</button>
@@ -904,7 +921,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         <h4 class="section-title">差异明细（点击行查看峰图）</h4>
         <table class="seq-table clickable">
           <thead>
-            <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th></tr>
+            <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
           </thead>
           <tbody>
             <tr v-for="(v, i) in analysis.variants" :key="i" @click="jumpToVariant(v)">
@@ -921,6 +938,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               </td>
               <td>{{ v.support_reads || 1 }}</td>
               <td>{{ v.read_q ?? '-' }}</td>
+              <td>
+                <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
+                      :title="v.confidence === 'low' ? '低置信：变异位有混合峰信号或 Q 值偏低，务必人工核对峰图' : (v.confidence === 'medium' ? '中置信：建议峰图复核' : '高置信')">
+                  {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
+                </span>
+                <span v-else>-</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -1100,6 +1124,15 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .seq-table th { background: var(--bg-secondary, #f7f7f7); }
 .seq-table.clickable tr { cursor: pointer; }
 .seq-table.clickable tr:hover { background: var(--bg-secondary, #f7f7f7); }
+.grade-chip { display: inline-block; min-width: 20px; text-align: center; font-weight: 700; border-radius: 6px; padding: 1px 7px; font-size: 0.8rem; }
+.grade-A { background: #E5F5E9; color: #227A36; }
+.grade-B { background: #FCF3DC; color: #9A6D00; }
+.grade-C { background: #FBEAE8; color: #A03227; }
+.conf-chip { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 0.78rem; }
+.conf-high { background: #E5F5E9; color: #227A36; }
+.conf-medium { background: #FCF3DC; color: #9A6D00; }
+.conf-low { background: #FBEAE8; color: #A03227; }
+.coverage-gaps { margin: 0.4rem 0 0; font-size: 0.78rem; color: #9A6D00; }
 .mono { font-family: Consolas, monospace; }
 
 .section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
