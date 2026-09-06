@@ -269,7 +269,7 @@ describe('SequencingPanel', () => {
     expect(w2.text()).not.toContain('还差参考序列文件')
   })
 
-  it('renders alignment overview map with direction bars and diff dots', async () => {
+  it('renders SnapGene-style match map with feature arrows and diff dots', async () => {
     const analysis = {
       ...mockAnalysis,
       reads: [
@@ -277,20 +277,32 @@ describe('SequencingPanel', () => {
         { ...mockAnalysis.reads[0], index: 1, filename: 'r2.ab1', direction: '-', ref_start: 300, ref_end: 400, alignment_view: makeAlignmentView() },
       ],
       variants: [{ ...mockAnalysis.variants[0], ref_pos: 106, read: 'r1.ab1', read_pos: 6 }],
+      features: [
+        { name: 'MX', type: 'CDS', start: 120, end: 1180, strand: '+' },
+        { name: 'lacI', type: 'CDS', start: 2600, end: 3500, strand: '-' },
+        { name: 'T7 promoter', type: 'promoter', start: 4923, end: 4938, strand: '+' },
+      ],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.map-box').exists()).toBe(true)
-    expect(wrapper.findAll('.map-bar-fwd').length).toBe(1)
-    expect(wrapper.findAll('.map-bar-rev').length).toBe(1)
+    // read 箭头一正一反
+    expect(wrapper.findAll('.map-arrow-fwd').length).toBe(1)
+    expect(wrapper.findAll('.map-arrow-rev').length).toBe(1)
     // 每条 read 的对齐视图各有 1 处错配 → 各 1 个差异点
     expect(wrapper.findAll('.map-dot').length).toBe(2)
-    // 参考条上方的合并差异标记
+    // 轴上方的合并变异红块
     expect(wrapper.findAll('.map-var-tick').length).toBe(1)
+    // 参考特征箭头：名字放得下的画在箭头内，放不下的引线外置
+    expect(wrapper.findAll('.map-feat path').length).toBe(3)
+    expect(wrapper.findAll('.map-feat-label').length).toBe(2)
+    expect(wrapper.findAll('.map-feat-out').length).toBe(1)
+    // 自适应刻度数字
+    expect(wrapper.findAll('.map-tick-num').length).toBeGreaterThan(0)
 
-    // 点击 read 条带 → 比对校验切换到该 read
-    await wrapper.find('.map-bar-rev').trigger('click')
+    // 点击 read 箭头 → 比对校验切换到该 read
+    await wrapper.find('.map-arrow-rev').trigger('click')
     await wrapper.vm.$nextTick()
     expect((wrapper.vm as any).alignReadIdx).toBe(1)
   })

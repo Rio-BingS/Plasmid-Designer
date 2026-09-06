@@ -256,14 +256,38 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
   chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
 }
 
-// ==================== 匹配简图（多 read 落位一览） ====================
+// ==================== 匹配简图（SnapGene 风格线性图谱） ====================
+// 上方 read 深红块状箭头（方向见箭头），中间刻度轴（绿段=已测覆盖、轴上红块=变异），
+// 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
 const MAP_W = 1000        // viewBox 宽度
 const MAP_GUTTER = 150    // 左侧文件名栏宽
-const MAP_ROW_H = 22      // 每行高度
-const MAP_BAR_H = 10      // 条带高度
-const MAP_TOP = 34        // 参考行 + 刻度占用的顶部高度
+const READS_TOP = 8       // read 区顶部
+const READ_LANE_H = 24    // read 行高
+const READ_H = 12         // read 箭头高度
+const VAR_H = 14          // 轴上方变异标记带高度
+const FEAT_LANE_H = 17    // 特征行高
+const FEAT_H = 11         // 特征箭头高度
+const LABEL_LANE_H = 15   // 特征外置标签行高
 
-type MapRead = SequencingAnalysis['reads'][number] & { diffs: number[] }
+// 特征类型配色（与 PlasmidMap 环形图谱一致）
+const FEATURE_COLORS: Record<string, string> = {
+  promoter: '#E8656B', terminator: '#2FA98C', CDS: '#4E79C7', gene: '#4E79C7',
+  origin: '#8FBF6B', rep_origin: '#8FBF6B', resistance: '#E8B93E', tag: '#B07FD8',
+  MCS: '#E8923D', multiple_cloning_site: '#E8923D', regulatory: '#E8656B',
+  other: '#9AA5B1'
+}
+function mapFeatureColor(type: string): string {
+  return FEATURE_COLORS[type] || FEATURE_COLORS.other
+}
+function darkenColor(hex: string, amount: number): string {
+  const n = parseInt(hex.slice(1), 16)
+  const r = Math.round(((n >> 16) & 255) * (1 - amount))
+  const g = Math.round(((n >> 8) & 255) * (1 - amount))
+  const b = Math.round((n & 255) * (1 - amount))
+  return `rgb(${r},${g},${b})`
+}
+
+type MapRead = SequencingAnalysis['reads'][number] & { diffs: number[]; lane: number }
 
 /** 该 read 全部差异（替换/插入/缺失）在参考上的位置 */
 function readDiffPositions(r: SequencingAnalysis['reads'][number]): number[] {
@@ -284,16 +308,34 @@ function readDiffPositions(r: SequencingAnalysis['reads'][number]): number[] {
   return [...out].sort((x, y) => x - y)
 }
 
-/** 按落位排序的 read 行（附差异位置） */
+/** 首次适配分道：把互不重叠的区间堆进尽量少的行，返回每项道号 */
+function assignLanes<T>(items: T[], startOf: (t: T) => number, endOf: (t: T) => number): number[] {
+  const laneEnds: number[] = []
+  return items.map((it) => {
+    const s = startOf(it)
+    const e = endOf(it)
+    let li = laneEnds.findIndex((le) => s > le)
+    if (li === -1) {
+      laneEnds.push(e)
+      li = laneEnds.length - 1
+    } else {
+      laneEnds[li] = e
+    }
+    return li
+  })
+}
+
+/** 按落位排序的 read 行（附差异位置与堆叠道号） */
 const mapRows = computed<MapRead[]>(() => {
   const a = analysis.value
   if (!a) return []
-  return [...a.reads]
+  const sorted = [...a.reads]
     .sort((x, y) => x.ref_start - y.ref_start || x.index - y.index)
     .map((r) => ({ ...r, diffs: readDiffPositions(r) }))
+  const lanes = assignLanes(sorted, (r) => r.ref_start, (r) => r.ref_end)
+  return sorted.map((r, i) => ({ ...r, lane: lanes[i] }))
 })
 
-const mapHeight = computed(() => MAP_TOP + mapRows.value.length * MAP_ROW_H + 4)
 const mapScale = computed(() => {
   const a = analysis.value
   return a ? (MAP_W - 10 - MAP_GUTTER) / a.reference_length : 0
@@ -303,24 +345,120 @@ function mapX(pos: number): number {
   return MAP_GUTTER + (pos - 1) * mapScale.value
 }
 
-function mapRowY(i: number): number {
-  return MAP_TOP + i * MAP_ROW_H
+const readLaneCount = computed(() => mapRows.value.reduce((m, r) => Math.max(m, r.lane + 1), 0))
+const axisY = computed(() => READS_TOP + readLaneCount.value * READ_LANE_H + VAR_H + 6)
+const featsTop = computed(() => axisY.value + 24)
+
+function readY(lane: number): number {
+  return READS_TOP + lane * READ_LANE_H
+}
+function featY(lane: number): number {
+  return featsTop.value + lane * FEAT_LANE_H
+}
+function labelY(lane: number): number {
+  return featsTop.value + featLaneCount.value * FEAT_LANE_H + 14 + lane * LABEL_LANE_H
 }
 
-/** 参考条覆盖段（灰底上叠加绿色已测段） */
+/** 块状箭头路径（forward 箭头朝右，否则朝左） */
+function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolean): string {
+  const w = Math.max(2, x2 - x1)
+  const aw = Math.min(18, Math.max(6, w * 0.2))
+  if (forward) {
+    const bx = Math.max(x1, x2 - aw)
+    return `M ${x1} ${y} L ${bx} ${y} L ${x2} ${y + h / 2} L ${bx} ${y + h} L ${x1} ${y + h} Z`
+  }
+  const bx = Math.min(x2, x1 + aw)
+  return `M ${x2} ${y} L ${bx} ${y} L ${x1} ${y + h / 2} L ${bx} ${y + h} L ${x2} ${y + h} Z`
+}
+
+function readWidth(r: { ref_start: number; ref_end: number }): number {
+  return Math.max(6, (r.ref_end - r.ref_start + 1) * mapScale.value)
+}
+
+interface MapFeat {
+  name: string
+  type: string
+  start: number
+  end: number
+  strand: string
+  x1: number
+  x2: number
+  lane: number
+  labelInside: boolean
+  labelX: number
+  labelLane: number
+}
+
+/** 参考特征（彩色块状箭头；名字放不下时引线外置到下方标签道） */
+const mapFeats = computed<MapFeat[]>(() => {
+  const a = analysis.value
+  if (!a || !a.features?.length) return []
+  const sorted = [...a.features].sort((x, y) => x.start - y.start || x.end - y.end)
+  const lanes = assignLanes(sorted, (f) => f.start, (f) => f.end)
+  const labelLaneEnds: number[] = []
+  return sorted.map((f, i) => {
+    const x1 = mapX(f.start)
+    const x2 = x1 + Math.max(8, (f.end - f.start + 1) * mapScale.value)
+    const labelW = f.name.length * 6.6 + 8
+    const bodyW = x2 - x1 - Math.min(18, Math.max(6, (x2 - x1) * 0.2)) - 4
+    const inside = f.name.length > 0 && labelW <= bodyW
+    const cx = Math.min(MAP_W - 10 - labelW / 2, Math.max(MAP_GUTTER + labelW / 2, (x1 + x2) / 2))
+    let labelLane = -1
+    if (!inside) {
+      let li = labelLaneEnds.findIndex((le) => cx - labelW / 2 > le + 8)
+      if (li === -1) {
+        labelLaneEnds.push(cx + labelW / 2)
+        li = labelLaneEnds.length - 1
+      } else {
+        labelLaneEnds[li] = cx + labelW / 2
+      }
+      labelLane = li
+    }
+    return {
+      name: f.name, type: f.type, start: f.start, end: f.end, strand: f.strand || '+',
+      x1, x2, lane: lanes[i], labelInside: inside, labelX: cx, labelLane
+    }
+  })
+})
+
+const featLaneCount = computed(() => mapFeats.value.reduce((m, f) => Math.max(m, f.lane + 1), 0))
+const labelLaneCount = computed(() =>
+  mapFeats.value.reduce((m, f) => Math.max(m, f.labelInside ? 0 : f.labelLane + 1), 0))
+
+const mapHeight = computed(() => Math.max(
+  axisY.value + 28,
+  featsTop.value + featLaneCount.value * FEAT_LANE_H + labelLaneCount.value * LABEL_LANE_H + 4
+))
+
+/** 参考条覆盖段（轴上叠加绿色已测段） */
 const mapCovered = computed(() => analysis.value?.coverage_ranges ?? [])
 
-/** 参考条坐标刻度（首/25%/50%/75%/尾） */
+/** 轴刻度（自适应步长，形如 SnapGene 的 2000/4000/6000） */
 const mapTicks = computed(() => {
   const a = analysis.value
   if (!a) return []
   const L = a.reference_length
-  const ticks = [{ pos: 1, label: '1' }]
-  for (const f of [0.25, 0.5, 0.75]) {
-    ticks.push({ pos: Math.round(L * f), label: String(Math.round(L * f)) })
+  const steps = [100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000, 50000]
+  const step = steps.find((s) => L / s <= 9) ?? 100000
+  const out: { pos: number; label: string }[] = []
+  for (let p = step; p <= L; p += step) {
+    out.push({ pos: p, label: p >= 10000 ? `${Math.round(p / 1000)}k` : String(p) })
   }
-  ticks.push({ pos: L, label: String(L) })
-  return ticks
+  return out
+})
+
+/** 图例里出现的特征类型（按出现顺序去重） */
+const mapLegendTypes = computed(() => {
+  const seen = new Set<string>()
+  const out: { type: string; color: string }[] = []
+  for (const f of mapFeats.value) {
+    const key = FEATURE_COLORS[f.type] ? f.type : 'other'
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push({ type: key === 'other' ? '其他' : key, color: FEATURE_COLORS[key] })
+    }
+  }
+  return out
 })
 
 function shortName(name: string): string {
@@ -618,43 +756,61 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
       </div>
 
-      <!-- 匹配简图：多 read 在参考上的落位与差异一览 -->
+      <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
       <div class="map-box" v-if="analysis.reads.length">
-        <h4 class="section-title">匹配简图<span class="map-sub">（每条 read 的落位与差异；点击条带看比对，点击红块看峰图）</span></h4>
+        <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span></h4>
         <svg class="map-svg" :viewBox="`0 0 ${MAP_W} ${mapHeight}`" preserveAspectRatio="xMidYMid meet" role="img">
           <!-- 刻度网格线 -->
           <line v-for="t in mapTicks" :key="'g' + t.pos" :x1="mapX(t.pos)" :x2="mapX(t.pos)"
-                y1="27" :y2="mapHeight - 4" class="map-grid" />
-          <!-- 参考条（灰底 + 绿色已覆盖段） -->
-          <text :x="MAP_GUTTER - 8" y="15" text-anchor="end" class="map-label">参考</text>
-          <rect :x="MAP_GUTTER" y="9" :width="MAP_W - 10 - MAP_GUTTER" height="6" rx="3" class="map-ref-bg" />
-          <rect v-for="(seg, i) in mapCovered" :key="'c' + i" :x="mapX(seg[0])" y="9"
-                :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="6" class="map-ref-cov" />
-          <!-- 刻度数字 -->
-          <text v-for="(t, i) in mapTicks" :key="'t' + t.pos" :x="mapX(t.pos)" y="24"
-                :text-anchor="i === 0 ? 'start' : (i === mapTicks.length - 1 ? 'end' : 'middle')"
-                class="map-tick">{{ t.label }}</text>
-          <!-- 合并后的差异标记（参考条上方红块，点击跳峰图） -->
-          <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
-            <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
-            <rect :x="mapX(v.ref_pos) - 2" y="1" width="4" height="7" rx="1" class="map-var-tick" />
-          </g>
-          <!-- read 行 -->
-          <g v-for="(r, i) in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
+                :y1="READS_TOP - 4" :y2="mapHeight - 2" class="map-grid" />
+          <!-- read 行：深红块状箭头（方向见箭头），差异位点空心圆 -->
+          <g v-for="r in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
             <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击查看逐碱基比对</title>
-            <text :x="MAP_GUTTER - 8" :y="mapRowY(i) + MAP_BAR_H / 2 + 3.5" text-anchor="end" class="map-label">
+            <text :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 3.5" text-anchor="end" class="map-label">
               {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
             </text>
-            <rect :x="mapX(r.ref_start)" :y="mapRowY(i)"
-                  :width="Math.max(2, (r.ref_end - r.ref_start + 1) * mapScale)" :height="MAP_BAR_H" rx="3"
-                  :class="r.direction === '+' ? 'map-bar-fwd' : 'map-bar-rev'" />
-            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="mapRowY(i) + MAP_BAR_H / 2" r="2.4" class="map-dot" />
+            <path :d="arrowPath(mapX(r.ref_start), mapX(r.ref_start) + readWidth(r), readY(r.lane), READ_H, r.direction === '+')"
+                  :class="r.direction === '+' ? 'map-arrow-fwd' : 'map-arrow-rev'" />
+            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="2.6" class="map-dot" />
+          </g>
+          <!-- 刻度轴：灰底 + 绿色已测覆盖段 + 黑轴线 + 刻度数字 -->
+          <rect :x="MAP_GUTTER" :y="axisY - 3" :width="MAP_W - 10 - MAP_GUTTER" height="6" rx="3" class="map-axis-bg" />
+          <rect v-for="(seg, i) in mapCovered" :key="'c' + i" :x="mapX(seg[0])" :y="axisY - 3"
+                :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="6" class="map-axis-cov" />
+          <line :x1="MAP_GUTTER" :x2="MAP_W - 10" :y1="axisY" :y2="axisY" class="map-axis-line" />
+          <g v-for="t in mapTicks" :key="'t' + t.pos">
+            <line :x1="mapX(t.pos)" :x2="mapX(t.pos)" :y1="axisY" :y2="axisY + 5" class="map-tick-line" />
+            <text :x="mapX(t.pos)" :y="axisY + 16"
+                  :text-anchor="mapX(t.pos) > MAP_W - 45 ? 'end' : (mapX(t.pos) < MAP_GUTTER + 45 ? 'start' : 'middle')"
+                  class="map-tick-num">{{ t.label }}</text>
+          </g>
+          <!-- 轴上变异红块（点击跳峰图） -->
+          <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
+            <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
+            <rect :x="mapX(v.ref_pos) - 2.5" :y="axisY - VAR_H + 2" width="5" height="10" rx="1" class="map-var-tick" />
+          </g>
+          <!-- 参考特征：彩色块状箭头，名字放不下时引线外置 -->
+          <g v-for="(f, i) in mapFeats" :key="'f' + i" class="map-feat">
+            <title>{{ f.name }}（{{ f.type }}，{{ f.start }}-{{ f.end }}，{{ f.strand === '-' ? '反向' : '正向' }}）</title>
+            <path :d="arrowPath(f.x1, f.x2, featY(f.lane), FEAT_H, f.strand !== '-')"
+                  :fill="mapFeatureColor(f.type)" :stroke="darkenColor(mapFeatureColor(f.type), 0.28)" stroke-width="0.8" />
+            <text v-if="f.labelInside" :x="(f.x1 + f.x2) / 2" :y="featY(f.lane) + FEAT_H / 2 + 3.2"
+                  text-anchor="middle" class="map-feat-label">{{ f.name }}</text>
+            <template v-else>
+              <line :x1="(f.x1 + f.x2) / 2" :x2="(f.x1 + f.x2) / 2" :y1="featY(f.lane) + FEAT_H"
+                    :y2="labelY(f.labelLane) - 10" class="map-leader" />
+              <text :x="f.labelX" :y="labelY(f.labelLane)" text-anchor="middle" class="map-feat-out">{{ f.name }}</text>
+            </template>
           </g>
         </svg>
         <p class="map-legend hint">
-          <span class="lg-fwd">━ 正向</span> · <span class="lg-rev">━ 反向</span> ·
-          <span class="lg-dot">○ 差异位点</span> · <span class="lg-cov">▮</span> 参考条绿段 = 已测序覆盖 ·
-          <span class="lg-var">▮</span> 红块 = 差异（点击跳峰图）
+          <span class="lg-read">▬ 测序 read（箭头=方向，点击看比对）</span> ·
+          <span class="lg-dot">○ 差异位点</span> ·
+          <span class="lg-var">▮</span> 变异（点击跳峰图） ·
+          <span class="lg-cov">▬</span> 轴上绿段 = 已测序覆盖
+          <template v-if="mapLegendTypes.length"> · 特征
+            <span v-for="t in mapLegendTypes" :key="t.type" class="lg-type"><i :style="{ background: t.color }"></i>{{ t.type }}</span>
+          </template>
         </p>
       </div>
 
@@ -926,19 +1082,31 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .map-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
 .map-sub { font-size: 0.75rem; color: #999; font-weight: 400; }
 .map-svg { width: 100%; height: auto; display: block; user-select: none; }
-.map-label { font-size: 11px; fill: #666; font-family: Consolas, monospace; }
-.map-tick { font-size: 9px; fill: #AAA; }
-.map-grid { stroke: #F0F0F0; stroke-width: 1; stroke-dasharray: 3 3; }
-.map-ref-bg { fill: #E7E7E7; }
-.map-ref-cov { fill: #7DC98C; }
+.map-label { font-size: 11px; fill: #555; font-family: Consolas, monospace; }
+.map-grid { stroke: #ECEEF0; stroke-width: 1; stroke-dasharray: 3 4; }
 .map-row { cursor: pointer; }
-.map-bar-fwd { fill: #2E9E44; opacity: 0.85; }
-.map-bar-rev { fill: #2456C8; opacity: 0.8; }
-.map-row:hover .map-bar-fwd, .map-row:hover .map-bar-rev { opacity: 1; }
-.map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.2; pointer-events: none; }
+.map-arrow-fwd, .map-arrow-rev { fill: #B03A2E; stroke: #7E251C; stroke-width: 0.8; opacity: 0.92; }
+.map-row:hover .map-arrow-fwd, .map-row:hover .map-arrow-rev { opacity: 1; fill: #C74A3C; }
+.map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.3; pointer-events: none; }
 .map-var { cursor: pointer; }
 .map-var-tick { fill: #C0392B; }
 .map-var:hover .map-var-tick { fill: #E74C3C; }
+.map-axis-bg { fill: #D5D9DE; }
+.map-axis-cov { fill: #58B368; }
+.map-axis-line { stroke: #3A3F45; stroke-width: 1.4; }
+.map-tick-line { stroke: #3A3F45; stroke-width: 1; }
+.map-tick-num { font-size: 10px; fill: #666; }
+.map-feat { fill-opacity: 0.95; }
+.map-feat:hover { fill-opacity: 1; }
+.map-feat-label { font-size: 10px; fill: #10131A; pointer-events: none; }
+.map-feat-out { font-size: 10.5px; fill: #333; }
+.map-leader { stroke: #A5A9AE; stroke-width: 0.8; }
+.lg-read { color: #B03A2E; font-weight: 600; }
+.lg-dot { color: #C0392B; font-weight: 600; }
+.lg-var { color: #C0392B; font-weight: 700; }
+.lg-cov { color: #58B368; font-weight: 700; }
+.lg-type { margin-left: 6px; white-space: nowrap; }
+.lg-type i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
 .lg-fwd { color: #2E9E44; font-weight: 600; }
 .lg-rev { color: #2456C8; font-weight: 600; }
 .lg-dot { color: #C0392B; font-weight: 600; }

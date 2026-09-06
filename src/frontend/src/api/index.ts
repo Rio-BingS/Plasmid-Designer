@@ -466,7 +466,7 @@ export interface SequencingAnalysis {
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
   errors: { filename: string; error: string }[]
   reference_length: number
-  features: { name: string; type: string; start: number; end: number }[]
+  features: { name: string; type: string; start: number; end: number; strand: string; description?: string }[]
 }
 
 export interface ReadTrace {
