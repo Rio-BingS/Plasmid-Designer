@@ -96,6 +96,27 @@ def test_parse_snapgene_requires_reader():
         parse_reference("plasmid.dna", b"\x00\x01fake")
 
 
+def test_parse_snapgene_coordinates_are_one_based(monkeypatch):
+    """snapgene_reader 返回 0-based 半开区间（start 已减 1，end 原样保留）：
+    解析器必须把 start 加回 1，否则所有特征整体左移 1bp、长度多 1，
+    CDS 会误报"长度不是 3 的倍数"且翻译阅读框整体错位（MX.dna 实测案例）"""
+    import snapgene_reader
+
+    fake = {
+        "seq": REF_SEQ,
+        "features": [
+            # 模拟库输出：真实 1-based 区间 21..80 → 库返回 start=20, end=80
+            {"start": 20, "end": 80, "strand": "1", "type": "CDS", "name": "GFP",
+             "segments": [{"@range": "21-80"}]},
+        ],
+    }
+    monkeypatch.setattr(snapgene_reader, "snapgene_file_to_dict", lambda path: fake)
+    seq, features = parse_reference("plasmid.dna", b"SNAPGENE-BYTES")
+    gfp = features[0]
+    assert (gfp["start"], gfp["end"], gfp["strand"]) == (21, 80, "+")
+    assert gfp["end"] - gfp["start"] + 1 == 60  # 1-based 闭区间长度
+
+
 # ==================== 通用分析端点集成 ====================
 
 def test_analyze_upload_endpoint_full_flow(client):
