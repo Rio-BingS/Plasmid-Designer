@@ -41,7 +41,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
 tests/                      后端 pytest（174 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes；tests/abif_utils.py 合成 ab1 生成器）
-                            + 前端 vitest（64 用例，src/frontend/tests）
+                            + 前端 vitest（65 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-06）
 
-- pytest **174 通过**（含 test_vector_data 数据守门 6 项、test_reference_parser 8 项）；前端 vitest **64 通过**；vite build 通过
+- pytest **174 通过**（含 test_vector_data 数据守门 6 项、test_reference_parser 8 项）；前端 vitest **65 通过**；vite build 通过
 - 新增（2026-09-06 三次补充）**比对校验视图**（页内核对测序结果，不再需要导出到其他软件）：
   aligner.align_read 输出逐列对齐 `aligned`（ref_aligned/read_aligned 等长带 gap、read 以
   参考方向展示、q_aligned 逐列 Q 反向 read 随碱基反转）；_summary 每条 read 带 alignment_view；

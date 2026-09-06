@@ -107,4 +107,22 @@ describe('SequencingView', () => {
     expect(wrapper.findComponent(SequencingPanel).props('initialReference')).toBeNull()
     expect(fetchVectorGenbankFile).toHaveBeenCalledTimes(1)
   })
+
+  it('深链请求返回前路由已离开：迟到的响应被丢弃不残留', async () => {
+    let resolveFetch!: (f: File) => void
+    vi.mocked(fetchVectorGenbankFile).mockImplementation(
+      () => new Promise<File>((res) => { resolveFetch = res })
+    )
+    await router.push({ path: '/sequencing', query: { mode: 'vector', ref: 'pET-21a' } })
+    const wrapper = mountView()
+    await flushPromises()
+
+    // 响应仍在途中就跳回普通页
+    await router.push('/sequencing')
+    await flushPromises()
+    resolveFetch(new File(['LOCUS'], 'pET-21a.gb'))  // 迟到的响应
+    await flushPromises()
+
+    expect(wrapper.findComponent(SequencingPanel).props('initialReference')).toBeNull()
+  })
 })

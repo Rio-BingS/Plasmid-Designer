@@ -23,24 +23,33 @@ const initialReference = ref<File | null>(null)
 const stageError = ref('')
 const staging = ref(false)
 
+// 请求序号：响应期间路由已变化时丢弃过期结果（否则迟到的响应会把参考
+// 又塞回已清空的普通页——竞态残留）
+let loadSeq = 0
+
 async function loadReferenceFromRoute() {
+  const seq = ++loadSeq
   const refId = route.query.ref as string
   const mode = route.query.mode as string
   if (!refId) {
     initialReference.value = null
     stageError.value = ''
+    staging.value = false
     return
   }
   staging.value = true
   stageError.value = ''
   try {
-    initialReference.value = mode === 'vector'
+    const file = mode === 'vector'
       ? await fetchVectorGenbankFile(refId)
       : await fetchDesignGenbankFile(refId)
+    if (seq !== loadSeq) return
+    initialReference.value = file
   } catch {
+    if (seq !== loadSeq) return
     stageError.value = '未能自动带入参考序列（可能已过期），请手动上传参考文件'
   } finally {
-    staging.value = false
+    if (seq === loadSeq) staging.value = false
   }
 }
 
