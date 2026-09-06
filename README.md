@@ -46,6 +46,8 @@ plasmid-designer-v2/
 │   ├── codon_tables/           # 密码子表 (YAML)
 │   └── vectors/                # 载体模板 (YAML)
 ├── tests/                      # 测试
+├── scripts/                    # 离线工具（fetch_vector_sequences 载体库刷新、
+│                             # batch_sequencing_report 批量测序整理分析）
 └── docs/                       # 文档
 ```
 
@@ -204,6 +206,20 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
 分析记录为进程级内存存储（重启失效）。
+
+**批量离线整理与分析**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
+结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
+测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
+扫描文件夹中的 .ab1 与参考图谱（.dna/.gb/.fasta），按引物列文件名与质粒名称自动匹配，
+把同一质粒的文件【复制】到 `<数据文件夹>/测序分析/<质粒名>/`——原始文件不移动、不删除、
+不覆盖（重名副本加序号，`整理清单.csv` 记录原始路径与 MD5 保证可追溯），逐质粒运行
+全自动分析管线生成 `测序分析报告.md` + `分析结果.json`，并把一句话结论回填 Excel
+"测序结果"列（原表先备份到输出目录）。
+
+```bash
+python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
+    [--excel 信息表.xlsx] [--out-dir 目录] [--min-q 20] [--dry-run] [--no-write-back]
+```
 
 **结果页内可直接核对准确性，无需导出到其他软件**：每条 read 附带逐列比对视图
 （read vs 参考逐碱基对照，错配红底、插入缺失、低质量 Q<20 橙色提示；反向 read 以参考

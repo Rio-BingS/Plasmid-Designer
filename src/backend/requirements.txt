@@ -24,6 +24,8 @@ email-validator>=2.1.0
 biopython>=1.81
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
 snapgene-reader>=0.1.23
+# 批量测序整理分析脚本（scripts/batch_sequencing_report.py）读写 Excel 信息表
+openpyxl>=3.1.0
 
 # Testing
 pytest>=7.4.0

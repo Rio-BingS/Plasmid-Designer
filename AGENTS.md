@@ -39,9 +39,9 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （逐列 read vs 参考+Q 值）/峰图/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（208 用例，含 test_sanger_pipeline/test_enzyme_sites/
-                            test_sequencing_routes；tests/abif_utils.py 合成 ab1 生成器）
-                            + 前端 vitest（69 用例，src/frontend/tests）
+tests/                      后端 pytest（219 用例，含 test_sanger_pipeline/test_enzyme_sites/
+                            test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
+                            合成 ab1 生成器）+ 前端 vitest（70 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -99,9 +99,15 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
   （conftest.py 会重新注入正确路径）
 
-## 当前状态（2026-09-06）
+## 当前状态（2026-09-07）
 
-- pytest **208 通过**（含 test_vector_data 数据守门 6 项、test_reference_parser 10 项、CDS 测序结论 13 项、峰级证据/ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **69 通过**；vite build 通过
+- pytest **219 通过**（含 test_batch_sequencing 11 项、test_vector_data 数据守门 6 项、test_reference_parser 10 项、CDS 测序结论 13 项、峰级证据/ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **70 通过**；vite build 通过
+- 新增（2026-09-07）**批量测序整理分析脚本**（scripts/batch_sequencing_report.py）：离线批处理
+  "Excel 信息表 + 测序结果文件夹"——引物列填测序文件名（分号分隔）匹配 .ab1、质粒名称匹配
+  参考图谱（.dna/.gb/.fasta）；同一质粒文件【复制】到 <数据目录>/测序分析/<质粒名>/（原件
+  不动不覆盖、整理清单.csv 记录原始路径+MD5），逐质粒跑 core/sanger 全自动管线生成
+  测序分析报告.md + 分析结果.json，一句话结论回填 Excel"测序结果"列（原表先备份）；
+  requirements 补 openpyxl；测试用合成 ab1 + FASTA 端到端覆盖（tests/test_batch_sequencing.py）
 - 新增（2026-09-06 三次补充）**比对校验视图**（页内核对测序结果，不再需要导出到其他软件）：
   aligner.align_read 输出逐列对齐 `aligned`（ref_aligned/read_aligned 等长带 gap、read 以
   参考方向展示、q_aligned 逐列 Q 反向 read 随碱基反转）；_summary 每条 read 带 alignment_view；
