@@ -40,7 +40,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
 tests/                      后端 pytest（147 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes；tests/abif_utils.py 合成 ab1 生成器）
-                            + 前端 vitest（44 用例，src/frontend/tests）
+                            + 前端 vitest（54 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -100,7 +100,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-06）
 
-- pytest **158 通过**（含 test_vector_data 数据守门 6 项）；前端 vitest **44 通过**；vite build 通过
+- pytest **158 通过**（含 test_vector_data 数据守门 6 项）；前端 vitest **54 通过**；vite build 通过
 - 新增（2026-09-06）：PlasmidMap v2 重写（填充式特征弧+重叠分层+方向箭头、外侧标签多轨、
   内侧单一酶切位点蓝色多轨、PNG 2x 导出、坐标环形取模）；SequenceView v2（酶名两档错层+
   切点标记、识别序列底纹、翻译按链分置、特征条重叠分层）；**测序分析拆为独立模块**
@@ -110,6 +110,10 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   序列+注释（SnapGene 官方库直链 + NCBI L09137/U78872），YAML 带 data_provenance 血统，
   scripts/fetch_vector_sequences.py 为刷新管线（含自检），ElementType 补 CDS、加载器未知
   类型降级 other
+- 测序页参考序列（2026-09-06 补充）：**默认选中「设计结果」**（验证自己设计的构建体是
+  主场景），载体库降为第二 tab；设计模式支持「最近设计」卡片点选（ResultView 完成态写入
+  localStorage recent_designs_v1，utils/recentDesigns.ts，上限 8 条）+ 手输 ID 校验
+  （getDesign 验证存在且 completed），面板头部显示「参考：名称 · 长度」chip
 - 2026-09-05：SnapGene 风格图谱初版 + Sanger 测序全自动分析（core/sanger/ +
   sequencing_routes + SequencingPanel，依赖 biopython，可选 tracy 解卷积；分析记录为进程内存存储）
 - 旧状态：2026-09-04 pytest 126 / vitest 42；冒烟 20 通过；GitHub main 已同步
