@@ -117,6 +117,14 @@ def test_analyze_reports_errors():
     assert result["errors"][0]["filename"] == "bad.ab1"
 
 
+def test_analyze_over_aggressive_trim_reports_error():
+    """阈值高于全部碱基 Q 值：修剪后为空，报错误条目而非比对崩溃"""
+    blob = make_ab1("ACGT" * 50, [40] * 200)
+    result = analyze([("q.ab1", blob)], "ACGT" * 100, [], min_q=50)
+    assert result["reads"] == []
+    assert result["errors"] and "修剪后仅 0bp" in result["errors"][0]["error"]
+
+
 # ==================== 逐列对齐视图（人工核对证据） ====================
 
 def test_aligner_aligned_strings_forward(reference):

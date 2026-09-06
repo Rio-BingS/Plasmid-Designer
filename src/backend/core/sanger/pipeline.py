@@ -192,6 +192,14 @@ def analyze(
         s, e = _trim_by_quality(bases, quality, min_q)
         trimmed = bases[s:e]
         trimmed_q = quality[s:e]
+        # 阈值高于全部碱基 Q 值时修剪结果为空：记为错误条目，
+        # 不能送进 PairwiseAligner（空序列会抛 ValueError → 500）
+        if len(trimmed) < MIN_WINDOW:
+            errors.append({
+                "filename": filename,
+                "error": f"Q≥{min_q} 的碱基不足 {MIN_WINDOW}bp（修剪后仅 {len(trimmed)}bp），无法比对",
+            })
+            continue
         mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
 
         aln = align_read(trimmed, ref, trimmed_q)
