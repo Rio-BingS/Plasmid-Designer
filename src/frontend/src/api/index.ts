@@ -429,6 +429,9 @@ export interface CdsReport {
   premature_stop_aa: number | null
   frameshift_count: number
   aa_changes: string[]
+  /** Sequence Ontology 标准后果词表（与 VEP/snpEff/bcftools csq 对齐） */
+  consequences?: string[]
+  synonymous_count?: number
   verdict: string
 }
 

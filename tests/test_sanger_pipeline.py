@@ -345,3 +345,55 @@ def test_cds_report_uncovered_and_reverse_strand():
     cr = result2["cds_reports"][0]
     assert cr["protein_identical"] is True
     assert cr["verdict"].startswith("CDS 完整覆盖")
+
+
+def test_cds_report_synonymous_mutation(reference):
+    """CDS 内同义突变：蛋白一致但要点名 synonymous_variant 与同义计数"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[45] = "C"  # GCT→GCC（codon2）：Ala→Ala 同义
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is True
+    assert "synonymous_variant" in cr["consequences"]
+    assert cr["synonymous_count"] == 1
+    assert "同义突变" in cr["verdict"]
+
+
+def test_cds_report_inframe_deletion(reference):
+    """整密码子 3bp 缺失：inframe_deletion，不移码，蛋白短一个氨基酸"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    mutated = ref[:46] + ref[49:190]  # 删 codon3 TTC（pos 47-49）
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "inframe_deletion" in cr["consequences"]
+    assert cr["frameshift_count"] == 0
+    assert cr["protein_identical"] is False
+    assert cr["alt_protein_length"] == cr["ref_protein_length"] - 1
+    assert "框内插入/缺失 3 bp" in cr["verdict"]
+
+
+def test_cds_report_start_lost(reference):
+    """起始密码子 ATG→ACG：start_lost"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[41] = "C"  # ATG→ACG（codon1）
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "start_lost" in cr["consequences"]
+    assert "起始密码子改变" in cr["verdict"]
+
+
+def test_cds_report_stop_lost(reference):
+    """终止密码子 TAA→CAA：stop_lost，翻译读穿"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[187] = "C"  # TAA→CAA（codon50，pos 188-190）
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "stop_lost" in cr["consequences"]
+    assert "终止密码子丢失" in cr["verdict"]

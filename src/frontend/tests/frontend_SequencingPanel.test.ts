@@ -319,6 +319,7 @@ describe('SequencingPanel', () => {
           ref_protein_length: 640, alt_protein_length: 640,
           protein_identical: true, premature_stop_aa: null,
           frameshift_count: 0, aa_changes: [],
+          consequences: ['synonymous_variant'], synonymous_count: 2,
           verdict: 'CDS 完整覆盖，翻译产物与参考一致（640 aa）',
         },
         {
@@ -327,6 +328,7 @@ describe('SequencingPanel', () => {
           ref_protein_length: 288, alt_protein_length: 271,
           protein_identical: false, premature_stop_aa: 33,
           frameshift_count: 2, aa_changes: ['F11S', 'G12D', 'Y13T', 'A14L', 'F15S', 'T16P'],
+          consequences: ['stop_gained', 'frameshift_variant'], synonymous_count: 0,
           verdict: '翻译产物与参考不一致；移码 2 处',
         },
       ],
@@ -337,6 +339,10 @@ describe('SequencingPanel', () => {
     expect(wrapper.text()).toContain('编码区（CDS）测序结论')
     expect(wrapper.findAll('.cds-dot.pass').length).toBe(1)
     expect(wrapper.findAll('.cds-dot.fail').length).toBe(1)
+    // SO 标准后果徽章（按影响分级着色）
+    expect(wrapper.find('.cds-so.high').text()).toBe('无义突变')
+    expect(wrapper.findAll('.cds-so.high').length).toBe(2)
+    expect(wrapper.find('.cds-so.low').text()).toBe('同义')
     expect(wrapper.find('.cds-cov.full').text()).toBe('完整覆盖')
     expect(wrapper.find('.cds-cov.partial').text()).toBe('覆盖 62.5%')
     const detail = wrapper.find('.cds-detail').text()

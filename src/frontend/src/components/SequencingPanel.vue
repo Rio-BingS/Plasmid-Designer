@@ -263,6 +263,25 @@ function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number 
   return `覆盖 ${c.covered_percent}%`
 }
 
+// SO 标准后果词表 → 中文标签与影响等级（VEP/snpEff 同款分级）
+const SO_LABELS: Record<string, string> = {
+  stop_gained: '无义突变',
+  stop_lost: '终止丢失',
+  start_lost: '起始丢失',
+  frameshift_variant: '移码',
+  inframe_insertion: '框内插入',
+  inframe_deletion: '框内缺失',
+  missense_variant: '错义',
+  synonymous_variant: '同义',
+}
+const SO_HIGH = new Set(['stop_gained', 'stop_lost', 'start_lost', 'frameshift_variant'])
+const SO_MID = new Set(['inframe_insertion', 'inframe_deletion', 'missense_variant'])
+function soLevel(t: string): string {
+  if (SO_HIGH.has(t)) return 'high'
+  if (SO_MID.has(t)) return 'mid'
+  return 'low'
+}
+
 // ==================== 匹配简图（SnapGene 风格线性图谱） ====================
 // 上方 read 深红块状箭头（方向见箭头），中间刻度轴（绿段=已测覆盖、轴上红块=变异），
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
@@ -783,6 +802,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               {{ c.name }}
               <span class="cds-coord">{{ c.start }}-{{ c.end }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
               <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
+              <span v-for="t in c.consequences ?? []" :key="t" class="cds-so" :class="soLevel(t)">{{ SO_LABELS[t] ?? t }}</span>
             </p>
             <p class="cds-verdict">{{ c.verdict }}</p>
             <p class="cds-detail" v-if="c.protein_identical === false">
@@ -1062,6 +1082,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .cds-cov.full { background: #E5F5E9; color: #227A36; }
 .cds-cov.partial { background: #FCF3DC; color: #9A6D00; }
 .cds-cov.uncovered { background: #EEE; color: #777; }
+.cds-so { font-size: 0.7rem; padding: 1px 7px; border-radius: 10px; margin-left: 5px; vertical-align: 1px; }
+.cds-so.high { background: #FBEAE8; color: #A03227; }
+.cds-so.mid { background: #FDF2E3; color: #A8641A; }
+.cds-so.low { background: #EDF2EE; color: #5E7A64; }
 .cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
 .cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
 .conclusion-meta { display: flex; gap: 1.5rem; font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }

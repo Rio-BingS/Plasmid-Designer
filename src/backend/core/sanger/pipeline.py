@@ -295,12 +295,15 @@ def _build_cds_reports(
                 "premature_stop_aa": None,
                 "frameshift_count": 0,
                 "aa_changes": [],
+                "consequences": [],
+                "synonymous_count": 0,
                 "verdict": "未被测序覆盖，无法判定，建议补充覆盖该区域的引物",
             })
             continue
 
         ref_prot = _translate(ref[start - 1:end], strand)
-        alt_prot_raw = _translate(_rebuild(start, end), strand)
+        alt_nt_full = _rebuild(start, end)
+        alt_prot_raw = _translate(alt_nt_full, strand)
         stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
         alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
 
@@ -316,20 +319,66 @@ def _build_cds_reports(
             return start <= v["ref_pos"] <= end
 
         in_cds = [v for v in variants if _affects(v)]
+        indels = [v for v in in_cds if v.get("type") in ("insertion", "deletion")]
         # 移码自判定：影响该 CDS 的 indel 长度非 3 的倍数即为移码
         #（不依赖全局注释——注释器只看变体自身所在特征，会漏掉边界插入）
-        frameshifts = [
-            v for v in in_cds
-            if v.get("type") in ("insertion", "deletion") and int(v.get("length") or 1) % 3 != 0
-        ]
+        frameshifts = [v for v in indels if int(v.get("length") or 1) % 3 != 0]
+        inframe_ins = sum(1 for v in indels if v["type"] == "insertion" and int(v.get("length") or 1) % 3 == 0)
+        inframe_del = sum(1 for v in indels if v["type"] == "deletion" and int(v.get("length") or 1) % 3 == 0)
         protein_identical = ref_prot == alt_prot_raw
+
+        # 起始/终止密码子状态（参考方向核酸层面判定，参照 VEP/snpEff 的 start_lost/stop_lost）
+        from Bio.SeqUtils import seq3
+
+        def _orient(s: str) -> str:
+            return str(Seq(s).reverse_complement()) if strand == "-" else s
+
+        start_codons = {"ATG"} | ALT_START_CODONS
+        stop_codons = {"TAA", "TAG", "TGA"}
+        ref_o = _orient(ref[start - 1:end])
+        alt_o = _orient(alt_nt_full)
+        alt_o_codons = alt_o[:len(alt_o) - len(alt_o) % 3]
+        start_lost = ref_o[:3] in start_codons and alt_o[:3] not in start_codons
+        stop_lost = (
+            len(ref_o) >= 3 and ref_o[-3:] in stop_codons
+            and (len(alt_o_codons) < 3 or alt_o_codons[-3:] not in stop_codons)
+        )
+
+        # CDS 区间内的 DNA 替换数（用于同义突变统计）
+        dna_subs = sum(
+            1 for pos, d in diff_by_pos.items()
+            if start <= pos <= end and d["ref_base"] != "-" and d["cons_base"] != "-"
+        )
 
         aln = _protein_alignment(ref_prot, alt_prot)
         first_diff = aln["first_diff"]  # 0-based；一致前缀长度
         aa_diffs = [] if frameshifts else aln["subs"]  # 移码区的“替换”是移码噪声，不列
+        # 同义计数仅在无移码/无内部终止时可靠（错义数来自蛋白比对）
+        synonymous = max(0, dna_subs - len(aa_diffs)) if not frameshifts and stop_idx < 0 else 0
+
+        # Sequence Ontology 标准后果词表（与 VEP/snpEff/bcftools csq 对齐，按影响从高到低）
+        consequences: List[str] = []
+        if stop_idx >= 0:
+            consequences.append("stop_gained")
+        if stop_lost:
+            consequences.append("stop_lost")
+        if start_lost:
+            consequences.append("start_lost")
+        if frameshifts:
+            consequences.append("frameshift_variant")
+        if inframe_ins:
+            consequences.append("inframe_insertion")
+        if inframe_del:
+            consequences.append("inframe_deletion")
+        if aa_diffs:
+            consequences.append("missense_variant")
+        if synonymous:
+            consequences.append("synonymous_variant")
 
         if protein_identical:
             parts = [f"翻译产物与参考一致（{len(ref_prot)} aa，蛋白层面完全比对）"]
+            if synonymous:
+                parts[0] += f"；存在 {synonymous} 处同义突变（DNA 变、蛋白不变）"
         else:
             parts = ["翻译产物与参考不一致"]
             prefix = f"前 {first_diff} aa 与参考一致" if first_diff > 0 else "自第 1 aa 起即存在差异"
@@ -338,14 +387,31 @@ def _build_cds_reports(
                 details.append(
                     f"无义突变使翻译提前终止于第 {stop_idx + 1} aa（产物 {len(alt_prot)} aa，参考 {len(ref_prot)} aa）"
                 )
+            if start_lost:
+                details.append(f"起始密码子改变（{ref_o[:3]} → {alt_o[:3]}）")
+            if stop_lost:
+                details.append("终止密码子丢失，翻译将读穿至下游")
             if frameshifts:
-                fs = ""
+                # HGVS：fs 位点 1 号计新阅读框，终止给出 fsTerN；3 字符氨基酸码
                 if first_diff < len(ref_prot) and first_diff < len(alt_prot):
-                    fs = f"（p.{ref_prot[first_diff]}{first_diff + 1}{alt_prot[first_diff]}fs）"
+                    ter = stop_idx + 1 - first_diff if stop_idx >= 0 else None
+                    fs = (
+                        f"p.{seq3(ref_prot[first_diff])}{first_diff + 1}{seq3(alt_prot[first_diff])}fs"
+                        + (f"Ter{ter}" if ter and ter > 0 else "")
+                    )
+                else:
+                    fs = ""
                 details.append(
-                    f"{len(frameshifts)} 处移码使自第 {first_diff + 1} aa 起阅读框改变{fs}，其后产物不可与参考逐位比对"
+                    f"{len(frameshifts)} 处移码使自第 {first_diff + 1} aa 起阅读框改变"
+                    + (f"（{fs}）" if fs else "")
+                    + "，其后产物不可与参考逐位比对"
                 )
-            elif stop_idx < 0:
+            else:
+                if inframe_ins or inframe_del:
+                    n_bp = sum(int(v.get("length") or 1) for v in in_cds
+                               if v.get("type") in ("insertion", "deletion")
+                               and int(v.get("length") or 1) % 3 == 0)
+                    details.append(f"框内插入/缺失 {n_bp} bp（阅读框保持）")
                 if len(alt_prot) != len(ref_prot):
                     details.append(f"翻译产物长度改变（{len(ref_prot)} → {len(alt_prot)} aa）")
                 if aln["gap_residues"]:
@@ -353,6 +419,8 @@ def _build_cds_reports(
                 if aa_diffs:
                     preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
                     details.append(f"错义替换 {len(aa_diffs)} 处（{preview}）")
+                if synonymous:
+                    details.append(f"另有 {synonymous} 处同义突变")
             parts.append(prefix + ("；" + "；".join(details) if details else ""))
         verdict = "；".join(parts)
         verdict = (
@@ -370,6 +438,8 @@ def _build_cds_reports(
             "premature_stop_aa": stop_idx + 1 if stop_idx >= 0 else None,
             "frameshift_count": len(frameshifts),
             "aa_changes": aa_diffs[:10],
+            "consequences": consequences,
+            "synonymous_count": synonymous,
             "verdict": verdict,
         })
     return reports
