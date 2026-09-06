@@ -118,6 +118,7 @@ function onFolderPick(e: Event) {
   ;(e.target as HTMLInputElement).value = ''
 }
 function removeRead(i: number) { reads.value.splice(i, 1) }
+function clearReads() { reads.value = [] }
 function clearReference() { referenceFile.value = null }
 
 // ==================== 分析 ====================
@@ -126,6 +127,12 @@ const allowDecompose = ref(true)
 const analyzing = ref(false)
 const analysis = ref<SequencingAnalysis | null>(null)
 const errorMsg = ref('')
+
+/** 阈值合法范围 0-60（与后端校验一致），失焦时就近钳制避免 422 */
+function normalizeMinQ() {
+  if (!Number.isFinite(minQ.value)) { minQ.value = 20; return }
+  minQ.value = Math.max(0, Math.min(60, Math.round(minQ.value)))
+}
 
 const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0)
 
@@ -140,7 +147,11 @@ async function runAnalysis() {
     )
     emit('analyzed', analysis.value)
   } catch (e: any) {
-    errorMsg.value = e.response?.data?.detail || e.message || '分析失败'
+    // FastAPI 校验错误(422)的 detail 是数组，逐条转成可读文本
+    const detail = e.response?.data?.detail
+    if (typeof detail === 'string') errorMsg.value = detail
+    else if (Array.isArray(detail)) errorMsg.value = detail.map((d: any) => d.msg || JSON.stringify(d)).join('；')
+    else errorMsg.value = e.message || '分析失败'
   } finally {
     analyzing.value = false
   }
@@ -470,6 +481,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         </div>
         <div v-if="reads.length" class="reads-staged">
           <span class="stage-label">测序文件 × {{ reads.length }}</span>
+          <button class="clear-btn" title="清空全部 .ab1 测序文件" @click="clearReads">一键清除</button>
           <span v-for="(f, i) in reads" :key="i" class="file-chip">
             {{ f.name }} ({{ (f.size / 1024).toFixed(0) }}KB)
             <button class="file-remove" @click="removeRead(i)">×</button>
@@ -483,7 +495,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 
       <details class="advanced">
         <summary>高级参数</summary>
-        <label>末端修剪 Q 阈值 <input type="number" v-model.number="minQ" min="5" max="40" /></label>
+        <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
         <label><input type="checkbox" v-model="allowDecompose" /> 混合样品自动解卷积（需 tracy）</label>
       </details>
       <button class="analyze-btn" :disabled="!canAnalyze || analyzing" @click="runAnalysis">
@@ -695,6 +707,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
   font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.35rem;
 }
 .file-remove { border: none; background: none; cursor: pointer; font-size: 1rem; color: #c00; }
+.clear-btn {
+  border: 1px solid var(--border-color, #ddd); background: #fff; color: #c0392b;
+  border-radius: 999px; font-size: 0.72rem; padding: 0.1rem 0.55rem; cursor: pointer;
+}
+.clear-btn:hover { background: #FDE8E8; border-color: #E8A5A5; }
 .advanced { margin-top: 0.75rem; font-size: 0.85rem; text-align: left; display: inline-block; }
 .advanced label { display: block; margin: 0.35rem 0; }
 .analyze-btn {

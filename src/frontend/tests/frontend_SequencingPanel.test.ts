@@ -202,4 +202,36 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('该 read 无对齐数据')
   })
+
+  it('clears all staged reads with one click', async () => {
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('a.ab1'), makeFile('b.ab1'), makeFile('c.gb')])
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('测序文件 × 2')
+
+    await wrapper.find('.clear-btn').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    // reads 全部清空、参考保留、回到缺 ab1 提示且按钮禁用
+    expect(wrapper.text()).toContain('还差 .ab1 测序文件')
+    expect(wrapper.text()).toContain('c.gb')
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.clear-btn').exists()).toBe(false)
+  })
+
+  it('clamps minQ into 0-60 before sending analysis request', async () => {
+    vi.mocked(analyzeSequencingFiles).mockResolvedValue(mockAnalysis)
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('c.gb'), makeFile('a.ab1')])
+    await wrapper.vm.$nextTick()
+
+    const input = wrapper.find('.advanced input[type="number"]')
+    await input.setValue('100')
+    await input.trigger('change')   // 失焦钳制到 60
+    ;(wrapper.vm as any).runAnalysis()
+    await flushPromises()
+
+    const [, , minQ] = vi.mocked(analyzeSequencingFiles).mock.calls[0]
+    expect(minQ).toBe(60)
+  })
 })

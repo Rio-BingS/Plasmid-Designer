@@ -130,7 +130,7 @@ async def _analyze_endpoint(
 async def analyze_sequencing_upload(
     reference: UploadFile = File(..., description="参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）"),
     reads: List[UploadFile] = File(..., description="一个或多个 .ab1 测序文件"),
-    min_q: int = Form(default=20, ge=5, le=40, description="末端修剪质量阈值"),
+    min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
@@ -158,7 +158,7 @@ async def analyze_sequencing_upload(
 async def analyze_design_sequencing(
     design_id: str,
     files: List[UploadFile] = File(..., description="一个或多个 .ab1 文件"),
-    min_q: int = Form(default=20, ge=5, le=40, description="末端修剪质量阈值"),
+    min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
 ):
     """上传 AB1 文件，对设计结果（构建体序列）做全自动测序验证"""
@@ -182,7 +182,7 @@ async def analyze_design_sequencing(
 async def analyze_vector_sequencing(
     vector_id: str,
     files: List[UploadFile] = File(...),
-    min_q: int = Form(default=20, ge=5, le=40),
+    min_q: int = Form(default=20, ge=0, le=60),
     allow_decompose: bool = Form(default=True),
 ):
     """上传 AB1 文件，对载体库中有序列的载体做全自动测序验证"""
