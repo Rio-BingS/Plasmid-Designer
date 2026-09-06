@@ -15,7 +15,8 @@ REPO = Path(__file__).resolve().parents[1]
 DOCKER_REQ = REPO / "deploy" / "docker" / "requirements.backend.txt"
 SRC_REQ = REPO / "src" / "backend" / "requirements.txt"
 
-PKG_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*[<>=!~]")
+# 包名可带 extras（uvicorn[standard]）与环境标记；取行首包名即可
+PKG_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)(\[[^\]]*\])?\s*([<>=!~;]|$)")
 
 
 def _packages(path: Path) -> set:
