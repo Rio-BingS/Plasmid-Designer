@@ -261,13 +261,13 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
 const MAP_W = 1000        // viewBox 宽度
 const MAP_GUTTER = 150    // 左侧文件名栏宽
-const READS_TOP = 8       // read 区顶部
-const READ_LANE_H = 24    // read 行高
-const READ_H = 12         // read 箭头高度
-const VAR_H = 14          // 轴上方变异标记带高度
-const FEAT_LANE_H = 17    // 特征行高
-const FEAT_H = 11         // 特征箭头高度
-const LABEL_LANE_H = 15   // 特征外置标签行高
+const READS_TOP = 10      // read 区顶部
+const READ_LANE_H = 30    // read 行高（read 是本图主角，行高/箭头明显大于特征）
+const READ_H = 17         // read 箭头高度
+const VAR_H = 16          // 轴上方变异标记带高度
+const FEAT_LANE_H = 19    // 特征行高
+const FEAT_H = 14         // 特征箭头高度
+const LABEL_LANE_H = 16   // 特征外置标签行高
 
 // 特征类型配色（与 PlasmidMap 环形图谱一致）
 const FEATURE_COLORS: Record<string, string> = {
@@ -362,7 +362,7 @@ function labelY(lane: number): number {
 /** 块状箭头路径（forward 箭头朝右，否则朝左） */
 function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolean): string {
   const w = Math.max(2, x2 - x1)
-  const aw = Math.min(18, Math.max(6, w * 0.2))
+  const aw = Math.min(20, Math.max(7, w * 0.2))
   if (forward) {
     const bx = Math.max(x1, x2 - aw)
     return `M ${x1} ${y} L ${bx} ${y} L ${x2} ${y + h / 2} L ${bx} ${y + h} L ${x1} ${y + h} Z`
@@ -400,7 +400,7 @@ const mapFeats = computed<MapFeat[]>(() => {
     const x1 = mapX(f.start)
     const x2 = x1 + Math.max(8, (f.end - f.start + 1) * mapScale.value)
     const labelW = f.name.length * 6.6 + 8
-    const bodyW = x2 - x1 - Math.min(18, Math.max(6, (x2 - x1) * 0.2)) - 4
+    const bodyW = x2 - x1 - Math.min(20, Math.max(7, (x2 - x1) * 0.2)) - 4
     const inside = f.name.length > 0 && labelW <= bodyW
     const cx = Math.min(MAP_W - 10 - labelW / 2, Math.max(MAP_GUTTER + labelW / 2, (x1 + x2) / 2))
     let labelLane = -1
@@ -766,12 +766,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           <!-- read 行：深红块状箭头（方向见箭头），差异位点空心圆 -->
           <g v-for="r in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
             <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击查看逐碱基比对</title>
-            <text :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 3.5" text-anchor="end" class="map-label">
+            <text :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 4.5" text-anchor="end" class="map-label">
               {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
             </text>
             <path :d="arrowPath(mapX(r.ref_start), mapX(r.ref_start) + readWidth(r), readY(r.lane), READ_H, r.direction === '+')"
                   :class="r.direction === '+' ? 'map-arrow-fwd' : 'map-arrow-rev'" />
-            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="2.6" class="map-dot" />
+            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="3.4" class="map-dot" />
           </g>
           <!-- 刻度轴：灰底 + 绿色已测覆盖段 + 黑轴线 + 刻度数字 -->
           <rect :x="MAP_GUTTER" :y="axisY - 3" :width="MAP_W - 10 - MAP_GUTTER" height="6" rx="3" class="map-axis-bg" />
@@ -779,22 +779,22 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
                 :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="6" class="map-axis-cov" />
           <line :x1="MAP_GUTTER" :x2="MAP_W - 10" :y1="axisY" :y2="axisY" class="map-axis-line" />
           <g v-for="t in mapTicks" :key="'t' + t.pos">
-            <line :x1="mapX(t.pos)" :x2="mapX(t.pos)" :y1="axisY" :y2="axisY + 5" class="map-tick-line" />
-            <text :x="mapX(t.pos)" :y="axisY + 16"
+            <line :x1="mapX(t.pos)" :x2="mapX(t.pos)" :y1="axisY" :y2="axisY + 6" class="map-tick-line" />
+            <text :x="mapX(t.pos)" :y="axisY + 18"
                   :text-anchor="mapX(t.pos) > MAP_W - 45 ? 'end' : (mapX(t.pos) < MAP_GUTTER + 45 ? 'start' : 'middle')"
                   class="map-tick-num">{{ t.label }}</text>
           </g>
           <!-- 轴上变异红块（点击跳峰图） -->
           <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
             <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
-            <rect :x="mapX(v.ref_pos) - 2.5" :y="axisY - VAR_H + 2" width="5" height="10" rx="1" class="map-var-tick" />
+            <rect :x="mapX(v.ref_pos) - 3" :y="axisY - VAR_H + 2" width="6" height="12" rx="1" class="map-var-tick" />
           </g>
           <!-- 参考特征：彩色块状箭头，名字放不下时引线外置 -->
           <g v-for="(f, i) in mapFeats" :key="'f' + i" class="map-feat">
             <title>{{ f.name }}（{{ f.type }}，{{ f.start }}-{{ f.end }}，{{ f.strand === '-' ? '反向' : '正向' }}）</title>
             <path :d="arrowPath(f.x1, f.x2, featY(f.lane), FEAT_H, f.strand !== '-')"
                   :fill="mapFeatureColor(f.type)" :stroke="darkenColor(mapFeatureColor(f.type), 0.28)" stroke-width="0.8" />
-            <text v-if="f.labelInside" :x="(f.x1 + f.x2) / 2" :y="featY(f.lane) + FEAT_H / 2 + 3.2"
+            <text v-if="f.labelInside" :x="(f.x1 + f.x2) / 2" :y="featY(f.lane) + FEAT_H / 2 + 3.8"
                   text-anchor="middle" class="map-feat-label">{{ f.name }}</text>
             <template v-else>
               <line :x1="(f.x1 + f.x2) / 2" :x2="(f.x1 + f.x2) / 2" :y1="featY(f.lane) + FEAT_H"
@@ -1082,24 +1082,24 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .map-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
 .map-sub { font-size: 0.75rem; color: #999; font-weight: 400; }
 .map-svg { width: 100%; height: auto; display: block; user-select: none; }
-.map-label { font-size: 11px; fill: #555; font-family: Consolas, monospace; }
+.map-label { font-size: 11.5px; fill: #444; font-family: Consolas, monospace; }
 .map-grid { stroke: #ECEEF0; stroke-width: 1; stroke-dasharray: 3 4; }
 .map-row { cursor: pointer; }
 .map-arrow-fwd, .map-arrow-rev { fill: #B03A2E; stroke: #7E251C; stroke-width: 0.8; opacity: 0.92; }
 .map-row:hover .map-arrow-fwd, .map-row:hover .map-arrow-rev { opacity: 1; fill: #C74A3C; }
-.map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.3; pointer-events: none; }
+.map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.5; pointer-events: none; }
 .map-var { cursor: pointer; }
 .map-var-tick { fill: #C0392B; }
 .map-var:hover .map-var-tick { fill: #E74C3C; }
 .map-axis-bg { fill: #D5D9DE; }
 .map-axis-cov { fill: #58B368; }
-.map-axis-line { stroke: #3A3F45; stroke-width: 1.4; }
+.map-axis-line { stroke: #3A3F45; stroke-width: 1.6; }
 .map-tick-line { stroke: #3A3F45; stroke-width: 1; }
-.map-tick-num { font-size: 10px; fill: #666; }
+.map-tick-num { font-size: 11px; fill: #555; }
 .map-feat { fill-opacity: 0.95; }
 .map-feat:hover { fill-opacity: 1; }
-.map-feat-label { font-size: 10px; fill: #10131A; pointer-events: none; }
-.map-feat-out { font-size: 10.5px; fill: #333; }
+.map-feat-label { font-size: 10.5px; fill: #10131A; pointer-events: none; }
+.map-feat-out { font-size: 11px; fill: #333; }
 .map-leader { stroke: #A5A9AE; stroke-width: 0.8; }
 .lg-read { color: #B03A2E; font-weight: 600; }
 .lg-dot { color: #C0392B; font-weight: 600; }
