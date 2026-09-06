@@ -171,6 +171,16 @@ def _build_cds_reports(
     """
     from Bio.Seq import Seq
 
+    ALT_START_CODONS = {"GTG", "TTG", "ATT", "CTG", "ATC", "ATA"}  # 细菌替代起始
+
+    def _translate(seq: str, strand: str) -> str:
+        s = str(Seq(seq).reverse_complement()) if strand == "-" else seq
+        s = s[:len(s) - len(s) % 3]  # 移码可能留下不足整密码子的尾部
+        prot = str(Seq(s).translate(table=11))
+        if prot and s[:3] in ALT_START_CODONS:
+            prot = "M" + prot[1:]  # 细菌替代起始密码子按惯例显示为 M
+        return prot[:-1] if prot.endswith("*") else prot  # 去掉末尾终止密码子
+
     diff_by_pos: Dict[int, Dict] = {}
     for d in consensus.get("diffs", []):
         diff_by_pos[d["ref_pos"]] = d  # 每个参考位置至多一条共识差异
@@ -195,17 +205,65 @@ def _build_cds_reports(
             elif d["cons_base"] == "-":
                 continue  # 缺失：该参考碱基被删
             elif d["ref_base"] == "-":
-                out.extend(d["cons_base"])  # 插入锚定在 pos 之前
+                # 插入位于 pos 与 pos-1 之间：仅当插入点严格落在 CDS 内部才影响该 CDS；
+                # 紧贴起点之前（pos == start）的插入不改变 CDS 自身序列
+                if start < pos <= end:
+                    out.extend(d["cons_base"])
                 out.append(ref[pos - 1])
             else:
                 out.append(d["cons_base"])  # 替换
         return "".join(out)
 
-    def _translate(seq: str, strand: str) -> str:
-        s = str(Seq(seq).reverse_complement()) if strand == "-" else seq
-        s = s[:len(s) - len(s) % 3]  # 移码可能留下不足整密码子的尾部
-        prot = str(Seq(s).translate(table=11))
-        return prot[:-1] if prot.endswith("*") else prot  # 去掉末尾终止密码子
+    def _protein_alignment(ref_prot: str, alt_prot: str) -> Dict:
+        """蛋白层面全局比对（BLOSUM62，blastp 同款 gap 罚分；HGVS 要求的对比方式）
+
+        返回一致残基数、首个分歧参考位置（0-based，含 gap 事件）、
+        错义替换清单（仅对齐块内）与残基水平的插入/缺失总数。
+        """
+        from Bio import Align
+
+        aligner = Align.PairwiseAligner()
+        try:
+            from Bio.Align import substitution_matrices
+            aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
+        except Exception:
+            aligner.match_score = 2
+            aligner.mismatch_score = -1
+        aligner.open_gap_score = -11
+        aligner.extend_gap_score = -1
+        best = aligner.align(ref_prot, alt_prot)[0]
+
+        blocks = best.aligned
+        identical = 0
+        aligned_ref = 0
+        aligned_alt = 0
+        first_diff: Optional[int] = None
+        prev_ref_end = 0
+        subs: List[str] = []
+        for (rs, re_), (qs, qe_) in zip(blocks[0], blocks[1]):
+            if rs > prev_ref_end and first_diff is None:
+                first_diff = prev_ref_end  # 比对 gap：参考缺失或 alt 插入残基
+            for k in range(re_ - rs):
+                a, b = ref_prot[rs + k], alt_prot[qs + k]
+                if a == b:
+                    identical += 1
+                else:
+                    if first_diff is None:
+                        first_diff = rs + k
+                    subs.append(f"{a}{rs + k + 1}{b}")
+            aligned_ref += re_ - rs
+            aligned_alt += qe_ - qs
+            prev_ref_end = re_
+        if first_diff is None and aligned_ref < len(ref_prot):
+            first_diff = aligned_ref  # 尾部参考残基在 alt 中缺失
+        return {
+            "identical": identical,
+            "aligned_ref": aligned_ref,
+            "aligned_alt": aligned_alt,
+            "first_diff": first_diff if first_diff is not None else len(ref_prot),
+            "subs": subs,
+            "gap_residues": (len(ref_prot) - aligned_ref) + (len(alt_prot) - aligned_alt),
+        }
 
     reports: List[Dict] = []
     for f in features or []:
@@ -216,6 +274,10 @@ def _build_cds_reports(
             continue
         strand = f.get("strand") or "+"
         cov_pct = _span_coverage(start, end)
+        frame_note = (
+            "" if (end - start + 1) % 3 == 0
+            else f"（注意：该特征长度 {end - start + 1} bp 不是 3 的倍数，翻译按参考阅读框截断）"
+        )
         base = {
             "name": f.get("name") or "CDS",
             "start": start,
@@ -242,39 +304,63 @@ def _build_cds_reports(
         stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
         alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
 
-        in_cds = [v for v in variants if start <= v["ref_pos"] <= end]
-        frameshifts = [v for v in in_cds if v.get("frameshift")]
+        # 变体是否影响该 CDS：替换/缺失按碱基区间与 CDS 相交判定；
+        # 插入发生在 ref_pos 与 ref_pos+1 之间，插入点严格落在 CDS 内部
+        #（anchor ∈ [start, end-1]）才影响该 CDS，紧贴边界的插入不改变 CDS 自身序列
+        def _affects(v: Dict) -> bool:
+            vlen = int(v.get("length") or 1)
+            if v.get("type") == "insertion":
+                return start <= v["ref_pos"] < end
+            if v.get("type") == "deletion":
+                return not (v["ref_pos"] + vlen - 1 < start or v["ref_pos"] > end)
+            return start <= v["ref_pos"] <= end
+
+        in_cds = [v for v in variants if _affects(v)]
+        # 移码自判定：影响该 CDS 的 indel 长度非 3 的倍数即为移码
+        #（不依赖全局注释——注释器只看变体自身所在特征，会漏掉边界插入）
+        frameshifts = [
+            v for v in in_cds
+            if v.get("type") in ("insertion", "deletion") and int(v.get("length") or 1) % 3 != 0
+        ]
         protein_identical = ref_prot == alt_prot_raw
 
-        aa_diffs: List[str] = []
-        if not protein_identical and stop_idx < 0 and len(ref_prot) == len(alt_prot):
-            aa_diffs = [
-                f"{a}{i + 1}{b}"
-                for i, (a, b) in enumerate(zip(ref_prot, alt_prot)) if a != b
-            ]
+        aln = _protein_alignment(ref_prot, alt_prot)
+        first_diff = aln["first_diff"]  # 0-based；一致前缀长度
+        aa_diffs = [] if frameshifts else aln["subs"]  # 移码区的“替换”是移码噪声，不列
 
         if protein_identical:
-            parts = [f"翻译产物与参考一致（{len(ref_prot)} aa）"]
+            parts = [f"翻译产物与参考一致（{len(ref_prot)} aa，蛋白层面完全比对）"]
         else:
-            parts = []
+            parts = ["翻译产物与参考不一致"]
+            prefix = f"前 {first_diff} aa 与参考一致" if first_diff > 0 else "自第 1 aa 起即存在差异"
+            details: List[str] = []
             if stop_idx >= 0:
-                parts.append(f"无义突变使翻译提前终止于第 {stop_idx + 1} 位氨基酸")
-            if len(alt_prot) != len(ref_prot):
-                parts.append(f"翻译产物长度改变（{len(ref_prot)} → {len(alt_prot)} aa）")
+                details.append(
+                    f"无义突变使翻译提前终止于第 {stop_idx + 1} aa（产物 {len(alt_prot)} aa，参考 {len(ref_prot)} aa）"
+                )
             if frameshifts:
-                parts.append(f"移码 {len(frameshifts)} 处")
-            if aa_diffs:
-                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
-                parts.append(f"氨基酸替换 {len(aa_diffs)} 处（{preview}）")
-            if not parts:
-                parts.append("存在氨基酸差异")
-            parts.insert(0, "翻译产物与参考不一致")
+                fs = ""
+                if first_diff < len(ref_prot) and first_diff < len(alt_prot):
+                    fs = f"（p.{ref_prot[first_diff]}{first_diff + 1}{alt_prot[first_diff]}fs）"
+                details.append(
+                    f"{len(frameshifts)} 处移码使自第 {first_diff + 1} aa 起阅读框改变{fs}，其后产物不可与参考逐位比对"
+                )
+            elif stop_idx < 0:
+                if len(alt_prot) != len(ref_prot):
+                    details.append(f"翻译产物长度改变（{len(ref_prot)} → {len(alt_prot)} aa）")
+                if aln["gap_residues"]:
+                    details.append(f"存在 {aln['gap_residues']} 个残基的插入/缺失")
+                if aa_diffs:
+                    preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
+                    details.append(f"错义替换 {len(aa_diffs)} 处（{preview}）")
+            parts.append(prefix + ("；" + "；".join(details) if details else ""))
         verdict = "；".join(parts)
         verdict = (
             f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证），已测区域{verdict}"
             if cov_pct < 99
             else f"CDS 完整覆盖，{verdict}"
         )
+        verdict += frame_note
         reports.append({
             **base,
             "coverage_status": "full" if cov_pct >= 99 else "partial",

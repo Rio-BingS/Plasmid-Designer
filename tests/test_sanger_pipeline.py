@@ -281,8 +281,34 @@ def test_cds_report_frameshift(reference):
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is False
     assert cr["frameshift_count"] == 1
-    assert "移码 1 处" in cr["verdict"]
-    assert ("翻译产物长度改变" in cr["verdict"]) or ("氨基酸替换" in cr["verdict"])
+    # HGVS 风格：一致前缀 + 第一个受影响氨基酸的 fs 描述
+    assert "前 10 aa 与参考一致" in cr["verdict"]
+    assert "自第 11 aa 起阅读框改变" in cr["verdict"]
+    assert "fs" in cr["verdict"]
+    # 移码区的“替换”属于噪声，不应列出
+    assert cr["aa_changes"] == []
+
+
+def test_cds_report_insertion_boundaries():
+    """边界插入语义：CDS 起点前的插入不改变 CDS 自身（判一致）；CDS 内部 1bp 插入为移码"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+
+    # 紧贴起点之前的插入：CDS 序列不变，翻译产物一致
+    seg_before = ref[:40] + "T" + ref[40:190]
+    cr1 = analyze([("f.ab1", make_ab1(seg_before, [40] * len(seg_before)))], ref, feats)["cds_reports"][0]
+    assert cr1["frameshift_count"] == 0
+    assert cr1["protein_identical"] is True
+    assert "翻译产物与参考一致" in cr1["verdict"]
+
+    # CDS 首碱基之后的 1bp 插入：移码，HGVS fs 描述
+    seg_in = ref[:41] + "T" + ref[41:190]
+    cr2 = analyze([("f.ab1", make_ab1(seg_in, [40] * len(seg_in)))], ref, feats)["cds_reports"][0]
+    assert cr2["frameshift_count"] == 1
+    assert cr2["protein_identical"] is False
+    assert "移码" in cr2["verdict"]
+    assert "fs" in cr2["verdict"]
+    assert cr2["aa_changes"] == []  # 移码区不列错义清单
 
 
 def test_cds_report_premature_stop(reference):
