@@ -1,29 +1,42 @@
 <script setup lang="ts">
 /**
  * Sanger 测序分析 — 独立模块
- * ① 选择参考序列（载体库 / 设计结果，支持 ?mode=&ref= 深链）→
+ * ① 选择参考序列（默认为设计结果；也可选载体库，支持 ?mode=&ref= 深链）→
  * ② 上传 .ab1 一键自动分析（SequencingPanel）→
  * ③ 历史分析（查看 / 删除）
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  getVectors, listSequencingAnalyses, getSequencingAnalysis, deleteSequencingAnalysis,
+  getVectors, getDesign, listSequencingAnalyses, getSequencingAnalysis, deleteSequencingAnalysis,
   type SequencingAnalysis, type SequencingAnalysisSummary
 } from '@/api'
 import type { VectorInfo } from '@/types'
+import { listRecentDesigns, recordRecentDesign, type RecentDesign } from '@/utils/recentDesigns'
 import SequencingPanel from '@/components/SequencingPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 // ==================== 参考序列选择 ====================
-const mode = ref<'vector' | 'design'>((route.query.mode as 'vector' | 'design') || 'vector')
+// 测序验证的主场景是核对「自己设计的构建体」，默认选中设计结果；载体库作为备选
+const mode = ref<'design' | 'vector'>(route.query.mode === 'vector' ? 'vector' : 'design')
 const vectorId = ref('')
-const designId = ref('')
 const vectors = ref<VectorInfo[]>([])
 const vectorsLoading = ref(false)
 const search = ref('')
+
+// 设计结果：输入框内容与已确认的选择分离，避免逐键触发面板重挂
+const designInput = ref('')
+const designId = ref('')
+const designInfo = ref<{ id: string; name: string; length: number } | null>(null)
+const designChecking = ref(false)
+const designError = ref('')
+const recentDesigns = ref<RecentDesign[]>([])
+
+function designDisplayName(vectorName: string): string {
+  return vectorName || '插入片段（无载体）'
+}
 
 const filteredVectors = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -34,6 +47,16 @@ const filteredVectors = computed(() => {
     (v.host || []).some((h) => h.toLowerCase().includes(q)) ||
     (v.antibiotic_resistance || []).some((a) => a.toLowerCase().includes(q))
   )
+})
+
+const vectorName = computed(() =>
+  vectors.value.find((v) => v.id === vectorId.value)?.name || ''
+)
+
+const refLabel = computed(() => {
+  if (mode.value === 'vector') return vectorName.value
+  if (!designInfo.value) return ''
+  return `${designInfo.value.name} · ${designInfo.value.length} bp`
 })
 
 async function loadVectors() {
@@ -54,19 +77,81 @@ function selectVector(id: string) {
   }
 }
 
-function confirmDesign() {
-  if (designId.value.trim()) {
-    router.replace({ query: { mode: 'design', ref: designId.value.trim() } })
+/** 校验设计 ID 有效且已完成，成功后登记为当前参考 */
+async function validateDesign(id: string): Promise<boolean> {
+  designError.value = ''
+  designChecking.value = true
+  try {
+    const d = await getDesign(id)
+    if (d.status !== 'completed') {
+      designInfo.value = null
+      designError.value = '该设计尚未完成，无法作为测序参考'
+      return false
+    }
+    const length = d.final_length ?? d.construct_sequence?.length ?? 0
+    designInfo.value = { id, name: designDisplayName(d.vector_name || ''), length }
+    recordRecentDesign({
+      design_id: id,
+      vector_name: d.vector_name || '',
+      length,
+      time: d.created_at,
+    })
+    recentDesigns.value = listRecentDesigns()
+    return true
+  } catch {
+    designInfo.value = null
+    designError.value = '未找到该设计 ID，请检查输入（设计记录可能已过期）'
+    return false
+  } finally {
+    designChecking.value = false
   }
 }
 
-// 深链预选
+function selectRecent(d: RecentDesign) {
+  if (designId.value === d.design_id) {
+    // 再次点击取消选择
+    designId.value = ''
+    designInfo.value = null
+    router.replace({ query: { mode: 'design' } })
+    return
+  }
+  designId.value = d.design_id
+  designInput.value = d.design_id
+  designInfo.value = {
+    id: d.design_id,
+    name: designDisplayName(d.vector_name),
+    length: d.length,
+  }
+  designError.value = ''
+  router.replace({ query: { mode: 'design', ref: d.design_id } })
+}
+
+async function confirmDesign() {
+  const id = designInput.value.trim()
+  if (!id) return
+  const ok = await validateDesign(id)
+  if (ok) {
+    designId.value = id
+    router.replace({ query: { mode: 'design', ref: id } })
+  } else {
+    designId.value = ''
+    router.replace({ query: { mode: 'design' } })
+  }
+}
+
+// 深链预选：设计模式需校验有效性后才展示分析面板
 onMounted(async () => {
+  recentDesigns.value = listRecentDesigns()
   loadVectors()
   const refId = (route.query.ref as string) || ''
   if (refId) {
-    if (mode.value === 'vector') vectorId.value = refId
-    else designId.value = refId
+    if (mode.value === 'vector') {
+      vectorId.value = refId
+    } else {
+      designInput.value = refId
+      designId.value = refId
+      await validateDesign(refId)
+    }
   }
   refreshHistory()
 })
@@ -75,6 +160,12 @@ onMounted(async () => {
 const panelKey = ref(0)
 const preset = ref<SequencingAnalysis | null>(null)
 const viewingHistory = ref(false)
+
+const panelVisible = computed(
+  () => (mode.value === 'vector' && !!vectorId.value) ||
+    (mode.value === 'design' && !!designInfo.value) ||
+    !!preset.value
+)
 
 // 切换参考序列时重挂面板，清掉旧结果
 watch([mode, vectorId, designId], () => {
@@ -130,7 +221,7 @@ async function removeHistory(id: string) {
 }
 
 function formatTime(iso: string): string {
-  return iso.replace('T', ' ').slice(0, 16)
+  return (iso || '').replace('T', ' ').slice(0, 16)
 }
 </script>
 
@@ -149,13 +240,42 @@ function formatTime(iso: string): string {
         <span class="step-no">①</span>
         <h2>选择参考序列</h2>
         <div class="mode-tabs">
-          <button :class="{ active: mode === 'vector' }" @click="mode = 'vector'">载体库</button>
           <button :class="{ active: mode === 'design' }" @click="mode = 'design'">设计结果</button>
+          <button :class="{ active: mode === 'vector' }" @click="mode = 'vector'">载体库</button>
         </div>
       </div>
 
-      <!-- 载体选择 -->
-      <template v-if="mode === 'vector'">
+      <!-- 设计结果（默认）：验证自己设计的构建体 -->
+      <template v-if="mode === 'design'">
+        <template v-if="recentDesigns.length">
+          <p class="picker-label">最近的设计结果</p>
+          <div class="vector-grid">
+            <button
+              v-for="d in recentDesigns"
+              :key="d.design_id"
+              class="vector-card"
+              :class="{ selected: designId === d.design_id }"
+              @click="selectRecent(d)"
+            >
+              <span class="vector-name">{{ designDisplayName(d.vector_name) }}</span>
+              <span class="vector-meta mono">{{ d.design_id }}</span>
+              <span class="vector-meta">{{ d.length }} bp · {{ formatTime(d.time) }}</span>
+            </button>
+          </div>
+          <p class="picker-label spaced">或输入设计任务 ID</p>
+        </template>
+        <div class="design-row">
+          <input v-model="designInput" class="search-input" placeholder="输入设计任务 ID（如 design_xxxxxxxxxxxxxx）" @keyup.enter="confirmDesign" />
+          <button class="btn-confirm" :disabled="designChecking || !designInput.trim()" @click="confirmDesign">
+            {{ designChecking ? '校验中…' : '确定' }}
+          </button>
+        </div>
+        <p v-if="designError" class="hint error-hint">{{ designError }}</p>
+        <p class="hint">设计 ID 可在设计结果页 URL 中找到，或从设计结果页点击「测序验证」直接跳转</p>
+      </template>
+
+      <!-- 载体库（备选） -->
+      <template v-else>
         <input v-model="search" class="search-input" placeholder="搜索载体名称 / 类型 / 宿主 / 抗性…" />
         <p v-if="vectorsLoading" class="hint">加载载体列表…</p>
         <p v-else-if="!filteredVectors.length" class="hint">未找到匹配的载体</p>
@@ -176,34 +296,26 @@ function formatTime(iso: string): string {
         </div>
         <p v-if="filteredVectors.length > 24" class="hint">仅显示前 24 个，请用搜索缩小范围</p>
       </template>
-
-      <!-- 设计结果 -->
-      <template v-else>
-        <div class="design-row">
-          <input v-model="designId" class="search-input" placeholder="输入设计任务 ID（如 dsg_xxxxxxxx）" @keyup.enter="confirmDesign" />
-          <button class="btn-confirm" @click="confirmDesign">确定</button>
-        </div>
-        <p class="hint">设计 ID 可在设计结果页 URL 中找到，或从设计结果页点击「测序验证」直接跳转</p>
-      </template>
     </div>
 
     <!-- ② 分析 -->
-    <div v-if="(mode === 'vector' && vectorId) || (mode === 'design' && designId.trim()) || preset" class="panel-card">
+    <div v-if="panelVisible" class="panel-card">
       <div class="ref-header">
         <span class="step-no">②</span>
         <h2>上传测序文件并分析</h2>
+        <span v-if="refLabel" class="ref-chip" :title="`参考序列：${refLabel}`">参考：{{ refLabel }}</span>
         <button v-if="viewingHistory" class="back-analysis-btn" @click="stopHistoryView">返回新分析</button>
       </div>
       <SequencingPanel
         :key="panelKey"
-        :reference-id="mode === 'vector' ? vectorId : designId.trim()"
+        :reference-id="mode === 'vector' ? vectorId : designId"
         :mode="mode"
         :preset="preset"
         @analyzed="onAnalyzed"
       />
     </div>
     <div v-else class="panel-empty">
-      <p>请先在上方{{ mode === 'vector' ? '选择一个载体' : '填写设计 ID' }}</p>
+      <p>请先在上方{{ mode === 'vector' ? '选择一个载体' : '选择或输入一个已完成的设计' }}</p>
     </div>
 
     <!-- ③ 历史分析 -->
@@ -308,6 +420,25 @@ function formatTime(iso: string): string {
   margin-bottom: 0.75rem;
   box-sizing: border-box;
 }
+
+.picker-label { color: var(--text-secondary, #888); font-size: 0.82rem; margin: 0 0 0.5rem; }
+.picker-label.spaced { margin-top: 1rem; }
+
+.ref-chip {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.6rem;
+  background: #F3F7FD;
+  border: 1px solid #C7D8EF;
+  color: #2B54C4;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  max-width: 340px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-hint { color: #C0392B; }
 
 .vector-grid {
   display: grid;
