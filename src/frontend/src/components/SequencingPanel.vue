@@ -289,12 +289,15 @@ function soLevel(t: string): string {
   return 'low'
 }
 
-/** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比） */
-function confTitle(v: { confidence?: string; peak_evidence?: { mutant_pct?: number | null; snr?: number | null } }): string {
+/** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比 / 插入峰强度比） */
+function confTitle(v: { confidence?: string; peak_evidence?: { mutant_pct?: number | null; snr?: number | null; insertion_peak_ratio?: number | null } }): string {
   const ev = v.peak_evidence
-  const peak = ev && ev.mutant_pct != null
-    ? `峰级证据：突变峰占比 ${ev.mutant_pct}%，信噪比 ${ev.snr ?? '—'}`
-    : ''
+  let peak = ''
+  if (ev && ev.mutant_pct != null) {
+    peak = `峰级证据：突变峰占比 ${ev.mutant_pct}%，信噪比 ${ev.snr ?? '—'}`
+  } else if (ev && ev.insertion_peak_ratio != null) {
+    peak = `峰级证据：插入峰强度为邻峰的 ${Math.round(ev.insertion_peak_ratio * 100)}%（≥60% 说明插入峰真实存在，Q 值在峰压缩区偏低属正常）`
+  }
   if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
   return `高置信${peak ? '：' + peak : ''}`

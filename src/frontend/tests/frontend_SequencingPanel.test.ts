@@ -411,4 +411,21 @@ describe('SequencingPanel', () => {
     expect(pending!.text()).toContain('5 处')
     expect(wrapper.find('.cds-verdict').text()).toContain('未计入判定')
   })
+
+  it('shows insertion peak ratio in confidence tooltip', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      variants: [{
+        ...mockAnalysis.variants[0],
+        type: 'insertion', alt_base: 'C', confidence: 'medium',
+        peak_evidence: { insertion_peak_ratio: 0.69 },
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+    const chip = wrapper.find('.conf-medium')
+    expect(chip.text()).toBe('中')
+    expect(chip.attributes('title')).toContain('插入峰强度为邻峰的 69%')
+    expect(chip.attributes('title')).toContain('真实存在')
+  })
 })

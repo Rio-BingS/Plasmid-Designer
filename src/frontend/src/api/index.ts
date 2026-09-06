@@ -455,8 +455,12 @@ export interface SequencingVariant {
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
   confidence?: string
-  /** 替换变体的峰级证据（Mutation Surveyor 式）：突变峰占比% / 信噪比 */
-  peak_evidence?: { mutant_pct?: number | null; snr?: number | null }
+  /** 峰级证据：替换为突变峰占比/信噪比，插入为插入峰强度比（相对邻峰） */
+  peak_evidence?: {
+    mutant_pct?: number | null
+    snr?: number | null
+    insertion_peak_ratio?: number | null
+  }
 }
 
 export interface SequencingAnalysis {

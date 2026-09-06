@@ -61,15 +61,48 @@ def _peak_snr(trace: Dict[str, List[int]], base: str, pk: int,
     return round(peak / noise, 1) if noise > 0 else None
 
 
+def _insertion_peak_ratio(trace: Dict[str, List[int]], peak_indices: List[int],
+                          read_pos: int, alt_base: str) -> Optional[float]:
+    """插入峰强度比：插入碱基通道峰面积 / 相邻峰主峰面积中位数
+
+    纯合质粒中真实存在的插入，其峰高接近邻峰（~1）；部分克隆带插入（混合
+    样品）或峰压缩区峰高偏弱（~0.3-0.6）；caller 伪影几乎无独立峰（~0）。
+    仅支持单碱基插入（多碱基插入的峰形判别复杂，返回 None 走 Q 口径）。
+    """
+    if len(alt_base) != 1 or alt_base not in "ACGT":
+        return None
+    if read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
+        return None
+    i = read_pos - 1
+    n = min(len(v) for v in trace.values()) if trace else 0
+    if n == 0 or peak_indices[i] is None or not (0 <= peak_indices[i] < n):
+        return None
+    lo, hi = _peak_window(peak_indices, i, n)
+    alt_area = sum(trace[alt_base][lo:hi])
+    neigh: List[int] = []
+    for j in (i - 2, i - 1, i + 1, i + 2):
+        if j == i or not (0 <= j < len(peak_indices)):
+            continue
+        if peak_indices[j] is None or not (0 <= peak_indices[j] < n):
+            continue
+        l2, h2 = _peak_window(peak_indices, j, n)
+        neigh.append(max(sum(trace[b][l2:h2]) for b in "ACGT"))
+    if not neigh:
+        return None
+    med = sorted(neigh)[len(neigh) // 2]
+    return round(alt_area / med, 2) if med > 0 else None
+
+
 def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
                            read_pos: Optional[int], ref_base: str,
-                           alt_base: str) -> Optional[Dict]:
-    """替换变体的峰级证据（仅替换；indel 无对应单通道，返回 None）
-
-    - mutant_pct = 100 × alt 峰面积 / (alt + ref 峰面积)（Mutation Surveyor 峰强比公式）：
-      ~100% 为纯合真实突变，~50% 为混合双峰；
-    - snr：alt 通道峰高 / 全轨迹本底中位数。
-    """
+                           alt_base: str, vtype: str = "substitution") -> Optional[Dict]:
+    """变体的峰级证据：替换用峰强比（mutant_pct）+ 信噪比，插入用插入峰强度比"""
+    if vtype == "insertion":
+        # Sanger read 前导 ~20bp 峰形未稳定（信号爬升/压缩高发），峰证据不可靠
+        if read_pos is None or read_pos < 20:
+            return None
+        ratio = _insertion_peak_ratio(trace, peak_indices, read_pos, alt_base)
+        return {"insertion_peak_ratio": ratio} if ratio is not None else None
     if not ref_base or not alt_base or len(ref_base) != 1 or len(alt_base) != 1:
         return None
     if alt_base not in "ACGT" or ref_base not in "ACGT":
@@ -97,11 +130,23 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     - 无峰证据（indel / trace 缺失）时退回 Q + 支持数口径；indel 假阳性率远高于
       替换（同聚物滑移、错配区比对补偿），单 read 低质量 indel 的门槛为 Q30
     """
+    ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
-        return "low"
+        # 插入位点的峰级证据更具体：插入峰接近邻峰（≥0.6）时，GC 压缩区的
+        # 通道拖尾（次级峰 30-40%）不按混合样品处理，交由插入峰规则分级
+        if ins_ratio is None or ins_ratio < 0.6:
+            return "low"
     q = v.get("read_q") or 0
     support = v.get("support_reads") or 1
     if evidence is not None:
+        if ins_ratio is not None:
+            # 插入峰强度比：峰接近邻峰（≥0.6）说明峰真实存在——Q 值在峰压缩区
+            # 系统性偏低（basecaller 对 indel/压缩区的已知短板），不应一票否决
+            if ins_ratio < 0.3:
+                return "low"  # 几乎无独立峰：疑似 caller 伪影
+            if ins_ratio >= 0.6 and (support >= 2 or q >= 25):
+                return "high"
+            return "medium" if (ins_ratio >= 0.6 or q >= 15) else "low"
         mp = evidence.get("mutant_pct")
         snr = evidence.get("snr")
         if mp is not None and mp < 70:
@@ -785,7 +830,7 @@ def analyze(
         if src is not None:
             evidence = _variant_peak_evidence(
                 src["trace"], src["trimmed_peaks"], v.get("read_pos"),
-                v.get("ref_base", ""), v.get("alt_base", ""),
+                v.get("ref_base", ""), v.get("alt_base", ""), v.get("type", "substitution"),
             )
             if evidence is not None:
                 v["peak_evidence"] = evidence

@@ -15,7 +15,7 @@ from core.sanger.annotator import annotate_variant, summarize_severity  # noqa: 
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
 from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
-    _read_grade, _variant_confidence, _coverage_gaps,
+    _read_grade, _variant_confidence, _coverage_gaps, _variant_peak_evidence,
 )
 
 
@@ -653,3 +653,49 @@ def test_summarize_marks_low_confidence():
     v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v2["features"] = []
     assert "低置信度" not in summarize_severity([v2])[0]
+
+
+# ---------- 插入峰强度比（真实单碱基插入 vs caller 伪影的判别） ----------
+
+def test_insertion_peak_evidence_grades():
+    """插入峰强度比：峰接近邻峰时升档（Q 在压缩区偏低不一票否决），无峰判低"""
+    prefix = "ACGTTACGTAGCAATGGTCA"          # 20bp 稳定区前导
+    ins_read = prefix + "C" + "CAATGGTCA"    # read_pos 21 = 插入 C（前导区外）
+    read = extract_read(make_ab1(ins_read, [45] * len(ins_read)))  # 主通道 100 / 本底 4
+    # 默认 trace 下插入 C 的 C 通道与邻峰同为 100 → ratio ≈ 1
+    ev = _variant_peak_evidence(
+        read["trace"], read["peak_indices"], 21, "-", "C", "insertion")
+    assert ev is not None and ev["insertion_peak_ratio"] == pytest.approx(1.0, abs=0.15)
+    v = {"read_pos": 21, "read_q": 3, "support_reads": 1}
+    # 峰清晰但单 read + 极低 Q：中置信（峰压缩区 Q 偏低不否决真实峰）
+    assert _variant_confidence(v, set(), ev) == "medium"
+    # 多 read 支持或 Q 达标 → 高置信
+    assert _variant_confidence(dict(v, read_q=30), set(), ev) == "high"
+    assert _variant_confidence(dict(v, support_reads=2), set(), ev) == "high"
+    # 峰很弱（<0.3）：疑似伪影 → 低
+    tr = {b: list(x) for b, x in read["trace"].items()}
+    tr["C"][20] = 4  # 插入位点 C 通道压到本底
+    ev_weak = _variant_peak_evidence(tr, read["peak_indices"], 21, "-", "C", "insertion")
+    assert ev_weak["insertion_peak_ratio"] < 0.3
+    assert _variant_confidence(v, set(), ev_weak) == "low"
+
+
+def test_insertion_peak_evidence_requires_stable_region():
+    """read 前导 ~20bp 峰形未稳定：不产出插入峰证据（走 Q + 支持数口径）"""
+    bases = "ACGT" * 10
+    read = extract_read(make_ab1(bases, [45] * len(bases)))
+    assert _variant_peak_evidence(read["trace"], read["peak_indices"], 10, "-", "C", "insertion") is None
+    assert _variant_peak_evidence(read["trace"], read["peak_indices"], None, "-", "C", "insertion") is None
+
+
+def test_mixed_signal_yields_to_clear_insertion_peak():
+    """插入位点的压缩拖尾（次级峰 30-40%）不按混合样品一票否决：峰清晰时按插入规则升档"""
+    ins_read = "ACGTTACGTAGCAATGGTCA" + "C" + "CAATGGTCA"  # read_pos 21 = 插入 C
+    read = extract_read(make_ab1(ins_read, [45] * len(ins_read)))
+    ev = _variant_peak_evidence(
+        read["trace"], read["peak_indices"], 21, "-", "C", "insertion")
+    v = {"read_pos": 21, "read_q": 3, "support_reads": 1}
+    # 同位点被判 mixed：峰清晰（ratio≥0.6）→ 仍按插入规则给中置信而非低
+    assert _variant_confidence(v, {21}, ev) == "medium"
+    # 无峰证据的 mixed 位点依旧低置信
+    assert _variant_confidence(v, {21}, None) == "low"
