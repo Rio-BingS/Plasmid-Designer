@@ -287,9 +287,11 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.map-box').exists()).toBe(true)
-    // read 箭头一正一反
+    // read 箭头一正一反；长 read 名字画进箭头内，短 read 退回左侧栏
     expect(wrapper.findAll('.map-arrow-fwd').length).toBe(1)
     expect(wrapper.findAll('.map-arrow-rev').length).toBe(1)
+    expect(wrapper.findAll('.map-read-name').length).toBe(1)
+    expect(wrapper.findAll('.map-label').filter(t => t.text().includes('r2.ab1')).length).toBe(1)
     // 每条 read 的对齐视图各有 1 处错配 → 各 1 个差异点
     expect(wrapper.findAll('.map-dot').length).toBe(2)
     // 轴上方的合并变异红块

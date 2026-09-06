@@ -261,10 +261,10 @@ function focusAlignmentAt(refPos: number, afterGap: boolean) {
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
 const MAP_W = 1000        // viewBox 宽度
 const MAP_GUTTER = 150    // 左侧文件名栏宽
-const READS_TOP = 10      // read 区顶部
-const READ_LANE_H = 30    // read 行高（read 是本图主角，行高/箭头明显大于特征）
-const READ_H = 17         // read 箭头高度
-const VAR_H = 16          // 轴上方变异标记带高度
+const READS_TOP = 8       // read 区顶部
+const READ_LANE_H = 36    // read 行高（read 是本图主角，行高/箭头约为特征的 2 倍）
+const READ_H = 26         // read 箭头高度
+const VAR_H = 14          // 轴上方变异标记带高度
 const FEAT_LANE_H = 19    // 特征行高
 const FEAT_H = 14         // 特征箭头高度
 const LABEL_LANE_H = 16   // 特征外置标签行高
@@ -287,7 +287,7 @@ function darkenColor(hex: string, amount: number): string {
   return `rgb(${r},${g},${b})`
 }
 
-type MapRead = SequencingAnalysis['reads'][number] & { diffs: number[]; lane: number }
+type MapRead = SequencingAnalysis['reads'][number] & { diffs: number[]; lane: number; nameInside: boolean }
 
 /** 该 read 全部差异（替换/插入/缺失）在参考上的位置 */
 function readDiffPositions(r: SequencingAnalysis['reads'][number]): number[] {
@@ -325,7 +325,7 @@ function assignLanes<T>(items: T[], startOf: (t: T) => number, endOf: (t: T) => 
   })
 }
 
-/** 按落位排序的 read 行（附差异位置与堆叠道号） */
+/** 按落位排序的 read 行（附差异位置、堆叠道号；名字放得下画进箭头内） */
 const mapRows = computed<MapRead[]>(() => {
   const a = analysis.value
   if (!a) return []
@@ -333,7 +333,12 @@ const mapRows = computed<MapRead[]>(() => {
     .sort((x, y) => x.ref_start - y.ref_start || x.index - y.index)
     .map((r) => ({ ...r, diffs: readDiffPositions(r) }))
   const lanes = assignLanes(sorted, (r) => r.ref_start, (r) => r.ref_end)
-  return sorted.map((r, i) => ({ ...r, lane: lanes[i] }))
+  return sorted.map((r, i) => {
+    const w = readWidth(r)
+    const nameW = shortName(r.filename).length * 7 + 8
+    const nameInside = w - arrowHeadW(w) - 10 >= nameW
+    return { ...r, lane: lanes[i], nameInside }
+  })
 })
 
 const mapScale = computed(() => {
@@ -359,10 +364,15 @@ function labelY(lane: number): number {
   return featsTop.value + featLaneCount.value * FEAT_LANE_H + 14 + lane * LABEL_LANE_H
 }
 
+/** 箭头头部宽度（随条带宽度自适应，封顶限制扁条不被头部吃满） */
+function arrowHeadW(w: number): number {
+  return Math.min(26, Math.max(8, w * 0.2))
+}
+
 /** 块状箭头路径（forward 箭头朝右，否则朝左） */
 function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolean): string {
   const w = Math.max(2, x2 - x1)
-  const aw = Math.min(20, Math.max(7, w * 0.2))
+  const aw = arrowHeadW(w)
   if (forward) {
     const bx = Math.max(x1, x2 - aw)
     return `M ${x1} ${y} L ${bx} ${y} L ${x2} ${y + h / 2} L ${bx} ${y + h} L ${x1} ${y + h} Z`
@@ -400,7 +410,7 @@ const mapFeats = computed<MapFeat[]>(() => {
     const x1 = mapX(f.start)
     const x2 = x1 + Math.max(8, (f.end - f.start + 1) * mapScale.value)
     const labelW = f.name.length * 6.6 + 8
-    const bodyW = x2 - x1 - Math.min(20, Math.max(7, (x2 - x1) * 0.2)) - 4
+    const bodyW = x2 - x1 - arrowHeadW(x2 - x1) - 4
     const inside = f.name.length > 0 && labelW <= bodyW
     const cx = Math.min(MAP_W - 10 - labelW / 2, Math.max(MAP_GUTTER + labelW / 2, (x1 + x2) / 2))
     let labelLane = -1
@@ -763,20 +773,22 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           <!-- 刻度网格线 -->
           <line v-for="t in mapTicks" :key="'g' + t.pos" :x1="mapX(t.pos)" :x2="mapX(t.pos)"
                 :y1="READS_TOP - 4" :y2="mapHeight - 2" class="map-grid" />
-          <!-- read 行：深红块状箭头（方向见箭头），差异位点空心圆 -->
+          <!-- read 行：深红块状箭头（方向见箭头），名字放得下画进箭头内，差异位点空心圆 -->
           <g v-for="r in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
             <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击查看逐碱基比对</title>
-            <text :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 4.5" text-anchor="end" class="map-label">
+            <text v-if="!r.nameInside" :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="end" class="map-label">
               {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
             </text>
             <path :d="arrowPath(mapX(r.ref_start), mapX(r.ref_start) + readWidth(r), readY(r.lane), READ_H, r.direction === '+')"
                   :class="r.direction === '+' ? 'map-arrow-fwd' : 'map-arrow-rev'" />
-            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="3.4" class="map-dot" />
+            <text v-if="r.nameInside" :x="mapX(r.ref_start) + (readWidth(r) - arrowHeadW(readWidth(r))) / 2"
+                  :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="middle" class="map-read-name">{{ shortName(r.filename) }}</text>
+            <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="4.5" class="map-dot" />
           </g>
           <!-- 刻度轴：灰底 + 绿色已测覆盖段 + 黑轴线 + 刻度数字 -->
-          <rect :x="MAP_GUTTER" :y="axisY - 3" :width="MAP_W - 10 - MAP_GUTTER" height="6" rx="3" class="map-axis-bg" />
-          <rect v-for="(seg, i) in mapCovered" :key="'c' + i" :x="mapX(seg[0])" :y="axisY - 3"
-                :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="6" class="map-axis-cov" />
+          <rect :x="MAP_GUTTER" :y="axisY - 4" :width="MAP_W - 10 - MAP_GUTTER" height="8" rx="4" class="map-axis-bg" />
+          <rect v-for="(seg, i) in mapCovered" :key="'c' + i" :x="mapX(seg[0])" :y="axisY - 4"
+                :width="Math.max(1.5, (seg[1] - seg[0] + 1) * mapScale)" height="8" class="map-axis-cov" />
           <line :x1="MAP_GUTTER" :x2="MAP_W - 10" :y1="axisY" :y2="axisY" class="map-axis-line" />
           <g v-for="t in mapTicks" :key="'t' + t.pos">
             <line :x1="mapX(t.pos)" :x2="mapX(t.pos)" :y1="axisY" :y2="axisY + 6" class="map-tick-line" />
@@ -787,7 +799,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           <!-- 轴上变异红块（点击跳峰图） -->
           <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
             <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
-            <rect :x="mapX(v.ref_pos) - 3" :y="axisY - VAR_H + 2" width="6" height="12" rx="1" class="map-var-tick" />
+            <rect :x="mapX(v.ref_pos) - 3.5" :y="axisY - VAR_H + 2" width="7" height="10" rx="1" class="map-var-tick" />
           </g>
           <!-- 参考特征：彩色块状箭头，名字放不下时引线外置 -->
           <g v-for="(f, i) in mapFeats" :key="'f' + i" class="map-feat">
@@ -1085,6 +1097,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .map-label { font-size: 11.5px; fill: #444; font-family: Consolas, monospace; }
 .map-grid { stroke: #ECEEF0; stroke-width: 1; stroke-dasharray: 3 4; }
 .map-row { cursor: pointer; }
+.map-read-name { font-size: 11.5px; fill: #fff; font-weight: 700; pointer-events: none; }
 .map-arrow-fwd, .map-arrow-rev { fill: #B03A2E; stroke: #7E251C; stroke-width: 0.8; opacity: 0.92; }
 .map-row:hover .map-arrow-fwd, .map-row:hover .map-arrow-rev { opacity: 1; fill: #C74A3C; }
 .map-dot { fill: #fff; stroke: #C0392B; stroke-width: 1.5; pointer-events: none; }
