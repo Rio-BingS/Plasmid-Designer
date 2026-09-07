@@ -13,6 +13,8 @@
 import logging
 import re
 import smtplib
+import urllib.error
+import urllib.request
 from email.header import Header
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -106,9 +108,15 @@ def _send_resend(to: str, subject: str, html: str) -> bool:
         headers={
             "Authorization": f"Bearer {settings.RESEND_API_KEY}",
             "Content-Type": "application/json",
+            # Resend 前面的 Cloudflare 会按 UA 拦截默认的 Python-urllib（error 1010）
+            "User-Agent": "PlasmidDesigner/2.2",
         })
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return 200 <= resp.status < 300
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        logger.error("Resend 返回 %s: %s", e.code, (e.read() or b"").decode(errors="replace")[:300])
+        return False
 
 
 def _send_brevo(to: str, subject: str, html: str) -> bool:
@@ -129,9 +137,14 @@ def _send_brevo(to: str, subject: str, html: str) -> bool:
             "api-key": settings.BREVO_API_KEY,
             "Content-Type": "application/json",
             "accept": "application/json",
+            "User-Agent": "PlasmidDesigner/2.2",
         })
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return 200 <= resp.status < 300
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        logger.error("Brevo 返回 %s: %s", e.code, (e.read() or b"").decode(errors="replace")[:300])
+        return False
 
 
 def _sender_email() -> str:
