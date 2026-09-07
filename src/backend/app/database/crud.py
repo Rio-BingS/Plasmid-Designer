@@ -69,11 +69,15 @@ def update_user(db: Session, user_id: str, **fields) -> Optional[UserDB]:
 
 
 def delete_user(db: Session, user_id: str) -> bool:
-    """删除用户（其设计任务的 user_id 置空，保留设计记录）"""
+    """删除用户（其验证码一并清除，设计/载体/批量任务的 user_id 置空，保留记录）"""
     user = get_user_by_id(db, user_id)
     if user is None:
         return False
+    # email_verifications.user_id 不可空，须直接删除；其余关联表置空保留
+    db.query(EmailVerificationDB).filter(EmailVerificationDB.user_id == user_id).delete()
     db.query(DesignDB).filter(DesignDB.user_id == user_id).update({"user_id": None})
+    db.query(VectorDB).filter(VectorDB.user_id == user_id).update({"user_id": None})
+    db.query(BatchJobDB).filter(BatchJobDB.user_id == user_id).update({"user_id": None})
     db.delete(user)
     db.commit()
     return True
