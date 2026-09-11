@@ -23,10 +23,17 @@ api.interceptors.request.use(
 // 响应拦截器：处理 401 错误
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
+      // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
+      try {
+        const { useAuthStore } = await import('@/stores/auth')
+        useAuthStore().clearAuth()
+      } catch {
+        // Pinia 未初始化（如单测环境）时仅清理 localStorage 即可
+      }
     }
     return Promise.reject(error)
   }
@@ -368,6 +375,7 @@ export interface AdminUserInfo {
   is_admin: boolean
   is_active: boolean
   email_verified: boolean
+  allowed_features: string[] | null
   created_at: string | null
 }
 
@@ -388,7 +396,7 @@ export async function listAdminUsers(): Promise<AdminUserInfo[]> {
 
 export async function updateAdminUser(
   userId: string,
-  patch: { is_admin?: boolean; is_active?: boolean; email_verified?: boolean }
+  patch: { is_admin?: boolean; is_active?: boolean; email_verified?: boolean; allowed_features?: string[] }
 ): Promise<AdminUserInfo> {
   const response = await api.put(`/admin/users/${userId}`, patch)
   return response.data
