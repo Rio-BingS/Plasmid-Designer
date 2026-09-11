@@ -94,6 +94,10 @@ class PrimerInfo(BaseModel):
     gc_content: float
     length: int
     overhang: Optional[str] = None
+    # 目标区域坐标（0-indexed，半开区间）：交叉杂交审查时用于排除相邻 oligo
+    # 的预期 overlap 配对；非合成 oligo（如克隆引物对）为 None
+    target_start: Optional[int] = None
+    target_end: Optional[int] = None
     notes: Optional[str] = None
 
 

@@ -204,6 +204,8 @@ def _primer_to_info(p, include_overhang: bool = True) -> PrimerInfo:
         gc_content=p.gc_content,
         length=p.length,
         overhang=getattr(p, "overhang", None) or None,
+        target_start=getattr(p, "target_start", None),
+        target_end=getattr(p, "target_end", None),
         notes=notes or None,
     )
 

@@ -767,9 +767,13 @@ class PrimerDesigner:
             for j, t in enumerate(seqs):
                 if i == j:
                     continue
-                # 预期配对：两条 oligo 的目标区域重叠（相邻片的 overlap 退火）
+                # 预期配对：两条 oligo 的目标区域重叠（相邻片的 overlap 退火）。
+                # 坐标缺失（target_start/target_end 为 None，如克隆引物）时
+                # 无法判定为预期配对，按交叉杂交正常计数
                 ti, tj = oligos[i], oligos[j]
-                if ti.target_start < tj.target_end and tj.target_start < ti.target_end:
+                ts_i, te_i = getattr(ti, "target_start", None), getattr(ti, "target_end", None)
+                ts_j, te_j = getattr(tj, "target_start", None), getattr(tj, "target_end", None)
+                if None not in (ts_i, te_i, ts_j, te_j) and ts_i < te_j and ts_j < te_i:
                     continue
                 if rc_tail in t:
                     count += 1
