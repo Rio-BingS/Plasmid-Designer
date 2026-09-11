@@ -129,6 +129,68 @@
 
 ---
 
+## 2026-09-07 第二轮代码审查新增（已于 2026-09-11 全部修复，✅）
+
+> 与上文 12 项互不重复；本轮聚焦前两轮未覆盖的角落（设计流水线内部、
+> 令牌用途隔离、批量参数转发）。高危 1/2 与中危 3 均已在本地实际复现。
+
+### 5.1 🔴 全基因合成（gene_synthesis）设计 100% 失败 ✅
+
+- **位置**：`src/backend/app/design_service.py:514`（交叉杂交检查）
+- **现象**：`cross_hybridization_count(result.primers)` 收到的是 API 模型
+  `PrimerInfo`（`routes/models.py:88`，仅 name/sequence/tm 等字段），而该函数
+  访问 `oligos[i].target_start / target_end`（`core/primer_designer.py:772`）——
+  `PrimerInfo` 无这两个字段，抛 `AttributeError`，被 `run_design` 的宽泛
+  `except` 捕获后整个设计标记 FAILED。
+- **复现**：提交 `cloning_method=GENE_SYNTHESIS, insert_source=gene_synthesis` 的
+  设计请求 → `status=FAILED, errors=["'PrimerInfo' object has no attribute
+  'target_start'"]`。
+- **为何既有测试未覆盖**：回归测试用核心层 `Primer` 对象直接调
+  `cross_hybridization_count`，未走 `run_design` 的 gene_synthesis 全路径。
+- **建议**：`PrimerInfo` 补 `target_start/target_end` 字段并由 `_primer_to_info`
+  透传；或交叉杂交检查改在模型转换前用核心 `Primer` 列表执行。补一条
+  gene_synthesis `run_design` 全路径回归测试。
+
+### 5.2 🔴 邮箱验证令牌可当登录令牌使用 ✅
+
+- **位置**：`src/backend/app/auth/jwt_auth.py:110`（`decode_token`）vs
+  `:129`（`create_verify_token`）
+- **现象**：验证令牌带 `purpose="verify_email"` 仅做了单向限定
+  （`decode_verify_token` 检查 purpose），但登录侧 `decode_token` 不检查
+  purpose——签名有效且有 `sub` 即通过。注册流程中取得的 30 分钟验证令牌
+  可直接作为 `Authorization: Bearer` 通过 `get_current_user_required` 登录
+  该账号。模块注释声称「purpose 限定，不能当登录令牌用」，实际未兑现。
+- **复现**：`decode_token(create_verify_token("user-123"))` 返回
+  `user_id='user-123'`。
+- **建议**：`decode_token` 拒绝携带 `purpose` 声明的令牌
+  （`if payload.get("purpose"): return None`）。补误用回归测试。
+
+### 5.3 🟡 批量设计丢弃一半设计参数 ✅
+
+- **位置**：`src/backend/app/routes/batch_routes.py:188-203`
+  （`run_batch_design_task` 组装 `DesignRequest`）
+- **现象**：`BatchDesignRequest` 继承 `DesignOptions` 全部参数，但逐条转
+  `DesignRequest` 时 `insert_source、enzyme_5、enzyme_3、oligo_length_min、
+  oligo_length_max、exclude_enzymes、gibson_site` 全部未转发，静默回落默认值：
+  - 批量选全基因合成 → 只出一对克隆引物，不生成重叠 oligo；
+  - 批量双酶切（enzyme_5 ≠ enzyme_3）→ 两端变成同一酶；
+  - 批量排除酶位点避让 → 完全失效。
+  前端 `BatchDesignView` 确实提交这些字段——同样参数单条与批量提交结果不同。
+- **建议**：改为整体转发，如
+  `DesignRequest(**request.model_dump(exclude={"sequences", "sequence_names"}), sequence=…, sequence_name=…)`。
+
+### 5.4 🟢 低危（顺手可修）✅
+
+1. `jwt_auth.get_current_user`（可选认证）不检查 `is_active`，被禁用用户在
+   可选认证端点仍被视为登录（必检路径无问题）。
+2. `src/frontend/src/api/index.ts:24-33` 401 拦截器只清 localStorage，不通知
+   Pinia store 也不跳转，用户停留在页面表现为「下次请求才失败」。
+3. `batch_routes.py:181` 后台任务直接解引用 `batch_jobs[batch_id]`——单 worker
+   下安全，但恢复多 worker（或 `_persist_batch` 不再写内存字典）时会
+   KeyError，属对部署形态的隐性耦合。
+
+---
+
 ## 部署备忘（1 核 2G VPS，非代码问题）
 
 1. **前端不要在 VPS 上构建**：`Dockerfile.frontend` 多阶段构建中的 `vite build` 峰值内存
@@ -170,3 +232,7 @@
 | 2026-08-31 | 3.3 | `vector_routes.py` 新增 `_safe_filename` 白名单（仅 `[A-Za-z0-9._-]`），上传载体 YAML 输出名不再受 `vector.name` 中 `\` 等字符影响；顺带修复 `file.filename` 为 None 时 500。上传与内置模板分目录存放暂不做（白名单已消除路径注入，且现有 delete/update 按目录扫描逻辑依赖同目录） | 定向验证：`..\..\evil <x>`、`a/b\c:d`、`///` 均归一为安全文件名 |
 | 2026-08-31 | 3.4 | `cache.py` `CacheManager.backend` 改为延迟初始化 property：首次使用才连 Redis，连不上回退内存并每 60s 重试升级回 Redis（`REDIS_RETRY_SECONDS` 可调） | 定向验证：实例化不触发连接（Redis 未启动时首用解析为 MemoryCache）；pytest 全绿 |
 | 2026-09-04 | 4.1 | 修复反向互补映射错误：`primer_designer.py` `cross_hybridization_count` 与 `codon_optimizer.py` `_five_prime_hairpin_count` 误用 `maketrans("ATGC","TAGC")`（G/C 映射到自身），改为正确的 `maketrans("ATGC","TACG")`；交叉杂交检查同步排除目标区域重叠的相邻 oligo（预期 overlap 配对不再计入）；删除 `_smooth_gc` 中未使用的死变量。| 300bp 随机序列实测：修复前交叉杂交恒为 0（漏检）、GC 茎发夹漏检；修复后均正确检出。新增回归测试 4 项，pytest 126 passed |
+| 2026-09-11 | 5.1 | `routes/models.py` `PrimerInfo` 增加 `target_start/target_end` 可选字段，`design_service._primer_to_info` 透传；`primer_designer.cross_hybridization_count` 对坐标缺失的 oligo 不再假定预期配对（正常计数），消除 `AttributeError` | gene_synthesis 全路径实测：修复前 `status=FAILED, errors=["'PrimerInfo' object has no attribute 'target_start'"]`，修复后 `COMPLETED`，6 条 primers 正常产出 |
+| 2026-09-11 | 5.2 | `jwt_auth.decode_token` 拒绝携带 `purpose` 声明的令牌（验证令牌不能再当登录令牌）；顺带 `get_current_user` 补 `is_active` 检查（5.4.1） | 实测：`decode_token(create_verify_token(...))` 返回 None；登录令牌解码正常 |
+| 2026-09-11 | 5.3 | `batch_routes.run_batch_design_task` 改为 `DesignRequest(**request.model_dump(exclude={"sequences","sequence_names"}), ...)` 整体转发 DesignOptions 全部参数；后台任务改用 `_load_batch` 取任务（顺带 5.4.3，消除对内存字典的隐性耦合） | 实测：批量请求的 insert_source/enzyme_5/enzyme_3/oligo_length_min/max/exclude_enzymes/gibson_site 全部转发无遗漏 |
+| 2026-09-11 | 5.4 | ① `get_current_user` 补 `is_active` 检查（随 5.2）；② 前端 `api/index.ts` 401 拦截器同步清理 Pinia auth store（`clearAuth`，动态导入避免循环依赖）；③ 批量后台任务改走 `_load_batch`（随 5.3） | 代码审查；前端需构建后人工冒烟 |
