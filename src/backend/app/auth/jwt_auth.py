@@ -63,6 +63,8 @@ class User(UserBase):
     is_active: bool = True
     is_admin: bool = False
     email_verified: bool = True
+    # 个人功能权限覆盖（None = 跟随层级默认；键见 features.FEATURE_REGISTRY）
+    allowed_features: Optional[list] = None
     created_at: Optional[datetime] = None
 
 
@@ -108,9 +110,12 @@ def create_access_token(user: User) -> str:
 
 
 def decode_token(token: str) -> Optional[TokenData]:
-    """解码令牌"""
+    """解码登录令牌；带 purpose 的流程令牌（如邮箱验证）一律拒绝"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("purpose"):
+            # purpose 令牌（create_verify_token 签发）不能当登录令牌使用
+            return None
         return TokenData(
             user_id=payload.get("sub"),
             email=payload.get("email")
@@ -150,6 +155,13 @@ def decode_verify_token(token: str) -> Optional[str]:
 
 def db_user_to_user(db_user) -> User:
     """转换数据库用户模型为响应模型"""
+    import json as _json
+
+    raw = getattr(db_user, "allowed_features", None)
+    try:
+        override = _json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        override = None
     return User(
         id=db_user.id,
         email=db_user.email,
@@ -158,6 +170,7 @@ def db_user_to_user(db_user) -> User:
         is_admin=db_user.is_admin,
         # 旧库迁移前列可能不存在（迁移由 init_db 保证先于请求发生）
         email_verified=getattr(db_user, "email_verified", True),
+        allowed_features=override,
         created_at=db_user.created_at
     )
 
@@ -180,6 +193,8 @@ async def get_current_user(
 
     db_user = get_user_by_id(db, token_data.user_id)
     if db_user is None:
+        return None
+    if not db_user.is_active:
         return None
 
     return db_user_to_user(db_user)
