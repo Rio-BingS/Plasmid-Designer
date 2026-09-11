@@ -178,51 +178,46 @@ async def get_batch_report(batch_id: str):
 
 def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: List[str]):
     """后台批量设计：每条序列调用统一 run_design。"""
-    batch_jobs[batch_id].status = "running"
-    _persist_batch(batch_jobs[batch_id])
+    job = _load_batch(batch_id)
+    if job is None:
+        logger.error("批量任务 %s 不存在，无法执行", batch_id)
+        return
+    job.status = "running"
+    _persist_batch(job)
 
     for i, sequence in enumerate(request.sequences):
         sequence_name = names[i] if i < len(names) else f"sequence_{i+1}"
         design_id = f"design_{uuid.uuid4().hex[:12]}"
         try:
+            # 整体转发 DesignOptions 的全部参数，避免逐字段复制漏掉
+            # 新增选项导致单任务与批量结果不一致
             single = DesignRequest(
+                **request.model_dump(exclude={"sequences", "sequence_names"}),
                 sequence=sequence,
-                sequence_type=request.sequence_type,
                 sequence_name=sequence_name,
-                vector_id=request.vector_id,
-                cloning_method=request.cloning_method,
-                optimize_codons=request.optimize_codons,
-                target_species=request.target_species,
-                gc_min=request.gc_min,
-                gc_max=request.gc_max,
-                homology_arm=request.homology_arm,
-                enzyme=request.enzyme,
-                oligo_length=request.oligo_length,
-                overlap_length=request.overlap_length,
-                protocol_language=getattr(request, "protocol_language", "zh") or "zh",
             )
             result = run_design(design_id, single)
             _persist(result)
 
             if result.status == DesignStatus.COMPLETED:
-                batch_jobs[batch_id].results.append(design_id)
-                batch_jobs[batch_id].completed += 1
+                job.results.append(design_id)
+                job.completed += 1
             else:
-                batch_jobs[batch_id].errors.append(
+                job.errors.append(
                     {
                         "index": i,
                         "sequence_name": sequence_name,
                         "error": "; ".join(result.errors) or "design failed",
                     }
                 )
-                batch_jobs[batch_id].failed += 1
+                job.failed += 1
         except Exception as e:
-            batch_jobs[batch_id].errors.append(
+            job.errors.append(
                 {"index": i, "sequence_name": sequence_name, "error": str(e)}
             )
-            batch_jobs[batch_id].failed += 1
+            job.failed += 1
 
-        _persist_batch(batch_jobs[batch_id])
+        _persist_batch(job)
 
-    batch_jobs[batch_id].status = "completed"
-    _persist_batch(batch_jobs[batch_id])
+    job.status = "completed"
+    _persist_batch(job)
