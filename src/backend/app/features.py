@@ -54,3 +54,27 @@ def features_for_tier(site_settings: dict, tier: str) -> List[str]:
 
 def is_feature_allowed(site_settings: dict, tier: str, feature: str) -> bool:
     return tier == "admin" or feature in features_for_tier(site_settings, tier)
+
+
+def features_for_user(site_settings: dict, user) -> List[str]:
+    """用户实际可用的功能清单（后端 API 门控与前端渲染的单一依据）：
+    admin 全量 → 用户个人覆盖（allowed_features 非空时精确生效）→ 层级默认"""
+    tier = tier_for(user)
+    if tier == "admin":
+        return list(ALL_FEATURES)
+    if user is not None:
+        override = getattr(user, "allowed_features", None)
+        # 兼容两种形态：JWT auth 已解析的 list / DB 模型上的 JSON 字符串
+        if isinstance(override, str):
+            try:
+                import json as _json
+                override = _json.loads(override)
+            except ValueError:
+                override = None
+        if override:
+            return valid_features(list(override))
+    return features_for_tier(site_settings, tier)
+
+
+def is_feature_allowed_for_user(site_settings: dict, user, feature: str) -> bool:
+    return feature in features_for_user(site_settings, user)

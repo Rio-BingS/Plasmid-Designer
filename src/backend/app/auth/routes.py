@@ -29,7 +29,7 @@ from app.database import (
     get_site_settings_row, create_email_verification, get_latest_email_verification,
     consume_email_verification, update_user,
 )
-from app.features import features_for_tier, tier_for
+from app.features import features_for_tier, features_for_user, tier_for
 from app.mailer import send_email, verification_email_html
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -295,7 +295,7 @@ async def site_config(current_user: Optional[User] = Depends(get_current_user),
             "anonymous": site["anonymous_features"],
             "user": site["user_features"],
         },
-        effective_features=features_for_tier(site, tier),
+        effective_features=features_for_user(site, current_user),
     )
 
 

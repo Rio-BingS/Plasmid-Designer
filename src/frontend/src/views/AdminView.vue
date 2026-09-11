@@ -113,6 +113,52 @@ async function removeUser(u: AdminUserInfo) {
   }
 }
 
+// ==================== 用户功能权限 ====================
+const permUser = ref<AdminUserInfo | null>(null)
+const permDraft = ref<{ followDefault: boolean; features: string[] }>({ followDefault: true, features: [] })
+const savingPerm = ref(false)
+
+const permDefaultFeatures = computed(() => settings.value?.user_features ?? [])
+
+function openPermEditor(u: AdminUserInfo) {
+  permUser.value = u
+  if (u.allowed_features && u.allowed_features.length > 0) {
+    permDraft.value = { followDefault: false, features: [...u.allowed_features] }
+  } else {
+    permDraft.value = { followDefault: true, features: [...permDefaultFeatures.value] }
+  }
+}
+
+function togglePermFeature(key: string) {
+  const list = permDraft.value.features
+  const idx = list.indexOf(key)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(key)
+}
+
+async function savePerm() {
+  if (!permUser.value) return
+  savingPerm.value = true
+  error.value = ''
+  try {
+    const features = permDraft.value.followDefault ? [] : permDraft.value.features
+    const updated = await updateAdminUser(permUser.value.id, { allowed_features: features })
+    users.value = users.value.map((x) => (x.id === updated.id ? updated : x))
+    permUser.value = null
+    message.value = '用户功能权限已更新'
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || e?.message || '保存失败'
+  } finally {
+    savingPerm.value = false
+  }
+}
+
+function permSummary(u: AdminUserInfo): string {
+  if (!u.allowed_features || u.allowed_features.length === 0) return '跟随默认'
+  if (u.allowed_features.length === featureKeys.value.length) return '全部功能'
+  return u.allowed_features.map((k) => featureLabels.value[k] || k).join('、')
+}
+
 function fmtTime(iso: string | null): string {
   return (iso || '').replace('T', ' ').slice(0, 16)
 }
@@ -200,6 +246,7 @@ onMounted(load)
               <th>管理员</th>
               <th>启用</th>
               <th>邮箱验证</th>
+              <th>功能权限</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -214,6 +261,9 @@ onMounted(load)
               <td><input type="checkbox" :checked="u.is_active" @change="setUserFlag(u, { is_active: !u.is_active })" /></td>
               <td><input type="checkbox" :checked="u.email_verified" @change="setUserFlag(u, { email_verified: !u.email_verified })" /></td>
               <td>
+                <button class="btn small perm-btn" @click="openPermEditor(u)">{{ permSummary(u) }}</button>
+              </td>
+              <td>
                 <button class="btn danger small" :disabled="u.id === currentUserId" @click="removeUser(u)">
                   删除
                 </button>
@@ -224,6 +274,46 @@ onMounted(load)
         <p class="hint">保护规则：不能禁用/删除自己的账号；不能移除最后一位管理员。</p>
       </section>
     </template>
+
+    <!-- ==================== 用户功能权限弹窗 ==================== -->
+    <div v-if="permUser" class="modal-mask" @click.self="permUser = null">
+      <div class="modal">
+        <h3>功能权限 — {{ permUser.username }}</h3>
+        <p class="hint">{{ permUser.email }}</p>
+
+        <div class="switch-row">
+          <div>
+            <div class="switch-title">跟随站点默认</div>
+            <div class="switch-desc">与「站点设置 → 普通登录用户」的功能清单保持一致；关闭后为该用户精确指定</div>
+          </div>
+          <label class="switch">
+            <input v-model="permDraft.followDefault" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div v-if="!permDraft.followDefault" class="perm-list">
+          <label v-for="key in featureKeys" :key="key" class="perm-item">
+            <input
+              type="checkbox"
+              :checked="permDraft.features.includes(key)"
+              @change="togglePermFeature(key)"
+            />
+            {{ featureLabels[key] || key }} <code class="key">{{ key }}</code>
+          </label>
+          <p v-if="permDraft.features.length === 0" class="hint warn">
+            未勾选任何功能——该用户将无法使用任何功能（管理员不受影响）
+          </p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" @click="permUser = null">取消</button>
+          <button class="btn primary" :disabled="savingPerm" @click="savePerm">
+            {{ savingPerm ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -419,5 +509,79 @@ h1 {
 
 .loading {
   color: #999;
+}
+
+.btn.small {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8125rem;
+}
+
+.perm-btn {
+  background: #eef2ff;
+  color: #4f46e5;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: min(480px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.modal h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+}
+
+.perm-list {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.perm-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.perm-item input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.hint.warn {
+  color: #dc2626;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+}
+
+.modal-actions .btn.primary {
+  margin-top: 0;
 }
 </style>

@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 
 from app.auth.jwt_auth import User, get_current_user
-from app.features import FEATURE_REGISTRY, is_feature_allowed, tier_for
+from app.features import FEATURE_REGISTRY, is_feature_allowed_for_user, tier_for
 from app import site_settings
 
 _TIER_CN = {"anonymous": "未登录访客", "user": "普通用户", "admin": "管理员"}
@@ -22,7 +22,7 @@ def require_feature(feature: str):
 
     async def _dep(user: Optional[User] = Depends(get_current_user)) -> None:
         tier = tier_for(user)
-        if not is_feature_allowed(site_settings.get_settings(), tier, feature):
+        if not is_feature_allowed_for_user(site_settings.get_settings(), user, feature):
             label = FEATURE_REGISTRY[feature]["label"]
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

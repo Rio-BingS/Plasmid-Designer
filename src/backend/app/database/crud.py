@@ -55,8 +55,8 @@ def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[UserDB]:
 
 
 def update_user(db: Session, user_id: str, **fields) -> Optional[UserDB]:
-    """更新用户指定字段（仅允许角色/状态/验证标记）"""
-    allowed = {"is_admin", "is_active", "email_verified"}
+    """更新用户指定字段（仅允许角色/状态/验证标记/个人功能权限）"""
+    allowed = {"is_admin", "is_active", "email_verified", "allowed_features"}
     user = get_user_by_id(db, user_id)
     if user is None:
         return None

@@ -53,6 +53,9 @@ class UserDB(Base):
     is_admin = Column(Boolean, default=False)
     # 注册邮箱验证状态；历史用户经 init_db 迁移回填为 True，不会被新开关锁死
     email_verified = Column(Boolean, default=False)
+    # 个人功能权限覆盖（JSON 数组字符串，键见 features.FEATURE_REGISTRY）；
+    # NULL = 跟随「普通用户」层级默认，设值后精确覆盖该用户可用功能
+    allowed_features = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # 关联
@@ -268,22 +271,27 @@ def init_db():
 
 
 def _migrate_users_table():
-    """users 表轻量迁移：create_all 只建新表不改旧表，email_verified 列
-    是后加的，需手工 ALTER 补列；历史用户回填为已验证（邮箱验证开关打开时
-    才会校验该字段，回填保证存量账号不被新开关锁死）"""
+    """users 表轻量迁移：create_all 只建新表不改旧表，后加的列需手工 ALTER 补齐。
+    - email_verified：历史用户回填为已验证（邮箱验证开关打开时才会校验该字段，
+      回填保证存量账号不被新开关锁死）
+    - allowed_features：个人功能权限覆盖，NULL 即跟随层级默认，无需回填
+    """
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
     if "users" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("users")}
-    if "email_verified" in cols:
-        return
     with engine.begin() as conn:
-        conn.execute(text(
-            "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE"))
-        conn.execute(text("UPDATE users SET email_verified = TRUE"))
-    print("✅ users 表已迁移：新增 email_verified 列（存量用户回填为已验证）")
+        if "email_verified" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE"))
+            conn.execute(text("UPDATE users SET email_verified = TRUE"))
+            print("✅ users 表已迁移：新增 email_verified 列（存量用户回填为已验证）")
+        if "allowed_features" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN allowed_features TEXT NULL"))
+            print("✅ users 表已迁移：新增 allowed_features 列（个人功能权限覆盖）")
 
 
 def drop_db():

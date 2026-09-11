@@ -46,7 +46,10 @@ describe('auth store 功能门控', () => {
 
   it('匿名用户按 anonymous_features 过滤', async () => {
     vi.mocked(api.getSiteConfig).mockResolvedValue(
-      siteConfig({ features: { anonymous: ['vectors'], user: fullFeatures } })
+      siteConfig({
+        features: { anonymous: ['vectors'], user: fullFeatures },
+        effective_features: ['vectors']
+      })
     )
     const store = useAuthStore()
     await store.refreshSiteConfig()
@@ -55,9 +58,13 @@ describe('auth store 功能门控', () => {
     expect(store.featureAllowed('sequencing')).toBe(false)
   })
 
-  it('登录用户按 user_features 过滤', async () => {
+  it('登录用户按后端下发的 effective_features 过滤（含个人权限覆盖）', async () => {
     vi.mocked(api.getSiteConfig).mockResolvedValue(
-      siteConfig({ features: { anonymous: [], user: ['design', 'vectors'] } })
+      siteConfig({
+        tier: 'user',
+        features: { anonymous: [], user: ['design', 'vectors'] },
+        effective_features: ['design', 'vectors']
+      })
     )
     const store = useAuthStore()
     store.user = { username: 'u', is_admin: false }
@@ -69,7 +76,7 @@ describe('auth store 功能门控', () => {
 
   it('管理员不受功能开关限制', async () => {
     vi.mocked(api.getSiteConfig).mockResolvedValue(
-      siteConfig({ features: { anonymous: [], user: [] } })
+      siteConfig({ tier: 'admin', features: { anonymous: [], user: [] }, effective_features: [] })
     )
     const store = useAuthStore()
     store.user = { username: 'boss', is_admin: true }
@@ -104,7 +111,10 @@ describe('NavBar 按功能开关过滤导航', () => {
 
   it('匿名用户只看到开放的功能入口', async () => {
     const wrapper = await mountNav(
-      siteConfig({ features: { anonymous: ['vectors', 'design'], user: fullFeatures } })
+      siteConfig({
+        features: { anonymous: ['vectors', 'design'], user: fullFeatures },
+        effective_features: ['vectors', 'design']
+      })
     )
     const links = wrapper.findAll('.nav-link').map((l) => l.text())
     expect(links).toContain('设计')

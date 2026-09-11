@@ -17,7 +17,7 @@ from app.config import settings
 from app.database import (
     get_db, get_users, get_user_by_id, update_user, delete_user, count_admins,
 )
-from app.features import FEATURE_REGISTRY
+from app.features import FEATURE_REGISTRY, valid_features
 from app import site_settings
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(get_admin_user)])
@@ -47,6 +47,8 @@ class AdminUserUpdate(BaseModel):
     is_admin: Optional[bool] = None
     is_active: Optional[bool] = None
     email_verified: Optional[bool] = None
+    # None=不改；空数组=清除覆盖（跟随层级默认）；非空=精确覆盖
+    allowed_features: Optional[List[str]] = None
 
 
 class AdminUserInfo(BaseModel):
@@ -56,6 +58,7 @@ class AdminUserInfo(BaseModel):
     is_admin: bool
     is_active: bool
     email_verified: bool
+    allowed_features: Optional[List[str]] = None
     created_at: Optional[datetime] = None
 
 
@@ -94,10 +97,18 @@ async def write_settings(patch: AdminSettingsUpdate):
 # ==================== 用户管理 ====================
 
 def _to_info(u) -> AdminUserInfo:
+    import json as _json
+
+    raw = getattr(u, "allowed_features", None)
+    try:
+        override = _json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        override = None
     return AdminUserInfo(
         id=u.id, email=u.email, username=u.username,
         is_admin=u.is_admin, is_active=u.is_active,
         email_verified=bool(getattr(u, "email_verified", True)),
+        allowed_features=override,
         created_at=u.created_at,
     )
 
@@ -123,6 +134,12 @@ async def modify_user(user_id: str, patch: AdminUserUpdate,
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能移除最后一位管理员")
 
     fields = patch.model_dump(exclude_none=True)
+    if "allowed_features" in fields:
+        # 个人功能权限：清洗未知键；空数组存 NULL 表示清除覆盖（跟随层级默认）
+        import json as _json
+
+        cleaned = valid_features(fields["allowed_features"])
+        fields["allowed_features"] = _json.dumps(cleaned) if cleaned else None
     updated = update_user(db, user_id, **fields)
     return _to_info(updated)
 

@@ -15,10 +15,11 @@ export const useAuthStore = defineStore('auth', () => {
   const isAdmin = computed(() => user.value?.is_admin === true)
   const username = computed(() => user.value?.username || '')
 
-  // 当前层级可见的功能（按层级自行计算，管理员全量）；管理员用 user 清单做 UI 展示
+  // 当前用户可见的功能：后端 site-config 的 effective_features 已按
+  // 「管理员全量 → 个人权限覆盖 → 层级默认」解析好，直接采用
   const effectiveFeatures = computed(() => {
     if (!siteConfig.value) return null
-    return siteConfig.value.features.user
+    return siteConfig.value.effective_features
   })
 
   const registrationOpen = computed(() => siteConfig.value?.registration_open ?? true)
@@ -27,9 +28,7 @@ export const useAuthStore = defineStore('auth', () => {
   function featureAllowed(key: string): boolean {
     if (!siteConfig.value) return true
     if (isAdmin.value) return true
-    const tier = isAuthenticated.value ? 'user' : 'anonymous'
-    const list = tier === 'user' ? siteConfig.value.features.user : siteConfig.value.features.anonymous
-    return (list ?? []).includes(key)
+    return (effectiveFeatures.value ?? []).includes(key)
   }
 
   async function refreshSiteConfig(): Promise<void> {
