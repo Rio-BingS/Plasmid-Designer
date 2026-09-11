@@ -73,6 +73,18 @@ def test_trim_by_quality():
     assert s == 10 and e == 70
 
 
+def test_trim_by_quality_sporadic_good_base_in_bad_ends():
+    """坏末端里夹着零星高 Q 碱基：逐碱基法剪不动，Mott 累积法应整段剪掉"""
+    bases = "ACGT" * 15
+    quality = ([3, 3, 45, 4, 4, 4, 5]       # 坏首端，夹一个 Q45
+               + [40] * 40                   # 干净中段
+               + [4, 50, 4, 4, 3])           # 坏尾端，夹一个 Q50
+    s, e = _trim_by_quality(bases, quality, 20)
+    # 中段 40 个干净碱基整体保留；首端 Q45 零星碱基（其后紧跟 -16 分）不把保留区拖到前端
+    assert (s, e) == (7, 49)
+    assert quality[s] >= 20 and quality[e - 1] >= 20
+
+
 def test_merge_coverage():
     merged = merge_coverage([(1, 100), (90, 200), (300, 350)], 1000)
     assert merged == [(1, 200), (300, 350)]
@@ -102,6 +114,73 @@ def test_analyze_detects_mutation_with_annotation(reference):
     assert v["aa_change"]  # 氨基酸变化已注释
     # 修剪生效：NNNN 不产生假突变
     assert all(v2["ref_pos"] < 1000 for v2 in result["variants"])
+
+
+def test_analyze_end_noise_not_confirmed(reference):
+    """read 首尾 20bp 内的单 read 差异是信号爬升/下降区噪声：
+    判低置信、不写入共识、不影响 CDS 结论；中段同 Q 差异照常确证"""
+    seg = list(reference[100:600])
+    end_noise = "A" if seg[9] != "A" else "G"      # read_pos 10 → ref_pos 110
+    mid_real = "A" if seg[249] != "A" else "G"     # read_pos 250 → ref_pos 350
+    seg[9], seg[249] = end_noise, mid_real
+    blob = make_ab1("".join(seg), [40] * 500)
+    features = [{"name": "GFP", "type": "CDS", "start": 101, "end": 700, "strand": "+"}]
+    result = analyze([("end.ab1", blob)], reference, features)
+
+    by_pos = {v["ref_pos"]: v for v in result["variants"]}
+    noise, real = by_pos[110], by_pos[350]
+    assert noise["confidence"] == "low"
+    assert real["confidence"] != "low"
+    # 噪声不进共识：consensus 该位仍是参考碱基
+    assert result["consensus"]["sequence"][109] == reference[109].upper()
+    assert result["consensus"]["sequence"][349] == mid_real
+    # CDS 判定只计入确证变体：verdict 提到中段差异而非首端噪声
+    gfp = next(cr for cr in result["cds_reports"] if cr["name"] == "GFP")
+    assert "110" not in gfp["verdict"]
+
+
+def test_reverse_read_variant_read_pos_in_original_coords(reference):
+    """反向 read 的 read_pos 必须镜像回原始电泳顺序：Q 值/峰证据按真实位点取样，
+    而不是拿到镜像位置（往往是另一端的坏区）——真实突变不被误判低置信"""
+    seg = list(reference[700:1300])
+    seg[50] = "A" if seg[50] != "A" else "G"   # ref_pos 751；revcomp 后位于 read 尾部附近
+    rc = revcomp("".join(seg))                  # 原始 read（电泳顺序）：突变靠近 read 末端
+    q = [40] * len(rc)
+    q[3] = 5                                    # read 首端的坏碱基（与突变无关）
+    result = analyze([("rev.ab1", make_ab1(rc, q))], reference, [])
+    v = result["variants"][0]
+    assert v["ref_pos"] == 751
+    assert v["read_q"] == 40                   # 取突变真实位点的 Q，而非镜像位（Q5）
+    assert v["confidence"] != "low"
+
+
+def test_ab1_channel_autodetect_nonstandard_tag_and_order(reference):
+    """真实仪器染料组各异：通道不在 DATA9-12 / 顺序非 A-T-G-C 时必须自动检测。
+
+    映射错了，突变峰被记到错误通道（mutant_pct 假性 0/50%），真实突变被
+    误判低置信（线上实例：正向 read C→A，Q31，tracy 印证，仍判 low）。
+    """
+    seg = list(reference[500:1000])
+    seg[100] = "A" if seg[100] != "A" else "G"  # ref_pos 601
+    mutated = "".join(seg)
+    q = [40] * len(mutated)
+    # 通道存 DATA1-4，顺序 T/A/G/C（即 DATA2 是 A 通道）
+    blob = make_ab1(mutated, q, channel_start=1, channel_order="TAGC")
+    r = extract_read(blob)
+    expected_a0 = 100 if mutated[0] == "A" else 4
+    assert r["trace"]["A"][0] == expected_a0
+    result = analyze([("f.ab1", blob)], reference, [])
+    v = next(x for x in result["variants"] if x["ref_pos"] == 601)
+    assert v["confidence"] != "low"
+    ev = v.get("peak_evidence") or {}
+    assert ev.get("mutant_pct", 0) >= 80
+
+
+def test_ab1_channel_default_mapping_still_works(reference):
+    """标准 DATA9-12/ATGC 文件不受自动检测影响"""
+    blob = make_ab1(reference[200:700], [40] * 500)
+    r = extract_read(blob)
+    assert r["trace"]["A"][:5] == [100 if reference[200 + i] == "A" else 4 for i in range(5)]
 
 
 def test_analyze_multi_read_consensus(reference):

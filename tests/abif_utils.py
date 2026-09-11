@@ -8,21 +8,25 @@ PCON2 质量值按 type 2 char 存储；DATA9-12 四通道 trace）。用于单�
 import struct
 
 
-def make_ab1(bases, quals, traces=None):
+def make_ab1(bases, quals, traces=None, channel_start=9, channel_order="ATGC"):
     """bases: 碱基字符串; quals: phred 质量列表; traces: 4 个通道强度列表
 
     默认 trace 模拟真实通道：碱基对应主通道 100、其余通道 4（本底）。
     等强度通道会让峰级证据把每个位点都判成 50/50 混合，失真。
+
+    channel_start/channel_order：四通道写入 DATA{n}..{n+3} 的起始编号与
+    通道→碱基顺序。默认 9/'ATGC'（最常见惯例）；真实仪器染料组各异，
+    用于测试通道自动检测。
     """
     if traces is None:
-        traces = [[100 if b == ch else 4 for b in bases] for ch in "ATGC"]
+        traces = [[100 if b == ch else 4 for b in bases] for ch in channel_order]
     entries = [
         (b"PBAS", 2, 2, 1, len(bases), bases.encode()),
         (b"PCON", 2, 2, 1, len(quals), bytes(quals)),
         (b"PLOC", 2, 5, 4, len(bases), struct.pack(f">{len(bases)}I", *range(1, len(bases) + 1))),
     ]
     for i, tr in enumerate(traces):
-        entries.append((b"DATA", 9 + i, 5, 4, len(tr), struct.pack(f">{len(tr)}i", *tr)))
+        entries.append((b"DATA", channel_start + i, 5, 4, len(tr), struct.pack(f">{len(tr)}i", *tr)))
 
     dir_size = 28 * len(entries)
     cur = 128 + dir_size

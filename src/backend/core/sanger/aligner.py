@@ -121,6 +121,14 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
                     "length": 1,
                 })
 
+    # 反向 read 的 query 是 revcomp：变体 read_pos 同步镜像回原始电泳顺序，
+    # 与 quality/trace/peak_indices（原始顺序）保持同一坐标系，
+    # 否则 Q 值与峰级证据会取到镜像位置的错误数据
+    if direction == "-":
+        n = len(read_up)
+        for v in variants:
+            v["read_pos"] = max(1, n - v["read_pos"] + 1)
+
     identity = matches / compared if compared else 0.0
     ref_start = int(coords[0][0]) + 1
     ref_end = int(coords[0][-1])

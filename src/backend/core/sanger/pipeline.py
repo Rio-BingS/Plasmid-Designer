@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from typing import Dict, List, Optional, Tuple
 
-from core.sanger.abif_reader import extract_read, AbiParseError
+from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import align_read, merge_coverage
 from core.sanger.annotator import annotate_variants, summarize_severity
 
@@ -22,6 +22,7 @@ TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
 MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
 MIN_WINDOW = 50          # 修剪后最短保留长度
+END_MARGIN = 20          # read 首尾不可靠区宽度（信号爬升/下降段）
 
 
 def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float]:
@@ -121,7 +122,8 @@ def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
 
 
 def _variant_confidence(v: Dict, mixed_positions: set,
-                        evidence: Optional[Dict] = None) -> str:
+                        evidence: Optional[Dict] = None,
+                        read_len: Optional[int] = None) -> str:
     """变异置信度分级（Mutation Surveyor 评分要素：峰强比 + 信噪比 + Q 值 + 多 read 支持）
 
     - 混合峰信号（次级峰占比 >30%，或峰级突变占比落在 30-70%）→ 低：疑似混合/杂合
@@ -129,7 +131,14 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     - 突变峰占比 ≥80% 且信号强，Q≥40（或多 read 支持 Q≥30）→ 高
     - 无峰证据（indel / trace 缺失）时退回 Q + 支持数口径；indel 假阳性率远高于
       替换（同聚物滑移、错配区比对补偿），单 read 低质量 indel 的门槛为 Q30
+    - read 首尾 END_MARGIN bp 是信号爬升/下降区，basecaller 错误率天然偏高
+      （与修剪阈值无关），落在该区的单 read 差异直接判低，多 read 支持才升级
     """
+    support = v.get("support_reads") or 1
+    rp = v.get("read_pos")
+    if (read_len and rp and support < 2
+            and (rp <= END_MARGIN or rp > read_len - END_MARGIN)):
+        return "low"
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
         # 插入位点的峰级证据更具体：插入峰接近邻峰（≥0.6）时，GC 压缩区的
@@ -137,7 +146,6 @@ def _variant_confidence(v: Dict, mixed_positions: set,
         if ins_ratio is None or ins_ratio < 0.6:
             return "low"
     q = v.get("read_q") or 0
-    support = v.get("support_reads") or 1
     if evidence is not None:
         if ins_ratio is not None:
             # 插入峰强度比：峰接近邻峰（≥0.6）说明峰真实存在——Q 值在峰压缩区
@@ -184,33 +192,22 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
 
 
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
-    """返回保留区间 [start, end)（0-based）：去除两端质量低于阈值的碱基"""
-    n = len(bases)
-    s, e = 0, n
-    while s < e and quality[s] < min_q:
-        s += 1
-    while e > s and quality[e - 1] < min_q:
-        e -= 1
-    return (s, e)
+    """返回保留区间 [start, end)（0-based）：Mott/Phred 式累积分数修剪
 
-
-def _peak_window(peak_indices: List[int], i: int, n: int,
-                 default_half: int = 6) -> Tuple[int, int]:
-    """第 i 个碱基峰在 trace 数据中的取样窗口 [lo, hi)
-
-    PLOC 峰坐标是 trace 数据点坐标（每碱基占多个采样点，非碱基索引）。
-    半宽取相邻峰间距的一半（覆盖本峰面积、不跨入邻峰）；间距为 1
-    （每碱基单采样点，常见于合成数据）时退化为单点窗口。
+    逐碱基「剥掉 Q<阈值」碰到一个高质量碱基就会提前停手——真实 ab1 的
+    首末端是低质量区里夹杂零星好碱基，逐碱基法几乎剪不动。这里改为
+    Mott 算法：每碱基计分 q-threshold，取累积和最大的子区间（Kadane），
+    整段坏末端（即使夹着好碱基）会被整体剪掉。
     """
-    pk = peak_indices[i]
-    gaps = []
-    if i > 0:
-        gaps.append(max(1, pk - peak_indices[i - 1]))
-    if i + 1 < len(peak_indices):
-        gaps.append(max(1, peak_indices[i + 1] - pk))
-    half = min(default_half, min(gaps) // 2) if gaps else default_half
-    lo, hi = max(0, pk - half), min(n, pk + half + 1)
-    return lo, max(lo + 1, hi)
+    best_sum, cur_sum, best_start, cur_start, best_end = 0, 0, 0, 0, 0
+    for i, q in enumerate(quality):
+        if cur_sum <= 0:
+            cur_start = i
+            cur_sum = 0
+        cur_sum += q - min_q
+        if cur_sum > best_sum:
+            best_sum, best_start, best_end = cur_sum, cur_start, i + 1
+    return (best_start, best_end)
 
 
 def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
@@ -923,14 +920,23 @@ def analyze(
         src = by_read.get(v.get("read", ""))
         evidence = None
         if src is not None:
+            # 反向 read 的 alt/ref 碱基是参考链方向，trace 通道记录的却是原始
+            # 电泳链（互补链）信号：峰证据取样前必须按链向互补换算
+            if src["alignment"].get("direction") == "-":
+                comp = str.maketrans("ACGTN", "TGCAN")
+                ev_ref = (v.get("ref_base", "") or "").translate(comp)
+                ev_alt = (v.get("alt_base", "") or "").translate(comp)[::-1]
+            else:
+                ev_ref, ev_alt = v.get("ref_base", ""), v.get("alt_base", "")
             evidence = _variant_peak_evidence(
                 src["trace"], src["trimmed_peaks"], v.get("read_pos"),
-                v.get("ref_base", ""), v.get("alt_base", ""), v.get("type", "substitution"),
+                ev_ref, ev_alt, v.get("type", "substitution"),
             )
             if evidence is not None:
                 v["peak_evidence"] = evidence
         v["confidence"] = _variant_confidence(
-            v, mixed_by_read.get(v.get("read", ""), set()), evidence
+            v, mixed_by_read.get(v.get("read", ""), set()), evidence,
+            read_len=src["trimmed_length"] if src is not None else None,
         )
 
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
