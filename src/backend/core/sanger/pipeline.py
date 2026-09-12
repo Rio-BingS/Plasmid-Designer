@@ -17,6 +17,10 @@ from typing import Dict, List, Optional, Tuple
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import align_read, merge_coverage
 from core.sanger.annotator import annotate_variants, summarize_severity
+from core.sanger.signal import (
+    baseline_correct, property_maps, estimate_run_length, peak_heights,
+    detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
+)
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
@@ -24,27 +28,38 @@ MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
 MIN_WINDOW = 50          # 修剪后最短保留长度
 END_MARGIN = 20          # read 首尾不可靠区宽度（信号爬升/下降段）
 HOMOPOLYMER_MIN = 20     # poly 结构判定：≥20bp 连续同一碱基视为 poly 结构（如 polyA）
-POLY_COMPRESSION_RATIO = 0.5  # poly 区峰幅 / 全 read 主峰幅中位数 低于此值视为峰压缩
+POLY_OBSERVE_MIN = 8     # 观察级：8-19bp 同聚物入报告（不触发结论告警）
+POLY_MIN_UNITS = 4       # 二/三核苷酸重复：≥4 个重复单元入报告
+POLY_COMPRESSION_RATIO = 0.5  # poly 区峰幅 / 局部主峰幅 低于此值视为峰压缩
 POLY_PEAK_HEIGHT_RATIO = 0.3  # 峰图计数：低于窗口中位峰高 30% 的波动视为噪声
-POLY_PEAK_COUNT_TOL = 0.02   # 峰图计数与调用碱基数容差（相对 poly 长度，至少 ±1）
 
 
-def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float]:
+def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float, int]:
     """Read 质量评级（ClinQC/Mutation Surveyor 类工具的 QC 口径）
 
     A：Q20 比例 ≥90%、修剪后 ≥400bp、无 N
     C：Q20 比例 <70% 或修剪后 <100bp
     B：其余
-    返回 (等级, Q20 比例)
+    返回 (等级, Q20 比例, CRL)；CRL = QV>20 最长连续段（Genewiz 官方定义，
+    常规质粒/PCR 测序以 >500bp 为成功参考）。
     """
     q20 = sum(1 for q in trimmed_q if q >= 20)
     q20_ratio = round(q20 / len(trimmed_q), 3) if trimmed_q else 0.0
     n_count = trimmed.upper().count("N")
     if q20_ratio >= 0.9 and len(trimmed) >= 400 and n_count == 0:
-        return "A", q20_ratio
+        return "A", q20_ratio, continuous_read_length(trimmed_q)
     if q20_ratio < 0.7 or len(trimmed) < 100:
-        return "C", q20_ratio
-    return "B", q20_ratio
+        return "C", q20_ratio, continuous_read_length(trimmed_q)
+    return "B", q20_ratio, continuous_read_length(trimmed_q)
+
+
+def _peak_count_tol(run_len: int) -> int:
+    """峰图计数与调用碱基数的容差（A3：长度相关）
+
+    旧口径 0.02×长度对 30bp 只容 ±1；文献口径 20bp+ 的判读误差可达 ±2。
+    tol = max(1, round(1 + run_len*0.05))：20bp→±2、30bp→±2、107bp→±6。
+    """
+    return max(1, round(1 + run_len * 0.05))
 
 
 def _peak_snr(trace: Dict[str, List[int]], base: str, pk: int,
@@ -223,18 +238,37 @@ def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, i
 
 def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
                             peak_indices: List[int]) -> List[int]:
-    """检测疑似混合/杂合位点：次级通道峰面积占主峰比例过高"""
+    """检测疑似混合/杂合位点：次级通道峰面积占主峰比例过高
+
+    主峰面积低于全 read 主峰面积中位数 25% 的位点跳过：called 碱基本身
+    无信号的退化窗口（合成数据/校正后的零信号区）四通道面积全相等，
+    没有可比的"主峰"，不设门槛会把每个位点都误判成混合。
+    """
     mixed = []
     n = min(len(v) for v in trace.values()) if trace else 0
+    if n == 0:
+        return mixed
+    windows: List[Optional[Dict[str, int]]] = []
     for i, base in enumerate(bases):
         if base not in "ACGT" or i >= len(peak_indices):
+            windows.append(None)
             continue
         pk = peak_indices[i]
         if pk is None or pk < 0 or pk >= n:
+            windows.append(None)
             continue
         lo, hi = _peak_window(peak_indices, i, n)
-        areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
+        windows.append({b: sum(trace[b][lo:hi]) for b in "ACGT"})
+    tops = sorted(max(w.values()) for w in windows if w)
+    pos_tops = [t for t in tops if t > 0]
+    main_floor = 0.25 * pos_tops[len(pos_tops) // 2] if pos_tops else 0.0
+    for i, base in enumerate(bases):
+        areas = windows[i]
+        if areas is None:
+            continue
         sorted_a = sorted(areas.values(), reverse=True)
+        if sorted_a[0] < main_floor:
+            continue
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
             if ratio > MIXED_PEAK_RATIO and areas[base] == sorted_a[0]:
@@ -268,19 +302,87 @@ def _try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
         return None
 
 
-def find_homopolymers(seq: str, min_len: int = HOMOPOLYMER_MIN) -> List[Dict]:
-    """扫描同聚物（poly）结构：≥min_len 连续同一碱基，1-based 闭区间"""
+def find_repeat_runs(seq: str, min_len: int = HOMOPOLYMER_MIN,
+                     observe_min: int = POLY_OBSERVE_MIN,
+                     min_units: int = POLY_MIN_UNITS) -> List[Dict]:
+    """扫描重复结构（B3）：period=1 同聚物 + period=2/3 二/三核苷酸重复
+
+    - period=1：≥min_len 为 poly 结构（tier="poly"），observe_min..min_len-1
+      为"观察级"（tier="observed"，入报告但不触发结论告警——basecaller 的
+      整段偏差风险主要出现在 ≥20bp，短 run 只作观察）；
+    - period=2/3：≥min_units 个完整重复单元入报告；
+    - TRF 类工具会把同一 span 以多个 period 冗余报出（如 AAAAA 也匹配
+      period 2 的 AA）：只保留能解释该 span 的最小 period。
+
+    返回 run 字典：{base(unit 首碱基；period>1 为 None), unit, period,
+    start, end(1-based 闭区间), length(bp), repeat_count(单元数), lus, tier}。
+    lus = 无中断重复数（本扫描只报最大纯 span，故等于 repeat_count；
+    L31：LUS 比总长更能预测 stutter 水平）。
+    """
+    n = len(seq)
+    raw: List[Dict] = []
+    for period in (1, 2, 3):
+        i = 0
+        while i < n:
+            unit = seq[i:i + period]
+            if len(unit) < period or not all(c in "ACGT" for c in unit):
+                i += 1
+                continue
+            j = i + period
+            while j + period <= n and seq[j:j + period] == unit:
+                j += period
+            span = j - i
+            units = span // period
+            appended = False
+            if period == 1:
+                if span >= observe_min:
+                    raw.append({"unit": unit, "period": 1, "start": i, "span": span,
+                                "repeat_count": span})
+                    appended = True
+            elif units >= min_units:
+                raw.append({"unit": unit, "period": period, "start": i, "span": span,
+                            "repeat_count": units})
+                appended = True
+            # 命中 run 后跳到 run 末尾；未命中必须逐位前进（period 2/3 的
+            # run 可从任意相位开始，跨步会漏掉错位起点）
+            i = j if appended else i + 1
+    # 去冗余：span 被更小 period 的 run 完全覆盖（且单元循环一致）时丢弃
+    raw.sort(key=lambda r: (r["period"], r["start"]))
     runs: List[Dict] = []
-    i, n = 0, len(seq)
-    while i < n:
-        j = i
-        while j + 1 < n and seq[j + 1] == seq[i]:
-            j += 1
-        if j - i + 1 >= min_len and seq[i] in "ACGT":
-            runs.append({"base": seq[i], "start": i + 1, "end": j + 1,
-                         "length": j - i + 1})
-        i = j + 1
-    return runs
+    for r in raw:
+        redundant = False
+        for q in runs:
+            if q["period"] < r["period"] and q["start"] <= r["start"] \
+                    and r["start"] + r["span"] <= q["start"] + q["span"]:
+                redundant = True
+                break
+        if not redundant:
+            runs.append(r)
+    out: List[Dict] = []
+    for r in runs:
+        length = r["span"]
+        tier = "poly" if length >= min_len else "observed"
+        out.append({
+            "base": r["unit"][0] if r["period"] == 1 else None,
+            "unit": r["unit"],
+            "period": r["period"],
+            "start": r["start"] + 1,          # 1-based 闭区间（沿用现有约定）
+            "end": r["start"] + length,
+            "length": length,
+            "repeat_count": r["repeat_count"],
+            "lus": r["repeat_count"],
+            "tier": tier,
+        })
+    return out
+
+
+def find_homopolymers(seq: str, min_len: int = HOMOPOLYMER_MIN) -> List[Dict]:
+    """扫描同聚物（poly）结构：≥min_len 连续同一碱基，1-based 闭区间
+
+    find_repeat_runs 的 period=1 视图（含 period/tier/repeat_count/lus 字段）。
+    """
+    return [r for r in find_repeat_runs(seq, min_len=min_len, observe_min=min_len)
+            if r["period"] == 1]
 
 
 def _overlapping_run(runs: List[Dict], pos: int, end: int, base: Optional[str] = None) -> Optional[Dict]:
@@ -293,63 +395,93 @@ def _overlapping_run(runs: List[Dict], pos: int, end: int, base: Optional[str] =
 
 def _annotate_homopolymer(ref: str, variants: List[Dict],
                           runs: List[Dict]) -> None:
-    """为变体标注所在/相邻 poly 结构，并计算参考与测得的重复数目
+    """为变体标注所在/相邻重复结构，并计算参考与测得的重复数目
 
-    - 替换落在 poly 内：标注结构，重复数不变；
-    - 插入：插入的碱基与相邻 poly 同碱基（indel 归一化后 anchor 紧贴结构），
-      测得重复数 = 参考重复数 + 插入长度；
-    - 缺失：删除序列与所在 poly 同碱基，测得重复数 = 参考重复数 - 删除长度；
-    - 跨 poly 的多碱基复杂 indel 不算 poly 变异。
+    - 替换落在 run 内：标注结构，重复数不变；
+    - 插入：插入序列为相邻 run 的整倍单元（B3：poly 的 AAA 也好、(CAG)n
+      的 CAG 也好，统一按"插入单元 = 重复单元"归属），测得重复数 =
+      参考重复数 + 插入单元数；
+    - 缺失：删除序列为所在 run 的整倍单元，测得重复数 =
+      参考重复数 - 删除单元数；
+    - 跨 run 的复杂 indel 不算重复结构变异。
     """
     for v in variants:
         pos = int(v["ref_pos"])
         if v["type"] == "substitution":
             run = _overlapping_run(runs, pos, pos)
             if run:
-                v["homopolymer"] = {**run, "ref_repeat_count": run["length"],
-                                    "observed_repeat_count": run["length"]}
+                v["homopolymer"] = {**run, "ref_repeat_count": run["repeat_count"],
+                                    "observed_repeat_count": run["repeat_count"]}
             continue
         if v["type"] == "insertion":
             alt = (v.get("alt_base") or "").upper()
-            if alt and set(alt) == {alt[0]} and alt[0] in "ACGT":
-                run = _overlapping_run(runs, pos, pos + 1, alt[0])
+            if alt and all(c in "ACGT" for c in alt):
+                run = _unit_run(runs, pos, pos + 1, alt)
                 if run:
-                    v["homopolymer"] = {**run, "ref_repeat_count": run["length"],
-                                        "observed_repeat_count": run["length"] + len(alt)}
+                    k = len(alt) // run["period"]
+                    v["homopolymer"] = {**run, "ref_repeat_count": run["repeat_count"],
+                                        "observed_repeat_count": run["repeat_count"] + k}
             continue
         # deletion
         vlen = int(v.get("length") or 1)
         deleted = ref[pos - 1:pos - 1 + vlen].upper()
-        if deleted and set(deleted) == {deleted[0]} and deleted[0] in "ACGT":
-            run = _overlapping_run(runs, pos, pos + vlen - 1, deleted[0])
+        if deleted and all(c in "ACGT" for c in deleted):
+            run = _unit_run(runs, pos, pos + vlen - 1, deleted)
             if run and run["length"] >= vlen:
-                v["homopolymer"] = {**run, "ref_repeat_count": run["length"],
-                                    "observed_repeat_count": run["length"] - vlen}
+                k = vlen // run["period"]
+                v["homopolymer"] = {**run, "ref_repeat_count": run["repeat_count"],
+                                    "observed_repeat_count": run["repeat_count"] - k}
+
+
+def _unit_run(runs: List[Dict], pos: int, end: int, seq: str) -> Optional[Dict]:
+    """返回与 [pos, end] 相交、且 seq 为其重复单元整倍数的第一个 run（B3）
+
+    整倍判定：len(seq) 是 period 的整倍数且 seq == unit × k。period 小者
+    优先（runs 按 period 升序传入），同 poly 插入优先归同聚物结构。
+    """
+    for r in runs:
+        if r["start"] <= end and r["end"] >= pos:
+            period = r["period"]
+            if len(seq) % period == 0 and seq == r["unit"] * (len(seq) // period):
+                return r
+    return None
 
 
 def _poly_peak_amplitude_ratio(trace: Dict[str, List[int]], peaks: List[int],
-                               read_pos: int, run_len: int) -> Optional[float]:
-    """poly 区峰幅 / 全 read 主峰幅中位数 — 峰压缩程度（重复数计数可靠性）
+                               read_pos: int, run_len: int,
+                               local: bool = False) -> Optional[float]:
+    """poly 区峰幅 / 主峰幅 — 峰压缩程度（重复数计数可靠性）
 
-    同聚物滑移/聚合酶压缩使 poly 区多个碱基挤成矮峰或合并峰，此时
-    basecaller 报出的重复数不可靠。返回 None 表示无法评估（视为可靠）。
+    分子：run 各峰在峰窗内取 max（A1：PLOC 与真实峰顶常差 1-2 采样点，
+    单点采样会系统性读低弱信号区峰高）后取中位数。
+    分母：默认全 read 主峰幅中位数；local=True（B1）改取 run 中间峰附近
+    ±4 个有效峰的滑动中位数 H(run)——信号沿 read 衰减时，全局分母会把
+    read 后段的正常 poly 误判为压缩（前/后段同 poly 的比值有系统性位置
+    差）；有效峰 < 5 个时退回全局口径。
+    返回 None 表示无法评估（视为可靠）。
     """
     n = min(len(v) for v in trace.values()) if trace else 0
     if n == 0 or not peaks or read_pos is None or read_pos < 1:
         return None
-    def _h(p: Optional[int]) -> Optional[int]:
-        if p is None or not (0 <= p < n):
-            return None
-        return max((trace[b][p] for b in "ACGT" if b in trace and p < len(trace[b])), default=0)
-    run_idx = [peaks[i] for i in range(read_pos - 1, min(read_pos - 1 + max(run_len, 1), len(peaks)))]
-    run_h = [h for h in (_h(p) for p in run_idx) if h is not None and h > 0]
-    all_h = [h for h in (_h(p) for p in peaks) if h is not None and h > 0]
-    if not run_h or not all_h:
+    heights = peak_heights(trace, peaks)
+    i0 = read_pos - 1
+    i1 = min(read_pos - 1 + max(run_len, 1), len(heights))
+    if i0 >= len(heights):
         return None
-    med_all = sorted(all_h)[len(all_h) // 2]
-    if med_all <= 0:
+    run_h = [h for h in heights[i0:i1] if h > 0]
+    all_idx = [i for i, h in enumerate(heights) if h > 0]
+    if not run_h or not all_idx:
         return None
-    return round(sorted(run_h)[len(run_h) // 2] / med_all, 2)
+    med_all = sorted(heights[i] for i in all_idx)[len(all_idx) // 2]
+    denom = med_all
+    if local and len(all_idx) >= 5:
+        mid = (i0 + i1 - 1) // 2
+        mi = min(range(len(all_idx)), key=lambda k: abs(all_idx[k] - mid))
+        near = [heights[all_idx[k]] for k in range(max(0, mi - 4), min(len(all_idx), mi + 5))]
+        denom = sorted(near)[len(near) // 2]
+    if denom <= 0:
+        return None
+    return round(sorted(run_h)[len(run_h) // 2] / denom, 2)
 
 
 def _poly_peak_count(trace: Dict[str, List[int]], peaks: List[int],
@@ -937,17 +1069,30 @@ def _build_cds_reports(
     return reports
 
 
+def _signal_maps(r: Dict) -> Optional[Dict]:
+    """read 级 H(x)/W(x) property map（B1；惰性计算并缓存，_sigmaps 不进输出）"""
+    if "_sigmaps" not in r:
+        r["_sigmaps"] = property_maps(r["trace"], r["trimmed_peaks"])
+    return r["_sigmaps"]
+
+
 def analyze(
     ab1_files: List[Tuple[str, bytes]],
     reference: str,
     features: Optional[List[Dict]] = None,
     min_q: int = MIN_TRIM_Q,
     allow_decompose: bool = True,
+    signal_correct: bool = True,
+    poly_local_ratio: bool = True,
 ) -> Dict:
     """全自动分析入口
 
     ab1_files: [(filename, bytes), ...]
     reference: 参考载体序列（环形质粒按线性处理，1-based 坐标）
+    signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
+    显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
+    poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
+    中位数——信号沿 read 衰减时后段正常 poly 会被误判压缩）。
     """
     features = features or []
     ref = reference.upper().replace("U", "T")
@@ -970,6 +1115,11 @@ def analyze(
             errors.append({"filename": filename, "error": "碱基数过少（<50bp）"})
             continue
 
+        # A2 基线校正：峰级定量前扣除各通道加性本底（通道映射不动）；
+        # 显示与定量统一使用校正后信号（关闭开关回退原始信号）
+        if signal_correct:
+            read["trace"] = baseline_correct(read["trace"])
+
         s, e = _trim_by_quality(bases, quality, min_q)
         trimmed = bases[s:e]
         trimmed_q = quality[s:e]
@@ -982,7 +1132,7 @@ def analyze(
             })
             continue
         mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
-        grade, q20_ratio = _read_grade(trimmed, trimmed_q)
+        grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
 
         aln = align_read(trimmed, ref, trimmed_q)
 
@@ -1009,10 +1159,7 @@ def analyze(
                     v["quality"] = cq[cs:ce][qi]
                 cross_variants = _normalize_indel_all(ref, caln["variants"])
 
-        mixed_positions = _detect_mixed_positions(
-            trimmed, read["trace"],
-            [read["peak_indices"][i] for i in range(s, min(e, len(read["peak_indices"])))],
-        )
+        # 混合峰检测移至 poly 结构识别之后（B4：滑移 echo 先于 mixed 判定剔除）
         # 变体 read_pos 基于 trimmed 碱基（1-based）；峰坐标保持 trace 数据点坐标系，
         # 与 PLOC 一致，供混合检测与峰级证据按相邻峰窗口取样
         trimmed_peaks = [
@@ -1027,10 +1174,10 @@ def analyze(
             "mean_q": round(mean_q, 1),
             "grade": grade,
             "q20_ratio": q20_ratio,
+            "crl": crl,
             "trimmed_bases": trimmed,
             "trimmed_quality": trimmed_q,
             "alignment": aln,
-            "mixed_positions": mixed_positions,
             "trace": read["trace"],
             "peak_indices": read["peak_indices"],
             "trimmed_peaks": trimmed_peaks,
@@ -1056,9 +1203,44 @@ def analyze(
     variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
     variants = annotate_variants(variants, features, ref)
 
-    # poly（同聚物）结构：参考序列扫描 + 变体归属与重复数计算
-    poly_runs = find_homopolymers(ref)
+    # poly 重复结构：参考序列扫描（B3：period 1-3 + 观察级）+ 变体归属
+    poly_runs = find_repeat_runs(ref)
     _annotate_homopolymer(ref, variants, poly_runs)
+
+    # 每 read 的信号层分析（B4/B5）：滑移 echo 位置 → 从 mixed 中剔除；
+    # poly 末端下游骤降记录。mixed 判定在此进行（P17 顺序：stutter 先于 merge）
+    poly_runs_p1 = [r for r in poly_runs if r["period"] == 1]
+    for r in read_results:
+        aln = r["alignment"]
+        slip: set = set()
+        dropouts: List[Dict] = []
+        for run in poly_runs_p1:
+            if aln["direction"] == "-":
+                i0 = aln["ref_end"] - run["end"]
+                i1 = i0 + run["length"] - 1
+            else:
+                i0 = run["start"] - aln["ref_start"]
+                i1 = i0 + run["length"] - 1
+            if i1 < 0 or i0 > len(r["trimmed_peaks"]) - 1:
+                continue
+            slip.update(detect_phase_shift(
+                r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                run["base"],
+            ))
+            drop = detect_post_poly_dropout(
+                r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                bases=r["trimmed_bases"], end_margin=2 * END_MARGIN,
+            )
+            if drop:
+                dropouts.append({"base": run["base"], "ref_start": run["start"],
+                                 "ref_end": run["end"], **drop})
+        r["slippage_positions"] = sorted(slip)
+        r["post_poly_dropouts"] = dropouts
+        r["mixed_positions"] = [
+            p for p in _detect_mixed_positions(
+                r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
+            if p not in slip
+        ]
 
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
@@ -1084,25 +1266,34 @@ def analyze(
         # poly 区 indel 的峰压缩评估：决定重复数计数是否可靠（参与置信度分级）
         hp = v.get("homopolymer")
         if hp and v.get("type") in ("insertion", "deletion") and src is not None:
-            run_len_read = hp["ref_repeat_count"]
+            # run 窗长以碱基计：period>1 的重复（如 (CAG)n）按单元数×period 折算
+            period = hp.get("period") or 1
+            run_len_read = hp["ref_repeat_count"] * period
             if v["type"] == "insertion":
                 run_len_read += int(v.get("length") or 1)
             hp["peak_amplitude_ratio"] = _poly_peak_amplitude_ratio(
                 src["trace"], src["trimmed_peaks"], v.get("read_pos"), run_len_read,
+                local=poly_local_ratio,
             )
             hp["count_reliable"] = (
                 hp["peak_amplitude_ratio"] is None
                 or hp["peak_amplitude_ratio"] >= POLY_COMPRESSION_RATIO
             )
-            # 峰图独立计数交叉验证：数出的峰与调用碱基数差超容差 → 计数不可靠
-            _tol = max(1, round(hp["ref_repeat_count"] * POLY_PEAK_COUNT_TOL))
-            _pc = _poly_peak_count(
-                src["trace"], src["trimmed_peaks"], v.get("read_pos"),
-                hp["observed_repeat_count"],
-            )
-            hp["peak_count"] = _pc
-            if _pc is not None and abs(_pc - hp["observed_repeat_count"]) > _tol:
-                hp["count_reliable"] = False
+            if period == 1:
+                # 峰图独立计数交叉验证（仅同聚物）：数出的峰与调用碱基数差超容差
+                # → 计数不可靠；二/三核苷酸重复只做结构标注，不做峰图计数
+                _tol = _peak_count_tol(hp["ref_repeat_count"])
+                _pc = _poly_peak_count(
+                    src["trace"], src["trimmed_peaks"], v.get("read_pos"),
+                    hp["observed_repeat_count"],
+                )
+                hp["peak_count"] = _pc
+                if _pc is not None and abs(_pc - hp["observed_repeat_count"]) > _tol:
+                    hp["count_reliable"] = False
+            else:
+                hp["peak_count"] = None
+        if src is not None and v.get("read_pos") in set(src.get("slippage_positions") or []):
+            v["slippage_artifact"] = True
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             read_len=src["trimmed_length"] if src is not None else None,
@@ -1134,23 +1325,28 @@ def analyze(
     )
     coverage_gaps = _coverage_gaps(coverage_ranges, len(ref))
 
-    # poly 结构清单：仅列出落在测序覆盖范围内的结构，回填测得重复数。
+    # poly 重复结构清单：仅列出落在测序覆盖范围内的结构，回填测得重复数。
     # 除调用碱基外，对每条覆盖该结构的 read 做峰图独立计数并交叉验证：
-    # 正反 read 的滑移位置不同，计数互差或与调用数不符 → 重复数不可靠
+    # 正反 read 的滑移位置不同，计数互差或与调用数不符 → 重复数不可靠。
+    # B2：每条覆盖 read 同时输出宽度法长度估计（峰完全合并时峰数法失效的
+    # 救援）；B3：period>1 重复只做结构标注（重复数以单元计），不做峰图计数
     homopolymer_report: List[Dict] = []
     for run in poly_runs:
         if not any(max(run["start"], s) <= min(run["end"], e) for s, e in coverage_ranges):
             continue
         entry = {
-            "base": run["base"], "start": run["start"], "end": run["end"],
-            "ref_repeat_count": run["length"],
-            "observed_repeat_count": run["length"],
+            "base": run["base"], "unit": run["unit"], "period": run["period"],
+            "tier": run["tier"], "lus": run["lus"],
+            "start": run["start"], "end": run["end"], "length": run["length"],
+            "ref_repeat_count": run["repeat_count"],
+            "observed_repeat_count": run["repeat_count"],
             "count_reliable": True,
             "variant": None,
         }
         for v in variants:
             hp = v.get("homopolymer")
-            if (hp and hp["base"] == run["base"] and hp["start"] == run["start"]
+            if (hp and hp["base"] == run["base"] and hp["unit"] == run["unit"]
+                    and hp["start"] == run["start"]
                     and v["type"] in ("insertion", "deletion")):
                 entry["observed_repeat_count"] = hp["observed_repeat_count"]
                 entry["count_reliable"] = hp.get("count_reliable", True)
@@ -1160,33 +1356,76 @@ def analyze(
                     "confidence": v.get("confidence"),
                 }
                 break
-        tol = max(1, round(run["length"] * POLY_PEAK_COUNT_TOL))
+        tol = _peak_count_tol(run["length"])
         run_reads: List[Dict] = []
-        for r in read_results:
-            aln = r["alignment"]
-            if aln["ref_start"] > run["start"] or aln["ref_end"] < run["end"]:
-                continue
-            if aln["direction"] == "-":
-                rp = aln["ref_end"] - run["end"] + 1
-            else:
-                rp = run["start"] - aln["ref_start"] + 1
-            pc = _poly_peak_count(r["trace"], r["trimmed_peaks"], rp,
-                                  entry["observed_repeat_count"])
-            run_reads.append({
-                "filename": r["filename"], "direction": aln["direction"],
-                "peak_count": pc,
-            })
+        if run["period"] == 1:
+            for r in read_results:
+                aln = r["alignment"]
+                if aln["ref_start"] > run["start"] or aln["ref_end"] < run["end"]:
+                    continue
+                if aln["direction"] == "-":
+                    rp = aln["ref_end"] - run["end"] + 1
+                    i0 = aln["ref_end"] - run["end"]
+                else:
+                    rp = run["start"] - aln["ref_start"] + 1
+                    i0 = run["start"] - aln["ref_start"]
+                i1 = i0 + max(1, entry["observed_repeat_count"]) - 1
+                pc = _poly_peak_count(r["trace"], r["trimmed_peaks"], rp,
+                                      entry["observed_repeat_count"])
+                est = estimate_run_length(
+                    r["trace"], r["trimmed_peaks"],
+                    max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                    maps=_signal_maps(r),
+                )
+                run_reads.append({
+                    "filename": r["filename"], "direction": aln["direction"],
+                    "peak_count": pc,
+                    "length_estimate": est["n"] if est else None,
+                    "length_method": est["method"] if est else None,
+                    "length_ci": ([est["ci_low"], est["ci_high"]] if est else None),
+                })
         entry["read_counts"] = run_reads
         pcs = [x["peak_count"] for x in run_reads if x["peak_count"] is not None]
         entry["peak_count_estimate"] = sorted(pcs)[len(pcs) // 2] if pcs else None
+        ests = [x["length_estimate"] for x in run_reads if x["length_estimate"] is not None]
+        cis = [x["length_ci"] for x in run_reads if x["length_ci"] is not None]
+        methods = [x["length_method"] for x in run_reads if x["length_method"]]
+        entry["length_estimate"] = sorted(ests)[len(ests) // 2] if ests else None
+        entry["length_method"] = max(set(methods), key=methods.count) if methods else None
+        entry["length_ci"] = ([min(c[0] for c in cis), max(c[1] for c in cis)]
+                              if cis else None)
         if pcs:
             if any(abs(pc - entry["observed_repeat_count"]) > tol for pc in pcs):
                 entry["count_reliable"] = False
             if len(pcs) >= 2 and max(pcs) - min(pcs) > tol:
                 entry["count_reliable"] = False
+        elif ests:
+            # 峰数法完全失效（无可用峰计数）时以宽度法交叉验证（B2）
+            if any(abs(est - entry["observed_repeat_count"]) > tol for est in ests):
+                entry["count_reliable"] = False
         homopolymer_report.append(entry)
 
     cds_reports = _build_cds_reports(ref, features, variants, consensus)
+
+    # B5：poly 下游信号骤降注记（end_truncation 属 read 末端正常下降，不算）。
+    # 与"未覆盖"明确区分：覆盖区内的骤降段碱基判读不可信，不是没测到
+    dropout_notes: List[str] = []
+    seen_drop: set = set()
+    for r in read_results:
+        for d in r.get("post_poly_dropouts") or []:
+            if d.get("end_truncation"):
+                continue
+            key = (d["base"], d["ref_start"], d["ref_end"])
+            if key in seen_drop:
+                continue
+            seen_drop.add(key)
+            ratio_txt = f"{round((d['ratio'] or 0) * 100)}%" if d.get("ratio") is not None else "?"
+            rec = "" if d.get("recovered") else "且未见恢复"
+            dropout_notes.append(
+                f"  ↳ poly({d['base']}) 同聚物 {d['ref_start']}-{d['ref_end']} 下游检测到信号骤降"
+                f"（降至约 {ratio_txt}{rec}）：该段碱基判读不可信（区别于未覆盖），"
+                "建议人工核对峰图或换引物复测"
+            )
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
     cds_lines = [
@@ -1200,16 +1439,17 @@ def analyze(
             f"构建序列与设计一致：{len(read_results)} 条 read 全部匹配，"
             f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
         )
-        # poly 重复数峰图计数存疑时不能只报“一致”
+        # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）
         poly_warnings = [
             f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 参考写的是 "
             f"{e['ref_repeat_count']} 个，碱基调用也是 {e['observed_repeat_count']} 个，"
             f"但峰图计数约 {e['peak_count_estimate']} 个——长同聚物区碱基调用存在整段偏差风险，"
             "实际重复数建议以峰图/克隆验证为准"
             for e in homopolymer_report
-            if not e["count_reliable"] and e["peak_count_estimate"] is not None
+            if e["tier"] == "poly" and not e["count_reliable"]
+            and e["peak_count_estimate"] is not None
         ]
-        all_lines = [conclusion] + cds_lines + poly_warnings
+        all_lines = [conclusion] + cds_lines + poly_warnings + dropout_notes
         conclusion = "\n".join(x for x in all_lines if x)
     else:
         lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
@@ -1231,7 +1471,7 @@ def analyze(
             )
         # 峰图计数与调用不一致（即使无 indel 变体）：长同聚物的碱基调用可能整段偏差
         for e in homopolymer_report:
-            if e["count_reliable"] or e["peak_count_estimate"] is None:
+            if e["tier"] != "poly" or e["count_reliable"] or e["peak_count_estimate"] is None:
                 continue
             detail = " / ".join(
                 f"{x['filename']}{'反向' if x['direction'] == '-' else '正向'}"
@@ -1244,6 +1484,7 @@ def analyze(
                 f"但峰图计数约 {e['peak_count_estimate']} 个（{detail}）——"
                 "长同聚物区碱基调用存在整段偏差风险，实际重复数以峰图/克隆验证为准"
             )
+        lines.extend(dropout_notes)
         lines.extend(cds_lines)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""
@@ -1262,7 +1503,8 @@ def analyze(
 
     return {
         "reads": [
-            {k: v for k, v in r.items() if k not in ("trace", "peak_indices", "cross_variants")}
+            {k: v for k, v in r.items()
+             if k not in ("trace", "peak_indices", "cross_variants", "_sigmaps")}
             for r in read_results
         ],
         # 峰图原始数据（与 reads 同序）：四通道 + 碱基 + 质量 + 峰位置

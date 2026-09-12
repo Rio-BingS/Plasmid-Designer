@@ -20,7 +20,7 @@ PyJWT>=2.8.0
 email-validator>=2.1.0
 
 # Sanger 测序分析（比对核心 + ab1 解析主路径 Bio.SeqIO("abi")；
-# 无 Biopython 时回退内置纯标准库解析器）
+# Biopython 导入失败时回退内置解析器）
 biopython>=1.81
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
 snapgene-reader>=0.1.23
@@ -31,5 +31,6 @@ openpyxl>=3.1.0
 pytest>=7.4.0
 httpx>=0.26.0
 
-# 说明：核心设计算法（core/ 设计主线）为纯 Python 标准库实现；
-# Sanger 测序分析（core/sanger/）使用 biopython 做比对。
+# 说明：Sanger 测序分析（core/sanger/）依赖 biopython（比对 + ab1 解析）。
+# "核心算法纯标准库实现"已不再是项目约束（2026-09-12 解除，见
+# docs/poly-final-actionable-list.md 约束 1）；新增依赖照常在本文声明。

@@ -160,6 +160,11 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     tail = []
     if pending:
         tail.append(f"{pending} 处低置信差异疑似测序噪声（详见报告）")
+    # A4：poly 区峰图计数与碱基调用不一致——此前批量 Excel 丢掉这条关键告警
+    hp_bad = [e for e in (res.get("homopolymers") or [])
+              if e.get("tier", "poly") == "poly" and e.get("count_reliable") is False]
+    if hp_bad:
+        tail.append("poly 区峰图计数与碱基调用不一致（重复数存疑，详见报告）")
     if cov < 95:
         tail.append(f"测序覆盖 {cov:.0f}%")
 

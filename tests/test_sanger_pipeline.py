@@ -1,5 +1,6 @@
 """Sanger 测序分析管线测试 — 合成 ab1 全链路"""
 
+import logging
 import os
 import random
 import sys
@@ -10,13 +11,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from abif_utils import make_ab1  # noqa: E402
-from core.sanger.abif_reader import extract_read, parse_abif, AbiParseError  # noqa: E402
+from core.sanger.abif_reader import (  # noqa: E402
+    AbiParseError,
+    _extract_read_internal,
+    extract_read,
+    parse_abif,
+)
 from core.sanger.annotator import annotate_variant, summarize_severity  # noqa: E402
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
+from core.sanger.signal import (  # noqa: E402
+    baseline_correct,
+    continuous_read_length,
+    estimate_run_length,
+    fit_decay,
+    peak_heights,
+    property_maps,
+)
 from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
     _read_grade, _variant_confidence, _coverage_gaps, _variant_peak_evidence,
-    find_homopolymers,
+    _poly_peak_amplitude_ratio, _detect_mixed_positions, _peak_count_tol,
+    _annotate_homopolymer, find_homopolymers, find_repeat_runs,
 )
 
 
@@ -29,9 +44,55 @@ def reference() -> str:
 def test_find_homopolymers():
     runs = find_homopolymers("AAAAACGTTTTTTACGT", 5)
     assert runs == [
-        {"base": "A", "start": 1, "end": 5, "length": 5},
-        {"base": "T", "start": 8, "end": 13, "length": 6},
+        {"base": "A", "unit": "A", "period": 1, "start": 1, "end": 5, "length": 5,
+         "repeat_count": 5, "lus": 5, "tier": "poly"},
+        {"base": "T", "unit": "T", "period": 1, "start": 8, "end": 13, "length": 6,
+         "repeat_count": 6, "lus": 6, "tier": "poly"},
     ]
+
+
+def test_find_repeat_runs_periods_and_tiers():
+    """B3：二/三核苷酸重复 + 8bp 观察级；TRF 式 period 冗余去重"""
+    seq = "ATATATAT" + "CAGCAGCAGCAG" + "A" * 20 + "GCA"
+    runs = find_repeat_runs(seq)
+    by = {(r["period"], r["unit"]): r for r in runs}
+    at = by[(2, "AT")]
+    assert at["start"] == 1 and at["length"] == 8 and at["repeat_count"] == 4
+    cag = by[(3, "CAG")]
+    assert cag["start"] == 9 and cag["repeat_count"] == 4
+    a = by[(1, "A")]
+    assert a["length"] == 20 and a["tier"] == "poly" and a["base"] == "A"
+    # 去重：A 同聚物 span 不再冗余报出 period 2 的 AA
+    assert all(not (r["period"] == 2 and r["unit"] == "AA") for r in runs)
+    assert len(runs) == 3
+
+    # 观察级：8-19bp 同聚物 tier=observed（入报告、不触发结论告警）
+    seq2 = "ACGT" + "A" * 10 + "T" * 20 + "GCA"
+    runs2 = find_repeat_runs(seq2)
+    a10 = next(r for r in runs2 if r["base"] == "A")
+    assert a10["tier"] == "observed" and a10["length"] == 10
+    t20 = next(r for r in runs2 if r["base"] == "T")
+    assert t20["tier"] == "poly" and t20["length"] == 20
+
+
+def test_annotate_repeat_unit_insertion_and_deletion():
+    """B3：插入/删除整倍重复单元归入重复结构——(CAG)n 加一个 CAG 旧逻辑
+    因 set(alt)=={alt[0]} 根本归不到结构上"""
+    ref = "ACGT" + "CAG" * 6 + "TTTT"
+    runs = find_repeat_runs(ref)
+    ins = {"ref_pos": 10, "type": "insertion", "alt_base": "CAG", "length": 3}
+    _annotate_homopolymer(ref, [ins], runs)
+    hp = ins["homopolymer"]
+    assert hp["unit"] == "CAG" and hp["period"] == 3
+    assert hp["ref_repeat_count"] == 6 and hp["observed_repeat_count"] == 7
+    # 归一化最左 anchor（插入点在 run 左缘之前）同样归属
+    ins2 = {"ref_pos": 4, "type": "insertion", "alt_base": "CAG", "length": 3}
+    _annotate_homopolymer(ref, [ins2], runs)
+    assert ins2["homopolymer"]["observed_repeat_count"] == 7
+    # 缺失一个单元（anchor 在 run 左缘，相位与单元一致——与 indel 左归一化一致）
+    del_v = {"ref_pos": 5, "type": "deletion", "length": 3}
+    _annotate_homopolymer(ref, [del_v], runs)
+    assert del_v["homopolymer"]["observed_repeat_count"] == 5
 
 
 def test_poly_indel_compression_caps_confidence():
@@ -62,23 +123,54 @@ def test_homopolymer_poly_count_and_conclusion():
     assert "poly(A)" in result["conclusion"]
 
 
-def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4):
+def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4,
+                   decay=0.0, baseline_slope=0.0, crosstalk=0.0, stutter=None):
     """构造 4 采样/碱基的三角峰 trace：poly 窗口内只放 real_peaks 个 A 峰
 
     模拟长同聚物压缩：basecaller 按窗口碱基数调用，但峰图上只有
     real_peaks 个可分辨峰（窗口 [start, end) 为 read 上的 poly 区间）。
+
+    注入开关（默认关闭，现有用例零改动；A2/B1/B4/B5 的验收依赖，真值已知）：
+    - decay：全通道几何衰减，峰值 ×(1−decay)^(采样位置/总采样点)
+    - baseline_slope：线性基线漂移（每采样点叠加 slope×位置 的本底）
+    - crosstalk：通道串扰（每通道混入相邻通道该比例的信号）
+    - stutter：poly 末端后的滑移 echo 序列（主峰高比例，如 (0.5, 0.2)）
     """
     traces = {ch: [] for ch in channel_order}
     for i, b in enumerate(bases):
         for ch in channel_order:
             if ch == b and not (ch == "A" and poly_span[0] <= i < poly_span[1]):
-                traces[ch].extend([4, 100, 100, 4])
+                traces[ch].extend([100, 100, 4, 4])
             else:
                 traces[ch].extend([4, 4, 4, 4])
     head = [4] * (poly_span[0] * spb)
     body = [100, 100, 4, 4] * real_peaks
     tail = [4] * ((len(bases) - poly_span[1]) * spb)
     traces["A"] = head + body + tail
+    n = len(bases) * spb
+    if stutter:
+        for j, f in enumerate(stutter):
+            s0 = (poly_span[1] + j) * spb
+            if s0 + 1 < n:
+                traces["A"][s0] = int(round(100 * f))
+                traces["A"][s0 + 1] = int(round(100 * f))
+    if decay:
+        for ch in channel_order:
+            traces[ch] = [int(round(v * (1 - decay) ** (s / n)))
+                          for s, v in enumerate(traces[ch])]
+    if baseline_slope:
+        for ch in channel_order:
+            traces[ch] = [v + int(round(baseline_slope * s))
+                          for s, v in enumerate(traces[ch])]
+    if crosstalk:
+        order = list(channel_order)
+        mixed = {ch: [0] * n for ch in order}
+        for idx, ch in enumerate(order):
+            prev_ch = order[(idx - 1) % len(order)]
+            mixed[ch] = [int(round((1 - crosstalk) * traces[ch][s]
+                                   + crosstalk * traces[prev_ch][s]))
+                         for s in range(n)]
+        traces = mixed
     return [traces[ch] for ch in channel_order]
 
 
@@ -95,6 +187,9 @@ def test_poly_peak_count_and_cross_read_validation():
     assert hp["peak_count_estimate"] == 27
     assert hp["count_reliable"] is False
     assert hp["read_counts"][0]["peak_count"] == 27
+    # B2：宽度法交叉值同时输出（峰数法可用时 method=peaks，两者应一致）
+    assert hp["length_estimate"] == 27
+    assert hp["length_method"] == "peaks"
     assert "峰图计数约 27 个" in result["conclusion"]
     assert "碱基调用存在整段偏差风险" in result["conclusion"]
 
@@ -570,12 +665,19 @@ def test_read_grade_levels():
     q40 = [40] * 500
     assert _read_grade("ACGT" * 125, q40)[0] == "A"
     seg = "ACGT" * 30 + "N" * 4           # 含 N：降为 B
-    grade, _ = _read_grade(seg, [40] * len(seg))
+    grade, _, _ = _read_grade(seg, [40] * len(seg))
     assert grade == "B"
     low_q = [18] * 100                     # Q20 比例 0 → C
     assert _read_grade("ACGT" * 25, low_q)[0] == "C"
     assert _read_grade("ACGT" * 5, [40] * 20)[0] == "C"  # 过短
     assert _read_grade("ACGT" * 25, [40] * 80 + [15] * 20)[0] == "B"  # Q20 比例 0.8
+
+
+def test_continuous_read_length():
+    """B5：CRL = QV>20 最长连续段（Genewiz 口径）"""
+    assert continuous_read_length([40, 40, 10, 40, 41, 42, 5, 40]) == 3
+    assert continuous_read_length([19, 20, 21]) == 1   # Q20 本身不算（严格 >20）
+    assert continuous_read_length([]) == 0
 
 
 def test_variant_confidence_levels():
@@ -929,3 +1031,299 @@ def test_tracy_unavailable_degrades_gracefully(reference):
     result = analyze([("f.ab1", make_ab1(seq, [40] * 400))], reference, [])
     assert result["engine"] == "internal+biopython"
     assert result["variants"]
+
+
+def test_fwo1_direct_mapping():
+    """第 0 步：FWO_1 是权威通道映射，Biopython 与内置解析器都直接采用"""
+    bases = "ACGT" * 8
+    blob = make_ab1(bases, [40] * len(bases), channel_order="GATC", fwo="GATC")
+    expected = {b: [100 if c == b else 4 for c in bases] for b in "GATC"}
+    assert extract_read(blob)["trace"] == expected                 # Biopython 主路径
+    assert _extract_read_internal(blob)["trace"] == expected       # 内置解析器兜底路径
+
+
+def test_fwo1_overrides_content_detection(caplog):
+    """第 0 步：FWO_1 与内容检测冲突时以 FWO_1 为准，并记 warning 不静默"""
+    bases = "ACGT" * 8
+    # 通道内容按旧惯例摆放（DATA9=A 主峰），文件却声明 GATC（DATA9=G）→ 冲突
+    blob = make_ab1(bases, [40] * len(bases), channel_order="ATGC", fwo="GATC")
+    with caplog.at_level(logging.WARNING):
+        read = extract_read(blob)
+    # FWO_1 胜出：G ← DATA9（其内容实为 A 主峰），交叉校验告警可见
+    assert read["trace"]["G"] == [100 if c == "A" else 4 for c in bases]
+    assert "FWO_1" in caplog.text and "不一致" in caplog.text
+
+
+def test_fwo1_ignored_without_data9_12():
+    """FWO_1 只描述 DATA9-12；通道不在 9-12 时回落内容检测"""
+    bases = "ACGT" * 8
+    blob = make_ab1(bases, [40] * len(bases), channel_start=1,
+                    channel_order="TAGC", fwo="GATC")
+    read = extract_read(blob)
+    # 检测命中 group(1-4) 的 TAGC 排列：T ← DATA1、A ← DATA2
+    assert read["trace"]["T"] == [100 if c == "T" else 4 for c in bases]
+    assert read["trace"]["A"] == [100 if c == "A" else 4 for c in bases]
+
+
+def test_default_fallback_gatc_convention():
+    """第 0 步：无 FWO_1 且检测不可靠时，兜底为 DATA9-12 → G/A/T/C
+
+    旧兜底 A/T/G/C 与真实文件权威顺序（FWO_1=GATC）交叉错位，本测试锁定修正。
+    碱基全 N 时内容检测无采样位点，必然走兜底。
+    """
+    traces = [[1] * 6, [2] * 6, [3] * 6, [4] * 6]  # DATA9..12 互不相同
+    blob = make_ab1("NNNNNN", [40] * 6, traces=traces)
+    read = extract_read(blob)
+    assert read["trace"]["G"] == [1] * 6  # DATA9
+    assert read["trace"]["A"] == [2] * 6  # DATA10
+    assert read["trace"]["T"] == [3] * 6  # DATA11
+    assert read["trace"]["C"] == [4] * 6  # DATA12
+
+
+# ==================== A1：窗口峰高（抗 PLOC 抖动） ====================
+
+def test_poly_ratio_window_height_resists_ploc_jitter():
+    """A1：峰高在峰窗内取 max——PLOC 系统性偏 1 采样点时，run 内峰全被
+    单点采样读成爬坡值 4，正常 poly 被误判为压缩（4/100）；窗口取峰后为 1.0"""
+    trace = {b: [4] * 64 for b in "ACGT"}
+    peaks = []
+    for k in range(16):
+        trace["A"][4 * k + 1] = 100   # 峰顶在 PLOC+1
+        peaks.append(4 * k)           # PLOC 全部偏在峰顶前 1 个采样点
+    ratio = _poly_peak_amplitude_ratio(trace, peaks, 5, 8)
+    assert ratio == 1.0
+
+
+# ==================== A2：基线校正 ====================
+
+def test_baseline_correction_prevents_mixed_false_positives():
+    """A2：线性基线漂移抬高本底——不校正时 read 后段本底接近峰高，
+    _detect_mixed_positions 大面积误报；校正后本底扣除、零误报"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30, baseline_slope=0.10)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    raw = analyze([("f.ab1", blob)], ref, [], signal_correct=False)
+    assert raw["mixed_detected"] and any(raw["mixed_detected"].values()), \
+        "注入应先复现误报（基线漂移 → 假混合峰）"
+    corrected = analyze([("f.ab1", blob)], ref, [], signal_correct=True)
+    assert corrected["mixed_detected"] == {}
+
+
+def test_baseline_correct_preserves_merged_plateau():
+    """A2 平台护栏：合并峰平台（信号自身就是局部最低值）不得被当本底扣平。
+    本底是四通道共有的加性量，信号是通道特异的——跨通道共模判据兜底"""
+    tr = {ch: [4] * 400 for ch in "ATGC"}
+    tr["A"][100:300] = [100] * 200          # 200 采样点连续 A 平台
+    bc = baseline_correct(tr)
+    assert max(bc["A"][100:300]) >= 90, "平台被扣平"
+    assert max(bc["T"]) == 0 and min(bc["A"][:100]) == 0
+
+
+# ==================== A3：长度相关容差 ====================
+
+def test_peak_count_tolerance_length_scaled():
+    """A3：tol = max(1, round(1+0.05×长度))——旧口径 0.02 对 30bp 只容 ±1，
+    文献口径 20bp+ 误差可达 ±2。已验算：27vs30 差 3 > 2 仍不可靠、
+    0 差可靠、19vs20 差 1 ≤ 2 可靠"""
+    assert _peak_count_tol(1) == 1
+    assert _peak_count_tol(19) == 2
+    assert _peak_count_tol(20) == 2
+    assert _peak_count_tol(30) == 2
+    assert _peak_count_tol(107) == 6
+
+
+# ==================== A4：报告层 ====================
+
+def test_summarize_slippage_wording():
+    """A4：带滑移标记的低置信变异点名“poly 下游疑似滑移伪影”（B4 落地后接入）"""
+    v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v["confidence"] = "low"
+    v["features"] = []
+    v["slippage_artifact"] = True
+    note = summarize_severity([v])[0]
+    assert "滑移伪影" in note and "混合峰" not in note
+    # 无标记的低置信变异维持原口径
+    v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v2["confidence"] = "low"
+    v2["features"] = []
+    assert "疑似测序噪声或混合峰" in summarize_severity([v2])[0]
+
+
+def test_excel_conclusion_flags_poly_count_mismatch():
+    """A4：批量 Excel 一句话结论补回 poly 区峰图计数告警（此前是真丢失）"""
+    from core.sanger.batch import excel_conclusion
+    res = {
+        "reads": [{}], "errors": [], "variants": [],
+        "consensus": {"coverage_percent": 99.0},
+        "cds_reports": [],
+        "homopolymers": [{"tier": "poly", "count_reliable": False}],
+    }
+    out = excel_conclusion("p", res, 1, True)
+    assert "poly 区峰图计数与碱基调用不一致" in out
+    # 观察级 run 不触发该告警
+    res2 = {**res, "homopolymers": [{"tier": "observed", "count_reliable": False}]}
+    assert "poly 区峰图计数" not in excel_conclusion("p", res2, 1, True)
+
+
+# ==================== B1：property map 与局部压缩比 ====================
+
+def test_property_maps_h_and_w():
+    """B1：H(x)/W(x) property map——每峰 (height, width@半高) 滑动中位数插值"""
+    ref = "ACGT" * 10 + "A" * 30 + "TGCACGTT" + "ACGT" * 10
+    traces = _shaped_traces(ref, (40, 70), 30)
+    tr = {ch: traces[i] for i, ch in enumerate("ATGC")}
+    peaks = [i * 4 for i in range(len(ref))]
+    maps = property_maps(tr, peaks)
+    assert maps is not None
+    assert abs(maps["H"][peaks[50]] - 100) < 5      # poly 区峰高包络
+    assert maps["peaks_w"][0] == pytest.approx(2)   # 正常单峰半高宽 2 采样点
+
+
+def test_local_ratio_removes_position_bias():
+    """B1：信号沿 read 衰减时全局分母把后段正常 poly 误判压缩；
+    局部分母 H(run) 下前/后段同 poly 的比值无系统性位置差"""
+    bases = "ACGT" * 5 + "A" * 20 + "CGTACGTA" + "A" * 20 + "ACGT" * 5
+    n = len(bases)
+    ns = n * 4
+    traces = {ch: [] for ch in "ATGC"}
+    for i, b in enumerate(bases):
+        for ch in "ATGC":
+            traces[ch].extend([100 if ch == b else 4] * 4)
+    for ch in "ATGC":
+        traces[ch] = [int(v * (0.05 ** (s / ns))) for s, v in enumerate(traces[ch])]
+    peaks = [i * 4 for i in range(n)]
+    early = _poly_peak_amplitude_ratio(traces, peaks, 21, 20, local=True)
+    late = _poly_peak_amplitude_ratio(traces, peaks, n - 25, 20, local=True)
+    assert 0.8 <= early <= 1.2, early
+    assert 0.8 <= late <= 1.2, late
+    late_global = _poly_peak_amplitude_ratio(traces, peaks, n - 25, 20, local=False)
+    assert late_global < 0.6, late_global   # 全局口径的位置偏差（本改动动机）
+
+
+def test_fit_decay_recovers_rate():
+    """B1：log 空间衰减拟合从注入的几何衰减中恢复 α（Andrade & Manolakos）"""
+    import math
+    bases = "ACGT" * 40
+    traces = {ch: [] for ch in "ATGC"}
+    for i, b in enumerate(bases):
+        for ch in "ATGC":
+            traces[ch].extend([100 if ch == b else 4] * 4)
+    ns = len(bases) * 4
+    decay_frac = 0.05
+    for ch in "ATGC":
+        traces[ch] = [int(v * (decay_frac ** (s / ns))) for s, v in enumerate(traces[ch])]
+    peaks = [i * 4 for i in range(len(bases))]
+    fd = fit_decay(traces, peaks, skip_start=5, skip_end=5)
+    assert fd is not None and fd["n"] > 20
+    expect_alpha = -math.log(decay_frac) / ns   # ln h = β − α·t
+    assert fd["alpha"] == pytest.approx(expect_alpha, rel=0.25)
+
+
+# ==================== B2：宽度法救合并峰 ====================
+
+def test_estimate_run_length_rescues_merged_peaks():
+    """B2：峰完全合并（连续高台）时峰数法失效（count≈0），宽度法给出
+    长度估计 ∈ [28,32]（真值 30）；count_reliable 维持不可靠判定"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道（"ATGC" 第 1 路）连续高台
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["peak_count_estimate"] == 0     # 峰数法失效（现有行为）
+    assert hp["count_reliable"] is False
+    assert 28 <= hp["length_estimate"] <= 32
+    assert hp["length_method"] == "width"
+    assert hp["length_ci"] and hp["length_ci"][0] <= 30 <= hp["length_ci"][1]
+
+
+# ==================== B3：二/三核苷酸重复进报告 ====================
+
+def test_repeat_runs_report_and_observed_tier_end_to_end():
+    """B3：(CAG)6 参考进 homopolymer_report；8-20bp A run 出现在观察级；
+    观察级与单元重复不触发“碱基调用偏差”结论告警"""
+    ref = "ACGT" * 10 + "CAG" * 6 + "ACGT" * 5 + "A" * 12 + "TGCACGTT" + "ACGT" * 20
+    read_bases = ref[20:150]
+    result = analyze([("f.ab1", make_ab1(read_bases, [40] * len(read_bases)))], ref, [])
+    cag = next(h for h in result["homopolymers"] if h["period"] == 3)
+    assert cag["unit"] == "CAG" and cag["ref_repeat_count"] == 6
+    obs = next(h for h in result["homopolymers"]
+               if h["tier"] == "observed" and h["period"] == 1)
+    assert obs["base"] == "A" and 8 <= obs["length"] < 20
+    assert "碱基调用存在整段偏差风险" not in result["conclusion"]
+
+
+# ==================== B4：滑移 echo 先于 mixed 判定 ====================
+
+def test_slippage_echoes_not_flagged_as_mixed():
+    """B4：poly 下游滑移 echo（n−1/n−2 几何衰减次峰）不进 mixed_positions，
+    不再连带降级该区真实变异；P17 顺序要求 stutter 检测先于 merge"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30, stutter=(0.5, 0.4))
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    read = extract_read(blob)
+    unfiltered = _detect_mixed_positions(read_bases, read["trace"], read["peak_indices"])
+    assert 71 in unfiltered and 72 in unfiltered, "注入应先复现误报（echo 峰 → 假混合）"
+    result = analyze([("f.ab1", blob)], ref, [])
+    mixed = result["mixed_detected"].get("f.ab1", [])
+    assert 71 not in mixed and 72 not in mixed
+    assert result["reads"][0]["slippage_positions"] == [71, 72]
+
+
+def test_slippage_ignores_full_height_continuation():
+    """B4 红线：poly 后真实同碱基延续（全高峰）不是 echo——不打滑移标记；
+    等高次级峰（真实混合的形态，非衰减序列）也不误判为滑移"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    assert result["reads"][0]["slippage_positions"] == []
+
+
+# ==================== B5：poly 后骤降 + CRL ====================
+
+def test_post_poly_dropout_reported_and_end_truncation_not_alarmed():
+    """B5：read 中段 poly 下游信号骤降（塌陷后恢复）进结论并区分“未覆盖”；
+    read 末端塌陷记 end_truncation、不触发骤降告警；护栏：骤降只标记不修补"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    for i in range(70, 85):                    # 中段塌陷 15 碱基后恢复
+        for ch_i in range(4):
+            row = traces[ch_i]
+            row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    drops = result["reads"][0]["post_poly_dropouts"]
+    assert drops and drops[0]["base"] == "A"
+    assert drops[0]["end_truncation"] is False and drops[0]["recovered"] is True
+    assert "信号骤降" in result["conclusion"] and "区别于未覆盖" in result["conclusion"]
+
+    # read 末端塌陷：end_truncation，结论不告警
+    traces2 = _shaped_traces(read_bases, (40, 70), 30)
+    for i in range(100, len(read_bases)):      # 距 read 末端 < 2×END_MARGIN
+        for ch_i in range(4):
+            row = traces2[ch_i]
+            row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
+    blob2 = make_ab1(read_bases, [40] * len(read_bases), traces=traces2, samples_per_base=4)
+    result2 = analyze([("f.ab1", blob2)], ref, [])
+    drops2 = result2["reads"][0]["post_poly_dropouts"]
+    assert drops2 and drops2[0]["end_truncation"] is True
+    assert "信号骤降" not in result2["conclusion"]
+
+
+def test_read_crl_in_output():
+    """B5：CRL 进 read QC 输出"""
+    ref = "ACGT" * 30
+    blob = make_ab1(ref[10:130], [40] * 110)
+    result = analyze([("f.ab1", blob)], ref, [])
+    assert result["reads"][0]["crl"] == 110
+    q = [40] * 60 + [3] * 5 + [40] * 45
+    blob2 = make_ab1(ref[10:130], q)
+    result2 = analyze([("f.ab1", blob2)], ref, [])
+    assert result2["reads"][0]["crl"] == 60
+
