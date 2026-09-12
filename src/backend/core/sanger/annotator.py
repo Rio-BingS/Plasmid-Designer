@@ -134,7 +134,12 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
             kind = "插入" if v["type"] == "insertion" else "缺失"
             note = f"位置 {v['ref_pos']} {kind} {v['length']}bp（{loc}）"
         if v.get("confidence") == "low":
-            note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
+            # 低置信文案分两支（A4）：落在 poly 下游滑移 echo 区的变异点名
+            # 最可能的原因（B4 打 slippage_artifact 标记后接入）；其余维持原口径
+            if v.get("slippage_artifact"):
+                note += "，低置信度（poly 下游疑似滑移伪影，建议人工核对峰图）"
+            else:
+                note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
         notes.append(note)
         if v.get("enzyme_sites_lost"):
             notes.append(f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}")
