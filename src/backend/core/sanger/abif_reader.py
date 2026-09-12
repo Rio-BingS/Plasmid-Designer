@@ -1,4 +1,7 @@
-"""ABIF (.ab1) 测序文件解析器 — 纯标准库实现
+"""ABIF (.ab1) 测序文件解析器
+
+主路径 Biopython SeqIO("abi")，内置解析器兜底（Biopython 导入失败时）；
+两者都按 FWO_1 声明确定 trace 通道映射（见 _build_trace）。
 
 ABIF 1.0 格式（Applied Biosystems）：
 - 128 字节文件头：magic 'ABIF', 版本, 目录元素个数, 目录偏移(64-67), 目录大小
@@ -7,13 +10,16 @@ ABIF 1.0 格式（Applied Biosystems）：
 
 提取内容：
 - bases / quality（PBAS2）
-- trace 四通道（DATA 9-12，即原始通道 1-4）
+- trace 四通道（DATA 9-12，即原始通道 1-4；映射优先按 FWO_1 声明）
 - peak 位置（PLOC）
 """
 
 import itertools
+import logging
 import struct
 from typing import Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 MAGIC = b"ABIF"
 
@@ -124,29 +130,27 @@ def _decode(elem_type: int, elem_count: int, payload: bytes):
     return list(struct.unpack(f">{n}{code}", payload[: n * width]))
 
 
-def _detect_trace_mapping(channel_data: Dict[int, List[int]], bases: str,
-                          peak_indices: List[int]) -> Dict[str, List[int]]:
-    """按信号内容自动检测染料通道映射
+def _detect_channel_assignment(channel_data: Dict[int, List[int]], bases: str,
+                               peak_indices: List[int]) -> Tuple[Dict[str, int], float]:
+    """按信号内容检测「碱基 → DATA 通道号」映射，返回 (映射, 符合率)
 
     机器染料组不同，四个染料可能存于不同 DATA 标签且顺序各异（不是所有
-    文件都遵循 DATA9-12 → A/T/G/C 惯例）。映射错了，峰级证据会把突变峰
-    记到错误通道（mutant_pct 假性 0/50%），真实突变被误判低置信。
+    文件都遵循惯例）。映射错了，峰级证据会把突变峰记到错误通道
+    （mutant_pct 假性 0/50%），真实突变被误判低置信。
 
     检测方法：无论映射如何，每个碱基调用峰的「主通道」应与调用碱基一致。
-    在候选通道组 × 24 种染料排列中选符合率最高的组合；低于阈值时回退
-    DATA9-12 → A/T/G/C 惯例。
+    在候选通道组 × 24 种染料排列中选符合率最高的组合；低于阈值时返回
+    (None, score)，由调用方决定兜底。
     """
-    default = {b: [int(v) for v in channel_data.get(n, [])]
-               for b, n in zip("ATGC", (9, 10, 11, 12))}
     if not channel_data or not bases or not peak_indices:
-        return default
+        return None, 0.0
 
     # 采样：均匀取 ≤150 个有效碱基位（速度可控且覆盖全 read）
     usable = [i for i, b in enumerate(bases)
               if b in "ACGT" and i < len(peak_indices)
               and peak_indices[i] is not None and peak_indices[i] >= 0]
     if not usable:
-        return default
+        return None, 0.0
     if len(usable) > 150:
         step = len(usable) / 150
         usable = [usable[int(j * step)] for j in range(150)]
@@ -171,8 +175,79 @@ def _detect_trace_mapping(channel_data: Dict[int, List[int]], bases: str,
                 best_score, best_group, best_perm = score, group, perm
 
     if best_group is None or best_score < _MIN_MAP_SCORE:
+        return None, best_score
+    return dict(zip(best_perm, best_group)), best_score
+
+
+def _fmt_assignment(assignment: Dict[str, int]) -> str:
+    return " ".join(f"{b}←DATA{n}" for b, n in sorted(assignment.items(), key=lambda x: x[1]))
+
+
+def _detect_trace_mapping(channel_data: Dict[int, List[int]], bases: str,
+                          peak_indices: List[int]) -> Dict[str, List[int]]:
+    """按信号内容检测染料通道映射（碱基 → 通道数据），无可靠检测时走兜底
+
+    独立入口：外部探测/基线脚本用它单独取「纯内容检测」结果；
+    extract_read 走 _build_trace（FWO_1 优先 + 本检测作交叉校验）。
+    """
+    assignment, _ = _detect_channel_assignment(channel_data, bases, peak_indices)
+    if assignment is None:
+        return {b: [int(v) for v in channel_data.get(n, [])]
+                for b, n in zip("GATC", (9, 10, 11, 12))}
+    return {b: [int(v) for v in channel_data[n]] for b, n in assignment.items()}
+
+
+def _fwo_assignment(fwo) -> Dict[str, int]:
+    """FWO_1（滤光片轮顺序，4 字符如 b"GATC"）→ {碱基: DATA 通道号}
+
+    FWO_1 是文件自带的权威通道声明：第 k 个字符即 DATA(9+k) 对应的碱基，
+    所有实测文件均为 "GATC"（DATA9=G / 10=A / 11=T / 12=C）。
+    非 4 字符 ACGT 排列（缺失/损坏）时返回 None。
+    """
+    if isinstance(fwo, (bytes, bytearray)):
+        fwo = fwo.decode("ascii", errors="replace")
+    if not isinstance(fwo, str):
+        return None
+    fwo = fwo.strip().upper()
+    if len(fwo) != 4 or sorted(fwo) != ["A", "C", "G", "T"]:
+        return None
+    return dict(zip(fwo, (9, 10, 11, 12)))
+
+
+def _build_trace(channel_data: Dict[int, List[int]], bases: str,
+                 peak_indices: List[int], fwo=None) -> Dict[str, List[int]]:
+    """生成 trace 通道映射：FWO_1 优先，内容检测作交叉校验（第 0 步）
+
+    1. FWO_1 是机器自述的权威映射，直接采用；DATA9-12 任一缺失或长度
+       不一致则视为不适用，落到内容检测。
+    2. 无 FWO_1 时用内容检测；检测不可靠（符合率 < _MIN_MAP_SCORE）时
+       兜底 DATA9-12 → G/A/T/C（旧兜底 A/T/G/C 与权威顺序交叉错位，已修）。
+    3. 检测结果与权威映射不一致时记 warning，不静默。
+    """
+    default = {b: [int(v) for v in channel_data.get(n, [])]
+               for b, n in zip("GATC", (9, 10, 11, 12))}
+    if not channel_data or not bases or not peak_indices:
         return default
-    return {b: [int(v) for v in channel_data[n]] for b, n in zip(best_perm, best_group)}
+
+    fwo_map = _fwo_assignment(fwo)
+    if fwo_map is not None:
+        arrays = [channel_data.get(n) for n in (9, 10, 11, 12)]
+        if all(arrays) and len({len(a) for a in arrays}) == 1:
+            detected, score = _detect_channel_assignment(channel_data, bases, peak_indices)
+            if detected is not None and detected != fwo_map:
+                logger.warning(
+                    "trace 通道映射：FWO_1(%s) 与内容检测(%s, 符合率 %.2f)不一致，以 FWO_1 为准",
+                    _fmt_assignment(fwo_map), _fmt_assignment(detected), score)
+            return {b: [int(v) for v in channel_data[n]] for b, n in fwo_map.items()}
+
+    detected, score = _detect_channel_assignment(channel_data, bases, peak_indices)
+    if detected is not None:
+        if detected != {b: n for b, n in zip("GATC", (9, 10, 11, 12))}:
+            logger.warning(
+                "trace 通道映射：无 FWO_1，内容检测(%s, 符合率 %.2f)偏离 G/A/T/C 惯例",
+                _fmt_assignment(detected), score)
+        return {b: [int(v) for v in channel_data[n]] for b, n in detected.items()}
+    return default
 
 
 def extract_read(data: bytes) -> Dict:
@@ -180,11 +255,11 @@ def extract_read(data: bytes) -> Dict:
 
     主路径：Biopython Bio.SeqIO("abi") —— 官方持续维护的 ABIF 解析接口，
     经大量真实 ab1 文件验证（Bio.Sequencing.Abi 已在 1.73 移除，由 SeqIO abi 接管）。
-    回退路径：内置纯标准库解析器（无 Biopython 环境时）。
+    回退路径：内置解析器（Biopython 导入失败时兜底）。
 
     返回 {bases, quality, trace: {A,T,G,C}, peak_indices, sample_name}
-    trace 通道映射按信号内容自动检测（机器染料组各异，不是所有文件都是
-    DATA9-12 → A/T/G/C），检测不可靠时回退该惯例。
+    trace 通道映射优先读 FWO_1（机器自带声明）；无 FWO_1 时按信号内容
+    检测，检测不可靠时回退 DATA9-12 → G/A/T/C 惯例（见 _build_trace）。
     """
     try:
         return _extract_read_biopython(data)
@@ -210,7 +285,10 @@ def _extract_read_biopython(data: bytes) -> Dict:
     ploc = raw.get("PLOC2", raw.get("PLOC1", [])) or []
     peak_indices = [int(p) - 1 for p in ploc[: len(bases)]]
 
-    trace = _detect_trace_mapping(channel_data, bases, peak_indices)
+    # FWO 记录：4 字节 tag "FWO_"（下划线填充）+ number 1，Biopython key "FWO_1"；
+    # NUL 填充变体（"FWO\x001"）留作个别软件的兜底
+    trace = _build_trace(channel_data, bases, peak_indices,
+                         fwo=raw.get("FWO_1", raw.get("FWO\x001")))
 
     sample_name = raw.get("SPNM1", "") or ""
     if isinstance(sample_name, list):
@@ -260,7 +338,8 @@ def _extract_read_internal(data: bytes) -> Dict:
     ploc = records.get(("PLOC", 2), records.get(("PLOC", 1))) or []
     peak_indices = [int(p) - 1 for p in ploc[: len(bases)]]  # 1-based → 0-based
 
-    trace = _detect_trace_mapping(channel_data, bases, peak_indices)
+    trace = _build_trace(channel_data, bases, peak_indices,
+                         fwo=records.get(("FWO_", 1), records.get(("FWO\x00", 1))))
 
     sample_name = records.get(("SPNM", 1), "") or records.get(("LAbN", 1), "") or ""
     if isinstance(sample_name, list):
