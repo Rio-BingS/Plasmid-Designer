@@ -513,6 +513,7 @@ def _summary(record: Dict) -> Dict:
         "coverage_ranges": record["coverage_ranges"],
         "coverage_gaps": record.get("coverage_gaps", []),
         "cds_reports": record.get("cds_reports", []),
+        "homopolymers": record.get("homopolymers", []),
         "mixed_detected": record.get("mixed_detected", {}),
         "decomposed_alleles": record.get("decomposed_alleles", {}),
         "errors": record["errors"],

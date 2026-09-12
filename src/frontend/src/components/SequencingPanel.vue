@@ -844,6 +844,38 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         </div>
       </div>
 
+      <!-- poly 同聚物结构：识别与重复数判读（≥20bp 连续同一碱基） -->
+      <div class="conclusion-card cds-card" v-if="analysis.homopolymers?.length">
+        <h4 class="section-title">poly 同聚物结构<span class="map-sub">（≥20bp 连续同一碱基；indel 落入时给出参考/测得重复数）</span></h4>
+        <div v-for="h in analysis.homopolymers" :key="h.base + h.start" class="cds-row">
+          <span class="cds-dot" :class="h.count_reliable ? 'pass' : 'mid'"></span>
+          <div class="cds-main">
+            <p class="cds-name">
+              poly({{ h.base }})
+              <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} 个 {{ h.base }}）</span>
+              <span class="cds-cov" :class="h.count_reliable ? 'full' : 'partial'">
+                {{ h.count_reliable ? '重复数计数可靠' : '峰压缩区，计数可能不准，建议核对峰图' }}
+              </span>
+            </p>
+            <p class="cds-verdict">
+              测得 {{ h.observed_repeat_count }} 个
+              <template v-if="h.variant">
+                （位置 {{ h.variant.ref_pos }} {{ h.variant.type === 'insertion' ? '插入' : '缺失' }} {{ h.variant.length }}bp，
+                {{ h.variant.confidence === 'high' ? '高' : h.variant.confidence === 'medium' ? '中' : '低' }}置信）
+              </template>
+              <template v-else>，与参考一致</template>
+              <template v-if="h.peak_count_estimate != null">
+                ；峰图独立计数约 {{ h.peak_count_estimate }} 个
+                <span v-if="h.read_counts?.length" class="poly-read-detail">
+                  （{{ h.read_counts.map(rc =>
+                    `${rc.filename}${rc.direction === '-' ? '反向' : '正向'} ${rc.peak_count ?? '?'}`).join('，') }}）
+                </span>
+              </template>
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
       <div class="map-box" v-if="analysis.reads.length">
         <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span></h4>
@@ -1119,6 +1151,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .cds-dot.pass { background: #2E9E44; }
 .cds-dot.fail { background: #C0392B; }
 .cds-dot.na { background: #BBB; }
+.cds-dot.mid { background: #E6A700; }
 .cds-name { font-weight: 600; margin: 0; }
 .cds-coord { font-weight: 400; color: #888; font-size: 0.78rem; font-family: Consolas, monospace; }
 .cds-cov { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; }

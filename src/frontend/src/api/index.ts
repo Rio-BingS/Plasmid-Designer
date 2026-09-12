@@ -581,6 +581,17 @@ export interface SequencingAnalysis {
   coverage_ranges: [number, number][]
   coverage_gaps?: { start: number; end: number; length: number }[]
   cds_reports?: CdsReport[]
+  homopolymers?: {
+    base: string
+    start: number
+    end: number
+    ref_repeat_count: number
+    observed_repeat_count: number
+    count_reliable: boolean
+    peak_count_estimate?: number | null
+    read_counts?: { filename: string; direction: string; peak_count: number | null }[]
+    variant: { ref_pos: number; type: string; length: number; confidence: string } | null
+  }[]
   mixed_detected: Record<string, number[]>
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
   errors: { filename: string; error: string }[]

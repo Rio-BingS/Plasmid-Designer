@@ -16,6 +16,7 @@ from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E40
 from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
     _read_grade, _variant_confidence, _coverage_gaps, _variant_peak_evidence,
+    find_homopolymers,
 )
 
 
@@ -23,6 +24,91 @@ from core.sanger.pipeline import (  # noqa: E402
 def reference() -> str:
     random.seed(42)
     return "".join(random.choice("ACGT") for _ in range(2000))
+
+
+def test_find_homopolymers():
+    runs = find_homopolymers("AAAAACGTTTTTTACGT", 5)
+    assert runs == [
+        {"base": "A", "start": 1, "end": 5, "length": 5},
+        {"base": "T", "start": 8, "end": 13, "length": 6},
+    ]
+
+
+def test_poly_indel_compression_caps_confidence():
+    """poly 区单 read indel：峰压缩明显时不给高置信（重复数计数不可靠）"""
+    v = {"ref_pos": 10, "type": "deletion", "length": 1, "read_q": 40,
+         "support_reads": 1,
+         "homopolymer": {"base": "A", "peak_amplitude_ratio": 0.3}}
+    assert _variant_confidence(v, set(), None, read_len=800) == "medium"
+    v["homopolymer"]["peak_amplitude_ratio"] = 0.9
+    assert _variant_confidence(v, set(), None, read_len=800) == "high"
+    v["read_q"] = 15
+    assert _variant_confidence(v, set(), None, read_len=800) == "low"
+
+
+def test_homopolymer_poly_count_and_conclusion():
+    """poly 区缺失：识别结构、计算参考/测得重复数、结论给出 poly 判读"""
+    ref = "ACGT" * 20 + "A" * 20 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-100
+    read_bases = ref[20:180]
+    mutated = read_bases[:60] + read_bases[61:]  # 缺 1 个 A
+    blob = make_ab1(mutated, [40] * len(mutated))
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["ref_repeat_count"] == 20
+    assert hp["observed_repeat_count"] == 19
+    assert hp["count_reliable"] and hp["variant"]["type"] == "deletion"
+    v = next(x for x in result["variants"] if x.get("homopolymer"))
+    assert v["homopolymer"]["observed_repeat_count"] == 19
+    assert "poly(A)" in result["conclusion"]
+
+
+def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4):
+    """构造 4 采样/碱基的三角峰 trace：poly 窗口内只放 real_peaks 个 A 峰
+
+    模拟长同聚物压缩：basecaller 按窗口碱基数调用，但峰图上只有
+    real_peaks 个可分辨峰（窗口 [start, end) 为 read 上的 poly 区间）。
+    """
+    traces = {ch: [] for ch in channel_order}
+    for i, b in enumerate(bases):
+        for ch in channel_order:
+            if ch == b and not (ch == "A" and poly_span[0] <= i < poly_span[1]):
+                traces[ch].extend([4, 100, 100, 4])
+            else:
+                traces[ch].extend([4, 4, 4, 4])
+    head = [4] * (poly_span[0] * spb)
+    body = [100, 100, 4, 4] * real_peaks
+    tail = [4] * ((len(bases) - poly_span[1]) * spb)
+    traces["A"] = head + body + tail
+    return [traces[ch] for ch in channel_order]
+
+
+def test_poly_peak_count_and_cross_read_validation():
+    """峰图独立计数 < 调用碱基数：判重复数不可靠并在结论给出峰图计数"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    spb = 4
+    traces = _shaped_traces(read_bases, poly_span=(40, 70), real_peaks=27)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=spb)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["ref_repeat_count"] == 30 and hp["observed_repeat_count"] == 30
+    assert hp["peak_count_estimate"] == 27
+    assert hp["count_reliable"] is False
+    assert hp["read_counts"][0]["peak_count"] == 27
+    assert "峰图计数约 27 个" in result["conclusion"]
+    assert "碱基调用存在整段偏差风险" in result["conclusion"]
+
+
+def test_poly_peak_count_agrees_is_reliable():
+    """峰图计数与调用一致：维持可靠判定（正常 polyA）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    blob = make_ab1(read_bases, [40] * len(read_bases), samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["count_reliable"] is True
+    assert hp["peak_count_estimate"] == 30
+    assert "峰图计数约" not in result["conclusion"]
 
 
 def test_abif_parser_matches_biopython():

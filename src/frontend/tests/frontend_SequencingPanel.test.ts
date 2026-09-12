@@ -132,6 +132,29 @@ describe('SequencingPanel', () => {
     expect(wrapper.text()).toContain('共检出 1 处差异')
   })
 
+  it('renders poly homopolymer structures with repeat counts', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      homopolymers: [
+        { base: 'A', start: 3993, end: 4062, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
+        { base: 'T', start: 500, end: 521, ref_repeat_count: 22, observed_repeat_count: 20, count_reliable: false,
+          variant: { ref_pos: 500, type: 'deletion', length: 2, confidence: 'medium' } },
+      ],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('poly 同聚物结构')
+    expect(text).toContain('poly(A)')
+    expect(text).toContain('3993-4062（参考 70 个 A）')
+    expect(text).toContain('测得 70 个')
+    expect(text).toContain('poly(T)')
+    expect(text).toContain('测得 20 个')
+    expect(text).toContain('位置 500 缺失 2bp')
+    expect(text).toContain('峰压缩区，计数可能不准')
+  })
+
   it('renders alignment view with mismatch and low-Q highlighting', async () => {
     const analysis = {
       ...mockAnalysis,
