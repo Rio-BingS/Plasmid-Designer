@@ -282,7 +282,7 @@ const conclusionParts = computed(() => {
   const low: string[] = []
   let prevFolded = false
   for (const l of lines) {
-    const folded = isLowHead(l) || (isSubNote(l) && prevFolded)
+    const folded: boolean = isLowHead(l) || (isSubNote(l) && prevFolded)
     ;(folded ? low : main).push(l)
     prevFolded = folded
   }
