@@ -880,9 +880,6 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       <!-- 结论总览 -->
       <div class="conclusion-card" :class="{ ok: analysis.variants.length === 0 }">
         <p class="conclusion-text">{{ conclusionParts.main }}</p>
-        <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-          {{ showLowConf ? '▾' : '▸' }} {{ lowConfVariants.length }} 处低置信差异已折叠（疑似测序噪声/混合峰，点击{{ showLowConf ? '收起' : '展开' }}逐条人工核对）
-        </button>
         <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
         <div class="conclusion-meta">
           <span>引擎: {{ analysis.engine }}</span>
@@ -1076,7 +1073,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 
       <!-- 突变表 -->
       <div v-if="analysis.variants.length">
-        <h4 class="section-title">差异明细（点击行查看峰图）<span v-if="lowConfVariants.length && !showLowConf" class="map-sub">（{{ lowConfVariants.length }} 处低置信已折叠，在上方结论区展开）</span></h4>
+        <h4 class="section-title">差异明细（点击行查看峰图）
+          <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
+            {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
+          </button>
+        </h4>
         <table class="seq-table clickable">
           <thead>
             <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>

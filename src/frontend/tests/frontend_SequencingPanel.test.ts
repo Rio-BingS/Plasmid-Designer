@@ -234,8 +234,8 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     let text = wrapper.text()
-    // 默认折叠：差异明细只剩高置信行，低置信以计数条收起
-    expect(text).toContain('1 处低置信差异已折叠')
+    // 默认折叠：差异明细只剩高置信行，开关在差异明细表头
+    expect(text).toContain('1 处低置信已折叠')
     expect(text).toContain('共检出 2 处差异')
     expect(text).not.toContain('位置 380 缺失 1bp')
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(1)
