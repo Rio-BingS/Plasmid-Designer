@@ -272,13 +272,21 @@ const shownVariants = computed(() => {
   const all = analysis.value?.variants ?? []
   return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
 })
-// 结论文本中低置信差异行（后端标注为"低置信度（"/"低置信（"）同样折叠
+// 结论文本按组折叠：低置信行（后端标注"低置信（/低置信度（"）连同紧随的
+// "↳ 破坏/新增酶切位点"子注释行一起收起；poly 判读等独立行不受牵连
 const conclusionParts = computed(() => {
   const lines = (analysis.value?.conclusion ?? '').split('\n')
-  // 匹配逐条标注"低置信（/低置信度（"，不误伤主结论里的"低置信差异…未计入判定"概述句
-  const isLow = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
-  const low = lines.filter(isLow)
-  return { main: lines.filter((l) => !isLow(l)).join('\n'), low }
+  const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
+  const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
+  const main: string[] = []
+  const low: string[] = []
+  let prevFolded = false
+  for (const l of lines) {
+    const folded = isLowHead(l) || (isSubNote(l) && prevFolded)
+    ;(folded ? low : main).push(l)
+    prevFolded = folded
+  }
+  return { main: main.join('\n'), low }
 })
 
 /** CDS 结论卡的覆盖标签 */
@@ -882,6 +890,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       <!-- 结论总览 -->
       <div class="conclusion-card" :class="{ ok: analysis.variants.length === 0 }">
         <p class="conclusion-text">{{ conclusionParts.main }}</p>
+        <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
+          {{ showLowConf ? '▾ 收起低置信' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
+        </button>
         <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
         <div class="conclusion-meta">
           <span>引擎: {{ analysis.engine }}</span>

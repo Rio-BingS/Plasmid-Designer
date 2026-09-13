@@ -224,7 +224,7 @@ describe('SequencingPanel', () => {
   it('collapses low-confidence variants by default with an expand toggle', async () => {
     const analysis = {
       ...mockAnalysis,
-      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n位置 380 缺失 1bp（非编码区），低置信度（疑似测序噪声或混合峰，建议人工核对峰图）',
+      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n  ↳ 新增酶切位点: EcoRI\n【MBYSTC CDS】CDS 已完整覆盖\n位置 380 缺失 1bp（非编码区），低置信度（疑似测序噪声或混合峰，建议人工核对峰图）\n  ↳ 破坏酶切位点: BsaHI',
       variants: [
         { ...mockAnalysis.variants[0], confidence: 'high' },
         { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low' },
@@ -234,17 +234,22 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     let text = wrapper.text()
-    // 默认折叠：差异明细只剩高置信行，开关在差异明细表头
+    // 默认折叠：差异明细只剩高置信行，结论卡开关挂在低置信行组上
     expect(text).toContain('1 处低置信已折叠')
     expect(text).toContain('共检出 2 处差异')
     expect(text).not.toContain('位置 380 缺失 1bp')
+    // 低置信行的子注释行（破坏酶切位点）跟随折叠，高置信行的子注释保留
+    expect(text).not.toContain('破坏酶切位点: BsaHI')
+    expect(text).toContain('新增酶切位点: EcoRI')
+    expect(text).toContain('【MBYSTC CDS】')
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(1)
 
-    // 展开：低置信行与结论文本行都出现
+    // 展开：低置信行、其子注释与差异明细行都出现
     await wrapper.find('.lowconf-toggle').trigger('click')
     text = wrapper.text()
     expect(text).toContain('位置 380 缺失 1bp')
     expect(text).toContain('低置信度（疑似测序噪声或混合峰，建议人工核对峰图）')
+    expect(text).toContain('破坏酶切位点: BsaHI')
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
   })
 
