@@ -152,7 +152,7 @@ describe('SequencingPanel', () => {
     expect(text).toContain('poly(T)')
     expect(text).toContain('测得 20 个 T')
     expect(text).toContain('位置 500 缺失 2bp')
-    expect(text).toContain('峰压缩区，计数可能不准')
+    expect(text).toContain('峰图证据与调用不一致')
   })
 
   it('hides sub-threshold repeats by default and labels dinucleotide repeats correctly', async () => {
@@ -184,7 +184,7 @@ describe('SequencingPanel', () => {
     expect(text).not.toContain('已默认隐藏')
   })
 
-  it('surfaces in-tolerance peak count gap, signal length estimate and partially covering reads', async () => {
+  it('surfaces peak evidence verdict, signal length estimate and partially covering reads', async () => {
     const analysis = {
       ...mockAnalysis,
       reads: [
@@ -193,23 +193,31 @@ describe('SequencingPanel', () => {
       ],
       homopolymers: [{
         base: 'A', start: 3993, end: 4099, length: 107, ref_repeat_count: 107,
-        observed_repeat_count: 107, count_reliable: true, variant: null,
-        peak_count_estimate: 104, length_estimate: 106, length_method: 'width',
+        observed_repeat_count: 107, count_reliable: false, variant: null,
+        peak_count_estimate: 104, evidence_peak_count: 104, evidence_range: [104, 107],
+        length_estimate: 106, length_method: 'width',
         length_ci: [103, 108],
-        read_counts: [{ filename: 'r1.ab1', direction: '+', peak_count: 104 }],
+        read_counts: [
+          { filename: 'r1.ab1', direction: '+', peak_count: 104, coverage: 'full', called_count: 107 },
+          { filename: 'r2.ab1', direction: '-', peak_count: 103, coverage: 'partial', covered_span: [4010, 4099], called_count: 103 },
+        ],
       }],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await wrapper.vm.$nextTick()
 
     const text = wrapper.text()
-    // 计数差 3 在 107bp 的 ±6 容差内（仍判可靠），但差异要明示而不是只报"一致"
+    // 调用 107 与峰图证据矛盾：不再绿灯"计数可靠"，以可分辨峰为准给出判读
     expect(text).toContain('测得 107 个 A')
-    expect(text).toContain('峰图计数比调用少 3 个')
+    expect(text).toContain('峰图证据与调用不一致')
+    expect(text).toContain('以可分辨峰为准约 104 个 A')
+    expect(text).toContain('（区间 104–107，上限为调用数）')
     expect(text).toContain('宽度法约 106 个 A（区间 103–108）')
-    // 反向 read 只覆盖 polyA 右段（4010 起），未完整跨过 → 明示未参与交叉验证
+    // 逐 read 明细：完整覆盖给整段峰数，部分覆盖标注覆盖段与段内调用/峰数
+    expect(text).toContain('r1.ab1正向峰104（调用107）')
+    expect(text).toContain('r2.ab1反向覆盖段4010-4099调用103/峰103')
+    // 部分覆盖 read 的证据边界明示
     expect(text).toContain('r2.ab1（反向）仅覆盖该结构 4010-4099，未完整跨过')
-    expect(text).not.toContain('r1.ab1（正向）仅覆盖')
   })
 
   it('renders alignment view with mismatch and low-Q highlighting', async () => {

@@ -295,19 +295,6 @@ function polyUnitLabel(h: Hp): string {
   return (h.period ?? 1) === 1 ? `个 ${h.base}` : `个 ${h.unit} 单元`
 }
 
-/** 与调用数不一致但仍在后端长度相关容差内的峰图计数（107bp 容差 ±6，
- *  差 3 个不判不可靠）：绿灯不等于峰图证据与调用完全吻合，仍要明示差异 */
-function polyCountDiff(h: Hp): number | null {
-  if (h.peak_count_estimate == null || h.count_reliable === false) return null
-  const diff = h.peak_count_estimate - h.observed_repeat_count
-  return diff !== 0 ? diff : null
-}
-function polyDiffNote(h: Hp): string | null {
-  const diff = polyCountDiff(h)
-  if (diff === null) return null
-  return `峰图计数比调用${diff > 0 ? '多' : '少'} ${Math.abs(diff)} 个——长同聚物精确重复数建议以峰图/克隆验证为准`
-}
-
 const LENGTH_METHOD_LABELS: Record<string, string> = {
   peaks: '峰数法', width: '宽度法', second_derivative: '二阶导数法',
 }
@@ -319,8 +306,20 @@ function polyEstNote(h: Hp): string | null {
   return `${label}约 ${h.length_estimate} ${polyUnitLabel(h)}${ci}`
 }
 
+/** 逐 read 峰图明细：部分覆盖的 read 标注覆盖段与段内调用数/峰数（B4：
+ *  截断 read 照常参与核对，只对覆盖段负责），完整覆盖 read 给整段峰数 */
+function readCountLabel(rc: NonNullable<Hp['read_counts']>[number]): string {
+  const d = rc.direction === '-' ? '反向' : '正向'
+  const n = rc.peak_count ?? '?'
+  if (rc.coverage === 'partial' && rc.covered_span) {
+    return `${rc.filename}${d}覆盖段${rc.covered_span[0]}-${rc.covered_span[1]}`
+      + `调用${rc.called_count ?? '?'}/峰${n}`
+  }
+  return `${rc.filename}${d}峰${n}（调用${rc.called_count ?? '?'}）`
+}
+
 /** 覆盖该结构但未完整跨过的 read（如反向引物在 poly 内截断）：
- *  它们不参与峰图交叉验证，前端从 read 落位推得，明确提示证据缺口 */
+ *  其峰图证据只针对覆盖段，整段重复数以完整覆盖的 read 为准 */
 function polyPartialReads(h: Hp) {
   return (analysis.value?.reads ?? []).filter(
     (r) => r.ref_end >= h.start && r.ref_start <= h.end
@@ -329,7 +328,7 @@ function polyPartialReads(h: Hp) {
 function polyPartialNote(h: Hp, r: SequencingAnalysis['reads'][number]): string {
   const cov = `${Math.max(r.ref_start, h.start)}-${Math.min(r.ref_end, h.end)}`
   return `${r.filename}（${r.direction === '-' ? '反向' : '正向'}）仅覆盖该结构 ${cov}，`
-    + '未完整跨过（read 在结构内截断/起始），未参与峰图交叉验证'
+    + '未完整跨过（read 在结构内截断/起始）——覆盖段峰图已参与核对，整段重复数以完整覆盖的 read 为准'
 }
 
 // SO 标准后果词表 → 中文标签与影响等级（VEP/snpEff 同款分级）
@@ -925,7 +924,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               {{ polyName(h) }}
               <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}）</span>
               <span class="cds-cov" :class="h.count_reliable ? 'full' : 'partial'">
-                {{ h.count_reliable ? '重复数计数可靠' : '峰压缩区，计数可能不准，建议核对峰图' }}
+                {{ h.count_reliable ? '重复数计数可靠' : '峰图证据与调用不一致，建议核对峰图' }}
               </span>
             </p>
             <p class="cds-verdict">
@@ -937,13 +936,15 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               <template v-else>，与参考一致</template>
               <template v-if="h.peak_count_estimate != null">
                 ；峰图独立计数约 {{ h.peak_count_estimate }} {{ polyUnitLabel(h) }}
-                <span v-if="h.read_counts?.length" class="poly-read-detail">
-                  （{{ h.read_counts.map(rc =>
-                    `${rc.filename}${rc.direction === '-' ? '反向' : '正向'} ${rc.peak_count ?? '?'}`).join('，') }}）
-                </span>
+              </template>
+              <template v-if="h.evidence_peak_count != null">
+                ；以可分辨峰为准约 {{ h.evidence_peak_count }} {{ polyUnitLabel(h) }}
+                <span v-if="h.evidence_range" class="poly-read-detail">（区间 {{ h.evidence_range[0] }}–{{ h.evidence_range[1] }}，上限为调用数）</span>
               </template>
               <template v-if="polyEstNote(h)">；{{ polyEstNote(h) }}</template>
-              <template v-if="polyDiffNote(h)">；{{ polyDiffNote(h) }}</template>
+              <span v-if="h.read_counts?.length" class="poly-read-detail">
+                （{{ h.read_counts.map(readCountLabel).join('，') }}）
+              </span>
             </p>
             <p class="cds-detail" v-for="pr in polyPartialReads(h)" :key="pr.filename">
               <span>↳ {{ polyPartialNote(h, pr) }}</span>
