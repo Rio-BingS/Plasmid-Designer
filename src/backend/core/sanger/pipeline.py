@@ -1579,6 +1579,8 @@ def analyze(
     else:
         lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
         lines.extend(summarize_severity(variants))
+        # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）
+        lines.extend(cds_lines)
         # poly 判读：同聚物区的 indel 单列重复数变化（实验员关心的“多了/少了几个”）
         for v in variants:
             hp = v.get("homopolymer")
@@ -1614,7 +1616,6 @@ def analyze(
                 f"{_peak_verdict_phrase(e)}（{detail}）——以峰图可分辨峰为准，建议人工复核"
             )
         lines.extend(dropout_notes)
-        lines.extend(cds_lines)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""
             if coverage_gaps:
