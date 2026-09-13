@@ -523,6 +523,64 @@ def _poly_peak_count(trace: Dict[str, List[int]], peaks: List[int],
     return count
 
 
+def _aligned_run_window(aln: Dict, cs: int, ce: int,
+                        base: str) -> Optional[Tuple[int, int, int]]:
+    """从逐列对齐提取参考区间 [cs,ce] 对应的 read 峰窗与段内调用数
+
+    返回 (i0, i1, called)：i0/i1 为 read 原始方向 0-based 索引（峰窗两端），
+    called 为窗口内与参考链 run 碱基一致的调用数（read_aligned 一律按参考
+    方向展示，正反 read 通用）。线性偏移映射在 read 带上游 indel 时错位、
+    且反向 read 会数错互补碱基（表现为调用 0），逐列对齐两种问题都避免。
+    区间内无对齐列（对齐视图缺失/退化）时返回 None。
+    """
+    aligned = aln.get("aligned") or {}
+    ref_s = (aligned.get("ref_aligned") or "").upper()
+    read_s = (aligned.get("read_aligned") or "").upper()
+    if not ref_s or len(ref_s) != len(read_s):
+        return None
+    ref_pos = int(aligned.get("ref_start") or aln["ref_start"])
+    total = sum(1 for c in read_s if c != "-")
+    first = last = None
+    called = 0
+    idx = 0  # 参考方向的 read 碱基序号（非 gap 才前进）
+    for k, rch in enumerate(ref_s):
+        b = read_s[k]
+        if b != "-":
+            if rch != "-":
+                cur = ref_pos
+                ref_pos += 1
+                if cs <= cur <= ce:
+                    if first is None:
+                        first = idx
+                    last = idx
+                    if b == base:
+                        called += 1
+            idx += 1
+    if first is None:
+        return None
+    if aln.get("direction") == "-":
+        # read_aligned 为参考方向，原始 read（trace/peaks）方向相反
+        first, last = total - 1 - last, total - 1 - first
+    return first, last, called
+
+
+def _peak_verdict_phrase(e: Dict) -> str:
+    """峰图主判读短语（以可分辨峰为准，basecaller 调用数只在逐 read 里出现）"""
+    ref = e["ref_repeat_count"]
+    m = e.get("peak_measured")
+    if m is None:
+        ci = e.get("length_ci")
+        est = f"宽度法估计 {e.get('length_estimate')} 个"
+        if ci:
+            est += f"（区间 {ci[0]}–{ci[1]}）"
+        return f"峰图计数不可用，{est}"
+    if e.get("peak_missing"):
+        return f"缺失 {e['peak_missing']} 个 {e['base']}：实测 {m} 个，参考 {ref} 个"
+    if e.get("peak_inserted"):
+        return f"插入 {e['peak_inserted']} 个 {e['base']}：实测 {m} 个，参考 {ref} 个"
+    return f"poly({e['base']}) 碱基类型完整：实测 {m} 个，参考 {ref} 个"
+
+
 def _normalize_indel(ref: str, v: Dict) -> Dict:
     """indel 归一化为最左最简表示（Tan 2015，bcftools norm/GATK 同款算法）
 
@@ -1353,39 +1411,27 @@ def analyze(
                 aln = r["alignment"]
                 if aln["ref_end"] < run["start"] or aln["ref_start"] > run["end"]:
                     continue
-                # 覆盖判读（B4）：完整跨过才给整体证据；截断/起始落在结构内的
+                # 覆盖判读（B4）：完整跨过才给整段证据；截断/起始落在结构内的
                 # read 只对覆盖段负责——人工核对会综合两条 read 而不是整体舍弃，
-                # 部分覆盖的 read 照常数峰、只与其覆盖段内的调用数比较
+                # 部分覆盖的 read 照常数峰、只与其覆盖段比较
                 full = aln["ref_start"] <= run["start"] and aln["ref_end"] >= run["end"]
-                if full:
-                    cs, ce = run["start"], run["end"]
-                    run_len = max(1, entry["observed_repeat_count"])
-                    if aln["direction"] == "-":
-                        rp = aln["ref_end"] - run["end"] + 1
-                    else:
-                        rp = run["start"] - aln["ref_start"] + 1
-                    i0 = rp - 1
-                else:
-                    cs = max(run["start"], aln["ref_start"])
-                    ce = min(run["end"], aln["ref_end"])
-                    if aln["direction"] == "-":
-                        i0 = aln["ref_end"] - ce
-                    else:
-                        i0 = cs - aln["ref_start"]
-                    rp = i0 + 1
-                    run_len = ce - cs + 1
-                i1 = i0 + run_len - 1
-                n_read = len(r["trimmed_bases"])
-                i0c, i1c = max(0, i0), min(i1, n_read - 1)
-                # 该 read 在窗口内实际调用的 run 碱基数（read 内部口径，非参考值）
-                called = (sum(1 for c in r["trimmed_bases"][i0c:i1c + 1]
-                              if c.upper() == run["base"]) if i1c >= i0c else None)
-                pc = _poly_peak_count(r["trace"], r["trimmed_peaks"], rp, run_len)
-                est = estimate_run_length(
-                    r["trace"], r["trimmed_peaks"],
-                    max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
-                    maps=_signal_maps(r),
-                )
+                cs = run["start"] if full else max(run["start"], aln["ref_start"])
+                ce = run["end"] if full else min(run["end"], aln["ref_end"])
+                win = _aligned_run_window(aln, cs, ce, run["base"])
+                called = None
+                pc = None
+                i0 = i1 = None
+                if win is not None:
+                    i0, i1, called = win
+                    pc = _poly_peak_count(r["trace"], r["trimmed_peaks"], i0 + 1,
+                                          i1 - i0 + 1)
+                est = None
+                if i0 is not None:
+                    est = estimate_run_length(
+                        r["trace"], r["trimmed_peaks"],
+                        max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                        maps=_signal_maps(r),
+                    )
                 run_reads.append({
                     "filename": r["filename"], "direction": aln["direction"],
                     "coverage": "full" if full else "partial",
@@ -1425,14 +1471,25 @@ def analyze(
         # 峰数法整体失效（采样密度不足等，无任何可用峰计数）时不翻判：
         # 宽度法是模型估计而非可见证据，其自身偏差不应直接否决调用；
         # 长度估计与区间照常输出，交人工判读
-        if not entry["count_reliable"] and max(full_pcs, default=0) > 0:
-            # 峰图证据综合（B4）：压缩只会合并峰、不会凭空多峰，完整覆盖 read
-            # 中最高的可分辨峰即重复数下限；调用数存在压缩多读风险，只作上限
-            # （峰数法整体失效计 0 时不产生区间，交给宽度法口径）
-            entry["evidence_peak_count"] = max(full_pcs)
-            high = max([entry["observed_repeat_count"]] + full_pcs)
-            if max(full_pcs) < high:
-                entry["evidence_range"] = [max(full_pcs), high]
+        # 主判读以峰图为准（B4）：每条 read 覆盖段内，参考段长 − 可分辨峰 =
+        # 该段缺失数（峰只会被压缩合并、不会凭空多出，段内峰数即实测）；
+        # 整段缺失取各 read 覆盖段缺失的最大值（缺失只能被覆盖它的 read 看见），
+        # 实测 = 参考 − 缺失 + 插入。峰数法整体失效（None/0）时不编造实测数，
+        # 交宽度法口径与人工判读
+        usable = [x for x in run_reads if x["peak_count"] and x.get("covered_span")]
+        if usable:
+            seg_len = lambda x: x["covered_span"][1] - x["covered_span"][0] + 1
+            entry["peak_missing"] = max(0, max(seg_len(x) - x["peak_count"]
+                                               for x in usable))
+            entry["peak_inserted"] = max(0, max(x["peak_count"] - seg_len(x)
+                                                for x in usable))
+            entry["peak_measured"] = (run["repeat_count"] - entry["peak_missing"]
+                                      + entry["peak_inserted"])
+        cov_pos: set = set()
+        for x in run_reads:
+            if x.get("covered_span"):
+                cov_pos.update(range(x["covered_span"][0], x["covered_span"][1] + 1))
+        entry["run_covered"] = len(cov_pos)
         homopolymer_report.append(entry)
 
     cds_reports = _build_cds_reports(ref, features, variants, consensus)
@@ -1471,16 +1528,10 @@ def analyze(
         )
         # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）
         poly_warnings = [
-            f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 参考写的是 "
-            f"{e['ref_repeat_count']} 个，碱基调用也是 {e['observed_repeat_count']} 个，"
-            f"但峰图计数约 {e['peak_count_estimate']} 个"
-            + (f"，综合判读约 {e['evidence_peak_count']} 个"
-               f"（区间 {e['evidence_range'][0]}–{e['evidence_range'][1]}）"
-               if e.get("evidence_peak_count") is not None else "")
-            + "——长同聚物区碱基调用存在整段偏差风险，实际重复数以峰图/克隆验证为准"
+            f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
+            f"{_peak_verdict_phrase(e)}——以峰图可分辨峰为准，建议人工复核"
             for e in homopolymer_report
             if e["tier"] == "poly" and not e["count_reliable"]
-            and e["peak_count_estimate"] is not None
         ]
         all_lines = [conclusion] + cds_lines + poly_warnings + dropout_notes
         conclusion = "\n".join(x for x in all_lines if x)
@@ -1504,7 +1555,7 @@ def analyze(
             )
         # 峰图计数与调用不一致（即使无 indel 变体）：长同聚物的碱基调用可能整段偏差
         for e in homopolymer_report:
-            if e["tier"] != "poly" or e["count_reliable"] or e["peak_count_estimate"] is None:
+            if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
                 continue
 
             def _rc_label(x: Dict) -> str:
@@ -1514,17 +1565,12 @@ def analyze(
                     s, t = x["covered_span"]
                     return (f"{x['filename']}{d}覆盖段{s}-{t}"
                             f"调用{x['called_count']}/峰{n}个")
-                return f"{x['filename']}{d}{n}个"
+                return f"{x['filename']}{d}调用{x['called_count']}/峰{n}个"
 
             detail = " / ".join(_rc_label(x) for x in e["read_counts"])
-            synth = (f"，综合判读约 {e['evidence_peak_count']} 个"
-                     f"（区间 {e['evidence_range'][0]}–{e['evidence_range'][1]}）"
-                     if e.get("evidence_peak_count") is not None else "")
             lines.append(
-                f"  ↳ poly({e['base']}) 同聚物 {e['start']}-{e['end']}："
-                f"参考 {e['ref_repeat_count']} 个，碱基调用 {e['observed_repeat_count']} 个，"
-                f"但峰图计数约 {e['peak_count_estimate']} 个（{detail}）{synth}——"
-                "长同聚物区碱基调用存在整段偏差风险，实际重复数以峰图/克隆验证为准"
+                f"  ↳ poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
+                f"{_peak_verdict_phrase(e)}（{detail}）——以峰图可分辨峰为准，建议人工复核"
             )
         lines.extend(dropout_notes)
         lines.extend(cds_lines)

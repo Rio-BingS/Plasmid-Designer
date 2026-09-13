@@ -593,8 +593,10 @@ export interface SequencingAnalysis {
     observed_repeat_count: number
     count_reliable: boolean
     peak_count_estimate?: number | null
-    evidence_peak_count?: number | null
-    evidence_range?: [number, number] | null
+    peak_missing?: number | null
+    peak_inserted?: number | null
+    peak_measured?: number | null
+    run_covered?: number | null
     length_estimate?: number | null
     length_method?: string | null
     length_ci?: [number, number] | null

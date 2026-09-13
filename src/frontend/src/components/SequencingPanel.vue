@@ -298,37 +298,41 @@ function polyUnitLabel(h: Hp): string {
 const LENGTH_METHOD_LABELS: Record<string, string> = {
   peaks: '峰数法', width: '宽度法', second_derivative: '二阶导数法',
 }
-/** 信号反卷积的长度估计（峰完全合并时峰数法失效的救援口径） */
+/** 信号反卷积的长度估计：method=peaks 时估计就是可分辨峰数，与主判读
+ *  重复，不重复展示；宽度法/二阶导数是独立口径，保留 */
 function polyEstNote(h: Hp): string | null {
-  if (h.length_estimate == null) return null
+  if (h.length_estimate == null || h.length_method === 'peaks') return null
   const label = LENGTH_METHOD_LABELS[h.length_method ?? ''] ?? '信号估计'
   const ci = h.length_ci ? `（区间 ${h.length_ci[0]}–${h.length_ci[1]}）` : ''
   return `${label}约 ${h.length_estimate} ${polyUnitLabel(h)}${ci}`
 }
 
-/** 逐 read 峰图明细：部分覆盖的 read 标注覆盖段与段内调用数/峰数（B4：
- *  截断 read 照常参与核对，只对覆盖段负责），完整覆盖 read 给整段峰数 */
+/** 引物覆盖行：每条 read 的覆盖段与段内调用数/峰数（B4：截断 read 照常
+ *  参与核对，只对覆盖段负责） */
 function readCountLabel(rc: NonNullable<Hp['read_counts']>[number]): string {
   const d = rc.direction === '-' ? '反向' : '正向'
-  const n = rc.peak_count ?? '?'
+  const called = rc.called_count ?? '?'
+  const pk = rc.peak_count ?? '?'
   if (rc.coverage === 'partial' && rc.covered_span) {
-    return `${rc.filename}${d}覆盖段${rc.covered_span[0]}-${rc.covered_span[1]}`
-      + `调用${rc.called_count ?? '?'}/峰${n}`
+    return `${rc.filename}${d}覆盖段${rc.covered_span[0]}-${rc.covered_span[1]}调用${called}/峰${pk}`
   }
-  return `${rc.filename}${d}峰${n}（调用${rc.called_count ?? '?'}）`
+  return `${rc.filename}${d}调用${called}/峰${pk}`
 }
 
-/** 覆盖该结构但未完整跨过的 read（如反向引物在 poly 内截断）：
- *  其峰图证据只针对覆盖段，整段重复数以完整覆盖的 read 为准 */
-function polyPartialReads(h: Hp) {
-  return (analysis.value?.reads ?? []).filter(
-    (r) => r.ref_end >= h.start && r.ref_start <= h.end
-      && (r.ref_start > h.start || r.ref_end < h.end))
-}
-function polyPartialNote(h: Hp, r: SequencingAnalysis['reads'][number]): string {
-  const cov = `${Math.max(r.ref_start, h.start)}-${Math.min(r.ref_end, h.end)}`
-  return `${r.filename}（${r.direction === '-' ? '反向' : '正向'}）仅覆盖该结构 ${cov}，`
-    + '未完整跨过（read 在结构内截断/起始）——覆盖段峰图已参与核对，整段重复数以完整覆盖的 read 为准'
+/** 逐引物判读行：调用数 vs 可分辨峰 → 是否出入；覆盖情况与证据边界 */
+function readVerdictLine(rc: NonNullable<Hp['read_counts']>[number]): string {
+  const d = rc.direction === '-' ? '反向' : '正向'
+  const called = rc.called_count ?? '?'
+  const pk = rc.peak_count ?? '?'
+  const arrow = (rc.peak_count != null && rc.called_count != null)
+    ? (rc.peak_count === rc.called_count
+        ? '峰图与调用一致'
+        : `峰图与调用有出入（差 ${Math.abs(rc.peak_count - rc.called_count)}），标记矛盾`)
+    : '峰数不可计'
+  const seg = rc.coverage === 'partial' && rc.covered_span
+    ? `仅覆盖该结构 ${rc.covered_span[0]}-${rc.covered_span[1]}，未完整跨过（read 在结构内截断/起始）——覆盖段峰图已参与核对`
+    : '完整跨过该结构'
+  return `${rc.filename}（${d}）：调用 ${called}，可分辨峰 ${pk} → ${arrow}；${seg}`
 }
 
 // SO 标准后果词表 → 中文标签与影响等级（VEP/snpEff 同款分级）
@@ -924,30 +928,33 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
               {{ polyName(h) }}
               <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}）</span>
               <span class="cds-cov" :class="h.count_reliable ? 'full' : 'partial'">
-                {{ h.count_reliable ? '重复数计数可靠' : '峰图证据与调用不一致，建议核对峰图' }}
+                {{ h.count_reliable ? '峰图与调用一致' : '峰图证据与调用不一致，建议核对峰图' }}
               </span>
             </p>
+            <!-- 主判读：以解读的峰图数据开头 -->
             <p class="cds-verdict">
-              测得 {{ h.observed_repeat_count }} {{ polyUnitLabel(h) }}
-              <template v-if="h.variant">
-                （位置 {{ h.variant.ref_pos }} {{ h.variant.type === 'insertion' ? '插入' : '缺失' }} {{ h.variant.length }}bp，
-                {{ h.variant.confidence === 'high' ? '高' : h.variant.confidence === 'medium' ? '中' : '低' }}置信）
+              <template v-if="h.peak_measured != null">
+                <template v-if="(h.peak_missing ?? 0) > 0">缺失 {{ h.peak_missing }} 个 {{ h.base }}：实测 {{ h.peak_measured }} {{ polyUnitLabel(h) }}，参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}</template>
+                <template v-else-if="(h.peak_inserted ?? 0) > 0">插入 {{ h.peak_inserted }} 个 {{ h.base }}：实测 {{ h.peak_measured }} {{ polyUnitLabel(h) }}，参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}</template>
+                <template v-else>poly({{ h.base }}) 碱基类型完整：实测 {{ h.peak_measured }} {{ polyUnitLabel(h) }}，参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}</template>
               </template>
-              <template v-else>，与参考一致</template>
-              <template v-if="h.peak_count_estimate != null">
-                ；峰图独立计数约 {{ h.peak_count_estimate }} {{ polyUnitLabel(h) }}
-              </template>
-              <template v-if="h.evidence_peak_count != null">
-                ；以可分辨峰为准约 {{ h.evidence_peak_count }} {{ polyUnitLabel(h) }}
-                <span v-if="h.evidence_range" class="poly-read-detail">（区间 {{ h.evidence_range[0] }}–{{ h.evidence_range[1] }}，上限为调用数）</span>
-              </template>
-              <template v-if="polyEstNote(h)">；{{ polyEstNote(h) }}</template>
-              <span v-if="h.read_counts?.length" class="poly-read-detail">
-                （{{ h.read_counts.map(readCountLabel).join('，') }}）
-              </span>
+              <template v-else-if="h.read_counts?.length">峰图计数不可用，以宽度法估计为准</template>
+              <template v-else>重复结构标注（该结构不做峰图计数）</template>
+              <span v-if="polyEstNote(h)" class="poly-read-detail">（{{ polyEstNote(h) }}）</span>
             </p>
-            <p class="cds-detail" v-for="pr in polyPartialReads(h)" :key="pr.filename">
-              <span>↳ {{ polyPartialNote(h, pr) }}</span>
+            <!-- 引物覆盖情况 -->
+            <p class="cds-verdict" v-if="h.read_counts?.length">
+              引物覆盖：<span class="poly-read-detail">{{ h.read_counts.map(readCountLabel).join('；') }}</span>
+            </p>
+            <!-- 逐引物判读 -->
+            <p class="cds-detail" v-for="rc in h.read_counts ?? []" :key="rc.filename">
+              <span>↳ {{ readVerdictLine(rc) }}</span>
+            </p>
+            <p class="cds-detail" v-if="h.read_counts?.length && !h.read_counts.some((rc) => rc.coverage === 'full')">
+              <span>↳ 无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）</span>
+            </p>
+            <p class="cds-detail" v-if="h.run_covered != null && h.run_covered < h.ref_repeat_count">
+              <span>↳ 各 read 合并覆盖该结构 {{ h.run_covered }}/{{ h.ref_repeat_count }} 个位置，未覆盖段无峰图证据</span>
             </p>
           </div>
         </div>
