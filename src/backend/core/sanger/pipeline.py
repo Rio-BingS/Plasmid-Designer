@@ -523,6 +523,9 @@ def _poly_peak_count(trace: Dict[str, List[int]], peaks: List[int],
     return count
 
 
+_COMPLEMENT = {"A": "T", "T": "A", "G": "C", "C": "G"}
+
+
 def _aligned_run_window(aln: Dict, cs: int, ce: int,
                         base: str) -> Optional[Tuple[int, int, int]]:
     """从逐列对齐提取参考区间 [cs,ce] 对应的 read 峰窗与段内调用数
@@ -1230,6 +1233,10 @@ def analyze(
             "trace": read["trace"],
             "peak_indices": read["peak_indices"],
             "trimmed_peaks": trimmed_peaks,
+            # poly 计数用：质量修剪常剪掉 poly 末端低 Q 压缩区，峰窗需沿
+            # 原始 read 外扩（B4），保留原始碱基串与修剪偏移
+            "raw_bases": bases,
+            "trim_start": s,
             "cross_variants": cross_variants if used_tracy else None,
         })
 
@@ -1414,24 +1421,58 @@ def analyze(
                 # 覆盖判读（B4）：完整跨过才给整段证据；截断/起始落在结构内的
                 # read 只对覆盖段负责——人工核对会综合两条 read 而不是整体舍弃，
                 # 部分覆盖的 read 照常数峰、只与其覆盖段比较
-                full = aln["ref_start"] <= run["start"] and aln["ref_end"] >= run["end"]
-                cs = run["start"] if full else max(run["start"], aln["ref_start"])
-                ce = run["end"] if full else min(run["end"], aln["ref_end"])
+                full_aln = aln["ref_start"] <= run["start"] and aln["ref_end"] >= run["end"]
+                cs = run["start"] if full_aln else max(run["start"], aln["ref_start"])
+                ce = run["end"] if full_aln else min(run["end"], aln["ref_end"])
                 win = _aligned_run_window(aln, cs, ce, run["base"])
                 called = None
                 pc = None
-                i0 = i1 = None
-                if win is not None:
-                    i0, i1, called = win
-                    pc = _poly_peak_count(r["trace"], r["trimmed_peaks"], i0 + 1,
-                                          i1 - i0 + 1)
                 est = None
-                if i0 is not None:
-                    est = estimate_run_length(
-                        r["trace"], r["trimmed_peaks"],
-                        max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
-                        maps=_signal_maps(r),
-                    )
+                full = full_aln
+                if win is not None:
+                    i0, i1, aln_called = win
+                    # B4：质量修剪常把 poly 末端低 Q 压缩区剪掉，而那里正是
+                    # 计数证据所在（SnapGene 显示原始 read，所以人工看到的
+                    # 覆盖比修剪后长）——峰窗沿原始 read 的连续同碱基外扩、
+                    # 越出修剪边界。两侧都见到非 run 碱基侧翼时，该 read 的
+                    # run 完整对应参考整段（人类"数两个侧翼之间的 A 串"口径）
+                    s_off = r.get("trim_start") or 0
+                    raw_bases = (r.get("raw_bases") or "").upper()
+                    b_up = run["base"]
+                    # 反向 read 的原始碱基串是读向的：run 在读向为互补碱基
+                    b_read = b_up if aln["direction"] == "+" else _COMPLEMENT[b_up]
+                    r0, r1 = s_off + i0, s_off + i1
+                    if raw_bases:
+                        while r0 > 0 and raw_bases[r0 - 1] == b_read:
+                            r0 -= 1
+                        while r1 < len(raw_bases) - 1 and raw_bases[r1 + 1] == b_read:
+                            r1 += 1
+                        flank_l = r0 > 0 and raw_bases[r0 - 1] not in (b_read, "N")
+                        flank_r = (r1 < len(raw_bases) - 1
+                                   and raw_bases[r1 + 1] not in (b_read, "N"))
+                        full = full_aln or (flank_l and flank_r)
+                        if full:
+                            cs, ce = run["start"], run["end"]
+                        called = sum(1 for c in raw_bases[r0:r1 + 1] if c == b_read)
+                        pc = _poly_peak_count(r["trace"], r["peak_indices"],
+                                              r0 + 1, r1 - r0 + 1)
+                        if not full:
+                            ext_low, ext_high = (s_off + i0) - r0, r1 - (s_off + i1)
+                            if aln["direction"] == "-":
+                                ext_low, ext_high = ext_high, ext_low
+                            cs = max(run["start"], cs - ext_low)
+                            ce = min(run["end"], ce + ext_high)
+                        est = estimate_run_length(
+                            r["trace"], r["peak_indices"], r0, r1,
+                            maps=_signal_maps(r))
+                    else:
+                        called = aln_called
+                        pc = _poly_peak_count(r["trace"], r["trimmed_peaks"],
+                                              i0 + 1, i1 - i0 + 1)
+                        est = estimate_run_length(
+                            r["trace"], r["trimmed_peaks"], max(0, i0),
+                            min(i1, len(r["trimmed_peaks"]) - 1),
+                            maps=_signal_maps(r))
                 run_reads.append({
                     "filename": r["filename"], "direction": aln["direction"],
                     "coverage": "full" if full else "partial",
@@ -1592,7 +1633,8 @@ def analyze(
     return {
         "reads": [
             {k: v for k, v in r.items()
-             if k not in ("trace", "peak_indices", "cross_variants", "_sigmaps")}
+             if k not in ("trace", "peak_indices", "cross_variants", "_sigmaps",
+                          "raw_bases", "trim_start")}
             for r in read_results
         ],
         # 峰图原始数据（与 reads 同序）：四通道 + 碱基 + 质量 + 峰位置

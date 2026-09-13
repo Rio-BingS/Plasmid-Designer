@@ -245,6 +245,32 @@ def test_poly_partial_read_participates_and_peak_verdict():
     assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
 
 
+def test_poly_trimmed_tail_recovered_from_raw_read():
+    """B4：质量修剪剪掉 poly 末端低 Q 压缩区（SnapGene 显示原始 read，人工
+    看到的覆盖更长）——峰窗沿原始 read 的连续同碱基外扩越出修剪边界，两侧
+    侧翼可见时判完整对应参考整段；调用数（basecaller 补齐值）与峰数出入
+    即标记矛盾，主判读按峰图给缺失数"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    # poly 区峰图只有 27 个可分辨峰（basecaller 仍调用 30 个 A——补齐）
+    traces = _shaped_traces(read_bases, poly_span=(40, 70), real_peaks=27)
+    # read 末端低 Q：Mott 修剪剪进 polyA（保留 27 个 A，剪掉末尾 3 个）
+    quality = [40] * 67 + [5] * (len(read_bases) - 67)
+    blob = make_ab1(read_bases, quality, traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    rc = hp["read_counts"][0]
+    assert rc["coverage"] == "full"            # 原始 read 两侧侧翼可见
+    assert rc["covered_span"] == [81, 110]     # 不再止于修剪边界 107
+    assert rc["called_count"] == 30            # 原始 read 的补齐调用数
+    assert rc["peak_count"] == 27
+    assert hp["count_reliable"] is False       # 调用 30 vs 峰 27 → 矛盾
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
+    assert hp["run_covered"] == 30
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+
+
 def test_poly_reverse_read_called_count_via_complement():
     """反向 read 的调用数按参考方向对齐列统计（互补碱基正确折算）——修复
     线性映射把反向覆盖段调用数记成 0 的缺陷；部分覆盖照常参与核对"""
