@@ -224,7 +224,7 @@ describe('SequencingPanel', () => {
   it('collapses low-confidence variants by default with an expand toggle', async () => {
     const analysis = {
       ...mockAnalysis,
-      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n位置 380 缺失 1bp（非编码区），低置信（疑似测序噪声或混合峰，建议人工核对峰图）',
+      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n位置 380 缺失 1bp（非编码区），低置信度（疑似测序噪声或混合峰，建议人工核对峰图）',
       variants: [
         { ...mockAnalysis.variants[0], confidence: 'high' },
         { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low' },
@@ -244,7 +244,7 @@ describe('SequencingPanel', () => {
     await wrapper.find('.lowconf-toggle').trigger('click')
     text = wrapper.text()
     expect(text).toContain('位置 380 缺失 1bp')
-    expect(text).toContain('低置信（疑似测序噪声或混合峰，建议人工核对峰图）')
+    expect(text).toContain('低置信度（疑似测序噪声或混合峰，建议人工核对峰图）')
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
   })
 
