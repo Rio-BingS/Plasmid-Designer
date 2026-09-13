@@ -272,11 +272,13 @@ const shownVariants = computed(() => {
   const all = analysis.value?.variants ?? []
   return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
 })
-// 结论文本中低置信差异行（后端固定以"低置信（"标注）同样折叠
+// 结论文本中低置信差异行（后端标注为"低置信度（"/"低置信（"）同样折叠
 const conclusionParts = computed(() => {
   const lines = (analysis.value?.conclusion ?? '').split('\n')
-  const low = lines.filter((l) => l.includes('低置信（'))
-  return { main: lines.filter((l) => !l.includes('低置信（')).join('\n'), low }
+  // 匹配逐条标注"低置信（/低置信度（"，不误伤主结论里的"低置信差异…未计入判定"概述句
+  const isLow = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
+  const low = lines.filter(isLow)
+  return { main: lines.filter((l) => !isLow(l)).join('\n'), low }
 })
 
 /** CDS 结论卡的覆盖标签 */
