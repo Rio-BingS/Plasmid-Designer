@@ -593,10 +593,17 @@ export interface SequencingAnalysis {
     observed_repeat_count: number
     count_reliable: boolean
     peak_count_estimate?: number | null
+    evidence_peak_count?: number | null
+    evidence_range?: [number, number] | null
     length_estimate?: number | null
     length_method?: string | null
     length_ci?: [number, number] | null
-    read_counts?: { filename: string; direction: string; peak_count: number | null }[]
+    read_counts?: {
+      filename: string; direction: string; peak_count: number | null
+      coverage?: 'full' | 'partial'
+      covered_span?: [number, number] | null
+      called_count?: number | null
+    }[]
     variant: { ref_pos: number; type: string; length: number; confidence: string } | null
   }[]
   mixed_detected: Record<string, number[]>

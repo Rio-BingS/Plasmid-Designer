@@ -30,7 +30,7 @@ from core.sanger.signal import (  # noqa: E402
 from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
     _read_grade, _variant_confidence, _coverage_gaps, _variant_peak_evidence,
-    _poly_peak_amplitude_ratio, _detect_mixed_positions, _peak_count_tol,
+    _poly_peak_amplitude_ratio, _detect_mixed_positions,
     _annotate_homopolymer, find_homopolymers, find_repeat_runs,
 )
 
@@ -175,7 +175,7 @@ def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4,
 
 
 def test_poly_peak_count_and_cross_read_validation():
-    """峰图独立计数 < 调用碱基数：判重复数不可靠并在结论给出峰图计数"""
+    """峰图独立计数 < 调用碱基数：严格口径判不可靠并在结论给出峰图证据"""
     ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
     read_bases = ref[40:170]
     spb = 4
@@ -187,10 +187,16 @@ def test_poly_peak_count_and_cross_read_validation():
     assert hp["peak_count_estimate"] == 27
     assert hp["count_reliable"] is False
     assert hp["read_counts"][0]["peak_count"] == 27
+    assert hp["read_counts"][0]["coverage"] == "full"
+    assert hp["read_counts"][0]["called_count"] == 30
+    # B4：以可分辨峰为准的综合判读——下限 27（压缩只会合并峰），调用 30 只作上限
+    assert hp["evidence_peak_count"] == 27
+    assert hp["evidence_range"] == [27, 30]
     # B2：宽度法交叉值同时输出（峰数法可用时 method=peaks，两者应一致）
     assert hp["length_estimate"] == 27
     assert hp["length_method"] == "peaks"
     assert "峰图计数约 27 个" in result["conclusion"]
+    assert "综合判读约 27 个" in result["conclusion"]
     assert "碱基调用存在整段偏差风险" in result["conclusion"]
 
 
@@ -204,6 +210,37 @@ def test_poly_peak_count_agrees_is_reliable():
     assert hp["count_reliable"] is True
     assert hp["peak_count_estimate"] == 30
     assert "峰图计数约" not in result["conclusion"]
+
+
+def test_poly_partial_read_participates_and_evidence_range():
+    """B4：截断在 poly 内的部分覆盖 read 不整体舍弃——照常数覆盖段峰并与
+    覆盖段调用数比较；任一 read 峰数≠调用数即判不可靠，综合判读以完整
+    覆盖 read 的可分辨峰为下限、调用数为上限（人工核对会综合两条 read）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read1 = ref[40:170]   # 完整跨过 poly：调用 30 个 A，峰图只有 27 个可分辨峰
+    traces1 = _shaped_traces(read1, poly_span=(40, 70), real_peaks=27)
+    read2 = ref[94:170]   # 从 poly 中段起始（95-170）：覆盖段 16 个 A，峰图 16 个
+    traces2 = _shaped_traces(read2, poly_span=(0, 16), real_peaks=16)
+    reads = [
+        ("f1.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
+        ("f2.ab1", make_ab1(read2, [40] * len(read2), traces=traces2, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["f1.ab1"]["coverage"] == "full"
+    assert by_file["f1.ab1"]["called_count"] == 30
+    assert by_file["f1.ab1"]["peak_count"] == 27
+    assert by_file["f2.ab1"]["coverage"] == "partial"
+    assert by_file["f2.ab1"]["covered_span"] == [95, 110]
+    assert by_file["f2.ab1"]["called_count"] == 16
+    assert by_file["f2.ab1"]["peak_count"] == 16
+    # f2 内部一致、f1 有出入 → 整体判不可靠（不设容差）
+    assert hp["count_reliable"] is False
+    assert hp["evidence_peak_count"] == 27
+    assert hp["evidence_range"] == [27, 30]
+    # 无变体（两条 read 调用都与参考一致）→ 结论走 poly 告警分支，给出综合判读
+    assert "综合判读约 27 个（区间 27–30）" in result["conclusion"]
 
 
 def test_abif_parser_matches_biopython():
@@ -1118,19 +1155,6 @@ def test_baseline_correct_preserves_merged_plateau():
     bc = baseline_correct(tr)
     assert max(bc["A"][100:300]) >= 90, "平台被扣平"
     assert max(bc["T"]) == 0 and min(bc["A"][:100]) == 0
-
-
-# ==================== A3：长度相关容差 ====================
-
-def test_peak_count_tolerance_length_scaled():
-    """A3：tol = max(1, round(1+0.05×长度))——旧口径 0.02 对 30bp 只容 ±1，
-    文献口径 20bp+ 误差可达 ±2。已验算：27vs30 差 3 > 2 仍不可靠、
-    0 差可靠、19vs20 差 1 ≤ 2 可靠"""
-    assert _peak_count_tol(1) == 1
-    assert _peak_count_tol(19) == 2
-    assert _peak_count_tol(20) == 2
-    assert _peak_count_tol(30) == 2
-    assert _peak_count_tol(107) == 6
 
 
 # ==================== A4：报告层 ====================
