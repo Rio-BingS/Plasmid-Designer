@@ -136,8 +136,10 @@ describe('SequencingPanel', () => {
     const analysis = {
       ...mockAnalysis,
       homopolymers: [
-        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
-        { base: 'T', start: 500, end: 521, length: 22, ref_repeat_count: 22, observed_repeat_count: 20, count_reliable: false,
+        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70,
+          count_reliable: true, variant: null, peak_measured: 70, peak_missing: 0, peak_inserted: 0, run_covered: 70 },
+        { base: 'T', start: 500, end: 521, length: 22, ref_repeat_count: 22, observed_repeat_count: 20,
+          count_reliable: false, peak_measured: 20, peak_missing: 2, peak_inserted: 0, run_covered: 22,
           variant: { ref_pos: 500, type: 'deletion', length: 2, confidence: 'medium' } },
       ],
     }
@@ -148,10 +150,9 @@ describe('SequencingPanel', () => {
     expect(text).toContain('poly 同聚物 / 重复结构')
     expect(text).toContain('poly(A)')
     expect(text).toContain('3993-4062（参考 70 个 A）')
-    expect(text).toContain('测得 70 个 A')
+    expect(text).toContain('poly(A) 碱基类型完整：实测 70 个 A，参考 70 个 A')
     expect(text).toContain('poly(T)')
-    expect(text).toContain('测得 20 个 T')
-    expect(text).toContain('位置 500 缺失 2bp')
+    expect(text).toContain('缺失 2 个 T：实测 20 个 T，参考 22 个 T')
     expect(text).toContain('峰图证据与调用不一致')
   })
 
@@ -159,9 +160,12 @@ describe('SequencingPanel', () => {
     const analysis = {
       ...mockAnalysis,
       homopolymers: [
-        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
-        { base: 'A', start: 700, end: 711, length: 12, tier: 'observed', ref_repeat_count: 12, observed_repeat_count: 12, count_reliable: true, variant: null },
-        { base: 'A', unit: 'AT', period: 2, start: 900, end: 907, length: 8, ref_repeat_count: 4, observed_repeat_count: 4, count_reliable: true, variant: null },
+        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70,
+          count_reliable: true, variant: null, peak_measured: 70, peak_missing: 0, peak_inserted: 0, run_covered: 70 },
+        { base: 'A', start: 700, end: 711, length: 12, tier: 'observed', ref_repeat_count: 12, observed_repeat_count: 12,
+          count_reliable: true, variant: null, peak_measured: 12, peak_missing: 0, peak_inserted: 0, run_covered: 12 },
+        { base: 'A', unit: 'AT', period: 2, start: 900, end: 907, length: 8, ref_repeat_count: 4, observed_repeat_count: 4,
+          count_reliable: true, variant: null },
       ],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
@@ -184,22 +188,17 @@ describe('SequencingPanel', () => {
     expect(text).not.toContain('已默认隐藏')
   })
 
-  it('surfaces peak evidence verdict, signal length estimate and partially covering reads', async () => {
+  it('leads with peak-derived verdict and per-primer breakdown (user-specified layout)', async () => {
     const analysis = {
       ...mockAnalysis,
-      reads: [
-        { ...mockAnalysis.reads[0], filename: 'r1.ab1', direction: '+', ref_start: 3900, ref_end: 4200 },
-        { ...mockAnalysis.reads[0], filename: 'r2.ab1', direction: '-', ref_start: 4010, ref_end: 4400 },
-      ],
       homopolymers: [{
-        base: 'A', start: 3993, end: 4099, length: 107, ref_repeat_count: 107,
+        base: 'A', start: 3925, end: 4031, length: 107, ref_repeat_count: 107,
         observed_repeat_count: 107, count_reliable: false, variant: null,
-        peak_count_estimate: 104, evidence_peak_count: 104, evidence_range: [104, 107],
-        length_estimate: 106, length_method: 'width',
-        length_ci: [103, 108],
+        peak_measured: 106, peak_missing: 1, peak_inserted: 0, run_covered: 107,
+        length_estimate: 100, length_method: 'width', length_ci: [98, 101],
         read_counts: [
-          { filename: 'r1.ab1', direction: '+', peak_count: 104, coverage: 'full', called_count: 107 },
-          { filename: 'r2.ab1', direction: '-', peak_count: 103, coverage: 'partial', covered_span: [4010, 4099], called_count: 103 },
+          { filename: 'S99680-10855-1seqF1.ab1', direction: '+', peak_count: 100, coverage: 'partial', covered_span: [3925, 4025], called_count: 100 },
+          { filename: 'S99680-M13F-75.ab1', direction: '-', peak_count: 100, coverage: 'partial', covered_span: [3931, 4031], called_count: 101 },
         ],
       }],
     }
@@ -207,17 +206,19 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     const text = wrapper.text()
-    // 调用 107 与峰图证据矛盾：不再绿灯"计数可靠"，以可分辨峰为准给出判读
-    expect(text).toContain('测得 107 个 A')
+    // 第一行：以峰图解读开头（缺失几个什么碱基 / 实测 / 参考）
+    expect(text).toContain('缺失 1 个 A：实测 106 个 A，参考 107 个 A')
     expect(text).toContain('峰图证据与调用不一致')
-    expect(text).toContain('以可分辨峰为准约 104 个 A')
-    expect(text).toContain('（区间 104–107，上限为调用数）')
-    expect(text).toContain('宽度法约 106 个 A（区间 103–108）')
-    // 逐 read 明细：完整覆盖给整段峰数，部分覆盖标注覆盖段与段内调用/峰数
-    expect(text).toContain('r1.ab1正向峰104（调用107）')
-    expect(text).toContain('r2.ab1反向覆盖段4010-4099调用103/峰103')
-    // 部分覆盖 read 的证据边界明示
-    expect(text).toContain('r2.ab1（反向）仅覆盖该结构 4010-4099，未完整跨过')
+    expect(text).toContain('宽度法约 100 个 A（区间 98–101）')
+    // 第二行：引物覆盖情况（覆盖段 + 调用/峰）
+    expect(text).toContain('引物覆盖：')
+    expect(text).toContain('S99680-10855-1seqF1.ab1正向覆盖段3925-4025调用100/峰100')
+    expect(text).toContain('S99680-M13F-75.ab1反向覆盖段3931-4031调用101/峰100')
+    // 第三行：逐引物判读（调用 vs 可分辨峰 → 出入标记；覆盖情况）
+    expect(text).toContain('S99680-10855-1seqF1.ab1（正向）：调用 100，可分辨峰 100 → 峰图与调用一致；仅覆盖该结构 3925-4025，未完整跨过')
+    expect(text).toContain('S99680-M13F-75.ab1（反向）：调用 101，可分辨峰 100 → 峰图与调用有出入（差 1），标记矛盾')
+    // 证据边界：无完整覆盖 read 时明示合成口径
+    expect(text).toContain('无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）')
   })
 
   it('renders alignment view with mismatch and low-Q highlighting', async () => {

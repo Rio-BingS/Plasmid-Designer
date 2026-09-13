@@ -123,7 +123,7 @@ def test_homopolymer_poly_count_and_conclusion():
     assert "poly(A)" in result["conclusion"]
 
 
-def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4,
+def _shaped_traces(bases, poly_span, real_peaks, channel="A", channel_order="ATGC", spb=4,
                    decay=0.0, baseline_slope=0.0, crosstalk=0.0, stutter=None):
     """构造 4 采样/碱基的三角峰 trace：poly 窗口内只放 real_peaks 个 A 峰
 
@@ -146,14 +146,14 @@ def _shaped_traces(bases, poly_span, real_peaks, channel_order="ATGC", spb=4,
     head = [4] * (poly_span[0] * spb)
     body = [100, 100, 4, 4] * real_peaks
     tail = [4] * ((len(bases) - poly_span[1]) * spb)
-    traces["A"] = head + body + tail
+    traces[channel] = head + body + tail
     n = len(bases) * spb
     if stutter:
         for j, f in enumerate(stutter):
             s0 = (poly_span[1] + j) * spb
             if s0 + 1 < n:
-                traces["A"][s0] = int(round(100 * f))
-                traces["A"][s0 + 1] = int(round(100 * f))
+                traces[channel][s0] = int(round(100 * f))
+                traces[channel][s0 + 1] = int(round(100 * f))
     if decay:
         for ch in channel_order:
             traces[ch] = [int(round(v * (1 - decay) ** (s / n)))
@@ -189,15 +189,14 @@ def test_poly_peak_count_and_cross_read_validation():
     assert hp["read_counts"][0]["peak_count"] == 27
     assert hp["read_counts"][0]["coverage"] == "full"
     assert hp["read_counts"][0]["called_count"] == 30
-    # B4：以可分辨峰为准的综合判读——下限 27（压缩只会合并峰），调用 30 只作上限
-    assert hp["evidence_peak_count"] == 27
-    assert hp["evidence_range"] == [27, 30]
+    # B4：主判读以峰图为准——参考段 30 个、可分辨峰 27 → 缺失 3、实测 27
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
     # B2：宽度法交叉值同时输出（峰数法可用时 method=peaks，两者应一致）
     assert hp["length_estimate"] == 27
     assert hp["length_method"] == "peaks"
-    assert "峰图计数约 27 个" in result["conclusion"]
-    assert "综合判读约 27 个" in result["conclusion"]
-    assert "碱基调用存在整段偏差风险" in result["conclusion"]
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+    assert "以峰图可分辨峰为准" in result["conclusion"]
 
 
 def test_poly_peak_count_agrees_is_reliable():
@@ -209,13 +208,14 @@ def test_poly_peak_count_agrees_is_reliable():
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["count_reliable"] is True
     assert hp["peak_count_estimate"] == 30
-    assert "峰图计数约" not in result["conclusion"]
+    assert hp["peak_missing"] == 0 and hp["peak_measured"] == 30
+    assert "峰图判读" not in result["conclusion"]
 
 
-def test_poly_partial_read_participates_and_evidence_range():
+def test_poly_partial_read_participates_and_peak_verdict():
     """B4：截断在 poly 内的部分覆盖 read 不整体舍弃——照常数覆盖段峰并与
-    覆盖段调用数比较；任一 read 峰数≠调用数即判不可靠，综合判读以完整
-    覆盖 read 的可分辨峰为下限、调用数为上限（人工核对会综合两条 read）"""
+    覆盖段参考长度比较；主判读以峰图为准：整段缺失取各覆盖段缺失最大值，
+    实测 = 参考 − 缺失（人工核对会综合两条 read，不随意丢数据）"""
     ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
     read1 = ref[40:170]   # 完整跨过 poly：调用 30 个 A，峰图只有 27 个可分辨峰
     traces1 = _shaped_traces(read1, poly_span=(40, 70), real_peaks=27)
@@ -235,12 +235,37 @@ def test_poly_partial_read_participates_and_evidence_range():
     assert by_file["f2.ab1"]["covered_span"] == [95, 110]
     assert by_file["f2.ab1"]["called_count"] == 16
     assert by_file["f2.ab1"]["peak_count"] == 16
-    # f2 内部一致、f1 有出入 → 整体判不可靠（不设容差）
+    # f2 内部一致、f1 峰数与调用有出入 → 整体判不可靠（不设容差）
     assert hp["count_reliable"] is False
-    assert hp["evidence_peak_count"] == 27
-    assert hp["evidence_range"] == [27, 30]
-    # 无变体（两条 read 调用都与参考一致）→ 结论走 poly 告警分支，给出综合判读
-    assert "综合判读约 27 个（区间 27–30）" in result["conclusion"]
+    # 主判读：f1 段缺 3、f2 段完整 → 整段缺失 3、实测 27
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
+    assert hp["run_covered"] == 30
+    # 无变体（两条 read 调用都与参考一致）→ 结论走 poly 告警分支，给出峰图判读
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+
+
+def test_poly_reverse_read_called_count_via_complement():
+    """反向 read 的调用数按参考方向对齐列统计（互补碱基正确折算）——修复
+    线性映射把反向覆盖段调用数记成 0 的缺陷；部分覆盖照常参与核对"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # 反向 read 覆盖参考 90-170：polyA 的 90-110 段在 read 坐标 60-80（polyT）
+    read_bases = ref[89:170].translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    traces = _shaped_traces(read_bases, poly_span=(60, 81), real_peaks=21, channel="T")
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("r.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    rc = hp["read_counts"][0]
+    assert rc["direction"] == "-"
+    assert rc["coverage"] == "partial"
+    assert rc["covered_span"] == [90, 110]
+    assert rc["called_count"] == 21   # 互补折算正确，不再是 0
+    assert rc["peak_count"] == 21
+    # 覆盖段内峰数与参考段一致 → 不构成缺失证据；整段实测维持参考值
+    assert hp["peak_missing"] == 0
+    assert hp["peak_measured"] == 30
+    assert hp["count_reliable"] is True
+    assert hp["run_covered"] == 21    # 两条合并覆盖不足整段时如实统计
 
 
 def test_abif_parser_matches_biopython():
