@@ -263,6 +263,22 @@ const gapSummary = computed(() => {
   return parts.join('、') + (gs.length > 3 ? ' 等' : '')
 })
 
+// 低置信差异（单 read 支持 / 低 Q / 疑似混合峰）默认折叠：不删除、不影响
+// 共识与 CDS 结论，只是收起避免刷屏；点开展开供人工核对峰图
+const showLowConf = ref(false)
+const lowConfVariants = computed(() =>
+  (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
+const shownVariants = computed(() => {
+  const all = analysis.value?.variants ?? []
+  return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
+})
+// 结论文本中低置信差异行（后端固定以"低置信（"标注）同样折叠
+const conclusionParts = computed(() => {
+  const lines = (analysis.value?.conclusion ?? '').split('\n')
+  const low = lines.filter((l) => l.includes('低置信（'))
+  return { main: lines.filter((l) => !l.includes('低置信（')).join('\n'), low }
+})
+
 /** CDS 结论卡的覆盖标签 */
 function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
   if (c.coverage_status === 'uncovered') return '未覆盖'
@@ -863,7 +879,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
     <template v-if="analysis">
       <!-- 结论总览 -->
       <div class="conclusion-card" :class="{ ok: analysis.variants.length === 0 }">
-        <p class="conclusion-text">{{ analysis.conclusion }}</p>
+        <p class="conclusion-text">{{ conclusionParts.main }}</p>
+        <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
+          {{ showLowConf ? '▾' : '▸' }} {{ lowConfVariants.length }} 处低置信差异已折叠（疑似测序噪声/混合峰，点击{{ showLowConf ? '收起' : '展开' }}逐条人工核对）
+        </button>
+        <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
         <div class="conclusion-meta">
           <span>引擎: {{ analysis.engine }}</span>
           <span>共识覆盖率: {{ analysis.consensus.coverage_percent }}%</span>
@@ -1056,13 +1076,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 
       <!-- 突变表 -->
       <div v-if="analysis.variants.length">
-        <h4 class="section-title">差异明细（点击行查看峰图）</h4>
+        <h4 class="section-title">差异明细（点击行查看峰图）<span v-if="lowConfVariants.length && !showLowConf" class="map-sub">（{{ lowConfVariants.length }} 处低置信已折叠，在上方结论区展开）</span></h4>
         <table class="seq-table clickable">
           <thead>
             <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(v, i) in analysis.variants" :key="i" @click="jumpToVariant(v)">
+            <tr v-for="(v, i) in shownVariants" :key="i" @click="jumpToVariant(v)">
               <td>{{ v.ref_pos }}</td>
               <td>{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}</td>
               <td class="mono">{{ v.ref_base }} → {{ v.alt_base }}</td>
@@ -1232,6 +1252,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 }
 .conclusion-card.ok { background: #F0FAF2; border-color: #BFE5C8; }
 .conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
+.lowconf-toggle {
+  display: inline-block; margin: 0.1rem 0 0.4rem; padding: 0.15rem 0.6rem;
+  font-size: 0.78rem; color: #8a6a1f; background: #FBF3DF;
+  border: 1px solid #E8D9A8; border-radius: 12px; cursor: pointer;
+}
+.lowconf-toggle:hover { background: #F5E9C8; }
+.lowconf-lines { font-weight: 400; font-size: 0.85rem; color: #8a6a1f; }
 .cds-card { margin-top: 0.75rem; }
 .cds-row { display: flex; gap: 0.6rem; padding: 0.5rem 0; border-top: 1px dashed #E8E8E8; }
 .cds-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: none; }

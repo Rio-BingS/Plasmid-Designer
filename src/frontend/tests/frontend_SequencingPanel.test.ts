@@ -221,6 +221,33 @@ describe('SequencingPanel', () => {
     expect(text).toContain('无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）')
   })
 
+  it('collapses low-confidence variants by default with an expand toggle', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n位置 380 缺失 1bp（非编码区），低置信（疑似测序噪声或混合峰，建议人工核对峰图）',
+      variants: [
+        { ...mockAnalysis.variants[0], confidence: 'high' },
+        { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low' },
+      ],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    let text = wrapper.text()
+    // 默认折叠：差异明细只剩高置信行，低置信以计数条收起
+    expect(text).toContain('1 处低置信差异已折叠')
+    expect(text).toContain('共检出 2 处差异')
+    expect(text).not.toContain('位置 380 缺失 1bp')
+    expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(1)
+
+    // 展开：低置信行与结论文本行都出现
+    await wrapper.find('.lowconf-toggle').trigger('click')
+    text = wrapper.text()
+    expect(text).toContain('位置 380 缺失 1bp')
+    expect(text).toContain('低置信（疑似测序噪声或混合峰，建议人工核对峰图）')
+    expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
+  })
+
   it('renders alignment view with mismatch and low-Q highlighting', async () => {
     const analysis = {
       ...mockAnalysis,
@@ -459,8 +486,9 @@ describe('SequencingPanel', () => {
     // read 表质量评级（含 Q20 tooltip）
     expect(wrapper.find('.grade-chip').text()).toBe('A')
     expect(wrapper.find('.grade-chip').attributes('title')).toContain('98%')
-    // 变异表置信度分级
+    // 变异表置信度分级（低置信默认折叠，先展开再断言）
     // happy-dom 的 querySelector 对复合类选择器（.a.b）不可靠，用单类选择器断言
+    await wrapper.find('.lowconf-toggle').trigger('click')
     expect(wrapper.find('.conf-low').text()).toBe('低')
     // 覆盖缺口提示（按长度排序，取最长 3 段）
     const gaps = wrapper.find('.coverage-gaps').text()
