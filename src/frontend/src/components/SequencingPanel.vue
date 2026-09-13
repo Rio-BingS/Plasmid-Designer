@@ -270,6 +270,68 @@ function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number 
   return `覆盖 ${c.covered_percent}%`
 }
 
+// ==================== poly 同聚物 / 重复结构卡片 ====================
+type Hp = NonNullable<SequencingAnalysis['homopolymers']>[number]
+
+// 显示阈值：默认 20bp（=后端 HOMOPOLYMER_MIN），只显示需要核对重复数的
+// poly 功能结构；8-19bp 观察级同聚物与二/三核苷酸重复默认隐藏，可调低查看
+const polyMinLen = ref(20)
+function onPolyThresh(e: Event) {
+  polyMinLen.value = Number((e.target as HTMLSelectElement).value)
+}
+const polyEntries = computed(() =>
+  (analysis.value?.homopolymers ?? [])
+    .filter((h) => (h.length ?? h.end - h.start + 1) >= polyMinLen.value))
+const polyHiddenCount = computed(
+  () => (analysis.value?.homopolymers ?? []).length - polyEntries.value.length)
+
+/** 结构名：period=1 用 poly(A)；period>1 是二/三核苷酸重复，按 (AT)×4 标注，
+ *  避免把"参考 4 个单元"误读成 4bp 的 polyA */
+function polyName(h: Hp): string {
+  if ((h.period ?? 1) === 1) return `poly(${h.base})`
+  return `(${h.unit})×${h.ref_repeat_count} 重复`
+}
+function polyUnitLabel(h: Hp): string {
+  return (h.period ?? 1) === 1 ? `个 ${h.base}` : `个 ${h.unit} 单元`
+}
+
+/** 与调用数不一致但仍在后端长度相关容差内的峰图计数（107bp 容差 ±6，
+ *  差 3 个不判不可靠）：绿灯不等于峰图证据与调用完全吻合，仍要明示差异 */
+function polyCountDiff(h: Hp): number | null {
+  if (h.peak_count_estimate == null || h.count_reliable === false) return null
+  const diff = h.peak_count_estimate - h.observed_repeat_count
+  return diff !== 0 ? diff : null
+}
+function polyDiffNote(h: Hp): string | null {
+  const diff = polyCountDiff(h)
+  if (diff === null) return null
+  return `峰图计数比调用${diff > 0 ? '多' : '少'} ${Math.abs(diff)} 个——长同聚物精确重复数建议以峰图/克隆验证为准`
+}
+
+const LENGTH_METHOD_LABELS: Record<string, string> = {
+  peaks: '峰数法', width: '宽度法', second_derivative: '二阶导数法',
+}
+/** 信号反卷积的长度估计（峰完全合并时峰数法失效的救援口径） */
+function polyEstNote(h: Hp): string | null {
+  if (h.length_estimate == null) return null
+  const label = LENGTH_METHOD_LABELS[h.length_method ?? ''] ?? '信号估计'
+  const ci = h.length_ci ? `（区间 ${h.length_ci[0]}–${h.length_ci[1]}）` : ''
+  return `${label}约 ${h.length_estimate} ${polyUnitLabel(h)}${ci}`
+}
+
+/** 覆盖该结构但未完整跨过的 read（如反向引物在 poly 内截断）：
+ *  它们不参与峰图交叉验证，前端从 read 落位推得，明确提示证据缺口 */
+function polyPartialReads(h: Hp) {
+  return (analysis.value?.reads ?? []).filter(
+    (r) => r.ref_end >= h.start && r.ref_start <= h.end
+      && (r.ref_start > h.start || r.ref_end < h.end))
+}
+function polyPartialNote(h: Hp, r: SequencingAnalysis['reads'][number]): string {
+  const cov = `${Math.max(r.ref_start, h.start)}-${Math.min(r.ref_end, h.end)}`
+  return `${r.filename}（${r.direction === '-' ? '反向' : '正向'}）仅覆盖该结构 ${cov}，`
+    + '未完整跨过（read 在结构内截断/起始），未参与峰图交叉验证'
+}
+
 // SO 标准后果词表 → 中文标签与影响等级（VEP/snpEff 同款分级）
 const SO_LABELS: Record<string, string> = {
   stop_gained: '无义突变',
@@ -844,36 +906,53 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         </div>
       </div>
 
-      <!-- poly 同聚物结构：识别与重复数判读（≥20bp 连续同一碱基） -->
+      <!-- poly 同聚物/重复结构：识别与重复数判读（阈值可调，默认只显示 ≥20bp 功能结构） -->
       <div class="conclusion-card cds-card" v-if="analysis.homopolymers?.length">
-        <h4 class="section-title">poly 同聚物结构<span class="map-sub">（≥20bp 连续同一碱基；indel 落入时给出参考/测得重复数）</span></h4>
-        <div v-for="h in analysis.homopolymers" :key="h.base + h.start" class="cds-row">
+        <h4 class="section-title">poly 同聚物 / 重复结构<span class="map-sub">（仅显示长度 ≥ </span>
+          <select class="poly-thresh" :value="polyMinLen" @change="onPolyThresh"
+                  title="低于该长度的短同聚物/微卫星重复默认隐藏；调低可查看观察级结构">
+            <option value="8">8</option>
+            <option value="12">12</option>
+            <option value="20">20</option>
+            <option value="30">30</option>
+            <option value="50">50</option>
+          </select>
+          <span class="map-sub"> bp 的结构；indel 落入时给出参考/测得重复数）</span></h4>
+        <div v-for="h in polyEntries" :key="h.start" class="cds-row">
           <span class="cds-dot" :class="h.count_reliable ? 'pass' : 'mid'"></span>
           <div class="cds-main">
             <p class="cds-name">
-              poly({{ h.base }})
-              <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} 个 {{ h.base }}）</span>
+              {{ polyName(h) }}
+              <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}）</span>
               <span class="cds-cov" :class="h.count_reliable ? 'full' : 'partial'">
                 {{ h.count_reliable ? '重复数计数可靠' : '峰压缩区，计数可能不准，建议核对峰图' }}
               </span>
             </p>
             <p class="cds-verdict">
-              测得 {{ h.observed_repeat_count }} 个
+              测得 {{ h.observed_repeat_count }} {{ polyUnitLabel(h) }}
               <template v-if="h.variant">
                 （位置 {{ h.variant.ref_pos }} {{ h.variant.type === 'insertion' ? '插入' : '缺失' }} {{ h.variant.length }}bp，
                 {{ h.variant.confidence === 'high' ? '高' : h.variant.confidence === 'medium' ? '中' : '低' }}置信）
               </template>
               <template v-else>，与参考一致</template>
               <template v-if="h.peak_count_estimate != null">
-                ；峰图独立计数约 {{ h.peak_count_estimate }} 个
+                ；峰图独立计数约 {{ h.peak_count_estimate }} {{ polyUnitLabel(h) }}
                 <span v-if="h.read_counts?.length" class="poly-read-detail">
                   （{{ h.read_counts.map(rc =>
                     `${rc.filename}${rc.direction === '-' ? '反向' : '正向'} ${rc.peak_count ?? '?'}`).join('，') }}）
                 </span>
               </template>
+              <template v-if="polyEstNote(h)">；{{ polyEstNote(h) }}</template>
+              <template v-if="polyDiffNote(h)">；{{ polyDiffNote(h) }}</template>
+            </p>
+            <p class="cds-detail" v-for="pr in polyPartialReads(h)" :key="pr.filename">
+              <span>↳ {{ polyPartialNote(h, pr) }}</span>
             </p>
           </div>
         </div>
+        <p class="cds-detail" v-if="polyHiddenCount > 0">
+          <span>另有 {{ polyHiddenCount }} 条长度 &lt; {{ polyMinLen }}bp 的短同聚物/微卫星重复已默认隐藏（一般结构，无需核对重复数），调低上方阈值可查看</span>
+        </p>
       </div>
 
       <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
@@ -1164,6 +1243,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .cds-so.low { background: #EDF2EE; color: #5E7A64; }
 .cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
 .cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+.poly-thresh {
+  width: auto; min-width: 0; padding: 0 2px; font-size: 0.75rem; font-weight: 400;
+  border: 1px solid #CBD5E1; border-radius: 4px; background: #fff; color: #334155;
+  vertical-align: middle;
+}
+.poly-read-detail { color: #777; }
 .conclusion-meta { display: flex; gap: 1.5rem; font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }
 .coverage-bar {
   position: relative; height: 14px; background: #EEE; border-radius: 7px; overflow: hidden;
