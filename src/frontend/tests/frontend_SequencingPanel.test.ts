@@ -136,8 +136,8 @@ describe('SequencingPanel', () => {
     const analysis = {
       ...mockAnalysis,
       homopolymers: [
-        { base: 'A', start: 3993, end: 4062, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
-        { base: 'T', start: 500, end: 521, ref_repeat_count: 22, observed_repeat_count: 20, count_reliable: false,
+        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
+        { base: 'T', start: 500, end: 521, length: 22, ref_repeat_count: 22, observed_repeat_count: 20, count_reliable: false,
           variant: { ref_pos: 500, type: 'deletion', length: 2, confidence: 'medium' } },
       ],
     }
@@ -145,14 +145,71 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     const text = wrapper.text()
-    expect(text).toContain('poly 同聚物结构')
+    expect(text).toContain('poly 同聚物 / 重复结构')
     expect(text).toContain('poly(A)')
     expect(text).toContain('3993-4062（参考 70 个 A）')
-    expect(text).toContain('测得 70 个')
+    expect(text).toContain('测得 70 个 A')
     expect(text).toContain('poly(T)')
-    expect(text).toContain('测得 20 个')
+    expect(text).toContain('测得 20 个 T')
     expect(text).toContain('位置 500 缺失 2bp')
     expect(text).toContain('峰压缩区，计数可能不准')
+  })
+
+  it('hides sub-threshold repeats by default and labels dinucleotide repeats correctly', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      homopolymers: [
+        { base: 'A', start: 3993, end: 4062, length: 70, ref_repeat_count: 70, observed_repeat_count: 70, count_reliable: true, variant: null },
+        { base: 'A', start: 700, end: 711, length: 12, tier: 'observed', ref_repeat_count: 12, observed_repeat_count: 12, count_reliable: true, variant: null },
+        { base: 'A', unit: 'AT', period: 2, start: 900, end: 907, length: 8, ref_repeat_count: 4, observed_repeat_count: 4, count_reliable: true, variant: null },
+      ],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    let text = wrapper.text()
+    expect(text).toContain('poly(A)')
+    expect(text).toContain('3993-4062（参考 70 个 A）')
+    // 阈值默认 20：观察级 12bp 与 (AT)×4 微卫星默认隐藏，且给出隐藏计数
+    expect(text).not.toContain('700-711')
+    expect(text).not.toContain('(AT)×4')
+    expect(text).toContain('另有 2 条长度 < 20bp 的短同聚物/微卫星重复已默认隐藏')
+
+    // 调低阈值到 8：全部显示，微卫星按 (AT)×4 标注而非 poly(A)
+    await wrapper.find('select.poly-thresh').setValue(8)
+    text = wrapper.text()
+    expect(text).toContain('700-711（参考 12 个 A）')
+    expect(text).toContain('(AT)×4 重复')
+    expect(text).toContain('900-907（参考 4 个 AT 单元）')
+    expect(text).not.toContain('已默认隐藏')
+  })
+
+  it('surfaces in-tolerance peak count gap, signal length estimate and partially covering reads', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      reads: [
+        { ...mockAnalysis.reads[0], filename: 'r1.ab1', direction: '+', ref_start: 3900, ref_end: 4200 },
+        { ...mockAnalysis.reads[0], filename: 'r2.ab1', direction: '-', ref_start: 4010, ref_end: 4400 },
+      ],
+      homopolymers: [{
+        base: 'A', start: 3993, end: 4099, length: 107, ref_repeat_count: 107,
+        observed_repeat_count: 107, count_reliable: true, variant: null,
+        peak_count_estimate: 104, length_estimate: 106, length_method: 'width',
+        length_ci: [103, 108],
+        read_counts: [{ filename: 'r1.ab1', direction: '+', peak_count: 104 }],
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    const text = wrapper.text()
+    // 计数差 3 在 107bp 的 ±6 容差内（仍判可靠），但差异要明示而不是只报"一致"
+    expect(text).toContain('测得 107 个 A')
+    expect(text).toContain('峰图计数比调用少 3 个')
+    expect(text).toContain('宽度法约 106 个 A（区间 103–108）')
+    // 反向 read 只覆盖 polyA 右段（4010 起），未完整跨过 → 明示未参与交叉验证
+    expect(text).toContain('r2.ab1（反向）仅覆盖该结构 4010-4099，未完整跨过')
+    expect(text).not.toContain('r1.ab1（正向）仅覆盖')
   })
 
   it('renders alignment view with mismatch and low-Q highlighting', async () => {

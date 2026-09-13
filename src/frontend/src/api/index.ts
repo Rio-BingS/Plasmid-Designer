@@ -582,13 +582,20 @@ export interface SequencingAnalysis {
   coverage_gaps?: { start: number; end: number; length: number }[]
   cds_reports?: CdsReport[]
   homopolymers?: {
-    base: string
+    base: string | null
+    unit?: string | null
+    period?: number
     start: number
     end: number
+    length?: number
+    tier?: string
     ref_repeat_count: number
     observed_repeat_count: number
     count_reliable: boolean
     peak_count_estimate?: number | null
+    length_estimate?: number | null
+    length_method?: string | null
+    length_ci?: [number, number] | null
     read_counts?: { filename: string; direction: string; peak_count: number | null }[]
     variant: { ref_pos: number; type: string; length: number; confidence: string } | null
   }[]
