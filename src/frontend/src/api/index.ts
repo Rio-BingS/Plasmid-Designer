@@ -24,7 +24,8 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
+      // 登录接口本身的 401 是密码错误，不应清除本地会话状态
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
@@ -39,6 +40,26 @@ api.interceptors.response.use(
   }
 )
 
+/** blob 下载公共路径：错误响应(JSON)直接抛出，成功则触发保存并释放 URL */
+async function saveBlobResponse(response: { data: any }, filename: string): Promise<void> {
+  const data = response.data as Blob
+  if (data.type && data.type.includes('application/json')) {
+    // responseType: 'blob' 时后端的 4xx/5xx JSON 错误也以 Blob 返回，不能存成下载文件
+    const text = await data.text()
+    let detail = text
+    try { detail = JSON.parse(text)?.detail ?? text } catch { /* 保留原文 */ }
+    throw new Error(typeof detail === 'string' ? detail : '下载失败')
+  }
+  const url = window.URL.createObjectURL(data)
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
 // 设计任务
 export async function submitDesign(request: DesignRequest): Promise<{ design_id: string; status: string }> {
   const response = await api.post('/design', request)
@@ -52,24 +73,12 @@ export async function getDesign(designId: string): Promise<DesignResult> {
 
 export async function downloadGenbank(designId: string): Promise<void> {
   const response = await api.get(`/design/${designId}/download/genbank`, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = url
-  link.setAttribute('download', `${designId}.gb`)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  await saveBlobResponse(response, `${designId}.gb`)
 }
 
 export async function downloadPrimers(designId: string): Promise<void> {
   const response = await api.get(`/design/${designId}/download/primers`, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = url
-  link.setAttribute('download', `${designId}_primers.tsv`)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  await saveBlobResponse(response, `${designId}_primers.tsv`)
 }
 
 // 载体库
@@ -155,13 +164,7 @@ export async function getBatchReport(batchId: string): Promise<any> {
 
 export async function downloadBatchResults(batchId: string): Promise<void> {
   const response = await api.get(`/design/batch/${batchId}/download`, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = url
-  link.setAttribute('download', `${batchId}_results.zip`)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  await saveBlobResponse(response, `${batchId}_results.zip`)
 }
 
 
@@ -178,9 +181,7 @@ export async function getVectorSequence(vectorId: string, format: string = 'fast
 export async function uploadVectorFile(file: File): Promise<any> {
   const formData = new FormData()
   formData.append('file', file)
-  const response = await api.post('/vectors/import/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
+  const response = await api.post('/vectors/import/upload', formData)
   return response.data
 }
 
@@ -267,16 +268,10 @@ export async function exportSequence(sequence: string, features: any[], format: 
     format,
     name
   }, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = url
   const extensions: Record<string, string> = {
     genbank: 'gb', fasta: 'fasta', snapgene: 'dna', benchling: 'json', sbol: 'json'
   }
-  link.setAttribute('download', `${name}.${extensions[format] || format}`)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  await saveBlobResponse(response, `${name}.${extensions[format] || format}`)
 }
 
 // 酶信息（对应后端 GET /analysis/enzymes 返回结构）
@@ -427,13 +422,7 @@ export async function exportAllFormats(
     description,
     is_circular: isCircular
   }, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = url
-  link.setAttribute('download', `${name}_exports.zip`)
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  await saveBlobResponse(response, `${name}_exports.zip`)
 }
 
 // 克隆兼容性检查（JSON body，与后端 CompatibilityRequest 对齐）
@@ -635,17 +624,23 @@ export async function analyzeSequencingFiles(
   reads.forEach((f) => form.append('reads', f))
   form.append('min_q', String(minQ))
   form.append('allow_decompose', String(allowDecompose))
-  const response = await api.post('/sequencing/analyze', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000
-  })
+  const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   return response.data
 }
 
 /** 取设计结果的 GenBank 文件（测序页深链自动带入参考序列用） */
 export async function fetchDesignGenbankFile(designId: string): Promise<File> {
   const response = await api.get(`/design/${designId}/download/genbank`, { responseType: 'blob' })
+  assertBlobIsGenbank(response.data, designId)
   return new File([response.data], `${designId}.gb`, { type: 'application/octet-stream' })
+}
+
+/** 深链取参考序列时校验响应确实是 GenBank 文本——401/404 时错误 JSON 会被包成
+ *  Blob 传给后端解析，用户只看到莫名的解析报错而看不到根因 */
+function assertBlobIsGenbank(data: Blob, name: string): void {
+  if (data.type && data.type.includes('application/json')) {
+    throw new Error(`无法获取 ${name} 的参考序列（请确认其仍然存在）`)
+  }
 }
 
 /** 取载体库载体的 GenBank 文件（测序页深链自动带入参考序列用） */
@@ -654,6 +649,7 @@ export async function fetchVectorGenbankFile(vectorId: string): Promise<File> {
     params: { format: 'genbank' },
     responseType: 'blob'
   })
+  assertBlobIsGenbank(response.data, vectorId)
   return new File([response.data], `${vectorId}.gb`, { type: 'application/octet-stream' })
 }
 
@@ -735,9 +731,6 @@ export async function analyzeSequencingBatch(
   files.forEach((f) => form.append('files', f))
   if (excel) form.append('excel', excel, excel.name)
   form.append('min_q', String(minQ))
-  const response = await api.post('/sequencing/analyze-batch', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 600000
-  })
+  const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
   return response.data
 }
