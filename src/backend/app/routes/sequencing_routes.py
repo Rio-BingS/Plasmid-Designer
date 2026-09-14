@@ -18,6 +18,7 @@
 """
 
 import os
+import re
 import uuid
 import tempfile
 from datetime import datetime
@@ -52,6 +53,22 @@ def _get_analysis(analysis_id: str) -> Dict:
     return result
 
 
+async def _read_limited(f: UploadFile, max_bytes: int = MAX_FILE_SIZE) -> bytes:
+    """分块读取上传文件，累计超限立即中断——避免先整读进内存再校验被超大文件打爆"""
+    name = f.filename or "unknown"
+    buf = bytearray()
+    while True:
+        chunk = await f.read(1024 * 1024)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=400, detail=f"文件过大（>{max_bytes // (1024 * 1024)}MB）: {name}"
+            )
+    return bytes(buf)
+
+
 async def _read_ab1_files(files: List[UploadFile]) -> List[Tuple[str, bytes]]:
     if not files or len(files) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"请上传 1-{MAX_FILES} 个 .ab1 文件")
@@ -60,10 +77,7 @@ async def _read_ab1_files(files: List[UploadFile]) -> List[Tuple[str, bytes]]:
         name = f.filename or "unknown.ab1"
         if not name.lower().endswith(".ab1"):
             raise HTTPException(status_code=400, detail=f"仅支持 .ab1 文件，收到: {name}")
-        blob = await f.read()
-        if len(blob) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail=f"文件过大（>20MB）: {name}")
-        blobs.append((name, blob))
+        blobs.append((name, await _read_limited(f)))
     return blobs
 
 
@@ -156,7 +170,7 @@ async def analyze_sequencing_upload(
     from core.sanger.reference_parser import parse_reference, ReferenceParseError
 
     ref_name = reference.filename or "reference.gb"
-    ref_bytes = await reference.read()
+    ref_bytes = await _read_limited(reference)
     if not ref_bytes:
         raise HTTPException(status_code=400, detail="参考文件为空")
     try:
@@ -195,7 +209,7 @@ def _group_batch_uploads(
     per_plasmid: Dict[str, Dict] = {}
     unmatched: List[Dict] = []
     for r in refs:
-        raw_stem = r["name"][: r["name"].rfind(".")]
+        raw_stem = r["name"].rsplit(".", 1)[0] if "." in r["name"] else r["name"]
         if norm_stem(raw_stem) in {norm_stem(k) for k in per_plasmid}:
             unmatched.append({"file": r, "reason": "已存在同名图谱，本文件未采用"})
             continue
@@ -320,9 +334,7 @@ async def analyze_sequencing_batch(
     ignored: List[str] = []
     for f in files:
         name = f.filename or "unnamed"
-        blob = await f.read()
-        if len(blob) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail=f"文件过大（>20MB）: {name}")
+        blob = await _read_limited(f)
         if name.startswith("~$") or not blob:
             continue
         ext = os.path.splitext(name)[1].lower()
@@ -344,7 +356,7 @@ async def analyze_sequencing_batch(
 
     excel_rows = None
     if excel is not None:
-        excel_bytes = await excel.read()
+        excel_bytes = await _read_limited(excel)
         if not excel_bytes:
             raise HTTPException(status_code=400, detail="信息表文件为空")
         try:
@@ -443,7 +455,10 @@ async def export_consensus(analysis_id: str, format: str = "fasta"):
     """导出拼接结果（共识序列，FASTA / GenBank）"""
     record = _get_analysis(analysis_id)
     seq = record["consensus"]["sequence"]
-    safe_name = f"{record['sample_name']}-consensus".replace(" ", "_")
+    # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
+    # Content-Disposition 响应头（引号/CR/LF）
+    safe_name = re.sub(r"[^A-Za-z0-9._\-一-鿿]+", "_",
+                       f"{record['sample_name']}-consensus").strip("._") or "consensus"
 
     if format.lower() == "genbank":
         lines = [

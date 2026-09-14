@@ -2,9 +2,10 @@
 缓存 API 路由
 提供缓存管理接口
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List, Optional
 from app.cache import cache
+from app.auth.jwt_auth import get_admin_user
 
 router = APIRouter(prefix="/api/cache", tags=["cache"])
 
@@ -21,7 +22,7 @@ async def get_cache_stats() -> Dict:
 
 
 @router.post("/clear")
-async def clear_cache(pattern: str = "*") -> Dict:
+async def clear_cache(pattern: str = "*", _: object = Depends(get_admin_user)) -> Dict:
     """
     清除缓存
     
