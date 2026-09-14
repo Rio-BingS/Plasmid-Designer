@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
-import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
+import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData, formatApiError } from '@/api'
 import PlasmidMap from '@/components/PlasmidMap.vue'
 import SequenceView from '@/components/SequenceView.vue'
 
@@ -24,10 +24,7 @@ function goToSequencing() {
 let pollInterval: number | null = null
 
 function apiError(e: any): string {
-  const d = e.response?.data?.detail
-  if (typeof d === 'string') return d
-  if (Array.isArray(d)) return d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
-  return e.message || '请求失败'
+  return formatApiError(e, '请求失败')
 }
 
 async function fetchResult() {

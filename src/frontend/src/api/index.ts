@@ -3,9 +3,13 @@ import type { DesignRequest, DesignResult, VectorInfo, CodonTable } from '@/type
 
 const API_BASE = '/api'
 
+// 注意：这里不能硬编码 Content-Type。
+// axios 1.x 的 transformRequest 见到「Content-Type 含 application/json」且 data 是
+// FormData 时，会把 FormData 转成 JSON 字符串（File 全变成 {}）发出去，
+// 后端 multipart 接口就会收到空表单并报 "Field required"。
+// 交给 axios 自己判断：普通对象发 application/json，FormData 发 multipart（含 boundary）。
 const api = axios.create({
-  baseURL: API_BASE,
-  headers: { 'Content-Type': 'application/json' }
+  baseURL: API_BASE
 })
 
 // 请求拦截器：自动添加 token
@@ -39,6 +43,29 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+/** 把错误响应转成可读文本（axios 错误 / 后端 detail 都能吃）。
+ *
+ *  FastAPI 的 422 校验错误 detail 是数组，每条只有 "Field required" 这类 msg，
+ *  必须带上 loc 里的字段名，否则界面上只会出现「Field required；Field required」
+ *  这种看不出缺了什么的文案。
+ */
+export function formatApiError(e: any, fallback = '请求失败'): string {
+  const detail = e?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d: any) => {
+        const msg = d?.msg || JSON.stringify(d)
+        const field = Array.isArray(d?.loc)
+          ? d.loc.filter((x: any) => x !== 'body' && x !== 'query' && x !== 'path').join('.')
+          : ''
+        return field ? `${field}: ${msg}` : msg
+      })
+      .join('；')
+  }
+  return e?.message || fallback
+}
 
 /** blob 下载公共路径：错误响应(JSON)直接抛出，成功则触发保存并释放 URL */
 async function saveBlobResponse(response: { data: any }, filename: string): Promise<void> {
