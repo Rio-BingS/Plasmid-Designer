@@ -1,5 +1,6 @@
 """内存存储实现 — 用于 HuggingFace 等无需持久化的部署"""
 
+from copy import deepcopy
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -28,14 +29,16 @@ class MemoryDesignStore(DesignStoreBase):
             self._store.pop(next(iter(self._store)))
 
     def get(self, design_id: str) -> Optional[Dict[str, Any]]:
-        return self._store.get(design_id)
+        # deepcopy 防止调用方绕过 save 直接修改存储态（与 DB 模式语义对齐）
+        item = self._store.get(design_id)
+        return deepcopy(item) if item is not None else None
 
     def update(self, design_id: str, **kwargs) -> Optional[Dict[str, Any]]:
         if design_id not in self._store:
             return None
         for key, value in kwargs.items():
             self._store[design_id][key] = value
-        return self._store[design_id]
+        return deepcopy(self._store[design_id])
 
     def exists(self, design_id: str) -> bool:
         return design_id in self._store
@@ -53,7 +56,7 @@ class MemoryDesignStore(DesignStoreBase):
             self._store[design_id].setdefault("errors", []).append(message)
 
     def list_designs(self, skip: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
-        items = list(self._store.values())
+        items = [deepcopy(v) for v in self._store.values()]
         return items[skip:skip + limit]
 
 
