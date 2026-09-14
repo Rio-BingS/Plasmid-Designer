@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .jwt_auth import (
@@ -33,6 +34,10 @@ from app.features import features_for_tier, features_for_user, tier_for
 from app.mailer import send_email, verification_email_html
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+# 验证码防爆破：每个验证码最多允许的失败尝试次数（进程内计数）
+_VERIFY_MAX_ATTEMPTS = 5
+_verify_attempts: "dict[int, int]" = {}
 
 CODE_TTL_MINUTES = 10
 RESEND_COOLDOWN_SECONDS = 60
@@ -145,20 +150,31 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
     hashed_pw = hash_password(user_data.password)
 
+    def _duplicate_email_400(exc: Exception) -> HTTPException:
+        # 并发注册同邮箱时 unique 约束兜底（先查后插存在竞态窗口）
+        db.rollback()
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册")
+
     if not site["email_verification_required"]:
-        db_user = db_create_user(
-            db=db, email=user_data.email, username=user_data.username,
-            hashed_password=hashed_pw, email_verified=True,
-        )
+        try:
+            db_user = db_create_user(
+                db=db, email=user_data.email, username=user_data.username,
+                hashed_password=hashed_pw, email_verified=True,
+            )
+        except IntegrityError as e:
+            raise _duplicate_email_400(e) from e
         user = db_user_to_user(db_user)
         return RegisterResponse(
             access_token=create_access_token(user), expires_in=24 * 3600, user=user)
 
     # 开启邮箱验证：先建未验证账号，再发码
-    db_user = db_create_user(
-        db=db, email=user_data.email, username=user_data.username,
-        hashed_password=hashed_pw, email_verified=False,
-    )
+    try:
+        db_user = db_create_user(
+            db=db, email=user_data.email, username=user_data.username,
+            hashed_password=hashed_pw, email_verified=False,
+        )
+    except IntegrityError as e:
+        raise _duplicate_email_400(e) from e
     code = _generate_code()
     create_email_verification(
         db, user_id=db_user.id, email=db_user.email,
@@ -256,8 +272,18 @@ async def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="验证码已过期，请重新发送")
     if _hash_code(payload.code.strip(), user_id) != row.code_hash:
+        # 防爆破：6 位数字码 10 分钟有效，无失败次数限制时可被暴力遍历
+        attempts = _verify_attempts.get(row.id, 0) + 1
+        _verify_attempts[row.id] = attempts
+        if attempts >= _VERIFY_MAX_ATTEMPTS:
+            consume_email_verification(db, row)
+            _verify_attempts.pop(row.id, None)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="错误次数过多，验证码已作废，请重新发送")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误")
 
+    _verify_attempts.pop(row.id, None)
     consume_email_verification(db, row)
     update_user(db, user_id, email_verified=True)
     user_response = db_user_to_user(get_user_by_id(db, user_id))
