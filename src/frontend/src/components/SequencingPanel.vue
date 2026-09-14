@@ -6,7 +6,7 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
-  analyzeSequencingFiles, getReadTrace, exportConsensus,
+  analyzeSequencingFiles, getReadTrace, exportConsensus, formatApiError,
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
 } from '@/api'
 
@@ -165,11 +165,7 @@ async function runAnalysis() {
     )
     emit('analyzed', analysis.value)
   } catch (e: any) {
-    // FastAPI 校验错误(422)的 detail 是数组，逐条转成可读文本
-    const detail = e.response?.data?.detail
-    if (typeof detail === 'string') errorMsg.value = detail
-    else if (Array.isArray(detail)) errorMsg.value = detail.map((d: any) => d.msg || JSON.stringify(d)).join('；')
-    else errorMsg.value = e.message || '分析失败'
+    errorMsg.value = formatApiError(e, '分析失败')
   } finally {
     analyzing.value = false
   }

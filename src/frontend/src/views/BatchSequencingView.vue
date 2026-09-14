@@ -7,7 +7,7 @@
  */
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { analyzeSequencingBatch, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
+import { analyzeSequencingBatch, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
 
 const router = useRouter()
 
@@ -118,10 +118,7 @@ async function runBatch() {
   try {
     result.value = await analyzeSequencingBatch(files.value, excelFile.value, minQ.value)
   } catch (e: any) {
-    const detail = e.response?.data?.detail
-    if (typeof detail === 'string') errorMsg.value = detail
-    else if (Array.isArray(detail)) errorMsg.value = detail.map((d: any) => d.msg || JSON.stringify(d)).join('；')
-    else errorMsg.value = e.message || '批量分析失败'
+    errorMsg.value = formatApiError(e, '批量分析失败')
   } finally {
     analyzing.value = false
   }
