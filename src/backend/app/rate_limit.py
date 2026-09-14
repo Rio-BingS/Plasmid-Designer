@@ -286,6 +286,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return "batch"
         elif "/design" in path:
             return "design"
+        elif "/sequencing" in path:
+            # 测序分析上传大文件（.ab1/参考图谱），按 upload 档限流
+            return "upload"
         elif "/upload" in path or "/import" in path:
             return "upload"
         elif "/auth" in path:
