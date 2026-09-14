@@ -1460,3 +1460,42 @@ def test_boundary_deletion_partial_overlap_counts_as_frameshift():
     consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
     cr = _build_cds_reports(ref, feats, variants, consensus)[0]
     assert cr["frameshift_count"] == 1
+
+
+def test_negative_strand_cds_codon_annotation():
+    """负链 CDS 的密码子/氨基酸注释按编码方向（反向互补）计算
+
+    此前直接用正向链序列翻译，负链 CDS 的 aa_change 全错。
+    """
+    # 正向参考：特征区间 6-10 为 TACGT；负链编码序列 = revcomp = ACGTA
+    # 编码第 1 个密码子 ACG (Thr)；参考链位置 8 的 C 对应编码偏移 e-8=2
+    ref = "AAAAA" + "TACGT" + "AAAAA"
+    feats = [{"name": "N", "type": "CDS", "start": 6, "end": 10, "strand": "-"}]
+    v = _base_variant(ref_pos=8, type="substitution", ref_base="C", alt_base="T")
+    annotate_variant(v, feats, ref)
+    # 编码序列 ACGTA，cpos=2 → 密码子 ACG，第 3 位 C→G（互补）→ ACG→ACG?
+    # T 的互补是 A：ACG→ACA（Thr→Thr），同义
+    assert v["codon_change"] == "ACG>ACA"
+    assert v.get("synonymous") is True
+    assert v.get("aa_change") is None
+
+    # 错义：alt=A（互补 T）→ ACG→ACT（Thr→Thr）仍是同义；换位置 6：
+    v2 = _base_variant(ref_pos=10, type="substitution", ref_base="T", alt_base="C")
+    annotate_variant(v2, feats, ref)
+    # cpos = 0 → 密码子 ACG 第 1 位，C 的互补 G → GCG（Ala）错义
+    assert v2["codon_change"] == "ACG>GCG"
+    assert v2.get("aa_change") == "N:T1A"
+
+
+def test_duplicate_cds_names_annotate_correct_feature():
+    """重名 CDS（如多个无 label 特征都叫 CDS）：注释取变体实际命中的特征"""
+    ref = "A" * 12 + "TAT" + "A" * 15 + "TAC" + "A" * 12
+    feats = [
+        {"name": "CDS", "type": "CDS", "start": 13, "end": 15, "strand": "+"},
+        {"name": "CDS", "type": "CDS", "start": 31, "end": 33, "strand": "+"},
+    ]
+    # 变体落在第二个 CDS 的 TAC（Tyr）：第 2 位 A→G → TGC（Cys）错义
+    v = _base_variant(ref_pos=32, type="substitution", ref_base="A", alt_base="G")
+    annotate_variant(v, feats, ref)
+    assert v["codon_change"] == "TAC>TGC"
+    assert v["aa_change"] == "CDS:Y1C"

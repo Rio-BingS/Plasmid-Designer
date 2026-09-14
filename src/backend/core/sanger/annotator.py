@@ -28,42 +28,57 @@ def translate(seq: str) -> str:
     return "".join(CODON_TABLE.get(seq[i:i + 3], "x") for i in range(0, len(seq) - len(seq) % 3, 3))
 
 
+def _revcomp(seq: str) -> str:
+    return seq.translate(_COMPLEMENT)[::-1]
+
+
 def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dict:
     """为单个变体补充特征级注释（原地修改并返回）"""
     ref_pos = variant["ref_pos"]
     ref = reference.upper().replace("U", "T")
     L = len(ref)
 
-    # 所在特征
+    # 所在特征（同时保留原始特征 dict，供 CDS 注释直接使用——
+    # 按名称二次反查在重名特征时会取错坐标）
     hit_features = []
+    hit_feats: List[Dict] = []
     for f in features:
         s, e = int(f.get("start", 0)), int(f.get("end", 0))
         if s <= ref_pos <= e:
             hit_features.append({"name": f.get("name", "?"), "type": f.get("type", "other")})
+            hit_feats.append(f)
     variant["features"] = hit_features
 
     # CDS 内的氨基酸变化与移码判定
     variant["codon_change"] = None
     variant["aa_change"] = None
     variant["frameshift"] = False
-    for f in hit_features:
-        if f["type"] not in ("CDS", "gene"):
-            continue
-        feat = next((x for x in features if x.get("name") == f["name"]), None)
-        if not feat:
+    for feat in hit_feats:
+        if feat.get("type") not in ("CDS", "gene"):
             continue
         s, e = int(feat["start"]), int(feat["end"])
-        offset = ref_pos - s  # 0-based 在特征内偏移
+        strand = feat.get("strand", "+")
+        if strand == "-":
+            # 负链 CDS：编码序列是特征区间的反向互补，密码子坐标按编码方向计算
+            coding = _revcomp(ref[s - 1:e])
+            cpos = e - ref_pos  # 0-based 在编码序列内偏移
+        else:
+            coding = ref[s - 1:e]
+            cpos = ref_pos - s
         if variant["type"] == "substitution":
-            frame = (offset // 3) * 3
-            codon_ref = ref[s - 1 + frame: s - 1 + frame + 3]
+            frame = (cpos // 3) * 3
+            codon_ref = coding[frame: frame + 3]
             mut_codon = list(codon_ref)
-            mut_codon[offset % 3] = variant["alt_base"][:1]
+            # 负链上变体的 alt_base 是参考链坐标，编码方向需取互补
+            mut_base = variant["alt_base"][:1]
+            if strand == "-":
+                mut_base = mut_base.translate(_COMPLEMENT)
+            mut_codon[cpos % 3] = mut_base
             aa_ref = CODON_TABLE.get(codon_ref, "x")
             aa_alt = CODON_TABLE.get("".join(mut_codon).upper(), "x")
             variant["codon_change"] = f"{codon_ref}>{''.join(mut_codon).upper()}"
             if aa_alt != aa_ref:
-                variant["aa_change"] = f"{feat.get('name', 'CDS')}:{aa_ref}{offset // 3 + 1}{aa_alt}"
+                variant["aa_change"] = f"{feat.get('name', 'CDS')}:{aa_ref}{cpos // 3 + 1}{aa_alt}"
             elif aa_ref != "x":
                 variant["synonymous"] = True  # 同义：DNA 变、蛋白不变，不算氨基酸改变
         elif variant["type"] in ("insertion", "deletion"):
