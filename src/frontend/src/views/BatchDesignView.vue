@@ -48,21 +48,35 @@ const parsedSequences = computed(() => {
 const sequenceCount = computed(() => parsedSequences.value.length)
 
 let pollInterval: number | null = null
+let pollFailures = 0
+const MAX_POLL_FAILURES = 5  // 后端持续报错时停止无限轮询
 
 async function startPolling(id: string) {
   batchId.value = id
+  pollFailures = 0
   const poll = async () => {
     try {
       const data = await getBatchProgress(id)
+      pollFailures = 0
       progress.value = data
       if (data.status === 'completed') {
         fetchBatchReport()
         if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
       }
-    } catch (e: any) { console.error('Poll error:', e) }
+    } catch (e: any) {
+      console.error('Poll error:', e)
+      if (++pollFailures >= MAX_POLL_FAILURES) {
+        stopPolling()
+        error.value = '进度查询连续失败，请刷新页面重试'
+      }
+    }
   }
   poll()
   pollInterval = window.setInterval(poll, 2000)
+}
+
+function stopPolling() {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
 }
 
 async function handleSubmit() {
@@ -316,7 +330,7 @@ onUnmounted(() => {
             ></div>
           </div>
           <div class="progress-percent">
-            {{ progress.progress_percent.toFixed(1) }}%
+            {{ Number(progress.progress_percent ?? 0).toFixed(1) }}%
           </div>
         </div>
         
