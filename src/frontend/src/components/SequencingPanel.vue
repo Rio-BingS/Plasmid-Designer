@@ -132,7 +132,10 @@ function onFolderPick(e: Event) {
   addFiles((e.target as HTMLInputElement).files)
   ;(e.target as HTMLInputElement).value = ''
 }
-function removeRead(i: number) { reads.value.splice(i, 1) }
+function removeRead(f: File) {
+  const i = reads.value.indexOf(f)
+  if (i >= 0) reads.value.splice(i, 1)
+}
 function clearReads() { reads.value = [] }
 function clearReference() { referenceFile.value = null; autoFilledRef.value = false }
 
@@ -226,6 +229,8 @@ function setChunkRef(i: number, el: unknown) {
 function selectAlignRead(i: number) {
   alignReadIdx.value = i
   focusCol.value = null
+  // 切换 read 后 chunk 数量变化，清掉旧 read 的元素引用防止陈旧 DOM 残留
+  for (const k of Object.keys(chunkEls)) delete chunkEls[Number(k)]
 }
 
 function chunkStartPos(chunk: { cols: AlnCol[] }): string {
@@ -634,23 +639,39 @@ watch(() => props.preset, (p) => {
     trace.value = null
     highlightReadIdx.value = null
     focusCol.value = null
+  } else {
+    // 退出历史回看：清空上次注入的分析状态，避免面板残留旧结果造成误读
+    analysis.value = null
+    trace.value = null
+    highlightReadIdx.value = null
+    focusCol.value = null
+    errorMsg.value = ''
+    showLowConf.value = false
   }
 }, { immediate: true })
 
 const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: '#222222', C: '#2456C8' }
 
-async function loadTrace(readIndex: number) {
+// 请求序号防竞态：连点两条 read（或跳峰连跳）时，慢的旧响应不得覆盖新响应
+let traceReqSeq = 0
+
+async function loadTrace(readIndex: number): Promise<boolean> {
+  const reqId = ++traceReqSeq
   activeRead.value = readIndex
   traceLoading.value = true
   highlightReadIdx.value = null
   try {
-    trace.value = await getReadTrace(analysis.value!.analysis_id, readIndex)
+    const t = await getReadTrace(analysis.value!.analysis_id, readIndex)
+    if (reqId !== traceReqSeq) return false
+    trace.value = t
     traceStart.value = 0
     nextDraw()
+    return true
   } catch (e: any) {
-    errorMsg.value = e.response?.data?.detail || '峰图加载失败'
+    if (reqId === traceReqSeq) errorMsg.value = e.response?.data?.detail || '峰图加载失败'
+    return false
   } finally {
-    traceLoading.value = false
+    if (reqId === traceReqSeq) traceLoading.value = false
   }
 }
 
@@ -768,7 +789,10 @@ function traceZoom(factor: number) {
 async function jumpToVariant(v: SequencingVariant) {
   if (!analysis.value) return
   const read = analysis.value.reads.find((r) => r.filename === (v.read || r.filename)) || analysis.value.reads[0]
-  if (!trace.value || activeRead.value !== read.index) await loadTrace(read.index)
+  if (!trace.value || activeRead.value !== read.index) {
+    // 加载失败时不得沿用旧 read 的峰图定位（会定位到错误窗口）
+    if (!(await loadTrace(read.index))) return
+  }
   const t = trace.value
   // 精确定位：read_pos 是该 read 修剪后序列内的 1-based 位置（有 indel 也准确）
   const readIdx = v.read_pos ? v.read_pos - 1 : v.ref_pos - read.ref_start
@@ -857,9 +881,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         <div v-if="reads.length" class="reads-staged">
           <span class="stage-label">测序文件 × {{ reads.length }}</span>
           <button class="clear-btn" title="清空全部 .ab1 测序文件" @click="clearReads">一键清除</button>
-          <span v-for="(f, i) in reads" :key="i" class="file-chip">
+          <span v-for="f in reads" :key="f.name + f.size" class="file-chip">
             {{ f.name }} ({{ (f.size / 1024).toFixed(0) }}KB)
-            <button class="file-remove" @click="removeRead(i)">×</button>
+            <button class="file-remove" @click="removeRead(f)">×</button>
           </span>
         </div>
         <p v-if="conflictNames.length" class="stage-note">已忽略多余的参考文件：{{ conflictNames.join('、') }}（一次只能分析一个参考序列）</p>
@@ -1096,7 +1120,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(v, i) in shownVariants" :key="i" @click="jumpToVariant(v)">
+            <tr v-for="v in shownVariants" :key="`${v.ref_pos}-${v.type}-${v.alt_base ?? ''}-${v.read ?? ''}`" @click="jumpToVariant(v)">
               <td>{{ v.ref_pos }}</td>
               <td>{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}</td>
               <td class="mono">{{ v.ref_base }} → {{ v.alt_base }}</td>
