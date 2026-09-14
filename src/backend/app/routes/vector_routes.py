@@ -11,13 +11,14 @@ import tempfile
 import shutil
 from typing import List, Optional, Dict
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.cache import cache
 from app.config import settings
 from app.design_service import get_vector_library, invalidate_vector_library_cache
+from app.auth.jwt_auth import get_admin_user
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
     BatchImportRequest, PlasmidMapData
@@ -130,7 +131,7 @@ async def get_vector(vector_id: str):
 
 
 @router.delete("/{vector_id}")
-async def delete_vector(vector_id: str):
+async def delete_vector(vector_id: str, _: object = Depends(get_admin_user)):
     """删除本地载体"""
     vectors_dir = settings.VECTORS_DIR
 
@@ -149,7 +150,7 @@ async def delete_vector(vector_id: str):
 
 
 @router.put("/{vector_id}")
-async def update_vector(vector_id: str, request: VectorUpdateRequest):
+async def update_vector(vector_id: str, request: VectorUpdateRequest, _: object = Depends(get_admin_user)):
     """更新载体信息"""
     vectors_dir = settings.VECTORS_DIR
     vector_file = None
@@ -285,7 +286,7 @@ async def get_vector_map_data(vector_id: str):
 # ==================== NCBI 导入路由 ====================
 
 @router.post("/import/ncbi")
-async def import_vector_from_ncbi(query: str, limit: int = 5):
+async def import_vector_from_ncbi(query: str, limit: int = 5, _: object = Depends(get_admin_user)):
     """从 NCBI 搜索并导入载体
 
     NCBI 请求（单次超时 30s、限速间隔 0.6s）与 YAML 导出均为阻塞调用，
@@ -307,7 +308,7 @@ async def import_vector_from_ncbi(query: str, limit: int = 5):
 
 
 @router.post("/import/ncbi-id")
-async def import_vector_by_ncbi_id(seq_id: str):
+async def import_vector_by_ncbi_id(seq_id: str, _: object = Depends(get_admin_user)):
     """通过 NCBI 序列 ID 直接导入载体（阻塞调用移交线程池，见 /import/ncbi 说明）"""
     from core.external_vector_importer import VectorLibraryManager
 
@@ -374,7 +375,7 @@ async def preview_ncbi_vector(seq_id: str):
 
 
 @router.post("/import/upload")
-async def upload_vector_file(file: UploadFile = File(...)):
+async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(get_admin_user)):
     """上传并导入载体文件（GenBank/SnapGene）"""
     from core.external_vector_importer import GenBankImporter
 
@@ -383,9 +384,20 @@ async def upload_vector_file(file: UploadFile = File(...)):
     if not (filename.endswith('.gb') or filename.endswith('.gbk') or filename.endswith('.dna')):
         raise HTTPException(status_code=400, detail="Unsupported file format. Use .gb, .gbk, or .dna")
 
-    # 保存临时文件
+    # 保存临时文件：边写边计数，超限即中断（此前无大小限制，可被写满磁盘）
+    max_upload = 20 * 1024 * 1024
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
-        shutil.copyfileobj(file.file, tmp)
+        copied = 0
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > max_upload:
+                tmp.close()
+                os.unlink(tmp.name)
+                raise HTTPException(status_code=400, detail="文件过大（>20MB）")
+            tmp.write(chunk)
         tmp_path = tmp.name
 
     try:
@@ -472,7 +484,7 @@ def _run_batch_import(request: BatchImportRequest) -> Dict:
 
 
 @router.post("/import/batch")
-async def batch_import_vectors(request: BatchImportRequest):
+async def batch_import_vectors(request: BatchImportRequest, _: object = Depends(get_admin_user)):
     """批量导入载体
 
     安全说明：file_paths 仅允许 DATA_DIR 目录内的文件，
