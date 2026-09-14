@@ -10,6 +10,7 @@ from .base import DesignStoreBase, BatchStoreBase
 _DESIGN_COLUMN_FIELDS = (
     "optimized_sequence", "cai", "gc_content", "final_length",
     "status", "validation_passed",
+    "construct_sequence", "insert_start", "insert_end", "vector_name",
 )
 
 
@@ -29,6 +30,9 @@ def _design_columns(data: Dict[str, Any]) -> Dict[str, Any]:
     for key in _DESIGN_COLUMN_FIELDS:
         if key in data and data[key] is not None:
             fields[key] = data[key]
+    feats = data.get("construct_features")
+    if feats:
+        fields["construct_features"] = json.dumps(feats, ensure_ascii=False)
     completed_at = _as_datetime(data.get("completed_at"))
     if completed_at is not None:
         fields["completed_at"] = completed_at
@@ -194,10 +198,17 @@ class DBDesignStore(DesignStoreBase):
             "cai": design.cai,
             "gc_content": design.gc_content,
             "vector_id": design.vector_id,
-            "vector_name": "",
+            "vector_name": design.vector_name or "",
             "cloning_method": design.cloning_method,
             "final_length": design.final_length,
             "validation_passed": design.validation_passed,
+            "construct_sequence": design.construct_sequence,
+            "construct_features": (
+                json.loads(design.construct_features)
+                if design.construct_features else None
+            ),
+            "insert_start": design.insert_start,
+            "insert_end": design.insert_end,
             "created_at": created_at,
             "completed_at": design.completed_at,
             "primers": [

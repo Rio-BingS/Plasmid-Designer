@@ -123,6 +123,12 @@ class DesignDB(Base):
     cai = Column(Float, nullable=True)
     gc_content = Column(Float, nullable=True)
     final_length = Column(Integer, nullable=True)
+    # 完整构建体（此前不落库，DB 模式重启/缓存过期后导出与图谱静默降级）
+    construct_sequence = Column(Text, nullable=True)
+    construct_features = Column(Text, nullable=True)  # JSON 数组字符串
+    insert_start = Column(Integer, nullable=True)
+    insert_end = Column(Integer, nullable=True)
+    vector_name = Column(String(100), nullable=True)
     
     # 状态
     status = Column(String(20), default="pending")
@@ -266,8 +272,31 @@ def get_db():
 def init_db():
     """初始化数据库"""
     _migrate_users_table()
+    _migrate_designs_table()
     Base.metadata.create_all(bind=engine)
     print("✅ 数据库表已创建")
+
+
+def _migrate_designs_table():
+    """designs 表轻量迁移：补齐后加的构建体列（create_all 不改旧表）"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "designs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("designs")}
+    stmts = {
+        "construct_sequence": "ALTER TABLE designs ADD COLUMN construct_sequence TEXT NULL",
+        "construct_features": "ALTER TABLE designs ADD COLUMN construct_features TEXT NULL",
+        "insert_start": "ALTER TABLE designs ADD COLUMN insert_start INTEGER NULL",
+        "insert_end": "ALTER TABLE designs ADD COLUMN insert_end INTEGER NULL",
+        "vector_name": "ALTER TABLE designs ADD COLUMN vector_name VARCHAR(100) NULL",
+    }
+    with engine.begin() as conn:
+        for col, ddl in stmts.items():
+            if col not in cols:
+                conn.execute(text(ddl))
+                print(f"✅ designs 表已迁移：新增 {col} 列")
 
 
 def _migrate_users_table():
