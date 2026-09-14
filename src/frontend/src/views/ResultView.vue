@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData } from '@/api'
@@ -152,6 +152,14 @@ function goAnalyze() {
 function goRedesign() {
   router.push('/design')
 }
+
+// 路由参数变化时组件会被复用（如批量结果页内跳转另一 design），必须重载
+watch(() => props.designId, () => {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+  error.value = ''
+  loading.value = true
+  fetchResult()
+})
 
 onMounted(() => {
   fetchResult()

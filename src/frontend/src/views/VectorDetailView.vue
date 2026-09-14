@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
 import PlasmidMap from '@/components/PlasmidMap.vue'
@@ -89,6 +89,12 @@ async function loadVectorInfo() {
 }
 
 onMounted(() => {
+  loadVectorMap()
+  loadVectorInfo()
+})
+
+// 路由参数变化时组件会被复用（页内从载体 A 导航到 B），必须重载
+watch(vectorId, () => {
   loadVectorMap()
   loadVectorInfo()
 })
