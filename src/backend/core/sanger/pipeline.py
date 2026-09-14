@@ -260,6 +260,10 @@ def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
         sorted_a = sorted(areas.values(), reverse=True)
         if sorted_a[0] < main_floor:
             continue
+        # 退化窗口护栏：四通道面积接近相等（无主导通道）说明基线校正后
+        # 该窗口无真实信号差异，按混合峰处理只会整段误报
+        if sorted_a[1] >= 0.9 * sorted_a[0]:
+            continue
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
             if ratio > MIXED_PEAK_RATIO and areas[base] == sorted_a[0]:
@@ -567,6 +571,16 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
     return first, last, called
 
 
+def _run_label(run: Dict) -> str:
+    """重复结构标签：period=1 为 poly(A) 同聚物；period>1 为 (CAG)n 型重复"""
+    if run.get("period", 1) == 1 and run.get("base"):
+        return f"poly({run['base']}) 同聚物"
+    unit = run.get("unit") or ""
+    if unit:
+        return f"({unit}){run.get('ref_repeat_count', '?')} 重复"
+    return "重复序列"
+
+
 def _peak_verdict_phrase(e: Dict) -> str:
     """峰图主判读短语（以可分辨峰为准，basecaller 调用数只在逐 read 里出现）"""
     ref = e["ref_repeat_count"]
@@ -615,9 +629,14 @@ def _normalize_indel_all(ref: str, variants: List[Dict]) -> List[Dict]:
     return [_normalize_indel(ref, v) for v in variants]
 
 
-def _variant_key(v: Dict) -> Tuple[int, str, str]:
-    """归一化后的合并 key：同一 indel 无论被哪个 caller/read 报在哪一等价位都聚合"""
-    return (int(v["ref_pos"]), v.get("type", ""), v.get("alt_base", "").upper())
+def _variant_key(v: Dict) -> Tuple[int, str, str, int]:
+    """归一化后的合并 key：同一 indel 无论被哪个 caller/read 报在哪一等价位都聚合。
+
+    长度必须入 key：同一锚点上长度不同的删除（如 polyA 少 2 个 vs 少 3 个）
+    是不同的构建体，不能合并——否则 support_reads 虚增、长度取决于 read 顺序。
+    """
+    return (int(v["ref_pos"]), v.get("type", ""), v.get("alt_base", "").upper(),
+            int(v.get("length") or 1))
 
 
 def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
@@ -670,6 +689,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
     """
     L = len(reference)
     votes: List[Dict[str, int]] = [{} for _ in range(L)]
+    end_insert_votes: Dict[str, int] = {}  # 参考末端之后的插入（无右侧锚定位）
 
     for r in read_results:
         weight = max(10, int(r["mean_q"]))
@@ -679,7 +699,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
                 base = reference[pos - 1].upper()
                 votes[pos - 1][base] = votes[pos - 1].get(base, 0) + weight
         for v in aln["variants"]:
-            if skip_keys and (v["ref_pos"], v["type"], v.get("alt_base", "")) in skip_keys:
+            if skip_keys and _variant_key(v) in skip_keys:
                 continue
             if v["type"] == "substitution":
                 idx = v["ref_pos"] - 1
@@ -693,8 +713,11 @@ def _build_consensus(reference: str, read_results: List[Dict],
                         votes[idx]["-"] = votes[idx].get("-", 0) + weight + 5
             elif v["type"] == "insertion":
                 idx = v["ref_pos"]  # 插入点右侧参考位置
+                key = f"+{v['alt_base'].upper()}"
                 if 0 <= idx < L:
-                    votes[idx][f"+{v['alt_base'].upper()}"] = weight + 5
+                    votes[idx][key] = votes[idx].get(key, 0) + weight + 5
+                elif idx == L:
+                    end_insert_votes[key] = end_insert_votes.get(key, 0) + weight + 5
 
     consensus_chars: List[str] = []
     diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
@@ -728,6 +751,13 @@ def _build_consensus(reference: str, read_results: List[Dict],
                     "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
                     "cons_base": best_key, "cons_index": len(consensus_chars) - 1,
                 })
+
+    if end_insert_votes:
+        best_key = max(end_insert_votes.items(), key=lambda kv: kv[1])[0]
+        alt = best_key[1:]
+        cons_index = len(consensus_chars)
+        consensus_chars.extend(list(alt))
+        diffs.append({"ref_pos": L, "ref_base": "-", "cons_base": alt, "cons_index": cons_index})
 
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
@@ -978,9 +1008,17 @@ def _build_cds_reports(
         stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
         alt_prot = alt_prot_raw[:stop_idx] if stop_idx >= 0 else alt_prot_raw
         indels = [v for v in confirmed if v.get("type") in ("insertion", "deletion")]
-        # 移码自判定：影响该 CDS 的确证 indel 长度非 3 的倍数即为移码
+        # 移码自判定：删除按其实际落入 CDS 的碱基数取模——跨边界删除只有
+        # 部分落在 CDS 内时，按变体全长取模会误判 inframe/frameshift
         #（不依赖全局注释——注释器只看变体自身所在特征，会漏掉边界插入）
-        frameshifts = [v for v in indels if int(v.get("length") or 1) % 3 != 0]
+        def _indel_len_in_cds(v: Dict) -> int:
+            vlen = int(v.get("length") or 1)
+            if v["type"] == "insertion":
+                return vlen  # anchor 落在 CDS 内部（_affects 已保证）
+            lo = max(v["ref_pos"], start)
+            hi = min(v["ref_pos"] + vlen - 1, end)
+            return max(0, hi - lo + 1)
+        frameshifts = [v for v in indels if _indel_len_in_cds(v) % 3 != 0]
         inframe_ins = sum(1 for v in indels if v["type"] == "insertion" and int(v.get("length") or 1) % 3 == 0)
         inframe_del = sum(1 for v in indels if v["type"] == "deletion" and int(v.get("length") or 1) % 3 == 0)
         protein_identical = ref_prot == alt_prot_raw
@@ -1281,7 +1319,8 @@ def analyze(
                 continue
             slip.update(detect_phase_shift(
                 r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
-                run["base"],
+                # 反向 read 的 trace 通道按读向（互补链）记录，必须取互补碱基
+                run["base"] if aln["direction"] == "+" else _COMPLEMENT[run["base"]],
             ))
             drop = detect_post_poly_dropout(
                 r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
@@ -1369,10 +1408,7 @@ def analyze(
 
     # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
     # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
-    low_keys = {
-        (v["ref_pos"], v["type"], v.get("alt_base", ""))
-        for v in variants if v.get("confidence") == "low"
-    }
+    low_keys = {_variant_key(v) for v in variants if v.get("confidence") == "low"}
     consensus = _build_consensus(ref, read_results, skip_keys=low_keys)
 
     coverage_ranges = merge_coverage(
@@ -1592,7 +1628,7 @@ def analyze(
             if hp.get("peak_count") is not None:
                 rel += f"；峰图独立计数 {hp['peak_count']} 个"
             lines.append(
-                f"  ↳ poly({hp['base']}) 同聚物 {hp['start']}-{hp['end']}："
+                f"  ↳ {_run_label(hp)} {hp['start']}-{hp['end']}："
                 f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
                 f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
             )
