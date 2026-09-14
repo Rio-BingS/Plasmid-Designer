@@ -31,7 +31,7 @@ from core.sanger.pipeline import (  # noqa: E402
     analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
     _read_grade, _variant_confidence, _coverage_gaps, _variant_peak_evidence,
     _poly_peak_amplitude_ratio, _detect_mixed_positions,
-    _annotate_homopolymer, find_homopolymers, find_repeat_runs,
+    _annotate_homopolymer, find_homopolymers, find_repeat_runs, _variant_key,
 )
 
 
@@ -977,7 +977,7 @@ def test_consensus_skips_low_confidence_keys():
     }
     c = _build_consensus(ref, [read])
     assert len(c["sequence"]) == len(ref) + 3
-    c2 = _build_consensus(ref, [read], skip_keys={(7, "insertion", "GGG")})
+    c2 = _build_consensus(ref, [read], skip_keys={_variant_key(read["alignment"]["variants"][0])})
     assert c2["sequence"] == ref.upper()
     assert c2["diffs"] == []
 
@@ -1402,3 +1402,61 @@ def test_read_crl_in_output():
     result2 = analyze([("f.ab1", blob2)], ref, [])
     assert result2["reads"][0]["crl"] == 60
 
+
+
+# ---------- 回归测试：共识投票与变体合并（隐藏 bug 修复） ----------
+
+def test_consensus_insertion_votes_accumulate_across_reads():
+    """两条 read 支持同一插入：插入票必须累加，不能被参考碱基票淹没（此前为赋值）"""
+    ref = "ACGTACGTAC" * 5
+    def _read(q):
+        return {
+            "mean_q": q,
+            "alignment": {
+                "ref_start": 5, "ref_end": 20,
+                "variants": [{"ref_pos": 7, "type": "insertion", "ref_base": "-",
+                              "alt_base": "GGG", "length": 3}],
+            },
+        }
+    c = _build_consensus(ref, [_read(40), _read(40)])
+    assert len(c["sequence"]) == len(ref) + 3
+    assert c["sequence"][7:10] == "GGG"
+
+
+def test_consensus_insertion_after_reference_end():
+    """参考末端之后的插入：不再因右侧无锚定位而静默丢失"""
+    ref = "ACGTACGTAC" * 5
+    read = {
+        "mean_q": 40,
+        "alignment": {
+            "ref_start": 5, "ref_end": len(ref),
+            "variants": [{"ref_pos": len(ref), "type": "insertion", "ref_base": "-",
+                          "alt_base": "TT", "length": 2}],
+        },
+    }
+    c = _build_consensus(ref, [read])
+    assert len(c["sequence"]) == len(ref) + 2
+    assert c["sequence"].endswith("TT")
+
+
+def test_variant_key_distinguishes_deletion_lengths():
+    """同一位点长度不同的删除是不同的构建体：合并 key 必须包含长度"""
+    d2 = _base_variant(ref_pos=10, type="deletion", alt_base="-", length=2)
+    d3 = _base_variant(ref_pos=10, type="deletion", alt_base="-", length=3)
+    from core.sanger.pipeline import _variant_key
+    assert _variant_key(d2) != _variant_key(d3)
+
+
+def test_boundary_deletion_partial_overlap_counts_as_frameshift():
+    """跨 CDS 边界的删除：只有部分碱基落在 CDS 内时按实际碱基数取模
+
+    3bp 删除仅 2bp 在 CDS 内 → 实际移码（此前按全长 3 判 inframe）。
+    """
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    # 删除起点在 CDS 起点前 1 位、长度 3 → 2bp 落入 CDS
+    variants = [{"ref_pos": start - 1, "type": "deletion", "ref_base": "A",
+                 "alt_base": "-", "length": 3, "read_q": 40, "confidence": "high"}]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    cr = _build_cds_reports(ref, feats, variants, consensus)[0]
+    assert cr["frameshift_count"] == 1
