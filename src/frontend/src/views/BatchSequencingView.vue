@@ -7,7 +7,7 @@
  */
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { analyzeSequencingBatch, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
+import { analyzeSequencingBatch, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
 
 const router = useRouter()
 
@@ -151,6 +151,21 @@ function viewDetail(it: SequencingBatchItem) {
   if (!it.analysis_id) return
   router.push({ path: '/sequencing', query: { history: it.analysis_id } })
 }
+
+// 整理包：服务器按上传原始字节打包（归档副本 + 各组分析报告 + 回填信息表），
+// 与分析记录一样 15 分钟后自动清理
+const downloading = ref(false)
+async function downloadReport() {
+  if (!result.value?.batch_id || downloading.value) return
+  downloading.value = true
+  try {
+    await downloadBatchSequencingReport(result.value.batch_id)
+  } catch (e: any) {
+    errorMsg.value = formatApiError(e, '整理包下载失败')
+  } finally {
+    downloading.value = false
+  }
+}
 </script>
 
 <template>
@@ -240,6 +255,12 @@ function viewDetail(it: SequencingBatchItem) {
           <span class="count bad">不合格/失败 {{ summary.bad }}</span> ·
           <span class="count warn">待补 {{ summary.warn }}</span>
         </p>
+        <p class="report-row">
+          <button v-if="result.report_ready" class="report-btn" :disabled="downloading" @click="downloadReport">
+            {{ downloading ? '整理包准备中…' : '⬇ 下载整理包（按质粒归档 + 分析报告 + 回填信息表）' }}
+          </button>
+          <span class="report-note">整理包内是原始文件副本（未改动）+ 各组分析报告 + 整理清单；与分析记录一样 15 分钟后自动清理</span>
+        </p>
         <table class="seq-table" v-if="result.items.length">
           <thead>
             <tr><th>质粒</th><th v-if="cloneMode">克隆</th><th>图谱</th><th>reads</th><th>覆盖</th><th>确证差异</th><th>一句话结论</th><th>操作</th></tr>
@@ -278,8 +299,7 @@ function viewDetail(it: SequencingBatchItem) {
         </p>
         <p class="hint">
           「查看详情」跳转到测序分析页逐碱基核对（比对校验 / 峰图 / 共识序列）；
-          需要整理副本与 Excel 回填结论时，可离线运行
-          <code>scripts/batch_sequencing_report.py</code>
+          本地大批量处理仍可离线运行 <code>scripts/batch_sequencing_report.py</code>
         </p>
       </div>
     </template>
@@ -358,6 +378,14 @@ function viewDetail(it: SequencingBatchItem) {
 .count.ok { color: #2E9E44; font-weight: 600; }
 .count.bad { color: #C0392B; font-weight: 600; }
 .count.warn { color: #9A6D00; font-weight: 600; }
+
+.report-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0 0 0.9rem; }
+.report-btn {
+  padding: 0.45rem 1.1rem; border: none; background: var(--primary-color, #4E79C7);
+  color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.88rem;
+}
+.report-btn:disabled { background: #aaa; cursor: not-allowed; }
+.report-note { font-size: 0.76rem; color: var(--text-secondary, #999); }
 
 .seq-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .seq-table th, .seq-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border-color, #eee); text-align: left; }

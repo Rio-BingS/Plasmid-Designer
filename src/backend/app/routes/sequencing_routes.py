@@ -19,27 +19,37 @@
 功能门控（main.py 路由级 + 本文件端点级）：
 - 「测序分析」（sequencing）：单样品分析三入口（/sequencing/analyze、
   designs/{id}/…、vectors/{id}/…）
-- 「批量测序分析」（sequencing_batch）：/sequencing/analyze-batch
+- 「批量测序分析」（sequencing_batch）：/sequencing/analyze-batch 与
+  /sequencing/batches/{batch_id}/report
 - 分析记录的查看/峰图/导出/删除为两者共用，任一功能开放即可用
 
-分析记录为进程级内存存储（会话级数据，重启后失效；trace 峰图数据体积大，
-不写入设计主线的持久化存储，且只保留最近若干次——更早的分析仍可查看
-变体/共识结论，仅峰图不可再加载）。
+分析记录为进程级内存存储（会话级数据）：每条记录 15 分钟后自动删除
+（与批量整理包缓存一致），服务重启同样清空；容量兜底只保留最近若干次。
+trace 峰图原始数据体积大，只保留最近若干条——更早的分析（在 15 分钟内）
+仍可查看变体/共识结论，仅峰图不可再加载。
+
+批量分析完成后按上传原始字节现场打包「整理包」并缓存（离线脚本
+scripts/batch_sequencing_report.py 产物结构的网页版：按质粒/克隆归档副本、
+每组测序分析报告.md、整理清单.csv、结论回填的信息表），15 分钟内可经
+GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 """
 
 import os
 import re
+import time
 import uuid
 import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.design_service import get_vector_library
 from app.gating import require_feature
+from app.sequencing_report import backfill_excel, build_batch_zip
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_clone_files,
     match_files, norm_stem, rows_have_clones,
@@ -51,6 +61,8 @@ router = APIRouter(prefix="/api", tags=["sequencing"])
 
 # 进程级内存存储：analysis_id → 完整结果（含 trace 峰图）
 _ANALYSES: Dict[str, Dict] = {}
+# 进程级内存存储：batch_id → {"created_ts", "zip"}（批量整理包，15 分钟有效）
+_BATCHES: Dict[str, Dict] = {}
 MAX_FILE_SIZE = 20 * 1024 * 1024      # 单文件 20MB
 MAX_FILES = 24                        # 单次最多 24 条 read
 MAX_STORED = 200                      # 内存最多保留 200 次分析记录
@@ -58,9 +70,24 @@ MAX_TRACE_STORED = 40                 # 峰图原始数据体积大，只保留�
 MAX_BATCH_FILES = 400                 # 批量单次最多 400 个文件
 MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
 MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分组
+ANALYSIS_TTL = 15 * 60                # 分析记录 15 分钟后自动删除
+BATCH_TTL = 15 * 60                   # 批量整理包同样 15 分钟后清理
+MAX_BATCH_CACHE_BYTES = 256 * 1024 * 1024   # 整理包缓存上限（超出则本次不提供下载）
+
+
+def _sweep_expired() -> None:
+    """清理过期的分析记录与批量整理包（每次访问入口处惰性触发）"""
+    now = time.time()
+    for aid in [aid for aid, r in _ANALYSES.items()
+                if now - r.get("_created_ts", 0) > ANALYSIS_TTL]:
+        del _ANALYSES[aid]
+    for bid in [bid for bid, r in _BATCHES.items()
+                if now - r["created_ts"] > BATCH_TTL]:
+        del _BATCHES[bid]
 
 
 def _get_analysis(analysis_id: str) -> Dict:
+    _sweep_expired()
     result = _ANALYSES.get(analysis_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -136,7 +163,9 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     批量克隆模式一次可产生上百条记录：分析记录本体（变体/共识/比对）很小，
     上限放宽到 MAX_STORED；峰图原始数据（四通道全分辨率采样）体积大，
     超过 MAX_TRACE_STORED 时淘汰最旧记录的峰图，记录仍可查看结论。
+    所有记录 15 分钟后由 _sweep_expired 自动删除（隐私考量，见模块 docstring）。
     """
+    _sweep_expired()
     analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
     record = {
         "analysis_id": analysis_id,
@@ -144,6 +173,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         "reference": reference.upper(),
         "features": features,
         "created_at": datetime.now().isoformat(),
+        "_created_ts": time.time(),
         **result,
     }
     # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
@@ -265,12 +295,15 @@ def _group_batch_uploads(
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int,
-) -> Dict:
+) -> Tuple[Dict, List[Dict], List[Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
     信息表带「克隆号」列时为克隆模式（core.sanger.match_clone_files）：一个
     质粒的每个克隆独立成组、独立分析；同一质粒的参考图谱解析一次供其全部
     克隆复用。否则按质粒归组（旧行为）。
+
+    返回 (payload, groups, raw_unmatched)：payload 为对外 JSON；groups 与
+    raw_unmatched 保留原始文件条目（含字节），供整理包打包使用。
     """
     if len(reads) + len(refs) > MAX_BATCH_FILES:
         raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
@@ -377,7 +410,7 @@ def _run_batch(
             for u in unmatched
         ],
         "ignored_files": ignored,
-    }
+    }, groups, unmatched
 
 
 @router.post(
@@ -395,6 +428,11 @@ async def analyze_sequencing_batch(
     管线；每个分组返回一句话结论，成功者同时注册为标准分析记录（analysis_id
     可进历史列表与详情页）。信息表带「克隆号」列时按克隆分组——一个质粒的
     每个克隆独立分析，引物用中英文分号分隔均可，ab1 文件名 = 克隆号-引物。
+
+    分析完成后按上传原始字节现场打包「整理包」（离线脚本产物的网页版：
+    按质粒/克隆归档副本、各组 测序分析报告.md、整理清单.csv、结论回填的
+    信息表）缓存 15 分钟，经 GET /sequencing/batches/{batch_id}/report 下载；
+    响应 report_ready=False 表示本次体积超上限未打包。
     """
     if not files:
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
@@ -424,17 +462,73 @@ async def analyze_sequencing_batch(
             status_code=400,
             detail="未找到可用的测序文件（.ab1）或参考图谱（.dna/.gb/.fasta）")
 
+    excel_pack = None
     excel_rows = None
     if excel is not None:
         excel_bytes = await _read_limited(excel)
         if not excel_bytes:
             raise HTTPException(status_code=400, detail="信息表文件为空")
         try:
-            _, _, _, excel_rows = await run_in_threadpool(load_excel, excel_bytes)
+            wb, _header, cols, excel_rows = await run_in_threadpool(load_excel, excel_bytes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        excel_pack = (excel.filename or "信息表.xlsx", excel_bytes, wb, cols, excel_rows)
 
-    return await run_in_threadpool(_run_batch, reads, refs, excel_rows, ignored, min_q)
+    payload, groups, raw_unmatched = await run_in_threadpool(
+        _run_batch, reads, refs, excel_rows, ignored, min_q)
+
+    # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
+    # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）；
+    # 打包与回填放线程池，避免大包阻塞事件循环
+    total_bytes = sum(len(e["file"]["bytes"])
+                      for g in groups
+                      for e in ([g["reference"]] if g["reference"] else []) + g["reads"])
+    total_bytes += sum(len(u["file"]["bytes"]) for u in raw_unmatched)
+    report_ready = total_bytes <= MAX_BATCH_CACHE_BYTES
+    payload["report_ready"] = report_ready
+    if report_ready:
+        def _pack() -> None:
+            excel_name = excel_original = excel_filled = None
+            if excel_pack:
+                excel_name, excel_original, wb, cols, rows = excel_pack
+                excel_filled = backfill_excel(wb, cols, rows, payload["items"],
+                                              payload["clone_mode"])
+            records = {it["analysis_id"]: _ANALYSES[it["analysis_id"]]
+                       for it in payload["items"] if it["analysis_id"]}
+            zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
+                                        excel_original, excel_filled, records)
+            _sweep_expired()
+            _BATCHES[payload["batch_id"]] = {
+                "created_ts": time.time(),
+                "zip": zip_bytes,
+                "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
+            }
+
+        await run_in_threadpool(_pack)
+    return payload
+
+
+@router.get(
+    "/sequencing/batches/{batch_id}/report",
+    dependencies=[Depends(require_feature("sequencing_batch"))],
+)
+async def download_batch_report(batch_id: str):
+    """下载批量分析整理包（按质粒/克隆归档副本 + 各组分析报告 + 整理清单 +
+    结论回填的信息表）；生成 15 分钟后随缓存自动清理，可重复下载。"""
+    _sweep_expired()
+    rec = _BATCHES.get(batch_id)
+    if rec is None:
+        raise HTTPException(status_code=404,
+                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    # HTTP 头仅限 latin-1：中文文件名走 RFC 5987 filename*，ASCII 名兜底
+    ascii_name = f"seqbatch_{batch_id[-6:]}.zip"
+    utf8_name = quote(f"{rec['zip_name']}.zip")
+    return Response(
+        content=rec["zip"],
+        media_type="application/zip",
+        headers={"Content-Disposition":
+                 f"attachment; filename={ascii_name}; filename*=UTF-8''{utf8_name}"},
+    )
 
 
 @router.post(
@@ -492,7 +586,8 @@ async def analyze_vector_sequencing(
 
 @router.get("/sequencing/analyses")
 async def list_analyses():
-    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细）"""
+    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细；记录 15 分钟后自动删除）"""
+    _sweep_expired()
     items = sorted(_ANALYSES.values(), key=lambda r: r["created_at"], reverse=True)
     return [
         {
