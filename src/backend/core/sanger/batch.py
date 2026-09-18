@@ -184,6 +184,10 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     防 "MX" 命中 "MX2"）；候选不唯一一律不猜，判为未匹配。同一质粒的不同
     克隆行可混用全名与单段名（'17648' / 'MBYSTC' / '17648 MBYSTC'）——只写
     一段的名称按双向包含找唯一候选图谱共享（候选多于一张维持缺图谱）。
+    图谱文件名也可只写一段（'17648.fasta'）：与图谱共享该段的行直接命中；
+    只写另一段的行（'MBYSTC'）与之没有共同标识，仅当表内恰有一个以它为
+    组成段的质粒名且该名已确定图谱时，按表内别名共享；表中无全名行时
+    确实无法建立对应关系，维持缺图谱。
 
     返回 (groups, unmatched)。groups 顺序 = 信息表行序，每项：
     {"plasmid", "clone", "reference": {"file","how"}|None, "reads": [{"file","how"}]}
@@ -347,6 +351,29 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
             ref_by_plasmid[plasmid] = {
                 "file": cands[0],
                 "how": "质粒名称与图谱文件名部分一致（唯一候选，共享全名质粒的图谱）",
+            }
+
+    # 表内别名兜底：图谱文件名只含两段式名称的一段时（如图谱叫 '17648'），
+    # 只写另一段的行（'MBYSTC'）与图谱没有共同标识——但信息表内若恰有一个
+    # 以它为组成段的质粒名且该名已确定图谱，说明两种写法指向同一质粒，共享
+    # 其图谱；这样的宿主名称多于一个（'MBYSTC' 同时是 17648/17649 的组成段）
+    # 或宿主本身缺图谱时维持不猜。表中完全没有全名行时（图谱 '17648' ↔
+    # 表 'MBYSTC'）确实无法建立对应，保持缺图谱
+    for (plasmid, _clone) in list(groups):
+        if not plasmid or plasmid in ref_by_plasmid:
+            continue
+        nsq = _squash(plasmid)
+        if len(nsq) < 2:
+            continue
+        hosts = [n for n in names if n != plasmid and nsq in
+                 {_squash(t) for t in re.split(r"\s+", n.strip()) if t}]
+        if len(hosts) != 1:
+            continue
+        host_ref = ref_by_plasmid.get(hosts[0])
+        if host_ref:
+            ref_by_plasmid[plasmid] = {
+                "file": host_ref["file"],
+                "how": f"「{plasmid}」与「{hosts[0]}」为同一质粒的不同写法（表内互为别名），共享其图谱",
             }
 
     ordered = list(groups.values())

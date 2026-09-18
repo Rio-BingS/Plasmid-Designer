@@ -280,6 +280,75 @@ def test_batch_clone_mode_mixed_name_forms_share_reference(client):
     assert data["unmatched"] == []
 
 
+def test_batch_clone_mode_reference_named_by_one_segment(client):
+    """图谱只写一段（'17648.fasta'）：写全名/该段的行直接命中或兜底共享，
+    只写另一段（'MBYSTC'）的行经表内别名（全名行）共享同一图谱"""
+    resp = _post(client, [
+        _fasta("17648.fasta", REF_MX),
+        _ab1("S99678-M13F-75.ab1", REF_MX),
+        _ab1("S99679-M13F-75.ab1", REF_MX),
+        _ab1("S99680-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S99678", "17648 MBYSTC", ["M13F-75"]),
+        ("S99679", "MBYSTC", ["M13F-75"]),
+        ("S99680", "17648", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert all(it["status"] == "analyzed" for it in data["items"])
+    assert all(it["reference_name"] == "17648.fasta" for it in data["items"])
+    assert data["unmatched"] == []
+
+
+def test_batch_clone_mode_reference_named_by_other_segment(client):
+    """对称方向：图谱叫 'MBYSTC.fasta'，只写编号（'17648'）的行经表内别名共享"""
+    resp = _post(client, [
+        _fasta("MBYSTC.fasta", REF_MX),
+        _ab1("S99678-M13F-75.ab1", REF_MX),
+        _ab1("S99679-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S99678", "17648 MBYSTC", ["M13F-75"]),
+        ("S99679", "17648", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert all(it["status"] == "analyzed" for it in data["items"])
+    assert all(it["reference_name"] == "MBYSTC.fasta" for it in data["items"])
+    assert data["unmatched"] == []
+
+
+def test_batch_clone_mode_segment_map_without_link_stays_unmatched(client):
+    """图谱叫 '17648' 而表中只有 'MBYSTC' 行（无全名行建立对应）→ 缺图谱不猜"""
+    resp = _post(client, [
+        _fasta("17648.fasta", REF_MX),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "MBYSTC", ["M13F-75"])]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"][0]["status"] == "no_reference"
+    assert {u["filename"] for u in data["unmatched"]} == {"17648.fasta"}
+
+
+def test_batch_clone_mode_alias_ambiguous_not_guessed(client):
+    """'MBYSTC' 同时是 '17648 MBYSTC'/'17649 MBYSTC' 的组成段 → 别名歧义不猜；
+    图谱 '17648' 仍归唯一能命中的 '17648 MBYSTC' 行"""
+    resp = _post(client, [
+        _fasta("17648.fasta", REF_MX),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+        _ab1("S2-M13F-75.ab1", REF_MX),
+        _ab1("S3-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S1", "17648 MBYSTC", ["M13F-75"]),
+        ("S2", "17649 MBYSTC", ["M13F-75"]),
+        ("S3", "MBYSTC", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    items = {it["plasmid"]: it for it in resp.json()["items"]}
+    assert items["17648 MBYSTC"]["status"] == "analyzed"
+    assert items["17649 MBYSTC"]["status"] == "no_reference"
+    assert items["MBYSTC"]["status"] == "no_reference"
+
+
 def test_batch_clone_mode_single_part_name_ambiguous_still_refused(client):
     """单段名 'AB2C' 若唯一候选不存在（两张图都含该段）→ 维持缺图谱，不猜"""
     resp = _post(client, [
