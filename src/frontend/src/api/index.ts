@@ -64,7 +64,13 @@ export function formatApiError(e: any, fallback = '请求失败'): string {
       })
       .join('；')
   }
-  return e?.message || fallback
+  // 浏览器 XHR 在发送阶段失败（文件被其他程序占用、连接被掐断）时，axios 只给
+  // 一句笼统的 "Network Error"，翻译成可行动的提示
+  const msg = typeof e?.message === 'string' ? e.message : ''
+  if (/network error|failed to fetch|load failed/i.test(msg)) {
+    return '网络异常：请求未能送达服务器（可能是文件被其他程序占用、网络中断或超出传输大小限制），请检查后重试'
+  }
+  return msg || fallback
 }
 
 /** blob 下载公共路径：错误响应(JSON)直接抛出，成功则触发保存并释放 URL */

@@ -15,6 +15,7 @@ const router = useRouter()
 const files = ref<File[]>([])
 const excelFile = ref<File | null>(null)
 const ignoredNames = ref<string[]>([])
+const skippedNames = ref<string[]>([])
 const errorMsg = ref('')
 const dragOver = ref(false)
 
@@ -23,11 +24,24 @@ function fileExt(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
+// Excel/WPS 打开表格时会留下 ~$ 开头的锁文件（按名称排序常排在正主前面，
+// 选择整个文件夹会被一起选中，还可能因被占用而读不了）；连同系统垃圾文件一并跳过
+const JUNK_NAMES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
+
+function isTempOrJunk(name: string): boolean {
+  return name.startsWith('~$') || JUNK_NAMES.has(name.toLowerCase())
+}
+
 function addFiles(list: File[] | FileList | null | undefined) {
   if (!list) return
   ignoredNames.value = []
+  skippedNames.value = []
   errorMsg.value = ''
   for (const f of Array.from(list)) {
+    if (isTempOrJunk(f.name)) {
+      skippedNames.value.push(f.name)
+      continue
+    }
     if (fileExt(f.name) === 'xlsx') {
       if (!excelFile.value) excelFile.value = f
       continue
@@ -36,8 +50,8 @@ function addFiles(list: File[] | FileList | null | undefined) {
   }
 }
 
-function clearFiles() { files.value = [] }
-function clearExcel() { excelFile.value = null }
+function clearFiles() { files.value = []; skippedNames.value = [] }
+function clearExcel() { excelFile.value = null; skippedNames.value = [] }
 
 // 拖入文件夹时浏览器给的是目录句柄，需要递归枚举成 File 列表
 interface FsEntry {
@@ -94,7 +108,14 @@ function onFilePick(e: Event) {
 }
 function onExcelPick(e: Event) {
   const f = (e.target as HTMLInputElement).files?.[0]
-  if (f) excelFile.value = f
+  if (f) {
+    if (isTempOrJunk(f.name)) {
+      skippedNames.value = [f.name]
+      errorMsg.value = '所选信息表是 Excel 临时文件（~$ 开头），请选择正式的信息表 .xlsx'
+    } else {
+      excelFile.value = f
+    }
+  }
   ;(e.target as HTMLInputElement).value = ''
 }
 
@@ -110,12 +131,48 @@ function normalizeMinQ() {
 
 const canAnalyze = computed(() => files.value.length > 0 && !analyzing.value)
 
+// Cloudflare 免费版有 100MB 请求体硬上限，超出时连接会被直接掐断（浏览器只看到
+// Network Error），留余量在上传前拦截
+const MAX_UPLOAD_BYTES = 95 * 1024 * 1024
+
+const stagedSizeMB = computed(() => {
+  const bytes = [...files.value, ...(excelFile.value ? [excelFile.value] : [])]
+    .reduce((s, f) => s + f.size, 0)
+  return (bytes / 1024 / 1024).toFixed(1)
+})
+
+// 文件被占用时（如正被 Excel 打开的表格）浏览器读不出来，XHR 会在发送阶段整体
+// 失败且 axios 只报笼统的 Network Error——上传前逐个试读 1 字节，把问题文件挑
+// 出来给明确提示
+async function fileReadable(f: File): Promise<boolean> {
+  try {
+    await f.slice(0, 1).text()
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function runBatch() {
   if (!files.value.length) return
+  const staged = [...files.value, ...(excelFile.value ? [excelFile.value] : [])]
+  const totalBytes = staged.reduce((s, f) => s + f.size, 0)
+  if (totalBytes > MAX_UPLOAD_BYTES) {
+    errorMsg.value = `所选文件总体积 ${stagedSizeMB.value} MB，超过免费版 Cloudflare 的 100 MB 请求体上限，请删掉部分文件分批上传`
+    return
+  }
   analyzing.value = true
   errorMsg.value = ''
   result.value = null
   try {
+    const unreadable: string[] = []
+    for (const f of staged) {
+      if (!(await fileReadable(f))) unreadable.push(f.name)
+    }
+    if (unreadable.length) {
+      errorMsg.value = `这些文件无法读取（多半正被 Excel/WPS 打开占用）：${unreadable.join('、')}——请关闭占用程序后重试`
+      return
+    }
     result.value = await analyzeSequencingBatch(files.value, excelFile.value, minQ.value)
   } catch (e: any) {
     errorMsg.value = formatApiError(e, '批量分析失败')
@@ -218,9 +275,12 @@ async function downloadReport() {
 
         <div v-if="files.length || excelFile" class="staged">
           <p class="staged-line">
-            <span>测序/图谱文件 × {{ files.length }}</span>
+            <span>测序/图谱文件 × {{ files.length }} · 共 {{ stagedSizeMB }} MB</span>
             <span v-if="excelFile" class="file-chip ref">📊 {{ excelFile.name }}<button class="file-remove" title="移除信息表" @click="clearExcel">×</button></span>
             <button class="clear-btn" title="清空全部文件" @click="clearFiles">一键清除</button>
+          </p>
+          <p v-if="skippedNames.length" class="note-line muted">
+            已自动跳过临时/系统文件：{{ skippedNames.slice(0, 5).join('、') }}{{ skippedNames.length > 5 ? ' 等' : '' }}
           </p>
         </div>
         <p v-else class="stage-empty">尚未选择文件</p>

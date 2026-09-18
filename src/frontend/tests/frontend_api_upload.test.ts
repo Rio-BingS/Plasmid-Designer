@@ -95,7 +95,10 @@ describe('formatApiError', () => {
 
   it('detail 是字符串时原样透出，缺 detail 时用兜底文案', () => {
     expect(api.formatApiError({ response: { data: { detail: '参考序列过短' } } })).toBe('参考序列过短')
-    expect(api.formatApiError({ message: 'Network Error' }, '分析失败')).toBe('Network Error')
+    // 浏览器发送阶段失败（文件被占用/连接中断）时 axios 只给 "Network Error"，
+    // 翻译成可行动的提示而不是原样透出
+    expect(api.formatApiError({ message: 'Network Error' }, '分析失败')).toContain('网络异常')
+    expect(api.formatApiError({ message: '超时了' }, '分析失败')).toBe('超时了')
     expect(api.formatApiError({}, '分析失败')).toBe('分析失败')
   })
 })
