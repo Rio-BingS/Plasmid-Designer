@@ -1,5 +1,6 @@
 """测序分析路由集成测试（design 全链路 + 内存结果端点）"""
 
+import json
 import os
 import sys
 import time
@@ -18,6 +19,19 @@ from abif_utils import make_ab1  # noqa: E402
 @pytest.fixture(scope="module")
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _all_features_open(monkeypatch):
+    """端点门控读站点设置（模块级连接，本机真实库）——打桩为默认全开放，
+    使测试不依赖本机数据库的矩阵状态（存量库可能缺新拆分键）"""
+    from app import site_settings
+    from app.features import ALL_FEATURES as _ALL
+
+    state = {"registration_open": True, "email_verification_required": False,
+             "anonymous_features": list(_ALL), "user_features": list(_ALL)}
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: json.loads(json.dumps(state)))
 
 
 @pytest.fixture(scope="module")

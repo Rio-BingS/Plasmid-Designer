@@ -26,6 +26,7 @@ from app.database import Base, get_db  # noqa: E402
 from app.database.crud import (  # noqa: E402
     create_user, get_site_settings_row, save_site_settings_row,
 )
+from app.database.models import _migrate_feature_lists  # noqa: E402
 from app import site_settings  # noqa: E402
 from app.auth.jwt_auth import hash_password  # noqa: E402
 from app.features import ALL_FEATURES, FEATURE_REGISTRY  # noqa: E402
@@ -93,7 +94,11 @@ def test_registry_has_split_key_after_sequencing():
 
 
 def test_one_time_migration_inherits_split_key(db):
-    """存量清单含 sequencing 无 sequencing_batch → 自动补齐并记标记；只跑一次"""
+    """存量清单含 sequencing 无 sequencing_batch → 自动补齐并记标记；只跑一次
+
+    迁移在 init_db 启动时执行（_migrate_feature_lists），这里直接以测试引擎调用；
+    StaticPool 共享同一连接，ORM 会话需先提交再 expire 后重读。
+    """
     old_keys = [k for k in ALL_FEATURES if k != "sequencing_batch"]
     row = get_site_settings_row(db)
     row.anonymous_features = json.dumps(old_keys)
@@ -101,7 +106,9 @@ def test_one_time_migration_inherits_split_key(db):
     row.feature_migrations = ""
     save_site_settings_row(db, row)
 
-    site_settings._apply_one_time_feature_migrations(db, row)
+    _migrate_feature_lists(engine)
+    db.expire_all()
+    row = get_site_settings_row(db)
     assert "sequencing_batch" in json.loads(row.anonymous_features)
     assert "sequencing_batch" in json.loads(row.user_features)
     assert "vectors" not in json.loads(row.user_features)      # 未误开原有收紧项
@@ -109,24 +116,30 @@ def test_one_time_migration_inherits_split_key(db):
     assert "sequencing_batch" in row.feature_migrations
 
     # 幂等：再跑一次不变
-    site_settings._apply_one_time_feature_migrations(db, row)
+    _migrate_feature_lists(engine)
+    db.expire_all()
+    row = get_site_settings_row(db)
+    assert "vectors" not in json.loads(row.user_features)
 
-    # 迁移后管理员显式取消勾选新键（保留 sequencing）→ 不被补回
+    # 迁移后管理员显式取消勾选新键（保留 sequencing）→ 不会在下次启动被补回
     row.user_features = json.dumps([k for k in old_keys if k != "sequencing_batch"])
     save_site_settings_row(db, row)
-    site_settings._apply_one_time_feature_migrations(db, row)
+    _migrate_feature_lists(engine)
+    db.expire_all()
+    row = get_site_settings_row(db)
     assert "sequencing_batch" not in json.loads(row.user_features)
 
 
 def test_one_time_migration_covers_user_overrides(db):
-    """用户个人覆盖清单同样补齐拆分键（get_current_user 每请求查库，即时生效）"""
+    """用户个人覆盖清单同样补齐拆分键（get_current_user 每请求查库，重启后即时生效）"""
     old_keys = [k for k in ALL_FEATURES if k != "sequencing_batch"]
     _make_user(db, email="ov@test.com", allowed_features=old_keys)
     row = get_site_settings_row(db)
     row.feature_migrations = ""
     save_site_settings_row(db, row)
 
-    site_settings._apply_one_time_feature_migrations(db, row)
+    _migrate_feature_lists(engine)
+    db.expire_all()
     from app.database.models import UserDB
     u = db.query(UserDB).filter(UserDB.email == "ov@test.com").one()
     assert "sequencing_batch" in json.loads(u.allowed_features)
