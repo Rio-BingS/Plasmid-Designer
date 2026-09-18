@@ -723,6 +723,8 @@ export async function deleteSequencingAnalysis(analysisId: string): Promise<void
 
 export interface SequencingBatchItem {
   plasmid: string
+  /** 克隆号（信息表带「克隆号」列时有值；每个克隆独立分析） */
+  clone?: string | null
   /** analyzed=已分析 / no_reads=只有图谱 / no_reference=缺图谱 / failed=分析失败 / not_found=无文件 */
   status: 'analyzed' | 'no_reads' | 'no_reference' | 'failed' | 'not_found'
   conclusion: string
@@ -743,6 +745,8 @@ export interface SequencingBatchResult {
   min_q: number
   /** true=按信息表引物列/质粒名归组；false=按图谱文件名包含关系归组 */
   excel_mode: boolean
+  /** true=信息表带克隆号列，按克隆分组（一个质粒多个克隆独立分析） */
+  clone_mode?: boolean
   items: SequencingBatchItem[]
   unmatched: { filename: string; reason: string }[]
   ignored_files: string[]

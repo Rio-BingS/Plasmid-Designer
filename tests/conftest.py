@@ -8,6 +8,21 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 BACKEND = Path(__file__).resolve().parent.parent / "src" / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """每个测试前清空内存限流计数。
+
+    限流器是进程级单例（upload 档 20 次/小时），全套件运行时 /sequencing
+    的历史请求会把配额占满，让排在后面的测试收到与被测逻辑无关的 429。
+    """
+    from app.rate_limit import limiter
+
+    limiter._requests.clear()
+    yield

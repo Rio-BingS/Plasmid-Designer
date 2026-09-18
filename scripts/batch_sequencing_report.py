@@ -41,6 +41,7 @@ from core.sanger.batch import (  # noqa: E402
     main_sentence,
     match_files,
     norm_stem as _norm,
+    rows_have_clones,
 )
 
 
@@ -226,6 +227,12 @@ def main():
     except ValueError as e:
         raise SystemExit(f"{e}：{excel_path}")
     print(f"信息表：{excel_path.name}（{len(rows)} 个质粒）")
+    if rows_have_clones(rows):
+        raise SystemExit(
+            "信息表带「克隆号」列（克隆模式，每个克隆独立分析）："
+            "请使用网页端批量测序分析（/batch-sequencing）；"
+            "本脚本目前仅支持无克隆号列的质粒模式信息表"
+        )
     files = scan_files(data_dir, out_dir)
     n_ab1 = sum(1 for f in files if f["ext"] in READ_EXTS)
     print(f"扫描到 {len(files)} 个文件（{n_ab1} 个 .ab1，{len(files) - n_ab1} 个图谱）")
