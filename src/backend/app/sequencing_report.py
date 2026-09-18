@@ -4,8 +4,14 @@
 按质粒归档的文件副本（只复制不覆盖）、每组 测序分析报告.md、分析结果.json、
 整理清单.csv（原始路径 + MD5 可追溯）与结论回填的信息表。网页端批量分析
 拿不到本地路径（浏览器一次上传、服务器不落盘），改为分析完成后按上传
-原始字节在内存里打包同构 ZIP，经 GET /api/sequencing/batches/{batch_id}/report
+原始字节在内存里打包 ZIP，经 GET /api/sequencing/batches/{batch_id}/report
 下载，缓存时效清理见 sequencing_routes._sweep_expired。
+
+归档结构（2026-09 起按交付整理习惯调整，与离线脚本的平铺结构分道）：
+同一质粒一个文件夹（信息表里 '17648'/'MBYSTC'/'17648 MBYSTC' 等不同写法
+按表内别名合并，口径与 core.sanger.batch 一致），其下固定 正确/ 错误/ 两个
+子文件夹按各组一句话结论分置文件与报告（合格→正确、不合格→错误，分析
+失败/缺图谱等无法判定的归 无法判定/），参考图谱放质粒文件夹根。
 
 本模块只做与路由无关的纯构建：输入（归组、分析记录、信息表）均为已成形
 数据，输出 ZIP 字节与回填后的信息表字节。
@@ -18,7 +24,11 @@ import json
 import re
 import zipfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+# 表内别名判定的分隔符不敏感形式与 core.sanger.batch 共用一份实现，保证
+# 归档合并与图谱共享对「同一质粒的不同写法」口径完全一致
+from core.sanger.batch import _squash
 
 ZIP_ROOT = "测序整理"
 
@@ -31,6 +41,43 @@ def _safe_component(name: str) -> str:
 
 def _md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
+
+
+def _conclusion_bucket(conclusion: str) -> str:
+    """按一句话结论把组归入质粒文件夹下的子文件夹：合格→正确，不合格→错误；
+    其余（分析失败、缺参考图谱、没匹配到 reads 等）无法自动判定 → 无法判定"""
+    if conclusion.startswith("合格"):
+        return "正确"
+    if conclusion.startswith("不合格"):
+        return "错误"
+    return "无法判定"
+
+
+def _plasmid_folders(plasmids: List[str]) -> Dict[str, str]:
+    """归档文件夹名：表内别名写法并入同一质粒文件夹——X（分隔符不敏感）恰为
+    另一名称 Y 的某一空白分隔段（'17648' ⊂ '17648 MBYSTC'）且宿主唯一时视为
+    同一质粒并入 Y；宿主多于一个（'17648' 同时是 17648 A/17648 B 的段）或
+    无宿主（'17648' 与 'MBYSTC' 并存但表中无全名行）时维持自身，与
+    core.sanger.batch 的表内别名共享同一「候选不唯一不猜」口径。
+    返回 {原始名: 文件夹名}。"""
+    uniq = sorted({p for p in plasmids if p})
+    rep: Dict[str, str] = {}
+    for n in uniq:                     # 仅大小写/分隔符不同的写法共用一个文件夹
+        rep.setdefault(_squash(n), n)
+    reps = sorted(set(rep.values()))
+    segs = {n: {_squash(t) for t in re.split(r"\s+", n.strip()) if t} for n in reps}
+    host: Dict[str, Optional[str]] = {}
+    for n in reps:
+        cands = [m for m in reps if m != n and _squash(n) in segs[m]]
+        host[n] = cands[0] if len(cands) == 1 else None
+    final: Dict[str, str] = {}
+    for n in reps:                     # 传递并入最终宿主（环兜底限步数）
+        cur, hops = n, 0
+        while host.get(cur) and hops <= len(reps):
+            cur = host[cur]
+            hops += 1
+        final[n] = cur
+    return {p: final[rep[_squash(p)]] if p else "sample" for p in plasmids}
 
 
 def _fmt_change(v) -> str:
@@ -181,6 +228,10 @@ def build_batch_zip(
     unmatched：未匹配原始条目 [{"file","reason"}]；records：analysis_id →
     内存分析记录（供报告与 分析结果.json 取数）。groups 与 payload["items"]
     由 _run_batch 保证一一对应（每组恰好产出一个 item，顺序一致）。
+
+    归档布局：同一质粒（含表内别名写法合并，见 _plasmid_folders）一个文件夹，
+    参考图谱在文件夹根；各组文件与报告按结论分入 正确/ 错误/（无法判定的入
+    无法判定/），正确/错误 两个子文件夹固定保留（空置也给出，结构可预期）。
     """
     manifest: List[Dict] = []
     used_arcs: set = set()          # 全局防 zip 条目冲突
@@ -201,42 +252,81 @@ def build_batch_zip(
         used_arcs.add(arc)
         return arc
 
+    items = payload["items"]
+    folders = _plasmid_folders([g["plasmid"] or "" for g in groups])
+
+    # 预分桶：图谱与 read 皆空的组（未找到任何东西）无可归档，不产文件夹
+    buckets: Dict[Tuple[str, str], List[int]] = {}
+    for i, (g, item) in enumerate(zip(groups, items)):
+        if not (g["reference"] or g["reads"]):
+            continue
+        folder = _safe_component(folders.get(g["plasmid"] or "") or "sample")
+        buckets.setdefault(
+            (folder, _conclusion_bucket(item.get("conclusion") or "")), []).append(i)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for g, item in zip(groups, payload["items"]):
-            plasmid, clone = g["plasmid"], g["clone"]
-            parts = [_safe_component(plasmid or "sample")]
-            if payload.get("clone_mode") and clone:
-                parts.append(_safe_component(clone))
-            arcdir = "/".join(parts)
-            copied = []
-            if g["reference"]:
-                copied.append({"name": g["reference"]["file"].get("name") or "reference",
-                               "kind": "参考图谱", "how": g["reference"]["how"]})
-            for r in g["reads"]:
-                copied.append({"name": r["file"].get("name") or "read",
-                               "kind": "测序 read", "how": r["how"]})
-            if not copied:
-                continue
-            for e in ([g["reference"]] if g["reference"] else []) + g["reads"]:
-                entry = e["file"]
-                data = entry.get("bytes") or b""
-                arc = _arc(arcdir, _safe_component(entry.get("name") or "file"))
-                zf.writestr(arc, data)
-                manifest.append({
-                    "质粒": plasmid or "", "克隆": clone or "",
-                    "文件": entry.get("name") or arc.rsplit("/", 1)[-1],
-                    "类型": "参考图谱" if e is g["reference"] else "测序 read",
-                    "匹配方式": e["how"], "归档路径": arc,
-                    "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
-                })
-            record = records.get(item["analysis_id"]) if item.get("analysis_id") else None
-            zf.writestr(_arc(arcdir, "测序分析报告.md"), _group_report_md(item, record, copied))
-            if record:
-                dump = {k: v for k, v in record.items()
-                        if k not in ("_trace_data", "_created_ts", "reference")}
-                zf.writestr(_arc(arcdir, "分析结果.json"),
-                            json.dumps(dump, ensure_ascii=False, indent=1))
+        # 每个质粒文件夹固定给出 正确/错误 子文件夹（空置也保留）；无法判定/
+        # 只在确有内容时出现
+        for folder in sorted({folder for folder, _b in buckets}):
+            for d in ("正确", "错误"):
+                zf.writestr(zipfile.ZipInfo(f"{ZIP_ROOT}/{folder}/{d}/"), b"")
+
+        ref_archived: Dict[str, set] = {}   # 质粒文件夹 → 已归档图谱 (文件名, MD5)
+        for (folder, bucket), idxs in buckets.items():
+            # 同桶多组（克隆模式多克隆 / 表内别名写法并档）时报告与 json 带组名
+            # 后缀区分；单组保持干净名
+            multi = len(idxs) > 1
+            for i in idxs:
+                g, item = groups[i], items[i]
+                plasmid, clone = g["plasmid"], g["clone"]
+                if g["reference"]:
+                    e = g["reference"]["file"]
+                    data = e.get("bytes") or b""
+                    seen = ref_archived.setdefault(folder, set())
+                    key = (e.get("name"), _md5(data))
+                    if key not in seen:     # 别名组/同质粒克隆共享同一图谱：只归档一份
+                        seen.add(key)
+                        arc = _arc(folder, _safe_component(e.get("name") or "reference"))
+                        zf.writestr(arc, data)
+                        manifest.append({
+                            "质粒": plasmid or "", "克隆": clone or "",
+                            "文件": e.get("name") or arc.rsplit("/", 1)[-1],
+                            "类型": "参考图谱", "结论": "",
+                            "匹配方式": g["reference"]["how"], "归档路径": arc,
+                            "大小KB": round(len(data) / 1024, 1), "MD5": key[1],
+                        })
+                copied = []
+                if g["reference"]:
+                    copied.append({"name": g["reference"]["file"].get("name") or "reference",
+                                   "kind": "参考图谱", "how": g["reference"]["how"]})
+                for r in g["reads"]:
+                    e = r["file"]
+                    data = e.get("bytes") or b""
+                    arc = _arc(f"{folder}/{bucket}", _safe_component(e.get("name") or "read"))
+                    zf.writestr(arc, data)
+                    copied.append({"name": e.get("name") or "read",
+                                   "kind": "测序 read", "how": r["how"]})
+                    manifest.append({
+                        "质粒": plasmid or "", "克隆": clone or "",
+                        "文件": e.get("name") or arc.rsplit("/", 1)[-1],
+                        "类型": "测序 read", "结论": item.get("conclusion") or "",
+                        "匹配方式": r["how"], "归档路径": arc,
+                        "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
+                    })
+                record = records.get(item["analysis_id"]) if item.get("analysis_id") else None
+                gname = item.get("clone") or plasmid or "sample"
+                rname = (f"测序分析报告-{_safe_component(gname)}.md" if multi
+                         else "测序分析报告.md")
+                zf.writestr(_arc(f"{folder}/{bucket}", rname),
+                            _group_report_md(item, record, copied))
+                if record:
+                    dump = {k: v for k, v in record.items()
+                            if k not in ("_trace_data", "_created_ts", "reference")}
+                    jname = (f"分析结果-{_safe_component(gname)}.json" if multi
+                             else "分析结果.json")
+                    zf.writestr(_arc(f"{folder}/{bucket}", jname),
+                                json.dumps(dump, ensure_ascii=False, indent=1))
 
         for u in unmatched:
             entry = u["file"]
@@ -245,14 +335,14 @@ def build_batch_zip(
             zf.writestr(arc, data)
             manifest.append({
                 "质粒": "", "克隆": "", "文件": entry.get("name") or arc.rsplit("/", 1)[-1],
-                "类型": "未匹配", "匹配方式": u["reason"], "归档路径": arc,
+                "类型": "未匹配", "结论": "", "匹配方式": u["reason"], "归档路径": arc,
                 "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
             })
 
-        # 整理清单（可追溯：归档路径 + MD5）
+        # 整理清单（可追溯：归档路径 + MD5 + 该组结论）
         out = io.StringIO()
-        w = csv.DictWriter(out, fieldnames=["质粒", "克隆", "文件", "类型", "匹配方式",
-                                            "归档路径", "大小KB", "MD5"])
+        w = csv.DictWriter(out, fieldnames=["质粒", "克隆", "文件", "类型", "结论",
+                                            "匹配方式", "归档路径", "大小KB", "MD5"])
         w.writeheader()
         w.writerows(manifest)
         zf.writestr(f"{ZIP_ROOT}/整理清单.csv", "\ufeff" + out.getvalue())
@@ -261,6 +351,9 @@ def build_batch_zip(
         lines = ["批量测序分析整理包",
                  f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
                  f"分组模式：{'克隆模式（每行一个克隆独立分析）' if payload.get('clone_mode') else '质粒模式'}",
+                 "归档结构：每个质粒一个文件夹（表内不同写法已合并），参考图谱在其根；"
+                 "其下 正确/ 错误/ 按各组一句话结论分置（合格→正确、不合格→错误，"
+                 "分析失败或缺图谱等无法判定的归 无法判定/）",
                  "", f"各组结论（{len(payload['items'])} 组）："]
         for it in payload["items"]:
             label = f"{it['plasmid']}（克隆 {it['clone']}）" if it.get("clone") else it["plasmid"]

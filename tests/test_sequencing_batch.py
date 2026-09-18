@@ -440,7 +440,8 @@ def _open_zip(resp):
 
 
 def test_batch_report_zip_archives_and_backfills_excel(client):
-    """整理包：按质粒归档上传文件副本 + 测序分析报告.md + 整理清单 + 结论回填信息表"""
+    """整理包：同一质粒一个文件夹（图谱在根），文件与报告按结论归入 正确/错误
+    子文件夹（空桶也保留）+ 整理清单 + 结论回填信息表"""
     resp = _post(client, [
         _fasta("MX.fasta", REF_MX),
         _ab1("T1.ab1", REF_MX),
@@ -455,13 +456,14 @@ def test_batch_report_zip_archives_and_backfills_excel(client):
     zf = _open_zip(got)
     names = zf.namelist()
     assert "测序整理/MX/MX.fasta" in names
-    assert "测序整理/MX/T1.ab1" in names
-    assert "测序整理/MX/测序分析报告.md" in names
-    assert "测序整理/MX/分析结果.json" in names
+    assert "测序整理/MX/正确/T1.ab1" in names
+    assert "测序整理/MX/正确/测序分析报告.md" in names
+    assert "测序整理/MX/正确/分析结果.json" in names
+    assert "测序整理/MX/错误/" in names            # 空桶也保留，结构可预期
     assert "测序整理/整理清单.csv" in names
     assert "测序整理/批次总览.txt" in names
     # 报告含结论；整理清单含 MD5；回填信息表结论与接口返回一致，且留原始备份
-    report = zf.read("测序整理/MX/测序分析报告.md").decode("utf-8")
+    report = zf.read("测序整理/MX/正确/测序分析报告.md").decode("utf-8")
     assert "# MX 测序分析报告" in report and f"> **{data['items'][0]['conclusion']}**" in report
     manifest = zf.read("测序整理/整理清单.csv").decode("utf-8")
     assert "T1.ab1" in manifest and "参考图谱" in manifest
@@ -472,7 +474,8 @@ def test_batch_report_zip_archives_and_backfills_excel(client):
 
 
 def test_batch_report_clone_mode_backfills_per_clone(client):
-    """克隆模式整理包：按 质粒/克隆 两级归档，结论按（质粒, 克隆）回填到对应行"""
+    """克隆模式整理包：同一质粒一个文件夹、各克隆文件按结论分入 正确/错误，
+    同桶多克隆的报告带克隆号后缀；结论按（质粒, 克隆）回填到对应行"""
     resp = _post(client, [
         _fasta("MX.fasta", REF_MX),
         _ab1("S1-T1.ab1", REF_MX),
@@ -483,13 +486,65 @@ def test_batch_report_clone_mode_backfills_per_clone(client):
     assert data["clone_mode"] is True
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
     names = zf.namelist()
-    assert "测序整理/MX/S1/S1-T1.ab1" in names
-    assert "测序整理/MX/S2/S2-T2.ab1" in names
+    assert "测序整理/MX/正确/S1-T1.ab1" in names
+    assert "测序整理/MX/正确/S2-T2.ab1" in names
+    assert "测序整理/MX/正确/测序分析报告-S1.md" in names
+    assert "测序整理/MX/正确/测序分析报告-S2.md" in names
     wb = openpyxl.load_workbook(io.BytesIO(zf.read("测序整理/测序.xlsx")))
     ws = wb.worksheets[0]
     # 表头 [克隆号, 质粒名称, 测序引物, 测序结果] → 结果列第 4 列；按行核对克隆结论
     assert ws.cell(row=2, column=4).value == data["items"][0]["conclusion"]
     assert ws.cell(row=3, column=4).value == data["items"][1]["conclusion"]
+
+
+def _origin_block(seq: str) -> str:
+    lines = []
+    for i in range(0, len(seq), 60):
+        chunk = seq[i:i + 60]
+        groups = " ".join(chunk[j:j + 10] for j in range(0, len(chunk), 10))
+        lines.append(f"{i + 1:>9} {groups}")
+    return "\n".join(lines)
+
+
+def _gb_mx() -> bytes:
+    """整序列为 CDS 的 GenBank 图谱（错义突变才能判 不合格）"""
+    return (
+        f"LOCUS       17648        {len(REF_MX)} bp    DNA     circular SYN 01-JAN-2026\n"
+        "DEFINITION  test construct.\n"
+        "ACCESSION   17648\n"
+        "FEATURES             Location/Qualifiers\n"
+        f"     source          1..{len(REF_MX)}\n"
+        f"     CDS             1..{len(REF_MX)}\n"
+        "                     /label=\"MX\"\n"
+        f"ORIGIN\n{_origin_block(REF_MX)}\n//\n"
+    ).encode()
+
+
+def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
+    """同一质粒的不同写法（'17648'/'17648 MBYSTC'）并档到一个质粒文件夹：
+    图谱在文件夹根，各组文件按结论分入 正确/错误 子文件夹"""
+    mut = REF_MX[:55] + "C" + REF_MX[56:]   # 密码子 19 ATG→ACG 错义（中段，避开末端修剪）
+    gb = _gb_mx()
+    resp = _post(client, [
+        ("17648.gb", gb, "application/octet-stream"),
+        ("17648 MBYSTC.gb", gb, "application/octet-stream"),
+        _ab1("T1.ab1", REF_MX),
+        _ab1("T2.ab1", mut),
+    ], excel_part=_xlsx([("17648", ["T1"]), ("17648 MBYSTC", ["T2"])]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["items"][0]["conclusion"].startswith("合格")
+    assert data["items"][1]["conclusion"].startswith("不合格")
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    names = zf.namelist()
+    assert not any(n.startswith("测序整理/17648/") for n in names)   # 两种写法已并档
+    assert "测序整理/17648 MBYSTC/17648.gb" in names                 # 图谱在质粒文件夹根
+    assert "测序整理/17648 MBYSTC/正确/T1.ab1" in names
+    assert "测序整理/17648 MBYSTC/错误/T2.ab1" in names
+    assert "测序整理/17648 MBYSTC/正确/测序分析报告.md" in names
+    assert "测序整理/17648 MBYSTC/错误/测序分析报告.md" in names
+    manifest = zf.read("测序整理/整理清单.csv").decode("utf-8")
+    assert "结论" in manifest and "T2.ab1" in manifest and "不合格" in manifest
 
 
 def test_batch_report_includes_unmatched_files(client):
