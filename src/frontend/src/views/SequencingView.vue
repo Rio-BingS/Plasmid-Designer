@@ -175,7 +175,7 @@ function formatTime(iso: string): string {
         <button class="refresh-btn" @click="refreshHistory">↻ 刷新</button>
       </div>
       <p v-if="historyLoading" class="hint">加载中…</p>
-      <p v-else-if="!history.length" class="hint">暂无分析记录（分析结果在服务重启后清空）</p>
+      <p v-else-if="!history.length" class="hint">暂无分析记录（分析记录 15 分钟后自动删除，服务重启也会清空）</p>
       <table v-else class="history-table">
         <thead>
           <tr>

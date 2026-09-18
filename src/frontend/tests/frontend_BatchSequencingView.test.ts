@@ -9,10 +9,11 @@ vi.mock('vue-router', () => ({
 }))
 
 vi.mock('@/api', () => ({
-  analyzeSequencingBatch: vi.fn()
+  analyzeSequencingBatch: vi.fn(),
+  downloadBatchSequencingReport: vi.fn()
 }))
 
-import { analyzeSequencingBatch } from '@/api'
+import { analyzeSequencingBatch, downloadBatchSequencingReport } from '@/api'
 
 const mockResult: SequencingBatchResult = {
   batch_id: 'seqbatch_test1',
@@ -52,6 +53,7 @@ function mountView() {
 describe('BatchSequencingView', () => {
   beforeEach(() => {
     vi.mocked(analyzeSequencingBatch).mockReset()
+    vi.mocked(downloadBatchSequencingReport).mockReset()
     pushMock.mockReset()
   })
 
@@ -118,5 +120,31 @@ describe('BatchSequencingView', () => {
     const form = vi.mocked(analyzeSequencingBatch).mock.calls[0]
     expect(form[0].map((f: File) => f.name)).toEqual(['T1.ab1'])
     expect(form[1]?.name).toBe('测序.xlsx')
+  })
+
+  it('report_ready 时显示整理包下载按钮并调下载接口，缺省不显示', async () => {
+    vi.mocked(analyzeSequencingBatch).mockResolvedValue(mockResult)
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    // 旧响应没有 report_ready → 不显示下载入口
+    expect(w.find('button.report-btn').exists()).toBe(false)
+
+    vi.mocked(analyzeSequencingBatch).mockResolvedValue({ ...mockResult, report_ready: true })
+    const w2 = mountView()
+    const input2 = w2.find('input[type="file"][multiple]')
+    Object.defineProperty(input2.element, 'files', { value: [makeFile('T1.ab1')] })
+    await input2.trigger('change')
+    await w2.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    expect(w2.find('button.report-btn').exists()).toBe(true)
+    await w2.find('button.report-btn').trigger('click')
+    await flushPromises()
+    expect(downloadBatchSequencingReport).toHaveBeenCalledWith('seqbatch_test1')
   })
 })

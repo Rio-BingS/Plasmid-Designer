@@ -102,6 +102,18 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 新增（2026-09-19）**批量分析整理包 + 分析记录 15 分钟自动删除**：网页批量
+  分析（analyze-batch）完成后按上传原始字节现场打包「整理包」并缓存（离线脚本
+  产物的网页版：按质粒/克隆归档的文件副本、各组 测序分析报告.md、分析结果.json、
+  整理清单.csv、批次总览.txt、结论回填的信息表 + 原始备份；克隆模式按
+  （质粒, 克隆）回填，是离线脚本没有的扩展），15 分钟内经
+  GET /api/sequencing/batches/{batch_id}/report 重复下载（响应 report_ready
+  控制；体积超 MAX_BATCH_CACHE_BYTES=256MB 跳过打包）。构建逻辑在
+  app/sequencing_report.py（纯函数），缓存时效清理在 sequencing_routes
+  （_sweep_expired）。同时分析记录（_ANALYSES）加 15 分钟 TTL 自动删除
+  （ANALYSIS_TTL），MAX_STORED/MAX_TRACE_STORED 容量兜底保留。上传链路：
+  容器 nginx client_max_body_size 10m→512m、代理读写超时 120s→600s（批量
+  交付几十个 ab1 轻易超 10MB，超限断连在浏览器端表现为 Network Error）。
 - 新增（2026-09-19）**克隆模式图谱单段命名 + 表内别名共享**：质粒名三种写法
   （'17648'/'MBYSTC'/'17648 MBYSTC'）与图谱文件名两两等价——图谱文件名也可只写
   一段（'17648.fasta'），与图谱共享该段的行直接命中；只写另一段的行（'MBYSTC'）

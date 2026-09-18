@@ -750,6 +750,8 @@ export interface SequencingBatchResult {
   items: SequencingBatchItem[]
   unmatched: { filename: string; reason: string }[]
   ignored_files: string[]
+  /** true=整理包已生成，可经 downloadBatchSequencingReport 下载（15 分钟有效） */
+  report_ready?: boolean
 }
 
 /** 批量测序分析：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表一次上传 */
@@ -764,4 +766,14 @@ export async function analyzeSequencingBatch(
   form.append('min_q', String(minQ))
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
   return response.data
+}
+
+/** 下载批量分析的整理包：按质粒/克隆归档的原始文件副本 + 各组分析报告 +
+ *  整理清单 + 结论回填的信息表（离线脚本产物的网页版；生成 15 分钟后过期） */
+export async function downloadBatchSequencingReport(batchId: string): Promise<void> {
+  const response = await api.get(`/sequencing/batches/${batchId}/report`, {
+    responseType: 'blob',
+    timeout: 300000
+  })
+  await saveBlobResponse(response, `测序整理_${batchId.slice(-6)}.zip`)
 }

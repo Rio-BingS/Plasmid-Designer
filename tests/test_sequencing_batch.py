@@ -413,3 +413,110 @@ def test_match_clone_files_fallbacks_and_conflicts():
     groups, unmatched = match_clone_files(rows, [mk("C1-M13F-75.ab1", ".ab1")])
     assert sum(len(g["reads"]) for g in groups) == 0
     assert "对应多行" in unmatched[0]["reason"]
+
+
+# ---------------------------------------------------------------- 整理包与记录时效
+
+
+def _open_zip(resp):
+    import zipfile
+    return zipfile.ZipFile(io.BytesIO(resp.content))
+
+
+def test_batch_report_zip_archives_and_backfills_excel(client):
+    """整理包：按质粒归档上传文件副本 + 测序分析报告.md + 整理清单 + 结论回填信息表"""
+    resp = _post(client, [
+        _fasta("MX.fasta", REF_MX),
+        _ab1("T1.ab1", REF_MX),
+    ], excel_part=_xlsx([("MX", ["T1"])]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["report_ready"] is True and data["batch_id"]
+
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    assert got.status_code == 200
+    assert got.headers["content-type"] == "application/zip"
+    zf = _open_zip(got)
+    names = zf.namelist()
+    assert "测序整理/MX/MX.fasta" in names
+    assert "测序整理/MX/T1.ab1" in names
+    assert "测序整理/MX/测序分析报告.md" in names
+    assert "测序整理/MX/分析结果.json" in names
+    assert "测序整理/整理清单.csv" in names
+    assert "测序整理/批次总览.txt" in names
+    # 报告含结论；整理清单含 MD5；回填信息表结论与接口返回一致，且留原始备份
+    report = zf.read("测序整理/MX/测序分析报告.md").decode("utf-8")
+    assert "# MX 测序分析报告" in report and f"> **{data['items'][0]['conclusion']}**" in report
+    manifest = zf.read("测序整理/整理清单.csv").decode("utf-8")
+    assert "T1.ab1" in manifest and "参考图谱" in manifest
+    wb = openpyxl.load_workbook(io.BytesIO(zf.read("测序整理/测序.xlsx")))
+    cell = wb.worksheets[0].cell(row=2, column=3).value
+    assert cell == data["items"][0]["conclusion"]
+    assert "测序整理/原始备份_测序.xlsx" in names
+
+
+def test_batch_report_clone_mode_backfills_per_clone(client):
+    """克隆模式整理包：按 质粒/克隆 两级归档，结论按（质粒, 克隆）回填到对应行"""
+    resp = _post(client, [
+        _fasta("MX.fasta", REF_MX),
+        _ab1("S1-T1.ab1", REF_MX),
+        _ab1("S2-T2.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "MX", ["T1"]), ("S2", "MX", ["T2"])]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["clone_mode"] is True
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    names = zf.namelist()
+    assert "测序整理/MX/S1/S1-T1.ab1" in names
+    assert "测序整理/MX/S2/S2-T2.ab1" in names
+    wb = openpyxl.load_workbook(io.BytesIO(zf.read("测序整理/测序.xlsx")))
+    ws = wb.worksheets[0]
+    # 表头 [克隆号, 质粒名称, 测序引物, 测序结果] → 结果列第 4 列；按行核对克隆结论
+    assert ws.cell(row=2, column=4).value == data["items"][0]["conclusion"]
+    assert ws.cell(row=3, column=4).value == data["items"][1]["conclusion"]
+
+
+def test_batch_report_includes_unmatched_files(client):
+    """未匹配文件不参与分析，但归档进 未匹配文件/ 并记入整理清单"""
+    resp = _post(client, [
+        _fasta("MX.fasta", REF_MX),
+        _ab1("T1.ab1", REF_MX),
+        _ab1("孤儿.ab1", REF_MX),
+    ], excel_part=_xlsx([("MX", ["T1"])]))
+    assert resp.status_code == 200
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{resp.json()['batch_id']}/report"))
+    assert "测序整理/未匹配文件/孤儿.ab1" in zf.namelist()
+
+
+def test_batch_report_skipped_when_over_cache_cap(client, monkeypatch):
+    """体积超整理包缓存上限：正常返回分析结果，但不提供整理包下载"""
+    from app.routes import sequencing_routes as sr
+    monkeypatch.setattr(sr, "MAX_BATCH_CACHE_BYTES", 1)
+    resp = _post(client, [_fasta("MX.fasta", REF_MX), _ab1("T1.ab1", REF_MX)],
+                 excel_part=_xlsx([("MX", ["T1"])]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["report_ready"] is False
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    assert got.status_code == 404
+    assert "过期" in got.json()["detail"] or "不存在" in got.json()["detail"]
+
+
+def test_analyses_and_batch_expire_after_ttl(client):
+    """分析记录与整理包 15 分钟 TTL：把记录时间戳拨旧 → 列表/详情/整理包全部消失"""
+    from app.routes import sequencing_routes as sr
+    resp = _post(client, [_fasta("MX.fasta", REF_MX), _ab1("T1.ab1", REF_MX)],
+                 excel_part=_xlsx([("MX", ["T1"])]))
+    data = resp.json()
+    aid = data["items"][0]["analysis_id"]
+    assert sr._ANALYSES.get(aid) is not None
+    assert client.get(f"/api/sequencing/batches/{data['batch_id']}/report").status_code == 200
+
+    for rec in sr._ANALYSES.values():
+        rec["_created_ts"] -= sr.ANALYSIS_TTL + 10
+    sr._BATCHES[data["batch_id"]]["created_ts"] -= sr.BATCH_TTL + 10
+
+    assert client.get("/api/sequencing/analyses").json() == []
+    assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 404
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    assert got.status_code == 404 and "过期" in got.json()["detail"]
