@@ -100,8 +100,23 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
   （conftest.py 会重新注入正确路径）
 
-## 当前状态（2026-09-18）
+## 当前状态（2026-09-19）
 
+- 新增（2026-09-19）**测序分析与批量测序分析权限彻底拆分**：功能矩阵新增
+  「批量测序分析」（sequencing_batch，注册表紧随 sequencing）。后端 main.py 对
+  sequencing_router 改挂 require_any_feature（分析记录查看/峰图/导出/删除为两者
+  共用，任一开放即可），端点级 require_feature 落到各入口——单样品三入口
+  （/sequencing/analyze、designs/{id}/…、vectors/{id}/…）属「测序分析」，
+  /sequencing/analyze-batch 属「批量测序分析」；gating.py 新增 require_any_feature。
+  存量兼容：site_settings 新增 feature_migrations 标记列（init_db 轻量 ALTER 迁移），
+  读路径按 features.SPLIT_INHERIT 做一次性继承迁移（含 sequencing 的清单——站点
+  两级矩阵 + 用户个人覆盖——自动补 sequencing_batch，保持拆分前行为；标记保证
+  只跑一次，之后管理员显式取消勾选不会被补回）。前端：/sequencing/batch 路由与
+  导航改绑新键；/sequencing 路由守卫 anyFeature 任一放行（批量结果深链 ?history=
+  的共用详情载体），仅有批量权限时页内隐藏上传分析区降级为只读回看；AdminView
+  矩阵由 feature_keys 动态渲染自动出现新键。测试 tests/test_feature_gating_sequencing.py
+  7 项（注册表顺序/一次性迁移幂等且不覆盖显式勾选/用户覆盖补齐/端点 403 拆分/
+  site-config 传导/矩阵键）+ 前端降级用例；pytest 299 通过，vitest 91 通过
 - 新增（2026-09-18）**批量测序克隆模式**（一个质粒多个克隆）：信息表带「克隆号」列时
   每行一个克隆独立成组、独立分析（core/sanger/batch.py 新增 rows_have_clones +
   match_clone_files；load_excel 识别克隆/样品列、数值单元格 123.0→'123'）。read 匹配：

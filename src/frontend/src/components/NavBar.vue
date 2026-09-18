@@ -28,7 +28,7 @@ const navItems = [
   { to: '/batch', label: '批量设计', feature: 'batch' },
   { to: '/vectors', label: '载体库', feature: 'vectors' },
   { to: '/sequencing', label: '测序分析', feature: 'sequencing' },
-  { to: '/sequencing/batch', label: '批量测序', feature: 'sequencing' },
+  { to: '/sequencing/batch', label: '批量测序', feature: 'sequencing_batch' },
   { to: '/analysis', label: '序列工具', feature: 'analysis' }
 ]
 
@@ -93,7 +93,7 @@ function goToBatch() {
           <RouterLink v-if="authStore.featureAllowed('batch')" to="/batch" class="dropdown-item" @click="goToBatch">
             📦 批量设计
           </RouterLink>
-          <RouterLink v-if="authStore.featureAllowed('sequencing')" to="/sequencing/batch" class="dropdown-item">
+          <RouterLink v-if="authStore.featureAllowed('sequencing_batch')" to="/sequencing/batch" class="dropdown-item">
             🧬 批量测序
           </RouterLink>
           <button class="dropdown-item logout-btn" @click="handleLogout">

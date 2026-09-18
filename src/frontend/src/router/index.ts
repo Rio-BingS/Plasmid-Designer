@@ -23,8 +23,12 @@ const router = createRouter({
     { path: '/vectors', name: 'vectors', component: VectorsView, meta: { feature: 'vectors' } },
     { path: '/vectors/:id', name: 'vector-detail', component: VectorDetailView, props: true, meta: { feature: 'vectors' } },
     { path: '/analysis', name: 'analysis', component: AnalysisView, meta: { feature: 'analysis' } },
-    { path: '/sequencing', name: 'sequencing', component: SequencingView, meta: { feature: 'sequencing' } },
-    { path: '/sequencing/batch', name: 'sequencing-batch', component: BatchSequencingView, meta: { feature: 'sequencing' } },
+    // 测序分析页与批量测序页权限独立（sequencing / sequencing_batch）；
+    // 测序分析页是两者共用的详情回看载体（批量结果深链 ?history=<id>），
+    // 任一功能开放即可进入，页内未开放的部分自行降级隐藏
+    { path: '/sequencing', name: 'sequencing', component: SequencingView,
+      meta: { feature: 'sequencing', anyFeature: ['sequencing', 'sequencing_batch'] } },
+    { path: '/sequencing/batch', name: 'sequencing-batch', component: BatchSequencingView, meta: { feature: 'sequencing_batch' } },
     { path: '/cache', name: 'cache', component: CacheView },
     { path: '/admin', name: 'admin', component: AdminView, meta: { adminOnly: true } },
     { path: '/forbidden', name: 'forbidden', component: ForbiddenView }
@@ -33,6 +37,7 @@ const router = createRouter({
 
 // 站点功能门控：导航入口已按 site-config 隐藏，这里拦截直链访问。
 // 站点配置未加载完成（null）时放行，避免刷新时误拦。
+// anyFeature：任一功能开放即放行（共用页面）；feature：单独要求。
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!auth.siteConfig) {
@@ -40,6 +45,13 @@ router.beforeEach(async (to) => {
   }
   if (to.meta.adminOnly && !auth.isAdmin) {
     return { name: 'home' }
+  }
+  const anyFeature = to.meta.anyFeature as string[] | undefined
+  if (anyFeature?.length) {
+    if (!anyFeature.some((f) => auth.featureAllowed(f))) {
+      return { name: 'forbidden', query: { feature: anyFeature[0] } }
+    }
+    return true
   }
   const feature = to.meta.feature as string | undefined
   if (feature && !auth.featureAllowed(feature)) {

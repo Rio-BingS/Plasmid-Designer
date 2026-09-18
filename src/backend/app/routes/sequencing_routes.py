@@ -16,6 +16,12 @@
 - 设计结果（POST /api/designs/{design_id}/sequencing/analyze）
 - 载体库中有序列的载体（POST /api/vectors/{vector_id}/sequencing/analyze）
 
+功能门控（main.py 路由级 + 本文件端点级）：
+- 「测序分析」（sequencing）：单样品分析三入口（/sequencing/analyze、
+  designs/{id}/…、vectors/{id}/…）
+- 「批量测序分析」（sequencing_batch）：/sequencing/analyze-batch
+- 分析记录的查看/峰图/导出/删除为两者共用，任一功能开放即可用
+
 分析记录为进程级内存存储（会话级数据，重启后失效；trace 峰图数据体积大，
 不写入设计主线的持久化存储，且只保留最近若干次——更早的分析仍可查看
 变体/共识结论，仅峰图不可再加载）。
@@ -28,11 +34,12 @@ import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.design_service import get_vector_library
+from app.gating import require_feature
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_clone_files,
     match_files, norm_stem, rows_have_clones,
@@ -175,7 +182,10 @@ async def _analyze_endpoint(
     return _summary(_ANALYSES[analysis_id])
 
 
-@router.post("/sequencing/analyze")
+@router.post(
+    "/sequencing/analyze",
+    dependencies=[Depends(require_feature("sequencing"))],
+)
 async def analyze_sequencing_upload(
     reference: UploadFile = File(..., description="参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）"),
     reads: List[UploadFile] = File(..., description="一个或多个 .ab1 测序文件"),
@@ -370,7 +380,10 @@ def _run_batch(
     }
 
 
-@router.post("/sequencing/analyze-batch")
+@router.post(
+    "/sequencing/analyze-batch",
+    dependencies=[Depends(require_feature("sequencing_batch"))],
+)
 async def analyze_sequencing_batch(
     files: List[UploadFile] = File(..., description="测序结果文件：.ab1 与参考图谱（.dna/.gb/.fasta 等），可多质粒混在一起"),
     excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果，可含克隆号列）；缺省时按图谱文件名包含关系归组"),
@@ -424,7 +437,10 @@ async def analyze_sequencing_batch(
     return await run_in_threadpool(_run_batch, reads, refs, excel_rows, ignored, min_q)
 
 
-@router.post("/designs/{design_id}/sequencing/analyze")
+@router.post(
+    "/designs/{design_id}/sequencing/analyze",
+    dependencies=[Depends(require_feature("sequencing"))],
+)
 async def analyze_design_sequencing(
     design_id: str,
     files: List[UploadFile] = File(..., description="一个或多个 .ab1 文件"),
@@ -448,7 +464,10 @@ async def analyze_design_sequencing(
     )
 
 
-@router.post("/vectors/{vector_id}/sequencing/analyze")
+@router.post(
+    "/vectors/{vector_id}/sequencing/analyze",
+    dependencies=[Depends(require_feature("sequencing"))],
+)
 async def analyze_vector_sequencing(
     vector_id: str,
     files: List[UploadFile] = File(...),

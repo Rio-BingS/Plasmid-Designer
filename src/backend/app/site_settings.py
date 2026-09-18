@@ -13,7 +13,8 @@ from typing import Optional
 
 from app.database import get_site_settings_row, save_site_settings_row
 from app.features import (
-    DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, valid_features
+    DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, SPLIT_INHERIT,
+    valid_features,
 )
 
 logger = logging.getLogger("plasmid_designer.site_settings")
@@ -40,11 +41,54 @@ def _row_to_dict(row) -> dict:
     }
 
 
+def _apply_one_time_feature_migrations(db, row) -> None:
+    """功能清单一次性迁移（读路径触发，feature_migrations 标记保证只跑一次）。
+
+    注册表新增拆分键（features.SPLIT_INHERIT：sequencing_batch ← sequencing）
+    时，给含被拆键的存量清单补上新键，保持拆分前的可用性；标记列保证之后
+    管理员显式取消勾选不会被读路径"补回"。作用对象：站点两级矩阵 + 用户
+    个人功能覆盖（get_current_user 每请求查库，迁移即时生效，无需重新登录）。
+    """
+    marker = getattr(row, "feature_migrations", "") or ""
+    done = {m.strip() for m in marker.split(",") if m.strip()}
+    pending = [new for new, src in SPLIT_INHERIT.items() if new not in done]
+    if not pending:
+        return
+    for new in pending:
+        src = SPLIT_INHERIT[new]
+
+        def _patch(raw: str) -> str:
+            try:
+                keys = json.loads(raw or "[]")
+            except ValueError:
+                return raw or "[]"
+            if src in keys and new not in keys:
+                keys.append(new)
+                return json.dumps(valid_features(keys))
+            return raw or "[]"
+
+        row.anonymous_features = _patch(row.anonymous_features)
+        row.user_features = _patch(row.user_features)
+
+        # 用户个人覆盖同步补齐，避免个人授权清单在升级后悄悄关掉批量测序
+        try:
+            from app.database.models import UserDB
+            for u in db.query(UserDB).filter(UserDB.allowed_features.isnot(None)).all():
+                u.allowed_features = _patch(u.allowed_features)
+        except Exception:
+            logger.warning("用户个人功能清单迁移失败，跳过", exc_info=True)
+
+    row.feature_migrations = ",".join(sorted(done | set(pending)))
+    save_site_settings_row(db, row)
+    logger.info("功能清单迁移完成：%s（补齐 %s）", row.feature_migrations, pending)
+
+
 def _fetch() -> dict:
     from app.database import SessionLocal
     db = SessionLocal()
     try:
         row = get_site_settings_row(db)
+        _apply_one_time_feature_migrations(db, row)
         data = _row_to_dict(row)
         # 存量行为兼容：开关列建库默认 False/True，功能清单为空时补默认
         if not data["anonymous_features"]:
