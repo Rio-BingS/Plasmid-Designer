@@ -143,6 +143,10 @@ const summary = computed(() => {
   return { ok: n('ok'), bad: n('bad'), warn: n('warn'), idle: n('idle') }
 })
 
+// 克隆模式：信息表带「克隆号」列，同一质粒的每个克隆独立成行
+const cloneMode = computed(() => (result.value?.items ?? []).some((it) => !!it.clone))
+const plasmidCount = computed(() => new Set((result.value?.items ?? []).map((it) => it.plasmid)).size)
+
 function viewDetail(it: SequencingBatchItem) {
   if (!it.analysis_id) return
   router.push({ path: '/sequencing', query: { history: it.analysis_id } })
@@ -191,8 +195,10 @@ function viewDetail(it: SequencingBatchItem) {
           </label>
         </div>
         <p class="excel-note">
-          信息表（.xlsx，表头含「质粒名称/测序引物/测序结果」，引物列填测序文件名）可精确定匹归组；
-          不上传时按「测序文件名包含图谱文件名」自动归组
+          信息表（.xlsx，表头含「质粒名称/测序引物/测序结果」，引物列填测序文件名，多个用中英文分号分隔均可）可精确定匹归组；
+          带「克隆号」列时按克隆分组——一个质粒多个克隆每行一个、独立分析（ab1 文件名 = 克隆号-引物），
+          质粒名称写全名或两段式名称的任一段（如 "123-1 AB2C" 只写 "123-1" 或 "AB2C"）均可识别；
+          不上传信息表时按「测序文件名包含图谱文件名」自动归组
         </p>
 
         <div v-if="files.length || excelFile" class="staged">
@@ -211,7 +217,7 @@ function viewDetail(it: SequencingBatchItem) {
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
       </details>
       <button class="analyze-btn" :disabled="!canAnalyze" @click="runBatch">
-        {{ analyzing ? '批量分析中…（逐质粒运行，请稍候）' : '开始批量分析' }}
+        {{ analyzing ? '批量分析中…（逐样品运行，请稍候）' : '开始批量分析' }}
       </button>
     </div>
 
@@ -221,24 +227,30 @@ function viewDetail(it: SequencingBatchItem) {
         <div class="ref-header">
           <span class="step-no">②</span>
           <h2>结论总览</h2>
-          <span class="mode-chip">{{ result.excel_mode ? '按信息表归组' : '按文件名归组' }}</span>
+          <span class="mode-chip">
+            {{ result.clone_mode ? '信息表 · 克隆模式' : result.excel_mode ? '按信息表归组' : '按文件名归组' }}
+          </span>
         </div>
         <p class="summary-line">
-          共 {{ result.items.length }} 个质粒：
+          <template v-if="cloneMode">
+            共 {{ plasmidCount }} 个质粒 / {{ result.items.length }} 个克隆：
+          </template>
+          <template v-else>共 {{ result.items.length }} 个质粒：</template>
           <span class="count ok">合格 {{ summary.ok }}</span> ·
           <span class="count bad">不合格/失败 {{ summary.bad }}</span> ·
           <span class="count warn">待补 {{ summary.warn }}</span>
         </p>
         <table class="seq-table" v-if="result.items.length">
           <thead>
-            <tr><th>质粒</th><th>图谱</th><th>reads</th><th>覆盖</th><th>确证差异</th><th>一句话结论</th><th>操作</th></tr>
+            <tr><th>质粒</th><th v-if="cloneMode">克隆</th><th>图谱</th><th>reads</th><th>覆盖</th><th>确证差异</th><th>一句话结论</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="it in result.items" :key="it.plasmid">
+            <tr v-for="(it, i) in result.items" :key="i">
               <td class="plasmid-cell">
                 <span class="badge" :class="itemBadge(it).cls">{{ itemBadge(it).label }}</span>
                 {{ it.plasmid }}
               </td>
+              <td v-if="cloneMode" class="mono">{{ it.clone }}</td>
               <td class="mono">{{ it.reference_name || '—' }}</td>
               <td>{{ it.read_count }}</td>
               <td>{{ it.coverage_percent != null ? it.coverage_percent + '%' : '—' }}</td>

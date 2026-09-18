@@ -7,14 +7,18 @@
 - POST /api/sequencing/analyze：单样品入口（1 个参考序列 + 它的 .ab1）
 - POST /api/sequencing/analyze-batch：批量入口（Excel 信息表/整个交付文件夹
   里的多个质粒，逐质粒归组分析，返回每质粒一句话结论；逻辑与
-  scripts/batch_sequencing_report.py 共用 core/sanger/batch.py）
+  scripts/batch_sequencing_report.py 共用 core/sanger/batch.py）。
+  信息表带「克隆号」列时为克隆模式：一个质粒的多个克隆每行一个、独立分析
+  （ab1 文件名 = 克隆号-引物，如 S99678-M13F-75.ab1），质粒名称支持两段式
+  部分匹配（"17648 MBYSTC" 可只写 "17648" / "MBYSTC" / 全名）。
 
 另保留两个按 ID 取参考的便捷端点：
 - 设计结果（POST /api/designs/{design_id}/sequencing/analyze）
 - 载体库中有序列的载体（POST /api/vectors/{vector_id}/sequencing/analyze）
 
-分析记录为进程级内存存储（会话级数据，重启后失效；trace 数据体积大，
-不写入设计主线的持久化存储）。
+分析记录为进程级内存存储（会话级数据，重启后失效；trace 峰图数据体积大，
+不写入设计主线的持久化存储，且只保留最近若干次——更早的分析仍可查看
+变体/共识结论，仅峰图不可再加载）。
 """
 
 import os
@@ -30,7 +34,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.design_service import get_vector_library
 from core.sanger.batch import (
-    REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_files, norm_stem,
+    REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_clone_files,
+    match_files, norm_stem, rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
 from core.sanger.reference_parser import parse_reference
@@ -41,9 +46,11 @@ router = APIRouter(prefix="/api", tags=["sequencing"])
 _ANALYSES: Dict[str, Dict] = {}
 MAX_FILE_SIZE = 20 * 1024 * 1024      # 单文件 20MB
 MAX_FILES = 24                        # 单次最多 24 条 read
-MAX_STORED = 50                       # 内存最多保留 50 次分析
-MAX_BATCH_FILES = 200                 # 批量单次最多 200 个文件
+MAX_STORED = 200                      # 内存最多保留 200 次分析记录
+MAX_TRACE_STORED = 40                 # 峰图原始数据体积大，只保留最近 40 次
+MAX_BATCH_FILES = 400                 # 批量单次最多 400 个文件
 MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
+MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分组
 
 
 def _get_analysis(analysis_id: str) -> Dict:
@@ -117,7 +124,12 @@ def _run_full_analysis(
 
 
 def _register_analysis(sample_name: str, reference: str, features: List[Dict], result: Dict) -> str:
-    """把一次完整分析写入内存存储（单样品与批量共用），返回 analysis_id"""
+    """把一次完整分析写入内存存储（单样品与批量共用），返回 analysis_id
+
+    批量克隆模式一次可产生上百条记录：分析记录本体（变体/共识/比对）很小，
+    上限放宽到 MAX_STORED；峰图原始数据（四通道全分辨率采样）体积大，
+    超过 MAX_TRACE_STORED 时淘汰最旧记录的峰图，记录仍可查看结论。
+    """
     analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
     record = {
         "analysis_id": analysis_id,
@@ -133,6 +145,13 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     if len(_ANALYSES) > MAX_STORED:
         oldest = sorted(_ANALYSES.items(), key=lambda kv: kv[1]["created_at"])[0][0]
         del _ANALYSES[oldest]
+    if len(_ANALYSES) > MAX_TRACE_STORED:
+        keep = {aid for aid, _ in sorted(_ANALYSES.items(),
+                                         key=lambda kv: kv[1]["created_at"],
+                                         reverse=True)[:MAX_TRACE_STORED]}
+        for aid, rec in _ANALYSES.items():
+            if aid not in keep and rec.get("_trace_data"):
+                rec["_trace_data"] = {}
     return analysis_id
 
 
@@ -237,21 +256,41 @@ def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int,
 ) -> Dict:
-    """同步执行批量分析（调用方负责移交线程池）：归组 → 逐质粒跑管线 → 一句话结论"""
+    """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
+
+    信息表带「克隆号」列时为克隆模式（core.sanger.match_clone_files）：一个
+    质粒的每个克隆独立成组、独立分析；同一质粒的参考图谱解析一次供其全部
+    克隆复用。否则按质粒归组（旧行为）。
+    """
     if len(reads) + len(refs) > MAX_BATCH_FILES:
         raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
 
-    ordered, per_plasmid, unmatched = _group_batch_uploads(reads, refs, rows)
-    if len(ordered) > MAX_BATCH_PLASMIDS:
-        raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
+    unmatched: List[Dict] = []
+    clone_mode = rows is not None and rows_have_clones(rows)
+    if clone_mode:
+        groups, unmatched = match_clone_files(rows, reads + refs)
+        if len({g["plasmid"] for g in groups}) > MAX_BATCH_PLASMIDS:
+            raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
+        if len(groups) > MAX_BATCH_GROUPS:
+            raise HTTPException(status_code=400, detail=f"克隆分组数超过上限（{MAX_BATCH_GROUPS} 个）")
+    else:
+        ordered, per_plasmid, unmatched = _group_batch_uploads(reads, refs, rows)
+        if len(ordered) > MAX_BATCH_PLASMIDS:
+            raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
+        groups = [{"plasmid": p, "clone": "", "reference": per_plasmid[p]["reference"],
+                   "reads": per_plasmid[p]["reads"]} for p in ordered]
 
     items: List[Dict] = []
-    for plasmid in ordered:
-        slot = per_plasmid[plasmid]
-        ref_file = slot["reference"]
-        n_reads = len(slot["reads"])
+    # 同一质粒多个克隆共用一张图谱：解析结果（或异常）按质粒缓存
+    ref_cache: Dict[str, object] = {}
+    for g in groups:
+        plasmid, clone = g["plasmid"], g["clone"]
+        ref_file = g["reference"]
+        n_reads = len(g["reads"])
+        label = f"{clone} {plasmid}".strip() or plasmid or "sample"
         item = {
             "plasmid": plasmid,
+            "clone": clone or None,
             "status": "analyzed",
             "conclusion": "",
             "analysis_id": None,
@@ -264,20 +303,34 @@ def _run_batch(
         }
         if ref_file is None and n_reads == 0:
             item["status"] = "not_found"
-            item["conclusion"] = "未在文件夹中找到该质粒的测序文件或图谱"
+            item["conclusion"] = (f"未找到克隆 {clone} 的图谱或测序文件" if clone
+                                  else "未在文件夹中找到该质粒的测序文件或图谱")
             items.append(item)
             continue
 
         res = None
         if ref_file and n_reads:
+            ref_entry = ref_cache.get(plasmid)
+            if ref_entry is None:
+                try:
+                    ref_seq, features = parse_reference(
+                        ref_file["file"]["name"], ref_file["file"]["bytes"])
+                    if len(ref_seq) < 50:
+                        raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
+                    ref_entry = (ref_seq, features)
+                except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
+                    ref_entry = e
+                ref_cache[plasmid] = ref_entry
+            if isinstance(ref_entry, Exception):
+                item["status"] = "failed"
+                item["conclusion"] = f"分析失败：{ref_entry}"
+                items.append(item)
+                continue
+            ref_seq, features = ref_entry
             try:
-                ref_seq, features = parse_reference(
-                    ref_file["file"]["name"], ref_file["file"]["bytes"])
-                if len(ref_seq) < 50:
-                    raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
-                ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in slot["reads"]]
+                ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 res = analyze(ab1s, ref_seq, features, min_q=min_q)
-                item["analysis_id"] = _register_analysis(plasmid, ref_seq, features, res)
+                item["analysis_id"] = _register_analysis(label, ref_seq, features, res)
                 item["reference_length"] = len(ref_seq)
                 confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
                 item["variant_count"] = len(confirmed)
@@ -291,12 +344,14 @@ def _run_batch(
 
         if ref_file and n_reads == 0:
             item["status"] = "no_reads"
-            item["conclusion"] = "已找到参考图谱，但未匹配到它的测序文件（.ab1）"
+            item["conclusion"] = (f"已找到参考图谱，但未匹配到克隆 {clone} 的测序文件（.ab1）"
+                                  if clone else
+                                  "已找到参考图谱，但未匹配到它的测序文件（.ab1）")
         elif ref_file is None:
             item["status"] = "no_reference"
-            item["conclusion"] = excel_conclusion(plasmid, None, n_reads, False)
+            item["conclusion"] = excel_conclusion(label, None, n_reads, False)
         else:
-            item["conclusion"] = excel_conclusion(plasmid, res, n_reads, True)
+            item["conclusion"] = excel_conclusion(label, res, n_reads, True)
         items.append(item)
 
     return {
@@ -304,6 +359,7 @@ def _run_batch(
         "created_at": datetime.now().isoformat(),
         "min_q": min_q,
         "excel_mode": rows is not None,
+        "clone_mode": clone_mode,
         "items": items,
         "unmatched": [
             {"filename": u["file"].get("name") or str(u["file"]["path"].name),
@@ -317,14 +373,15 @@ def _run_batch(
 @router.post("/sequencing/analyze-batch")
 async def analyze_sequencing_batch(
     files: List[UploadFile] = File(..., description="测序结果文件：.ab1 与参考图谱（.dna/.gb/.fasta 等），可多质粒混在一起"),
-    excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果）；缺省时按图谱文件名包含关系归组"),
+    excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果，可含克隆号列）；缺省时按图谱文件名包含关系归组"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
 ):
     """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
 
-    测序公司交付的「信息表 + 一批 .ab1/.dna」一次上传，按质粒归组后逐个
-    跑全自动管线；每个质粒返回一句话结论（与离线脚本同一口径），成功者
-    同时注册为标准分析记录（analysis_id 可进历史列表与详情页）。
+    测序公司交付的「信息表 + 一批 .ab1/.dna」一次上传，归组后逐个跑全自动
+    管线；每个分组返回一句话结论，成功者同时注册为标准分析记录（analysis_id
+    可进历史列表与详情页）。信息表带「克隆号」列时按克隆分组——一个质粒的
+    每个克隆独立分析，引物用中英文分号分隔均可，ab1 文件名 = 克隆号-引物。
     """
     if not files:
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
@@ -445,6 +502,9 @@ async def get_read_trace(analysis_id: str, read_index: int):
     """获取单条 read 的峰图数据（四通道 + 碱基 + 质量值 + 峰位置）"""
     record = _get_analysis(analysis_id)
     trace_data = record.get("_trace_data", {})
+    if not trace_data:
+        raise HTTPException(status_code=404,
+                            detail="峰图原始数据已从内存清理（仅保留最近分析），结论仍可查看")
     if read_index not in trace_data:
         raise HTTPException(status_code=404, detail="Read trace not found")
     return trace_data[read_index]

@@ -1,7 +1,9 @@
 """批量测序分析端点测试（POST /api/sequencing/analyze-batch，独立于单样品入口）
 
 覆盖：信息表归组端到端（分析+注册进历史）、无信息表按图谱名归组（含 MX/MX2
-前缀歧义的最长包含判定）、缺参考/缺 reads/分析失败等状态、非法信息表 400。
+前缀歧义的最长包含判定）、缺参考/缺 reads/分析失败等状态、非法信息表 400；
+克隆模式（信息表带「克隆号」列）：一个质粒多个克隆每行独立分析、两段式
+质粒名部分匹配、歧义不猜、克隆号+引物组合/分隔符变体/克隆号前缀兜底。
 """
 
 import io
@@ -18,6 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 from abif_utils import make_ab1  # noqa: E402
+from core.sanger.batch import load_excel, match_clone_files, norm_stem  # noqa: E402
 
 REF_MX = "ATGAAACGT" * 12 + "TAA"          # 123 bp
 REF_MX2 = "ATGCCCGGT" * 12 + "TAA"         # 与 REF_MX 前缀歧义（mx 是 mx2 的前缀）
@@ -42,6 +45,19 @@ def _xlsx(rows) -> tuple:
     ws.append(["质粒名称", "测序引物", "测序结果"])
     for name, primers in rows:
         ws.append([name, ";".join(primers), None])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return ("测序.xlsx", buf.getvalue(), "application/octet-stream")
+
+
+def _xlsx_clone(rows) -> tuple:
+    """克隆模式信息表：中英文分号混用分隔引物（真实交付常见）"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["克隆号", "质粒名称", "测序引物", "测序结果"])
+    for i, (clone, name, primers) in enumerate(rows):
+        sep = "；" if i % 2 == 0 else ";"
+        ws.append([clone, name, sep.join(primers), None])
     buf = io.BytesIO()
     wb.save(buf)
     return ("测序.xlsx", buf.getvalue(), "application/octet-stream")
@@ -167,3 +183,111 @@ def test_batch_rejects_when_no_usable_files(client):
     resp = _post(client, [("说明.txt", b"x", "application/octet-stream")])
     assert resp.status_code == 400
     assert "未找到" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------- 克隆模式
+
+
+def test_batch_clone_mode_analyzes_each_clone(client):
+    """信息表带克隆号列：一个质粒的每个克隆独立成组、独立分析并注册"""
+    resp = _post(client, [
+        _fasta("123-1 AB2C.fasta", REF_MX),
+        _ab1("S99678-M13F-75.ab1", REF_MX),
+        _ab1("S99678-M13R-88.ab1", REF_MX),
+        _ab1("S99679-M13F-75.ab1", REF_MX),
+        _ab1("S99999-M13F-75.ab1", REF_MX),   # 表中不存在的克隆 → 未匹配
+    ], excel_part=_xlsx_clone([
+        ("S99678", "123-1 AB2C", ["M13F-75", "M13R-88"]),
+        ("S99679", "123-1 AB2C", ["M13F-75", "M13R-88"]),
+        ("S99681", "123-1 AB2C", ["M13F-75", "M13R-88"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["excel_mode"] is True and data["clone_mode"] is True
+    items = data["items"]
+    assert [(it["plasmid"], it["clone"]) for it in items] == [
+        ("123-1 AB2C", "S99678"), ("123-1 AB2C", "S99679"), ("123-1 AB2C", "S99681")]
+    assert items[0]["status"] == "analyzed" and items[0]["read_count"] == 2
+    assert items[1]["status"] == "analyzed" and items[1]["read_count"] == 1
+    assert items[2]["status"] == "no_reads"
+    assert "S99681" in items[2]["conclusion"]
+    # 每个克隆一条独立分析记录，sample_name = 克隆号 + 质粒名
+    assert items[0]["analysis_id"] != items[1]["analysis_id"]
+    got = client.get(f"/api/sequencing/analyses/{items[0]['analysis_id']}").json()
+    assert got["sample_name"] == "S99678 123-1 AB2C"
+    assert {u["filename"] for u in data["unmatched"]} == {"S99999-M13F-75.ab1"}
+
+
+def test_batch_clone_mode_matches_partial_plasmid_name(client):
+    """两段式质粒名只写一段（'AB2C'）也能匹配图谱 '123-1 AB2C.fasta'"""
+    resp = _post(client, [
+        _fasta("123-1 AB2C.fasta", REF_MX),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "AB2C", ["M13F-75"])]))
+    assert resp.status_code == 200
+    it = resp.json()["items"][0]
+    assert it["status"] == "analyzed"
+    assert it["reference_name"] == "123-1 AB2C.fasta"
+
+
+def test_batch_clone_mode_ambiguous_partial_name_not_guessed(client):
+    """部分名 'AB2C' 同时命中 '123-1 AB2C'/'123-2 AB2C' 两张图 → 不猜，判未匹配"""
+    resp = _post(client, [
+        _fasta("123-1 AB2C.fasta", REF_MX),
+        _fasta("123-2 AB2C.fasta", REF_MX2),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "AB2C", ["M13F-75"])]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"][0]["status"] == "no_reference"
+    assert len(data["unmatched"]) == 2
+    assert all("无法唯一确定" in u["reason"] for u in data["unmatched"])
+
+
+def test_load_excel_clone_column_and_numeric_cells():
+    """克隆号列识别；数值单元格 99678.0 → '99678'；中英文分号均分隔"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["克隆号", "质粒名称", "测序引物"])
+    ws.append([99678, "P1", "M13F-75；M13R-88"])
+    ws.append([99679.0, "P1", "M13F-75;M13R-88"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    _, _, cols, rows = load_excel(buf.getvalue())
+    assert "clone" in cols
+    assert [r["clone"] for r in rows] == ["99678", "99679"]
+    assert all(r["primers"] == ["M13F-75", "M13R-88"] for r in rows)
+
+
+def test_match_clone_files_fallbacks_and_conflicts():
+    """分隔符变体/包含/克隆号前缀兜底 与 冲突/未知克隆拒绝"""
+
+    def mk(name, ext=".fasta"):
+        return {"ext": ext, "stem": norm_stem(name.rsplit(".", 1)[0]), "name": name, "bytes": b""}
+
+    # 分隔符变体文件名（下划线）与复制版后缀都能命中组合
+    rows = [{"name": "P", "clone": "C1", "primers": ["M13F-75"]}]
+    groups, unmatched = match_clone_files(
+        rows, [mk("C1_M13F-75.ab1", ".ab1"), mk("C1-M13F-75-2.ab1", ".ab1")])
+    assert len(groups[0]["reads"]) == 2 and not unmatched
+
+    # 信息表漏填引物 → 克隆号前缀兜底；未知克隆 S996789-x 不被吸收
+    rows = [{"name": "P", "clone": "S99678", "primers": []}]
+    groups, unmatched = match_clone_files(
+        rows, [mk("S99678.ab1", ".ab1"), mk("S99678-extra.ab1", ".ab1"), mk("S996789-x.ab1", ".ab1")])
+    assert len(groups[0]["reads"]) == 2 and len(unmatched) == 1
+
+    # 裸引物名出现在多行 → 无法归属；未知克隆号的文件不被吸收
+    rows = [{"name": "P", "clone": "C1", "primers": ["M13F-75"]},
+            {"name": "P", "clone": "C2", "primers": ["M13F-75"]}]
+    groups, unmatched = match_clone_files(rows, [mk("M13F-75.ab1", ".ab1")])
+    assert groups[0]["reads"] == [] and "多个克隆行" in unmatched[0]["reason"]
+    groups, unmatched = match_clone_files(rows, [mk("S99999-M13F-75.ab1", ".ab1")])
+    assert groups[0]["reads"] == [] and len(unmatched) == 1
+
+    # 同一组合对应两个质粒（克隆号重复）→ 拒绝归属
+    rows = [{"name": "P1", "clone": "C1", "primers": ["M13F-75"]},
+            {"name": "P2", "clone": "C1", "primers": ["M13F-75"]}]
+    groups, unmatched = match_clone_files(rows, [mk("C1-M13F-75.ab1", ".ab1")])
+    assert sum(len(g["reads"]) for g in groups) == 0
+    assert "对应多行" in unmatched[0]["reason"]
