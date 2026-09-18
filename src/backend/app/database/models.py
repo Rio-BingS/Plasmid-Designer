@@ -278,6 +278,7 @@ def init_db():
     _migrate_designs_table()
     _migrate_site_settings_table()
     Base.metadata.create_all(bind=engine)
+    _migrate_feature_lists()
     print("✅ 数据库表已创建")
 
 
@@ -295,6 +296,66 @@ def _migrate_site_settings_table():
                 "ALTER TABLE site_settings ADD COLUMN feature_migrations VARCHAR(200) "
                 "NOT NULL DEFAULT ''"))
             print("✅ site_settings 表已迁移：新增 feature_migrations 列")
+
+
+def _migrate_feature_lists(eng=None):
+    """功能清单一次性数据迁移：注册表拆分键继承（app.features.SPLIT_INHERIT）。
+
+    存量库的功能数组不含拆分出的新键（sequencing_batch），若不迁移，原本可用
+    批量测序的人群升级后即失去入口——含被拆键的清单（站点两级矩阵 + 用户个人
+    覆盖）自动补上新键，保持拆分前行为。site_settings.feature_migrations 标记
+    已补齐的新键，保证只跑一次：之后管理员显式取消勾选不会被启动迁移覆盖。
+    必须在 create_all 与列迁移之后调用（读取 feature_migrations 列）。
+    """
+    import json as _json
+
+    from sqlalchemy import inspect, text
+
+    from app.features import SPLIT_INHERIT, valid_features
+
+    eng = eng or engine
+    insp = inspect(eng)
+    if "site_settings" not in insp.get_table_names() or "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("site_settings")}
+    if "feature_migrations" not in cols:
+        return
+    with eng.begin() as conn:
+        row = conn.execute(text(
+            "SELECT anonymous_features, user_features, feature_migrations "
+            "FROM site_settings WHERE id = 1")).first()
+        if row is None:
+            return
+        anon, userf, marker = row
+        done = {m.strip() for m in (marker or "").split(",") if m.strip()}
+        pending = [k for k in SPLIT_INHERIT if k not in done]
+        if not pending:
+            return
+
+        def _patch(raw):
+            try:
+                keys = _json.loads(raw or "[]")
+            except ValueError:
+                return raw or "[]"
+            for new in pending:
+                src = SPLIT_INHERIT[new]
+                if src in keys and new not in keys:
+                    keys.append(new)
+            return _json.dumps(valid_features(keys))
+
+        conn.execute(text(
+            "UPDATE site_settings SET anonymous_features = :a, user_features = :u, "
+            "feature_migrations = :m WHERE id = 1"),
+            {"a": _patch(anon), "u": _patch(userf),
+             "m": ",".join(sorted(done | set(pending)))})
+        # 用户个人功能覆盖同步补齐（get_current_user 每请求查库，重启后即时生效）
+        for uid, raw in conn.execute(text(
+                "SELECT id, allowed_features FROM users WHERE allowed_features IS NOT NULL")).fetchall():
+            patched = _patch(raw)
+            if patched != raw:
+                conn.execute(text("UPDATE users SET allowed_features = :v WHERE id = :i"),
+                             {"v": patched, "i": uid})
+        print(f"✅ 功能清单迁移完成：补齐拆分键 {pending}")
 
 
 def _migrate_designs_table():

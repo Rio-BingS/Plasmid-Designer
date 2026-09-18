@@ -13,6 +13,7 @@ const FEATURE_LABELS: Record<string, string> = {
   batch: '批量设计',
   vectors: '载体库',
   sequencing: '测序分析',
+  sequencing_batch: '批量测序分析',
   analysis: '序列工具',
   codon: '密码子表'
 }
