@@ -147,4 +147,54 @@ describe('BatchSequencingView', () => {
     await flushPromises()
     expect(downloadBatchSequencingReport).toHaveBeenCalledWith('seqbatch_test1')
   })
+
+  it('选择文件夹时 ~$ Excel 锁文件被跳过，正式信息表被选中', async () => {
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    // webkitdirectory 的 FileList 按名称排序，~$ 锁文件（~ = 0x7E > 汉字码位）
+    // 恰好比测序.xlsx 先出现——旧逻辑会错把锁文件当信息表
+    Object.defineProperty(input.element, 'files', {
+      value: [makeFile('~$测序.xlsx'), makeFile('测序.xlsx'), makeFile('T1.ab1')]
+    })
+    await input.trigger('change')
+
+    expect(w.find('.staged-line').text()).toContain('测序.xlsx')
+    expect(w.find('.staged-line').text()).not.toContain('~$测序.xlsx')
+    expect(w.find('.staged-line').text()).toContain('测序/图谱文件 × 1')
+    expect(w.text()).toContain('已自动跳过临时/系统文件：~$测序.xlsx')
+  })
+
+  it('被占用的文件在上传前被拦截并给出明确提示，不调接口', async () => {
+    // Excel 打开时锁住的文件读不出来，XHR 在发送阶段整体失败 → 界面只剩
+    // "Network Error"；组件应在发送前试读并指出具体文件（模拟 slice 读失败）
+    const locked = makeFile('T1.ab1')
+    Object.defineProperty(locked, 'slice', {
+      value: () => ({ text: () => Promise.reject(new TypeError('read failed')) })
+    })
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [locked] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    expect(analyzeSequencingBatch).not.toHaveBeenCalled()
+    expect(w.find('.error-msg').text()).toContain('T1.ab1')
+    expect(w.find('.error-msg').text()).toContain('无法读取')
+  })
+
+  it('总体积超过 Cloudflare 100MB 上限时不发起请求', async () => {
+    const w = mountView()
+    const big = makeFile('big.ab1')
+    Object.defineProperty(big, 'size', { value: 96 * 1024 * 1024 })
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [big] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    expect(analyzeSequencingBatch).not.toHaveBeenCalled()
+    expect(w.find('.error-msg').text()).toContain('100 MB')
+    expect(w.find('.staged-line').text()).toContain('共 96.0 MB')
+  })
 })

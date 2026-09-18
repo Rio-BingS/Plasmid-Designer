@@ -193,6 +193,22 @@ def test_batch_rejects_excel_without_plasmid_header(client):
     assert "质粒" in resp.json()["detail"]
 
 
+def test_batch_rejects_excel_lock_file_by_name(client):
+    """Excel 打开信息表时留下的 ~$ 锁文件应被明确拒绝（而非 500 或含糊报错）"""
+    resp = _post(client, [_ab1("T1.ab1", REF_MX)],
+                 excel_part=("~$测序.xlsx", b"OLE2-lock-bytes", "application/octet-stream"))
+    assert resp.status_code == 400
+    assert "临时文件" in resp.json()["detail"]
+
+
+def test_batch_rejects_corrupted_excel_bytes(client):
+    """非 zip 的垃圾字节（如被占用的锁文件改了名）应得到可读的 400 而非 500"""
+    resp = _post(client, [_ab1("T1.ab1", REF_MX)],
+                 excel_part=("测序.xlsx", b"not-a-zip-at-all", "application/octet-stream"))
+    assert resp.status_code == 400
+    assert ".xlsx" in resp.json()["detail"]
+
+
 def test_batch_rejects_when_no_usable_files(client):
     resp = _post(client, [("说明.txt", b"x", "application/octet-stream")])
     assert resp.status_code == 400

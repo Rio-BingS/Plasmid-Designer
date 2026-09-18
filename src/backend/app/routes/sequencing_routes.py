@@ -45,7 +45,9 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse, Response
+from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
+from zipfile import BadZipFile
 
 from app.design_service import get_vector_library
 from app.gating import require_feature
@@ -468,10 +470,18 @@ async def analyze_sequencing_batch(
         excel_bytes = await _read_limited(excel)
         if not excel_bytes:
             raise HTTPException(status_code=400, detail="信息表文件为空")
+        if (excel.filename or "").startswith("~$"):
+            raise HTTPException(
+                status_code=400,
+                detail="所选信息表是 Excel 临时文件（~$ 开头），请选择正式的信息表 .xlsx")
         try:
             wb, _header, cols, excel_rows = await run_in_threadpool(load_excel, excel_bytes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except (InvalidFileException, BadZipFile):
+            raise HTTPException(
+                status_code=400,
+                detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
         excel_pack = (excel.filename or "信息表.xlsx", excel_bytes, wb, cols, excel_rows)
 
     payload, groups, raw_unmatched = await run_in_threadpool(

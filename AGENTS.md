@@ -102,6 +102,17 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 新增（2026-09-19）**批量上传防呆（Excel 锁文件/占用文件/体积上限）**：网页端
+  「选择文件夹」会把 `~$` 开头的 Excel 锁文件（名称排序先于正主）当成信息表；
+  正被 Excel/WPS 占用时浏览器读不出该文件，XHR 在发送阶段整体失败，前端只显示
+  Network Error 且源站完全无请求日志（易误判为服务器问题）。修复：前端 addFiles
+  跳过 `~$`/desktop.ini 等临时垃圾文件并在芯片行下方提示；runBatch 上传前逐文件
+  试读 1 字节（`slice(0,1).text()`），占用文件点名报错且不发起请求；总体积超
+  95MB 拦截（Cloudflare 免费版 100MB 请求体硬上限留余量）并提示分批；芯片行显示
+  总体积。formatApiError 把裸 Network Error/Failed to fetch 翻译成可行动提示。
+  后端 analyze-batch 对 `~$` 信息表与损坏 xlsx（BadZipFile/InvalidFileException，
+  原先 500）返回明确 400。注意测试环境是 happy-dom：无 Blob.array()、FileReader
+  事件在宏任务触发（flushPromises 刷不到），试读用 text()，测试用覆盖 slice 模拟。
 - 新增（2026-09-19）**批量分析整理包 + 分析记录 15 分钟自动删除**：网页批量
   分析（analyze-batch）完成后按上传原始字节现场打包「整理包」并缓存（离线脚本
   产物的网页版：按质粒/克隆归档的文件副本、各组 测序分析报告.md、分析结果.json、
