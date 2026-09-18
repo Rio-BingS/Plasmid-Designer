@@ -30,3 +30,26 @@ def require_feature(feature: str):
             )
 
     return _dep
+
+
+def require_any_feature(*features: str):
+    """生成路由依赖：任一功能对当前层级开放即放行。
+
+    用于拆分后仍被多个功能共用的端点（如测序分析记录的查看/导出/删除，
+    单样品与批量分析都会用到）——只有全部相关功能都关闭才拒绝。
+    """
+    for f in features:
+        if f not in FEATURE_REGISTRY:
+            raise ValueError(f"未知功能键: {f}")
+
+    async def _dep(user: Optional[User] = Depends(get_current_user)) -> None:
+        site = site_settings.get_settings()
+        if not any(is_feature_allowed_for_user(site, user, f) for f in features):
+            labels = "、".join(FEATURE_REGISTRY[f]["label"] for f in features)
+            tier = tier_for(user)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"「{labels}」均未对{_TIER_CN.get(tier, tier)}开放，请联系管理员",
+            )
+
+    return _dep

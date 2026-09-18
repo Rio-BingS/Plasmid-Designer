@@ -68,7 +68,9 @@ class SiteSettingsDB(Base):
     """站点设置（单行表，管理员可改）
 
     功能开关（anonymous_features / user_features）为 JSON 数组字符串，
-    键值含义见 app/features.py 的 FEATURE_REGISTRY
+    键值含义见 app/features.py 的 FEATURE_REGISTRY；
+    feature_migrations 记录已执行的功能清单一次性迁移（逗号分隔迁移 id），
+    保证拆分键继承只在升级后跑一次，不与管理员后续的显式勾选冲突
     """
     __tablename__ = "site_settings"
 
@@ -77,6 +79,7 @@ class SiteSettingsDB(Base):
     email_verification_required = Column(Boolean, default=False)
     anonymous_features = Column(Text, nullable=False, default="[]")
     user_features = Column(Text, nullable=False, default="[]")
+    feature_migrations = Column(String(200), nullable=False, default="")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -273,8 +276,25 @@ def init_db():
     """初始化数据库"""
     _migrate_users_table()
     _migrate_designs_table()
+    _migrate_site_settings_table()
     Base.metadata.create_all(bind=engine)
     print("✅ 数据库表已创建")
+
+
+def _migrate_site_settings_table():
+    """site_settings 表轻量迁移：补齐后加的列（create_all 不改旧表）"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "site_settings" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("site_settings")}
+    with engine.begin() as conn:
+        if "feature_migrations" not in cols:
+            conn.execute(text(
+                "ALTER TABLE site_settings ADD COLUMN feature_migrations VARCHAR(200) "
+                "NOT NULL DEFAULT ''"))
+            print("✅ site_settings 表已迁移：新增 feature_migrations 列")
 
 
 def _migrate_designs_table():

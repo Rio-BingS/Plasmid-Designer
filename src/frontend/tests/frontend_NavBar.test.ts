@@ -22,10 +22,10 @@ vi.mock('@/api', () => ({
       email_verification_required: false,
       tier: 'anonymous',
       features: {
-        anonymous: ['design', 'batch', 'vectors', 'sequencing', 'analysis', 'codon'],
-        user: ['design', 'batch', 'vectors', 'sequencing', 'analysis', 'codon']
+        anonymous: ['design', 'batch', 'vectors', 'sequencing', 'sequencing_batch', 'analysis', 'codon'],
+        user: ['design', 'batch', 'vectors', 'sequencing', 'sequencing_batch', 'analysis', 'codon']
       },
-      effective_features: ['design', 'batch', 'vectors', 'sequencing', 'analysis', 'codon']
+      effective_features: ['design', 'batch', 'vectors', 'sequencing', 'sequencing_batch', 'analysis', 'codon']
     })
   )
 }))

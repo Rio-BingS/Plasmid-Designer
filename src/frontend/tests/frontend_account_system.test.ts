@@ -7,7 +7,9 @@ import NavBar from '@/components/NavBar.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 import * as api from '@/api'
 
-const fullFeatures = ['design', 'batch', 'vectors', 'sequencing', 'analysis', 'codon']
+const fullFeatures = [
+  'design', 'batch', 'vectors', 'sequencing', 'sequencing_batch', 'analysis', 'codon'
+]
 
 function siteConfig(overrides: Partial<api.SiteConfig> = {}): api.SiteConfig {
   return {

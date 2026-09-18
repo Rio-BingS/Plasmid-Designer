@@ -15,9 +15,17 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "batch": {"label": "批量设计"},
     "vectors": {"label": "载体库"},
     "sequencing": {"label": "测序分析"},
+    "sequencing_batch": {"label": "批量测序分析"},
     "analysis": {"label": "序列工具"},
     "codon": {"label": "密码子表"},
 }
+
+# 拆分继承：sequencing_batch（2026-09-19）从 sequencing 拆出。存量库里的功能
+# 数组不含新键，若不迁移，原本可用批量测序的人群上线即失去入口——site_settings
+# 读路径按此表做一次性继承迁移（标记列保证只跑一次，不与管理员后续显式勾选
+# 冲突），保持拆分前「批量测序随测序分析开关」的行为；管理员随后可在功能矩阵
+# 中对两者单独收紧
+SPLIT_INHERIT: Dict[str, str] = {"sequencing_batch": "sequencing"}
 
 # 默认开关 = 全部开放，保持既有行为不变；管理员在后台自行收紧
 ALL_FEATURES: List[str] = list(FEATURE_REGISTRY.keys())

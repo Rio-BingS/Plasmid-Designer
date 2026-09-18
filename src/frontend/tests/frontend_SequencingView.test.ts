@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
+import { createPinia, setActivePinia } from 'pinia'
 import SequencingView from '@/views/SequencingView.vue'
 import SequencingPanel from '@/components/SequencingPanel.vue'
+import { useAuthStore } from '@/stores/auth'
 
 vi.mock('@/api', () => ({
   fetchDesignGenbankFile: vi.fn(),
@@ -25,9 +27,11 @@ const router = createRouter({
 const mounted: ReturnType<typeof mountView>[] = []
 
 function mountView() {
+  const pinia = createPinia()
+  setActivePinia(pinia)
   const wrapper = mount(SequencingView, {
     global: {
-      plugins: [router],
+      plugins: [router, pinia],
       // 面板只验证挂载与 props 传递，内部逻辑由 SequencingPanel 自己的用例覆盖
       stubs: { SequencingPanel: true },
     },
@@ -124,5 +128,26 @@ describe('SequencingView', () => {
     await flushPromises()
 
     expect(wrapper.findComponent(SequencingPanel).props('initialReference')).toBeNull()
+  })
+
+  it('仅有批量测序权限时降级为只读回看：隐藏上传分析区，保留历史', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore()
+    // featureAllowed 以 site-config 的 effective_features 为唯一依据
+    auth.siteConfig = {
+      registration_open: true,
+      email_verification_required: false,
+      tier: 'user',
+      features: { anonymous: [], user: ['sequencing_batch'] },
+      effective_features: ['sequencing_batch'],
+    } as never
+    const wrapper = mount(SequencingView, {
+      global: { plugins: [router, pinia], stubs: { SequencingPanel: true } },
+    })
+    mounted.push(wrapper)
+    expect(wrapper.findComponent(SequencingPanel).exists()).toBe(false)
+    expect(wrapper.text()).toContain('未对当前账户开放')
+    expect(wrapper.find('.history-card').exists()).toBe(true)
   })
 })

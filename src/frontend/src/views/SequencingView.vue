@@ -5,7 +5,7 @@
  *    从设计结果页 / 载体页跳转（?mode=design|vector&ref=ID）时自动带入参考序列
  * ② 历史分析（查看 / 删除）
  */
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   fetchDesignGenbankFile, fetchVectorGenbankFile,
@@ -13,8 +13,15 @@ import {
   type SequencingAnalysis, type SequencingAnalysisSummary
 } from '@/api'
 import SequencingPanel from '@/components/SequencingPanel.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const authStore = useAuthStore()
+
+// 权限拆分（2026-09-19）：「测序分析」与「批量测序分析」独立开关。本页是两者
+// 共用的详情回看载体（批量结果深链 ?history=<id>），仅当「测序分析」开放时
+// 才显示上传分析区；只有「批量测序分析」权限的用户进入时降级为只读回看
+const singleAllowed = computed(() => authStore.featureAllowed('sequencing'))
 
 // ==================== 深链预填参考序列 ====================
 // 仅 ?mode=design|vector&ref=ID 时带入；无参数时清空——普通 /sequencing
@@ -138,8 +145,8 @@ function formatTime(iso: string): string {
       </p>
     </div>
 
-    <!-- ① 上传并分析 -->
-    <div class="panel-card">
+    <!-- ① 上传并分析（「测序分析」未开放时隐藏——批量用户仅在此回看详情） -->
+    <div v-if="singleAllowed" class="panel-card">
       <div class="ref-header">
         <span class="step-no">①</span>
         <h2>导入参考序列与测序文件</h2>
@@ -152,6 +159,12 @@ function formatTime(iso: string): string {
         :preset="preset"
         @analyzed="onAnalyzed"
       />
+    </div>
+    <div v-else class="panel-card readonly-note">
+      <p class="hint">
+        🔒 单样品测序分析未对当前账户开放。批量测序的结果可通过「查看详情」在本页
+        回看比对校验、峰图与共识序列；如需单样品分析请联系管理员开通「测序分析」。
+      </p>
     </div>
 
     <!-- ② 历史分析 -->

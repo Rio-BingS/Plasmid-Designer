@@ -111,7 +111,7 @@ from app.rate_limit_routes import router as rate_limit_router
 from app.analysis_routes import router as analysis_router
 from app.routes.sequencing_routes import router as sequencing_router
 from app.admin_routes import router as admin_router
-from app.gating import require_feature
+from app.gating import require_feature, require_any_feature
 
 # 功能门控：site_settings 中各层级功能开关在此落到 API（管理员不受限）；
 # 前端导航/路由已按 site-config 隐藏，此处兜底防绕过前端直连
@@ -123,7 +123,12 @@ app.include_router(auth_router)
 app.include_router(cache_router)
 app.include_router(rate_limit_router)
 app.include_router(analysis_router, dependencies=[Depends(require_feature("analysis"))])
-app.include_router(sequencing_router, dependencies=[Depends(require_feature("sequencing"))])
+# 测序路由拆分门控：单样品分析 / 批量分析各自独立开关，分析记录的查看/导出/
+# 删除为两者共用（任一开放即可）；各端点的专属开关在 sequencing_routes 内落地
+app.include_router(
+    sequencing_router,
+    dependencies=[Depends(require_any_feature("sequencing", "sequencing_batch"))],
+)
 app.include_router(admin_router)
 
 # 速率限制中间件
