@@ -28,9 +28,9 @@
 trace 峰图原始数据体积大，只保留最近若干条——更早的分析（在 15 分钟内）
 仍可查看变体/共识结论，仅峰图不可再加载。
 
-批量分析完成后按上传原始字节现场打包「整理包」并缓存（离线脚本
-scripts/batch_sequencing_report.py 产物结构的网页版：按质粒/克隆归档副本、
-每组测序分析报告.md、整理清单.csv、结论回填的信息表），15 分钟内可经
+批量分析完成后按上传原始字节现场打包「整理包」并缓存：同一质粒一个文件夹
+（表内别名写法合并）、其下 正确/错误 按结论分置副本与各组测序分析报告.md、
+整理清单.csv、结论回填的信息表，15 分钟内可经
 GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 """
 
@@ -431,8 +431,8 @@ async def analyze_sequencing_batch(
     可进历史列表与详情页）。信息表带「克隆号」列时按克隆分组——一个质粒的
     每个克隆独立分析，引物用中英文分号分隔均可，ab1 文件名 = 克隆号-引物。
 
-    分析完成后按上传原始字节现场打包「整理包」（离线脚本产物的网页版：
-    按质粒/克隆归档副本、各组 测序分析报告.md、整理清单.csv、结论回填的
+    分析完成后按上传原始字节现场打包「整理包」（同一质粒一个文件夹、其下
+    正确/错误 按结论分置副本与各组 测序分析报告.md、整理清单.csv、结论回填的
     信息表）缓存 15 分钟，经 GET /sequencing/batches/{batch_id}/report 下载；
     响应 report_ready=False 表示本次体积超上限未打包。
     """
@@ -523,8 +523,9 @@ async def analyze_sequencing_batch(
     dependencies=[Depends(require_feature("sequencing_batch"))],
 )
 async def download_batch_report(batch_id: str):
-    """下载批量分析整理包（按质粒/克隆归档副本 + 各组分析报告 + 整理清单 +
-    结论回填的信息表）；生成 15 分钟后随缓存自动清理，可重复下载。"""
+    """下载批量分析整理包（同一质粒一个文件夹、其下 正确/错误 按结论分置副本
+    与各组分析报告 + 整理清单 + 结论回填的信息表）；生成 15 分钟后随缓存自动
+    清理，可重复下载。"""
     _sweep_expired()
     rec = _BATCHES.get(batch_id)
     if rec is None:
