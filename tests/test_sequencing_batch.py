@@ -280,6 +280,75 @@ def test_batch_clone_mode_mixed_name_forms_share_reference(client):
     assert data["unmatched"] == []
 
 
+def test_batch_clone_mode_reference_named_by_one_segment(client):
+    """图谱只写一段（'40008.fasta'）：写全名/该段的行直接命中或兜底共享，
+    只写另一段（'DEMOAB'）的行经表内别名（全名行）共享同一图谱"""
+    resp = _post(client, [
+        _fasta("40008.fasta", REF_MX),
+        _ab1("S00012-M13F-75.ab1", REF_MX),
+        _ab1("S00013-M13F-75.ab1", REF_MX),
+        _ab1("S00014-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S00012", "40008 DEMOAB", ["M13F-75"]),
+        ("S00013", "DEMOAB", ["M13F-75"]),
+        ("S00014", "40008", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert all(it["status"] == "analyzed" for it in data["items"])
+    assert all(it["reference_name"] == "40008.fasta" for it in data["items"])
+    assert data["unmatched"] == []
+
+
+def test_batch_clone_mode_reference_named_by_other_segment(client):
+    """对称方向：图谱叫 'DEMOAB.fasta'，只写编号（'40008'）的行经表内别名共享"""
+    resp = _post(client, [
+        _fasta("DEMOAB.fasta", REF_MX),
+        _ab1("S00012-M13F-75.ab1", REF_MX),
+        _ab1("S00013-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S00012", "40008 DEMOAB", ["M13F-75"]),
+        ("S00013", "40008", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert all(it["status"] == "analyzed" for it in data["items"])
+    assert all(it["reference_name"] == "DEMOAB.fasta" for it in data["items"])
+    assert data["unmatched"] == []
+
+
+def test_batch_clone_mode_segment_map_without_link_stays_unmatched(client):
+    """图谱叫 '40008' 而表中只有 'DEMOAB' 行（无全名行建立对应）→ 缺图谱不猜"""
+    resp = _post(client, [
+        _fasta("40008.fasta", REF_MX),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "DEMOAB", ["M13F-75"])]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"][0]["status"] == "no_reference"
+    assert {u["filename"] for u in data["unmatched"]} == {"40008.fasta"}
+
+
+def test_batch_clone_mode_alias_ambiguous_not_guessed(client):
+    """'DEMOAB' 同时是 '40008 DEMOAB'/'40009 DEMOAB' 的组成段 → 别名歧义不猜；
+    图谱 '40008' 仍归唯一能命中的 '40008 DEMOAB' 行"""
+    resp = _post(client, [
+        _fasta("40008.fasta", REF_MX),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+        _ab1("S2-M13F-75.ab1", REF_MX),
+        _ab1("S3-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S1", "40008 DEMOAB", ["M13F-75"]),
+        ("S2", "40009 DEMOAB", ["M13F-75"]),
+        ("S3", "DEMOAB", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    items = {it["plasmid"]: it for it in resp.json()["items"]}
+    assert items["40008 DEMOAB"]["status"] == "analyzed"
+    assert items["40009 DEMOAB"]["status"] == "no_reference"
+    assert items["DEMOAB"]["status"] == "no_reference"
+
+
 def test_batch_clone_mode_single_part_name_ambiguous_still_refused(client):
     """单段名 'AB2C' 若唯一候选不存在（两张图都含该段）→ 维持缺图谱，不猜"""
     resp = _post(client, [
