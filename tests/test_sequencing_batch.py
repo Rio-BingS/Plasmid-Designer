@@ -7,6 +7,7 @@
 """
 
 import io
+import json
 import os
 import sys
 
@@ -29,6 +30,19 @@ REF_MX2 = "ATGCCCGGT" * 12 + "TAA"         # 与 REF_MX 前缀歧义（mx 是 mx
 @pytest.fixture(scope="module")
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _all_features_open(monkeypatch):
+    """端点门控读站点设置（模块级连接，本机真实库）——打桩为默认全开放，
+    使测试不依赖本机数据库的矩阵状态（存量库可能缺新拆分键）"""
+    from app import site_settings
+    from app.features import ALL_FEATURES as _ALL
+
+    state = {"registration_open": True, "email_verification_required": False,
+             "anonymous_features": list(_ALL), "user_features": list(_ALL)}
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: json.loads(json.dumps(state)))
 
 
 def _fasta(name: str, seq: str) -> tuple:
@@ -242,6 +256,45 @@ def test_batch_clone_mode_ambiguous_partial_name_not_guessed(client):
     assert data["items"][0]["status"] == "no_reference"
     assert len(data["unmatched"]) == 2
     assert all("无法唯一确定" in u["reason"] for u in data["unmatched"])
+
+
+def test_batch_clone_mode_mixed_name_forms_share_reference(client):
+    """同一质粒的克隆行混用全名与单段名（'17648'/'MBYSTC'/'17648 MBYSTC'）
+    → 都识别为同一张图谱并共享（真实交付表的写法）"""
+    resp = _post(client, [
+        _fasta("17648 MBYSTC.fasta", REF_MX),
+        _ab1("S99678-M13F-75.ab1", REF_MX),
+        _ab1("S99679-M13F-75.ab1", REF_MX),
+        _ab1("S99680-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([
+        ("S99678", "17648", ["M13F-75"]),
+        ("S99679", "MBYSTC", ["M13F-75"]),
+        ("S99680", "17648 MBYSTC", ["M13F-75"]),
+    ]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["clone_mode"] is True
+    assert [it["plasmid"] for it in data["items"]] == ["17648", "MBYSTC", "17648 MBYSTC"]
+    assert all(it["status"] == "analyzed" for it in data["items"])
+    assert all(it["reference_name"] == "17648 MBYSTC.fasta" for it in data["items"])
+    assert data["unmatched"] == []
+
+
+def test_batch_clone_mode_single_part_name_ambiguous_still_refused(client):
+    """单段名 'AB2C' 若唯一候选不存在（两张图都含该段）→ 维持缺图谱，不猜"""
+    resp = _post(client, [
+        _fasta("123-1 AB2C.fasta", REF_MX),
+        _fasta("123-2 AB2C.fasta", REF_MX2),
+        _ab1("S1-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S1", "123-1 AB2C", ["M13F-75"])]))
+    assert resp.status_code == 200
+    # 全名精确命中的不受影响；再验证只写一段且两张图都包含 → 缺图谱
+    resp2 = _post(client, [
+        _fasta("123-1 AB2C.fasta", REF_MX),
+        _fasta("123-2 AB2C.fasta", REF_MX2),
+        _ab1("S2-M13F-75.ab1", REF_MX),
+    ], excel_part=_xlsx_clone([("S2", "AB2C", ["M13F-75"])]))
+    assert resp2.json()["items"][0]["status"] == "no_reference"
 
 
 def test_load_excel_clone_column_and_numeric_cells():

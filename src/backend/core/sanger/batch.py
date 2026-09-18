@@ -181,7 +181,9 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
 
     图谱 → 质粒名称支持两段式部分匹配：全名精确 > 忽略分隔符精确 >
     与名称的某一段一致（"MBYSTC" ↔ "17648 MBYSTC"）> 双向包含（短侧 ≥4 字符，
-    防 "MX" 命中 "MX2"）；候选不唯一一律不猜，判为未匹配。
+    防 "MX" 命中 "MX2"）；候选不唯一一律不猜，判为未匹配。同一质粒的不同
+    克隆行可混用全名与单段名（'17648' / 'MBYSTC' / '17648 MBYSTC'）——只写
+    一段的名称按双向包含找唯一候选图谱共享（候选多于一张维持缺图谱）。
 
     返回 (groups, unmatched)。groups 顺序 = 信息表行序，每项：
     {"plasmid", "clone", "reference": {"file","how"}|None, "reads": [{"file","how"}]}
@@ -326,6 +328,26 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
             other = c[0].get("name") or str(c[0]["path"].name)
             unmatched.append({"file": c[0],
                               "reason": f"质粒 {plasmid} 已采用图谱 {best_f.get('name') or str(best_f['path'].name)}，本文件未采用"})
+
+    # 名称驱动兜底：表里同一质粒的不同克隆可能分别只写两段式名称的一段
+    # （'17648'/'MBYSTC' 与全名 '17648 MBYSTC' 混用）——只写一段的质粒名
+    # 在所有图谱文件中找唯一的双向包含候选，命中则共享该图谱；候选多于
+    # 一张（如 'AB2C' 同时命中 '123-1 AB2C' 与 '123-2 AB2C'）维持缺图谱不猜
+    ref_files = [f for f in files if f["ext"] not in READ_EXTS]
+    for (plasmid, _clone) in list(groups):
+        if not plasmid or plasmid in ref_by_plasmid:
+            continue
+        nsq = _squash(plasmid)
+        if len(nsq) < 4:
+            continue
+        cands = [f for f in ref_files
+                 if min(len(nsq), len(_squash(f["stem"]))) >= 4
+                 and (nsq in _squash(f["stem"]) or _squash(f["stem"]) in nsq)]
+        if len(cands) == 1:
+            ref_by_plasmid[plasmid] = {
+                "file": cands[0],
+                "how": "质粒名称与图谱文件名部分一致（唯一候选，共享全名质粒的图谱）",
+            }
 
     ordered = list(groups.values())
     for g in ordered:
