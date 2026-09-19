@@ -253,6 +253,58 @@ describe('SequencingPanel', () => {
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
   })
 
+  it('folds per-read mixed double-peak ranges by default with a toggle', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      conclusion: [
+        '共检出 7 处差异（覆盖 48.4%）：',
+        '⚠ 2 条 read 均疑似混合样品（每条双峰位点 5–8 处，估计次要克隆占比约 30%）——样品为两种质粒的混合，主峰序列按多数碱基判读，建议重新挑单克隆划线培养后复测',
+        '  ↳ r1.ab1：双峰 8 处，位于 read 81–140、201–260（read 坐标；首尾 20bp 不可信区未计入）',
+        '  ↳ r2.ab1：双峰 5 处，位于 read 90、130（read 坐标；首尾 20bp 不可信区未计入）',
+      ].join('\n'),
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    let text = wrapper.text()
+    // 聚合主行常显，逐 read 范围子行默认折叠
+    expect(text).toContain('均疑似混合样品')
+    expect(text).toContain('2 条 read 的双峰位点范围已折叠')
+    expect(text).not.toContain('位于 read 81–140')
+    expect(text).not.toContain('r2.ab1：双峰 5 处')
+
+    // 展开：逐 read 范围子行出现
+    await wrapper.find('.lowconf-toggle').trigger('click')
+    text = wrapper.text()
+    expect(text).toContain('r1.ab1：双峰 8 处，位于 read 81–140、201–260')
+    expect(text).toContain('r2.ab1：双峰 5 处，位于 read 90、130')
+  })
+
+  it('deduplicates same-name overlapping reference features only when toggled', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      features: [
+        { name: '5 UTR', type: 'misc_feature', start: 300, end: 360, strand: '+' },
+        { name: '5 UTR', type: 'misc_feature', start: 320, end: 380, strand: '+' },
+        { name: '3 UTR', type: 'misc_feature', start: 700, end: 760, strand: '+' },
+        { name: 'GFP', type: 'CDS', start: 400, end: 600, strand: '+' },
+      ],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+
+    // 默认按文件原样显示（含重复注释）：4 条全画
+    expect(wrapper.findAll('.map-feat').length).toBe(4)
+
+    // 开启去重：同名同向且位置重叠的合并为一条（两个 5 UTR → 一条），
+    // 位置不重叠的同名特征（两个 3 UTR 场景）不受影响
+    await wrapper.find('.map-dedup-toggle input').setValue(true)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.map-feat').length).toBe(3)
+    const titles = wrapper.findAll('.map-feat').map((g) => g.find('title').text())
+    expect(titles.some((t) => t.includes('5 UTR') && t.includes('300-380'))).toBe(true)
+  })
+
   it('renders alignment view with mismatch and low-Q highlighting', async () => {
     const analysis = {
       ...mockAnalysis,

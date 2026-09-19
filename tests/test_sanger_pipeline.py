@@ -1551,6 +1551,19 @@ def test_classify_mixed_levels_and_minor_fraction():
     assert one["class"] == "none" and one["count"] == 1
 
 
+def test_pos_ranges_str_compresses_and_caps():
+    """位点列表压缩成连续区段：相邻合并、超出上限截断并注明总段数"""
+    from core.sanger.pipeline import _pos_ranges_str
+    assert _pos_ranges_str([]) == ""
+    assert _pos_ranges_str([5]) == "5"
+    assert _pos_ranges_str([81, 82, 83, 130, 131, 200]) == "81–83、130–131、200"
+    long_list = list(range(81, 141)) + list(range(201, 261))
+    assert _pos_ranges_str(long_list) == "81–140、201–260"
+    many = [[10 * i] for i in range(1, 9)]
+    out = _pos_ranges_str([p for seg in many for p in seg])
+    assert out.endswith("等 8 段") and out.count("、") == 5
+
+
 def test_mixed_sample_widespread_end_to_end():
     """两个克隆的混合培养物：多个分散双峰位点 → read 级判疑似混合样品，
     结论显式提示（此前 mixed_positions 只进结构化字段，结论完全不可见）"""
@@ -1563,6 +1576,10 @@ def test_mixed_sample_widespread_end_to_end():
     assert prof["positions"] == [p + 1 for p in sorted(sites)]
     assert "疑似混合样品" in result["conclusion"]
     assert "重新挑单克隆" in result["conclusion"]
+    # 逐 read 位点范围子行（前端默认折叠）：给具体范围供核对首尾；
+    # 孤立位点超过 6 段时截断并注明总段数
+    assert ("↳ m.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段"
+            "（read 坐标；首尾 20bp 不可信区未计入）") in result["conclusion"]
     assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
     # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
     from core.sanger.batch import excel_conclusion
@@ -1625,6 +1642,12 @@ def test_mixed_multi_read_aggregated_conclusion():
     assert "估计次要克隆占比" in lines[0]
     assert "次峰占比中位数" not in lines[0]
     assert "重新挑单克隆" in lines[0]
+    # 聚合行下仍逐 read 给位点范围子行（前端默认折叠）
+    detail = [x for x in result["conclusion"].splitlines()
+              if x.strip().startswith("↳") and "双峰" in x]
+    assert len(detail) == 2
+    assert ("↳ a.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段") in detail[0]
+    assert "↳ b.ab1：双峰 5 处，位于 read 81、131、201、261、331" in detail[1]
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 2, True)
     assert out.startswith("疑似混合：")
@@ -1645,6 +1668,8 @@ def test_mixed_end_margin_positions_ignored():
     prof = result["mixed_profiles"]["m.ab1"]
     assert prof["count"] == 5
     assert prof["positions"] == [81, 131, 201, 261, 331]
+    # 逐 read 范围子行同样只含可信区位点（末端 11/591 两处不出现）
+    assert "↳ m.ab1：双峰 5 处，位于 read 81、131、201、261、331" in result["conclusion"]
 
 
 def test_n_call_variants_always_low_confidence():

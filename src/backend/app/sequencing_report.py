@@ -31,7 +31,8 @@ from typing import Dict, List, Optional, Tuple
 from core.sanger.batch import _squash
 # 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
 # 网页、结论文本、整理包报告里说法一致，避免各写各的）
-from core.sanger.pipeline import END_MARGIN, _peak_verdict_phrase, _run_label
+from core.sanger.pipeline import (END_MARGIN, _peak_verdict_phrase,
+                                  _pos_ranges_str, _run_label)
 
 ZIP_ROOT = "测序整理"
 
@@ -210,7 +211,7 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
             "次级峰面积占主峰比例 >30% 的位点计为双峰位点（poly 下游滑移伪影与"
             "饱和峰拖影已剔除）。多个分散双峰位点提示样品可能混有第二种质粒"
             "（两个单克隆的混合培养物），此时主峰序列只代表多数克隆。", "",
-            "| read | 判定 | 双峰位点 | 次峰占比(中位) | 估计次要克隆占比 | 位点（前10个） |",
+            "| read | 判定 | 双峰位点 | 次峰占比(中位) | 估计次要克隆占比 | 位点范围（read 坐标） |",
             "|---|---|---|---|---|---|",
         ]
         for r, p in flagged:
@@ -221,9 +222,7 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
                    if p.get("median_ratio") is not None else "—")
             frac = p.get("minor_fraction")
             frac_txt = f"约 {round(frac * 100)}%" if frac else "—"
-            span = p.get("span")
-            span_txt = f"（跨 {span[0]}–{span[1]}）" if span else ""
-            pos_txt = "、".join(str(x) for x in p["positions"][:10]) + span_txt
+            pos_txt = _pos_ranges_str(p["positions"], max_ranges=10)
             if p.get("pullup_excluded"):
                 pos_txt += f"；另有 {p['pullup_excluded']} 处饱和峰拖影已剔除"
             lines.append(f"| {r['filename']} | {label} | {p['count']} | {pct} | {frac_txt} | {pos_txt} |")
