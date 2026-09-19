@@ -203,9 +203,13 @@ let seqScrollX = 0
 let seqRaf = 0
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
-const SEQ_TRACE_H = 54
-const SEQ_ROW_H = 16
-const seqWrapH = computed(() => 36 + visibleReads.value.length * (SEQ_ROW_H + SEQ_TRACE_H + 6) + 8)
+const SEQ_TRACE_H = 120  // 峰图条带高（SnapGene 式大峰，塞满带内空间）
+const SEQ_ROW_H = 16     // 碱基字母行高
+const SEQ_HEAD_H = 14    // read 头行高（文件名/落点/Q，与碱基字母不重叠）
+const seqWrapH = computed(
+  // 末尾 18px 是水平滚动条补偿：wrap.clientHeight 不含滚动条，少算会把带底位号裁掉
+  () => 36 + visibleReads.value.length * (SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8) + 8 + 18
+)
 const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
 
 interface SeqCol {
@@ -732,12 +736,22 @@ function isReadVisible(ri: number) {
 
 async function toggleRead(ri: number) {
   const i = visibleReads.value.indexOf(ri)
-  if (i >= 0) visibleReads.value.splice(i, 1)
-  else {
-    visibleReads.value.push(ri)
-    await loadSeqTrace(ri)
+  if (i >= 0) {
+    visibleReads.value.splice(i, 1)
+    nextSeqDraw()
+    return
   }
+  visibleReads.value.push(ri)
+  await loadSeqTrace(ri)
   nextSeqDraw()
+  // SnapGene 习惯：勾选一条 read 即看到它的落点——只有当它不覆盖当前窗口时才跳
+  const read = analysis.value?.reads[ri]
+  const wrap = seqBox.value
+  if (read && wrap && wrap.clientWidth > 0) {
+    const uL = seqScrollX / seqColW.value
+    const uR = (seqScrollX + wrap.clientWidth) / seqColW.value
+    if (read.ref_end < uL || read.ref_start > uR) scrollToRefPos(read.ref_start, true)
+  }
 }
 
 function safeScrollTo(left: number, smooth: boolean) {
@@ -754,7 +768,9 @@ function scrollToRefPos(refPos: number, flash = false) {
   const wrap = seqBox.value
   if (wrap) {
     const target = Math.max(0, (refPos - 0.5) * seqColW.value - wrap.clientWidth / 2)
-    safeScrollTo(target, true)
+    // 立即定位（不用平滑滚动）：平滑滚动进行中缩放/连跳会取到中途 scrollLeft，
+    // 造成视口漂移；目标列本身有 1.6s 黄色闪烁标识，无需动画引导
+    safeScrollTo(target, false)
   }
   if (flash) {
     flashRefPos.value = refPos
@@ -834,7 +850,11 @@ function seqZoomAt(f: number, anchorX?: number) {
   nextSeqDraw()
 }
 
-function seqZoom(f: number) { seqZoomAt(f) }
+// 工具栏缩放以视口中心为锚——点放大/缩小不丢失正在看的位点
+function seqZoom(f: number) {
+  const wrap = seqBox.value
+  seqZoomAt(f, wrap ? wrap.clientWidth / 2 : undefined)
+}
 
 function seqFit() {
   const wrap = seqBox.value
@@ -909,7 +929,7 @@ function drawSeqTrace(
     if (!arr) continue
     ctx.beginPath()
     ctx.strokeStyle = CHANNEL_COLORS[b]
-    ctx.lineWidth = 1
+    ctx.lineWidth = 1.4
     let started = false
     for (const w of wins) {
       const c = cols[w.ci]
@@ -988,12 +1008,12 @@ function drawSeq() {
     if (x > -colW && x < w + colW) ctx.fillRect(x, refRowY, Math.max(colW, 2), SEQ_ROW_H)
   }
   if (colW >= 7) {
-    ctx.font = '11px Consolas, monospace'
+    ctx.font = '13px Consolas, monospace'
     ctx.textAlign = 'center'
-    ctx.fillStyle = '#555'
+    ctx.fillStyle = '#333'
     for (const [p, b] of refCovered) {
       const x = seqX(p - 0.5)
-      if (x > -colW && x < w + colW) ctx.fillText(b, x, refRowY + 12)
+      if (x > -colW && x < w + colW) ctx.fillText(b, x, refRowY + 13)
     }
   }
   // 轴上变异红块（与匹配简图同语义）
@@ -1003,26 +1023,52 @@ function drawSeq() {
     if (x > -4 && x < w + 4) ctx.fillRect(x - 2, refRowY - 3, 4, 3)
   }
 
-  // 3) 各 read 行：碱基字母（Q 着色）+ 峰图条带 + 混合位点标注
+  // 3) 各 read 块（SnapGene 式）：头行（文件名/落点/Q）→ 碱基字母行 → 大峰图带
+  const blockH = SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8
   visibleReads.value.forEach((ri, rowN) => {
     const read = a.reads[ri]
     const cols = seqColsFor(ri)
-    const rowY = refRowY + SEQ_ROW_H + 4 + rowN * (SEQ_ROW_H + SEQ_TRACE_H + 6)
-    const traceTop = rowY + SEQ_ROW_H + 2
-    const baseline = traceTop + SEQ_TRACE_H - 4
+    const blockY = refRowY + SEQ_ROW_H + 4 + rowN * blockH
+    const baseY = blockY + SEQ_HEAD_H          // 碱基字母行顶
+    const traceTop = baseY + SEQ_ROW_H + 2     // 峰图带顶
+    const baseline = traceTop + SEQ_TRACE_H - 14 // 峰图基线（带底留位号行）
+    const bandBottom = baseline + 12
     if (!read) return
+
+    // 头行：白底芯片保证滚动时名字可读；不覆盖当前窗口的 read 置灰并注明落点
+    const covers = read.ref_end >= uLeft && read.ref_start <= uRight
+    const headText = `${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)} · ${read.ref_start}–${read.ref_end} · Q${read.mean_q}${cols ? '' : ' · 无对齐'}${covers ? '' : ' · 窗口外'}`
     ctx.textAlign = 'left'
-    ctx.fillStyle = '#98422A'
-    ctx.font = '9px Arial'
-    ctx.fillText(`${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)}`, 4, rowY + 8)
+    ctx.font = '10px Arial'
+    const headW = Math.min(ctx.measureText(headText).width + 8, w - 4)
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillRect(2, blockY, headW, SEQ_HEAD_H)
+    ctx.fillStyle = !cols ? '#BBB' : covers ? '#98422A' : '#BCA79E'
+    ctx.fillText(headText, 6, blockY + 10)
+
     if (!cols) {
       ctx.fillStyle = '#BBB'
-      ctx.fillText('（无对齐数据）', 4, rowY + SEQ_ROW_H + 14)
+      ctx.font = '11px Arial'
+      ctx.fillText('该 read 无对齐数据，无法展示碱基与峰图', 6, baseY + 22)
       return
     }
+
     const trace = traceCache.value[ri] ?? null
     const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
     for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
+
+    // 逐碱基纵向淡网格线贯穿碱基行与峰图带（SnapGene 对齐浏览的定位置感）
+    if (colW >= 8) {
+      ctx.strokeStyle = '#F2F2F2'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      for (let p = Math.ceil(uLeft); p <= Math.floor(uRight); p++) {
+        const x = seqX(p - 0.5)
+        ctx.moveTo(x, baseY)
+        ctx.lineTo(x, bandBottom)
+      }
+      ctx.stroke()
+    }
 
     // 采样窗（可见列）：apex 与相邻峰中点围成的本碱基区间
     const pk = trace?.peak_indices || []
@@ -1048,51 +1094,70 @@ function drawSeq() {
         for (let s = lo; s <= hi; s++) if (arr[s] > maxV) maxV = arr[s]
       }
     }
-    // 列背景与字母
+
+    // 列底色与碱基字母（错配红底加粗、双峰橙底贯穿整块、低 Q 橙字）
     for (const c of cols) {
       const cx = seqX(c.xu)
       if (cx < -colW * 2 || cx > w + colW * 2) continue
       if (c.read === '-') {
-        if (colW >= 7) { ctx.fillStyle = '#D8D8D8'; ctx.fillRect(cx - 1, rowY + 4, 2, 8) }
+        if (colW >= 7) { ctx.fillStyle = '#D8D8D8'; ctx.fillRect(cx - 1, baseY + 4, 2, 8) }
         continue
       }
       const md = mixedMap.get(c.origIdx)
       if (c.mm) {
-        ctx.fillStyle = 'rgba(208,52,44,0.16)'
-        ctx.fillRect(cx - colW / 2, rowY, Math.max(colW, 6), SEQ_ROW_H + 2)
+        ctx.fillStyle = 'rgba(208,52,44,0.18)'
+        ctx.fillRect(cx - colW / 2, baseY, Math.max(colW, 6), SEQ_ROW_H + 2)
+        // 差异列在峰图带内也铺极浅红，视线随峰形走到哪都能对上列
+        ctx.fillStyle = 'rgba(208,52,44,0.06)'
+        ctx.fillRect(cx - colW / 2, traceTop, Math.max(colW, 6), bandBottom - traceTop)
       }
       if (md) {
-        ctx.fillStyle = 'rgba(230,126,34,0.15)'
-        ctx.fillRect(cx - Math.max(colW / 2, 3), rowY, Math.max(colW, 6), SEQ_ROW_H + SEQ_TRACE_H + 2)
+        ctx.fillStyle = 'rgba(230,126,34,0.14)'
+        ctx.fillRect(cx - Math.max(colW / 2, 3), baseY, Math.max(colW, 6), bandBottom - baseY)
       }
-      if (colW >= 7 && c.read !== '-') {
+      if (colW >= 7) {
         ctx.textAlign = 'center'
-        ctx.font = c.mm ? 'bold 11px Consolas, monospace' : '11px Consolas, monospace'
+        ctx.font = c.mm ? 'bold 13px Consolas, monospace' : '13px Consolas, monospace'
         ctx.fillStyle = c.q > 0 && c.q < 20 ? '#E67E22' : c.mm ? '#B03028' : '#333'
-        ctx.fillText(c.read, cx, rowY + 12)
+        ctx.fillText(c.read, cx, baseY + 13)
       }
     }
 
-    // 峰图曲线
+    // 峰图带：先画大曲线再压深色基线（低电平通道的噪声段会贴着基线走，
+    // 基线后画才能保持 SnapGene 式的深色横线观感）
     if (trace && wins.length) {
-      ctx.strokeStyle = '#F2F2F2'
-      ctx.beginPath()
-      ctx.moveTo(0, baseline)
-      ctx.lineTo(w, baseline)
-      ctx.stroke()
       drawSeqTrace(ctx, trace, cols, wins, maxV, traceTop, baseline)
-      // 混合位点标注：次峰碱基 + 占比
+      // 混合位点标注：次峰碱基 + 次要克隆占比（r/(1+r)，与结论口径一致）
       if (colW >= 13) {
-        ctx.font = '8px Arial'
+        ctx.font = '9px Arial'
         ctx.textAlign = 'center'
         for (const w2 of wins) {
           const c = cols[w2.ci]
           const md = mixedMap.get(c.origIdx)
           if (!md) continue
           ctx.fillStyle = '#E67E22'
-          ctx.fillText(`${md.secondary_base}${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`, seqX(c.xu), traceTop + 8)
+          ctx.fillText(`${md.secondary_base}${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`, seqX(c.xu), traceTop + 10)
         }
       }
+    } else if (!trace && !seqTraceLoading.value) {
+      ctx.fillStyle = '#C9C9C9'
+      ctx.font = '11px Arial'
+      ctx.textAlign = 'left'
+      ctx.fillText('峰图不可用（加载失败或已过期，可重跑分析）', 6, traceTop + 20)
+    }
+    ctx.strokeStyle = '#444'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(0, baseline)
+    ctx.lineTo(w, baseline)
+    ctx.stroke()
+    // 带内位号（基线下方，与顶部刻度尺互为参照）
+    const pStep = [1, 2, 5, 10, 20, 50].find((s) => s * colW >= 46) ?? 100
+    ctx.font = '9px Arial'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = '#999'
+    for (let p = Math.max(1, Math.ceil(uLeft / pStep) * pStep); p <= Math.min(uRight, a.reference_length); p += pStep) {
+      ctx.fillText(String(p), seqX(p - 0.5), bandBottom)
     }
   })
 
