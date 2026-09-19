@@ -1588,6 +1588,30 @@ def test_mixed_sample_widespread_end_to_end():
     assert "8 处双峰" in out and "无法自动判定" in out
 
 
+def test_traces_payload_trim_start_and_mixed_detail():
+    """前端比对峰图融合视图的数据契约：traces 载荷带 trim_start（peak_indices
+    按原始 read 碱基索引，前端换算采样窗需要修剪偏移）；per-read mixed_detail
+    逐位给出 ratio/次级碱基（pullup 已剔除），供双峰标注与点选证据行"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260)}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    read = result["reads"][0]
+    # mixed_detail：逐位次级峰证据，pos 与触发位点一致
+    md = read["mixed_detail"]
+    assert [d["pos"] for d in md] == [p + 1 for p in sorted(sites)]
+    assert all(d["secondary_base"] == sites[d["pos"] - 1] for d in md)
+    # ratio = 次峰/主峰面积比（0 < r < 1；前端按 r/(1+r) 折算次要克隆占比）
+    assert all(0 < d["ratio"] < 1 for d in md)
+    # traces 载荷：peak_indices 覆盖整条原始 read，trim_start 为修剪偏移
+    tr = result["traces"][0]
+    assert tr["filename"] == "m.ab1"
+    assert isinstance(tr["trim_start"], int) and tr["trim_start"] >= 0
+    assert len(tr["peak_indices"]) >= tr["trim_start"] + len(tr["bases"])
+    assert tr["bases"] == read["trimmed_bases"]
+    assert tr["channels"].keys() == {"A", "T", "G", "C"}
+
+
 def test_mixed_sample_scattered_stays_qualified():
     """个别双峰位点（2 个）：只提示不升级——结论保持合格前缀"""
     random.seed(7)

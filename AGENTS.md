@@ -36,13 +36,13 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
   src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas：wrap特征/双向箭头/
                                      弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
   src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
-  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对校验视图
-                                     （逐列 read vs 参考+Q 值）/峰图/共识差异高亮/导出
+  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图
+                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（219 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（327 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（70 用例，src/frontend/tests）
+                            合成 ab1 生成器）+ 前端 vitest（97 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -102,6 +102,28 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 调整（2026-09-19）**比对峰图融合视图（SnapGene 式，A 轮）**：用户反馈
+  「峰图比对其实没什么作用」——证据链拆在 比对校验（纯文本网格）/Chromatogram
+  （独立峰图）/简图 三个互不相连的面板。落地（SequencingPanel 单 canvas 融合
+  面板替换两旧面板）：横轴统一为参考坐标——参考碱基行（可见 read 对齐参考取
+  并集，覆盖区浅绿底 + 轴上变异红块）+ 每 read 行（碱基字母 Q 着色/差异红底/
+  双峰位点橙底条带贯穿峰图）+ 四通道峰图条带同轴对齐，插入列在左右两列间插缝
+  （SeqCol xu 插值）；反向 read 展示用参考方向 revcomp，峰图按原始电泳序列映射
+  （origIdx = L−1−qi，与后端镜像同式）。关键修复：峰图采样窗不再假设固定
+  10 采样点/碱基，改为 peak_indices[trim_start+origIdx] 取峰 apex、与相邻峰
+  apex 的中点围成本碱基采样窗（pipeline.py traces 载荷新增 trim_start），对
+  任意采样密度/修剪偏移都成立。交互：read 复选框多 read 堆叠、Ctrl+滚轮缩放
+  （带锚点）+ 滚轮横滚 + 适应全宽 + 跳转位置输入、点击任意列出证据摘要行
+  （各 read 碱基/Q/次级峰占比——mixed_detail 的 ratio 是次峰/主峰面积比，
+  次要克隆占比 = r/(1+r)，显示口径与结论聚合一致）、差异明细行/简图红块/
+  read 简图点击原位跳列 flash 1.6s；read 表「峰图/比对」两按钮合并为「查看」。
+  pipeline.py per-read 新增 mixed_detail（[{pos, ratio, secondary_base}]，
+  pullup 已剔除），sequencing_routes _summary 透传。注意：①happy-dom 无
+  canvas 2d 且 getContext 不是函数（不是返回 null），绘制需 typeof 守卫，
+  测试只能断言 DOM 交互与 api mock 调用；②watch([visibleReads, seqColW])
+  需 deep:true（push/splice 原位变更不触发）；③旧 .aln-*/.trace-box CSS 已删，
+  .trace-toolbar 被 consensus-box 共用须保留；④B 轮（匹配简图缩放 +
+  SequenceView 序列层联动）待做。
 - 调整（2026-09-19）**双峰位点逐 read 范围 + 图谱特征去重开关**：用户追问
   ①「5–50 处双峰是不是在引物首尾」——答复：不在（末端过滤后剩下的全是
   中段位点），但结论里确实没有给具体范围，无法自行核对；②图谱特征重复
