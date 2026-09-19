@@ -168,6 +168,11 @@ async function runAnalysis() {
       visibleReads.value = [analysis.value.reads[0].index]
       selectedReadIdx.value = 0
       loadSeqTrace(analysis.value.reads[0].index)
+      // 行按视野过滤：把视口带到首条 read 的起点，避免初始面板没行
+      nextTick(() => {
+        const r0 = analysis.value?.reads[0]
+        if (r0?.ref_start) scrollToRefPos(r0.ref_start)
+      })
     }
     emit('analyzed', analysis.value)
   } catch (e: any) {
@@ -203,7 +208,10 @@ const selRefPos = ref<number | null>(null)   // 点选列（参考坐标）
 const flashRefPos = ref<number | null>(null) // 跳转高亮列（短暂）
 const seqInfo = ref('')
 const jumpInput = ref('')
-let seqScrollX = 0
+// 横向滚动位置（响应式：行布局按视野过滤，行数随滚动增减 → 高度要跟着变）
+const seqScrollX = ref(0)
+// 布局重算 tick：挂载后拿到真实 clientWidth、窗口 resize 时行集合会变
+const seqLayoutTick = ref(0)
 let seqRaf = 0
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -247,12 +255,13 @@ const ovDomain = computed(() => {
   return { lo: Math.max(1, lo0 - 1 - pad), hi: Math.min(refLen, hi0 + pad) }
 })
 const seqWrapH = computed(() => {
-  // 覆盖简图带 + 刻度尺14 + 参考行16 + 间隔4 + 各显示 read 的
+  // 覆盖简图带 + 刻度尺14 + 参考行16 + 间隔4 + 视野内各 read 的
   // 字母行 + 各自峰图条带（选中的加高）+ 底部8；末尾 18px 是水平
-  // 滚动条补偿：wrap.clientHeight 不含滚动条，少算会把条带底裁掉
+  // 滚动条补偿：wrap.clientHeight 不含滚动条，少算会把条带底裁掉。
+  // 行集合随横向滚动增减（rowLayouts 读 seqScrollX），高度跟着变
+  seqLayoutTick.value   // 挂载/resize 后 clientWidth 变化时强制重算
   const { ovH } = ovLayoutFor(ovLaneCount.value)
-  const strips = visibleReads.value.reduce(
-    (s, ri) => s + SEQ_ROW_H + SEQ_STRIP_H + (ri === selectedReadIdx.value ? SEL_STRIP_EXTRA : 0), 0)
+  const strips = rowLayouts().reduce((s, L) => s + SEQ_ROW_H + L.stripH, 0)
   return ovH + 14 + 16 + 4 + strips + 8 + 18
 })
 const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
@@ -337,7 +346,7 @@ function resetSeqViz() {
   seqInfo.value = ''
   jumpInput.value = ''
   seqColW.value = 12
-  seqScrollX = 0
+  seqScrollX.value = 0
   for (const k of Object.keys(seqColCache)) delete seqColCache[Number(k)]
 }
 
@@ -750,6 +759,11 @@ watch(() => props.preset, (p) => {
     if (p.reads.length) {
       selectedReadIdx.value = 0
       loadSeqTrace(0)
+      // 行按视野过滤：初始视口在参考开头，若首条 read 不在此处面板会没行
+      nextTick(() => {
+        const r0 = p.reads[0]
+        if (r0?.ref_start) scrollToRefPos(r0.ref_start)
+      })
     }
   } else {
     // 退出历史回看：清空上次注入的分析状态，避免面板残留旧结果造成误读
@@ -821,8 +835,8 @@ async function toggleRead(ri: number) {
   const read = analysis.value?.reads[ri]
   const wrap = seqBox.value
   if (read && wrap && wrap.clientWidth > 0) {
-    const uL = seqScrollX / seqColW.value
-    const uR = (seqScrollX + wrap.clientWidth) / seqColW.value
+    const uL = seqScrollX.value / seqColW.value
+    const uR = (seqScrollX.value + wrap.clientWidth) / seqColW.value
     if (read.ref_end < uL || read.ref_start > uR) scrollToRefPos(read.ref_start, true)
   }
 }
@@ -910,8 +924,8 @@ async function selectRead(ri: number, zoom = false) {
       scrollToRefPos((read.ref_start + read.ref_end) / 2, true)
     } else {
       // 塞不下整条 read：以可读密度落在 read 起点处（起点闪黄标识），向右浏览
-      seqScrollX = Math.max(0, (read.ref_start - 1) * nu - 12)
-      safeScrollTo(seqScrollX, false)
+      seqScrollX.value = Math.max(0, (read.ref_start - 1) * nu - 12)
+      safeScrollTo(seqScrollX.value, false)
       flashRefPos.value = read.ref_start
       if (flashTimer) clearTimeout(flashTimer)
       flashTimer = setTimeout(() => {
@@ -924,11 +938,27 @@ async function selectRead(ri: number, zoom = false) {
   nextSeqDraw()
 }
 
-/** 各显示 read 的条带布局：字母行与其峰图条带交接，选中的条带加高 */
-function stripLayouts() {
+/** 行布局：只渲染「勾选中、有对齐、与当前视野相交」的 read（SnapGene 式），
+ *  按参考起点排序；字母行 + 条带一起出现/消失，空行不占位。
+ *  无浏览器环境（happy-dom clientWidth=0）视窗视为全参考，行全出，便于测试。
+ *  win 参数供测试直接指定视野。 */
+function rowLayouts(win?: { uLeft: number; uRight: number }) {
+  const a = analysis.value
+  if (!a) return []
+  const cw = seqBox.value?.clientWidth ?? 0
+  const colW = seqColW.value
+  const uLeft = win ? win.uLeft : cw > 0 ? seqScrollX.value / colW : 0
+  const uRight = win ? win.uRight
+    : cw > 0 ? (seqScrollX.value + cw) / colW : a.reference_length
+  const eligible = visibleReads.value
+    .filter((ri) => {
+      const r = a.reads[ri]
+      return r && r.ref_end > 0 && r.ref_end >= uLeft - 2 && r.ref_start <= uRight + 2
+    })
+    .sort((x, y) => a.reads[x].ref_start - a.reads[y].ref_start)
   const layouts: { ri: number; rowY: number; stripTop: number; stripH: number; baseline: number }[] = []
   let y0 = ovLayoutFor(ovLaneCount.value).ovH + 14 + 2 + SEQ_ROW_H + 4
-  for (const ri of visibleReads.value) {
+  for (const ri of eligible) {
     const stripH = SEQ_STRIP_H + (selectedReadIdx.value === ri ? SEL_STRIP_EXTRA : 0)
     layouts.push({ ri, rowY: y0, stripTop: y0 + SEQ_ROW_H, stripH, baseline: y0 + SEQ_ROW_H + stripH - 10 })
     y0 += SEQ_ROW_H + stripH
@@ -946,7 +976,7 @@ function jumpToRefPos() {
 }
 
 function onSeqScroll() {
-  seqScrollX = seqBox.value?.scrollLeft ?? 0
+  seqScrollX.value = seqBox.value?.scrollLeft ?? 0
   nextSeqDraw()
 }
 
@@ -967,10 +997,10 @@ function seqZoomAt(f: number, anchorX?: number) {
   const nu = Math.max(1, Math.min(28, Math.round(old * f * 100) / 100))
   if (nu === old) return
   if (anchorX != null) {
-    const u = (seqScrollX + anchorX) / old
+    const u = (seqScrollX.value + anchorX) / old
     seqColW.value = nu
-    seqScrollX = Math.max(0, u * nu - anchorX)
-    safeScrollTo(seqScrollX, false)
+    seqScrollX.value = Math.max(0, u * nu - anchorX)
+    safeScrollTo(seqScrollX.value, false)
   } else {
     seqColW.value = nu
   }
@@ -1030,13 +1060,13 @@ function onSeqClick(e: MouseEvent) {
   }
 
   // 主区：点在字母行或其峰图条带上 → 选中该 read；列点选证据逻辑不变
-  for (const L of stripLayouts()) {
+  for (const L of rowLayouts()) {
     if (y >= L.rowY && y < L.stripTop + L.stripH) {
       if (selectedReadIdx.value !== L.ri) selectedReadIdx.value = L.ri
       break
     }
   }
-  const x = e.clientX - rect.left + seqScrollX
+  const x = e.clientX - rect.left + seqScrollX.value
   const refPos = Math.floor(x / seqColW.value) + 1
   if (refPos < 1 || refPos > a.reference_length) return
   selRefPos.value = refPos
@@ -1081,7 +1111,7 @@ function nextSeqDraw() {
 }
 
 function seqX(xu: number): number {
-  return xu * seqColW.value - seqScrollX
+  return xu * seqColW.value - seqScrollX.value
 }
 
 /** 峰图采样窗：可见列的 apex 与邻峰中点围成本碱基区间；同时求通道最大幅值 */
@@ -1171,14 +1201,13 @@ function drawSeq() {
   ctx.clearRect(0, 0, w, h)
 
   const colW = seqColW.value
-  const uLeft = seqScrollX / colW
-  const uRight = (seqScrollX + w) / colW
+  const uLeft = seqScrollX.value / colW
+  const uRight = (seqScrollX.value + w) / colW
   // 顶部覆盖简图（全景定位条）：固定整参考宽度、不随横向滚动移动，
   // 引物再多/放大多少倍都完整可见（SnapGene 图二式）
   const { ovCovY, ovH } = ovLayoutFor(ovLaneCount.value)
   const rulerH = ovH + 14
   const refRowY = rulerH + 2
-  const refLen = a.reference_length
   // 简图只覆盖引物实际覆盖的区段（见 ovDomain），无 read 的参考区不占位
   const { lo: ovLo, hi: ovHi } = ovDomain.value
   const ovX = (bp: number) => ((bp - ovLo) / Math.max(1, ovHi - ovLo)) * w
@@ -1313,18 +1342,22 @@ function drawSeq() {
     }
   }
 
-  // 3) 各 read 字母行 + 各自峰图条带交接（SnapGene 图三式；选中条带加高）
-  const layouts = stripLayouts()
-  if (!visibleReads.value.length) {
+  // 3) 各 read 字母行 + 各自峰图条带交接（SnapGene 图三式；选中条带加高）。
+  //    行集合 = 视野过滤后的 rowLayouts：没覆盖当前视野的 read 整组不出现
+  const layouts = rowLayouts()
+  if (!layouts.length) {
     ctx.fillStyle = '#C9C9C9'
     ctx.font = '11px Arial'
     ctx.textAlign = 'left'
-    ctx.fillText('勾选上方引物或点击简图箭头查看峰图', 6, refRowY + SEQ_ROW_H + 24)
+    ctx.fillText(visibleReads.value.length
+      ? '当前视野没有覆盖中的引物——横向滚动，或点击简图空白跳到有覆盖的位置'
+      : '勾选上方引物或点击简图箭头查看峰图', 6, refRowY + SEQ_ROW_H + 24)
   }
-  visibleReads.value.forEach((ri) => {
+  for (const L of layouts) {
+    const ri = L.ri
     const read = a.reads[ri]
-    if (!read) return
-    const rowY = layouts.find((L) => L.ri === ri)!.rowY
+    if (!read) continue
+    const rowY = L.rowY
     const cols = seqColsFor(ri)
     const isSel = sel === ri
     // 行左侧固定名字芯片（滚动时也知道每行是谁）
@@ -1337,7 +1370,7 @@ function drawSeq() {
     ctx.fillStyle = !cols ? '#BBB' : hexA(readColor(ri), isSel ? 1 : 0.85)
     ctx.fillText(chip, 4, rowY + 11)
 
-    if (!cols) return
+    if (!cols) continue
     const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
     for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
     for (const c of cols) {
@@ -1363,7 +1396,7 @@ function drawSeq() {
         ctx.fillText(c.read, cx, rowY + 13)
       }
     }
-  })
+  }
 
   // 4) 各 read 的峰图条带：直接交接在该 read 字母行下方，选中者加高并
   //    淡底强调；各条带独立归一幅值，峰形分歧（双峰/错配）一眼可辨
@@ -1460,8 +1493,14 @@ watch([visibleReads, seqColW, selectedReadIdx], nextSeqDraw, { deep: true })
 // 峰图带要叠加所有勾选 read：勾选后补拉各自峰图（有缓存/已失败的直接跳过）
 watch(visibleReads, (list) => { for (const ri of list) void loadSeqTrace(ri) }, { deep: true })
 
-function onSeqResize() { nextSeqDraw() }
-onMounted(() => window.addEventListener('resize', onSeqResize))
+function onSeqResize() {
+  seqLayoutTick.value++   // 视野宽度变了 → 行集合/高度重算
+  nextSeqDraw()
+}
+onMounted(() => {
+  window.addEventListener('resize', onSeqResize)
+  seqLayoutTick.value++   // 挂载后才有真实 clientWidth，行布局按视野过滤
+})
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onSeqResize)
   if (flashTimer) clearTimeout(flashTimer)
@@ -1811,7 +1850,7 @@ async function downloadConsensus(format: string) {
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
       <div class="seqviz-box" v-if="analysis.reads.length">
         <div class="trace-toolbar">
-          <h4 class="section-title">比对峰图<span class="map-sub">（顶部覆盖简图按引物覆盖区缩放：每引物一条箭头按泳道排布、独立配色、无覆盖区不占位，蓝框 = 当前视野，视野内引物着重，点击箭头选中该引物并跳到其起点（峰图保持可读密度），点击空白跳到该位置；橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异；主区参考行 + 各 read 字母行与其峰图条带交接排布（选中者加高），点字母行或条带选中该 read，Ctrl+滚轮缩放）</span></h4>
+          <h4 class="section-title">比对峰图<span class="map-sub">（顶部覆盖简图按引物覆盖区缩放：每引物一条箭头按泳道排布、独立配色、无覆盖区不占位，蓝框 = 当前视野，视野内引物着重，点击箭头选中该引物并跳到其起点（峰图保持可读密度），点击空白跳到该位置；橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异；主区参考行 + 视野内各 read 的字母行与其峰图条带交接排布（只显示覆盖当前视野的引物，行随横向滚动自动增减；选中者加高），点字母行或条带选中该 read，Ctrl+滚轮缩放）</span></h4>
           <div class="seqviz-controls">
             <label v-for="r in analysis.reads" :key="r.index" class="seqviz-pick"
                    :style="{ color: readColor(r.index) }">
@@ -1831,7 +1870,7 @@ async function downloadConsensus(format: string) {
           <canvas ref="seqCanvas" class="seqviz-canvas"></canvas>
         </div>
         <p v-if="seqInfo" class="seqviz-info">{{ seqInfo }}</p>
-        <p v-else class="hint">点击简图箭头选中引物并放大到其覆盖区，点简图空白跳到对应位置；每条引物的峰图直接衔接在其字母行下方，点字母行或条带选中它；点任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与红块可跳到对应位置</p>
+        <p v-else class="hint">点击简图箭头选中引物并放大到其覆盖区，点简图空白跳到对应位置；只显示覆盖当前视野的引物（字母行下方直接衔接其峰图，随滚动自动增减），点字母行或条带选中它；点任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与红块可跳到对应位置</p>
       </div>
 
       <!-- 解卷积结果 -->
