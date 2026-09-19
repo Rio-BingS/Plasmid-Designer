@@ -632,3 +632,48 @@ def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
     report = zf.read("测序整理/MX/无法判定/测序分析报告.md").decode("utf-8")
     assert "## 双峰（疑似混合）检测" in report
     assert "**疑似混合样品**" in report and "次峰占比" in report
+
+
+def test_group_report_poly_section_and_variant_split():
+    """整理包报告（C2）：poly 判读独立成章（结构表 + 逐 read 证据），
+    重复区 indel 从常规变异表拆出、按重复数变化呈现"""
+    from app.sequencing_report import _group_report_md
+    record = {
+        "engine": "internal+biopython", "reference": "A" * 40, "features": [],
+        "reads": [{"filename": "T1.ab1", "grade": "A", "mean_q": 40,
+                   "trimmed_length": 100,
+                   "alignment": {"ref_start": 1, "ref_end": 40, "direction": "+"},
+                   "mixed_profile": {"count": 0, "class": "none"}}],
+        "errors": [],
+        "consensus": {"coverage_percent": 100.0},
+        "cds_reports": [],
+        "variants": [
+            {"ref_pos": 35, "type": "substitution", "ref_base": "A", "alt_base": "G",
+             "confidence": "high", "features": []},
+            {"ref_pos": 20, "type": "deletion", "ref_base": "A", "alt_base": "-",
+             "length": 3, "confidence": "medium", "features": [],
+             "homopolymer": {"base": "A", "unit": "A", "period": 1, "start": 18,
+                             "end": 25, "ref_repeat_count": 8,
+                             "observed_repeat_count": 5, "count_reliable": False}},
+        ],
+        "homopolymers": [
+            {"base": "A", "unit": "A", "period": 1, "tier": "poly", "start": 18,
+             "end": 25, "length": 8, "ref_repeat_count": 8,
+             "observed_repeat_count": 5, "count_reliable": False,
+             "variant": {"ref_pos": 20, "type": "deletion", "length": 3,
+                         "confidence": "medium"},
+             "peak_missing": 3, "peak_measured": 5,
+             "read_counts": [{"filename": "T1.ab1", "direction": "+",
+                              "coverage": "full", "covered_span": [18, 25],
+                              "called_count": 5, "peak_count": 5}]},
+        ],
+    }
+    item = {"plasmid": "MX", "clone": None, "conclusion": "合格：与设计一致",
+            "reference_name": "MX.fasta"}
+    md = _group_report_md(item, record, [])
+    assert "## poly 同聚物 / 重复结构判读" in md
+    assert "| poly(A) 同聚物 | 18–25 | 8 |" in md
+    assert "不可靠" in md and "调用 5，可分辨峰 5" in md   # 逐 read 证据
+    assert "8→5" in md                                     # 重复数（参考→测得）
+    main = md.split("## 变异明细")[1]
+    assert "A>G" in main and "缺失" not in main            # 常规表只剩替换
