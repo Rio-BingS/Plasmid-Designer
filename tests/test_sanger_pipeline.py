@@ -1499,3 +1499,120 @@ def test_duplicate_cds_names_annotate_correct_feature():
     annotate_variant(v, feats, ref)
     assert v["codon_change"] == "TAC>TGC"
     assert v["aa_change"] == "CDS:Y1C"
+
+
+# ==================== C1：双峰（疑似混合样品）read 级分级 ====================
+
+_ALT_OF = {"A": "G", "C": "T", "G": "A", "T": "C"}
+
+
+def _mixed_ab1(seq, mix_sites, minor_level=60, sat_sites=None):
+    """合成混合样品 ab1：called 碱基 = seq（多数克隆），mix_sites 位点在
+    次级通道叠加 minor_level 信号（次要克隆）；sat_sites 模拟饱和峰拖影
+    （主通道 350、另一通道同期 120——pull-up 伪影）"""
+    traces = {ch: [] for ch in "ATGC"}
+    for b in seq:
+        for ch in "ATGC":
+            traces[ch].append(100 if ch == b else 4)
+    for pos, alt in mix_sites.items():
+        traces[alt][pos] = minor_level
+    for pos, alt in (sat_sites or {}).items():
+        for ch in "ATGC":
+            traces[ch][pos] = 4
+        traces[seq[pos]][pos] = 350
+        traces[alt][pos] = 120
+    return make_ab1(seq, [40] * len(seq), traces=[traces[c] for c in "ATGC"])
+
+
+def test_classify_mixed_levels_and_minor_fraction():
+    """read 级分级：widespread/scattered/none 与次要克隆占比 f=r/(1+r)"""
+    from core.sanger.pipeline import _classify_mixed
+    entries = [{"pos": i + 1, "ratio": 0.5, "secondary_base": "G", "pullup": False}
+               for i in range(5)]
+    p = _classify_mixed(entries, 600)
+    assert p["class"] == "widespread" and p["count"] == 5
+    assert p["median_ratio"] == 0.5 and p["minor_fraction"] == pytest.approx(1 / 3, abs=1e-3)
+    # pull-up 位点不计数、单独记录
+    entries[0]["pullup"] = True
+    p2 = _classify_mixed(entries, 600)
+    assert p2["count"] == 4 and p2["pullup_excluded"] == 1
+    assert p2["class"] == "scattered" and 1 not in p2["positions"]
+    # 连续段 ≥ MIXED_STRETCH_MIN 也算 widespread（indel 介导的混合）
+    entries3 = [{"pos": 100 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
+                for i in range(4)]
+    p3 = _classify_mixed(entries3, 600)
+    assert p3["class"] == "scattered" and p3["longest_stretch"] == 4
+    entries3 += [{"pos": 104 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
+                 for i in range(4)]
+    assert _classify_mixed(entries3, 600)["class"] == "widespread"
+    # 空与单点
+    assert _classify_mixed([], 600)["class"] == "none"
+    one = _classify_mixed([{"pos": 9, "ratio": 0.8, "secondary_base": "C", "pullup": False}], 600)
+    assert one["class"] == "none" and one["count"] == 1
+
+
+def test_mixed_sample_widespread_end_to_end():
+    """两个克隆的混合培养物：多个分散双峰位点 → read 级判疑似混合样品，
+    结论显式提示（此前 mixed_positions 只进结构化字段，结论完全不可见）"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["m.ab1"]
+    assert prof["class"] == "widespread" and prof["count"] == 8
+    assert prof["positions"] == [p + 1 for p in sorted(sites)]
+    assert "疑似混合样品" in result["conclusion"]
+    assert "重新挑单克隆" in result["conclusion"]
+    assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
+    # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 1, True)
+    assert out.startswith("疑似混合：")
+    assert "8 处双峰" in out and "无法自动判定" in out
+
+
+def test_mixed_sample_scattered_stays_qualified():
+    """个别双峰位点（2 个）：只提示不升级——结论保持合格前缀"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {80: _ALT_OF[ref[80]], 260: _ALT_OF[ref[260]]}
+    result = analyze([("s.ab1", _mixed_ab1(ref, sites))], ref, [])
+    assert result["mixed_profiles"]["s.ab1"]["class"] == "scattered"
+    assert "疑似混合样品" not in result["conclusion"]
+    assert "双峰位点" in result["conclusion"]
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 1, True)
+    assert out.startswith("合格") and "双峰位点" in out
+
+
+def test_pullup_saturated_bleed_suppressed():
+    """饱和峰拖影（pull-up）：主峰 ≥3× 中位且次级同期小峰 → 剔除不按混合计"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    result = analyze([("p.ab1", _mixed_ab1(
+        ref, {80: _ALT_OF[ref[80]]},
+        sat_sites={200: _ALT_OF[ref[200]], 330: _ALT_OF[ref[330]]}))], ref, [])
+    prof = result["mixed_profiles"]["p.ab1"]
+    assert prof["pullup_excluded"] == 2
+    assert prof["count"] == 1 and prof["class"] == "none"
+
+
+def test_mixed_contiguous_stretch_widespread():
+    """连续双峰段（两个克隆相差插入/缺失时交界下游逐位双峰）→ 疑似混合"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in range(300, 309)}
+    result = analyze([("c.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["c.ab1"]
+    assert prof["class"] == "widespread" and prof["longest_stretch"] == 9
+    assert "连续双峰段" in result["conclusion"]
+
+
+def test_n_call_variants_always_low_confidence():
+    """N/模糊调用恒低置信：basecaller 拿不准才给 N，Q 再高也不是"与参考不同"的证据"""
+    v = {"ref_pos": 100, "type": "substitution", "ref_base": "A", "alt_base": "N",
+         "read_q": 50, "support_reads": 1}
+    assert _variant_confidence(v, set(), None, read_len=800) == "low"
+    v2 = {"ref_pos": 100, "type": "insertion", "ref_base": "-", "alt_base": "AN",
+          "read_q": 50, "support_reads": 2}
+    assert _variant_confidence(v2, set(), None, read_len=800) == "low"

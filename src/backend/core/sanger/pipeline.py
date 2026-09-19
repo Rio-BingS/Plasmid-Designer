@@ -5,6 +5,9 @@
 
 流程：ABIF 解析 → 质量修剪 → 双向比对（自动判向）→ 多 read 一致性投票
       → 共识序列生成 → 特征级注释 → 自动结论
+双峰（疑似混合样品）：逐位次级峰检测（剔除 poly 滑移伪影与饱和峰拖影
+pull-up）→ read 级分级（widespread 疑似混合 / scattered 个别双峰）→
+结论显式提示；widespread 时批量一句话结论以「疑似混合」开头。
 可选：检测到 tracy 可执行文件时，对疑似混合样品执行 tracy decompose 解卷积。
 """
 
@@ -24,6 +27,11 @@ from core.sanger.signal import (
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
+MIXED_WIDESPREAD_MIN = 5   # 双峰位点 ≥ 此数 → read 级判「疑似混合样品」
+MIXED_SCATTERED_MIN = 2    # 2-4 个 → 「个别双峰位点」提示（不升级结论）
+MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
+PULLUP_HEIGHT_FACTOR = 3.0  # 主峰高 ≥ 全 read 峰高中位 × 此倍数视为饱和峰
+PULLUP_MAX_RATIO = 0.5      # 饱和峰位次级峰占比 ≤ 此值且与主峰同期 → 按染料拖影（pull-up）抑制
 MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
 MIN_WINDOW = 50          # 修剪后最短保留长度
 END_MARGIN = 20          # read 首尾不可靠区宽度（信号爬升/下降段）
@@ -146,6 +154,12 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     """
     support = v.get("support_reads") or 1
     rp = v.get("read_pos")
+    # N/模糊调用本身就是未解析（basecaller 拿不准才给 N），无论 Q 值多高
+    # 都不构成"与参考不同"的证据，恒低置信、不进共识与确证判定
+    alt_up = (v.get("alt_base") or "").upper()
+    if v.get("type") in ("substitution", "insertion") and any(
+            c not in "ACGT" for c in alt_up):
+        return "low"
     if (read_len and rp and support < 2
             and (rp <= END_MARGIN or rp > read_len - END_MARGIN)):
         return "low"
@@ -227,18 +241,25 @@ def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, i
     return (best_start, best_end)
 
 
-def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
-                            peak_indices: List[int]) -> List[int]:
-    """检测疑似混合/杂合位点：次级通道峰面积占主峰比例过高
+def _detect_mixed_detail(bases: str, trace: Dict[str, List[int]],
+                         peak_indices: List[int]) -> List[Dict]:
+    """逐位双峰细节（双峰检测的底层）：[{pos(1-based), ratio, secondary_base, pullup}]
 
-    主峰面积低于全 read 主峰面积中位数 25% 的位点跳过：called 碱基本身
-    无信号的退化窗口（合成数据/校正后的零信号区）四通道面积全相等，
-    没有可比的"主峰"，不设门槛会把每个位点都误判成混合。
+    判定口径与旧版一致：次级通道峰面积占主峰比例 > MIXED_PEAK_RATIO、
+    主峰面积高于全 read 主峰面积中位数 25%（called 碱基无信号的退化窗口
+    四通道面积全相等，不设门槛会把每个位点都误判成混合）、四通道面积不接
+    近相等（无主导通道 = 无真实信号差异）。
+
+    pull-up（染料拖影）抑制：强饱和峰会在其他通道同期漏出小峰——与真实
+    混合的双峰同期出现无法靠 timing 区分，改按「触发条件」区分：主峰高
+    ≥ 全 read 峰高中位 × PULLUP_HEIGHT_FACTOR（接近饱和）且次级占比
+    ≤ PULLUP_MAX_RATIO（拖影比例通常远低于真实混合）→ 标记 pullup。
+    真实混合样品在 read 上有多个双峰位点，个别饱和位被抑制不影响分级。
     """
-    mixed = []
+    detail: List[Dict] = []
     n = min(len(v) for v in trace.values()) if trace else 0
     if n == 0:
-        return mixed
+        return detail
     windows: List[Optional[Dict[str, int]]] = []
     for i, base in enumerate(bases):
         if base not in "ACGT" or i >= len(peak_indices):
@@ -253,6 +274,9 @@ def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
     tops = sorted(max(w.values()) for w in windows if w)
     pos_tops = [t for t in tops if t > 0]
     main_floor = 0.25 * pos_tops[len(pos_tops) // 2] if pos_tops else 0.0
+    # 全 read 峰高中位（pull-up 触发参考）：每峰取四通道最大值
+    all_heights = sorted(h for w in windows if w for h in [max(w.values())] if h > 0)
+    med_height = all_heights[len(all_heights) // 2] if all_heights else 0.0
     for i, base in enumerate(bases):
         areas = windows[i]
         if areas is None:
@@ -267,8 +291,81 @@ def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
             if ratio > MIXED_PEAK_RATIO and areas[base] == sorted_a[0]:
-                mixed.append(i + 1)
-    return mixed
+                sec_base = next((b for b in "ACGT" if b != base
+                                 and areas.get(b) == sorted_a[1]), None)
+                pullup = False
+                if med_height > 0 and sorted_a[0] >= PULLUP_HEIGHT_FACTOR * med_height \
+                        and ratio <= PULLUP_MAX_RATIO:
+                    pk = peak_indices[i] if i < len(peak_indices) else None
+                    if pk is not None and 0 <= pk < n:
+                        lo, hi = _peak_window(peak_indices, i, n)
+                        main_apex = max(range(lo, hi), key=lambda x: trace[base][x])
+                        sec_apex = max(range(lo, hi),
+                                       key=lambda x: trace.get(sec_base, [0] * n)[x])
+                        pullup = abs(sec_apex - main_apex) <= 1
+                detail.append({"pos": i + 1, "ratio": round(ratio, 3),
+                               "secondary_base": sec_base, "pullup": pullup})
+    return detail
+
+
+def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
+                            peak_indices: List[int]) -> List[int]:
+    """检测疑似混合/杂合位点（兼容入口）：返回双峰位点的 1-based 位置列表
+
+    已剔除 pull-up 拖影位（饱和峰在其他通道的同期小峰不是混合信号）；
+    poly 下游滑移 echo 由管线在调用前剔除。
+    """
+    return [e["pos"] for e in _detect_mixed_detail(bases, trace, peak_indices)
+            if not e["pullup"]]
+
+
+def _classify_mixed(entries: List[Dict], read_len: int) -> Dict:
+    """把逐位双峰聚合成 read 级混合分级（双峰准确性的关键一层）
+
+    - widespread（疑似混合样品）：位点数 ≥ MIXED_WIDESPREAD_MIN，或存在
+      ≥ MIXED_STRETCH_MIN 的连续双峰段（两个克隆相差插入/缺失时，交界下游
+      相位错开的逐位双峰是典型形态）；
+    - scattered（个别双峰）：MIXED_SCATTERED_MIN..MIN-1 个位点——两个克隆
+      仅差 1-2 个碱基的真实混合也会落在这里，按提示级处理、不升级结论；
+    - none：无或仅 1 个位点（单点双峰与个别碱基噪声无法区分，交由该位点
+      变体的峰级证据与置信度口径）。
+
+    minor_fraction：双峰占比中位数 r → 次要克隆占比 r/(1+r)
+    （两克隆混合模型下 次峰/主峰 = f/(1-f)，f 为次要克隆的摩尔占比）。
+    """
+    kept = [e for e in entries if not e["pullup"]]
+    count = len(kept)
+    profile = {
+        "count": count,
+        "pullup_excluded": len(entries) - count,
+        "positions": [e["pos"] for e in kept],
+        "median_ratio": None,
+        "minor_fraction": None,
+        "span": None,
+        "longest_stretch": 0,
+        "class": "none",
+    }
+    if not kept:
+        return profile
+    ratios = sorted(e["ratio"] for e in kept)
+    med = ratios[len(ratios) // 2]
+    profile["median_ratio"] = round(med, 3)
+    if 0 < med:
+        # 次峰/主峰 = f/(1-f)（f 为次要克隆占比）→ f = r/(1+r)；50/50 混合
+        # 时 r=1 → f=0.5
+        profile["minor_fraction"] = round(med / (1 + med), 3)
+    positions = profile["positions"]
+    profile["span"] = [positions[0], positions[-1]]
+    stretch = best = 1
+    for a, b in zip(positions, positions[1:]):
+        stretch = stretch + 1 if b - a == 1 else 1
+        best = max(best, stretch)
+    profile["longest_stretch"] = best
+    if count >= MIXED_WIDESPREAD_MIN or best >= MIXED_STRETCH_MIN:
+        profile["class"] = "widespread"
+    elif count >= MIXED_SCATTERED_MIN:
+        profile["class"] = "scattered"
+    return profile
 
 
 def _try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
@@ -1331,11 +1428,15 @@ def analyze(
                                  "ref_end": run["end"], **drop})
         r["slippage_positions"] = sorted(slip)
         r["post_poly_dropouts"] = dropouts
-        r["mixed_positions"] = [
-            p for p in _detect_mixed_positions(
+        mixed_detail = [
+            e for e in _detect_mixed_detail(
                 r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
-            if p not in slip
+            if e["pos"] not in slip
         ]
+        r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
+        # read 级混合分级：把逐位双峰聚合成 可行动 的判定（widespread=疑似
+        # 混合样品 / scattered=个别双峰），pull-up 拖影已在 detail 内标记剔除
+        r["mixed_profile"] = _classify_mixed(mixed_detail, len(r["trimmed_bases"]))
 
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
@@ -1591,6 +1692,32 @@ def analyze(
                 "建议人工核对峰图或换引物复测"
             )
 
+    # 双峰（疑似混合样品）结论行：read 级分级后给可行动的提示。
+    # 混合样品影响整份判读（主峰序列只是多数克隆），必须显式写出——此前
+    # mixed_positions 只进结构化字段，结论与报告完全不可见，混合样品会被
+    # 报成"与设计一致"
+    mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
+                      if r["mixed_profile"]["count"] > 0}
+    mixed_lines: List[str] = []
+    for r in read_results:
+        p = r["mixed_profile"]
+        if p["class"] == "widespread":
+            pct = f"{round((p['median_ratio'] or 0) * 100)}%"
+            frac = p.get("minor_fraction")
+            frac_txt = f"，估计次要克隆占比约 {round(frac * 100)}%" if frac else ""
+            line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
+                    f"（次峰占比中位数 {pct}{frac_txt}），主峰序列按多数碱基判读——"
+                    "建议重新挑单克隆划线培养后复测")
+            if p["longest_stretch"] >= MIXED_STRETCH_MIN:
+                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
+                         "（两个克隆相差插入/缺失时的典型形态）")
+            mixed_lines.append(line)
+        elif p["class"] == "scattered":
+            pos_preview = "、".join(str(x) for x in p["positions"][:6])
+            mixed_lines.append(
+                f"⚠ {r['filename']} 有 {p['count']} 个双峰位点（位置 {pos_preview}）："
+                "可能为个别碱基噪声或低比例混合，建议核对峰图")
+
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
     cds_lines = [
         f"【{cr['name']} CDS】{cr['verdict']}"
@@ -1610,10 +1737,12 @@ def analyze(
             for e in homopolymer_report
             if e["tier"] == "poly" and not e["count_reliable"]
         ]
-        all_lines = [conclusion] + cds_lines + poly_warnings + dropout_notes
+        # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
+        all_lines = [conclusion] + mixed_lines + cds_lines + poly_warnings + dropout_notes
         conclusion = "\n".join(x for x in all_lines if x)
     else:
         lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
+        lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
         lines.extend(summarize_severity(variants))
         # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）
         lines.extend(cds_lines)
@@ -1693,6 +1822,7 @@ def analyze(
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
+        "mixed_profiles": mixed_profiles,
         "errors": errors,
         "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
     }

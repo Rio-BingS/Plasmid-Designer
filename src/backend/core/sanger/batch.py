@@ -388,6 +388,29 @@ def main_sentence(verdict: str) -> str:
     return seg[1] if len(seg) > 1 else verdict
 
 
+def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
+    """双峰（疑似混合）结论要素：返回 (尾部提示行, widespread 列表)
+
+    widespread（≥5 个分散双峰位点或 ≥8 连续双峰段）= 疑似混合样品——整份
+    判读存疑，不再自动给 合格/不合格；scattered（2-4 个位点）只是提示。
+    """
+    profiles = (res or {}).get("mixed_profiles") or {}
+    widespread = [(fn, p) for fn, p in profiles.items()
+                  if p.get("class") == "widespread"]
+    tails: List[str] = []
+    for fn, p in widespread:
+        pct = f"{round((p.get('median_ratio') or 0) * 100)}%"
+        tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰（次峰占比约 {pct}），"
+                     "建议重新挑单克隆复测")
+    scattered = [(fn, p) for fn, p in profiles.items()
+                 if p.get("class") == "scattered"]
+    if scattered:
+        n = sum(p["count"] for _fn, p in scattered)
+        names = "、".join(fn for fn, _p in scattered[:2])
+        tails.append(f"{names} 有 {n} 个双峰位点，建议核对峰图")
+    return tails, widespread
+
+
 def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。"""
     if not has_ref:
@@ -402,7 +425,22 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     cov = res["consensus"]["coverage_percent"]
     bad = [c for c in res["cds_reports"]
            if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
+    mixed_tails, widespread = _mixed_tails(res)
     tail = []
+    # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了），混合降为提示；
+    # 否则疑似混合样品升级为结论主句——混合培养物无法自动判定
+    if not bad and widespread:
+        parts = [f"{fn} 检出 {p['count']} 处双峰（次峰占比约 "
+                 f"{round((p.get('median_ratio') or 0) * 100)}%）"
+                 for fn, p in widespread[:2]]
+        if len(widespread) > 2:
+            parts.append(f"另有 {len(widespread) - 2} 个 read 检出双峰")
+        out = ("疑似混合：" + "；".join(parts)
+               + "，无法自动判定，建议重新挑单克隆划线培养后复测")
+        if confirmed:
+            out += f"；按主峰判读编码区蛋白与设计一致，另有 {len(confirmed)} 处确证差异（详见报告）"
+        return out
+    tail.extend(mixed_tails)
     if pending:
         tail.append(f"{pending} 处低置信差异疑似测序噪声（详见报告）")
     # A4：poly 区峰图计数与碱基调用不一致——此前批量 Excel 丢掉这条关键告警

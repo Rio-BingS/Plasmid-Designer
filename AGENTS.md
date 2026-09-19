@@ -102,6 +102,30 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 调整（2026-09-19）**双峰（疑似混合样品）检测分级 + N 调用低置信**：用户反馈
+  突变/双峰识别准确性不够。根因之一：混合培养物（两个单克隆混测）的逐位双峰
+  只存进结构化字段 mixed_positions，结论/一句话结论/整理包报告完全不可见，
+  混合样品被报成「合格：与设计一致」。改造（core/sanger/pipeline.py）：
+  ①_detect_mixed_detail 输出逐位细节（比例/次级通道/pullup 标记），
+  _detect_mixed_positions 保留为兼容入口；②饱和峰拖影（pull-up，主峰 ≥3×
+  全 read 峰高中位且次级占比 ≤0.5、与主峰同期）剔除不按混合计；③
+  _classify_mixed 做 read 级分级：count ≥5 或连续双峰段 ≥8 → widespread
+  （疑似混合样品）、2-4 → scattered（个别双峰提示）、0-1 → none（单点双峰
+  与噪声无法区分，交变体峰级证据口径）；次要克隆占比 = r/(1+r)（r=次峰/主峰
+  中位，勿再写成 r/(1-r)）；④结论两分支均插入 mixed_lines（widespread 用
+  「⚠ 疑似混合样品：…建议重新挑单克隆」，紧跟首行）；⑤N/模糊调用
+  （alt_base 含非 ACGT）恒 low 置信——basecaller 拿不准才给 N，Q 再高也不算
+  "与参考不同"的证据。excel_conclusion（core/sanger/batch.py）：widespread
+  且无确证 CDS 不一致时结论以「疑似混合：」开头（_conclusion_bucket 落
+  整理包 无法判定/ 文件夹，不再混进 正确/）；确证不合格时保持不合格前缀、
+  混合降为尾部提示；scattered 走尾部提示。_group_report_md（app/
+  sequencing_report.py）新增「双峰（疑似混合）检测」章节（每 read 判定/
+  位点数/次峰占比/次要克隆占比/位点示例）。tracy decompose 触发改按
+  widespread（sequencing_routes _run_full_analysis），scattered 噪声不再
+  白跑解卷积。注意：①mixed_profiles 只含 count>0 的 read；per-read 的
+  mixed_profile 总是存在；②双峰位点的主峰判据要求 called 碱基 = 主通道，
+  basecaller 恰好调了次要碱基的位点检不到（真实混合以多数位点为准）；
+  ③离线脚本 scripts/batch_sequencing_report.py 的报告未同步双峰章节。
 - 调整（2026-09-19）**整理包按质粒归档 + 正确/错误分置**：同一质粒在信息表里
   写成 '17648'/'MBYSTC'/'17648 MBYSTC' 等多种写法时，原先按名称字符串逐组建
   文件夹被拆散。新布局（app/sequencing_report.py build_batch_zip）：同一质粒
