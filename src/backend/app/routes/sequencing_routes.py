@@ -135,15 +135,22 @@ def _run_full_analysis(
     """同步执行全自动分析（调用方负责移交线程池）"""
     result = analyze(ab1_blobs, reference, features, min_q=min_q)
 
-    # 混合样品解卷积（tracy 可用时）：写入临时文件后调用 decompose
-    if allow_decompose and result.get("mixed_detected"):
+    # 混合样品解卷积（tracy 可用时）：只对 read 级判为「疑似混合样品」
+    # （widespread）的 read 执行——个别双峰位点（scattered）多为噪声，
+    # 对它们 decompose 只会产出无意义的等位基因
+    to_decompose = {
+        fn: p.get("positions") or []
+        for fn, p in (result.get("mixed_profiles") or {}).items()
+        if p.get("class") == "widespread"
+    }
+    if allow_decompose and to_decompose:
         alleles: Dict[str, List[Dict]] = {}
         with tempfile.TemporaryDirectory() as td:
             ref_fasta = os.path.join(td, "ref.fasta")
             with open(ref_fasta, "w", encoding="utf-8") as fh:
                 fh.write(f">{sample_name or 'reference'}\n{reference.upper()}\n")
             by_name = dict(ab1_blobs)
-            for filename in result["mixed_detected"]:
+            for filename in to_decompose:
                 blob = by_name.get(filename)
                 if not blob:
                     continue
@@ -698,6 +705,8 @@ def _summary(record: Dict) -> Dict:
             "ref_end": r["alignment"]["ref_end"],
             "identity": r["alignment"]["identity"],
             "mixed_positions": r.get("mixed_positions", []),
+            "mixed_class": (r.get("mixed_profile") or {}).get("class"),
+            "mixed_count": (r.get("mixed_profile") or {}).get("count", 0),
             # 逐列对齐视图（read 与参考的原始证据，供人工核对）
             "alignment_view": r["alignment"].get("aligned"),
         })
@@ -715,6 +724,7 @@ def _summary(record: Dict) -> Dict:
         "cds_reports": record.get("cds_reports", []),
         "homopolymers": record.get("homopolymers", []),
         "mixed_detected": record.get("mixed_detected", {}),
+        "mixed_profiles": record.get("mixed_profiles", {}),
         "decomposed_alleles": record.get("decomposed_alleles", {}),
         "errors": record["errors"],
         "reference_length": len(record["reference"]),

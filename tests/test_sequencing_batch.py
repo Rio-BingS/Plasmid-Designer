@@ -591,3 +591,44 @@ def test_analyses_and_batch_expire_after_ttl(client):
     assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 404
     got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
     assert got.status_code == 404 and "过期" in got.json()["detail"]
+
+
+# ==================== 双峰（疑似混合样品）→ 无法判定 归档联动 ====================
+
+_MIX_ALT = {"A": "G", "C": "T", "G": "A", "T": "C"}
+
+
+def _mixed_ab1_mx(name: str) -> tuple:
+    """MX 混合样品 ab1：called 碱基 = REF_MX（多数克隆与设计一致），
+    5 个分散位点在次级通道叠加 60% 信号（次要克隆）→ read 级判疑似混合"""
+    traces = {ch: [] for ch in "ATGC"}
+    for b in REF_MX:
+        for ch in "ATGC":
+            traces[ch].append(100 if ch == b else 4)
+    for p in (30, 45, 60, 75, 90):
+        traces[_MIX_ALT[REF_MX[p]]][p] = 60
+    blob = make_ab1(REF_MX, [40] * len(REF_MX), traces=[traces[c] for c in "ATGC"])
+    return (name, blob, "application/octet-stream")
+
+
+def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
+    """混合样品（双峰）结论以「疑似混合」开头 → 整理包归入 无法判定/ 而非
+    正确/：混合培养物无法自动判定，报告含双峰检测章节"""
+    resp = _post(client, [
+        ("MX.gb", _gb_mx(), "application/octet-stream"),
+        _mixed_ab1_mx("T1.ab1"),
+    ], excel_part=_xlsx([("MX", ["T1"])]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    it = data["items"][0]
+    assert it["status"] == "analyzed"
+    assert it["conclusion"].startswith("疑似混合：")
+    assert "无法自动判定" in it["conclusion"]
+
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    names = zf.namelist()
+    assert "测序整理/MX/无法判定/T1.ab1" in names
+    assert not any(n.startswith("测序整理/MX/正确/T1") for n in names)
+    report = zf.read("测序整理/MX/无法判定/测序分析报告.md").decode("utf-8")
+    assert "## 双峰（疑似混合）检测" in report
+    assert "**疑似混合样品**" in report and "次峰占比" in report

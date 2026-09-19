@@ -139,6 +139,38 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
             mark = {"full": "✅", "partial": "🟡", "uncovered": "⚪"}.get(c["coverage_status"], "")
             lines.append(f"- {mark} **{c['name']}**（{c['covered_percent']}% 覆盖）：{c['verdict']}")
         lines.append("")
+    # 双峰（疑似混合）检测：次级峰 >30% 的位点计为双峰位点（已剔除 poly 滑移
+    # 伪影与饱和峰拖影），read 级分级——widespread 提示混有第二种质粒
+    flagged = []
+    if record and record["reads"]:
+        for r in record["reads"]:
+            p = r.get("mixed_profile") or {}
+            if p.get("count"):
+                flagged.append((r, p))
+    if flagged:
+        lines += [
+            "## 双峰（疑似混合）检测", "",
+            "次级峰面积占主峰比例 >30% 的位点计为双峰位点（poly 下游滑移伪影与"
+            "饱和峰拖影已剔除）。多个分散双峰位点提示样品可能混有第二种质粒"
+            "（两个单克隆的混合培养物），此时主峰序列只代表多数克隆。", "",
+            "| read | 判定 | 双峰位点 | 次峰占比(中位) | 估计次要克隆占比 | 位点（前10个） |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r, p in flagged:
+            cls = p.get("class")
+            label = ("**疑似混合样品**" if cls == "widespread"
+                     else "个别双峰位点" if cls == "scattered" else "—")
+            pct = (f"{round((p.get('median_ratio') or 0) * 100)}%"
+                   if p.get("median_ratio") is not None else "—")
+            frac = p.get("minor_fraction")
+            frac_txt = f"约 {round(frac * 100)}%" if frac else "—"
+            span = p.get("span")
+            span_txt = f"（跨 {span[0]}–{span[1]}）" if span else ""
+            pos_txt = "、".join(str(x) for x in p["positions"][:10]) + span_txt
+            if p.get("pullup_excluded"):
+                pos_txt += f"；另有 {p['pullup_excluded']} 处饱和峰拖影已剔除"
+            lines.append(f"| {r['filename']} | {label} | {p['count']} | {pct} | {frac_txt} | {pos_txt} |")
+        lines.append("")
     if copied:
         lines += ["## 文件整理（原始文件未改动，此处为副本）", "",
                   "| 文件 | 类型 | 匹配方式 |", "|---|---|---|"]
