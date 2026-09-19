@@ -411,13 +411,24 @@ def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
     widespread（≥5 个分散双峰位点或 ≥8 连续双峰段）= 疑似混合样品——整份
     判读存疑，不再自动给 合格/不合格；scattered（2-4 个位点）只是提示。
     多条 read 全部 widespread 时聚合一条，不逐 read 复读。
+    跨引物互检例外：唯一 widespread 的 read 若其双峰位点多数被其他引物
+    覆盖且峰形单一、无同报（与网页结论同口径），降级为尾部提示——
+    多半是该 read 自身信号问题（常见于引物首端），不影响整份判读。
     """
     profiles = (res or {}).get("mixed_profiles") or {}
     widespread = [(fn, p) for fn, p in profiles.items()
                   if p.get("class") == "widespread"]
     tails: List[str] = []
+    by_read = ((res or {}).get("mixed_corroboration") or {}).get("by_read") or {}
+    n_reads = len((res or {}).get("reads") or [])
     if len(widespread) == 1:
         fn, p = widespread[0]
+        chk = by_read.get(fn) or {}
+        if n_reads >= 2 and chk.get("multi", 0) == 0 \
+                and chk.get("clean", 0) >= max(1, p["count"] // 2):
+            tails.append(f"{fn} 检出 {p['count']} 处双峰，跨引物互检多数被其他"
+                         "引物覆盖且峰形单一，倾向该 read 信号噪声（详见报告）")
+            return tails, []
         tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰"
                      "，建议重新挑单克隆复测")
     elif widespread:

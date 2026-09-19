@@ -686,6 +686,129 @@ def _pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
     return out
 
 
+def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
+    """单条 read 的两张坐标映射（基于 alignment_view 的参考方向逐列视图）：
+
+    - read2ref: 原始电泳 read 坐标(1-based, 修剪后) -> 参考坐标(1-based)；
+      插入列无参考坐标，不入表
+    - ref2call: 参考坐标 -> {base, q, read_pos}（base 为参考方向判读碱基，
+      q 为该列 Q 值；同位点多次比对列取首列）
+
+    反向 read 的 query 是 revcomp：query 列索引 qi ↔ 原始电泳坐标 n-qi
+    （1-based，与 aligner 的 read_pos 镜像同式），mixed_detail 的 pos 即
+    原始电泳坐标，经此表即可与参考坐标互换。"""
+    aligned = (r.get("alignment") or {}).get("aligned") or {}
+    ref_s = (aligned.get("ref_aligned") or "").upper()
+    read_s = (aligned.get("read_aligned") or "").upper()
+    if not ref_s or len(ref_s) != len(read_s):
+        return {}, {}
+    direction = (r.get("alignment") or {}).get("direction", "+")
+    n = len(r.get("trimmed_bases") or "")
+    q_aligned = aligned.get("q_aligned") or []
+    ref_pos = int(aligned.get("ref_start") or (r.get("alignment") or {}).get("ref_start") or 1)
+    read2ref: Dict[int, int] = {}
+    ref2call: Dict[int, Dict] = {}
+    qi = -1
+    for i, rb in enumerate(ref_s):
+        qb = read_s[i]
+        if qb != "-":
+            qi += 1
+            orig = (n - qi) if direction == "-" else (qi + 1)
+        else:
+            orig = None
+        if rb != "-":
+            if qb != "-" and orig is not None:
+                read2ref[orig] = ref_pos
+                if ref_pos not in ref2call:
+                    ref2call[ref_pos] = {
+                        "base": qb,
+                        "q": q_aligned[i] if i < len(q_aligned) else 0,
+                        "read_pos": orig,
+                    }
+            ref_pos += 1
+    return read2ref, ref2call
+
+
+def _corroborate_mixed(read_results: List[Dict]) -> Dict:
+    """跨 read 双峰互检：一条引物的双峰位点映射到参考坐标后，看其他引物
+    在同一位点的表现——用户视角的关键一层：另一条引物测过且峰形单一、
+    判读碱基一致 → 多半是这条 read 自己的信号噪声（常见于引物首端）；
+    其他引物同样报双峰 → 倾向真实混合；无其他引物覆盖 → 无法互检。
+
+    返回 {by_read: {filename: {clean, multi, uncovered, multi_ref, clean_ref}},
+          multi_sites: [(ref_pos, [filenames])], total, clean_total,
+          multi_total, uncov_total}；单条 read 的分析互检无意义，字段照常
+          返回（clean/multi 均为 0），由结论层判断是否展示。"""
+    maps = [(r, *_read_ref_maps(r)) for r in read_results]
+    # 各 read 报了双峰的参考坐标集合（互检时判"同报双峰"用）
+    mixed_ref_by_read: Dict[str, set] = {}
+    for r, r2ref, _c in maps:
+        s = set()
+        for e in r.get("mixed_detail") or []:
+            rp = r2ref.get(e["pos"])
+            if rp is not None:
+                s.add(rp)
+        mixed_ref_by_read[r["filename"]] = s
+
+    by_read: Dict[str, Dict] = {}
+    multi_sites: Dict[int, List[str]] = {}
+    for r, r2ref, _c in maps:
+        fname = r["filename"]
+        clean: List[int] = []
+        multi: List[int] = []
+        uncovered: List[int] = []
+        for e in r.get("mixed_detail") or []:
+            rp = r2ref.get(e["pos"])
+            if rp is None:
+                uncovered.append(e["pos"])
+                continue
+            others_multi = [f for f, s in mixed_ref_by_read.items()
+                            if f != fname and rp in s]
+            if others_multi:
+                multi.append(e["pos"])
+                multi_sites.setdefault(rp, []).append(fname)
+                continue
+            # 其他引物在该位点峰形单一（自己没报双峰）且判读碱基一致、
+            # Q≥20 → 判"被覆盖复核"
+            ok = False
+            for o, _o2ref, ocall in maps:
+                if o["filename"] == fname:
+                    continue
+                call = ocall.get(rp)
+                if call and call["base"] == _c.get(rp, {}).get("base") \
+                        and call["q"] >= 20 \
+                        and rp not in mixed_ref_by_read[o["filename"]]:
+                    ok = True
+                    break
+            (clean if ok else uncovered).append(e["pos"])
+        by_read[fname] = {
+            "clean": len(clean), "multi": len(multi), "uncovered": len(uncovered),
+            "clean_ref": sorted({r2ref[p] for p in clean if p in r2ref}),
+            "multi_ref": sorted({r2ref[p] for p in multi if p in r2ref}),
+        }
+    total = sum(d["clean"] + d["multi"] + d["uncovered"] for d in by_read.values())
+    return {
+        "by_read": by_read,
+        "multi_sites": sorted(multi_sites.items()),
+        "total": total,
+        "clean_total": sum(d["clean"] for d in by_read.values()),
+        "multi_total": sum(d["multi"] for d in by_read.values()),
+        "uncov_total": sum(d["uncovered"] for d in by_read.values()),
+    }
+
+
+def _mixed_check_phrase(chk: Dict) -> str:
+    """单条 read 互检摘要短语（仅统计非零项，全零返回空串）"""
+    parts = []
+    if chk["multi"]:
+        parts.append(f"{chk['multi']} 处其他引物同报双峰（倾向真实混合）")
+    if chk["clean"]:
+        parts.append(f"{chk['clean']} 处其他引物覆盖且峰形单一（倾向噪声）")
+    if chk["uncovered"]:
+        parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核")
+    return "互检：" + "、".join(parts) if parts else ""
+
+
 def _run_label(run: Dict) -> str:
     """重复结构标签：period=1 为 poly(A) 同聚物；period>1 为 (CAG)n 型重复"""
     if run.get("period", 1) == 1 and run.get("base"):
@@ -1467,6 +1590,11 @@ def analyze(
         # 混合样品 / scattered=个别双峰），pull-up 拖影已在 detail 内标记剔除
         r["mixed_profile"] = _classify_mixed(mixed_detail, len(r["trimmed_bases"]))
 
+    # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
+    # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
+    # 其他引物同报双峰才倾向真实混合。结论与建议均按互检结果措辞
+    mixed_corroboration = _corroborate_mixed(read_results)
+
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
     mixed_by_read = {r["filename"]: set(r["mixed_positions"]) for r in read_results}
@@ -1740,15 +1868,34 @@ def analyze(
 
     wide = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "widespread"]
+    crossable = len(read_results) >= 2   # 单条 read 无从互检
     if len(wide) == 1:
         r, p = wide[0]
+        chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
         frac_txt = _frac_range([p])
-        line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
-                + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
-                + "，主峰序列按多数碱基判读——建议重新挑单克隆划线培养后复测")
-        if p["longest_stretch"] >= MIXED_STRETCH_MIN:
-            line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
-                     "（两个克隆相差插入/缺失时的典型形态）")
+        # 互检主导措辞：多数双峰位点被其他引物覆盖且峰形单一、无同报 →
+        # 倾向该 read 自身信号问题（常见于引物首端），而非真实混合
+        noise_like = (crossable and chk.get("multi", 0) == 0
+                      and chk.get("clean", 0) >= max(1, p["count"] // 2))
+        if noise_like:
+            line = (f"⚠ {r['filename']} 检出 {p['count']} 处双峰位点"
+                    + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
+                    + "——跨引物互检：多数双峰位点被其他引物测过且峰形单一、判读一致，"
+                    "更倾向该 read 自身信号问题（信号不稳区以引物首端为主）"
+                    "而非真实混合，建议核对峰图与互检位置后复测该段")
+            if p["longest_stretch"] >= MIXED_STRETCH_MIN and p.get("span"):
+                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
+                         "（若互检未覆盖该段，需警惕两个克隆相差插入/缺失）")
+        else:
+            line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
+                    + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
+                    + "，主峰序列按多数碱基判读——建议重新挑单克隆划线培养后复测")
+            if p["longest_stretch"] >= MIXED_STRETCH_MIN:
+                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
+                         "（两个克隆相差插入/缺失时的典型形态）")
+            note = _mixed_check_phrase(chk) if crossable else ""
+            if note:
+                line += f"；{note}"
         mixed_lines.append(line)
     elif wide:
         counts = sorted(p["count"] for _r, p in wide)
@@ -1766,21 +1913,30 @@ def analyze(
             line += f"；{names} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
         mixed_lines.append(line)
     # 逐 read 位点范围子行（↳ 详情行，前端默认折叠）：核对"双峰是否落在
-    # 引物首尾"需要具体范围——read 坐标 + 首尾不可信区未计入的说明
+    # 引物首尾"需要具体范围——read 坐标 + 互检结果
     for r, p in wide:
-        mixed_lines.append(
-            f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
-            f"{_pos_ranges_str(p['positions'])}"
-            f"（read 坐标；首尾 {END_MARGIN}bp 不可信区未计入）"
-        )
+        chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
+        note = _mixed_check_phrase(chk) if crossable else ""
+        base = (f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
+                f"{_pos_ranges_str(p['positions'])}"
+                f"（read 坐标；首尾 {END_MARGIN}bp 信号爬升/下降区未计入）")
+        mixed_lines.append(base + (f"；{note}" if note else ""))
     scat = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "scattered"]
     if len(scat) == 1:
         r, p = scat[0]
         pos_preview = "、".join(str(x) for x in p["positions"][:6])
+        chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
+        noise_like = (crossable and chk.get("multi", 0) == 0
+                      and chk.get("clean", 0) >= max(1, p["count"] // 2))
+        advice = ("多数位点被其他引物测过且峰形单一，更倾向测序噪声"
+                  if noise_like else "可能为个别碱基噪声或低比例混合，建议核对峰图")
         mixed_lines.append(
             f"⚠ {r['filename']} 有 {p['count']} 个双峰位点（位置 {pos_preview}）："
-            "可能为个别碱基噪声或低比例混合，建议核对峰图")
+            f"{advice}")
+        note = _mixed_check_phrase(chk) if crossable else ""
+        if note:
+            mixed_lines.append(f"  ↳ {r['filename']}（{p['count']} 处双峰位点）：{note}")
     elif scat:
         n_pos = sum(p["count"] for _r, p in scat)
         names = "、".join(r["filename"] for r, _p in scat[:2])
@@ -1789,17 +1945,36 @@ def analyze(
             f"⚠ {names}{more} 共有 {n_pos} 个双峰位点："
             "可能为个别碱基噪声或低比例混合，建议核对峰图")
         for r, p in scat:
-            mixed_lines.append(
-                f"  ↳ {r['filename']}：{p['count']} 处双峰位于 read "
-                f"{_pos_ranges_str(p['positions'])}（read 坐标）"
-            )
+            chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
+            note = _mixed_check_phrase(chk) if crossable else ""
+            base = (f"  ↳ {r['filename']}：{p['count']} 处双峰位于 read "
+                    f"{_pos_ranges_str(p['positions'])}（read 坐标）")
+            mixed_lines.append(base + (f"；{note}" if note else ""))
+    # 跨引物互检汇总（↳ 行随逐 read 明细折叠）：多引物同报双峰的参考位置
+    # 是真实混合的最强信号；其余按 复核一致/无覆盖 归类
+    if crossable and mixed_corroboration["total"] > 0:
+        mc = mixed_corroboration
+        parts = []
+        if mc["multi_sites"]:
+            pos_txt = "、".join(str(rp) for rp, _fs in mc["multi_sites"][:4])
+            more = " 等" if len(mc["multi_sites"]) > 4 else ""
+            parts.append(f"{len(mc['multi_sites'])} 处参考位点被多条引物同报双峰"
+                         f"（参考位置 {pos_txt}{more}，倾向真实混合）")
+        if mc["clean_total"]:
+            parts.append(f"{mc['clean_total']} 处其他引物覆盖且峰形单一（倾向噪声）")
+        if mc["uncov_total"]:
+            parts.append(f"{mc['uncov_total']} 处仅单条引物覆盖，无法互检")
+        if parts:
+            mixed_lines.append("  ↳ 双峰位点跨引物互检：" + "；".join(parts))
 
     # read 末端不可信区显式提示：首尾 END_MARGIN bp 是信号爬升/下降段，
     # 该区差异仅低置信处理还不够——用户常把 read 首尾当可靠证据核对
     end_note = (
         f"注意：每条 read 首尾约 {END_MARGIN}bp 为信号爬升/下降区，碱基判读"
-        "可信度低（该区差异已按低置信处理，各 read 的具体不可信区见报告"
-        "「read 概况」表；如需确认末端，建议换引物从对侧覆盖）"
+        f"可信度低（该区差异已按低置信处理，各 read 的具体不可信区见报告"
+        f"「read 概况」表；信号不稳区通常以引物首端最为明显）；该区如需确认，"
+        f"看另一条引物是否测过同一段——互检覆盖且峰形单一即可直接采信判读"
+        f"（双峰位点已按此思路跨引物互检并汇入结论）"
     )
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
@@ -1928,6 +2103,7 @@ def analyze(
         "conclusion": conclusion,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
+        "mixed_corroboration": mixed_corroboration,
         "errors": errors,
         "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
     }
