@@ -231,6 +231,17 @@ const ovLanes = computed(() => {
   return { lanes, laneOf }
 })
 const ovLaneCount = computed(() => Math.max(1, ovLanes.value.lanes.length))
+// 覆盖简图的坐标域：只取引物实际覆盖的区段（四周留 2% 边距）——
+// 参考序列上没有引物覆盖的部分不占位，箭头才能铺满整个简图宽度
+const ovDomain = computed(() => {
+  const refLen = analysis.value?.reference_length ?? 0
+  const cov = (analysis.value?.reads ?? []).filter((r) => r.ref_end > 0)
+  if (!cov.length || !refLen) return { lo: 0, hi: Math.max(1, refLen) }
+  const lo0 = Math.min(...cov.map((r) => r.ref_start))
+  const hi0 = Math.max(...cov.map((r) => r.ref_end))
+  const pad = Math.max(5, Math.round((hi0 - lo0) * 0.02))
+  return { lo: Math.max(1, lo0 - 1 - pad), hi: Math.min(refLen, hi0 + pad) }
+})
 const seqWrapH = computed(() => {
   // 覆盖简图带 + 刻度尺14 + 参考行16 + 间隔4 + 各显示 read 紧凑字母行 +
   // 单条峰图带（选中 read）+ 底部8；末尾 18px 是水平滚动条补偿：
@@ -869,9 +880,27 @@ async function selectRead(ri: number, zoom = false) {
   const wrap = seqBox.value
   if (zoom && wrap && wrap.clientWidth > 0) {
     const span = Math.max(1, read.ref_end - read.ref_start + 1)
-    const nu = Math.max(1, Math.min(28, Math.round(((wrap.clientWidth - 24) / span) * 100) / 100))
+    const avail = wrap.clientWidth - 24
+    // 可读性下限 6px/碱基：长 read 不再硬塞进一屏把峰压瘪（列宽 <1 时峰形不可辨）
+    let nu = Math.min(28, avail / span)
+    const fits = nu >= 6
+    if (!fits) nu = 6
+    nu = Math.round(nu * 100) / 100
     if (nu !== seqColW.value) seqColW.value = nu
-    scrollToRefPos((read.ref_start + read.ref_end) / 2, true)
+    if (fits) {
+      scrollToRefPos((read.ref_start + read.ref_end) / 2, true)
+    } else {
+      // 塞不下整条 read：以可读密度落在 read 起点处（起点闪黄标识），向右浏览
+      seqScrollX = Math.max(0, (read.ref_start - 1) * nu - 12)
+      safeScrollTo(seqScrollX, false)
+      flashRefPos.value = read.ref_start
+      if (flashTimer) clearTimeout(flashTimer)
+      flashTimer = setTimeout(() => {
+        flashRefPos.value = null
+        nextSeqDraw()
+      }, 1600)
+      nextSeqDraw()
+    }
   }
   nextSeqDraw()
 }
@@ -946,10 +975,12 @@ function onSeqClick(e: MouseEvent) {
   const { ovH } = ovLayoutFor(ovLaneCount.value)
 
   if (y < ovH) {
-    // 覆盖简图（全景固定比例，不随滚动移动）：x 直接映射回参考位置
+    // 覆盖简图（固定比例、不随滚动移动，域为引物覆盖区段）：x 反解参考位置
     const cw = wrap.clientWidth > 0 ? wrap.clientWidth : 1000
     const xLocal = e.clientX - rect.left
-    const refPos = Math.min(Math.max(1, Math.ceil((xLocal / cw) * a.reference_length)), a.reference_length)
+    const { lo: ovLo, hi: ovHi } = ovDomain.value
+    const refPos = Math.min(Math.max(1, Math.round(ovLo + (xLocal / cw) * (ovHi - ovLo))),
+      a.reference_length)
     const { lanes } = ovLanes.value
     const lane = Math.floor((y - 6) / (OV_ARROW_H + OV_LANE_GAP))
     // 命中该泳道内覆盖此位置的引物 → 选中并放大到其覆盖区；没命中 → 仅跳转
@@ -1095,7 +1126,9 @@ function drawSeq() {
   const rulerH = ovH + 14
   const refRowY = rulerH + 2
   const refLen = a.reference_length
-  const ovX = (bp: number) => (bp / refLen) * w
+  // 简图只覆盖引物实际覆盖的区段（见 ovDomain），无 read 的参考区不占位
+  const { lo: ovLo, hi: ovHi } = ovDomain.value
+  const ovX = (bp: number) => ((bp - ovLo) / Math.max(1, ovHi - ovLo)) * w
   const sel = selectedReadIdx.value
 
   // 0a) 覆盖并集绿条 + 轴线 + 变异刻度（低置信黄），与匹配简图同语义
@@ -1169,9 +1202,9 @@ function drawSeq() {
     }
   }
 
-  // 0c) 主视图当前窗口在简图上的投影（蓝框）
-  const vx1 = ovX(Math.max(0, uLeft))
-  const vx2 = ovX(Math.min(refLen, uRight))
+  // 0c) 主视图当前窗口在简图上的投影（蓝框）；窗口超出覆盖域时钳到简图边缘
+  const vx1 = Math.max(0, ovX(uLeft))
+  const vx2 = Math.min(w, ovX(uRight))
   ctx.fillStyle = 'rgba(36,86,200,0.10)'
   ctx.fillRect(vx1, 2, Math.max(3, vx2 - vx1), ovH - 4)
   ctx.strokeStyle = 'rgba(36,86,200,0.5)'
@@ -1760,7 +1793,7 @@ async function downloadConsensus(format: string) {
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
       <div class="seqviz-box" v-if="analysis.reads.length">
         <div class="trace-toolbar">
-          <h4 class="section-title">比对峰图<span class="map-sub">（顶部覆盖简图常驻全景：每引物一条箭头按泳道排布，蓝框 = 当前视野，视野内引物着重，点击箭头选中该引物并放大到其覆盖区，点击空白跳到该位置；橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异；主区参考行 + 各 read 字母行 + 单条峰图带，点字母行切峰图，Ctrl+滚轮缩放）</span></h4>
+          <h4 class="section-title">比对峰图<span class="map-sub">（顶部覆盖简图按引物覆盖区缩放：每引物一条箭头按泳道排布、无覆盖区不占位，蓝框 = 当前视野，视野内引物着重，点击箭头选中该引物并跳到其起点（峰图保持可读密度），点击空白跳到该位置；橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异；主区参考行 + 各 read 字母行 + 单条峰图带，点字母行切峰图，Ctrl+滚轮缩放）</span></h4>
           <div class="seqviz-controls">
             <label v-for="r in analysis.reads" :key="r.index" class="seqviz-pick">
               <input type="checkbox" :checked="isReadVisible(r.index)" @change="toggleRead(r.index)" />{{ r.direction === '-' ? '←' : '→' }} {{ shortName(r.filename) }}
