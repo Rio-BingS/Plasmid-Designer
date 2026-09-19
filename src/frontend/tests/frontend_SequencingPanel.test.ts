@@ -496,6 +496,31 @@ describe('SequencingPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('only reads covering the viewport get rows (SnapGene-style hiding)', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const reads = [
+      { ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() },
+      {
+        index: 1, filename: 'r2.ab1', raw_length: 500, trimmed_length: 480,
+        mean_q: 36, direction: '-', ref_start: 600, ref_end: 900,
+        identity: 0.99, mixed_positions: [],
+      } as SequencingAnalysis['reads'][number],
+    ]
+    const wrapper = mount(SequencingPanel, { props: { preset: { ...mockAnalysis, reads } } })
+    await flushPromises()
+    await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(true)
+    await flushPromises()
+
+    // happy-dom clientWidth=0 → 视窗视为全参考，两条都在
+    expect((wrapper.vm as any).rowLayouts().map((L: any) => L.ri)).toEqual([0, 1])
+    // 视野只落在第二条 read（600-900）→ 第一条（100-580）整组隐藏
+    expect((wrapper.vm as any).rowLayouts({ uLeft: 620, uRight: 700 }).map((L: any) => L.ri)).toEqual([1])
+    // 行按参考起点排序：即使勾选顺序颠倒
+    expect((wrapper.vm as any).rowLayouts({ uLeft: 100, uRight: 900 }).map((L: any) => L.ri)).toEqual([0, 1])
+    vi.unstubAllGlobals()
+  })
+
   it('clears all staged reads with one click', async () => {
     const wrapper = mount(SequencingPanel)
     ;(wrapper.vm as any).addFiles([makeFile('a.ab1'), makeFile('b.ab1'), makeFile('c.gb')])

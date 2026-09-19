@@ -102,6 +102,21 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 调整（2026-09-20）**行随视野过滤（SnapGene 真实行为）+ 全方位检查**：用户指出
+  逐 read 条带又变成"每引物一排且全部显示"——空行占位还把参考行顶出视野；
+  SnapGene 的真实行为是「视野里没有峰图的行自动隐藏」。落地：rowLayouts
+  （替代 stripLayouts）只渲染「勾选中、有对齐、与当前视野相交」的 read，按
+  参考起点排序，字母行+条带整组出现/消失；seqScrollX 改 ref（行数随横向
+  滚动增减 → seqWrapH 跟着重算），seqLayoutTick 在挂载/resize 时强制重算
+  （clientWidth 非 reactive）；happy-dom clientWidth=0 时视窗视为全参考
+  （行全出，测试可直接断言），rowLayouts(win) 支持传视野单测；分析完成与
+  历史回看自动滚到首条 read 起点（否则初始视口在参考开头会没行）；无覆盖
+  视野画"横向滚动或点击简图空白"提示。全方位检查结论：后端 331/前端 101
+  全绿、build 过、vue-tsc 本组件清零（其余 8 个历史错误在 AuthModal/
+  AnalysisView/DesignView/VectorsView，其中 DesignView 的 gibson_site/
+  exclude_enzymes 不在 DesignRequest 类型上疑似真问题待查）；导出 FASTA/
+  各页面/健康检查烟雾全过；确认测序分析记录无属主校验（同站任何能用测序
+  功能的用户可读/删他人记录，属已挂账的属主校验改造项，暂缓）。
 - 调整（2026-09-20）**互检悬空位点外推定位 + 峰图逐 read 交接条带**：用户指出
   ①「无其他引物覆盖待核」与事实不符（只有覆盖边缘的引物才真有无法互检的
   位点）②每条引物应有自己单独的峰图。根因（①）：比对是 local 模式，read
