@@ -42,7 +42,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
 tests/                      后端 pytest（327 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（97 用例，src/frontend/tests）
+                            合成 ab1 生成器）+ 前端 vitest（98 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -102,6 +102,24 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 新增（2026-09-19）**覆盖简图定位带（标尺上方，A 轮三次）**：用户反馈
+  「引物多了都看不到参考序列了」，要一条 SnapGene 图二式的简图——每引物一行、
+  只画覆盖区段、标低置信与双峰范围、点击跳峰图。落地（融合 canvas 顶部，
+  刻度尺之上）：全部 read（不论是否勾选）按 reads 数组顺序各占一行 12px 细
+  方向箭头（覆盖区段，深=显示中/浅=未显示；ref_end<=0 的无对齐 read 跳过），
+  箭头内白字短文件名（放得下才画）；bar 上 clip 后画 ①两端 20bp 白色半透明
+  覆盖 = 末端不可信区（对齐后端 END_MARGIN 口径）②mixed_detail 逐位橙点
+  （read 坐标经 seqColsFor 按 origIdx===pos-1 映射参考 xu，密集时自然连成
+  「范围」）；轴上变异刻度块低置信改黄色（与红=中高置信区分）。点击简图带
+  （onSeqClick 按 y<ovH 分流）→ 反查 read 行号，未显示的 read 自动加入并
+  loadSeqTrace，refPos 按该 read 覆盖区钳制，scrollToRefPos + flash；无对齐
+  read 点击直接 return。布局整体下移 ovH=8+n*OV_ROW_H：刻度数字 y、网格线
+  起点、sel/flash 竖线起点全部改为相对 ovH/rulerH，seqWrapH 公式同步加简图
+  带高。验证：4 条合成 read（含 readF2 一处 A/G 0.55 双峰、反向 R2 与 R1/F2
+  交叠）本地栈目检——泳道/箭头方向/两端浅色/橙点(600)/黄刻度(250 低置信)
+  全部符合；简图点击 900 正确居中+flash+证据行；未勾选 read 点击自动勾选并
+  出峰图。注意：①点击测试需给 clientY（happy-dom 默认 0 落在简图带内）；
+  ②简图行号 = reads 数组下标（文件顺序，不按落点排序）。
 - 调整（2026-09-19）**融合面板 SnapGene 化重绘（A 轮二次）**：首版上线后用户
   对照 SnapGene 截图反馈「还是很鸡肋」。重做绘制层：每 read 块改为 头行（
   文件名/落点/Q，白底芯片防滚动遮挡）→ 碱基字母行（13px，错配加粗红字红底）

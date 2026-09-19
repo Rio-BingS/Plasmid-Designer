@@ -391,12 +391,41 @@ describe('SequencingPanel', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('点击任意列查看各 read 在该位的碱基/质量/双峰证据')
 
-    // col 5 → 参考位置 106（101+5）：x = 105.5 * 列宽 12
+    // col 5 → 参考位置 106（101+5）：x = 105.5 * 列宽 12；clientY 落在主区（顶部
+    // 覆盖简图带是独立点击区域，见覆盖简图跳转用例）
     vi.stubGlobal('requestAnimationFrame', () => 0)
-    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: Math.round(105.5 * 12) })
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: Math.round(105.5 * 12), clientY: 100 })
     const info = wrapper.find('.seqviz-info').text()
     expect(info).toContain('参考位置 106')
     expect(info).toContain('r1.ab1 G（Q12）')
+    vi.unstubAllGlobals()
+  })
+
+  it('coverage overview click jumps to the read and position, auto-showing it', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const reads = [
+      { ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() },
+      {
+        index: 1, filename: 'r2.ab1', raw_length: 500, trimmed_length: 480,
+        mean_q: 36, direction: '-', ref_start: 1000, ref_end: 1400,
+        identity: 0.99, mixed_positions: [],
+      } as SequencingAnalysis['reads'][number],
+    ]
+    const wrapper = mount(SequencingPanel, { props: { preset: { ...mockAnalysis, reads } } })
+    await flushPromises()
+    // 默认只显示首条 read
+    expect((wrapper.vm as any).visibleReads).toEqual([0])
+
+    // 覆盖简图带：2 条 read → 行 1 占 y∈[16,28)；x 取参考位置 ~1006（在 r2 覆盖内）
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: Math.round(1005.5 * 12), clientY: 20 })
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    // 未显示的 read 自动加入并加载峰图，视图跳到点击位置
+    expect((wrapper.vm as any).visibleReads).toEqual([0, 1])
+    expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 1)
+    expect(wrapper.find('.seqviz-info').text()).toContain('参考位置 1006')
     vi.unstubAllGlobals()
   })
 
