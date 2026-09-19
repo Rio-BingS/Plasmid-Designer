@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 from core.sanger.batch import _squash
 # 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
 # 网页、结论文本、整理包报告里说法一致，避免各写各的）
-from core.sanger.pipeline import _peak_verdict_phrase, _run_label
+from core.sanger.pipeline import END_MARGIN, _peak_verdict_phrase, _run_label
 
 ZIP_ROOT = "测序整理"
 
@@ -236,13 +236,20 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
         lines.append("")
     if record and record["reads"]:
         lines += ["## 测序 read 概况", "",
-                  "| 文件 | QC 等级 | 平均 Q | 有效长度 | 比对区段（参考坐标） |",
-                  "|---|---|---|---|---|"]
+                  "| 文件 | QC 等级 | 平均 Q | 有效长度 | 比对区段（参考坐标） | 末端不可信区（参考坐标） |",
+                  "|---|---|---|---|---|---|"]
         for r in record["reads"]:
             a = r["alignment"]
+            s, e = int(a["ref_start"]), int(a["ref_end"])
+            if e - s + 1 <= 2 * END_MARGIN:
+                zones = f"{s}–{e}（整段）"
+            else:
+                zones = f"{s}–{s + END_MARGIN - 1}、{e - END_MARGIN + 1}–{e}"
             lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
-                         f"| {a['ref_start']}–{a['ref_end']} |")
-        lines.append("")
+                         f"| {a['ref_start']}–{a['ref_end']} | {zones} |")
+        lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
+                  "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
+                  "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
     if regular_variants:
         lines += ["## 变异明细", "",
                   "| 位置 | 类型 | 变化 | 置信度 | 测序Q | 支持read数 | 峰级证据 | 所在特征 | 氨基酸变化 |",

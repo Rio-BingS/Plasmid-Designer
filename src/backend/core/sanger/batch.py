@@ -388,20 +388,42 @@ def main_sentence(verdict: str) -> str:
     return seg[1] if len(seg) > 1 else verdict
 
 
+def _count_range(ps: List[Dict]) -> str:
+    """read 间双峰位点数区间：相同只给一个数，不同给 min–max。"""
+    counts = sorted(p["count"] for p in ps)
+    return (str(counts[0]) if counts[0] == counts[-1]
+            else f"{counts[0]}–{counts[-1]}")
+
+
+def _frac_range(ps: List[Dict]) -> str:
+    """read 间次要克隆占比区间（minor_fraction = r/(1+r)），同 pipeline 口径。"""
+    fr = sorted(round(p["minor_fraction"] * 100) for p in ps
+                if p.get("minor_fraction"))
+    if not fr:
+        return ""
+    lo, hi = fr[0], fr[-1]
+    return f"约 {lo}%" if lo == hi else f"约 {lo}–{hi}%"
+
+
 def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
     """双峰（疑似混合）结论要素：返回 (尾部提示行, widespread 列表)
 
     widespread（≥5 个分散双峰位点或 ≥8 连续双峰段）= 疑似混合样品——整份
     判读存疑，不再自动给 合格/不合格；scattered（2-4 个位点）只是提示。
+    多条 read 全部 widespread 时聚合一条，不逐 read 复读。
     """
     profiles = (res or {}).get("mixed_profiles") or {}
     widespread = [(fn, p) for fn, p in profiles.items()
                   if p.get("class") == "widespread"]
     tails: List[str] = []
-    for fn, p in widespread:
-        pct = f"{round((p.get('median_ratio') or 0) * 100)}%"
-        tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰（次峰占比约 {pct}），"
-                     "建议重新挑单克隆复测")
+    if len(widespread) == 1:
+        fn, p = widespread[0]
+        tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰"
+                     "，建议重新挑单克隆复测")
+    elif widespread:
+        tails.append(f"疑似混合样品：{len(widespread)} 条 read 均检出双峰"
+                     f"（每条 {_count_range([p for _f, p in widespread])} 处）"
+                     "，建议重新挑单克隆复测")
     scattered = [(fn, p) for fn, p in profiles.items()
                  if p.get("class") == "scattered"]
     if scattered:
@@ -430,12 +452,16 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了），混合降为提示；
     # 否则疑似混合样品升级为结论主句——混合培养物无法自动判定
     if not bad and widespread:
-        parts = [f"{fn} 检出 {p['count']} 处双峰（次峰占比约 "
-                 f"{round((p.get('median_ratio') or 0) * 100)}%）"
-                 for fn, p in widespread[:2]]
-        if len(widespread) > 2:
-            parts.append(f"另有 {len(widespread) - 2} 个 read 检出双峰")
-        out = ("疑似混合：" + "；".join(parts)
+        if len(widespread) == 1:
+            fn, p = widespread[0]
+            parts = [f"{fn} 检出 {p['count']} 处双峰"]
+        else:
+            parts = [f"{len(widespread)} 条 read 均检出双峰"
+                     f"（每条 {_count_range([p for _f, p in widespread])} 处）"]
+        fr_txt = _frac_range([p for _f, p in widespread])
+        if fr_txt:
+            parts.append(f"估计次要克隆占比{fr_txt}")
+        out = ("疑似混合：" + "，".join(parts)
                + "，无法自动判定，建议重新挑单克隆划线培养后复测")
         if confirmed:
             out += f"；按主峰判读编码区蛋白与设计一致，另有 {len(confirmed)} 处确证差异（详见报告）"

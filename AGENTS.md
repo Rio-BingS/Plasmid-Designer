@@ -102,6 +102,24 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 调整（2026-09-19）**双峰结论聚合 + read 末端不可信区显式报告**：用户对照
+  17647 MUTPK 真实数据（5 条 read 全 widespread）反馈①read 箭头首尾的不可信
+  区结论里没提、②5 条「疑似混合样品」逐 read 长句内容多而表述不明。改造：
+  ①结论聚合（core/sanger/pipeline.py mixed_lines 重写）——多条 read 全
+  widespread 只出一条综合判读（「N 条 read 均疑似混合样品（每条双峰位点
+  min–max 处，估计次要克隆占比约 x–y%）——样品为两种质粒的混合…」，连续
+  双峰段只点名有该形态的 read；scattered 同样聚合），单 read 保持原逐条
+  文案；②口径收敛——结论行删去「次峰占比中位数」（两个百分比并列反而难
+  读），只留次要克隆占比（minor_fraction = r/(1+r)，报告双峰章节仍给原始
+  ratio）；③末端边界——双峰检测剔除 read 首尾 END_MARGIN(20)bp 的位点
+  （与变体置信度同一条边界，末端拖尾不再凭空触发「自位置 6 起连续双峰段」
+  这类误报，真实数据里该段正是末端噪声）；④末端不可信区显式呈现——结论
+  两分支各加一条 end_note（首尾约 20bp 信号爬升/下降区判读可信度低，具体
+  区间见报告 read 概况表），_group_report_md 的 read 概况表新增「末端不可信
+  区（参考坐标）」列（ref_start–ref_start+19、ref_end–19–ref_end；覆盖
+  ≤2×margin 时标「整段」）；⑤excel_conclusion/_mixed_tails（core/sanger/
+  batch.py）同步聚合口径（multi-read「N 条 read 均检出双峰（每条 min–max
+  处）」，新增 _count_range/_frac_range 小工具）。
 - 调整（2026-09-19）**poly 判读呈现整理（C2）**：用户确认「常规序列与 poly
   序列的分析分开呈现更好」后收窄落地两件事。①结论文本去重（core/sanger/
   pipeline.py 变异分支）：此前 poly 区 indel 变体在结论里出现两条 ↳ 行
