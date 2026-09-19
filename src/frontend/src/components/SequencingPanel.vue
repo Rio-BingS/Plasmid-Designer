@@ -206,10 +206,15 @@ let flashTimer: ReturnType<typeof setTimeout> | undefined
 const SEQ_TRACE_H = 120  // 峰图条带高（SnapGene 式大峰，塞满带内空间）
 const SEQ_ROW_H = 16     // 碱基字母行高
 const SEQ_HEAD_H = 14    // read 头行高（文件名/落点/Q，与碱基字母不重叠）
-const seqWrapH = computed(
-  // 末尾 18px 是水平滚动条补偿：wrap.clientHeight 不含滚动条，少算会把带底位号裁掉
-  () => 36 + visibleReads.value.length * (SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8) + 8 + 18
-)
+const OV_ROW_H = 12      // 顶部覆盖简图带每行高（每条引物一行细箭头，只画覆盖区段）
+const seqWrapH = computed(() => {
+  // 覆盖简图带(8 + 全部引物数×OV_ROW_H) + 刻度尺14 + 参考行16 + 间隔4 +
+  // 各显示 read 块 + 底部8；末尾 18px 是水平滚动条补偿：wrap.clientHeight
+  // 不含滚动条，少算会把带底位号裁掉
+  const nAll = analysis.value?.reads.length ?? 0
+  return 8 + nAll * OV_ROW_H + 36
+    + visibleReads.value.length * (SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8) + 8 + 18
+})
 const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
 
 interface SeqCol {
@@ -869,6 +874,23 @@ function onSeqClick(e: MouseEvent) {
   if (!wrap || !analysis.value) return
   const rect = wrap.getBoundingClientRect()
   const x = e.clientX - rect.left + seqScrollX
+  const y = e.clientY - rect.top
+  // 覆盖简图带：定位到点击的引物 + 位置（未显示的 read 自动加入并加载峰图）
+  const ovH = 8 + analysis.value.reads.length * OV_ROW_H
+  if (y < ovH) {
+    const ri = Math.floor((y - 4) / OV_ROW_H)
+    const read = analysis.value.reads[ri]
+    if (!read || read.ref_end <= 0) return   // 无对齐 read 没有可跳的落点
+    const refPos = Math.min(Math.max(Math.floor(x / seqColW.value) + 1, read.ref_start), read.ref_end)
+    if (!isReadVisible(ri)) {
+      visibleReads.value.push(ri)
+      loadSeqTrace(ri)
+    }
+    selRefPos.value = refPos
+    seqInfo.value = composeSeqInfo(refPos)
+    scrollToRefPos(refPos, true)
+    return
+  }
   const refPos = Math.floor(x / seqColW.value) + 1
   if (refPos < 1 || refPos > analysis.value.reference_length) return
   selRefPos.value = refPos
@@ -974,8 +996,67 @@ function drawSeq() {
   const colW = seqColW.value
   const uLeft = seqScrollX / colW
   const uRight = (seqScrollX + w) / colW
-  const rulerH = 14
+  // 顶部覆盖简图带：每条引物一行（标尺上方），引物再多也不把参考行挤出视野
+  const ovH = 8 + a.reads.length * OV_ROW_H
+  const rulerH = ovH + 14
   const refRowY = rulerH + 2
+
+  // 0) 覆盖简图定位带（SnapGene 式）：每条引物一行方向箭头，只画覆盖区段；
+  //    橙点 = 双峰位点，两端浅色 = 末端约 20bp 信号爬升/下降不可信区。
+  //    点击任意行跳到对应列（read 未显示时自动加入），见 onSeqClick
+  const ovBarH = OV_ROW_H - 3
+  for (let i = 0; i < a.reads.length; i++) {
+    const read = a.reads[i]
+    if (read.ref_end <= 0) continue   // 无对齐数据的 read 没有落点，不画
+    const y = 4 + i * OV_ROW_H
+    const x1 = seqX(read.ref_start - 1)
+    const x2 = seqX(read.ref_end)
+    if (x2 < -4 || x1 > w + 4) continue
+    const bw = Math.max(x2 - x1, 4)
+    const vis = isReadVisible(i)
+    const fwd = read.direction !== '-'
+    const head = Math.min(9, bw * 0.3)
+    // 箭头路径：覆盖区段 + 方向尖
+    ctx.beginPath()
+    if (fwd) {
+      ctx.moveTo(x1, y); ctx.lineTo(x1 + bw - head, y); ctx.lineTo(x1 + bw, y + ovBarH / 2)
+      ctx.lineTo(x1 + bw - head, y + ovBarH); ctx.lineTo(x1, y + ovBarH)
+    } else {
+      ctx.moveTo(x1 + bw, y); ctx.lineTo(x1 + head, y); ctx.lineTo(x1, y + ovBarH / 2)
+      ctx.lineTo(x1 + head, y + ovBarH); ctx.lineTo(x1 + bw, y + ovBarH)
+    }
+    ctx.closePath()
+    ctx.fillStyle = vis ? 'rgba(176,58,46,0.85)' : 'rgba(176,58,46,0.32)'
+    ctx.fill()
+    ctx.save()
+    ctx.clip()
+    // 两端不可信区（后端 END_MARGIN=20bp：信号爬升/下降段判读不可靠）
+    const UNTRUST = 20
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'
+    const eL = seqX(read.ref_start - 1 + UNTRUST)
+    if (eL > x1) ctx.fillRect(x1, y, eL - x1, ovBarH)
+    const eR = seqX(read.ref_end - UNTRUST)
+    if (eR < x1 + bw) ctx.fillRect(eR, y, x1 + bw - eR, ovBarH)
+    // 双峰位点（read 坐标 → 参考坐标），密集时自然连成"范围"
+    ctx.fillStyle = '#F5A623'
+    const ocols = seqColsFor(i)
+    if (ocols) {
+      for (const d of read.mixed_detail || []) {
+        const c = ocols.find((cc) => cc.origIdx === d.pos - 1)
+        if (!c || c.ref === '-') continue
+        const x = seqX(c.xu)
+        if (x >= x1 - 2 && x <= x1 + bw + 2) ctx.fillRect(x - 1, y, 2, ovBarH)
+      }
+    }
+    ctx.restore()
+    // 名字（放得下才画；全名见上方复选框列表）
+    if (bw >= 64) {
+      ctx.font = '8px Arial'
+      ctx.textAlign = 'left'
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'
+      ctx.fillText(shortName(read.filename), Math.max(2, x1 + 3), y + ovBarH - 2, bw - head - 6)
+    }
+  }
 
   // 1) 刻度尺 + 纵向网格线
   const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
@@ -985,7 +1066,7 @@ function drawSeq() {
   for (let p = Math.max(1, Math.ceil(uLeft / step) * step); p <= uRight; p += step) {
     const x = seqX(p - 0.5)
     ctx.fillStyle = '#999'
-    ctx.fillText(p >= 10000 ? `${Math.round(p / 1000)}k` : String(p), x, 10)
+    ctx.fillText(p >= 10000 ? `${Math.round(p / 1000)}k` : String(p), x, rulerH - 4)
     ctx.strokeStyle = '#F0F0F0'
     ctx.beginPath()
     ctx.moveTo(x, rulerH)
@@ -1016,11 +1097,13 @@ function drawSeq() {
       if (x > -colW && x < w + colW) ctx.fillText(b, x, refRowY + 13)
     }
   }
-  // 轴上变异红块（与匹配简图同语义）
-  ctx.fillStyle = '#D0342C'
+  // 轴上变异刻度块（与匹配简图同语义；低置信差异用黄色区分）
   for (const v of a.variants) {
     const x = seqX(v.ref_pos - 0.5)
-    if (x > -4 && x < w + 4) ctx.fillRect(x - 2, refRowY - 3, 4, 3)
+    if (x > -4 && x < w + 4) {
+      ctx.fillStyle = v.confidence === 'low' ? '#E6A700' : '#D0342C'
+      ctx.fillRect(x - 2, refRowY - 3, 4, 3)
+    }
   }
 
   // 3) 各 read 块（SnapGene 式）：头行（文件名/落点/Q）→ 碱基字母行 → 大峰图带
@@ -1532,7 +1615,7 @@ async function downloadConsensus(format: string) {
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
       <div class="seqviz-box" v-if="analysis.reads.length">
         <div class="trace-toolbar">
-          <h4 class="section-title">比对峰图<span class="map-sub">（横轴 = 参考坐标；红底 = 差异，橙底 = 双峰位点，点击列看证据，Ctrl+滚轮缩放）</span></h4>
+          <h4 class="section-title">比对峰图<span class="map-sub">（横轴 = 参考坐标；顶部覆盖简图：每引物一行，橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异，点击简图任意位置跳转；红底 = 差异，橙底 = 双峰位点，Ctrl+滚轮缩放）</span></h4>
           <div class="seqviz-controls">
             <label v-for="r in analysis.reads" :key="r.index" class="seqviz-pick">
               <input type="checkbox" :checked="isReadVisible(r.index)" @change="toggleRead(r.index)" />{{ r.direction === '-' ? '←' : '→' }} {{ shortName(r.filename) }}
@@ -1551,7 +1634,7 @@ async function downloadConsensus(format: string) {
           <canvas ref="seqCanvas" class="seqviz-canvas"></canvas>
         </div>
         <p v-if="seqInfo" class="seqviz-info">{{ seqInfo }}</p>
-        <p v-else class="hint">点击任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与简图红块可跳到对应位置</p>
+        <p v-else class="hint">点击覆盖简图任意位置可跳到该引物的峰图对应处；点击任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与简图红块可跳到对应位置</p>
       </div>
 
       <!-- 解卷积结果 -->
