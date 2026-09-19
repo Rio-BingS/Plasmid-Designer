@@ -114,9 +114,13 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   前端 conclusionParts 新增 mixed 折叠组（isMixedDetail = ↳ 开头且含「双峰」，
   poly 判读/dropout 的 ↳ 行不含该词不受牵连），默认收起带展开钮，退历史
   回看时随 showLowConf 一起复位；②SequencingPanel 匹配简图标题栏新增
-  「特征去重」开关（dedupMapFeats，默认关=按文件原样显示）：开启后同名
-  同向且位置重叠的特征合并为一条（span 取并集），位置不重叠的同名特征
-  （如两处 3 UTR）不受影响——仅影响图谱显示，不改 features 数据与变异注释；
+  「特征去重」开关（dedupMapFeats，默认关=按文件原样显示）：开启后同名且
+  位置重叠或相邻（f.start − hit.end ≤ DEDUP_GAP_BP=50，方向不敏感——首版
+  要求"同向且重叠"，用户实测不起作用：厂商重复注释常为邻接不相交或标在
+  两条链上）合并为一条（end 取并集），相距远的同名特征（如两端两个
+  3 UTR）不受影响——仅影响图谱显示，不改 features 数据与变异注释；开启后
+  标题旁显示「已合并 N 条重复注释」（N=0 即图里没有满足条件的同名邻近
+  注释，本身是诊断信息）；
   ③整理包报告双峰章节「位点（前10个）」列改为「位点范围（read 坐标）」
   （_pos_ranges_str，前 10 段）。
 - 调整（2026-09-19）**双峰结论聚合 + read 末端不可信区显式报告**：用户对照

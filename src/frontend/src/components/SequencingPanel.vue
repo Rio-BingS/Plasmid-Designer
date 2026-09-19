@@ -553,7 +553,10 @@ interface MapFeat {
 
 /** 参考特征（彩色块状箭头；名字放不下时引线外置到下方标签道）。
  *  去重开关（默认关=按文件原样显示）：图谱文件里常见同名注释标了多条
- *  （如重复的 miscellaneous / 5 UTR），开启后同名同向且位置重叠的合并为一条 */
+ *  （如成对的 5 UTR / 邻接拼接的 miscellaneous），开启后同名且位置重叠
+ *  或相邻（≤50bp）的合并为一条；方向不敏感（同一元件常被标在两条链上）。
+ *  相距远的同名特征（如分布在两端的两个 3 UTR）不合并 */
+const DEDUP_GAP_BP = 50
 const dedupMapFeats = ref(false)
 const mapFeats = computed<MapFeat[]>(() => {
   const a = analysis.value
@@ -562,11 +565,11 @@ const mapFeats = computed<MapFeat[]>(() => {
   if (dedupMapFeats.value) {
     const merged: typeof feats = []
     for (const f of feats) {
+      // 按 start 升序扫描：f.start ≥ hit.start 恒成立，只需扩右端；
+      // f.start − hit.end ≤ 阈值 同时覆盖重叠（负数）与邻接（0/1）情形
       const hit = merged.find((m) => m.name === f.name
-        && (m.strand || '+') === (f.strand || '+')
-        && f.start <= m.end && m.start <= f.end)
+        && f.start - m.end <= DEDUP_GAP_BP)
       if (hit) {
-        hit.start = Math.min(hit.start, f.start)
         hit.end = Math.max(hit.end, f.end)
       } else {
         merged.push({ ...f })
@@ -602,6 +605,11 @@ const mapFeats = computed<MapFeat[]>(() => {
   })
 })
 
+/** 开启去重后实际合并掉的注释条数（0 = 图里没有满足合并条件的同名邻近注释） */
+const dedupMergedCount = computed(() => {
+  if (!dedupMapFeats.value || !analysis.value?.features?.length) return 0
+  return analysis.value.features.length - mapFeats.value.length
+})
 const featLaneCount = computed(() => mapFeats.value.reduce((m, f) => Math.max(m, f.lane + 1), 0))
 const labelLaneCount = computed(() =>
   mapFeats.value.reduce((m, f) => Math.max(m, f.labelInside ? 0 : f.labelLane + 1), 0))
@@ -1051,9 +1059,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
       <div class="map-box" v-if="analysis.reads.length">
         <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span>
           <label class="map-dedup-toggle"
-                 title="图谱文件里同名且位置重叠的重复注释合并为一条显示（如重复的 miscellaneous / 5 UTR）；默认按文件原样显示">
+                 title="图谱文件里同名且位置重叠或相邻（≤50bp）的重复注释合并为一条显示（如成对的 5 UTR、邻接的 miscellaneous），方向不敏感；相距远的同名特征不受影响；默认按文件原样显示">
             <input type="checkbox" v-model="dedupMapFeats" /> 特征去重
           </label>
+          <span v-if="dedupMergedCount > 0" class="map-sub">已合并 {{ dedupMergedCount }} 条重复注释</span>
         </h4>
         <svg class="map-svg" :viewBox="`0 0 ${MAP_W} ${mapHeight}`" preserveAspectRatio="xMidYMid meet" role="img">
           <!-- 刻度网格线 -->
