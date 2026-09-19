@@ -1677,6 +1677,31 @@ def test_mixed_cross_read_corroboration_downgrades_noise():
     assert "疑似混合样品" in result2["conclusion"]
 
 
+def test_mixed_overhang_sites_cross_checked_by_approx_position():
+    """局部比对在 read 端部留悬空（poly-A 区两端尤其常见）时，悬空段的
+    双峰位点按比对块两端锚点线性外推定位参考坐标，再正常参与互检——
+    不再一律"无其他引物覆盖待核"（用户实测：待核位点实际有邻居覆盖）。
+    反向 read + 原始 read 头部 100bp 悬空 junk：块内位点精确映射、悬空
+    位点外推，一个落在邻居覆盖内（clean）、一个落在覆盖外（待核带 ref）"""
+    random.seed(11)
+    ref = "".join(random.choice("ACGT") for _ in range(1000))
+    rng = random.Random(9)
+    junk_head = "".join(rng.choice("ACGT") for _ in range(100))
+    comp = str.maketrans("ACGT", "TGCA")
+    read_bases = junk_head + ref[149:500].translate(comp)[::-1]
+    sec_of = lambda i: "A" if read_bases[i] != "A" else "G"
+    mix = {29: sec_of(29), 139: sec_of(139)}   # pos30 悬空→外推571；pos140 块内→461
+    result = analyze([("rev.ab1", _mixed_ab1(read_bases, mix)),
+                      ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [])
+    chk = result["mixed_corroboration"]["by_read"]["rev.ab1"]
+    assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
+    assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
+    assert chk["uncovered_ref"] == [571]   # 悬空位点外推到邻居覆盖之外
+    # 待核短语带参考位置，用户可直接对照图谱核对"这个位置真的没人测过吗"
+    assert "无其他引物覆盖待核（参考位置 571）" in result["conclusion"]
+    assert "无法互检（参考位置 571）" in result["conclusion"]
+
+
 def test_mixed_multi_read_aggregated_conclusion():
     """多条 read 全部 widespread：结论聚合成一条综合判读（逐 read 复读把
     "重新挑克隆"这个唯一建议淹没），只保留次要克隆占比一个百分比口径；
