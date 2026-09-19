@@ -42,7 +42,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
 tests/                      后端 pytest（327 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（98 用例，src/frontend/tests）
+                            合成 ab1 生成器）+ 前端 vitest（99 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -100,8 +100,26 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
   （conftest.py 会重新注入正确路径）
 
-## 当前状态（2026-09-19）
+## 当前状态（2026-09-20）
 
+- 重构（2026-09-20）**覆盖简图全景化 + 主区弃逐 read 块改紧凑行（A 轮四次）**：
+  用户否定首版简图（随窗口滚动的 12px 行，放大后只剩一条 bar「一点变化都没有」），
+  要求 图二全景常驻 + 视野内引物着重 + 选中着重/放大 + 图三式交接（不再往下排）。
+  落地：①简图改固定整参考宽度（ovX = bp/refLen*w，不随 seqScrollX 移动），
+  ovLayoutFor(laneCount) 统一简图/seqWrapH 两处布局数字；泳道=按 ref_start 贪心
+  装箱（ovLanes computed，无对齐 read laneOf=-1 不上图），箭头内居中印名字，
+  下沿加覆盖并集绿条+变异刻度（低置信黄）；主视图当前窗口投影为蓝框（fillRect
+  +strokeRect 覆盖简图整体高度），视野相交的引物 0.85/0.5 alpha、窗口外 0.42/0.24。
+  ②主区：各 read 从 158px 整块（头行+字母+120px 峰图）改为 16px 紧凑字母行
+  （左侧固定白底名字芯片，滚动也知道每行是谁；非选中 read 字母 #666 弱化），
+  峰图只画一条（traceReadIdx：selectedReadIdx 优先、回退最后勾选），带左上
+  「峰图：xxx」芯片标归属，直接交接在字母行下方——5 read 面板从 ~870px 降到
+  ~350px，参考行始终可见。③交互汇聚到 selectedReadIdx：点简图箭头=selectRead
+  （自动勾选+colW 缩放到恰好容纳该 read 覆盖区+scrollToRefPos 中点居中+flash），
+  点简图空白=仅跳转（命中判定：x→refPos 反映射后在该泳道找覆盖者，±1bp 容差
+  取最近）；点字母行=切峰图；toggleRead 勾选即选中、取消选中的 read 回退最后
+  一条仍显示的；jumpToVariant/openReadInSeqviz 同步选中目标 read。坑：全景
+  x→refPos 反解用 wrap.clientWidth（happy-dom 恒 0，测试里回落 1000 才可断言）。
 - 新增（2026-09-19）**覆盖简图定位带（标尺上方，A 轮三次）**：用户反馈
   「引物多了都看不到参考序列了」，要一条 SnapGene 图二式的简图——每引物一行、
   只画覆盖区段、标低置信与双峰范围、点击跳峰图。落地（融合 canvas 顶部，
