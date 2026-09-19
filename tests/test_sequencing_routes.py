@@ -139,3 +139,72 @@ def test_analyze_unknown_design(client):
         files={"files": ("r.ab1", blob, "application/octet-stream")},
     )
     assert resp.status_code == 404
+
+
+# ==================== 分析记录属主校验 ====================
+
+def _ensure_user(email: str, is_admin: bool = False):
+    """在真实开发库 get_or_create 测试用户（固定邮箱可重复运行）"""
+    from app.database import SessionLocal
+    from app.database.crud import create_user, get_user_by_email
+    from app.auth.jwt_auth import hash_password
+
+    db = SessionLocal()
+    try:
+        u = get_user_by_email(db, email)
+        if u is None:
+            u = create_user(db, email=email, username=email.split("@")[0],
+                            hashed_password=hash_password("password123"),
+                            is_admin=is_admin, email_verified=True)
+            db.commit()
+            db.refresh(u)
+        return u
+    finally:
+        db.close()
+
+
+def _login_header(client, email: str, password: str = "password123"):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def test_analysis_record_ownership(client):
+    """分析记录绑定创建者：非创建者读/导出/删除一律 403，列表看不到；
+    管理员全可见；创建者本人不受影响（无属主的匿名遗留记录保持公开）"""
+    ua = _ensure_user("owner-a@test.com")
+    ub = _ensure_user("owner-b@test.com")
+    admin = _ensure_user("owner-admin@test.com", is_admin=True)
+    ha, hb, hadm = (_login_header(client, u.email) for u in (ua, ub, admin))
+
+    ref = ("ref.fasta", b">ref\n" + b"ATG" * 40, "text/plain")
+    blob = make_ab1("ATG" * 40, [40] * 120)
+    ra = client.post("/api/sequencing/analyze",
+                     files={"reference": ref, "reads": ("r1.ab1", blob, "application/octet-stream")},
+                     headers=ha)
+    assert ra.status_code == 200, ra.text
+    aid = ra.json()["analysis_id"]
+
+    # B：详情/峰图/导出/删除全部 403，列表里看不到 A 的记录
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=hb).status_code == 403
+    assert client.get(f"/api/sequencing/analyses/{aid}/trace/0", headers=hb).status_code == 403
+    assert client.get(f"/api/sequencing/analyses/{aid}/consensus/export", headers=hb).status_code == 403
+    assert client.delete(f"/api/sequencing/analyses/{aid}", headers=hb).status_code == 403
+    assert all(x["analysis_id"] != aid
+               for x in client.get("/api/sequencing/analyses", headers=hb).json())
+
+    # 管理员可见；A 本人可见、列表可见、可删
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=hadm).status_code == 200
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 200
+    assert any(x["analysis_id"] == aid
+               for x in client.get("/api/sequencing/analyses", headers=ha).json())
+    assert client.delete(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 200
+
+    # 匿名创建的记录无属主 → 保持公开（历史行为，匿名分析本来无法归属）
+    blob2 = make_ab1("AAG" * 40, [40] * 120)
+    r2 = client.post("/api/sequencing/analyze",
+                     files={"reference": ref, "reads": ("r2.ab1", blob2, "application/octet-stream")})
+    assert r2.status_code == 200
+    aid2 = r2.json()["analysis_id"]
+    assert client.get(f"/api/sequencing/analyses/{aid2}", headers=ha).status_code == 200
+    client.delete(f"/api/sequencing/analyses/{aid2}")

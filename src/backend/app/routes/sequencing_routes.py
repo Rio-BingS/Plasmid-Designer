@@ -49,6 +49,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
 from zipfile import BadZipFile
 
+from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
 from app.gating import require_feature
 from app.sequencing_report import backfill_excel, build_batch_zip
@@ -88,11 +89,22 @@ def _sweep_expired() -> None:
         del _BATCHES[bid]
 
 
-def _get_analysis(analysis_id: str) -> Dict:
+def _can_access(record: Dict, user: Optional[User]) -> bool:
+    """分析记录属主校验：管理员全可见；创建者可见；无属主记录（匿名创建或
+    属主改造前遗留）保持公开——匿名分析本来就没法归属"""
+    owner = record.get("owner_id")
+    if owner is None:
+        return True
+    return user is not None and (user.id == owner or user.is_admin)
+
+
+def _get_analysis(analysis_id: str, user: Optional[User] = None) -> Dict:
     _sweep_expired()
     result = _ANALYSES.get(analysis_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if not _can_access(result, user):
+        raise HTTPException(status_code=403, detail="无权访问该分析记录")
     return result
 
 
@@ -166,7 +178,8 @@ def _run_full_analysis(
     return result
 
 
-def _register_analysis(sample_name: str, reference: str, features: List[Dict], result: Dict) -> str:
+def _register_analysis(sample_name: str, reference: str, features: List[Dict], result: Dict,
+                       owner_id: Optional[str] = None) -> str:
     """把一次完整分析写入内存存储（单样品与批量共用），返回 analysis_id
 
     批量克隆模式一次可产生上百条记录：分析记录本体（变体/共识/比对）很小，
@@ -183,6 +196,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         "features": features,
         "created_at": datetime.now().isoformat(),
         "_created_ts": time.time(),
+        "owner_id": owner_id,
         **result,
     }
     # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
@@ -208,6 +222,7 @@ async def _analyze_endpoint(
     files: List[UploadFile],
     min_q: int,
     allow_decompose: bool,
+    user: Optional[User] = None,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
@@ -217,7 +232,8 @@ async def _analyze_endpoint(
         _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose
     )
 
-    analysis_id = _register_analysis(sample_name, reference, features, result)
+    analysis_id = _register_analysis(sample_name, reference, features, result,
+                                     owner_id=user.id if user else None)
     return _summary(_ANALYSES[analysis_id])
 
 
@@ -230,6 +246,7 @@ async def analyze_sequencing_upload(
     reads: List[UploadFile] = File(..., description="一个或多个 .ab1 测序文件"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
+    user: Optional[User] = Depends(get_current_user),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
 
@@ -249,7 +266,8 @@ async def analyze_sequencing_upload(
         raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
 
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
-    return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q, allow_decompose)
+    return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
+                                   allow_decompose, user=user)
 
 
 # ---------------------------------------------------------------- 批量分析（独立入口）
@@ -303,7 +321,7 @@ def _group_batch_uploads(
 
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
-    ignored: List[str], min_q: int,
+    ignored: List[str], min_q: int, owner_id: Optional[str] = None,
 ) -> Tuple[Dict, List[Dict], List[Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -382,7 +400,9 @@ def _run_batch(
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 res = analyze(ab1s, ref_seq, features, min_q=min_q)
-                item["analysis_id"] = _register_analysis(label, ref_seq, features, res)
+                item["analysis_id"] = _register_analysis(
+                    label, ref_seq, features, res,
+                    owner_id=owner_id)
                 item["reference_length"] = len(ref_seq)
                 confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
                 item["variant_count"] = len(confirmed)
@@ -430,6 +450,7 @@ async def analyze_sequencing_batch(
     files: List[UploadFile] = File(..., description="测序结果文件：.ab1 与参考图谱（.dna/.gb/.fasta 等），可多质粒混在一起"),
     excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果，可含克隆号列）；缺省时按图谱文件名包含关系归组"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
+    user: Optional[User] = Depends(get_current_user),
 ):
     """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
 
@@ -492,7 +513,8 @@ async def analyze_sequencing_batch(
         excel_pack = (excel.filename or "信息表.xlsx", excel_bytes, wb, cols, excel_rows)
 
     payload, groups, raw_unmatched = await run_in_threadpool(
-        _run_batch, reads, refs, excel_rows, ignored, min_q)
+        _run_batch, reads, refs, excel_rows, ignored, min_q,
+        owner_id=user.id if user else None)
 
     # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
     # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）；
@@ -558,6 +580,7 @@ async def analyze_design_sequencing(
     files: List[UploadFile] = File(..., description="一个或多个 .ab1 文件"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
+    user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对设计结果（构建体序列）做全自动测序验证"""
     from app.routes.design_routes import _load
@@ -572,7 +595,7 @@ async def analyze_design_sequencing(
     reference = result.construct_sequence or result.optimized_sequence or ""
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
-        list(result.construct_features or []), files, min_q, allow_decompose,
+        list(result.construct_features or []), files, min_q, allow_decompose, user=user,
     )
 
 
@@ -585,6 +608,7 @@ async def analyze_vector_sequencing(
     files: List[UploadFile] = File(...),
     min_q: int = Form(default=20, ge=0, le=60),
     allow_decompose: bool = Form(default=True),
+    user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对载体库中有序列的载体做全自动测序验证"""
     library = get_vector_library()
@@ -598,15 +622,18 @@ async def analyze_vector_sequencing(
         for e in vector.elements
     ]
     return await _analyze_endpoint(
-        vector.sequence, vector.name, features, files, min_q, allow_decompose,
+        vector.sequence, vector.name, features, files, min_q, allow_decompose, user=user,
     )
 
 
 @router.get("/sequencing/analyses")
-async def list_analyses():
-    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细；记录 15 分钟后自动删除）"""
+async def list_analyses(user: Optional[User] = Depends(get_current_user)):
+    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细；记录 15 分钟后自动删除）。
+
+    属主校验：只返回自己创建的（管理员全可见；无属主的匿名遗留记录公开）"""
     _sweep_expired()
-    items = sorted(_ANALYSES.values(), key=lambda r: r["created_at"], reverse=True)
+    items = sorted((r for r in _ANALYSES.values() if _can_access(r, user)),
+                   key=lambda r: r["created_at"], reverse=True)
     return [
         {
             "analysis_id": r["analysis_id"],
@@ -624,15 +651,16 @@ async def list_analyses():
 
 
 @router.get("/sequencing/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str):
-    """获取分析结果（不含峰图原始数据）"""
-    return _summary(_get_analysis(analysis_id))
+async def get_analysis(analysis_id: str, user: Optional[User] = Depends(get_current_user)):
+    """获取分析结果（不含峰图原始数据；非创建者且非管理员返回 403）"""
+    return _summary(_get_analysis(analysis_id, user))
 
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")
-async def get_read_trace(analysis_id: str, read_index: int):
+async def get_read_trace(analysis_id: str, read_index: int,
+                         user: Optional[User] = Depends(get_current_user)):
     """获取单条 read 的峰图数据（四通道 + 碱基 + 质量值 + 峰位置）"""
-    record = _get_analysis(analysis_id)
+    record = _get_analysis(analysis_id, user)
     trace_data = record.get("_trace_data", {})
     if not trace_data:
         raise HTTPException(status_code=404,
@@ -643,9 +671,10 @@ async def get_read_trace(analysis_id: str, read_index: int):
 
 
 @router.get("/sequencing/analyses/{analysis_id}/consensus/export")
-async def export_consensus(analysis_id: str, format: str = "fasta"):
+async def export_consensus(analysis_id: str, format: str = "fasta",
+                           user: Optional[User] = Depends(get_current_user)):
     """导出拼接结果（共识序列，FASTA / GenBank）"""
-    record = _get_analysis(analysis_id)
+    record = _get_analysis(analysis_id, user)
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
@@ -681,8 +710,8 @@ async def export_consensus(analysis_id: str, format: str = "fasta"):
 
 
 @router.delete("/sequencing/analyses/{analysis_id}")
-async def delete_analysis(analysis_id: str):
-    _get_analysis(analysis_id)
+async def delete_analysis(analysis_id: str, user: Optional[User] = Depends(get_current_user)):
+    _get_analysis(analysis_id, user)
     del _ANALYSES[analysis_id]
     return {"deleted": True, "analysis_id": analysis_id}
 
