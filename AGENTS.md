@@ -102,6 +102,25 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 调整（2026-09-20）**双峰位点跨引物互检 + 结论措辞优化**：用户指出 20bp
+  首尾不可信区是拍脑袋的固定值，实际信号不稳区以引物首端为主，且"另一条
+  引物测过去基本就没问题"——结论应体现多引物对比。落地（pipeline.py）：
+  ①_read_ref_maps 基于 alignment_view 建每条 read 的 read↔ref 双向映射
+  （反向 read 的原始电泳坐标 = n-qi，与 aligner 镜像同式；插入列无 ref 不入表）；
+  ②_corroborate_mixed 把每处 mixed_detail 位点映射到参考坐标后分三类——
+  其他引物同报双峰（倾向真实混合）/ 其他引物覆盖且峰形单一、判读一致、
+  Q≥20（倾向该 read 自身噪声）/ 无其他引物覆盖（无法互检），结果挂在
+  result["mixed_corroboration"]（by_read + multi_sites + 汇总数）；
+  ③结论措辞按互检改写：唯一 widespread 且无同报、多数位点复核一致 →
+  主句降级为"更倾向该 read 自身信号问题（信号不稳区以引物首端为主）而非
+  真实混合"，不再建议重新挑克隆；逐 read ↳ 行追加"互检：X 同报/Y 峰形
+  一致/Z 无覆盖"；新增"双峰位点跨引物互检"汇总 ↳ 行（多条引物同报的
+  参考位置 = 真实混合最强信号，列出位置）；end_note 补"首端最明显、
+  互检覆盖即可采信"。④batch._mixed_tails 同口径：唯一 widespread 噪声型
+  不再升级"疑似混合"主句，降为尾部提示（批量归档不再误入 无法判定/）。
+  注意：mixed_corroboration 在 API _summary 里未透传（前端暂不需要），
+  批量口径用的是内部 result dict；单条 read 分析无从互检，全部互检措辞
+  有 len(read_results)>=2 守卫。
 - 重构（2026-09-20）**覆盖简图全景化 + 主区弃逐 read 块改紧凑行（A 轮四次）**：
   用户否定首版简图（随窗口滚动的 12px 行，放大后只剩一条 bar「一点变化都没有」），
   要求 图二全景常驻 + 视野内引物着重 + 选中着重/放大 + 图三式交接（不再往下排）。

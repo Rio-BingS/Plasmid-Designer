@@ -1579,7 +1579,7 @@ def test_mixed_sample_widespread_end_to_end():
     # 逐 read 位点范围子行（前端默认折叠）：给具体范围供核对首尾；
     # 孤立位点超过 6 段时截断并注明总段数
     assert ("↳ m.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段"
-            "（read 坐标；首尾 20bp 不可信区未计入）") in result["conclusion"]
+            "（read 坐标；首尾 20bp 信号爬升/下降区未计入）") in result["conclusion"]
     assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
     # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
     from core.sanger.batch import excel_conclusion
@@ -1649,6 +1649,34 @@ def test_mixed_contiguous_stretch_widespread():
     assert "连续双峰段" in result["conclusion"]
 
 
+def test_mixed_cross_read_corroboration_downgrades_noise():
+    """跨引物互检：混合 read 的双峰位点全部被另一条干净引物覆盖且峰形
+    单一、判读一致 → 措辞降级为"倾向该 read 信号问题"而非疑似混合样品
+    （用户视角：另一条引物测过基本就没问题，结论要体现多引物对比）"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    result = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
+                      ("clean.ab1", _mixed_ab1(ref, {}))], ref, [])
+    # 分级本身不变（widespread 由该 read 位点数决定），但结论措辞按互检改写
+    assert result["mixed_profiles"]["mx.ab1"]["class"] == "widespread"
+    assert "疑似混合样品" not in result["conclusion"]
+    assert "跨引物互检：多数双峰位点被其他引物测过且峰形单一" in result["conclusion"]
+    assert "更倾向该 read 自身信号问题" in result["conclusion"]
+    assert "倾向真实混合" not in result["conclusion"]
+    chk = result["mixed_corroboration"]["by_read"]["mx.ab1"]
+    assert chk["clean"] == 8 and chk["multi"] == 0 and chk["uncovered"] == 0
+    # 批量一句话结论同口径：不升级"疑似混合"主句，降为尾部提示
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 2, True)
+    assert not out.startswith("疑似混合")
+    assert "倾向该 read 信号噪声" in out
+    # 反例：干净引物不覆盖（换个短 read 只测前 100bp）→ 维持疑似混合措辞
+    result2 = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
+                       ("short.ab1", _mixed_ab1(ref[:100], {}))], ref, [])
+    assert "疑似混合样品" in result2["conclusion"]
+
+
 def test_mixed_multi_read_aggregated_conclusion():
     """多条 read 全部 widespread：结论聚合成一条综合判读（逐 read 复读把
     "重新挑克隆"这个唯一建议淹没），只保留次要克隆占比一个百分比口径；
@@ -1666,12 +1694,23 @@ def test_mixed_multi_read_aggregated_conclusion():
     assert "估计次要克隆占比" in lines[0]
     assert "次峰占比中位数" not in lines[0]
     assert "重新挑单克隆" in lines[0]
-    # 聚合行下仍逐 read 给位点范围子行（前端默认折叠）
+    # 聚合行下仍逐 read 给位点范围子行 + 跨引物互检汇总（前端默认折叠）
     detail = [x for x in result["conclusion"].splitlines()
               if x.strip().startswith("↳") and "双峰" in x]
-    assert len(detail) == 2
+    assert len(detail) == 3
     assert ("↳ a.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段") in detail[0]
     assert "↳ b.ab1：双峰 5 处，位于 read 81、131、201、261、331" in detail[1]
+    # 互检：a 的 5 个位点 b 也同报双峰、3 个位点被 b 峰形单一覆盖；b 全部同报
+    assert "互检：5 处其他引物同报双峰" in detail[0] and "3 处其他引物覆盖且峰形单一" in detail[0]
+    assert "互检：5 处其他引物同报双峰" in detail[1]
+    # 汇总行：同报双峰的参考位置是真实混合的最强信号
+    assert "双峰位点跨引物互检：5 处参考位点被多条引物同报双峰（参考位置" in detail[2]
+    assert "倾向真实混合" in detail[2]
+    # 结构化字段：互检汇总随结果下发（批量口径复用）
+    chk = result["mixed_corroboration"]
+    assert chk["by_read"]["a.ab1"]["multi"] == 5 and chk["by_read"]["a.ab1"]["clean"] == 3
+    assert chk["by_read"]["b.ab1"]["multi"] == 5 and chk["by_read"]["b.ab1"]["clean"] == 0
+    assert [rp for rp, _fs in chk["multi_sites"]] == [81, 131, 201, 261, 331]
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 2, True)
     assert out.startswith("疑似混合：")
