@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（331 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（332 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（100 用例，src/frontend/tests）
 ```
