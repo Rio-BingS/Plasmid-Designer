@@ -418,9 +418,10 @@ describe('SequencingPanel', () => {
     expect((wrapper.vm as any).visibleReads).toEqual([0])
     expect((wrapper.vm as any).selectedReadIdx).toBe(0)
 
-    // 简图为全景固定比例：x=240/1000 → 参考位置 1200（r2 覆盖 1000-1400，
-    // 两条 read 不重叠同泳道）；点击箭头 = 选中该引物并放大到其覆盖区
-    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 240, clientY: 15 })
+    // 简图域 = 引物覆盖区（r1 100-580 + r2 1000-1400，2% 边距 → 73–1426）：
+    // x=833/1000 → 参考位置 ≈1200（r2 覆盖内，两条 read 不重叠同泳道）；
+    // 点击箭头 = 选中该引物并跳到其起点（长 read 不再硬塞一屏）
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 833, clientY: 15 })
     await flushPromises()
     await wrapper.vm.$nextTick()
 
