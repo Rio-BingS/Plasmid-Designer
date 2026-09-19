@@ -1428,10 +1428,15 @@ def analyze(
                                  "ref_end": run["end"], **drop})
         r["slippage_positions"] = sorted(slip)
         r["post_poly_dropouts"] = dropouts
+        n_trim = len(r["trimmed_bases"])
         mixed_detail = [
             e for e in _detect_mixed_detail(
                 r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
             if e["pos"] not in slip
+            # read 首尾 END_MARGIN bp 是信号爬升/下降区，次级峰不可信——
+            # 与变体置信度同一条边界（末端差异本就需多 read 支持才升级），
+            # 否则末端拖尾会凭空触发"连续双峰段"误报
+            and END_MARGIN < e["pos"] <= n_trim - END_MARGIN
         ]
         r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
         # read 级混合分级：把逐位双峰聚合成 可行动 的判定（widespread=疑似
@@ -1695,28 +1700,70 @@ def analyze(
     # 双峰（疑似混合样品）结论行：read 级分级后给可行动的提示。
     # 混合样品影响整份判读（主峰序列只是多数克隆），必须显式写出——此前
     # mixed_positions 只进结构化字段，结论与报告完全不可见，混合样品会被
-    # 报成"与设计一致"
+    # 报成"与设计一致"。多条 read 全部 widespread 时聚合成一条综合判读
+    # （逐 read 明细在报告双峰章节），否则 N 条近似长句把关键建议淹没
     mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
                       if r["mixed_profile"]["count"] > 0}
     mixed_lines: List[str] = []
-    for r in read_results:
-        p = r["mixed_profile"]
-        if p["class"] == "widespread":
-            pct = f"{round((p['median_ratio'] or 0) * 100)}%"
-            frac = p.get("minor_fraction")
-            frac_txt = f"，估计次要克隆占比约 {round(frac * 100)}%" if frac else ""
-            line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
-                    f"（次峰占比中位数 {pct}{frac_txt}），主峰序列按多数碱基判读——"
-                    "建议重新挑单克隆划线培养后复测")
-            if p["longest_stretch"] >= MIXED_STRETCH_MIN:
-                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
-                         "（两个克隆相差插入/缺失时的典型形态）")
-            mixed_lines.append(line)
-        elif p["class"] == "scattered":
-            pos_preview = "、".join(str(x) for x in p["positions"][:6])
-            mixed_lines.append(
-                f"⚠ {r['filename']} 有 {p['count']} 个双峰位点（位置 {pos_preview}）："
-                "可能为个别碱基噪声或低比例混合，建议核对峰图")
+
+    def _frac_range(ps: List[Dict]) -> str:
+        fr = sorted(round(p["minor_fraction"] * 100) for p in ps
+                    if p.get("minor_fraction"))
+        if not fr:
+            return ""
+        lo, hi = fr[0], fr[-1]
+        return f"约 {lo}%" if lo == hi else f"约 {lo}–{hi}%"
+
+    wide = [(r, r["mixed_profile"]) for r in read_results
+            if r["mixed_profile"]["class"] == "widespread"]
+    if len(wide) == 1:
+        r, p = wide[0]
+        frac_txt = _frac_range([p])
+        line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
+                + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
+                + "，主峰序列按多数碱基判读——建议重新挑单克隆划线培养后复测")
+        if p["longest_stretch"] >= MIXED_STRETCH_MIN:
+            line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
+                     "（两个克隆相差插入/缺失时的典型形态）")
+        mixed_lines.append(line)
+    elif wide:
+        counts = sorted(p["count"] for _r, p in wide)
+        cr = (str(counts[0]) if counts[0] == counts[-1]
+              else f"{counts[0]}–{counts[-1]}")
+        frac_txt = _frac_range([p for _r, p in wide])
+        line = (f"⚠ {len(wide)} 条 read 均疑似混合样品（每条双峰位点 {cr} 处"
+                + (f"，估计次要克隆占比{frac_txt}" if frac_txt else "")
+                + "）——样品为两种质粒的混合，主峰序列按多数碱基判读，"
+                "建议重新挑单克隆划线培养后复测")
+        stretchy = [r["filename"] for r, p in wide
+                    if p["longest_stretch"] >= MIXED_STRETCH_MIN and p.get("span")]
+        if stretchy:
+            names = "、".join(stretchy[:2])
+            line += f"；{names} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
+        mixed_lines.append(line)
+    scat = [(r, r["mixed_profile"]) for r in read_results
+            if r["mixed_profile"]["class"] == "scattered"]
+    if len(scat) == 1:
+        r, p = scat[0]
+        pos_preview = "、".join(str(x) for x in p["positions"][:6])
+        mixed_lines.append(
+            f"⚠ {r['filename']} 有 {p['count']} 个双峰位点（位置 {pos_preview}）："
+            "可能为个别碱基噪声或低比例混合，建议核对峰图")
+    elif scat:
+        n_pos = sum(p["count"] for _r, p in scat)
+        names = "、".join(r["filename"] for r, _p in scat[:2])
+        more = f" 等 {len(scat)} 条 read" if len(scat) > 2 else ""
+        mixed_lines.append(
+            f"⚠ {names}{more} 共有 {n_pos} 个双峰位点："
+            "可能为个别碱基噪声或低比例混合，建议核对峰图")
+
+    # read 末端不可信区显式提示：首尾 END_MARGIN bp 是信号爬升/下降段，
+    # 该区差异仅低置信处理还不够——用户常把 read 首尾当可靠证据核对
+    end_note = (
+        f"注意：每条 read 首尾约 {END_MARGIN}bp 为信号爬升/下降区，碱基判读"
+        "可信度低（该区差异已按低置信处理，各 read 的具体不可信区见报告"
+        "「read 概况」表；如需确认末端，建议换引物从对侧覆盖）"
+    )
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
     cds_lines = [
@@ -1738,7 +1785,8 @@ def analyze(
             if e["tier"] == "poly" and not e["count_reliable"]
         ]
         # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
-        all_lines = [conclusion] + mixed_lines + cds_lines + poly_warnings + dropout_notes
+        all_lines = ([conclusion] + mixed_lines + cds_lines + poly_warnings
+                     + dropout_notes + [end_note])
         conclusion = "\n".join(x for x in all_lines if x)
     else:
         lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
@@ -1798,6 +1846,7 @@ def analyze(
                 "——峰压缩区，以峰图可分辨峰为准，建议人工核对峰图"
             )
         lines.extend(dropout_notes)
+        lines.append(end_note)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""
             if coverage_gaps:

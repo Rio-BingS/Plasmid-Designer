@@ -1608,6 +1608,45 @@ def test_mixed_contiguous_stretch_widespread():
     assert "连续双峰段" in result["conclusion"]
 
 
+def test_mixed_multi_read_aggregated_conclusion():
+    """多条 read 全部 widespread：结论聚合成一条综合判读（逐 read 复读把
+    "重新挑克隆"这个唯一建议淹没），只保留次要克隆占比一个百分比口径；
+    批量一句话结论同样聚合"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    full = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    part = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330)}
+    result = analyze([("a.ab1", _mixed_ab1(ref, full)),
+                      ("b.ab1", _mixed_ab1(ref, part))], ref, [])
+    lines = [x for x in result["conclusion"].splitlines() if "疑似混合" in x]
+    assert len(lines) == 1
+    assert "2 条 read 均疑似混合样品" in lines[0]
+    assert "每条双峰位点 5–8 处" in lines[0]
+    assert "估计次要克隆占比" in lines[0]
+    assert "次峰占比中位数" not in lines[0]
+    assert "重新挑单克隆" in lines[0]
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 2, True)
+    assert out.startswith("疑似混合：")
+    assert "2 条 read 均检出双峰（每条 5–8 处）" in out
+    assert "估计次要克隆占比" in out
+
+
+def test_mixed_end_margin_positions_ignored():
+    """read 首尾 END_MARGIN bp 的次级峰是信号爬升/下降噪声：不进双峰分级，
+    否则末端拖尾会凭空触发"疑似混合/连续双峰段"（与变体置信度同一条边界）"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {10: _ALT_OF[ref[10]], 590: _ALT_OF[ref[590]],
+             80: _ALT_OF[ref[80]], 130: _ALT_OF[ref[130]],
+             200: _ALT_OF[ref[200]], 260: _ALT_OF[ref[260]],
+             330: _ALT_OF[ref[330]]}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["m.ab1"]
+    assert prof["count"] == 5
+    assert prof["positions"] == [81, 131, 201, 261, 331]
+
+
 def test_n_call_variants_always_low_confidence():
     """N/模糊调用恒低置信：basecaller 拿不准才给 N，Q 再高也不是"与参考不同"的证据"""
     v = {"ref_pos": 100, "type": "substitution", "ref_base": "A", "alt_base": "N",

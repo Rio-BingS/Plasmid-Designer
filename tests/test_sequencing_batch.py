@@ -677,3 +677,31 @@ def test_group_report_poly_section_and_variant_split():
     assert "8→5" in md                                     # 重复数（参考→测得）
     main = md.split("## 变异明细")[1]
     assert "A>G" in main and "缺失" not in main            # 常规表只剩替换
+
+
+def test_group_report_read_end_margin_zones():
+    """整理包报告：read 概况表显式给出每条 read 首尾不可信区的参考坐标——
+    此前该区只在内部降级变体，用户对照图谱上 read 箭头首尾时无据可依"""
+    from app.sequencing_report import _group_report_md
+    record = {
+        "engine": "internal+biopython", "reference": "A" * 600, "features": [],
+        "reads": [
+            {"filename": "T1.ab1", "grade": "A", "mean_q": 40,
+             "trimmed_length": 600,
+             "alignment": {"ref_start": 1, "ref_end": 600, "direction": "+"},
+             "mixed_profile": {"count": 0, "class": "none"}},
+            {"filename": "T2.ab1", "grade": "B", "mean_q": 33,
+             "trimmed_length": 60,
+             "alignment": {"ref_start": 101, "ref_end": 130, "direction": "-"},
+             "mixed_profile": {"count": 0, "class": "none"}},
+        ],
+        "errors": [], "consensus": {"coverage_percent": 100.0},
+        "cds_reports": [], "variants": [], "homopolymers": [],
+    }
+    item = {"plasmid": "MX", "clone": None, "conclusion": "合格：与设计一致",
+            "reference_name": "MX.fasta"}
+    md = _group_report_md(item, record, [])
+    assert "末端不可信区（参考坐标）" in md
+    assert "| 1–20、581–600 |" in md       # 正常长度：首尾各 20bp 两段
+    assert "| 101–130（整段） |" in md      # 覆盖 ≤ 2×margin：整段标注
+    assert "信号爬升/下降段" in md
