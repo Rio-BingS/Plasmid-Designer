@@ -287,7 +287,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         elif "/design" in path:
             return "design"
         elif "/sequencing" in path:
-            # 测序分析上传大文件（.ab1/参考图谱），按 upload 档限流
+            # 上传（.ab1/参考图谱 analyze）按 upload 档限流；只读 GET
+            # （分析详情/trace 峰图等）走 default 档——峰图带叠加一次要拉
+            # 多条 trace，不能烧 upload 的 20 次/小时配额
+            if request.method in ("GET", "HEAD", "OPTIONS"):
+                return "default"
             return "upload"
         elif "/upload" in path or "/import" in path:
             return "upload"
