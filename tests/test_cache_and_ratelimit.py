@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, Request
@@ -75,6 +76,23 @@ class TestUserRateLimitActivation:
     def test_anonymous_request_uses_ip_quota(self, mini_client):
         resp = mini_client.get("/ping")
         assert resp.headers["X-RateLimit-Limit"] == "100"  # default
+
+
+class TestSequencingEndpointTier:
+    """峰图带叠加一次要拉多条 trace（GET 只读）：走 default 档而非 upload
+    20 次/小时，否则勾几条 read 就把上传配额烧光、峰图全部 429。"""
+
+    def _type(self, method, path):
+        mw = RateLimitMiddleware(app=None)
+        req = SimpleNamespace(url=SimpleNamespace(path=path), method=method)
+        return mw._get_endpoint_type(req)
+
+    def test_get_trace_and_analysis_are_default_tier(self):
+        assert self._type("GET", "/api/sequencing/analyses/seq_x/trace/0") == "default"
+        assert self._type("GET", "/api/sequencing/analyses/seq_x") == "default"
+
+    def test_post_analyze_stays_upload_tier(self):
+        assert self._type("POST", "/api/sequencing/analyze") == "upload"
 
 
 # ==================== 缓存业务接线 ====================
