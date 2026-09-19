@@ -389,7 +389,7 @@ describe('SequencingPanel', () => {
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await flushPromises()
-    expect(wrapper.text()).toContain('点击任意列查看各 read 在该位的碱基/质量/双峰证据')
+    expect(wrapper.text()).toContain('点任意列查看各 read 在该位的碱基/质量/双峰证据')
 
     // col 5 → 参考位置 106（101+5）：x = 105.5 * 列宽 12；clientY 落在主区（顶部
     // 覆盖简图带是独立点击区域，见覆盖简图跳转用例）
@@ -401,7 +401,7 @@ describe('SequencingPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('coverage overview click jumps to the read and position, auto-showing it', async () => {
+  it('overview arrow click selects the read, auto-shows it and zooms to its range', async () => {
     vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
     vi.stubGlobal('requestAnimationFrame', () => 0)
     const reads = [
@@ -416,16 +416,44 @@ describe('SequencingPanel', () => {
     await flushPromises()
     // 默认只显示首条 read
     expect((wrapper.vm as any).visibleReads).toEqual([0])
+    expect((wrapper.vm as any).selectedReadIdx).toBe(0)
 
-    // 覆盖简图带：2 条 read → 行 1 占 y∈[16,28)；x 取参考位置 ~1006（在 r2 覆盖内）
-    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: Math.round(1005.5 * 12), clientY: 20 })
+    // 简图为全景固定比例：x=240/1000 → 参考位置 1200（r2 覆盖 1000-1400，
+    // 两条 read 不重叠同泳道）；点击箭头 = 选中该引物并放大到其覆盖区
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 240, clientY: 15 })
     await flushPromises()
     await wrapper.vm.$nextTick()
 
-    // 未显示的 read 自动加入并加载峰图，视图跳到点击位置
     expect((wrapper.vm as any).visibleReads).toEqual([0, 1])
+    expect((wrapper.vm as any).selectedReadIdx).toBe(1)
     expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 1)
-    expect(wrapper.find('.seqviz-info').text()).toContain('参考位置 1006')
+    expect(wrapper.find('.seqviz-info').text()).toContain('已选中 r2.ab1')
+    vi.unstubAllGlobals()
+  })
+
+  it('clicking a read letter row switches the trace band to that read', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const reads = [
+      { ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() },
+      {
+        index: 1, filename: 'r2.ab1', raw_length: 500, trimmed_length: 480,
+        mean_q: 36, direction: '-', ref_start: 1000, ref_end: 1400,
+        identity: 0.99, mixed_positions: [],
+      } as SequencingAnalysis['reads'][number],
+    ]
+    const wrapper = mount(SequencingPanel, { props: { preset: { ...mockAnalysis, reads } } })
+    await flushPromises()
+
+    // 勾选第二条 → 峰图切到它
+    await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(true)
+    await flushPromises()
+    expect((wrapper.vm as any).selectedReadIdx).toBe(1)
+
+    // 点第一条 read 的字母行（简图 ovH=42 + 尺 14 + 参考行 16 + 4 → 字母行 78-94）
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 600, clientY: 86 })
+    await flushPromises()
+    expect((wrapper.vm as any).selectedReadIdx).toBe(0)
     vi.unstubAllGlobals()
   })
 

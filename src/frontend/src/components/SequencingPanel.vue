@@ -166,6 +166,7 @@ async function runAnalysis() {
     resetSeqViz()
     if (analysis.value.reads.length) {
       visibleReads.value = [analysis.value.reads[0].index]
+      selectedReadIdx.value = 0
       loadSeqTrace(analysis.value.reads[0].index)
     }
     emit('analyzed', analysis.value)
@@ -205,17 +206,44 @@ let flashTimer: ReturnType<typeof setTimeout> | undefined
 
 const SEQ_TRACE_H = 120  // 峰图条带高（SnapGene 式大峰，塞满带内空间）
 const SEQ_ROW_H = 16     // 碱基字母行高
-const SEQ_HEAD_H = 14    // read 头行高（文件名/落点/Q，与碱基字母不重叠）
-const OV_ROW_H = 12      // 顶部覆盖简图带每行高（每条引物一行细箭头，只画覆盖区段）
+const OV_ARROW_H = 18    // 覆盖简图每条引物箭头高
+const OV_LANE_GAP = 4    // 覆盖简图泳道间隔
+/** 覆盖简图布局（简图固定整参考宽度，不随横向滚动移动；seqWrapH 与 drawSeq 共用一套数字） */
+function ovLayoutFor(laneCount: number) {
+  const arrowBlock = 6 + laneCount * (OV_ARROW_H + OV_LANE_GAP)
+  return { arrowBlock, ovCovY: arrowBlock + 6, ovH: arrowBlock + 6 + 8 }
+}
+// 泳道分配：按落点起点贪心装箱，同泳道内 read 互不重叠（与匹配简图同思路）
+const ovLanes = computed(() => {
+  const reads = analysis.value?.reads ?? []
+  const lanes: number[][] = []
+  const laneOf: number[] = reads.map(() => -1)
+  const order = reads.map((_, i) => i).sort((x, y) => reads[x].ref_start - reads[y].ref_start)
+  for (const i of order) {
+    const r = reads[i]
+    if (r.ref_end <= 0) continue   // 无对齐 read 没有落点，不上图
+    let placed = false
+    for (let l = 0; l < lanes.length; l++) {
+      if (lanes[l].every((j) => reads[j].ref_end < r.ref_start)) { lanes[l].push(i); laneOf[i] = l; placed = true; break }
+    }
+    if (!placed) { lanes.push([i]); laneOf[i] = lanes.length - 1 }
+  }
+  return { lanes, laneOf }
+})
+const ovLaneCount = computed(() => Math.max(1, ovLanes.value.lanes.length))
 const seqWrapH = computed(() => {
-  // 覆盖简图带(8 + 全部引物数×OV_ROW_H) + 刻度尺14 + 参考行16 + 间隔4 +
-  // 各显示 read 块 + 底部8；末尾 18px 是水平滚动条补偿：wrap.clientHeight
-  // 不含滚动条，少算会把带底位号裁掉
-  const nAll = analysis.value?.reads.length ?? 0
-  return 8 + nAll * OV_ROW_H + 36
-    + visibleReads.value.length * (SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8) + 8 + 18
+  // 覆盖简图带 + 刻度尺14 + 参考行16 + 间隔4 + 各显示 read 紧凑字母行 +
+  // 单条峰图带（选中 read）+ 底部8；末尾 18px 是水平滚动条补偿：
+  // wrap.clientHeight 不含滚动条，少算会把带底位号裁掉
+  const { ovH } = ovLayoutFor(ovLaneCount.value)
+  const nVis = visibleReads.value.length
+  return ovH + 14 + 16 + 4 + nVis * SEQ_ROW_H + 6
+    + (nVis > 0 ? SEQ_TRACE_H + 14 : 26) + 8 + 18
 })
 const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
+
+// 当前峰图带展示哪条 read（简图/字母行/复选框点选都汇聚到这里）
+const selectedReadIdx = ref<number | null>(null)
 
 interface SeqCol {
   ref: string
@@ -290,6 +318,7 @@ function resetSeqViz() {
   traceCache.value = {}
   selRefPos.value = null
   flashRefPos.value = null
+  selectedReadIdx.value = null
   seqInfo.value = ''
   jumpInput.value = ''
   seqColW.value = 12
@@ -703,7 +732,10 @@ watch(() => props.preset, (p) => {
     errorMsg.value = ''
     resetSeqViz()
     visibleReads.value = p.reads.length ? [0] : []
-    if (p.reads.length) loadSeqTrace(0)
+    if (p.reads.length) {
+      selectedReadIdx.value = 0
+      loadSeqTrace(0)
+    }
   } else {
     // 退出历史回看：清空上次注入的分析状态，避免面板残留旧结果造成误读
     analysis.value = null
@@ -743,10 +775,16 @@ async function toggleRead(ri: number) {
   const i = visibleReads.value.indexOf(ri)
   if (i >= 0) {
     visibleReads.value.splice(i, 1)
+    // 取消的是当前峰图 read → 回退到最后一条仍显示的
+    if (selectedReadIdx.value === ri) {
+      selectedReadIdx.value = visibleReads.value.length
+        ? visibleReads.value[visibleReads.value.length - 1] : null
+    }
     nextSeqDraw()
     return
   }
   visibleReads.value.push(ri)
+  selectedReadIdx.value = ri
   await loadSeqTrace(ri)
   nextSeqDraw()
   // SnapGene 习惯：勾选一条 read 即看到它的落点——只有当它不覆盖当前窗口时才跳
@@ -796,6 +834,7 @@ async function jumpToVariant(v: SequencingVariant) {
     visibleReads.value.push(read.index)
     await nextTick()
   }
+  selectedReadIdx.value = read.index   // 峰图条带切到支持该差异的 read
   await loadSeqTrace(read.index)
   selRefPos.value = v.ref_pos
   seqInfo.value = composeSeqInfo(v.ref_pos)
@@ -810,8 +849,37 @@ function openReadInSeqviz(i: number) {
     visibleReads.value.push(i)
     loadSeqTrace(i)
   }
+  selectedReadIdx.value = i
   seqBox.value?.scrollIntoView?.({ block: 'nearest' })
   scrollToRefPos(read.ref_start)
+}
+
+/** 简图点选引物：峰图切到该 read，未显示的自动加入；
+ *  zoom=true 时把主视图缩放到恰好容纳该 read 的覆盖区并居中（放大效果） */
+async function selectRead(ri: number, zoom = false) {
+  const read = analysis.value?.reads[ri]
+  if (!read || read.ref_end <= 0) return
+  const first = selectedReadIdx.value !== ri
+  selectedReadIdx.value = ri
+  if (!isReadVisible(ri)) {
+    visibleReads.value.push(ri)
+    loadSeqTrace(ri)
+  }
+  seqInfo.value = `已选中 ${shortName(read.filename)}（${read.direction === '-' ? '←' : '→'} ${read.ref_start}–${read.ref_end} · Q${read.mean_q}）${first ? '，峰图条带已切换到该引物' : ''}`
+  const wrap = seqBox.value
+  if (zoom && wrap && wrap.clientWidth > 0) {
+    const span = Math.max(1, read.ref_end - read.ref_start + 1)
+    const nu = Math.max(1, Math.min(28, Math.round(((wrap.clientWidth - 24) / span) * 100) / 100))
+    if (nu !== seqColW.value) seqColW.value = nu
+    scrollToRefPos((read.ref_start + read.ref_end) / 2, true)
+  }
+  nextSeqDraw()
+}
+
+/** 峰图带展示的 read：优先选中项，未选中时回退最后勾选的一条 */
+function traceReadIdx(): number | null {
+  if (selectedReadIdx.value != null && isReadVisible(selectedReadIdx.value)) return selectedReadIdx.value
+  return visibleReads.value.length ? visibleReads.value[visibleReads.value.length - 1] : null
 }
 
 function jumpToRefPos() {
@@ -871,28 +939,53 @@ function seqFit() {
 
 function onSeqClick(e: MouseEvent) {
   const wrap = seqBox.value
-  if (!wrap || !analysis.value) return
+  const a = analysis.value
+  if (!wrap || !a) return
   const rect = wrap.getBoundingClientRect()
-  const x = e.clientX - rect.left + seqScrollX
   const y = e.clientY - rect.top
-  // 覆盖简图带：定位到点击的引物 + 位置（未显示的 read 自动加入并加载峰图）
-  const ovH = 8 + analysis.value.reads.length * OV_ROW_H
+  const { ovH } = ovLayoutFor(ovLaneCount.value)
+
   if (y < ovH) {
-    const ri = Math.floor((y - 4) / OV_ROW_H)
-    const read = analysis.value.reads[ri]
-    if (!read || read.ref_end <= 0) return   // 无对齐 read 没有可跳的落点
-    const refPos = Math.min(Math.max(Math.floor(x / seqColW.value) + 1, read.ref_start), read.ref_end)
-    if (!isReadVisible(ri)) {
-      visibleReads.value.push(ri)
-      loadSeqTrace(ri)
+    // 覆盖简图（全景固定比例，不随滚动移动）：x 直接映射回参考位置
+    const cw = wrap.clientWidth > 0 ? wrap.clientWidth : 1000
+    const xLocal = e.clientX - rect.left
+    const refPos = Math.min(Math.max(1, Math.ceil((xLocal / cw) * a.reference_length)), a.reference_length)
+    const { lanes } = ovLanes.value
+    const lane = Math.floor((y - 6) / (OV_ARROW_H + OV_LANE_GAP))
+    // 命中该泳道内覆盖此位置的引物 → 选中并放大到其覆盖区；没命中 → 仅跳转
+    let hit = -1
+    if (lane >= 0 && lane < lanes.length) {
+      let best = Infinity
+      for (const i of lanes[lane]) {
+        const r = a.reads[i]
+        if (refPos < r.ref_start - 1 || refPos > r.ref_end + 1) continue
+        const d = refPos < r.ref_start ? r.ref_start - refPos : refPos > r.ref_end ? refPos - r.ref_end : 0
+        if (d < best) { best = d; hit = i }
+      }
     }
-    selRefPos.value = refPos
-    seqInfo.value = composeSeqInfo(refPos)
-    scrollToRefPos(refPos, true)
+    if (hit >= 0) {
+      selectRead(hit, true)
+    } else {
+      selRefPos.value = refPos
+      seqInfo.value = composeSeqInfo(refPos)
+      scrollToRefPos(refPos, true)
+    }
     return
   }
+
+  // 主区：点在字母行上 → 峰图切到该 read；列点选证据逻辑不变
+  const lettersTop = ovH + 14 + 2 + SEQ_ROW_H + 4
+  const rowN = Math.floor((y - lettersTop) / SEQ_ROW_H)
+  if (rowN >= 0 && rowN < visibleReads.value.length) {
+    const ri = visibleReads.value[rowN]
+    if (selectedReadIdx.value !== ri) {
+      selectedReadIdx.value = ri
+      nextSeqDraw()
+    }
+  }
+  const x = e.clientX - rect.left + seqScrollX
   const refPos = Math.floor(x / seqColW.value) + 1
-  if (refPos < 1 || refPos > analysis.value.reference_length) return
+  if (refPos < 1 || refPos > a.reference_length) return
   selRefPos.value = refPos
   seqInfo.value = composeSeqInfo(refPos)
   nextSeqDraw()
@@ -996,47 +1089,65 @@ function drawSeq() {
   const colW = seqColW.value
   const uLeft = seqScrollX / colW
   const uRight = (seqScrollX + w) / colW
-  // 顶部覆盖简图带：每条引物一行（标尺上方），引物再多也不把参考行挤出视野
-  const ovH = 8 + a.reads.length * OV_ROW_H
+  // 顶部覆盖简图（全景定位条）：固定整参考宽度、不随横向滚动移动，
+  // 引物再多/放大多少倍都完整可见（SnapGene 图二式）
+  const { ovCovY, ovH } = ovLayoutFor(ovLaneCount.value)
   const rulerH = ovH + 14
   const refRowY = rulerH + 2
+  const refLen = a.reference_length
+  const ovX = (bp: number) => (bp / refLen) * w
+  const sel = selectedReadIdx.value
 
-  // 0) 覆盖简图定位带（SnapGene 式）：每条引物一行方向箭头，只画覆盖区段；
-  //    橙点 = 双峰位点，两端浅色 = 末端约 20bp 信号爬升/下降不可信区。
-  //    点击任意行跳到对应列（read 未显示时自动加入），见 onSeqClick
-  const ovBarH = OV_ROW_H - 3
+  // 0a) 覆盖并集绿条 + 轴线 + 变异刻度（低置信黄），与匹配简图同语义
+  ctx.fillStyle = '#E2E2E2'
+  ctx.fillRect(0, ovCovY + 2, w, 1)
+  ctx.fillStyle = 'rgba(46,158,68,0.75)'
+  for (const [s, e] of a.coverage_ranges ?? []) {
+    ctx.fillRect(ovX(s - 1), ovCovY, Math.max(1, ovX(e) - ovX(s - 1)), 5)
+  }
+  for (const v of a.variants) {
+    ctx.fillStyle = v.confidence === 'low' ? '#E6A700' : '#D0342C'
+    ctx.fillRect(ovX(v.ref_pos - 0.5) - 1, ovCovY, 2, 5)
+  }
+
+  // 0b) 泳道箭头：当前视野覆盖到的引物着重，选中引物满色加边框并微微加高
+  const UNTRUST = 20
   for (let i = 0; i < a.reads.length; i++) {
     const read = a.reads[i]
-    if (read.ref_end <= 0) continue   // 无对齐数据的 read 没有落点，不画
-    const y = 4 + i * OV_ROW_H
-    const x1 = seqX(read.ref_start - 1)
-    const x2 = seqX(read.ref_end)
-    if (x2 < -4 || x1 > w + 4) continue
+    const lane = ovLanes.value.laneOf[i]
+    if (lane < 0) continue   // 无对齐 read 没有落点，不上图
+    const isSel = sel === i
+    const y = 6 + lane * (OV_ARROW_H + OV_LANE_GAP) + (isSel ? -1 : 0)
+    const ah = OV_ARROW_H + (isSel ? 2 : 0)
+    const x1 = ovX(read.ref_start - 1)
+    const x2 = ovX(read.ref_end)
     const bw = Math.max(x2 - x1, 4)
+    const inView = read.ref_end >= uLeft && read.ref_start <= uRight
     const vis = isReadVisible(i)
     const fwd = read.direction !== '-'
-    const head = Math.min(9, bw * 0.3)
-    // 箭头路径：覆盖区段 + 方向尖
+    const head = Math.min(14, Math.max(7, bw * 0.12))
     ctx.beginPath()
     if (fwd) {
-      ctx.moveTo(x1, y); ctx.lineTo(x1 + bw - head, y); ctx.lineTo(x1 + bw, y + ovBarH / 2)
-      ctx.lineTo(x1 + bw - head, y + ovBarH); ctx.lineTo(x1, y + ovBarH)
+      ctx.moveTo(x1, y); ctx.lineTo(x1 + bw - head, y); ctx.lineTo(x1 + bw, y + ah / 2)
+      ctx.lineTo(x1 + bw - head, y + ah); ctx.lineTo(x1, y + ah)
     } else {
-      ctx.moveTo(x1 + bw, y); ctx.lineTo(x1 + head, y); ctx.lineTo(x1, y + ovBarH / 2)
-      ctx.lineTo(x1 + head, y + ovBarH); ctx.lineTo(x1 + bw, y + ovBarH)
+      ctx.moveTo(x1 + bw, y); ctx.lineTo(x1 + head, y); ctx.lineTo(x1, y + ah / 2)
+      ctx.lineTo(x1 + head, y + ah); ctx.lineTo(x1 + bw, y + ah)
     }
     ctx.closePath()
-    ctx.fillStyle = vis ? 'rgba(176,58,46,0.85)' : 'rgba(176,58,46,0.32)'
+    ctx.fillStyle = isSel ? '#B03A2E'
+      : vis ? (inView ? 'rgba(176,58,46,0.85)' : 'rgba(176,58,46,0.5)')
+      : (inView ? 'rgba(176,58,46,0.42)' : 'rgba(176,58,46,0.24)')
     ctx.fill()
+    if (isSel) { ctx.strokeStyle = '#6E2018'; ctx.lineWidth = 1.5; ctx.stroke() }
     ctx.save()
     ctx.clip()
     // 两端不可信区（后端 END_MARGIN=20bp：信号爬升/下降段判读不可靠）
-    const UNTRUST = 20
     ctx.fillStyle = 'rgba(255,255,255,0.45)'
-    const eL = seqX(read.ref_start - 1 + UNTRUST)
-    if (eL > x1) ctx.fillRect(x1, y, eL - x1, ovBarH)
-    const eR = seqX(read.ref_end - UNTRUST)
-    if (eR < x1 + bw) ctx.fillRect(eR, y, x1 + bw - eR, ovBarH)
+    const eL = ovX(read.ref_start - 1 + UNTRUST)
+    if (eL > x1) ctx.fillRect(x1, y, eL - x1, ah)
+    const eR = ovX(read.ref_end - UNTRUST)
+    if (eR < x1 + bw) ctx.fillRect(eR, y, x1 + bw - eR, ah)
     // 双峰位点（read 坐标 → 参考坐标），密集时自然连成"范围"
     ctx.fillStyle = '#F5A623'
     const ocols = seqColsFor(i)
@@ -1044,21 +1155,30 @@ function drawSeq() {
       for (const d of read.mixed_detail || []) {
         const c = ocols.find((cc) => cc.origIdx === d.pos - 1)
         if (!c || c.ref === '-') continue
-        const x = seqX(c.xu)
-        if (x >= x1 - 2 && x <= x1 + bw + 2) ctx.fillRect(x - 1, y, 2, ovBarH)
+        const x = ovX(c.xu)
+        if (x >= x1 - 2 && x <= x1 + bw + 2) ctx.fillRect(x - 1, y, 2, ah)
       }
     }
     ctx.restore()
-    // 名字（放得下才画；全名见上方复选框列表）
-    if (bw >= 64) {
-      ctx.font = '8px Arial'
-      ctx.textAlign = 'left'
-      ctx.fillStyle = 'rgba(255,255,255,0.92)'
-      ctx.fillText(shortName(read.filename), Math.max(2, x1 + 3), y + ovBarH - 2, bw - head - 6)
+    // 名字居中印在箭头内（放得下才画）
+    if (bw >= 44) {
+      ctx.font = '9px Arial'
+      ctx.textAlign = 'center'
+      ctx.fillStyle = 'rgba(255,255,255,0.95)'
+      ctx.fillText(shortName(read.filename), (x1 + x2) / 2, y + ah - 6, bw - head - 8)
     }
   }
 
-  // 1) 刻度尺 + 纵向网格线
+  // 0c) 主视图当前窗口在简图上的投影（蓝框）
+  const vx1 = ovX(Math.max(0, uLeft))
+  const vx2 = ovX(Math.min(refLen, uRight))
+  ctx.fillStyle = 'rgba(36,86,200,0.10)'
+  ctx.fillRect(vx1, 2, Math.max(3, vx2 - vx1), ovH - 4)
+  ctx.strokeStyle = 'rgba(36,86,200,0.5)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(vx1 + 0.5, 2.5, Math.max(3, vx2 - vx1) - 1, ovH - 5)
+
+  // 1) 刻度尺 + 纵向网格线（主视图坐标，从简图下沿开始）
   const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   const step = steps.find((s) => s * colW >= 60) ?? 10000
   ctx.font = '9px Arial'
@@ -1106,145 +1226,170 @@ function drawSeq() {
     }
   }
 
-  // 3) 各 read 块（SnapGene 式）：头行（文件名/落点/Q）→ 碱基字母行 → 大峰图带
-  const blockH = SEQ_HEAD_H + SEQ_ROW_H + SEQ_TRACE_H + 8
+  // 3) 各 read 紧凑字母行（不再逐 read 整块下排；峰图只画一条，见 4）
+  const lettersTop = refRowY + SEQ_ROW_H + 4
+  const lettersBottom = lettersTop + visibleReads.value.length * SEQ_ROW_H
+  if (colW >= 8) {
+    ctx.strokeStyle = '#F2F2F2'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let p = Math.ceil(uLeft); p <= Math.floor(uRight); p++) {
+      const x = seqX(p - 0.5)
+      ctx.moveTo(x, lettersTop)
+      ctx.lineTo(x, lettersBottom)
+    }
+    ctx.stroke()
+  }
   visibleReads.value.forEach((ri, rowN) => {
     const read = a.reads[ri]
-    const cols = seqColsFor(ri)
-    const blockY = refRowY + SEQ_ROW_H + 4 + rowN * blockH
-    const baseY = blockY + SEQ_HEAD_H          // 碱基字母行顶
-    const traceTop = baseY + SEQ_ROW_H + 2     // 峰图带顶
-    const baseline = traceTop + SEQ_TRACE_H - 14 // 峰图基线（带底留位号行）
-    const bandBottom = baseline + 12
     if (!read) return
-
-    // 头行：白底芯片保证滚动时名字可读；不覆盖当前窗口的 read 置灰并注明落点
-    const covers = read.ref_end >= uLeft && read.ref_start <= uRight
-    const headText = `${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)} · ${read.ref_start}–${read.ref_end} · Q${read.mean_q}${cols ? '' : ' · 无对齐'}${covers ? '' : ' · 窗口外'}`
-    ctx.textAlign = 'left'
+    const rowY = lettersTop + rowN * SEQ_ROW_H
+    const cols = seqColsFor(ri)
+    const isSel = sel === ri
+    // 行左侧固定名字芯片（滚动时也知道每行是谁）
+    const chip = `${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)}${cols ? '' : '（无对齐）'}`
     ctx.font = '10px Arial'
-    const headW = Math.min(ctx.measureText(headText).width + 8, w - 4)
-    ctx.fillStyle = '#FFFFFF'
-    ctx.fillRect(2, blockY, headW, SEQ_HEAD_H)
-    ctx.fillStyle = !cols ? '#BBB' : covers ? '#98422A' : '#BCA79E'
-    ctx.fillText(headText, 6, blockY + 10)
+    ctx.textAlign = 'left'
+    const chipW = Math.min(ctx.measureText(chip).width + 8, w - 4)
+    ctx.fillStyle = 'rgba(255,255,255,0.92)'
+    ctx.fillRect(0, rowY, chipW, SEQ_ROW_H - 1)
+    ctx.fillStyle = !cols ? '#BBB' : isSel ? '#98422A' : '#B98A77'
+    ctx.fillText(chip, 4, rowY + 11)
 
-    if (!cols) {
-      ctx.fillStyle = '#BBB'
-      ctx.font = '11px Arial'
-      ctx.fillText('该 read 无对齐数据，无法展示碱基与峰图', 6, baseY + 22)
-      return
-    }
-
-    const trace = traceCache.value[ri] ?? null
+    if (!cols) return
     const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
     for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
-
-    // 逐碱基纵向淡网格线贯穿碱基行与峰图带（SnapGene 对齐浏览的定位置感）
-    if (colW >= 8) {
-      ctx.strokeStyle = '#F2F2F2'
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      for (let p = Math.ceil(uLeft); p <= Math.floor(uRight); p++) {
-        const x = seqX(p - 0.5)
-        ctx.moveTo(x, baseY)
-        ctx.lineTo(x, bandBottom)
-      }
-      ctx.stroke()
-    }
-
-    // 采样窗（可见列）：apex 与相邻峰中点围成的本碱基区间
-    const pk = trace?.peak_indices || []
-    const trim = trace?.trim_start ?? 0
-    const wins: { ci: number; lo: number; hi: number; apex: number }[] = []
-    let maxV = 1
-    for (let ci = 0; ci < cols.length; ci++) {
-      const c = cols[ci]
-      if (c.origIdx < 0) continue
-      if (c.xu < uLeft - 2 || c.xu > uRight + 2) continue
-      const iRaw = trim + c.origIdx
-      const apex = pk[iRaw]
-      if (apex == null || apex < 0) continue
-      const prevRaw = iRaw > 0 ? pk[iRaw - 1] : null
-      const nextRaw = iRaw + 1 < pk.length ? pk[iRaw + 1] : null
-      const lo = prevRaw != null ? Math.round((prevRaw + apex) / 2) : Math.max(0, apex - 5)
-      const hi = nextRaw != null ? Math.round((apex + nextRaw) / 2) : apex + 5
-      wins.push({ ci, lo, hi, apex })
-      const ch = trace!.channels as Record<string, number[]>
-      for (const b of ['A', 'T', 'G', 'C']) {
-        const arr = ch[b]
-        if (!arr) continue
-        for (let s = lo; s <= hi; s++) if (arr[s] > maxV) maxV = arr[s]
-      }
-    }
-
-    // 列底色与碱基字母（错配红底加粗、双峰橙底贯穿整块、低 Q 橙字）
     for (const c of cols) {
       const cx = seqX(c.xu)
       if (cx < -colW * 2 || cx > w + colW * 2) continue
       if (c.read === '-') {
-        if (colW >= 7) { ctx.fillStyle = '#D8D8D8'; ctx.fillRect(cx - 1, baseY + 4, 2, 8) }
+        if (colW >= 7) { ctx.fillStyle = '#D8D8D8'; ctx.fillRect(cx - 1, rowY + 4, 2, 8) }
         continue
       }
       const md = mixedMap.get(c.origIdx)
       if (c.mm) {
         ctx.fillStyle = 'rgba(208,52,44,0.18)'
-        ctx.fillRect(cx - colW / 2, baseY, Math.max(colW, 6), SEQ_ROW_H + 2)
-        // 差异列在峰图带内也铺极浅红，视线随峰形走到哪都能对上列
-        ctx.fillStyle = 'rgba(208,52,44,0.06)'
-        ctx.fillRect(cx - colW / 2, traceTop, Math.max(colW, 6), bandBottom - traceTop)
+        ctx.fillRect(cx - colW / 2, rowY, Math.max(colW, 6), SEQ_ROW_H)
       }
       if (md) {
-        ctx.fillStyle = 'rgba(230,126,34,0.14)'
-        ctx.fillRect(cx - Math.max(colW / 2, 3), baseY, Math.max(colW, 6), bandBottom - baseY)
+        ctx.fillStyle = 'rgba(230,126,34,0.16)'
+        ctx.fillRect(cx - Math.max(colW / 2, 3), rowY, Math.max(colW, 6), SEQ_ROW_H)
       }
       if (colW >= 7) {
         ctx.textAlign = 'center'
         ctx.font = c.mm ? 'bold 13px Consolas, monospace' : '13px Consolas, monospace'
-        ctx.fillStyle = c.q > 0 && c.q < 20 ? '#E67E22' : c.mm ? '#B03028' : '#333'
-        ctx.fillText(c.read, cx, baseY + 13)
+        ctx.fillStyle = c.q > 0 && c.q < 20 ? '#E67E22' : c.mm ? '#B03028' : isSel ? '#111' : '#666'
+        ctx.fillText(c.read, cx, rowY + 13)
       }
-    }
-
-    // 峰图带：先画大曲线再压深色基线（低电平通道的噪声段会贴着基线走，
-    // 基线后画才能保持 SnapGene 式的深色横线观感）
-    if (trace && wins.length) {
-      drawSeqTrace(ctx, trace, cols, wins, maxV, traceTop, baseline)
-      // 混合位点标注：次峰碱基 + 次要克隆占比（r/(1+r)，与结论口径一致）
-      if (colW >= 13) {
-        ctx.font = '9px Arial'
-        ctx.textAlign = 'center'
-        for (const w2 of wins) {
-          const c = cols[w2.ci]
-          const md = mixedMap.get(c.origIdx)
-          if (!md) continue
-          ctx.fillStyle = '#E67E22'
-          ctx.fillText(`${md.secondary_base}${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`, seqX(c.xu), traceTop + 10)
-        }
-      }
-    } else if (!trace && !seqTraceLoading.value) {
-      ctx.fillStyle = '#C9C9C9'
-      ctx.font = '11px Arial'
-      ctx.textAlign = 'left'
-      ctx.fillText('峰图不可用（加载失败或已过期，可重跑分析）', 6, traceTop + 20)
-    }
-    ctx.strokeStyle = '#444'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(0, baseline)
-    ctx.lineTo(w, baseline)
-    ctx.stroke()
-    // 带内位号（基线下方，与顶部刻度尺互为参照）
-    const pStep = [1, 2, 5, 10, 20, 50].find((s) => s * colW >= 46) ?? 100
-    ctx.font = '9px Arial'
-    ctx.textAlign = 'center'
-    ctx.fillStyle = '#999'
-    for (let p = Math.max(1, Math.ceil(uLeft / pStep) * pStep); p <= Math.min(uRight, a.reference_length); p += pStep) {
-      ctx.fillText(String(p), seqX(p - 0.5), bandBottom)
     }
   })
 
-  // 4) 点选列竖线 + 跳转高亮
+  // 4) 单条峰图带（选中 read，未选中时回退最后勾选的）：直接交接在字母行下方
+  const traceRi = traceReadIdx()
+  const traceTop = lettersBottom + 6
+  const baseline = traceTop + SEQ_TRACE_H - 14 // 峰图基线（带底留位号行）
+  const bandBottom = baseline + 12
+  if (traceRi == null) {
+    ctx.fillStyle = '#C9C9C9'
+    ctx.font = '11px Arial'
+    ctx.textAlign = 'left'
+    ctx.fillText('勾选上方引物或点击简图箭头查看峰图', 6, traceTop + 20)
+  } else {
+    const read = a.reads[traceRi]
+    const cols = seqColsFor(traceRi)
+    if (!read || !cols) {
+      ctx.fillStyle = '#C9C9C9'
+      ctx.font = '11px Arial'
+      ctx.textAlign = 'left'
+      ctx.fillText('该 read 无对齐数据，无法展示峰图', 6, traceTop + 20)
+    } else {
+      const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
+      for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
+      // 差异列浅红 / 双峰列橙底贯穿整条峰图带
+      for (const c of cols) {
+        const cx = seqX(c.xu)
+        if (cx < -colW * 2 || cx > w + colW * 2 || c.read === '-') continue
+        if (c.mm) {
+          ctx.fillStyle = 'rgba(208,52,44,0.06)'
+          ctx.fillRect(cx - colW / 2, traceTop, Math.max(colW, 6), bandBottom - traceTop)
+        }
+        if (mixedMap.get(c.origIdx)) {
+          ctx.fillStyle = 'rgba(230,126,34,0.14)'
+          ctx.fillRect(cx - Math.max(colW / 2, 3), traceTop, Math.max(colW, 6), bandBottom - traceTop)
+        }
+      }
+      // 采样窗（可见列）：apex 与相邻峰中点围成本碱基区间
+      const trace = traceCache.value[traceRi] ?? null
+      const pk = trace?.peak_indices || []
+      const trim = trace?.trim_start ?? 0
+      const wins: { ci: number; lo: number; hi: number; apex: number }[] = []
+      let maxV = 1
+      for (let ci = 0; ci < cols.length; ci++) {
+        const c = cols[ci]
+        if (c.origIdx < 0) continue
+        if (c.xu < uLeft - 2 || c.xu > uRight + 2) continue
+        const iRaw = trim + c.origIdx
+        const apex = pk[iRaw]
+        if (apex == null || apex < 0) continue
+        const prevRaw = iRaw > 0 ? pk[iRaw - 1] : null
+        const nextRaw = iRaw + 1 < pk.length ? pk[iRaw + 1] : null
+        const lo = prevRaw != null ? Math.round((prevRaw + apex) / 2) : Math.max(0, apex - 5)
+        const hi = nextRaw != null ? Math.round((apex + nextRaw) / 2) : apex + 5
+        wins.push({ ci, lo, hi, apex })
+        const ch = trace!.channels as Record<string, number[]>
+        for (const b of ['A', 'T', 'G', 'C']) {
+          const arr = ch[b]
+          if (!arr) continue
+          for (let s = lo; s <= hi; s++) if (arr[s] > maxV) maxV = arr[s]
+        }
+      }
+      if (trace && wins.length) {
+        drawSeqTrace(ctx, trace, cols, wins, maxV, traceTop, baseline)
+        // 混合位点标注：次峰碱基 + 次要克隆占比（r/(1+r)，与结论口径一致）
+        if (colW >= 13) {
+          ctx.font = '9px Arial'
+          ctx.textAlign = 'center'
+          for (const w2 of wins) {
+            const c = cols[w2.ci]
+            const md = mixedMap.get(c.origIdx)
+            if (!md) continue
+            ctx.fillStyle = '#E67E22'
+            ctx.fillText(`${md.secondary_base}${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`, seqX(c.xu), traceTop + 10)
+          }
+        }
+      } else if (!trace && !seqTraceLoading.value) {
+        ctx.fillStyle = '#C9C9C9'
+        ctx.font = '11px Arial'
+        ctx.textAlign = 'left'
+        ctx.fillText('峰图不可用（加载失败或已过期，可重跑分析）', 6, traceTop + 20)
+      }
+      ctx.strokeStyle = '#444'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, baseline)
+      ctx.lineTo(w, baseline)
+      ctx.stroke()
+      // 带内位号（基线下方，与顶部刻度尺互为参照）
+      const pStep = [1, 2, 5, 10, 20, 50].find((s) => s * colW >= 46) ?? 100
+      ctx.font = '9px Arial'
+      ctx.textAlign = 'center'
+      ctx.fillStyle = '#999'
+      for (let p = Math.max(1, Math.ceil(uLeft / pStep) * pStep); p <= Math.min(uRight, refLen); p += pStep) {
+        ctx.fillText(String(p), seqX(p - 0.5), bandBottom)
+      }
+      // 峰图归属标注（左上角小芯片）
+      const tag = `峰图：${shortName(read.filename)}${trace ? '' : '（加载中…）'}`
+      ctx.font = '10px Arial'
+      ctx.textAlign = 'left'
+      const tagW = Math.min(ctx.measureText(tag).width + 8, w - 4)
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'
+      ctx.fillRect(0, traceTop, tagW, 13)
+      ctx.fillStyle = '#98422A'
+      ctx.fillText(tag, 4, traceTop + 10)
+    }
+  }
+
+  // 5) 点选列竖线 + 跳转高亮（从简图下沿开始，避免盖住全景简图）
   if (selRefPos.value != null) {
     const x = seqX(selRefPos.value - 0.5)
     ctx.strokeStyle = '#2456C8'
@@ -1261,8 +1406,8 @@ function drawSeq() {
   }
 }
 
-// 滚动/缩放触发重绘；visibleReads 是 push/splice 原位变更，需 deep 才能触发
-watch([visibleReads, seqColW], nextSeqDraw, { deep: true })
+// 滚动/缩放/勾选/选中触发重绘；visibleReads 是 push/splice 原位变更，需 deep 才能触发
+watch([visibleReads, seqColW, selectedReadIdx], nextSeqDraw, { deep: true })
 
 function onSeqResize() { nextSeqDraw() }
 onMounted(() => window.addEventListener('resize', onSeqResize))
@@ -1615,7 +1760,7 @@ async function downloadConsensus(format: string) {
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
       <div class="seqviz-box" v-if="analysis.reads.length">
         <div class="trace-toolbar">
-          <h4 class="section-title">比对峰图<span class="map-sub">（横轴 = 参考坐标；顶部覆盖简图：每引物一行，橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异，点击简图任意位置跳转；红底 = 差异，橙底 = 双峰位点，Ctrl+滚轮缩放）</span></h4>
+          <h4 class="section-title">比对峰图<span class="map-sub">（顶部覆盖简图常驻全景：每引物一条箭头按泳道排布，蓝框 = 当前视野，视野内引物着重，点击箭头选中该引物并放大到其覆盖区，点击空白跳到该位置；橙点 = 双峰位点，两端浅色 = 末端约 20bp 不可信区，黄刻度 = 低置信差异；主区参考行 + 各 read 字母行 + 单条峰图带，点字母行切峰图，Ctrl+滚轮缩放）</span></h4>
           <div class="seqviz-controls">
             <label v-for="r in analysis.reads" :key="r.index" class="seqviz-pick">
               <input type="checkbox" :checked="isReadVisible(r.index)" @change="toggleRead(r.index)" />{{ r.direction === '-' ? '←' : '→' }} {{ shortName(r.filename) }}
@@ -1634,7 +1779,7 @@ async function downloadConsensus(format: string) {
           <canvas ref="seqCanvas" class="seqviz-canvas"></canvas>
         </div>
         <p v-if="seqInfo" class="seqviz-info">{{ seqInfo }}</p>
-        <p v-else class="hint">点击覆盖简图任意位置可跳到该引物的峰图对应处；点击任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与简图红块可跳到对应位置</p>
+        <p v-else class="hint">点击简图箭头选中引物（峰图随之切换并放大到该引物覆盖区），点简图空白跳到对应位置；点任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与红块可跳到对应位置</p>
       </div>
 
       <!-- 解卷积结果 -->
