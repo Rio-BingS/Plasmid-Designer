@@ -735,17 +735,35 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
     判读碱基一致 → 多半是这条 read 自己的信号噪声（常见于引物首端）；
     其他引物同样报双峰 → 倾向真实混合；无其他引物覆盖 → 无法互检。
 
-    返回 {by_read: {filename: {clean, multi, uncovered, multi_ref, clean_ref}},
+    返回 {by_read: {filename: {clean, multi, uncovered, multi_ref, clean_ref,
+    uncovered_ref}},
           multi_sites: [(ref_pos, [filenames])], total, clean_total,
           multi_total, uncov_total}；单条 read 的分析互检无意义，字段照常
           返回（clean/multi 均为 0），由结论层判断是否展示。"""
     maps = [(r, *_read_ref_maps(r)) for r in read_results]
+
+    def _approx_ref(r2ref: Dict[int, int], pos: int) -> Optional[int]:
+        """位点在 read2ref 查不到时的近似定位。局部比对会在 read 端部留
+        悬空（poly-A 同聚物区两端尤其常见），悬空段的双峰位点若直接归
+        "待核"，会把实际被邻居 read 覆盖、可互检的位点误报成无法互检。
+        以比对块两端（原始 read 坐标 ↔ 参考坐标）为锚点线性内插/外推
+        ——Sanger read 与参考共线，锚点间斜率近似 ±1（反向 read 同式）"""
+        if not r2ref:
+            return None
+        k_lo, k_hi = min(r2ref), max(r2ref)
+        if k_hi == k_lo:
+            return r2ref[k_lo]
+        return round(r2ref[k_lo] + (pos - k_lo) * (r2ref[k_hi] - r2ref[k_lo])
+                     / (k_hi - k_lo))
+
     # 各 read 报了双峰的参考坐标集合（互检时判"同报双峰"用）
     mixed_ref_by_read: Dict[str, set] = {}
     for r, r2ref, _c in maps:
         s = set()
         for e in r.get("mixed_detail") or []:
             rp = r2ref.get(e["pos"])
+            if rp is None:
+                rp = _approx_ref(r2ref, e["pos"])
             if rp is not None:
                 s.add(rp)
         mixed_ref_by_read[r["filename"]] = s
@@ -757,11 +775,14 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         clean: List[int] = []
         multi: List[int] = []
         uncovered: List[int] = []
+        uncovered_ref: List[int] = []
         for e in r.get("mixed_detail") or []:
             rp = r2ref.get(e["pos"])
             if rp is None:
-                uncovered.append(e["pos"])
-                continue
+                rp = _approx_ref(r2ref, e["pos"])
+                if rp is None:
+                    uncovered.append(e["pos"])
+                    continue
             others_multi = [f for f, s in mixed_ref_by_read.items()
                             if f != fname and rp in s]
             if others_multi:
@@ -781,10 +802,13 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
                     ok = True
                     break
             (clean if ok else uncovered).append(e["pos"])
+            if not ok:
+                uncovered_ref.append(rp)
         by_read[fname] = {
             "clean": len(clean), "multi": len(multi), "uncovered": len(uncovered),
             "clean_ref": sorted({r2ref[p] for p in clean if p in r2ref}),
             "multi_ref": sorted({r2ref[p] for p in multi if p in r2ref}),
+            "uncovered_ref": sorted(set(uncovered_ref)),
         }
     total = sum(d["clean"] + d["multi"] + d["uncovered"] for d in by_read.values())
     return {
@@ -805,7 +829,9 @@ def _mixed_check_phrase(chk: Dict) -> str:
     if chk["clean"]:
         parts.append(f"{chk['clean']} 处其他引物覆盖且峰形单一（倾向噪声）")
     if chk["uncovered"]:
-        parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核")
+        ref_txt = _pos_ranges_str(chk.get("uncovered_ref") or [])
+        parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核"
+                     + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
     return "互检：" + "、".join(parts) if parts else ""
 
 
@@ -1963,7 +1989,12 @@ def analyze(
         if mc["clean_total"]:
             parts.append(f"{mc['clean_total']} 处其他引物覆盖且峰形单一（倾向噪声）")
         if mc["uncov_total"]:
-            parts.append(f"{mc['uncov_total']} 处仅单条引物覆盖，无法互检")
+            uncov_refs = sorted({rp
+                                 for d in mc["by_read"].values()
+                                 for rp in d.get("uncovered_ref") or []})
+            ref_txt = _pos_ranges_str(uncov_refs)
+            parts.append(f"{mc['uncov_total']} 处仅单条引物覆盖，无法互检"
+                         + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
         if parts:
             mixed_lines.append("  ↳ 双峰位点跨引物互检：" + "；".join(parts))
 
