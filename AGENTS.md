@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（327 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（331 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（100 用例，src/frontend/tests）
 ```
@@ -102,6 +102,21 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 调整（2026-09-20）**互检悬空位点外推定位 + 峰图逐 read 交接条带**：用户指出
+  ①「无其他引物覆盖待核」与事实不符（只有覆盖边缘的引物才真有无法互检的
+  位点）②每条引物应有自己单独的峰图。根因（①）：比对是 local 模式，read
+  端部（poly-A 同聚物区两端尤其常见）悬空在比对块外，这些位点的 read2ref
+  查不到参考坐标而直接归"待核"——修复：_corroborate_mixed 对未映射位点以
+  比对块两端（原始 read 坐标↔参考坐标）为锚点线性内插/外推定位（Sanger
+  read 与参考共线），再正常参与 clean/multi 判定；待核短语与汇总行补
+  "（参考位置 …）"供用户对照图谱核对。落地（②）：主区改 SnapGene 图三式
+  交接——每条 read 字母行下直接衔接其峰图条带（SEQ_STRIP_H=62，选中加高
+  14 并淡底强调，左缘 read 色竖条与简图箭头/字母行同色绑定），条带独立归
+  一幅值；点字母行或条带都选中该 read；峰图加载加在途去重（traceInFlight，
+  preset watch 与 deep watch 同帧重入会重复拉取）。合成回归测试：反向 read
+  + 100bp 悬空 junk，块内位点精确映射被邻居覆盖判 clean、悬空位点外推到
+  覆盖外判待核且带参考位置（后端 331、前端 100）。注：上一条的 bandReads
+  叠加方案已被本条逐 read 条带取代（buildTraceWins/drawSeqTrace 保留复用）。
 - 调整（2026-09-20）**峰图带多 read 叠加 + 简图逐 read 配色 + sequencing GET 限流降档**：
   用户指出交叠区「乱了」且「只显示了一条引物的峰图」。落地：①峰图带从单条
   traceReadIdx 改为 bandReads()——叠加所有勾选 read 的峰图，选中的最后画
