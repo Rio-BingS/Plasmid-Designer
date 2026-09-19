@@ -458,7 +458,7 @@ describe('SequencingPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('trace band overlays every checked read and fetches all their traces', async () => {
+  it('each checked read gets its own trace strip and trace data fetched', async () => {
     vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
     vi.stubGlobal('requestAnimationFrame', () => 0)
     const reads = [
@@ -472,20 +472,27 @@ describe('SequencingPanel', () => {
     const wrapper = mount(SequencingPanel, { props: { preset: { ...mockAnalysis, reads } } })
     await flushPromises()
 
-    // 勾选第二条 → 两条 read 的峰图都被拉取（带内叠加衬底）
+    // 勾选第二条 → 两条 read 的峰图都被拉取（各自条带）
     await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(true)
     await flushPromises()
     expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 0)
     expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 1)
-    // 叠加顺序：选中的排最后、画在最上层
-    expect((wrapper.vm as any).bandReads()).toEqual([0, 1])
-    expect((wrapper.vm as any).traceReadIdx()).toBe(1)
+    expect(getReadTrace).toHaveBeenCalledTimes(2)
 
-    // 字母行点回第一条（两条 read 重叠 → 2 条泳道，ovH=64；行 0 在 y 100-116）
+    // 每条 read 一条峰图条带：勾选第二条后面板高度按一条条带增长
+    const h1 = (wrapper.vm as any).seqWrapH as number
+    await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(false)
+    await flushPromises()
+    const h0 = (wrapper.vm as any).seqWrapH as number
+    expect(h1 - h0).toBeGreaterThanOrEqual(62 + 16)
+
+    // 字母行点回第一条 → 选中切换
+    await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(true)
+    await flushPromises()
+    // 两条 read 重叠 → 2 条泳道，ovH=64；行 0 字母行在 y 100-116
     await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 600, clientY: 108 })
     await flushPromises()
     expect((wrapper.vm as any).selectedReadIdx).toBe(0)
-    expect((wrapper.vm as any).bandReads()).toEqual([1, 0])
     vi.unstubAllGlobals()
   })
 
