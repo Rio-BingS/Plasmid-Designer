@@ -589,6 +589,7 @@ export interface SequencingAnalysis {
     ref_end: number
     identity: number
     mixed_positions: number[]
+    mixed_detail?: { pos: number; ratio: number; secondary_base: string }[]
     alignment_view?: AlignmentView | null
     grade?: string
     q20_ratio?: number
@@ -643,6 +644,8 @@ export interface ReadTrace {
   quality: number[]
   channels: Record<'A' | 'T' | 'G' | 'C', number[]>
   peak_indices: number[]
+  /** 峰图采样窗口换算用：修剪偏移（peak_indices 按原始 read 碱基索引） */
+  trim_start?: number
 }
 
 /** 通用测序分析：参考序列文件（.gb/.fasta/.dna）+ .ab1 测序文件一起上传 */

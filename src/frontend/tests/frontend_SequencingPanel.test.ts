@@ -313,7 +313,8 @@ describe('SequencingPanel', () => {
     expect(wrapper.text()).toContain('已合并 2 条重复注释')
   })
 
-  it('renders alignment view with mismatch and low-Q highlighting', async () => {
+  it('fused alignment-trace panel mounts with first read shown and trace loaded', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
     const analysis = {
       ...mockAnalysis,
       reads: [{ ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() }],
@@ -325,19 +326,19 @@ describe('SequencingPanel', () => {
       }],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await flushPromises()
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.text()).toContain('比对校验')
-    // 唯一错配列红底高亮，且该列 Q<20 橙色提示
-    expect(wrapper.findAll('.cell.mm').length).toBe(1)
-    const qLow = wrapper.findAll('.cell.qLow')
-    expect(qLow.length).toBeGreaterThanOrEqual(2) // read 行 + Q 行
-    expect(wrapper.text()).toContain('红底 = 与参考不同')
-    // 该 read 无峰图数据时比对区仍正常展示参考行
-    expect(wrapper.find('.aln-scroll').exists()).toBe(true)
+    expect(wrapper.text()).toContain('比对峰图')
+    expect(wrapper.find('.seqviz-wrap').exists()).toBe(true)
+    expect(wrapper.find('canvas.seqviz-canvas').exists()).toBe(true)
+    // 首条 read 默认勾选显示，且自动加载其峰图
+    const box = wrapper.find('.seqviz-pick input').element as HTMLInputElement
+    expect(box.checked).toBe(true)
+    expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 0)
   })
 
-  it('clicking a variant row focuses the alignment column and requests trace', async () => {
+  it('clicking a variant row jumps the fused panel to that column', async () => {
     vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
     vi.stubGlobal('requestAnimationFrame', () => 0)
     const analysis = {
@@ -351,15 +352,18 @@ describe('SequencingPanel', () => {
       }],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
-    await wrapper.vm.$nextTick()
+    await flushPromises()
 
     await wrapper.find('.seq-table.clickable tbody tr').trigger('click')
     await flushPromises()
     await wrapper.vm.$nextTick()
 
     expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 0)
-    // 参考行与 read 行的对应列同时获得焦点高亮
-    expect(wrapper.findAll('.cell.focus').length).toBe(2)
+    // 证据摘要行：参考位置 + 各 read 碱基/Q + 差异注释
+    const info = wrapper.find('.seqviz-info').text()
+    expect(info).toContain('参考位置 106')
+    expect(info).toContain('Q12')
+    expect(info).toContain('A→G')
     vi.unstubAllGlobals()
   })
 
@@ -378,10 +382,22 @@ describe('SequencingPanel', () => {
     expect(wrapper.text()).toContain('黄色高亮 = 共识序列与参考不同的位点')
   })
 
-  it('shows fallback hint when a read has no alignment view', async () => {
-    const wrapper = mount(SequencingPanel, { props: { preset: mockAnalysis } })
-    await wrapper.vm.$nextTick()
-    expect(wrapper.text()).toContain('该 read 无对齐数据')
+  it('fused panel shows fallback hint, and a column click fills the evidence line', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      reads: [{ ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('点击任意列查看各 read 在该位的碱基/质量/双峰证据')
+
+    // col 5 → 参考位置 106（101+5）：x = 105.5 * 列宽 12
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: Math.round(105.5 * 12) })
+    const info = wrapper.find('.seqviz-info').text()
+    expect(info).toContain('参考位置 106')
+    expect(info).toContain('r1.ab1 G（Q12）')
+    vi.unstubAllGlobals()
   })
 
   it('clears all staged reads with one click', async () => {
@@ -484,10 +500,10 @@ describe('SequencingPanel', () => {
     // 自适应刻度数字
     expect(wrapper.findAll('.map-tick-num').length).toBeGreaterThan(0)
 
-    // 点击 read 箭头 → 比对校验切换到该 read
+    // 点击 read 箭头 → 融合视图显示该 read（复选框勾选 + 峰图请求）
     await wrapper.find('.map-arrow-rev').trigger('click')
     await wrapper.vm.$nextTick()
-    expect((wrapper.vm as any).alignReadIdx).toBe(1)
+    expect((wrapper.vm as any).visibleReads).toContain(1)
   })
 
   it('renders CDS-level sequencing verdicts with coverage badges', async () => {

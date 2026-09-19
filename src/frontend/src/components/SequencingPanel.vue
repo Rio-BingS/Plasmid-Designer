@@ -163,6 +163,11 @@ async function runAnalysis() {
     analysis.value = await analyzeSequencingFiles(
       referenceFile.value, reads.value, minQ.value, allowDecompose.value
     )
+    resetSeqViz()
+    if (analysis.value.reads.length) {
+      visibleReads.value = [analysis.value.reads[0].index]
+      loadSeqTrace(analysis.value.reads[0].index)
+    }
     emit('analyzed', analysis.value)
   } catch (e: any) {
     errorMsg.value = formatApiError(e, '分析失败')
@@ -179,82 +184,108 @@ const coverageSegments = computed(() => {
   return a.coverage_ranges.map(([s, e]) => ({ left: ((s - 1) / L) * 100, width: ((e - s + 1) / L) * 100 }))
 })
 
-// ==================== 比对校验（Read vs Reference 逐碱基核对） ====================
-// 注意：必须在下方 preset 的 immediate watch 之前声明（watch 回调引用 focusCol）
-const ALIGN_CHUNK = 60   // 每行显示列数
-const alignReadIdx = ref(0)
-const focusCol = ref<number | null>(null)  // 点击差异行后高亮的全局列号
-const chunkEls: Record<number, HTMLElement | null> = {}
-const alignBox = ref<HTMLElement | null>(null)
+// ==================== 比对峰图（SnapGene 式融合视图） ====================
+// 参考碱基行 + 各 read 碱基行 + 四通道峰图画在同一个参考坐标轴上：差异列的
+// 证据（参考碱基/read 碱基/Q/峰形/次级峰占比）一屏看完，不再在比对网格与
+// 独立峰图面板之间来回跳。横轴 = 参考坐标（插入列在左右两列间插缝），
+// Ctrl+滚轮缩放。注意：必须在下方 preset 的 immediate watch 之前声明
+const seqBox = ref<HTMLElement | null>(null)
+const seqCanvas = ref<HTMLCanvasElement | null>(null)
+const seqColW = ref(12)                 // 每个参考 bp 的像素宽（缩放）
+const visibleReads = ref<number[]>([])  // 显示中的 read index（按行序）
+const traceCache = ref<Record<number, ReadTrace | null>>({})
+const seqTraceLoading = ref(false)
+const selRefPos = ref<number | null>(null)   // 点选列（参考坐标）
+const flashRefPos = ref<number | null>(null) // 跳转高亮列（短暂）
+const seqInfo = ref('')
+const jumpInput = ref('')
+let seqScrollX = 0
+let seqRaf = 0
+let flashTimer: ReturnType<typeof setTimeout> | undefined
 
-const currentRead = computed(() => analysis.value?.reads[alignReadIdx.value] || null)
-const alignmentView = computed(() => currentRead.value?.alignment_view || null)
+const SEQ_TRACE_H = 54
+const SEQ_ROW_H = 16
+const seqWrapH = computed(() => 36 + visibleReads.value.length * (SEQ_ROW_H + SEQ_TRACE_H + 6) + 8)
+const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
 
-interface AlnCol { ref: string; read: string; q: number; mm: boolean; indel: boolean; refPos: number }
+interface SeqCol {
+  ref: string
+  read: string
+  q: number
+  mm: boolean
+  ins: boolean
+  refPos: number
+  origIdx: number   // 原始电泳顺序的 read 碱基下标（0-based；read 缺口列 = -1）
+  xu: number        // 横轴坐标（参考 bp 单位；插入列在缝内插值）
+  xEnd: number
+}
 
-const alignmentCols = computed<AlnCol[]>(() => {
-  const av = alignmentView.value
-  if (!av) return []
-  const cols: AlnCol[] = []
+// 逐 read 列模型缓存：alignment_view 是参考方向的逐列对齐（反向 read 已折算）
+const seqColCache: Record<number, SeqCol[] | null> = {}
+
+function buildSeqCols(read: SequencingAnalysis['reads'][number]): SeqCol[] | null {
+  const av = read.alignment_view
+  if (!av || !av.ref_aligned) return null
+  const L = read.trimmed_length
+  const cols: SeqCol[] = []
   let refPos = av.ref_start
+  let qi = -1
   for (let i = 0; i < av.ref_aligned.length; i++) {
     const rb = av.ref_aligned[i]
     const qb = av.read_aligned[i]
-    const col: AlnCol = { ref: rb, read: qb, q: av.q_aligned?.[i] ?? 0, mm: false, indel: false, refPos: 0 }
-    if (rb !== '-') col.refPos = refPos++
-    col.indel = rb === '-' || qb === '-'
-    col.mm = !col.indel && rb !== qb
-    cols.push(col)
+    if (qb !== '-') qi++
+    // 反向 read 的 query 是 revcomp：原始下标 = L-1-query 下标（与后端镜像同式）
+    const origIdx = qb === '-' ? -1 : (read.direction === '-' ? L - 1 - qi : qi)
+    cols.push({
+      ref: rb, read: qb, q: av.q_aligned?.[i] ?? 0,
+      mm: rb !== '-' && qb !== '-' && rb !== qb,
+      ins: rb === '-' && qb !== '-',
+      refPos: rb !== '-' ? refPos : 0,
+      origIdx, xu: 0, xEnd: 0,
+    })
+    if (rb !== '-') refPos++
+  }
+  // 横轴坐标：常规列落在其参考 bp 中心；连续插入列在左右两列之间等分插缝
+  let i = 0
+  let prevXu = -1
+  while (i < cols.length) {
+    if (!cols[i].ins) {
+      cols[i].xu = cols[i].refPos - 0.5
+      prevXu = cols[i].xu
+      i++
+      continue
+    }
+    let j = i
+    while (j < cols.length && cols[j].ins) j++
+    const nextXu = j < cols.length ? cols[j].refPos - 0.5 : prevXu + 1
+    const n = j - i
+    for (let m = i; m < j; m++) cols[m].xu = prevXu + (nextXu - prevXu) * ((m - i + 1) / (n + 1))
+    i = j
+  }
+  for (let k = 0; k < cols.length; k++) {
+    cols[k].xEnd = k + 1 < cols.length ? cols[k + 1].xu : cols[k].xu + 1
   }
   return cols
-})
+}
 
-const alignmentChunks = computed(() => {
-  const cols = alignmentCols.value
-  const out: { startCol: number; cols: AlnCol[] }[] = []
-  for (let i = 0; i < cols.length; i += ALIGN_CHUNK) {
-    out.push({ startCol: i, cols: cols.slice(i, i + ALIGN_CHUNK) })
+function seqColsFor(readIndex: number): SeqCol[] | null {
+  if (!(readIndex in seqColCache)) {
+    const r = analysis.value?.reads[readIndex]
+    seqColCache[readIndex] = r ? buildSeqCols(r) : null
   }
-  return out
-})
-
-function setChunkRef(i: number, el: unknown) {
-  chunkEls[i] = (el as HTMLElement) || null
+  return seqColCache[readIndex]
 }
 
-function selectAlignRead(i: number) {
-  alignReadIdx.value = i
-  focusCol.value = null
-  // 切换 read 后 chunk 数量变化，清掉旧 read 的元素引用防止陈旧 DOM 残留
-  for (const k of Object.keys(chunkEls)) delete chunkEls[Number(k)]
-}
-
-function chunkStartPos(chunk: { cols: AlnCol[] }): string {
-  const first = chunk.cols.find((c) => c.refPos)
-  return first ? String(first.refPos) : '—'
-}
-
-function qLabel(c: AlnCol): string {
-  if (c.read === '-') return '—'
-  return c.q > 0 ? String(c.q) : '·'
-}
-
-/** 定位到指定参考位置的列；插入差异（afterGap）锚定在左翼参考位置之后 */
-function focusAlignmentAt(refPos: number, afterGap: boolean) {
-  const cols = alignmentCols.value
-  let anchor = -1
-  for (let i = 0; i < cols.length; i++) {
-    if (cols[i].refPos === refPos && cols[i].ref !== '-') { anchor = i; break }
-  }
-  if (anchor < 0) return
-  let target = anchor
-  if (afterGap) {
-    target = anchor + 1
-    while (target < cols.length && cols[target].ref === '-') target++
-    target = Math.min(target, cols.length - 1)
-  }
-  focusCol.value = target
-  chunkEls[Math.floor(target / ALIGN_CHUNK)]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+function resetSeqViz() {
+  visibleReads.value = []
+  traceCache.value = {}
+  selRefPos.value = null
+  flashRefPos.value = null
+  seqInfo.value = ''
+  jumpInput.value = ''
+  seqColW.value = 12
+  seqScrollX = 0
+  for (const k of Object.keys(seqColCache)) delete seqColCache[Number(k)]
 }
 
 /** 覆盖缺口摘要（取最长 3 段展示） */
@@ -654,31 +685,21 @@ function shortName(name: string): string {
   return name.length > 18 ? name.slice(0, 17) + '…' : name
 }
 
-// ==================== 峰图 ====================
-const traceCanvas = ref<HTMLCanvasElement | null>(null)
-const traceWrap = ref<HTMLDivElement | null>(null)
-const activeRead = ref(0)
-const trace = ref<ReadTrace | null>(null)
-const traceLoading = ref(false)
-const traceStart = ref(0)        // 显示窗口起始碱基（0-based）
-const traceSpan = ref(60)        // 窗口碱基数
-const highlightReadIdx = ref<number | null>(null) // 高亮的 read 碱基（0-based，精确坐标）
+// ==================== 峰图数据加载 ====================
 
 // 历史回看：注入已完成分析后直接展示（immediate 覆盖挂载时即带 preset 的场景）
 watch(() => props.preset, (p) => {
   if (p) {
     analysis.value = p
     errorMsg.value = ''
-    trace.value = null
-    highlightReadIdx.value = null
-    focusCol.value = null
+    resetSeqViz()
+    visibleReads.value = p.reads.length ? [0] : []
+    if (p.reads.length) loadSeqTrace(0)
   } else {
     // 退出历史回看：清空上次注入的分析状态，避免面板残留旧结果造成误读
     analysis.value = null
-    trace.value = null
-    highlightReadIdx.value = null
-    focusCol.value = null
     errorMsg.value = ''
+    resetSeqViz()
     showLowConf.value = false
     showMixedDetail.value = false
   }
@@ -686,165 +707,421 @@ watch(() => props.preset, (p) => {
 
 const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: '#222222', C: '#2456C8' }
 
-// 请求序号防竞态：连点两条 read（或跳峰连跳）时，慢的旧响应不得覆盖新响应
-let traceReqSeq = 0
-
-async function loadTrace(readIndex: number): Promise<boolean> {
-  const reqId = ++traceReqSeq
-  activeRead.value = readIndex
-  traceLoading.value = true
-  highlightReadIdx.value = null
+// 峰图按 read 缓存（多 read 堆叠时各自取用；TTL 清理后为 null，仅剩碱基行）
+async function loadSeqTrace(ri: number): Promise<ReadTrace | null> {
+  if (!analysis.value) return null
+  if (traceCache.value[ri] !== undefined) return traceCache.value[ri]
+  seqTraceLoading.value = true
   try {
-    const t = await getReadTrace(analysis.value!.analysis_id, readIndex)
-    if (reqId !== traceReqSeq) return false
-    trace.value = t
-    traceStart.value = 0
-    nextDraw()
-    return true
+    const t = await getReadTrace(analysis.value.analysis_id, ri)
+    traceCache.value = { ...traceCache.value, [ri]: t ?? null }
+    nextSeqDraw()
+    return t ?? null
   } catch (e: any) {
-    if (reqId === traceReqSeq) errorMsg.value = e.response?.data?.detail || '峰图加载失败'
-    return false
+    traceCache.value = { ...traceCache.value, [ri]: null }
+    errorMsg.value = e.response?.data?.detail || '峰图加载失败'
+    return null
   } finally {
-    if (reqId === traceReqSeq) traceLoading.value = false
+    seqTraceLoading.value = false
   }
 }
 
-function nextDraw() { requestAnimationFrame(drawTrace) }
+function isReadVisible(ri: number) {
+  return visibleReads.value.includes(ri)
+}
 
-function drawTrace() {
-  const canvas = traceCanvas.value
-  const wrap = traceWrap.value
-  const t = trace.value
-  if (!canvas || !wrap || !t) return
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  const dpr = window.devicePixelRatio || 1
-  const w = wrap.clientWidth
-  const h = wrap.clientHeight
-  canvas.width = w * dpr
-  canvas.height = h * dpr
-  canvas.style.width = `${w}px`
-  canvas.style.height = `${h}px`
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.clearRect(0, 0, w, h)
-
-  const bases = t.bases
-  const span = Math.min(traceSpan.value, Math.max(10, bases.length))
-  const start = Math.min(traceStart.value, Math.max(0, bases.length - span))
-  const end = Math.min(bases.length, start + span)
-  const colW = (w - 70) / span
-
-  // 窗口内四通道最大值（归一化）
-  let maxV = 1
-  for (const b of ['A', 'T', 'G', 'C']) {
-    for (const v of (t.channels as Record<string, number[]>)[b].slice(start * 10, end * 10)) if (v > maxV) maxV = v
+async function toggleRead(ri: number) {
+  const i = visibleReads.value.indexOf(ri)
+  if (i >= 0) visibleReads.value.splice(i, 1)
+  else {
+    visibleReads.value.push(ri)
+    await loadSeqTrace(ri)
   }
-  const peakTop = 24
-  const peakH = h - peakTop - 34
-  const left = 60
+  nextSeqDraw()
+}
 
-  const mixedSet = new Set(analysis.value?.reads[activeRead.value]?.mixed_positions || [])
-
-  // trace 曲线：每个碱基约 10 个采样点
-  const pointsPerBase = 10
-  const traceLen = Math.min(t.channels.A.length, end * pointsPerBase)
-
-  for (const b of ['A', 'T', 'G', 'C']) {
-    ctx.beginPath()
-    ctx.strokeStyle = CHANNEL_COLORS[b]
-    ctx.lineWidth = 1.2
-    let started = false
-    const from = Math.max(0, start * pointsPerBase)
-    for (let i = from; i < traceLen; i++) {
-      const baseIdx = i / pointsPerBase
-      const x = left + (baseIdx - start) * colW
-      const y = peakTop + peakH * (1 - (t.channels as Record<string, number[]>)[b][i] / maxV)
-      if (!started) { ctx.moveTo(x, y); started = true } else ctx.lineTo(x, y)
-    }
-    ctx.stroke()
-  }
-
-  // 碱基字母 + 质量着色 + 位置刻度
-  ctx.font = '11px Consolas, monospace'
-  ctx.textAlign = 'center'
-  for (let i = start; i < end; i++) {
-    const x = left + (i - start) * colW + colW / 2
-    const base = bases[i]
-    if (base === ' ') continue
-    const q = t.quality[i] ?? 0
-    ctx.fillStyle = q < 20 ? '#D0342C' : '#333'
-    ctx.fillText(base, x, h - 18)
-    if ((i + 1) % 10 === 0) {
-      ctx.fillStyle = '#AAA'
-      ctx.font = '9px Arial'
-      ctx.fillText(String(i + 1), x, h - 4)
-      ctx.font = '11px Consolas, monospace'
-    }
-    // 混合位点标记
-    if (mixedSet.has(i + 1)) {
-      ctx.strokeStyle = '#E67E22'
-      ctx.strokeRect(left + (i - start) * colW, peakTop, colW, peakH)
-    }
-  }
-
-  // 高亮变异位置（read_pos 精确坐标，含 indel 也准确）
-  if (highlightReadIdx.value != null) {
-    const readIdx = highlightReadIdx.value
-    if (readIdx >= start && readIdx < end) {
-      const x = left + (readIdx - start) * colW
-      ctx.fillStyle = 'rgba(255, 220, 0, 0.25)'
-      ctx.fillRect(x, peakTop, colW, h - peakTop)
-    }
-  }
-
-  // 图例
-  ctx.font = '10px Arial'
-  ctx.textAlign = 'left'
-  let lx = 4
-  for (const b of ['A', 'T', 'G', 'C']) {
-    ctx.fillStyle = CHANNEL_COLORS[b]
-    ctx.fillText(b, lx, 12)
-    lx += 14
+function safeScrollTo(left: number, smooth: boolean) {
+  const wrap = seqBox.value
+  if (!wrap) return
+  try {
+    wrap.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' })
+  } catch {
+    wrap.scrollLeft = left   // jsdom 等环境无平滑滚动
   }
 }
 
-function traceShift(dir: number) {
-  const t = trace.value
-  if (!t) return
-  traceStart.value = Math.max(0, Math.min(t.bases.length - traceSpan.value, traceStart.value + dir * Math.floor(traceSpan.value / 2)))
-  nextDraw()
-}
-function traceZoom(factor: number) {
-  traceSpan.value = Math.max(15, Math.min(300, Math.round(traceSpan.value * factor)))
-  nextDraw()
+function scrollToRefPos(refPos: number, flash = false) {
+  const wrap = seqBox.value
+  if (wrap) {
+    const target = Math.max(0, (refPos - 0.5) * seqColW.value - wrap.clientWidth / 2)
+    safeScrollTo(target, true)
+  }
+  if (flash) {
+    flashRefPos.value = refPos
+    if (flashTimer) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      flashRefPos.value = null
+      nextSeqDraw()
+    }, 1600)
+  }
+  nextSeqDraw()
 }
 
 async function jumpToVariant(v: SequencingVariant) {
   if (!analysis.value) return
   const read = analysis.value.reads.find((r) => r.filename === (v.read || r.filename)) || analysis.value.reads[0]
-  if (!trace.value || activeRead.value !== read.index) {
-    // 加载失败时不得沿用旧 read 的峰图定位（会定位到错误窗口）
-    if (!(await loadTrace(read.index))) return
+  if (!read) return
+  if (!isReadVisible(read.index)) {
+    visibleReads.value.push(read.index)
+    await nextTick()
   }
-  const t = trace.value
-  // 精确定位：read_pos 是该 read 修剪后序列内的 1-based 位置（有 indel 也准确）
-  const readIdx = v.read_pos ? v.read_pos - 1 : v.ref_pos - read.ref_start
-  if (t && readIdx >= 0 && readIdx < t.bases.length) {
-    traceStart.value = Math.max(0, readIdx - Math.floor(traceSpan.value / 2))
-  }
-  highlightReadIdx.value = readIdx >= 0 ? readIdx : null
-  // 比对视图同步定位到该差异列
-  alignReadIdx.value = read.index
-  await nextTick()
-  focusAlignmentAt(v.ref_pos, v.type === 'insertion')
-  nextDraw()
+  await loadSeqTrace(read.index)
+  selRefPos.value = v.ref_pos
+  seqInfo.value = composeSeqInfo(v.ref_pos)
+  seqBox.value?.scrollIntoView?.({ block: 'nearest' })
+  scrollToRefPos(v.ref_pos, true)
 }
 
-function showAlignment(i: number) {
-  selectAlignRead(i)
-  nextTick(() => alignBox.value?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }))
+function openReadInSeqviz(i: number) {
+  const read = analysis.value?.reads[i]
+  if (!read) return
+  if (!isReadVisible(i)) {
+    visibleReads.value.push(i)
+    loadSeqTrace(i)
+  }
+  seqBox.value?.scrollIntoView?.({ block: 'nearest' })
+  scrollToRefPos(read.ref_start)
 }
+
+function jumpToRefPos() {
+  const p = parseInt(jumpInput.value, 10)
+  if (Number.isNaN(p) || !analysis.value) return
+  if (p < 1 || p > analysis.value.reference_length) return
+  selRefPos.value = p
+  seqInfo.value = composeSeqInfo(p)
+  scrollToRefPos(p, true)
+}
+
+function onSeqScroll() {
+  seqScrollX = seqBox.value?.scrollLeft ?? 0
+  nextSeqDraw()
+}
+
+function onSeqWheel(e: WheelEvent) {
+  if (e.ctrlKey) {
+    e.preventDefault()
+    seqZoomAt(e.deltaY < 0 ? 1.2 : 1 / 1.2, e.offsetX)
+  } else {
+    // 纵向滚轮 → 横向浏览（峰图浏览器惯例）
+    e.preventDefault()
+    seqBox.value?.scrollBy?.({ left: e.deltaY })
+    onSeqScroll()
+  }
+}
+
+function seqZoomAt(f: number, anchorX?: number) {
+  const old = seqColW.value
+  const nu = Math.max(1, Math.min(28, Math.round(old * f * 100) / 100))
+  if (nu === old) return
+  if (anchorX != null) {
+    const u = (seqScrollX + anchorX) / old
+    seqColW.value = nu
+    seqScrollX = Math.max(0, u * nu - anchorX)
+    safeScrollTo(seqScrollX, false)
+  } else {
+    seqColW.value = nu
+  }
+  nextSeqDraw()
+}
+
+function seqZoom(f: number) { seqZoomAt(f) }
+
+function seqFit() {
+  const wrap = seqBox.value
+  if (!wrap || !analysis.value) return
+  seqColW.value = Math.max(1, Math.min(28, Math.floor(wrap.clientWidth / analysis.value.reference_length)))
+  safeScrollTo(0, false)
+  nextSeqDraw()
+}
+
+function onSeqClick(e: MouseEvent) {
+  const wrap = seqBox.value
+  if (!wrap || !analysis.value) return
+  const rect = wrap.getBoundingClientRect()
+  const x = e.clientX - rect.left + seqScrollX
+  const refPos = Math.floor(x / seqColW.value) + 1
+  if (refPos < 1 || refPos > analysis.value.reference_length) return
+  selRefPos.value = refPos
+  seqInfo.value = composeSeqInfo(refPos)
+  nextSeqDraw()
+}
+
+/** 点选列的证据摘要：各可见 read 的碱基/Q/双峰占比 + 落在该位的差异注释 */
+function composeSeqInfo(refPos: number): string {
+  const a = analysis.value
+  if (!a) return ''
+  const parts: string[] = [`参考位置 ${refPos}`]
+  for (const ri of visibleReads.value) {
+    const cols = seqColsFor(ri)
+    const read = a.reads[ri]
+    if (!cols || !read) continue
+    const hit = cols.find((c) => c.refPos === refPos && c.read !== '-')
+    if (hit) {
+      let s = `${shortName(read.filename)} ${hit.read}（Q${hit.q || '?'}`
+      const md = (read.mixed_detail || []).find((d) => d.pos - 1 === hit.origIdx)
+      // ratio 是次峰/主峰面积比，次要克隆占比 = r/(1+r)（与结论聚合口径一致）
+      if (md) s += `，双峰：次峰 ${md.secondary_base} 占 ${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`
+      s += '）'
+      parts.push(s)
+    } else {
+      const insHere = cols.some((c) => c.ins && Math.floor(c.xu) + 1 === refPos)
+      parts.push(`${shortName(read.filename)} 未覆盖${insHere ? '（此处 read 有插入碱基）' : ''}`)
+    }
+  }
+  const v = a.variants.find((x) => x.ref_pos === refPos)
+  if (v) {
+    const feats = (v.features || []).map((f) => f.name).join('、')
+    parts.push(`差异：${v.ref_base}→${v.alt_base}（${feats || '非编码区'}${v.aa_change ? '，' + v.aa_change : ''}）`)
+  }
+  return parts.join(' · ')
+}
+
+// ==================== 融合视图绘制 ====================
+function nextSeqDraw() {
+  cancelAnimationFrame(seqRaf)
+  seqRaf = requestAnimationFrame(drawSeq)
+}
+
+function seqX(xu: number): number {
+  return xu * seqColW.value - seqScrollX
+}
+
+/** 单条 read 的峰图条带：逐列取该碱基的采样窗（peak apex 与邻峰中点），
+ *  apex 对齐列中心——对任意采样密度/修剪偏移/反向 read 都成立 */
+function drawSeqTrace(
+  ctx: CanvasRenderingContext2D, t: ReadTrace, cols: SeqCol[],
+  wins: { ci: number; lo: number; hi: number; apex: number }[],
+  maxV: number, top: number, baseline: number,
+) {
+  const ch = t.channels as Record<string, number[]>
+  for (const b of ['A', 'T', 'G', 'C']) {
+    const arr = ch[b]
+    if (!arr) continue
+    ctx.beginPath()
+    ctx.strokeStyle = CHANNEL_COLORS[b]
+    ctx.lineWidth = 1
+    let started = false
+    for (const w of wins) {
+      const c = cols[w.ci]
+      const prevXu = w.ci > 0 ? cols[w.ci - 1].xu : c.xu - 1
+      const nextXu = w.ci + 1 < cols.length ? cols[w.ci + 1].xu : c.xu + 1
+      const xL = seqX((c.xu + prevXu) / 2)
+      const xR = seqX((c.xu + nextXu) / 2)
+      const xc = seqX(c.xu)
+      const loN = Math.max(0, w.lo), hiN = Math.min(arr.length - 1, w.hi)
+      for (let s = loN; s <= hiN; s++) {
+        const v = arr[s]
+        if (v == null) continue
+        const x = s <= w.apex
+          ? xL + (xc - xL) * (w.apex === w.lo ? 1 : (s - w.lo) / Math.max(1, w.apex - w.lo))
+          : xc + (xR - xc) * (w.hi === w.apex ? 1 : (s - w.apex) / Math.max(1, w.hi - w.apex))
+        const y = baseline - (baseline - top) * Math.min(1, v / maxV)
+        if (!started) { ctx.moveTo(x, y); started = true } else ctx.lineTo(x, y)
+      }
+    }
+    ctx.stroke()
+  }
+}
+
+function drawSeq() {
+  const canvas = seqCanvas.value
+  const wrap = seqBox.value
+  if (!canvas || !wrap) return
+  const ctx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null
+  if (!ctx) return   // 无 2d 环境（happy-dom/jsdom 测试）跳过
+  const a = analysis.value
+  if (!a) return
+  const dpr = window.devicePixelRatio || 1
+  const w = wrap.clientWidth
+  const h = wrap.clientHeight
+  canvas.width = Math.max(1, Math.round(w * dpr))
+  canvas.height = Math.max(1, Math.round(h * dpr))
+  canvas.style.width = `${w}px`
+  canvas.style.height = `${h}px`
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, w, h)
+
+  const colW = seqColW.value
+  const uLeft = seqScrollX / colW
+  const uRight = (seqScrollX + w) / colW
+  const rulerH = 14
+  const refRowY = rulerH + 2
+
+  // 1) 刻度尺 + 纵向网格线
+  const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  const step = steps.find((s) => s * colW >= 60) ?? 10000
+  ctx.font = '9px Arial'
+  ctx.textAlign = 'center'
+  for (let p = Math.max(1, Math.ceil(uLeft / step) * step); p <= uRight; p += step) {
+    const x = seqX(p - 0.5)
+    ctx.fillStyle = '#999'
+    ctx.fillText(p >= 10000 ? `${Math.round(p / 1000)}k` : String(p), x, 10)
+    ctx.strokeStyle = '#F0F0F0'
+    ctx.beginPath()
+    ctx.moveTo(x, rulerH)
+    ctx.lineTo(x, h)
+    ctx.stroke()
+  }
+
+  // 2) 参考碱基行（可见 read 的对齐参考并集；覆盖区浅绿底）
+  const refCovered = new Map<number, string>()
+  for (const ri of visibleReads.value) {
+    const cols = seqColsFor(ri)
+    if (!cols) continue
+    for (const c of cols) {
+      if (c.ref !== '-' && !refCovered.has(c.refPos)) refCovered.set(c.refPos, c.ref)
+    }
+  }
+  ctx.fillStyle = 'rgba(46,158,68,0.10)'
+  for (const [p] of refCovered) {
+    const x = seqX(p - 1)
+    if (x > -colW && x < w + colW) ctx.fillRect(x, refRowY, Math.max(colW, 2), SEQ_ROW_H)
+  }
+  if (colW >= 7) {
+    ctx.font = '11px Consolas, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = '#555'
+    for (const [p, b] of refCovered) {
+      const x = seqX(p - 0.5)
+      if (x > -colW && x < w + colW) ctx.fillText(b, x, refRowY + 12)
+    }
+  }
+  // 轴上变异红块（与匹配简图同语义）
+  ctx.fillStyle = '#D0342C'
+  for (const v of a.variants) {
+    const x = seqX(v.ref_pos - 0.5)
+    if (x > -4 && x < w + 4) ctx.fillRect(x - 2, refRowY - 3, 4, 3)
+  }
+
+  // 3) 各 read 行：碱基字母（Q 着色）+ 峰图条带 + 混合位点标注
+  visibleReads.value.forEach((ri, rowN) => {
+    const read = a.reads[ri]
+    const cols = seqColsFor(ri)
+    const rowY = refRowY + SEQ_ROW_H + 4 + rowN * (SEQ_ROW_H + SEQ_TRACE_H + 6)
+    const traceTop = rowY + SEQ_ROW_H + 2
+    const baseline = traceTop + SEQ_TRACE_H - 4
+    if (!read) return
+    ctx.textAlign = 'left'
+    ctx.fillStyle = '#98422A'
+    ctx.font = '9px Arial'
+    ctx.fillText(`${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)}`, 4, rowY + 8)
+    if (!cols) {
+      ctx.fillStyle = '#BBB'
+      ctx.fillText('（无对齐数据）', 4, rowY + SEQ_ROW_H + 14)
+      return
+    }
+    const trace = traceCache.value[ri] ?? null
+    const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
+    for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
+
+    // 采样窗（可见列）：apex 与相邻峰中点围成的本碱基区间
+    const pk = trace?.peak_indices || []
+    const trim = trace?.trim_start ?? 0
+    const wins: { ci: number; lo: number; hi: number; apex: number }[] = []
+    let maxV = 1
+    for (let ci = 0; ci < cols.length; ci++) {
+      const c = cols[ci]
+      if (c.origIdx < 0) continue
+      if (c.xu < uLeft - 2 || c.xu > uRight + 2) continue
+      const iRaw = trim + c.origIdx
+      const apex = pk[iRaw]
+      if (apex == null || apex < 0) continue
+      const prevRaw = iRaw > 0 ? pk[iRaw - 1] : null
+      const nextRaw = iRaw + 1 < pk.length ? pk[iRaw + 1] : null
+      const lo = prevRaw != null ? Math.round((prevRaw + apex) / 2) : Math.max(0, apex - 5)
+      const hi = nextRaw != null ? Math.round((apex + nextRaw) / 2) : apex + 5
+      wins.push({ ci, lo, hi, apex })
+      const ch = trace!.channels as Record<string, number[]>
+      for (const b of ['A', 'T', 'G', 'C']) {
+        const arr = ch[b]
+        if (!arr) continue
+        for (let s = lo; s <= hi; s++) if (arr[s] > maxV) maxV = arr[s]
+      }
+    }
+    // 列背景与字母
+    for (const c of cols) {
+      const cx = seqX(c.xu)
+      if (cx < -colW * 2 || cx > w + colW * 2) continue
+      if (c.read === '-') {
+        if (colW >= 7) { ctx.fillStyle = '#D8D8D8'; ctx.fillRect(cx - 1, rowY + 4, 2, 8) }
+        continue
+      }
+      const md = mixedMap.get(c.origIdx)
+      if (c.mm) {
+        ctx.fillStyle = 'rgba(208,52,44,0.16)'
+        ctx.fillRect(cx - colW / 2, rowY, Math.max(colW, 6), SEQ_ROW_H + 2)
+      }
+      if (md) {
+        ctx.fillStyle = 'rgba(230,126,34,0.15)'
+        ctx.fillRect(cx - Math.max(colW / 2, 3), rowY, Math.max(colW, 6), SEQ_ROW_H + SEQ_TRACE_H + 2)
+      }
+      if (colW >= 7 && c.read !== '-') {
+        ctx.textAlign = 'center'
+        ctx.font = c.mm ? 'bold 11px Consolas, monospace' : '11px Consolas, monospace'
+        ctx.fillStyle = c.q > 0 && c.q < 20 ? '#E67E22' : c.mm ? '#B03028' : '#333'
+        ctx.fillText(c.read, cx, rowY + 12)
+      }
+    }
+
+    // 峰图曲线
+    if (trace && wins.length) {
+      ctx.strokeStyle = '#F2F2F2'
+      ctx.beginPath()
+      ctx.moveTo(0, baseline)
+      ctx.lineTo(w, baseline)
+      ctx.stroke()
+      drawSeqTrace(ctx, trace, cols, wins, maxV, traceTop, baseline)
+      // 混合位点标注：次峰碱基 + 占比
+      if (colW >= 13) {
+        ctx.font = '8px Arial'
+        ctx.textAlign = 'center'
+        for (const w2 of wins) {
+          const c = cols[w2.ci]
+          const md = mixedMap.get(c.origIdx)
+          if (!md) continue
+          ctx.fillStyle = '#E67E22'
+          ctx.fillText(`${md.secondary_base}${Math.round((md.ratio / (1 + md.ratio)) * 100)}%`, seqX(c.xu), traceTop + 8)
+        }
+      }
+    }
+  })
+
+  // 4) 点选列竖线 + 跳转高亮
+  if (selRefPos.value != null) {
+    const x = seqX(selRefPos.value - 0.5)
+    ctx.strokeStyle = '#2456C8'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(x, rulerH)
+    ctx.lineTo(x, h)
+    ctx.stroke()
+  }
+  if (flashRefPos.value != null) {
+    const x = seqX(flashRefPos.value - 1)
+    ctx.fillStyle = 'rgba(255, 220, 0, 0.28)'
+    ctx.fillRect(x, rulerH, Math.max(colW, 6), h - rulerH)
+  }
+}
+
+// 滚动/缩放触发重绘；visibleReads 是 push/splice 原位变更，需 deep 才能触发
+watch([visibleReads, seqColW], nextSeqDraw, { deep: true })
+
+function onSeqResize() { nextSeqDraw() }
+onMounted(() => window.addEventListener('resize', onSeqResize))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onSeqResize)
+  if (flashTimer) clearTimeout(flashTimer)
+})
 
 // ==================== 共识序列 ====================
 /** 分段渲染：与参考不同的位点高亮（cons_index 精确对应共识序列下标） */
@@ -876,9 +1153,6 @@ async function downloadConsensus(format: string) {
   link.click()
   URL.revokeObjectURL(url)
 }
-
-onMounted(() => window.addEventListener('resize', nextDraw))
-onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 </script>
 
 <template>
@@ -1057,7 +1331,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 
       <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
       <div class="map-box" v-if="analysis.reads.length">
-        <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span>
+        <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 或红块在比对峰图中查看）</span>
           <label class="map-dedup-toggle"
                  title="图谱文件里同名且位置重叠或相邻（≤50bp）的重复注释合并为一条显示（如成对的 5 UTR、邻接的 miscellaneous），方向不敏感；相距远的同名特征不受影响；默认按文件原样显示">
             <input type="checkbox" v-model="dedupMapFeats" /> 特征去重
@@ -1069,8 +1343,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           <line v-for="t in mapTicks" :key="'g' + t.pos" :x1="mapX(t.pos)" :x2="mapX(t.pos)"
                 :y1="READS_TOP - 4" :y2="mapHeight - 2" class="map-grid" />
           <!-- read 行：深红块状箭头（方向见箭头），名字放得下画进箭头内，差异位点空心圆 -->
-          <g v-for="r in mapRows" :key="r.index" class="map-row" @click="showAlignment(r.index)">
-            <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击查看逐碱基比对</title>
+          <g v-for="r in mapRows" :key="r.index" class="map-row" @click="openReadInSeqviz(r.index)">
+            <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击在比对峰图中查看</title>
             <text v-if="!r.nameInside" :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="end" class="map-label">
               {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
             </text>
@@ -1093,7 +1367,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           </g>
           <!-- 轴上变异红块（点击跳峰图） -->
           <g v-for="v in analysis.variants" :key="'v' + v.ref_pos + v.type" class="map-var" @click.stop="jumpToVariant(v)">
-            <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击查看峰图</title>
+            <title>{{ v.ref_pos }} {{ v.ref_base }}→{{ v.alt_base }}（{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}，{{ v.support_reads || 1 }} 条 read）——点击在比对峰图中查看</title>
             <rect :x="mapX(v.ref_pos) - 3.5" :y="axisY - VAR_H + 2" width="7" height="10" rx="1" class="map-var-tick" />
           </g>
           <!-- 参考特征：彩色块状箭头，名字放不下时引线外置 -->
@@ -1111,7 +1385,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           </g>
         </svg>
         <p class="map-legend hint">
-          <span class="lg-read">▬ 测序 read（箭头=方向，点击看比对）</span> ·
+          <span class="lg-read">▬ 测序 read（箭头=方向，点击在比对峰图中查看）</span> ·
           <span class="lg-dot">○ 差异位点</span> ·
           <span class="lg-var">▮</span> 变异（点击跳峰图） ·
           <span class="lg-cov">▬</span> 轴上绿段 = 已测序覆盖
@@ -1142,8 +1416,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
             </td>
             <td>{{ (r.identity * 100).toFixed(1) }}%</td>
             <td>
-              <button class="mini-btn" @click="loadTrace(r.index)">峰图</button>
-              <button class="mini-btn" @click="showAlignment(r.index)">比对</button>
+              <button class="mini-btn" @click="openReadInSeqviz(r.index)">查看</button>
             </td>
           </tr>
         </tbody>
@@ -1190,50 +1463,30 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
         </table>
       </div>
 
-      <!-- 比对校验：read vs 参考逐碱基核对（差异/插入缺失/低质量一目了然） -->
-      <div class="align-box" ref="alignBox" v-if="analysis.reads.length">
+      <!-- 比对峰图：参考行 + 各 read 碱基行 + 四通道峰图画在同一参考坐标轴上
+           （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
+      <div class="seqviz-box" v-if="analysis.reads.length">
         <div class="trace-toolbar">
-          <h4 class="section-title">比对校验<span v-if="currentRead"> — {{ currentRead.filename }}</span></h4>
-          <div class="aln-read-picker" v-if="analysis.reads.length > 1">
-            <button v-for="r in analysis.reads" :key="r.index" class="mini-btn"
-                    :class="{ active: alignReadIdx === r.index }" @click="selectAlignRead(r.index)">
-              {{ r.filename }}
-            </button>
+          <h4 class="section-title">比对峰图<span class="map-sub">（横轴 = 参考坐标；红底 = 差异，橙底 = 双峰位点，点击列看证据，Ctrl+滚轮缩放）</span></h4>
+          <div class="seqviz-controls">
+            <label v-for="r in analysis.reads" :key="r.index" class="seqviz-pick">
+              <input type="checkbox" :checked="isReadVisible(r.index)" @change="toggleRead(r.index)" />{{ r.direction === '-' ? '←' : '→' }} {{ shortName(r.filename) }}
+            </label>
+            <button class="mini-btn" title="放大" @click="seqZoom(1.25)">＋</button>
+            <button class="mini-btn" title="缩小" @click="seqZoom(0.8)">−</button>
+            <button class="mini-btn" @click="seqFit">适应全宽</button>
+            <input class="seqviz-jump" v-model="jumpInput" placeholder="参考位置" @keydown.enter="jumpToRefPos" />
+            <button class="mini-btn" @click="jumpToRefPos">跳转</button>
           </div>
         </div>
-        <p class="aln-legend" v-if="alignmentView && currentRead">
-          {{ currentRead.direction === '-' ? '反向 read（以参考方向展示，即测序碱基的反向互补）' : '正向 read' }}
-          · 参考区间 {{ currentRead.ref_start }}-{{ currentRead.ref_end }}
-          · 一致性 {{ (currentRead.identity * 100).toFixed(1) }}%
-          · <span class="lg-mm">红底 = 与参考不同</span>
-          · <span class="lg-q">橙字 = Q&lt;20 低质量</span>
-          · — = 插入/缺失
-        </p>
-        <div class="aln-scroll" v-if="alignmentChunks.length">
-          <div v-for="(chunk, ci) in alignmentChunks" :key="ci" class="aln-chunk" :ref="(el) => setChunkRef(ci, el)">
-            <div class="aln-row ruler">
-              <span class="aln-lbl">{{ chunkStartPos(chunk) }}</span>
-              <span v-for="(c, i) in chunk.cols" :key="i" class="cell"
-                    :class="{ tick: c.refPos && c.refPos % 10 === 0 }">{{ c.refPos && c.refPos % 10 === 0 ? (c.refPos % 10) : '' }}</span>
-            </div>
-            <div class="aln-row">
-              <span class="aln-lbl">参考</span>
-              <span v-for="(c, i) in chunk.cols" :key="i" class="cell mono"
-                    :class="{ gap: c.ref === '-', focus: focusCol === chunk.startCol + i }">{{ c.ref }}</span>
-            </div>
-            <div class="aln-row">
-              <span class="aln-lbl">Read</span>
-              <span v-for="(c, i) in chunk.cols" :key="i" class="cell mono"
-                    :class="{ gap: c.read === '-', mm: c.mm, indel: c.indel && c.read !== '-', qLow: c.read !== '-' && c.q > 0 && c.q < 20, focus: focusCol === chunk.startCol + i }">{{ c.read }}</span>
-            </div>
-            <div class="aln-row q-row">
-              <span class="aln-lbl">Q</span>
-              <span v-for="(c, i) in chunk.cols" :key="i" class="cell qcell"
-                    :class="{ qLow: c.read !== '-' && c.q > 0 && c.q < 20, gap: c.read === '-' }">{{ qLabel(c) }}</span>
-            </div>
-          </div>
+        <p v-if="seqTraceLoading" class="hint">加载峰图…</p>
+        <div ref="seqBox" class="seqviz-wrap" :style="{ height: seqWrapH + 'px' }"
+             @scroll="onSeqScroll" @wheel="onSeqWheel" @click="onSeqClick">
+          <div class="seqviz-spacer" :style="{ width: seqSpacerW + 'px' }"></div>
+          <canvas ref="seqCanvas" class="seqviz-canvas"></canvas>
         </div>
-        <p v-else class="hint">该 read 无对齐数据</p>
+        <p v-if="seqInfo" class="seqviz-info">{{ seqInfo }}</p>
+        <p v-else class="hint">点击任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与简图红块可跳到对应位置</p>
       </div>
 
       <!-- 解卷积结果 -->
@@ -1243,24 +1496,6 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           <strong>{{ fname }}</strong>:
           <span v-for="(a, i) in alleles" :key="i" class="mono allele-seq">{{ a.sequence.slice(0, 60) }}…</span>
         </div>
-      </div>
-
-      <!-- 峰图 -->
-      <div class="trace-box">
-        <div class="trace-toolbar">
-          <h4 class="section-title">Chromatogram{{ trace ? ` — ${trace.filename}` : '' }}</h4>
-          <div class="trace-controls">
-            <button class="mini-btn" @click="traceShift(-1)">←</button>
-            <button class="mini-btn" @click="traceZoom(0.7)">放大</button>
-            <button class="mini-btn" @click="traceZoom(1.4)">缩小</button>
-            <button class="mini-btn" @click="traceShift(1)">→</button>
-          </div>
-        </div>
-        <p v-if="traceLoading" class="hint">加载峰图…</p>
-        <div v-else-if="trace" ref="traceWrap" class="trace-wrap">
-          <canvas ref="traceCanvas"></canvas>
-        </div>
-        <p v-else class="hint">点击 read 表中的「查看」或差异明细行来加载峰图</p>
       </div>
 
       <!-- 共识序列 -->
@@ -1397,10 +1632,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .allele-item { font-size: 0.85rem; margin: 0.35rem 0; }
 .allele-seq { margin: 0 0.75rem; }
 
-.trace-box, .consensus-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
-.trace-toolbar { display: flex; justify-content: space-between; align-items: center; }
-.trace-controls { display: flex; gap: 0.35rem; }
-.trace-wrap { height: 220px; border: 1px solid #f0f0f0; border-radius: 6px; overflow: hidden; }
+.seqviz-box, .consensus-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
+.trace-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
 .hint { color: #999; font-size: 0.85rem; }
 
 .mini-btn {
@@ -1417,32 +1650,24 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 .cons-diff { background: #FFF3B8; border-radius: 2px; padding: 0 1px; }
 .cons-hint { margin-top: 0.4rem; }
 
-/* ==================== 比对校验视图 ==================== */
-.align-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
-.aln-read-picker { display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: flex-end; }
-.aln-read-picker .mini-btn.active { background: #2E9E44; color: #fff; border-color: #2E9E44; }
-.aln-legend { font-size: 0.78rem; color: #777; margin: 0.4rem 0 0.5rem; }
-.lg-mm { color: #C0392B; font-weight: 600; }
-.lg-q { color: #E67E22; font-weight: 600; }
-.aln-scroll { overflow-x: auto; }
-.aln-chunk { display: block; padding: 0.1rem 0.5rem 0.3rem 0; border-bottom: 1px dashed #ECECEC; }
-.aln-chunk:last-child { border-bottom: none; }
-.aln-row { display: flex; align-items: baseline; white-space: nowrap; line-height: 1.5; }
-.aln-lbl {
-  display: inline-block; width: 120px; flex-shrink: 0;
-  font-size: 0.7rem; color: #999; text-align: right; padding-right: 8px;
-  font-family: Consolas, monospace;
+/* ==================== 比对峰图融合视图 ==================== */
+.seqviz-controls { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; justify-content: flex-end; }
+.seqviz-pick {
+  font-size: 0.78rem; color: #444; white-space: nowrap;
+  user-select: none; cursor: pointer; margin-right: 0.35rem;
 }
-.cell { display: inline-block; width: 11px; text-align: center; font-size: 11px; line-height: 1.5; }
-.cell.mono { font-family: Consolas, monospace; }
-.ruler .cell { font-size: 9px; color: #B8B8B8; }
-.q-row .qcell { font-size: 7.5px; color: #999; }
-.cell.gap { color: #C8C8C8; }
-.cell.mm { background: #FDE8E8; color: #C0392B; font-weight: 700; border-radius: 2px; }
-.cell.indel { background: #FDE8E8; color: #C0392B; border-radius: 2px; }
-.cell.qLow { color: #E67E22; }
-.qcell.qLow { color: #E67E22; font-weight: 700; }
-.cell.focus { outline: 2px solid #F1C40F; outline-offset: -1px; background: rgba(241, 196, 15, 0.18); }
+.seqviz-pick input { vertical-align: middle; margin: 0 2px 0 0; }
+.seqviz-jump {
+  width: 70px; padding: 0.15rem 0.4rem; font-size: 0.78rem;
+  border: 1px solid var(--border-color, #ddd); border-radius: 4px;
+}
+.seqviz-wrap {
+  position: relative; overflow-x: auto; overflow-y: hidden;
+  border: 1px solid #E5E8EC; border-radius: 6px; background: #fff; cursor: crosshair;
+}
+.seqviz-spacer { position: absolute; top: 0; left: 0; height: 1px; pointer-events: none; }
+.seqviz-canvas { position: sticky; left: 0; top: 0; display: block; }
+.seqviz-info { font-size: 0.8rem; color: #555; margin: 0.4rem 0 0; font-family: Consolas, monospace; }
 
 /* ==================== 匹配简图 ==================== */
 .map-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }

@@ -1457,6 +1457,12 @@ def analyze(
             and END_MARGIN < e["pos"] <= n_trim - END_MARGIN
         ]
         r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
+        # 逐位证据（次级通道与占比）随结果下发，供前端在峰图上标注双峰
+        r["mixed_detail"] = [
+            {"pos": e["pos"], "ratio": round(e["ratio"], 3),
+             "secondary_base": e["secondary_base"]}
+            for e in mixed_detail if not e["pullup"]
+        ]
         # read 级混合分级：把逐位双峰聚合成 可行动 的判定（widespread=疑似
         # 混合样品 / scattered=个别双峰），pull-up 拖影已在 detail 内标记剔除
         r["mixed_profile"] = _classify_mixed(mixed_detail, len(r["trimmed_bases"]))
@@ -1900,7 +1906,8 @@ def analyze(
                           "raw_bases", "trim_start")}
             for r in read_results
         ],
-        # 峰图原始数据（与 reads 同序）：四通道 + 碱基 + 质量 + 峰位置
+        # 峰图原始数据（与 reads 同序）：四通道 + 碱基 + 质量 + 峰位置。
+        # peak_indices 按原始 read 碱基索引，前端换算采样窗需要修剪偏移
         "traces": [
             {
                 "filename": r["filename"],
@@ -1908,6 +1915,7 @@ def analyze(
                 "quality": r["trimmed_quality"],
                 "channels": r["trace"],
                 "peak_indices": r["peak_indices"],
+                "trim_start": r.get("trim_start", 0),
             }
             for r in read_results
         ],
