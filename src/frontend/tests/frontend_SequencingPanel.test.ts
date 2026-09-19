@@ -280,29 +280,37 @@ describe('SequencingPanel', () => {
     expect(text).toContain('r2.ab1：双峰 5 处，位于 read 90、130')
   })
 
-  it('deduplicates same-name overlapping reference features only when toggled', async () => {
+  it('deduplicates duplicate reference annotations only when toggled', async () => {
     const analysis = {
       ...mockAnalysis,
       features: [
-        { name: '5 UTR', type: 'misc_feature', start: 300, end: 360, strand: '+' },
-        { name: '5 UTR', type: 'misc_feature', start: 320, end: 380, strand: '+' },
-        { name: '3 UTR', type: 'misc_feature', start: 700, end: 760, strand: '+' },
-        { name: 'GFP', type: 'CDS', start: 400, end: 600, strand: '+' },
+        // 邻接不相交且异链（厂商图谱常见的重复标注形态之一）
+        { name: 'miscellaneous', type: 'misc_feature', start: 300, end: 360, strand: '+' },
+        { name: 'miscellaneous', type: 'misc_feature', start: 365, end: 420, strand: '-' },
+        // 重叠异链
+        { name: '5 UTR', type: 'misc_feature', start: 700, end: 760, strand: '+' },
+        { name: '5 UTR', type: 'misc_feature', start: 720, end: 780, strand: '-' },
+        // 相距远的同名特征是不同元件，不合并
+        { name: '3 UTR', type: 'misc_feature', start: 1200, end: 1260, strand: '+' },
+        { name: '3 UTR', type: 'misc_feature', start: 2400, end: 2460, strand: '+' },
+        { name: 'GFP', type: 'CDS', start: 1500, end: 1800, strand: '+' },
       ],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await wrapper.vm.$nextTick()
 
-    // 默认按文件原样显示（含重复注释）：4 条全画
-    expect(wrapper.findAll('.map-feat').length).toBe(4)
+    // 默认按文件原样显示（含重复注释）：7 条全画
+    expect(wrapper.findAll('.map-feat').length).toBe(7)
 
-    // 开启去重：同名同向且位置重叠的合并为一条（两个 5 UTR → 一条），
-    // 位置不重叠的同名特征（两个 3 UTR 场景）不受影响
+    // 开启去重：同名且位置重叠/相邻的合并为一条（异链也算），
+    // 相距远的同名特征（两个 3 UTR）不受影响
     await wrapper.find('.map-dedup-toggle input').setValue(true)
     await wrapper.vm.$nextTick()
-    expect(wrapper.findAll('.map-feat').length).toBe(3)
+    expect(wrapper.findAll('.map-feat').length).toBe(5)
     const titles = wrapper.findAll('.map-feat').map((g) => g.find('title').text())
-    expect(titles.some((t) => t.includes('5 UTR') && t.includes('300-380'))).toBe(true)
+    expect(titles.some((t) => t.includes('miscellaneous') && t.includes('300-420'))).toBe(true)
+    expect(titles.some((t) => t.includes('5 UTR') && t.includes('700-780'))).toBe(true)
+    expect(wrapper.text()).toContain('已合并 2 条重复注释')
   })
 
   it('renders alignment view with mismatch and low-Q highlighting', async () => {
