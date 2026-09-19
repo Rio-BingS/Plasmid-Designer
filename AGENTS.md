@@ -102,6 +102,20 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-19）
 
+- 调整（2026-09-19）**poly 判读呈现整理（C2）**：用户确认「常规序列与 poly
+  序列的分析分开呈现更好」后收窄落地两件事。①结论文本去重（core/sanger/
+  pipeline.py 变异分支）：此前 poly 区 indel 变体在结论里出现两条 ↳ 行
+  （变体行「参考 X 测得 Y」+ 峰图判读行「缺失 N 个」），现合并为一条——
+  峰图计数与调用不一致的 poly 结构（emitted_runs 集合按 (base,unit,start)
+  匹配变体的 homopolymer 注释）只出一条「峰图判读」行（变体锚点 + 峰图
+  实测 + 逐 read 调用/峰数明细），计数可靠的变体仍走原「重复数变化」行；
+  无变体的峰图告警分支不变。②批量报告（app/sequencing_report.py
+  _group_report_md）新增「poly 同聚物 / 重复结构判读」章节（结构表 +
+  不可靠结构的逐 read 证据 + 重复区 indel 表「重复数（参考→测得）」），
+  变异明细表剔除重复区 indel（v.type in ins/del 且有 homopolymer 注释者
+  归 poly 章节，替换类即使落在重复结构仍算常规变异）；结构名与判读短语
+  直接 import pipeline 的 _run_label/_peak_verdict_phrase，与网页卡同口径。
+  注意：离线脚本 scripts/batch_sequencing_report.py 的报告未同步本章节。
 - 调整（2026-09-19）**双峰（疑似混合样品）检测分级 + N 调用低置信**：用户反馈
   突变/双峰识别准确性不够。根因之一：混合培养物（两个单克隆混测）的逐位双峰
   只存进结构化字段 mixed_positions，结论/一句话结论/整理包报告完全不可见，

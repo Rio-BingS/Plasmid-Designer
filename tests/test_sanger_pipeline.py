@@ -1616,3 +1616,20 @@ def test_n_call_variants_always_low_confidence():
     v2 = {"ref_pos": 100, "type": "insertion", "ref_base": "-", "alt_base": "AN",
           "read_q": 50, "support_reads": 2}
     assert _variant_confidence(v2, set(), None, read_len=800) == "low"
+
+
+def test_poly_variant_and_peak_conflict_single_conclusion_line():
+    """结论合并口径（C2）：poly 区 indel 变体 + 峰图矛盾 → 只出一条峰图判读行
+    （变体锚点 + 逐 read 调用/峰数明细），不再变体行/峰图行各说一遍"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    mutated = read_bases[:65] + read_bases[66:]   # poly 内缺 1 个 A（调用 29）
+    traces = _shaped_traces(mutated, poly_span=(40, 69), real_peaks=26)  # 峰 26
+    blob = make_ab1(mutated, [40] * len(mutated), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    poly_lines = [ln for ln in result["conclusion"].splitlines()
+                  if "poly(A)" in ln and ln.strip().startswith("↳")]
+    assert len(poly_lines) == 1, result["conclusion"]
+    assert "峰图判读" in poly_lines[0] and "位置" in poly_lines[0]
+    assert "正向调用29/峰" in poly_lines[0]   # 逐 read 明细并入同一条线
+    assert "以峰图可分辨峰为准" in poly_lines[0]

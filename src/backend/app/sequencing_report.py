@@ -29,6 +29,9 @@ from typing import Dict, List, Optional, Tuple
 # 表内别名判定的分隔符不敏感形式与 core.sanger.batch 共用一份实现，保证
 # 归档合并与图谱共享对「同一质粒的不同写法」口径完全一致
 from core.sanger.batch import _squash
+# 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
+# 网页、结论文本、整理包报告里说法一致，避免各写各的）
+from core.sanger.pipeline import _peak_verdict_phrase, _run_label
 
 ZIP_ROOT = "测序整理"
 
@@ -139,6 +142,60 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
             mark = {"full": "✅", "partial": "🟡", "uncovered": "⚪"}.get(c["coverage_status"], "")
             lines.append(f"- {mark} **{c['name']}**（{c['covered_percent']}% 覆盖）：{c['verdict']}")
         lines.append("")
+    # 变体分组：重复区 indel（落在 poly/重复结构内）以「重复数变化」呈现，
+    # 单独列于 poly 章节，不与常规变异混排——普通突变是"序列真的变了"，
+    # 重复区 indel 往往是"这个结构到底有多少个单元说不清"，性质不同
+    record_variants = (record or {}).get("variants") or []
+
+    def _is_repeat_indel(v: Dict) -> bool:
+        return v.get("type") in ("insertion", "deletion") and bool(v.get("homopolymer"))
+
+    repeat_indels = [v for v in record_variants if _is_repeat_indel(v)]
+    regular_variants = [v for v in record_variants if not _is_repeat_indel(v)]
+    # poly 同聚物 / 重复结构判读（与网页 poly 卡同口径）：poly 级结构 +
+    # 带变体的观察级结构；峰图矛盾的结构附逐 read 调用/峰数证据
+    hp_entries = [e for e in ((record or {}).get("homopolymers") or [])
+                  if e.get("tier") == "poly" or e.get("variant")]
+    if hp_entries or repeat_indels:
+        lines += [
+            "## poly 同聚物 / 重复结构判读", "",
+            "重复区的 indel 以「重复数变化」呈现（多了/少了几个单元）；峰图可分辨峰"
+            "是独立于碱基调用的证据，与调用不一致时以峰图为准并建议人工核对。", "",
+        ]
+        if hp_entries:
+            lines += ["| 结构 | 区间 | 参考重复数 | 峰图判读 | 计数可靠性 |",
+                      "|---|---|---|---|---|"]
+            for e in hp_entries:
+                rel_txt = ("可靠" if e.get("count_reliable", True)
+                           else "**不可靠**（峰图与调用不一致，建议核对峰图）")
+                lines.append(f"| {_run_label(e)} | {e['start']}–{e['end']} "
+                             f"| {e['ref_repeat_count']} | {_peak_verdict_phrase(e)} | {rel_txt} |")
+            lines.append("")
+        for e in hp_entries:
+            if e.get("count_reliable", True) or not e.get("read_counts"):
+                continue
+            lines.append(f"- **{_run_label(e)} {e['start']}-{e['end']}**（峰图矛盾）逐 read 证据：")
+            for x in e["read_counts"]:
+                d = "反向" if x["direction"] == "-" else "正向"
+                n = x["peak_count"] if x["peak_count"] is not None else "?"
+                cov = (f"，覆盖段 {x['covered_span'][0]}–{x['covered_span'][1]}"
+                       if x.get("coverage") == "partial" and x.get("covered_span") else "")
+                lines.append(f"  - {x['filename']}（{d}{cov}）：调用 {x['called_count']}，可分辨峰 {n}")
+            lines.append("")
+        if repeat_indels:
+            lines += ["重复区 indel（重复数变化）：", "",
+                      "| 位置 | 类型 | 变化 | 所在结构 | 重复数（参考→测得） | 置信度 |",
+                      "|---|---|---|---|---|---|"]
+            for v in repeat_indels:
+                hp = v["homopolymer"]
+                kind = "插入" if v["type"] == "insertion" else "缺失"
+                conf = {"high": "高", "medium": "中", "low": "低"}.get(
+                    v.get("confidence"), v.get("confidence"))
+                lines.append(
+                    f"| {v['ref_pos']} | {kind} | {_fmt_change(v)} "
+                    f"| {_run_label(hp)} {hp['start']}-{hp['end']} "
+                    f"| {hp['ref_repeat_count']}→{hp['observed_repeat_count']} | {conf} |")
+            lines.append("")
     # 双峰（疑似混合）检测：次级峰 >30% 的位点计为双峰位点（已剔除 poly 滑移
     # 伪影与饱和峰拖影），read 级分级——widespread 提示混有第二种质粒
     flagged = []
@@ -186,11 +243,11 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
             lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
                          f"| {a['ref_start']}–{a['ref_end']} |")
         lines.append("")
-    if record and record["variants"]:
+    if regular_variants:
         lines += ["## 变异明细", "",
                   "| 位置 | 类型 | 变化 | 置信度 | 测序Q | 支持read数 | 峰级证据 | 所在特征 | 氨基酸变化 |",
                   "|---|---|---|---|---|---|---|---|---|"]
-        for v in record["variants"]:
+        for v in regular_variants:
             feats = "、".join(f["name"] for f in v.get("features", [])) or "—"
             aa = v.get("aa_change") or ("同义" if v.get("synonymous")
                                         else "移码" if v.get("frameshift") else "—")

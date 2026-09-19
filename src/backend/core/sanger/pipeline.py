@@ -1746,10 +1746,30 @@ def analyze(
         lines.extend(summarize_severity(variants))
         # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）
         lines.extend(cds_lines)
-        # poly 判读：同聚物区的 indel 单列重复数变化（实验员关心的“多了/少了几个”）
+        # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
+        # 线——变体锚点 + 峰图实测 + 逐 read 调用/峰数。此前变体行与峰图判读
+        # 行两条 ↳ 各说一遍，同一事件在结论里出现两次
+        emitted_runs = {(e["base"], e["unit"], e["start"])
+                        for e in homopolymer_report
+                        if e["tier"] == "poly" and not e["count_reliable"]
+                        and e["read_counts"]}
+
+        def _rc_label(x: Dict) -> str:
+            d = "反向" if x["direction"] == "-" else "正向"
+            n = x["peak_count"] if x["peak_count"] is not None else "?"
+            if x.get("coverage") == "partial":
+                s, t = x["covered_span"]
+                return (f"{x['filename']}{d}覆盖段{s}-{t}"
+                        f"调用{x['called_count']}/峰{n}个")
+            return f"{x['filename']}{d}调用{x['called_count']}/峰{n}个"
+
+        # poly 判读：计数可靠的重复区 indel 单列重复数变化（实验员关心的
+        # “多了/少了几个”）；峰图矛盾的结构由下面的峰图判读行统一覆盖
         for v in variants:
             hp = v.get("homopolymer")
             if not (hp and v.get("type") in ("insertion", "deletion")):
+                continue
+            if (hp.get("base"), hp.get("unit"), hp.get("start")) in emitted_runs:
                 continue
             kind = "插入" if v["type"] == "insertion" else "缺失"
             rel = ("重复数计数可靠" if hp.get("count_reliable", True)
@@ -1761,24 +1781,21 @@ def analyze(
                 f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
                 f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
             )
-        # 峰图计数与调用不一致（即使无 indel 变体）：长同聚物的碱基调用可能整段偏差
+        # 峰图计数与调用不一致（即使无 indel 变体）：长同聚物的碱基调用可能
+        # 整段偏差——一条线给全 变体锚点/实测数/逐 read 证据
         for e in homopolymer_report:
             if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
                 continue
-
-            def _rc_label(x: Dict) -> str:
-                d = "反向" if x["direction"] == "-" else "正向"
-                n = x["peak_count"] if x["peak_count"] is not None else "?"
-                if x.get("coverage") == "partial":
-                    s, t = x["covered_span"]
-                    return (f"{x['filename']}{d}覆盖段{s}-{t}"
-                            f"调用{x['called_count']}/峰{n}个")
-                return f"{x['filename']}{d}调用{x['called_count']}/峰{n}个"
-
+            var = e.get("variant")
+            anchor = ""
+            if var:
+                kind = "插入" if var["type"] == "insertion" else "缺失"
+                anchor = f"位置 {var['ref_pos']} {kind} {var['length']}bp；"
             detail = " / ".join(_rc_label(x) for x in e["read_counts"])
             lines.append(
-                f"  ↳ poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
-                f"{_peak_verdict_phrase(e)}（{detail}）——以峰图可分辨峰为准，建议人工复核"
+                f"  ↳ {_run_label(e)} {e['start']}-{e['end']} 峰图判读："
+                f"{_peak_verdict_phrase(e)}（{anchor}{detail}）"
+                "——峰压缩区，以峰图可分辨峰为准，建议人工核对峰图"
             )
         lines.extend(dropout_notes)
         if consensus["coverage_percent"] < 95:
