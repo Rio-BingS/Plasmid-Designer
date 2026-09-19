@@ -458,6 +458,37 @@ describe('SequencingPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('trace band overlays every checked read and fetches all their traces', async () => {
+    vi.mocked(getReadTrace).mockResolvedValue(mockTrace)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    const reads = [
+      { ...mockAnalysis.reads[0], alignment_view: makeAlignmentView() },
+      {
+        index: 1, filename: 'r2.ab1', raw_length: 500, trimmed_length: 480,
+        mean_q: 36, direction: '-', ref_start: 300, ref_end: 700,
+        identity: 0.99, mixed_positions: [],
+      } as SequencingAnalysis['reads'][number],
+    ]
+    const wrapper = mount(SequencingPanel, { props: { preset: { ...mockAnalysis, reads } } })
+    await flushPromises()
+
+    // 勾选第二条 → 两条 read 的峰图都被拉取（带内叠加衬底）
+    await wrapper.find('.seqviz-pick:nth-child(2) input').setValue(true)
+    await flushPromises()
+    expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 0)
+    expect(getReadTrace).toHaveBeenCalledWith('seq_test1', 1)
+    // 叠加顺序：选中的排最后、画在最上层
+    expect((wrapper.vm as any).bandReads()).toEqual([0, 1])
+    expect((wrapper.vm as any).traceReadIdx()).toBe(1)
+
+    // 字母行点回第一条（两条 read 重叠 → 2 条泳道，ovH=64；行 0 在 y 100-116）
+    await wrapper.find('.seqviz-wrap').trigger('click', { clientX: 600, clientY: 108 })
+    await flushPromises()
+    expect((wrapper.vm as any).selectedReadIdx).toBe(0)
+    expect((wrapper.vm as any).bandReads()).toEqual([1, 0])
+    vi.unstubAllGlobals()
+  })
+
   it('clears all staged reads with one click', async () => {
     const wrapper = mount(SequencingPanel)
     ;(wrapper.vm as any).addFiles([makeFile('a.ab1'), makeFile('b.ab1'), makeFile('c.gb')])

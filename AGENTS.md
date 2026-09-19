@@ -42,7 +42,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
 tests/                      后端 pytest（327 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（99 用例，src/frontend/tests）
+                            合成 ab1 生成器）+ 前端 vitest（100 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -102,6 +102,19 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 调整（2026-09-20）**峰图带多 read 叠加 + 简图逐 read 配色 + sequencing GET 限流降档**：
+  用户指出交叠区「乱了」且「只显示了一条引物的峰图」。落地：①峰图带从单条
+  traceReadIdx 改为 bandReads()——叠加所有勾选 read 的峰图，选中的最后画
+  （实线 1.8 宽、alpha 1），其余衬底（1 宽、alpha 0.3），选中不在视野时全体
+  0.75；联合幅值 maxV 同轴同标尺（峰高可直接对比），buildTraceWins 抽出复用；
+  勾选即由 watch 补拉各 read 峰图；图例「峰图 N 条叠加：X（实线）＋Y（衬底）」
+  用选中 read 的配色。②简图每条 read 固定 READ_COLORS 独立配色（箭头/字母行
+  芯片/工具栏复选框同色），视口蓝框改画在箭头下层不再切割箭头。③后端
+  rate_limit._get_endpoint_type 对 /sequencing 按 method 分流：GET/HEAD/OPTIONS
+  （分析详情/trace 等只读）走 default 档，POST analyze 才算 upload 20 次/小时
+  ——否则峰图叠加一次拉 5 条 trace 直接把 upload 配额烧光、429 拒签 28 分钟
+  （本地复现：勾 5 条 read 后 trace 全 429「峰图不可用」）。测试：前端 100
+  （新增叠加拉取/排序用例）、后端限流分类单测。
 - 调整（2026-09-20）**覆盖简图域收窄 + 箭头点击缩放可读性下限**：用户圈出
   简图左侧大片空白（参考 5000bp 只有 2140-4282 有 read）——简图域从整条
   参考改为 ovDomain（引物覆盖区段 ±2% 边距，无 read 区不占位，箭头放大
