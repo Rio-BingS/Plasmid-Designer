@@ -668,6 +668,24 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
     return first, last, called
 
 
+def _pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
+    """位点列表压缩成连续区段（如 81–140、201–260）：结论给范围概览，
+    超出 max_ranges 段截断并注明总段数，逐位细节在峰图里核对"""
+    if not positions:
+        return ""
+    spans: List[List[int]] = []
+    for p in positions:
+        if spans and p == spans[-1][1] + 1:
+            spans[-1][1] = p
+        else:
+            spans.append([p, p])
+    parts = [f"{a}–{b}" if b > a else str(a) for a, b in spans[:max_ranges]]
+    out = "、".join(parts)
+    if len(spans) > max_ranges:
+        out += f" 等 {len(spans)} 段"
+    return out
+
+
 def _run_label(run: Dict) -> str:
     """重复结构标签：period=1 为 poly(A) 同聚物；period>1 为 (CAG)n 型重复"""
     if run.get("period", 1) == 1 and run.get("base"):
@@ -1741,6 +1759,14 @@ def analyze(
             names = "、".join(stretchy[:2])
             line += f"；{names} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
         mixed_lines.append(line)
+    # 逐 read 位点范围子行（↳ 详情行，前端默认折叠）：核对"双峰是否落在
+    # 引物首尾"需要具体范围——read 坐标 + 首尾不可信区未计入的说明
+    for r, p in wide:
+        mixed_lines.append(
+            f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
+            f"{_pos_ranges_str(p['positions'])}"
+            f"（read 坐标；首尾 {END_MARGIN}bp 不可信区未计入）"
+        )
     scat = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "scattered"]
     if len(scat) == 1:
@@ -1756,6 +1782,11 @@ def analyze(
         mixed_lines.append(
             f"⚠ {names}{more} 共有 {n_pos} 个双峰位点："
             "可能为个别碱基噪声或低比例混合，建议核对峰图")
+        for r, p in scat:
+            mixed_lines.append(
+                f"  ↳ {r['filename']}：{p['count']} 处双峰位于 read "
+                f"{_pos_ranges_str(p['positions'])}（read 坐标）"
+            )
 
     # read 末端不可信区显式提示：首尾 END_MARGIN bp 是信号爬升/下降段，
     # 该区差异仅低置信处理还不够——用户常把 read 首尾当可靠证据核对

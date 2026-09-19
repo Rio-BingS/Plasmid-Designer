@@ -267,6 +267,7 @@ const gapSummary = computed(() => {
 // 低置信差异（单 read 支持 / 低 Q / 疑似混合峰）默认折叠：不删除、不影响
 // 共识与 CDS 结论，只是收起避免刷屏；点开展开供人工核对峰图
 const showLowConf = ref(false)
+const showMixedDetail = ref(false)
 const lowConfVariants = computed(() =>
   (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
 const shownVariants = computed(() => {
@@ -274,20 +275,29 @@ const shownVariants = computed(() => {
   return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
 })
 // 结论文本按组折叠：低置信行（后端标注"低置信（/低置信度（"）连同紧随的
-// "↳ 破坏/新增酶切位点"子注释行一起收起；poly 判读等独立行不受牵连
+// "↳ 破坏/新增酶切位点"子注释行一起收起；poly 判读等独立行不受牵连。
+// 逐 read 双峰位点范围行（"↳ …双峰 N 处，位于 read …"）单独一组默认收起，
+// 展开后可核对位点是否落在 read 首尾不可信区
 const conclusionParts = computed(() => {
   const lines = (analysis.value?.conclusion ?? '').split('\n')
   const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
   const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
+  const isMixedDetail = (l: string) => l.trimStart().startsWith('↳') && l.includes('双峰')
   const main: string[] = []
   const low: string[] = []
+  const mixed: string[] = []
   let prevFolded = false
   for (const l of lines) {
+    if (isMixedDetail(l)) {
+      mixed.push(l)
+      prevFolded = false
+      continue
+    }
     const folded: boolean = isLowHead(l) || (isSubNote(l) && prevFolded)
     ;(folded ? low : main).push(l)
     prevFolded = folded
   }
-  return { main: main.join('\n'), low }
+  return { main: main.join('\n'), low, mixed }
 })
 
 /** CDS 结论卡的覆盖标签 */
@@ -541,11 +551,30 @@ interface MapFeat {
   labelLane: number
 }
 
-/** 参考特征（彩色块状箭头；名字放不下时引线外置到下方标签道） */
+/** 参考特征（彩色块状箭头；名字放不下时引线外置到下方标签道）。
+ *  去重开关（默认关=按文件原样显示）：图谱文件里常见同名注释标了多条
+ *  （如重复的 miscellaneous / 5 UTR），开启后同名同向且位置重叠的合并为一条 */
+const dedupMapFeats = ref(false)
 const mapFeats = computed<MapFeat[]>(() => {
   const a = analysis.value
   if (!a || !a.features?.length) return []
-  const sorted = [...a.features].sort((x, y) => x.start - y.start || x.end - y.end)
+  let feats = [...a.features].sort((x, y) => x.start - y.start || x.end - y.end)
+  if (dedupMapFeats.value) {
+    const merged: typeof feats = []
+    for (const f of feats) {
+      const hit = merged.find((m) => m.name === f.name
+        && (m.strand || '+') === (f.strand || '+')
+        && f.start <= m.end && m.start <= f.end)
+      if (hit) {
+        hit.start = Math.min(hit.start, f.start)
+        hit.end = Math.max(hit.end, f.end)
+      } else {
+        merged.push({ ...f })
+      }
+    }
+    feats = merged
+  }
+  const sorted = feats
   const lanes = assignLanes(sorted, (f) => f.start, (f) => f.end)
   const labelLaneEnds: number[] = []
   return sorted.map((f, i) => {
@@ -643,6 +672,7 @@ watch(() => props.preset, (p) => {
     focusCol.value = null
     errorMsg.value = ''
     showLowConf.value = false
+    showMixedDetail.value = false
   }
 }, { immediate: true })
 
@@ -914,6 +944,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
           {{ showLowConf ? '▾ 收起低置信' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
         </button>
         <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
+        <button v-if="conclusionParts.mixed.length" class="lowconf-toggle" @click="showMixedDetail = !showMixedDetail">
+          {{ showMixedDetail ? '▾ 收起双峰位点范围' : `▸ ${conclusionParts.mixed.length} 条 read 的双峰位点范围已折叠（read 坐标，展开核对是否落在首尾）` }}
+        </button>
+        <p v-if="showMixedDetail && conclusionParts.mixed.length" class="conclusion-text lowconf-lines">{{ conclusionParts.mixed.join('\n') }}</p>
         <div class="conclusion-meta">
           <span>引擎: {{ analysis.engine }}</span>
           <span>共识覆盖率: {{ analysis.consensus.coverage_percent }}%</span>
@@ -1015,7 +1049,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 
       <!-- 匹配简图：SnapGene 风格线性图谱（read 箭头 / 刻度轴 / 参考特征） -->
       <div class="map-box" v-if="analysis.reads.length">
-        <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span></h4>
+        <h4 class="section-title">匹配简图<span class="map-sub">（read 落位与参考特征一览；点击 read 看比对，点击红块看峰图）</span>
+          <label class="map-dedup-toggle"
+                 title="图谱文件里同名且位置重叠的重复注释合并为一条显示（如重复的 miscellaneous / 5 UTR）；默认按文件原样显示">
+            <input type="checkbox" v-model="dedupMapFeats" /> 特征去重
+          </label>
+        </h4>
         <svg class="map-svg" :viewBox="`0 0 ${MAP_W} ${mapHeight}`" preserveAspectRatio="xMidYMid meet" role="img">
           <!-- 刻度网格线 -->
           <line v-for="t in mapTicks" :key="'g' + t.pos" :x1="mapX(t.pos)" :x2="mapX(t.pos)"
@@ -1399,6 +1438,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', nextDraw))
 /* ==================== 匹配简图 ==================== */
 .map-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
 .map-sub { font-size: 0.75rem; color: #999; font-weight: 400; }
+.map-dedup-toggle {
+  font-size: 0.75rem; color: #555; font-weight: 400; margin-left: 0.75rem;
+  display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; user-select: none;
+}
+.map-dedup-toggle input { vertical-align: middle; }
 .map-svg { width: 100%; height: auto; display: block; user-select: none; }
 .map-label { font-size: 11.5px; fill: #444; font-family: Consolas, monospace; }
 .map-grid { stroke: #ECEEF0; stroke-width: 1; stroke-dasharray: 3 4; }
