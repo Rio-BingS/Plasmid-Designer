@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSequence, getExportFormats, exportAllFormats, checkCompatibility, getEnzymes, simulateDigest } from '@/api'
+import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSequence, getExportFormats, checkCompatibility, getEnzymes, simulateDigest } from '@/api'
+
+const OVERHANG_LABELS: Record<string, string> = { '5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端' }
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const route = useRoute()
@@ -262,7 +264,7 @@ async function handleExport() {
               <td>{{ site.enzyme }}</td>
               <td class="mono">{{ site.recognition_sequence }}</td>
               <td>{{ site.position }} - {{ site.end }}</td>
-              <td>{{ { '5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端' }[site.overhang_type] || '未知' }}</td>
+              <td>{{ OVERHANG_LABELS[site.overhang_type] || '未知' }}</td>
             </tr>
           </tbody>
         </table>

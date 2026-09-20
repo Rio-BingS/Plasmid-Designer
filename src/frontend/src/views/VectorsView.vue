@@ -192,7 +192,7 @@ async function handleSearchNcbi() {
   }
 }
 
-async function openPreview(seqId) {
+async function openPreview(seqId: string) {
   try {
     previewData.value = await previewNcbi(seqId)
     showPreviewModal.value = true
@@ -201,7 +201,7 @@ async function openPreview(seqId) {
   }
 }
 
-async function confirmImport(seqId) {
+async function confirmImport(seqId: string) {
   try {
     importingId.value = seqId
     await importFromNcbiId(seqId)
@@ -392,7 +392,7 @@ onMounted(() => {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" @click="showPreviewModal = false">取消</button>
-        <button class="btn btn-primary" :disabled="importingId" @click="confirmImport(previewData.id)">📥 确认导入</button>
+        <button class="btn btn-primary" :disabled="!!importingId" @click="confirmImport(String(previewData.id))">📥 确认导入</button>
       </div>
     </div>
   </div>

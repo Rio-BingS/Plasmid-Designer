@@ -5,11 +5,12 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
 from typing import Dict, List
 from app.rate_limit import limiter, RATE_LIMITS, get_rate_limit_key, get_client_ip
+from app.auth.jwt_auth import get_admin_user
 
 router = APIRouter(prefix="/api/rate-limit", tags=["rate-limit"])
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(get_admin_user)])
 async def get_rate_limit_status(request: Request) -> Dict:
     """
     获取当前请求的速率限制状态
@@ -40,7 +41,7 @@ async def get_rate_limit_status(request: Request) -> Dict:
     return status
 
 
-@router.get("/config")
+@router.get("/config", dependencies=[Depends(get_admin_user)])
 async def get_rate_limit_config() -> Dict:
     """
     获取速率限制配置

@@ -40,9 +40,9 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（332 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（333 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（100 用例，src/frontend/tests）
+                            合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -102,6 +102,20 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 检查（2026-09-20）**全方位检查（第二轮，发现即修）**：①vue-tsc 全仓清零——
+  修复 8 个历史错误：AuthModal 未用导入、AnalysisView 未用导出+overhang 索引
+  any（提 OVERHANG_LABELS 常量）、VectorsView seqId 隐式 any×2 + importingId
+  Booleanish（!!）、DesignView 的 gibson_site/exclude_enzymes——核实后端
+  DesignOptions 一直有这两个字段，是前端 DesignRequest 类型漏了（已补）。
+  ②鉴权扫描补漏：/api/cache/stats 与 invalidate/design|vector、/api/rate-limit/
+  status|config 此前匿名可达（缓存统计泄露、任何人可失效缓存），收归
+  get_admin_user；/health 类端点保持公开；admin_routes 路由级门控 ✓；各功能
+  路由 include 门控 ✓；测试锁：test_account_system 加
+  test_cache_and_ratelimit_admin_endpoints_gated。③仓库卫生：无硬编码密钥，
+  仅 .env.example 模板在库。④后端 333/前端 101 全绿、build 过；本地重启后
+  烟雾：匿名 stats/rate-limit 401、管理员 200、演示分析详情渲染正常。
+  遗留（挂账）：design/batch/vectors 资源属主改造、poly-A 比对歧义、
+  分析记录落库。
 - 调整（2026-09-20）**行随视野过滤（SnapGene 真实行为）+ 全方位检查**：用户指出
   逐 read 条带又变成"每引物一排且全部显示"——空行占位还把参考行顶出视野；
   SnapGene 的真实行为是「视野里没有峰图的行自动隐藏」。落地：rowLayouts
