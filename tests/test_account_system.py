@@ -297,6 +297,24 @@ class TestAdminApi:
         r = c.get("/api/admin/users", headers=_auth_header(token))
         assert r.status_code == 403
 
+    def test_cache_and_ratelimit_admin_endpoints_gated(self, client, db):
+        """全方位检查补漏：/api/cache/stats|invalidate 与 /api/rate-limit/status|config
+        曾匿名可达（缓存统计泄露 + 任何人可失效缓存），现收归管理员"""
+        c, _ = client
+        assert c.get("/api/cache/stats").status_code in (401, 403)
+        assert c.post("/api/cache/invalidate/design/x").status_code in (401, 403)
+        assert c.post("/api/cache/invalidate/vector/x").status_code in (401, 403)
+        assert c.get("/api/rate-limit/status").status_code in (401, 403)
+        assert c.get("/api/rate-limit/config").status_code in (401, 403)
+        # 健康检查保持公开
+        assert c.get("/api/cache/health").status_code == 200
+        assert c.get("/api/rate-limit/health").status_code == 200
+        a = _make_user(db, email="root2@test.com", is_admin=True)
+        db.commit()
+        h = _auth_header(_login(c, a.email, "password123")["access_token"])
+        assert c.get("/api/cache/stats", headers=h).status_code == 200
+        assert c.get("/api/rate-limit/status", headers=h).status_code == 200
+
     def test_settings_roundtrip(self, client, db):
         c, _ = client
         a = _make_user(db, email="root@test.com", is_admin=True)

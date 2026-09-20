@@ -27,6 +27,10 @@ export interface DesignRequest {
   overlap_length?: number
   include_report: boolean
   protocol_language?: 'zh' | 'en'
+  /** Gibson：定位同源重组位置的酶切位点名称 */
+  gibson_site?: string
+  /** 基因合成：需从优化序列排除的限制酶 */
+  exclude_enzymes?: string[]
 }
 
 export interface PrimerInfo {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { verifyEmail, resendVerification } from '@/api'
 import { useRouter } from 'vue-router'

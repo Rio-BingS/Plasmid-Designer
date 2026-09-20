@@ -10,7 +10,7 @@ from app.auth.jwt_auth import get_admin_user
 router = APIRouter(prefix="/api/cache", tags=["cache"])
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(get_admin_user)])
 async def get_cache_stats() -> Dict:
     """
     获取缓存统计信息
@@ -39,7 +39,7 @@ async def clear_cache(pattern: str = "*", _: object = Depends(get_admin_user)) -
     }
 
 
-@router.post("/invalidate/design/{design_id}")
+@router.post("/invalidate/design/{design_id}", dependencies=[Depends(get_admin_user)])
 async def invalidate_design_cache(design_id: str) -> Dict:
     """
     使设计缓存失效
@@ -51,7 +51,7 @@ async def invalidate_design_cache(design_id: str) -> Dict:
     return {"invalidated": success, "design_id": design_id}
 
 
-@router.post("/invalidate/vector/{vector_id}")
+@router.post("/invalidate/vector/{vector_id}", dependencies=[Depends(get_admin_user)])
 async def invalidate_vector_cache(vector_id: str) -> Dict:
     """
     使载体缓存失效
