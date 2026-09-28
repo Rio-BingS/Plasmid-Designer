@@ -52,6 +52,7 @@ from zipfile import BadZipFile
 from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
 from app.gating import require_feature
+from app import sequencing_store
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_clone_files,
@@ -101,6 +102,12 @@ def _can_access(record: Dict, user: Optional[User]) -> bool:
 def _get_analysis(analysis_id: str, user: Optional[User] = None) -> Dict:
     _sweep_expired()
     result = _ANALYSES.get(analysis_id)
+    if result is None:
+        # 内存缓存未命中（过期/重启）：从数据库回灌
+        result = sequencing_store.load_record(analysis_id)
+        if result is not None:
+            result["_created_ts"] = time.time()
+            _ANALYSES[analysis_id] = result
     if result is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     if not _can_access(result, user):
@@ -185,7 +192,8 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     批量克隆模式一次可产生上百条记录：分析记录本体（变体/共识/比对）很小，
     上限放宽到 MAX_STORED；峰图原始数据（四通道全分辨率采样）体积大，
     超过 MAX_TRACE_STORED 时淘汰最旧记录的峰图，记录仍可查看结论。
-    所有记录 15 分钟后由 _sweep_expired 自动删除（隐私考量，见模块 docstring）。
+    内存记录 15 分钟后由 _sweep_expired 淘汰（作为读取缓存）；database 模式下
+    记录同时落库 sequencing_analyses 表，持久可回看，内存只是缓存。
     """
     _sweep_expired()
     analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
@@ -201,7 +209,11 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     }
     # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
     record["_trace_data"] = {i: t for i, t in enumerate(result.get("traces", []))}
+    # result["traces"] 与 _trace_data 是同一份峰图数据的原始副本，落盘/驻留都是双倍体积
+    record.pop("traces", None)
     _ANALYSES[analysis_id] = record
+    # 持久化：database 模式下重启/内存过期后记录仍可回看（峰图一并压缩落库）
+    sequencing_store.persist_record(record)
     if len(_ANALYSES) > MAX_STORED:
         oldest = sorted(_ANALYSES.items(), key=lambda kv: kv[1]["created_at"])[0][0]
         del _ANALYSES[oldest]
@@ -589,6 +601,7 @@ async def analyze_design_sequencing(
     result = _load(design_id)
     if not result:
         raise HTTPException(status_code=404, detail="Design not found")
+
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")
 
@@ -632,6 +645,9 @@ async def list_analyses(user: Optional[User] = Depends(get_current_user)):
 
     属主校验：只返回自己创建的（管理员全可见；无属主的匿名遗留记录公开）"""
     _sweep_expired()
+    if sequencing_store.db_enabled():
+        return sequencing_store.list_records(
+            user, is_admin=bool(user and user.is_admin))
     items = sorted((r for r in _ANALYSES.values() if _can_access(r, user)),
                    key=lambda r: r["created_at"], reverse=True)
     return [
@@ -712,7 +728,8 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
 @router.delete("/sequencing/analyses/{analysis_id}")
 async def delete_analysis(analysis_id: str, user: Optional[User] = Depends(get_current_user)):
     _get_analysis(analysis_id, user)
-    del _ANALYSES[analysis_id]
+    _ANALYSES.pop(analysis_id, None)
+    sequencing_store.delete_record(analysis_id)
     return {"deleted": True, "analysis_id": analysis_id}
 
 
