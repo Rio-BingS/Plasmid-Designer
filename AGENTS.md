@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（341 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（349 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -102,6 +102,28 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 优化（2026-09-28）**优先级清单批量落地（联合覆盖/锚压缩/verdict 下沉）**：
+  ①联合覆盖判定（用户点名）——无完整覆盖 read 时，部分覆盖且段内自洽的
+  read 恰好拼接盖满 run（首段从 run 起点始、段间恰好衔接、并集盖满）→
+  joint accepted（observed=各段调用数之和，joint_coverage 标记）；完整
+  覆盖 read 与联合读数冲突 → contradictory（联合条目入 verdict_votes）。
+  注意：run 端点滑动是同聚物固有歧义，段边界滑移时联合保守不成立（回退
+  原有分支），测试构造需借助侧翼锚定。②锚压缩检测补全——_anchor_quality
+  增加路标峰与邻峰间距检查（< 0.6×全 read 中位峰距 → unreliable，同通道
+  压缩合并形态，混合峰检查覆盖不到）。③批量 Excel excel_conclusion 按
+  run_verdict 分态（矛盾/不可判定单独点名，旧记录回退一般措辞）；离线
+  脚本 batch_sequencing_report.py 继承（同一 excel_conclusion）+ 报告新增
+  「同聚物判读」章节（verdict 三态 + 投票依据）。④前端峰图条带合并压缩
+  区灰罩（poly_merged_zones 改结构化列表下发，虚线框 + "压缩不可判读"
+  标签）；同聚物卡片新增「判定依据」行（verdict_votes 投票明细/联合拼
+  接/矛盾计数）。⑤共识导出带 verdict：GenBank misc_feature 注记判读状
+  态、FASTA 头 poly_verified/poly_unverified 摘要。⑥数据库增长管理：
+  SEQUENCING_DB_MAX_RECORDS（默认 2000，0 不限）超出按创建时间淘汰最旧
+  （persist 后 prune，仅 database 模式）；历史列表 limit/offset 分页
+  （默认 200，上限 1000）。⑦旧挂账：质粒模式 match_files 图谱匹配对齐
+  克隆模式多级口径（全名精确 > 忽略分隔符 > 两段式任一段 > 双向包含
+  ≥4 字符，候选不唯一不猜，_match_ref_name）。后端 349/前端 101 全绿、
+  vue-tsc 0、build 过。
 - 调整（2026-09-28）**同聚物落点歧义算法级解决（先单条分析→再综合评判）**：
   讨论定案（.workbuddy 2026-09-28）——计数歧义已由 B2 收口，残余落点歧义
   按「先单条分析，再综合评判」两步落地：①Step A per-read：run 两侧最近
