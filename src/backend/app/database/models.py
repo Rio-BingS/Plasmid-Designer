@@ -272,6 +272,33 @@ def get_db():
         db.close()
 
 
+# ==================== Sanger 测序分析记录（持久化） ====================
+
+class SequencingAnalysisDB(Base):
+    """Sanger 测序分析记录——落库后重启/内存过期不再丢失结论。
+
+    payload 为完整分析记录 JSON（reads/变体/比对/共识/互检，不含峰图）；
+    峰图原始数据体积大，单独存 trace_data 列（zlib+base64 压缩 JSON）。"""
+    __tablename__ = "sequencing_analyses"
+
+    id = Column(String(50), primary_key=True)
+    owner_id = Column(String(50), ForeignKey("users.id"), nullable=True, index=True)
+
+    sample_name = Column(String(200), default="")
+    engine = Column(String(50), default="")
+    conclusion = Column(Text, nullable=True)
+    read_count = Column(Integer, default=0)
+    variant_count = Column(Integer, default=0)
+    coverage_percent = Column(Float, default=0.0)
+    reference_length = Column(Integer, default=0)
+
+    # 大字段
+    payload = Column(Text, nullable=False)
+    trace_data = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_db():
     """初始化数据库"""
     _migrate_users_table()

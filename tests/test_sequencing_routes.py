@@ -208,3 +208,46 @@ def test_analysis_record_ownership(client):
     aid2 = r2.json()["analysis_id"]
     assert client.get(f"/api/sequencing/analyses/{aid2}", headers=ha).status_code == 200
     client.delete(f"/api/sequencing/analyses/{aid2}")
+
+
+def test_analysis_persists_across_restart(client):
+    """database 模式：分析记录落库——清空内存缓存（模拟重启）后详情/峰图/
+    列表仍可读，属主过滤在数据库路径同样生效"""
+    from fastapi.testclient import TestClient  # noqa
+    import app.routes.sequencing_routes as seq_routes
+
+    ua = _ensure_user("persist-a@test.com")
+    ub = _ensure_user("persist-b@test.com")
+    ha = _login_header(client, ua.email)
+    hb = _login_header(client, ub.email)
+
+    ref = ("ref.fasta", b">ref\n" + b"AAG" * 40, "text/plain")
+    blob = make_ab1("AAG" * 40, [40] * 120)
+    r = client.post("/api/sequencing/analyze",
+                    files={"reference": ref, "reads": ("r1.ab1", blob, "application/octet-stream")},
+                    headers=ha)
+    assert r.status_code == 200, r.text
+    aid = r.json()["analysis_id"]
+
+    # 模拟重启：清空内存缓存
+    seq_routes._ANALYSES.clear()
+
+    # 详情从数据库回灌，结论/reads 完整
+    got = client.get(f"/api/sequencing/analyses/{aid}", headers=ha)
+    assert got.status_code == 200, got.text
+    data = got.json()
+    assert data["reads"] and data["consensus"]["sequence"]
+    # 峰图从数据库解压回读（int 键还原）
+    trace = client.get(f"/api/sequencing/analyses/{aid}/trace/0", headers=ha).json()
+    assert set(trace["channels"].keys()) == {"A", "T", "G", "C"}
+    # 列表（数据库路径）可见；属主过滤：B 看不到
+    assert any(x["analysis_id"] == aid
+               for x in client.get("/api/sequencing/analyses", headers=ha).json())
+    assert all(x["analysis_id"] != aid
+               for x in client.get("/api/sequencing/analyses", headers=hb).json())
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=hb).status_code == 403
+
+    # 删除连数据库一起清
+    assert client.delete(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 200
+    seq_routes._ANALYSES.clear()
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 404

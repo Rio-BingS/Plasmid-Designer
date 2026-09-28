@@ -587,10 +587,21 @@ def test_analyses_and_batch_expire_after_ttl(client):
         rec["_created_ts"] -= sr.ANALYSIS_TTL + 10
     sr._BATCHES[data["batch_id"]]["created_ts"] -= sr.BATCH_TTL + 10
 
-    assert client.get("/api/sequencing/analyses").json() == []
-    assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 404
+    # 记录已落库（database 模式）：内存淘汰后详情/列表仍可回看；
+    # memory 模式无持久层 → 记录消失。批量整理包是内存产物，两种模式都过期
+    from app import sequencing_store
+    if sequencing_store.db_enabled():
+        assert any(x["analysis_id"] == aid
+                   for x in client.get("/api/sequencing/analyses").json())
+        assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 200
+    else:
+        assert client.get("/api/sequencing/analyses").json() == []
+        assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 404
     got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
     assert got.status_code == 404 and "过期" in got.json()["detail"]
+
+    # 清理落库记录，避免影响其他用例的列表断言
+    client.delete(f"/api/sequencing/analyses/{aid}")
 
 
 # ==================== 双峰（疑似混合样品）→ 无法判定 归档联动 ====================
