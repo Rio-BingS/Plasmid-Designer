@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（336 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（341 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -102,6 +102,32 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 调整（2026-09-28）**同聚物落点歧义算法级解决（先单条分析→再综合评判）**：
+  讨论定案（.workbuddy 2026-09-28）——计数歧义已由 B2 收口，残余落点歧义
+  按「先单条分析，再综合评判」两步落地：①Step A per-read：run 两侧最近
+  非 run 碱基做路标锚（_anchor_verdict_for_read），锚质量分级
+  （_anchor_quality：read 边缘/QV 修剪外→marginal，混合峰/poly 下游骤降
+  →unreliable，run 定位置信度=两侧路标最差者）；每 read 每 run 出五档
+  resolution（_read_run_verdict）：resolvable 峰数==调用数（投票权）/
+  deficit 可见缺失（B4 口径）/ merged 完全合并或宽度法救回（不可判定）/
+  noisy 峰数>调用（肩峰）/ no_evidence 采样不足（维持调用）。②Step B
+  综合：替换"任一 read 峰数≠调用数即整体不可信"的一票否决——真实难例
+  （正向可分辨互证一致+反向合并成山丘）不再被反向 read 否决；五档
+  run_verdict：accepted（可分辨 read 互证一致，observed_repeat_count
+  采信峰图）/ contradictory（互证矛盾）/ undetermined（无可分辨证据，
+  宽度法仅供参考）/ deficit_observed / caller_only。③抑制：合并压缩
+  run 窗（poly_merged_zones）内该 read 的逐位双峰不作证据（反向压缩山丘
+  不再切成伪差异串）；落在窗内的变异强制 low + merged_zone_artifact。
+  ④端点歧义行按 verdict 豁免：run 已 accepted 时比对端点滑动不影响判定
+  （无变体分支也接了该行）。⑤对齐窗口收紧：_aligned_run_window 的列窗
+  可能比连续 run 段宽（缺失放 run 前端时末端多包非 run 碱基），峰窗向内
+  收紧到连续 run 碱基（非 run 碱基自己的通道峰会经跨通道 max 混进计数）。
+  前端：逐引物判读行按 resolution 五档措辞 + 锚分级标注，结构状态点按
+  run_verdict 显示（旧记录无字段回退本地推断）；api 类型补
+  resolution/run_verdict/verdict_votes/anchor_grade。测试：+5 场景
+  （正可分辨+反合并→accepted、可分辨互证矛盾→contradictory、全合并→
+  undetermined、端点歧义按 verdict 豁免、合并区伪双峰抑制）；后端
+  341/前端 101 全绿、vue-tsc 0、build 过。
 - 修复（2026-09-28）**三大挂账项清账（落库/属主扩展/同聚物标注）**：①分析记录
   落库——新表 sequencing_analyses（payload JSON + trace_data zlib+base64 压缩，
   不含峰图双份驻留）+ app/sequencing_store.py（db_enabled/_ensure_table 幂等
