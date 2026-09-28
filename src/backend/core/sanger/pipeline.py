@@ -23,6 +23,7 @@ from core.sanger.annotator import annotate_variants, summarize_severity
 from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length, peak_heights,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
+    DROPOUT_WINDOW_BASES,
 )
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
@@ -862,6 +863,137 @@ def _peak_verdict_phrase(e: Dict) -> str:
     return f"poly({e['base']}) 碱基类型完整：实测 {m} 个，参考 {ref} 个"
 
 
+def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
+    """单个路标碱基的信号可靠度分级（run 定位置信度 = 两侧路标中较差者）
+
+    pos 为 1-based 原始 read 碱基序号（路标在 poly run 外侧紧邻处）。风险
+    逐项检查（用户点出的关键：锚可靠性「借自」路标碱基质量，路标本身落在
+    信号异常区时整段定位悄悄出错）：
+    - read 首尾 END_MARGIN bp 信号爬升/下降区 → 边缘
+    - QV 修剪边界外（basecaller 低置信）→ 边缘
+    - 路标落在另一 poly/重复结构内部（撞上第三种歧义）→ 边缘
+    - poly 下游 DROPOUT_WINDOW_BASES 窗内且骤降未恢复 → 不可靠
+    - 混合峰位点 → 不可靠
+    返回 ("reliable"|"marginal"|"unreliable", 原因列表)。
+    """
+    issues: List[str] = []
+    marginal: List[str] = []
+    unreliable: List[str] = []
+    off = pos - 1                      # 0-based 原始 read 坐标
+    trim_start = r.get("trim_start") or 0
+    n_trim = len(r["trimmed_bases"])
+    ti = off - trim_start              # 0-based 修剪后坐标（与 mixed/dropout 同系）
+    if off <= END_MARGIN or off > len(r.get("raw_bases") or "") - END_MARGIN:
+        marginal.append("read 边缘信号爬升/下降区")
+    if ti < 0 or ti >= n_trim:
+        marginal.append("QV 修剪边界外")
+    if any(e["pos"] == pos for e in r.get("mixed_detail") or []):
+        unreliable.append("混合峰位点")
+    for d in r.get("post_poly_dropouts") or []:
+        d0 = d.get("read_pos")
+        if d0 is not None and d0 < ti <= d0 + DROPOUT_WINDOW_BASES \
+                and not d.get("end_truncation"):
+            unreliable.append("poly 下游信号骤降区")
+            break
+    issues = marginal + unreliable
+    if unreliable:
+        return "unreliable", issues
+    if marginal:
+        return "marginal", issues
+    return "reliable", issues
+
+
+def _read_run_verdict(called: Optional[int],
+                      pc: Optional[int], est: Optional[Dict],
+                      anchor_grade: str,
+                      anchor_issues: List[str]) -> Dict:
+    """单条 read 对一个 poly run 的判读（Step A，先单条分析）
+
+    五档 resolution：
+    - resolvable：可分辨峰数 == 调用数（峰图证据完整，有投票权）；
+    - deficit：0 < 峰数 < 调用数——可见缺失证据（B4 口径：峰只会被压缩
+      合并、不会凭空多出，段内可分辨峰即实测），主判读以峰图为准；
+    - merged：峰完全合并（pc==0）或宽度法救回（峰数 < 调用数且 B2 判定
+      合并形态）——该 read 对此 run「不可判定」，峰窗内逐位双峰不作证据；
+    - noisy：峰数 > 调用数（疑似滑移肩峰），计数不可作证据；
+    - no_evidence：峰计数不可用（采样密度不足，如稀疏合成数据）——无矛盾
+      证据，维持调用数（caller_only），不做任何翻判。
+    定位置信度 = 锚分级：锚不可靠时 position_confidence 降为 marginal。
+    """
+    if called is None:
+        resolution, why = "unavailable", "覆盖段无法提取"
+    elif pc is None:
+        resolution, why = "no_evidence", "峰图计数不可用（采样密度不足）"
+    elif pc == 0:
+        resolution, why = "merged", "峰完全合并，无可分辨峰"
+    elif pc == called:
+        resolution, why = "resolvable", ""
+    elif pc < called and est is not None \
+            and est.get("method") in ("width", "second_derivative"):
+        resolution, why = "merged", f"峰合并（宽度法救回，可见 {pc} < 调用 {called}）"
+    elif pc < called:
+        resolution, why = "deficit", f"可见峰 {pc} < 调用 {called}（段内缺失/部分合并）"
+    else:
+        resolution, why = "noisy", f"峰数 {pc} > 调用 {called}（疑似滑移肩峰）"
+    verdict: Dict = {
+        "resolution": resolution,
+        "reason": why,
+        "called_count": called,
+        "peak_count": pc,
+        "length_estimate": est["n"] if est else None,
+        "length_ci": ([est["ci_low"], est["ci_high"]] if est else None),
+        "anchor_grade": anchor_grade,
+        "anchor_issues": anchor_issues,
+        "position_confidence": (
+            "marginal" if anchor_grade != "reliable" else "reliable"),
+    }
+    if est is not None and resolution == "merged":
+        # 宽度法是模型估计而非可见证据：保留数值供参考，但明确它不是证据
+        verdict["width_estimate_only"] = True
+    return verdict
+
+
+def _anchor_verdict_for_read(r: Dict, run: Dict, aln: Dict) -> Tuple[str, List[str]]:
+    """run 两侧路标碱基的可靠度综合（定位可靠度 = 两侧路标中最差者）
+
+    路标 = 原始 read 上紧邻 run 连续同碱基段外侧的第一位非重复碱基——
+    它钉死 run 的起止坐标，把「可滑动」变「可计数」；路标自身踩在信号
+    异常区（边缘/低 Q/混合峰/骤降）时，整段定位会悄悄出错，必须降级。
+    返回 (grade, issues)：grade ∈ reliable / marginal / unreliable /
+    one-sided（单侧锚定或两侧均无路标）。"""
+    b_read = run["base"] if aln["direction"] == "+" else _COMPLEMENT[run["base"]]
+    win = _aligned_run_window(aln, run["start"], run["end"], run["base"])
+    if win is None:
+        return "unreliable", ["run 窗口无法定位"]
+    i0, i1, _ = win
+    s_off = r.get("trim_start") or 0
+    raw = (r.get("raw_bases") or "").upper()
+    if not raw:
+        return "unreliable", ["原始碱基串缺失"]
+    r0, r1 = s_off + i0, s_off + i1
+    while r0 > 0 and raw[r0 - 1] == b_read:
+        r0 -= 1
+    while r1 < len(raw) - 1 and raw[r1 + 1] == b_read:
+        r1 += 1
+    grades: List[str] = []
+    issues: List[str] = []
+    if r0 > 0 and raw[r0 - 1] not in (b_read, "N"):
+        g, iss = _anchor_quality(r, r0)          # 左路标：raw 0-based r0-1 → 1-based r0
+        grades.append(g)
+        issues += [f"左路标：{x}" for x in iss]
+    if r1 < len(raw) - 1 and raw[r1 + 1] not in (b_read, "N"):
+        g, iss = _anchor_quality(r, r1 + 2)      # 右路标：raw 0-based r1+1 → 1-based r1+2
+        grades.append(g)
+        issues += [f"右路标：{x}" for x in iss]
+    if not grades:
+        return "one-sided", ["两侧均无路标（read 截断在 run 内）"]
+    order = {"reliable": 0, "marginal": 1, "unreliable": 2}
+    worst = max(grades, key=lambda g: order[g])
+    if len(grades) == 1 and worst == "reliable":
+        return "one-sided", issues + ["单侧锚定"]
+    return worst, issues
+
+
 def _normalize_indel(ref: str, v: Dict) -> Dict:
     """indel 归一化为最左最简表示（Tan 2015，bcftools norm/GATK 同款算法）
 
@@ -1590,12 +1722,15 @@ def analyze(
                 "filename": r["filename"], "hits": hits})
 
     # 每 read 的信号层分析（B4/B5）：滑移 echo 位置 → 从 mixed 中剔除；
-    # poly 末端下游骤降记录。mixed 判定在此进行（P17 顺序：stutter 先于 merge）
+    # poly 末端下游骤降记录。mixed 判定在此进行（P17 顺序：stutter 先于 merge）。
+    # Step A：run 窗口对该 read 呈"合并压缩"（无可分辨峰/强压缩）时记入
+    # merged_zones——该 read 在 run 内的逐位双峰不可分辨，属伪差异证据源
     poly_runs_p1 = [r for r in poly_runs if r["period"] == 1]
     for r in read_results:
         aln = r["alignment"]
         slip: set = set()
         dropouts: List[Dict] = []
+        merged_zones: Dict[Tuple, List[int]] = {}
         for run in poly_runs_p1:
             if aln["direction"] == "-":
                 i0 = aln["ref_end"] - run["end"]
@@ -1605,20 +1740,34 @@ def analyze(
                 i1 = i0 + run["length"] - 1
             if i1 < 0 or i0 > len(r["trimmed_peaks"]) - 1:
                 continue
+            w0, w1 = max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1)
             slip.update(detect_phase_shift(
-                r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                r["trace"], r["trimmed_peaks"], w0, w1,
                 # 反向 read 的 trace 通道按读向（互补链）记录，必须取互补碱基
                 run["base"] if aln["direction"] == "+" else _COMPLEMENT[run["base"]],
             ))
             drop = detect_post_poly_dropout(
-                r["trace"], r["trimmed_peaks"], max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1),
+                r["trace"], r["trimmed_peaks"], w0, w1,
                 bases=r["trimmed_bases"], end_margin=2 * END_MARGIN,
             )
             if drop:
                 dropouts.append({"base": run["base"], "ref_start": run["start"],
-                                 "ref_end": run["end"], **drop})
+                                 "ref_end": run["end"], "read_pos": i1, **drop})
+            # 压缩判定（与 report 循环同口径）：峰计数为 0 或峰幅比过半压缩
+            wpc = _poly_peak_count(r["trace"], r["trimmed_peaks"], w0 + 1, w1 - w0 + 1)
+            wamp = _poly_peak_amplitude_ratio(
+                r["trace"], r["trimmed_peaks"], w0 + 1, w1 - w0 + 1,
+                local=poly_local_ratio)
+            if wpc == 0 or (wamp is not None and wamp < POLY_COMPRESSION_RATIO):
+                # run 窗内（含 echo 边界 ±2）逐位双峰均不可作证据
+                merged_zones[(run["base"], run["start"], run["end"])] = \
+                    list(range(max(1, w0 - 1), w1 + 3))
         r["slippage_positions"] = sorted(slip)
         r["post_poly_dropouts"] = dropouts
+        r["poly_merged_zones"] = merged_zones
+        merged_span: set = set()
+        for positions in merged_zones.values():
+            merged_span.update(positions)
         n_trim = len(r["trimmed_bases"])
         mixed_detail = [
             e for e in _detect_mixed_detail(
@@ -1628,6 +1777,9 @@ def analyze(
             # 与变体置信度同一条边界（末端差异本就需多 read 支持才升级），
             # 否则末端拖尾会凭空触发"连续双峰段"误报
             and END_MARGIN < e["pos"] <= n_trim - END_MARGIN
+            # Step A 抑制：合并压缩的 run 窗内次级峰结构不可分辨，
+            # 强行判读会把压缩段切成一串伪双峰（反向压缩山丘难例）
+            and e["pos"] not in merged_span
         ]
         r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
         # 逐位证据（次级通道与占比）随结果下发，供前端在峰图上标注双峰
@@ -1701,6 +1853,16 @@ def analyze(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             read_len=src["trimmed_length"] if src is not None else None,
         )
+        # Step A 抑制：变异位点落在源 read 的合并压缩 run 窗内 → 该 read 在
+        # 此处根本没有可分辨证据，逐位判定（含 indel 锚点）不可信，强制降级
+        # （跨 read 互证一致的变异不受单 read 降级影响——support_reads 聚合
+        # 来自各 read 独立证据，merged read 的伪差异已被 mixed 抑制挡在门外）
+        if src is not None and v.get("confidence") != "low":
+            for positions in (src.get("poly_merged_zones") or {}).values():
+                if v.get("read_pos") in positions:
+                    v["confidence"] = "low"
+                    v["merged_zone_artifact"] = True
+                    break
 
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
@@ -1791,6 +1953,14 @@ def analyze(
                             r0 -= 1
                         while r1 < len(raw_bases) - 1 and raw_bases[r1 + 1] == b_read:
                             r1 += 1
+                        # 对齐列窗口可能比连续 run 段宽（缺失放 run 前端时
+                        # 末端多包非 run 碱基）：向内收紧到连续 run 碱基，
+                        # 峰窗即"两个侧翼之间的 A 串"——非 run 碱基自己的
+                        # 通道峰会经跨通道 max 混进 _poly_peak_count 计数
+                        while r0 <= r1 and raw_bases[r0] != b_read:
+                            r0 += 1
+                        while r1 >= r0 and raw_bases[r1] != b_read:
+                            r1 -= 1
                         flank_l = r0 > 0 and raw_bases[r0 - 1] not in (b_read, "N")
                         flank_r = (r1 < len(raw_bases) - 1
                                    and raw_bases[r1 + 1] not in (b_read, "N"))
@@ -1826,6 +1996,11 @@ def analyze(
                     "length_estimate": est["n"] if est else None,
                     "length_method": est["method"] if est else None,
                     "length_ci": ([est["ci_low"], est["ci_high"]] if est else None),
+                    # Step A 单 read 判读（先单条分析）：resolvable 峰图证据
+                    # 完整 / merged 峰合并不可判定 / conflicting 证据内部矛盾
+                    **_read_run_verdict(
+                        called, pc, est,
+                        *_anchor_verdict_for_read(r, run, aln)),
                 })
         entry["read_counts"] = run_reads
         full_pcs = [x["peak_count"] for x in run_reads
@@ -1843,19 +2018,56 @@ def analyze(
         entry["length_method"] = max(set(methods), key=methods.count) if methods else None
         entry["length_ci"] = ([min(c[0] for c in cis), max(c[1] for c in cis)]
                               if cis else None)
-        judged = [x for x in run_reads
-                  if x["peak_count"] is not None and x["called_count"] is not None]
-        if judged:
-            # 严格口径（不设容差）：任一 read 的可分辨峰与它自己的调用数有出入、
-            # 或完整覆盖 read 之间的峰数互不一致 → 重复数判读不可信。
-            # 人工核对以可见峰为准，宽放容差等于拿数据迁就调用值
-            ok = all(x["peak_count"] == x["called_count"] for x in judged)
-            if ok and len(full_pcs) >= 2 and max(full_pcs) != min(full_pcs):
-                ok = False
-            entry["count_reliable"] = ok
-        # 峰数法整体失效（采样密度不足等，无任何可用峰计数）时不翻判：
-        # 宽度法是模型估计而非可见证据，其自身偏差不应直接否决调用；
-        # 长度估计与区间照常输出，交人工判读
+        # Step B：跨 read / 跨链综合评判（后综合评判）
+        # 只有 resolvable read（峰数==调用数）拥有完整的可见计数证据，才有
+        # 投票权；deficit（可见缺失）与 merged（峰合并不可分辨）的 read 不
+        # 投票。旧口径"任一 read 峰数≠调用数即不可信"会把真实难例（正向
+        # 可分辨且互证一致 + 反向合并成压缩山丘）整体否决——反向合并是该
+        # read 的信号极限，不是对正向证据的反驳
+        votes = [x for x in run_reads
+                 if x.get("resolution") == "resolvable"
+                 and (x["coverage"] == "full"
+                      or (x.get("covered_span") and x["called_count"] is not None
+                          and x["peak_count"] == x["called_count"]
+                          and x["covered_span"][0] <= run["start"]
+                          and x["covered_span"][1] >= run["end"]))]
+        deficit = [x for x in run_reads
+                   if x.get("resolution") == "deficit"
+                   and x["coverage"] == "full"]
+        merged_any = [x for x in run_reads
+                      if x.get("resolution") == "merged"]
+        _vote_rec = lambda x: {"filename": x["filename"],
+                               "direction": x["direction"],
+                               "peak_count": x["peak_count"],
+                               "anchor": x.get("anchor_grade")}
+        if votes:
+            pcs = sorted({x["peak_count"] for x in votes})
+            if len(pcs) == 1:
+                # 可分辨 read 互证一致（含单条）：重复数采信峰图实测
+                entry["run_verdict"] = "accepted"
+                entry["count_reliable"] = True
+                entry["observed_repeat_count"] = pcs[0]
+                entry["verdict_votes"] = [_vote_rec(x) for x in votes]
+            else:
+                # 可分辨 read 之间互证矛盾：不可信，需人工核对或换引物
+                entry["run_verdict"] = "contradictory"
+                entry["count_reliable"] = False
+                entry["verdict_votes"] = [_vote_rec(x) for x in votes]
+        elif deficit:
+            # 无完整互证，但有可见缺失证据（B4 口径）：主判读以峰图为准，
+            # 计数不确证（部分合并可能掩盖更多缺失）
+            entry["run_verdict"] = "deficit_observed"
+            entry["count_reliable"] = False
+        elif merged_any:
+            # 整段合并、无可分辨证据：不可判定。
+            # 宽度法估计照常输出但仅为模型参考，不作为判定
+            entry["run_verdict"] = "undetermined"
+            entry["count_reliable"] = False
+        else:
+            # 无任何峰图计数证据（采样不足/仅部分覆盖且一致）：无矛盾证据，
+            # 维持调用数（旧口径兼容，spare 合成稀疏数据场景）
+            entry["run_verdict"] = "caller_only"
+            entry["count_reliable"] = True
         # 主判读以峰图为准（B4）：每条 read 覆盖段内，参考段长 − 可分辨峰 =
         # 该段缺失数（峰只会被压缩合并、不会凭空多出，段内峰数即实测）；
         # 整段缺失取各 read 覆盖段缺失的最大值（缺失只能被覆盖它的 read 看见），
@@ -2044,13 +2256,36 @@ def analyze(
             f"构建序列与设计一致：{len(read_results)} 条 read 全部匹配，"
             f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
         )
-        # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）
+        # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）；
+        # 三态 verdict 分措辞（Step B）：矛盾→不可信，不可判定→需换引物
+        _verdict_warn = {
+            "contradictory": "可分辨 read 之间计数互证矛盾，不可信",
+            "undetermined": "无可分辨峰证据，重复数不可判定（建议换引物或人工核对峰图）",
+            "deficit_observed": "峰图缺失证据，以峰图可分辨峰为准，建议人工复核",
+        }
         poly_warnings = [
             f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
-            f"{_peak_verdict_phrase(e)}——以峰图可分辨峰为准，建议人工复核"
+            f"{_peak_verdict_phrase(e)}——{_verdict_warn.get(e.get('run_verdict'), '以峰图可分辨峰为准，建议人工复核')}"
             for e in homopolymer_report
             if e["tier"] == "poly" and not e["count_reliable"]
         ]
+        # 端点歧义按 verdict 豁免（与变体分支同口径）：run 已 accepted 时
+        # 端点滑动不影响判定，不再提示
+        _verdict_ok0 = {(e["base"], e["start"]) for e in homopolymer_report
+                        if e.get("run_verdict") == "accepted"}
+        edge_notes0 = [x for x in edge_ambiguous_reads
+                       if not any((h["base"], h["start"]) in _verdict_ok0
+                                  for h in x["hits"])]
+        if edge_notes0:
+            names = "、".join(x["filename"] for x in edge_notes0[:3])
+            more = f" 等 {len(edge_notes0)} 条" if len(edge_notes0) > 3 else ""
+            first = edge_notes0[0]["hits"][0]
+            run_txt = (f"poly({first['base']}) {first['start']}-{first['end']}"
+                       if first["base"] else f"{first['start']}-{first['end']}")
+            poly_warnings.append(
+                f"注意：{names}{more} 的比对端点落在同聚物区内部"
+                f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
+                "互检定位可能有数 bp 偏差，建议对照图谱核对")
         # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
         all_lines = ([conclusion] + mixed_lines + cds_lines + poly_warnings
                      + dropout_notes + [end_note])
@@ -2101,22 +2336,44 @@ def analyze(
         for e in homopolymer_report:
             if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
                 continue
+        # 峰图判读行按三态 verdict 分措辞（Step B）：
+        # contradictory 互证矛盾 → 不可信；undetermined 无可分辨证据 → 不可
+        # 判定（宽度法仅供参考）；accepted 但整体计数不可靠的（如仅 partial
+        # read 覆盖）仍走旧提示。同一 run 只出一条线，逐 read 证据随行
+        _verdict_phrase = {
+            "contradictory": "可分辨 read 之间计数互证矛盾，不可信",
+            "undetermined": "无可分辨峰证据，长度不可判定（宽度法估计仅供参考）",
+            "deficit_observed": "峰图缺失证据，以峰图可分辨峰为准",
+        }
+        for e in homopolymer_report:
+            if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
+                continue
             var = e.get("variant")
             anchor = ""
             if var:
                 kind = "插入" if var["type"] == "insertion" else "缺失"
                 anchor = f"位置 {var['ref_pos']} {kind} {var['length']}bp；"
             detail = " / ".join(_rc_label(x) for x in e["read_counts"])
+            vt = _verdict_phrase.get(
+                e.get("run_verdict"), "峰压缩区，以峰图可分辨峰为准")
             lines.append(
                 f"  ↳ {_run_label(e)} {e['start']}-{e['end']} 峰图判读："
                 f"{_peak_verdict_phrase(e)}（{anchor}{detail}）"
-                "——峰压缩区，以峰图可分辨峰为准，建议人工核对峰图"
+                f"——{vt}，建议人工核对峰图"
             )
         lines.extend(dropout_notes)
-        if edge_ambiguous_reads:
-            names = "、".join(x["filename"] for x in edge_ambiguous_reads[:3])
-            more = f" 等 {len(edge_ambiguous_reads)} 条" if len(edge_ambiguous_reads) > 3 else ""
-            first = edge_ambiguous_reads[0]["hits"][0]
+        # 端点歧义行按 verdict 豁免（Step B）：run 已有可分辨 read 互证出
+        # 确定重复数（accepted）时，端点滑动不再影响判定——只有无判决或
+        # 判决存疑的 run 才提示定位偏差
+        _verdict_ok = {(e["base"], e["start"]) for e in homopolymer_report
+                       if e.get("run_verdict") == "accepted"}
+        edge_notes = [x for x in edge_ambiguous_reads
+                      if not any((h["base"], h["start"]) in _verdict_ok
+                                 for h in x["hits"])]
+        if edge_notes:
+            names = "、".join(x["filename"] for x in edge_notes[:3])
+            more = f" 等 {len(edge_notes)} 条" if len(edge_notes) > 3 else ""
+            first = edge_notes[0]["hits"][0]
             run_txt = f"poly({first['base']}) {first['start']}-{first['end']}" if first["base"] else f"{first['start']}-{first['end']}"
             lines.append(
                 f"注意：{names}{more} 的比对端点落在同聚物区内部"
