@@ -638,14 +638,17 @@ async def analyze_vector_sequencing(
 
 
 @router.get("/sequencing/analyses")
-async def list_analyses(user: Optional[User] = Depends(get_current_user)):
-    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细；记录 15 分钟后自动删除）。
+async def list_analyses(limit: int = 200, offset: int = 0,
+                        user: Optional[User] = Depends(get_current_user)):
+    """历史分析列表（摘要，按时间倒序；不含 reads/变体明细）。
 
-    属主校验：只返回自己创建的（管理员全可见；无属主的匿名遗留记录公开）"""
+    分页：limit（默认 200，0 不限）+ offset。属主校验：只返回自己创建的
+    （管理员全可见；无属主的匿名遗留记录公开）"""
     _sweep_expired()
     if sequencing_store.db_enabled():
         return sequencing_store.list_records(
-            user, is_admin=bool(user and user.is_admin))
+            user, is_admin=bool(user and user.is_admin),
+            limit=limit, offset=offset)
     items = sorted((r for r in _ANALYSES.values() if _can_access(r, user)),
                    key=lambda r: r["created_at"], reverse=True)
     return [
@@ -696,11 +699,32 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
                        f"{record['sample_name']}-consensus").strip("._") or "consensus"
 
     if format.lower() == "genbank":
+        # poly run 判读注释（Step B verdict）：确证的重复区写入确认注释，
+        # 矛盾/不可判定的显式标注——导出物脱离本系统后仍能自证判读状态
+        verdict_note = {
+            "accepted": "重复数确证 {obs} 个（峰图互证一致{joint}）",
+            "deficit_observed": "可见缺失证据，实测约 {obs} 个（以峰图为准，计数不确证）",
+            "contradictory": "可分辨 read 计数互证矛盾，重复数不可信",
+            "undetermined": "峰合并不可判读，重复数不可判定（宽度法估计 {est} 个）",
+        }
+        feats: List[str] = []
+        for e in record.get("homopolymers") or []:
+            if e.get("tier") != "poly" or e.get("run_verdict") not in verdict_note:
+                continue
+            label = f"poly({e['base']})" if e.get("base") else "repeat"
+            txt = verdict_note[e["run_verdict"]].format(
+                obs=e.get("observed_repeat_count"),
+                joint="；联合覆盖拼接" if e.get("joint_coverage") else "",
+                est=e.get("length_estimate"),
+            )
+            feats.append(f"     misc_feature    {e['start']}..{e['end']}\n"
+                         f"                     /note=\"{label} {e['start']}-{e['end']}：{txt}\"")
         lines = [
             f"LOCUS       {safe_name[:16]:<16} {len(seq)} bp DNA",
             "DEFINITION  Sanger consensus sequence",
             f"ACCESSION   {analysis_id}",
             "FEATURES             Location/Qualifiers",
+            *feats,
             "ORIGIN",
         ]
         for i in range(0, len(seq), 60):
@@ -711,8 +735,19 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
         content = "\n".join(lines)
         ext = "gb"
     else:
+        # FASTA 头带判读摘要：确证 run 数 / 存疑 run 数
+        hps = [e for e in record.get("homopolymers") or [] if e.get("tier") == "poly"]
+        ok_n = sum(1 for e in hps if e.get("run_verdict") == "accepted")
+        bad = [e for e in hps if e.get("run_verdict") in ("contradictory", "undetermined")]
+        flag = ""
+        if bad:
+            spans = "、".join(f"{e['start']}-{e['end']}" for e in bad[:3])
+            flag = f" poly_unverified={spans}" + ("..." if len(bad) > 3 else "")
+        elif hps:
+            flag = f" poly_verified={ok_n}/{len(hps)}"
         content = (
-            f">{safe_name} coverage={record['consensus']['coverage_percent']}%\n{seq}"
+            f">{safe_name} coverage={record['consensus']['coverage_percent']}%"
+            f"{flag}\n{seq}"
         )
         ext = "fasta"
 
