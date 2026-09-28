@@ -285,6 +285,71 @@ class TestEmailVerification:
         assert r.json()["mail_sent"] is False and r.json()["verify_token"]
 
 
+
+# ==================== 设计/批量资源属主校验 ====================
+
+class TestDesignBatchOwnership:
+    _REQ = {
+        "sequence": "ATG" + "AAACAG" * 12 + "TAA",
+        "sequence_type": "dna",
+        "optimize_codons": False,
+        "cloning_method": "restriction",
+        "enzyme_5": "EcoRI",
+        "enzyme_3": "HindIII",
+        "sequence_name": "own",
+    }
+
+    def test_design_result_owner_scoped(self, client, db):
+        c, _ = client
+        ua = _make_user(db, email="design-a@test.com")
+        ub = _make_user(db, email="design-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        r = c.post("/api/design", json=self._REQ, headers=ha)
+        assert r.status_code == 200, r.text
+        design_id = r.json()["design_id"]
+
+        # B 不可读；A 本人可读；匿名不可读（有属主）
+        assert c.get(f"/api/design/{design_id}", headers=hb).status_code == 403
+        assert c.get(f"/api/design/{design_id}", headers=ha).status_code == 200
+        assert c.get(f"/api/design/{design_id}").status_code == 403
+        # 设计图谱/下载同样受限
+        assert c.get(f"/api/design/{design_id}/map", headers=hb).status_code == 403
+        assert c.get(f"/api/design/{design_id}/download/genbank", headers=hb).status_code == 403
+
+        # 匿名创建 → 无属主 → 公开（历史行为兼容）
+        r2 = c.post("/api/design", json=self._REQ)
+        assert c.get(f"/api/design/{r2.json()['design_id']}", headers=hb).status_code == 200
+
+    def test_batch_job_owner_scoped(self, client, db):
+        c, _ = client
+        ua = _make_user(db, email="batch-a@test.com")
+        ub = _make_user(db, email="batch-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        req = dict(self._REQ)
+        r = c.post("/api/design/batch", json={
+            "sequences": [self._REQ["sequence"]],
+            "sequence_names": ["own"],
+            "sequence_type": "dna",
+            "optimize_codons": False,
+            "cloning_method": "restriction",
+            "enzyme_5": "EcoRI",
+            "enzyme_3": "HindIII",
+        }, headers=ha)
+        assert r.status_code == 200, r.text
+        batch_id = r.json()["batch_id"]
+
+        assert c.get(f"/api/design/batch/{batch_id}", headers=hb).status_code == 403
+        assert c.get(f"/api/design/batch/{batch_id}", headers=ha).status_code == 200
+        assert c.get(f"/api/design/batch/{batch_id}/report", headers=hb).status_code == 403
+
+
+
 # ==================== 管理员 API ====================
 
 class TestAdminApi:
