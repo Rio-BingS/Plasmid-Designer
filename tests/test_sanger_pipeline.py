@@ -1785,3 +1785,127 @@ def test_poly_variant_and_peak_conflict_single_conclusion_line():
     assert "峰图判读" in poly_lines[0] and "位置" in poly_lines[0]
     assert "正向调用29/峰" in poly_lines[0]   # 逐 read 明细并入同一条线
     assert "以峰图可分辨峰为准" in poly_lines[0]
+
+
+# ==================== Step A/B：同聚物落点歧义——先单条分析再综合评判 ====================
+
+def test_poly_merged_reverse_does_not_veto_resolvable_forward():
+    """真实难例（用户两链峰图）：正向 read 峰可分辨、反向 read 合并成压缩
+    山丘——旧口径任一 read 峰数≠调用数即整体判不可靠，反向合并（该 read 的
+    信号极限）否决了正向完整证据。新口径：只有 resolvable read 有投票权，
+    正向计数互证 → accepted；反向 resolution=merged 不投票、只标不可判定；
+    结论措辞按 verdict 给出（不出现旧的一票否决文案）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    fwd = ref[40:170]
+    t_fwd = _shaped_traces(fwd, poly_span=(40, 70), real_peaks=30)   # 正向：30 峰可分辨
+    # 反向覆盖同一 run：polyT 段完全合并成高台（无独立可辨峰）。
+    # 反向 read 读向坐标：ref p → 读向 130-p（ref[40:170] 反向互补），
+    # polyT（ref 110..81）在读向 60..89；T 通道在 "ATGC" 顺序中为第 2 路
+    rev = ref[40:170].translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    t_rev = _shaped_traces(rev, poly_span=(60, 90), real_peaks=30, channel="T")
+    t_rev[1][60 * 4:90 * 4] = [100] * 120   # T 通道连续高台（合并形态）
+    reads = [
+        ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
+        ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["fwd.ab1"]["resolution"] == "resolvable"
+    assert by_file["rev.ab1"]["resolution"] == "merged"
+    assert hp["run_verdict"] == "accepted"
+    assert hp["count_reliable"] is True
+    assert hp["observed_repeat_count"] == 30
+    # verdict_votes 只含投票 read（正向）
+    assert [v["filename"] for v in hp["verdict_votes"]] == ["fwd.ab1"]
+    assert "互证矛盾" not in result["conclusion"]
+
+
+def test_poly_resolvable_reads_conflict_is_contradictory():
+    """两条可分辨 read 计数互证矛盾（如真嵌合/两克隆）：contradictory——
+    与 merged 不可判定明确区分，结论不可信措辞"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read1 = ref[40:170]
+    traces1 = _shaped_traces(read1, poly_span=(40, 70), real_peaks=30)
+    # read2 同区间，poly 内真实缺 2 个 A 且峰可分辨（29 调用 vs 28 峰？
+    # ——构造调用 30 峰 28 的可分辨缺口：调用补齐 30，峰图 28 峰）
+    # 用缺 2A 的调用序列 + 28 峰 → called=28, pc=28 → resolvable 且与 read1 的 30 矛盾
+    mutated = read1[:68] + read1[70:]     # 缺 2 个 A（调用 28）
+    traces2 = _shaped_traces(mutated, poly_span=(40, 68), real_peaks=28)
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
+        ("b.ab1", make_ab1(mutated, [40] * len(mutated), traces=traces2, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "contradictory"
+    assert hp["count_reliable"] is False
+    assert "互证矛盾" in result["conclusion"]
+
+
+def test_poly_all_merged_reads_undetermined_not_conclusion_conflict():
+    """全部 read 均合并（无任何可分辨证据）：undetermined——宽度法估计仅
+    仅供参考，结论明确「不可判定」而非笼统「不可靠」"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道连续高台
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "undetermined"
+    assert hp["count_reliable"] is False
+    assert "不可判定" in result["conclusion"]
+
+
+def test_poly_edge_hits_exempt_when_verdict_accepted():
+    """端点歧义标注按 verdict 豁免：歧义端点 read（起点落在 run 内、必然
+    partial 不投票）+ 另一条完整覆盖 read 互证 accepted 时，比对端点滑动
+    不再影响判定——端点歧义注意行不出现；verdict 存疑（undetermined，
+    如歧义 read 自己合并成高台且无完整 read 旁证）时照常提示"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    # read1 起点落在 poly 内（reference[85:170]）→ 比对端点在 run 内部
+    mid = ref[85:170]
+    t_mid = _shaped_traces(mid, poly_span=(0, 25), real_peaks=25)
+    # read2 完整跨过 run、峰可分辨 → resolvable 投票
+    full = ref[40:170]
+    t_full = _shaped_traces(full, poly_span=(40, 70), real_peaks=30)
+    reads = [
+        ("mid.ab1", make_ab1(mid, [40] * len(mid), traces=t_mid, samples_per_base=4)),
+        ("full.ab1", make_ab1(full, [40] * len(full), traces=t_full, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "accepted"
+    assert "比对端点落在同聚物区内部" not in result["conclusion"]
+    # 对照：歧义端点 read 自己合并成高台、无完整 read 旁证 → undetermined，
+    # 端点歧义照常提示
+    t_mid2 = _shaped_traces(mid, (0, 25), 25)
+    t_mid2[1][0:25 * 4] = [100] * 100
+    blob2 = make_ab1(mid, [40] * len(mid), traces=t_mid2, samples_per_base=4)
+    result2 = analyze([("g.ab1", blob2)], ref, [])
+    hp2 = next(h for h in result2["homopolymers"] if h["base"] == "A")
+    assert hp2["run_verdict"] == "undetermined"
+    assert "比对端点落在同聚物区内部" in result2["conclusion"]
+
+
+def test_poly_merged_zone_suppresses_pseudo_mixed():
+    """Step A 抑制：合并压缩 run 窗内次级峰结构不可分辨——压缩高台 + 次级
+    通道小峰会把合并段切成一串伪双峰位点；抑制后该区 mixed_positions 不
+    出现，且 read 记录 poly_merged_zones（变异强制低置信的依据）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道（"ATGC" 第 1 路）连续高台
+    # G 通道（第 2 路）在 run 内 3 处叠加 45% 次级信号——若该区可判读，
+    # 次级/主峰 0.45 > 0.3 会逐位判双峰（压缩区强行判读的伪差异形态）
+    for j in (12, 24, 36):
+        traces[2][40 * 4 + j * 4] = 45
+        traces[2][40 * 4 + j * 4 + 1] = 45
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    read = result["reads"][0]
+    # 峰窗 41-70 对应 run 窗：窗内无伪双峰位点
+    in_zone = [p for p in (read["mixed_positions"] or []) if 38 <= p <= 72]
+    assert in_zone == []
+    assert read.get("poly_merged_zones"), "压缩 run 应记录 merged zone"
