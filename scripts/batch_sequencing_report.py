@@ -188,6 +188,33 @@ def write_report_md(plasmid: str, out_path: Path, ctx: dict, res, copied):
                   "**低**=疑似测序噪声，未计入结论。峰强比=突变碱基峰占双峰百分比（≈100% 纯合、"
                   "≈50% 混合）；插入峰强度=插入碱基峰面积÷邻峰面积中位数（≥60% 说明插入峰真实存在）。",
                   ""]
+    if res and res.get("homopolymers"):
+        # 同聚物判读（Step A/B verdict）：与平台端同一口径的三态结果
+        marks = {"accepted": "✅", "deficit_observed": "🟡", "caller_only": "✅",
+                 "contradictory": "⛔", "undetermined": "⚪"}
+        words = {"accepted": "计数确证（峰图互证一致）",
+                 "deficit_observed": "可见缺失证据，以峰图为准（计数不确证）",
+                 "caller_only": "无峰图计数证据，维持调用数",
+                 "contradictory": "可分辨 read 计数互证矛盾，不可信",
+                 "undetermined": "峰合并不可判读，重复数不可判定"}
+        lines += ["## 同聚物判读（重复数）", "",
+                  "| 结构 | 参考数 | 测得 | 判读 | 依据 |", "|---|---|---|---|---|"]
+        for e in res["homopolymers"]:
+            if e.get("tier") != "poly":
+                continue
+            vt = e.get("run_verdict", "caller_only")
+            mark = marks.get(vt, "")
+            word = words.get(vt, vt)
+            obs = e.get("observed_repeat_count")
+            votes = e.get("verdict_votes") or []
+            basis = "；".join(
+                f"{v.get('filename')}峰{v.get('peak_count')}" for v in votes if v.get("filename"))
+            if any(v.get("joint") for v in votes):
+                basis += "（联合覆盖拼接）"
+            lines.append(f"| {mark} poly({e.get('base')}) {e['start']}-{e['end']} "
+                         f"| {e.get('ref_repeat_count')} | {obs if obs is not None else '—'} "
+                         f"| {word} | {basis or '—'} |")
+        lines.append("")
     if res and res["errors"]:
         lines += ["## 分析中的错误", ""]
         lines += [f"- {e['filename']}: {e['error']}" for e in res["errors"]]
