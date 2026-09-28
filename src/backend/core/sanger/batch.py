@@ -140,18 +140,13 @@ def match_files(rows: List[Dict], files: List[Dict]):
             per_plasmid.setdefault(hit[0], {"reference": None, "reads": []})["reads"].append(
                 {"file": f, "how": hit[1]}
             )
-        else:  # 图谱文件 → 按质粒名称匹配
-            names = {norm_stem(r["name"]): r["name"] for r in rows if r["name"]}
-            if f["stem"] in names:
-                plasmid = names[f["stem"]]
-                how = "文件名与质粒名称精确匹配"
-            else:
-                cands = {n for n in names if n and n in f["stem"]}
-                if len(cands) != 1:
-                    unmatched.append({"file": f, "reason": "文件名不匹配任何质粒名称"})
-                    continue
-                plasmid = names[cands.pop()]
-                how = "文件名包含质粒名称"
+        else:  # 图谱文件 → 按质粒名称匹配（与克隆模式同口径的多级匹配：
+            # 全名精确 > 忽略分隔符精确 > 与名称的某一段一致 > 双向包含）
+            names = {r["name"] for r in rows if r["name"]}
+            plasmid, how = _match_ref_name(f["stem"], names)
+            if plasmid is None:
+                unmatched.append({"file": f, "reason": how})
+                continue
             slot = per_plasmid.setdefault(plasmid, {"reference": None, "reads": []})
             if slot["reference"] is not None:
                 unmatched.append({"file": f,
@@ -159,6 +154,40 @@ def match_files(rows: List[Dict], files: List[Dict]):
                 continue
             slot["reference"] = {"file": f, "how": how}
     return per_plasmid, unmatched
+
+
+def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
+    """图谱文件名 → 质粒名称的多级匹配（match_files 与 match_clone_files
+    同一口径）：全名精确 > 忽略分隔符精确 > 与名称的某一段一致（"MBYSTC" ↔
+    "17648 MBYSTC"）> 双向包含（短侧 ≥4 字符，防 "MX" 命中 "MX2"）。
+    候选不唯一一律不猜，返回 (None, 原因)。"""
+    sq = _squash(stem)
+    segs = lambda n: {_squash(t) for t in re.split(r"\s+", n.strip()) if t}
+    levels = (
+        ([n for n in names if norm_stem(n) == stem],
+         "文件名与质粒名称精确匹配"),
+        ([n for n in names if _squash(n) == sq],
+         "文件名与质粒名称精确匹配（忽略分隔符）"),
+        ([n for n in names if sq in segs(n)],
+         f"文件名与质粒名称的组成部分一致（{{}}）"),
+    )
+    for cands, how in levels:
+        if len(cands) == 1:
+            return cands[0], (how.format(cands[0]) if "{}" in how else how)
+        if len(cands) > 1:
+            return None, ("文件名同时匹配多个质粒名称（"
+                          + "、".join(sorted(cands))[:80] + "），无法唯一确定")
+    cont = []
+    for n in names:
+        nsq = _squash(n)
+        if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
+            cont.append(n)
+    if len(cont) == 1:
+        return cont[0], "文件名包含质粒名称（或反之）"
+    if len(cont) > 1:
+        return None, ("文件名同时匹配多个质粒名称（"
+                      + "、".join(sorted(cont))[:80] + "），无法唯一确定")
+    return None, "文件名不匹配任何质粒名称（支持全名或两段式名称的任一段）"
 
 
 def rows_have_clones(rows: List[Dict]) -> bool:
@@ -480,11 +509,21 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     tail.extend(mixed_tails)
     if pending:
         tail.append(f"{pending} 处低置信差异疑似测序噪声（详见报告）")
-    # A4：poly 区峰图计数与碱基调用不一致——此前批量 Excel 丢掉这条关键告警
+    # A4：poly 区峰图判读存疑——按 run_verdict 分态措辞（contradictory
+    # 互证矛盾对克隆批量筛查最致命，单独点名；undetermined 无可分辨证据；
+    # 其余（deficit_observed 等）归入一般"计数不一致"）
     hp_bad = [e for e in (res.get("homopolymers") or [])
               if e.get("tier", "poly") == "poly" and e.get("count_reliable") is False]
     if hp_bad:
-        tail.append("poly 区峰图计数与碱基调用不一致（重复数存疑，详见报告）")
+        vt = {e.get("run_verdict") for e in hp_bad}
+        if "contradictory" in vt:
+            tail.append("poly 区可分辨 read 之间计数互证矛盾（重复数不可信，"
+                        "疑似两克隆混合或需换引物复测，详见报告）")
+        elif "undetermined" in vt:
+            tail.append("poly 区峰完全合并无法判读（重复数不可判定，"
+                        "建议换引物或人工核对峰图，详见报告）")
+        else:
+            tail.append("poly 区峰图计数与碱基调用不一致（重复数存疑，详见报告）")
     if cov < 95:
         tail.append(f"测序覆盖 {cov:.0f}%")
 
