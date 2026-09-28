@@ -593,6 +593,13 @@ export interface SequencingAnalysis {
     alignment_view?: AlignmentView | null
     grade?: string
     q20_ratio?: number
+    /** 合并压缩区：该 read 对此段无可分辨证据（峰图条带画灰罩） */
+    poly_merged_zones?: {
+      base: string
+      ref_start: number
+      ref_end: number
+      positions: number[]
+    }[]
   }[]
   variants: SequencingVariant[]
   consensus: {
@@ -640,7 +647,11 @@ export interface SequencingAnalysis {
     /** Step B 综合评判：accepted 互证一致 / contradictory 矛盾不可信 /
      *  undetermined 无可分辨证据 / deficit_observed 可见缺失 / caller_only */
     run_verdict?: string
-    verdict_votes?: { filename: string; direction: string; peak_count: number | null; anchor?: string }[]
+    verdict_votes?: {
+      filename?: string; direction?: string; peak_count?: number | null; anchor?: string
+      joint?: boolean; observed_total?: number | null
+      reads?: { filename: string; direction: string; peak_count: number | null; anchor?: string }[]
+    }[]
     variant: { ref_pos: number; type: string; length: number; confidence: string } | null
   }[]
   mixed_detected: Record<string, number[]>
