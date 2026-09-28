@@ -628,7 +628,19 @@ export interface SequencingAnalysis {
       coverage?: 'full' | 'partial'
       covered_span?: [number, number] | null
       called_count?: number | null
+      /** Step A 单 read 判读：resolvable 证据完整 / merged 不可判定 /
+       *  deficit 可见缺失 / noisy 疑似肩峰 / no_evidence 采样不足 */
+      resolution?: string
+      reason?: string
+      anchor_grade?: string
+      anchor_issues?: string[]
+      length_estimate?: number | null
+      length_ci?: [number, number] | null
     }[]
+    /** Step B 综合评判：accepted 互证一致 / contradictory 矛盾不可信 /
+     *  undetermined 无可分辨证据 / deficit_observed 可见缺失 / caller_only */
+    run_verdict?: string
+    verdict_votes?: { filename: string; direction: string; peak_count: number | null; anchor?: string }[]
     variant: { ref_pos: number; type: string; length: number; confidence: string } | null
   }[]
   mixed_detected: Record<string, number[]>
