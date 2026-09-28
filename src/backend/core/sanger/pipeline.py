@@ -873,7 +873,8 @@ def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
     - QV 修剪边界外（basecaller 低置信）→ 边缘
     - 路标落在另一 poly/重复结构内部（撞上第三种歧义）→ 边缘
     - poly 下游 DROPOUT_WINDOW_BASES 窗内且骤降未恢复 → 不可靠
-    - 混合峰位点 → 不可靠
+    - 混合峰位点（次级通道可见的异常）→ 不可靠
+    - 路标峰与相邻峰间距 < 0.6×中位峰距（同通道压缩合并）→ 不可靠
     返回 ("reliable"|"marginal"|"unreliable", 原因列表)。
     """
     issues: List[str] = []
@@ -895,6 +896,22 @@ def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
                 and not d.get("end_truncation"):
             unreliable.append("poly 下游信号骤降区")
             break
+    # 路标峰与相邻峰合并（压缩）：峰距显著小于全 read 中位峰距时峰型不可
+    # 分辨，路标本身可能被错位调用/挪位——整段定位会悄悄偏移。混合峰检查
+    # 只覆盖"次级通道可见"的形态，这里补上"同通道压缩合并"的形态
+    tp = r.get("trimmed_peaks") or []
+    if 0 <= ti < len(tp) and tp[ti] is not None:
+        _gaps = sorted(b - a for a, b in zip(tp, tp[1:])
+                       if a is not None and b is not None and b > a)
+        _med = _gaps[len(_gaps) // 2] if _gaps else 0
+        if _med >= 2:
+            _near = None
+            if ti > 0 and tp[ti - 1] is not None and tp[ti] > tp[ti - 1]:
+                _near = tp[ti] - tp[ti - 1]
+            if ti + 1 < len(tp) and tp[ti + 1] is not None and tp[ti + 1] > tp[ti]:
+                _near = min(_near, tp[ti + 1] - tp[ti]) if _near else tp[ti + 1] - tp[ti]
+            if _near is not None and _near < 0.6 * _med:
+                unreliable.append("路标峰与相邻峰合并（压缩区）")
     issues = marginal + unreliable
     if unreliable:
         return "unreliable", issues
@@ -1730,7 +1747,7 @@ def analyze(
         aln = r["alignment"]
         slip: set = set()
         dropouts: List[Dict] = []
-        merged_zones: Dict[Tuple, List[int]] = {}
+        merged_zones: List[Dict] = []
         for run in poly_runs_p1:
             if aln["direction"] == "-":
                 i0 = aln["ref_end"] - run["end"]
@@ -1760,14 +1777,17 @@ def analyze(
                 local=poly_local_ratio)
             if wpc == 0 or (wamp is not None and wamp < POLY_COMPRESSION_RATIO):
                 # run 窗内（含 echo 边界 ±2）逐位双峰均不可作证据
-                merged_zones[(run["base"], run["start"], run["end"])] = \
-                    list(range(max(1, w0 - 1), w1 + 3))
+                merged_zones.append({
+                    "base": run["base"], "ref_start": run["start"],
+                    "ref_end": run["end"],
+                    "positions": list(range(max(1, w0 - 1), w1 + 3)),
+                })
         r["slippage_positions"] = sorted(slip)
         r["post_poly_dropouts"] = dropouts
         r["poly_merged_zones"] = merged_zones
         merged_span: set = set()
-        for positions in merged_zones.values():
-            merged_span.update(positions)
+        for z in merged_zones:
+            merged_span.update(z["positions"])
         n_trim = len(r["trimmed_bases"])
         mixed_detail = [
             e for e in _detect_mixed_detail(
@@ -1858,8 +1878,8 @@ def analyze(
         # （跨 read 互证一致的变异不受单 read 降级影响——support_reads 聚合
         # 来自各 read 独立证据，merged read 的伪差异已被 mixed 抑制挡在门外）
         if src is not None and v.get("confidence") != "low":
-            for positions in (src.get("poly_merged_zones") or {}).values():
-                if v.get("read_pos") in positions:
+            for zone in src.get("poly_merged_zones") or []:
+                if v.get("read_pos") in zone["positions"]:
                     v["confidence"] = "low"
                     v["merged_zone_artifact"] = True
                     break
@@ -2040,19 +2060,66 @@ def analyze(
                                "direction": x["direction"],
                                "peak_count": x["peak_count"],
                                "anchor": x.get("anchor_grade")}
+        # 联合覆盖投票（Step B 扩展）：无完整覆盖 read 时，多条部分覆盖且
+        # 段内自洽（resolvable）的 read 拼满整段 run 也可联合确证——
+        # 段间须恰好衔接（重叠段峰计数无法按位分解，保守跳过）、并集盖满
+        # run 起止，联合观测数 = 各段调用数之和（各段 pc==called）
+        joint_votes: List[Dict] = []
+        joint_total: Optional[int] = None
+        _partials = sorted(
+            (x for x in run_reads
+             if x.get("resolution") == "resolvable" and x["coverage"] == "partial"
+             and x.get("covered_span") and x.get("called_count") is not None),
+            key=lambda x: x["covered_span"][0])
+        _cursor: Optional[int] = None
+        for x in _partials:
+            cs, ce = x["covered_span"]
+            if _cursor is None:
+                if cs != run["start"]:
+                    break                      # 首段未从 run 起点开始 → 有缺口
+                _cursor = ce
+                joint_total = int(x["called_count"])
+                joint_votes.append(x)
+            elif cs <= _cursor:
+                continue                       # 与已覆盖段重叠：冗余，跳过
+            elif cs == _cursor + 1:
+                _cursor = ce                   # 恰好衔接，继续拼接
+                joint_total += int(x["called_count"])
+                joint_votes.append(x)
+            else:
+                break                          # 段间缺口
+        joint_ok = bool(joint_votes) and _cursor == run["end"]
         if votes:
             pcs = sorted({x["peak_count"] for x in votes})
-            if len(pcs) == 1:
-                # 可分辨 read 互证一致（含单条）：重复数采信峰图实测
+            if len(pcs) == 1 and (not joint_ok or joint_total == pcs[0]):
+                # 可分辨 read 互证一致（含单条）：重复数采信峰图实测；
+                # 联合覆盖读数与完整覆盖一致时互为印证
                 entry["run_verdict"] = "accepted"
                 entry["count_reliable"] = True
                 entry["observed_repeat_count"] = pcs[0]
                 entry["verdict_votes"] = [_vote_rec(x) for x in votes]
+            elif len(pcs) == 1 and joint_ok and joint_total != pcs[0]:
+                # 完整覆盖 read 与联合覆盖读数冲突（两段拼接各自自洽但互相
+                # 矛盾——两克隆混合的典型形态）：不可信
+                entry["run_verdict"] = "contradictory"
+                entry["count_reliable"] = False
+                entry["verdict_votes"] = [_vote_rec(x) for x in votes]
+                entry["verdict_votes"].append({
+                    "joint": True, "observed_total": joint_total,
+                    "reads": [_vote_rec(x) for x in joint_votes]})
             else:
                 # 可分辨 read 之间互证矛盾：不可信，需人工核对或换引物
                 entry["run_verdict"] = "contradictory"
                 entry["count_reliable"] = False
                 entry["verdict_votes"] = [_vote_rec(x) for x in votes]
+        elif joint_ok:
+            # 联合覆盖确证：各段内部自洽且拼满整段——等价于一条完整覆盖
+            # read 的证据（各 read 独立信号，段间无重叠无缺口）
+            entry["run_verdict"] = "accepted"
+            entry["count_reliable"] = True
+            entry["observed_repeat_count"] = joint_total
+            entry["joint_coverage"] = True
+            entry["verdict_votes"] = [_vote_rec(x) for x in joint_votes]
         elif deficit:
             # 无完整互证，但有可见缺失证据（B4 口径）：主判读以峰图为准，
             # 计数不确证（部分合并可能掩盖更多缺失）

@@ -1909,3 +1909,119 @@ def test_poly_merged_zone_suppresses_pseudo_mixed():
     in_zone = [p for p in (read["mixed_positions"] or []) if 38 <= p <= 72]
     assert in_zone == []
     assert read.get("poly_merged_zones"), "压缩 run 应记录 merged zone"
+
+
+# ==================== Step B 扩展：联合覆盖判定 + 锚压缩检测 ====================
+
+def test_poly_joint_coverage_partial_reads_accepted():
+    """联合覆盖判定：无完整覆盖 read 时，两条部分覆盖、段内自洽的 read
+    恰好拼接盖满整段 run → joint accepted，联合观测数 = 各段调用数之和；
+    与无旁证时的 caller_only / undetermined 明确区分"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # read1 覆盖 ref 41-100：run 段 81-100（20 个 A），截断在 run 内
+    read1 = ref[40:100]
+    # read2 从 ref 101 开始：run 段 101-110（10 个 A），起点在 run 内
+    read2 = ref[100:170]
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["a.ab1"]["coverage"] == "partial"
+    assert by_file["a.ab1"]["resolution"] == "resolvable"
+    assert by_file["b.ab1"]["resolution"] == "resolvable"
+    assert hp["run_verdict"] == "accepted"
+    assert hp.get("joint_coverage") is True
+    assert hp["observed_repeat_count"] == 30
+    assert hp["count_reliable"] is True
+    assert {v["filename"] for v in hp["verdict_votes"]} == {"a.ab1", "b.ab1"}
+
+
+def test_poly_joint_coverage_gap_falls_back():
+    """段间有缺口（两条 partial 之间隔了一段未覆盖）→ 联合不成立，
+    回退 caller_only（各自自洽、无矛盾证据）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read1 = ref[40:100]                     # 81-100
+    read2 = ref[105:170]                    # 106-110（缺口 101-105）
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "caller_only"
+    assert hp.get("joint_coverage") is None
+
+
+def test_poly_joint_conflicts_with_full_resolvable():
+    """联合覆盖读数与完整覆盖 read 冲突（一段 partial 各自自洽但隐含
+    缺失，与完整 read 的 30 矛盾）→ contradictory——两克隆混合的典型形态"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    # 完整 read 带 1 个 A 缺失（两侧侧翼可见 → full，调用 29 = 峰 29）
+    full = ref[40:170]
+    full_del = full[:41] + full[42:]        # 删 run 内第 2 个 A
+    # 两条干净 partial 拼满整段（各段自洽）→ 联合观测 30
+    read1 = ref[40:100]                     # 81-100，20 个 A
+    read2 = ref[100:170]                    # 101-110，10 个 A
+    reads = [
+        ("full.ab1", make_ab1(full_del, [40] * len(full_del), samples_per_base=4)),
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "contradictory"
+    assert hp["count_reliable"] is False
+    joint = [v for v in hp["verdict_votes"] if v.get("joint")]
+    assert joint and joint[0]["observed_total"] == 30
+    assert "互证矛盾" in result["conclusion"]
+
+
+def test_anchor_spacing_compression_flags_unreliable():
+    """锚压缩检测：路标峰与相邻峰间距显著小于中位峰距（同通道合并形态）
+    → anchor unreliable；正常等距峰路标保持 reliable"""
+    from core.sanger.pipeline import _anchor_quality
+    bases = "ACGT" * 10 + "C" + "A" * 20 + "C" + "G" * 5 + "T" * 30
+    r = {
+        "trimmed_bases": bases,
+        "raw_bases": bases,
+        "trim_start": 0,
+        "trimmed_quality": [40] * len(bases),
+        "mixed_detail": [],
+        "post_poly_dropouts": [],
+        # 正常区等距峰（每碱基 4 采样点）：路标间距 4 —— reliable
+        "trimmed_peaks": [i * 4 + 1 for i in range(len(bases))],
+    }
+    grade, issues = _anchor_quality(r, 41)    # run 前路标（run 42-61）
+    assert grade == "reliable", issues
+    grade, issues = _anchor_quality(r, 62)    # run 后路标
+    assert grade == "reliable", issues
+    # 路标与邻峰合并：run 后路标（pos 62 → 峰 idx 61）峰距骤减为 1
+    r2 = dict(r)
+    tp = list(r["trimmed_peaks"])
+    tp[61] = tp[60] + 1
+    r2["trimmed_peaks"] = tp
+    grade2, issues2 = _anchor_quality(r2, 62)
+    assert grade2 == "unreliable", issues2
+    assert any("合并" in x for x in issues2)
+
+
+def test_excel_conclusion_verdict_specific_wording():
+    """批量 Excel 一句话结论按 run_verdict 分态：矛盾/不可判定单独点名，
+    无 verdict 字段（旧记录）回退一般措辞"""
+    from core.sanger.batch import excel_conclusion
+    base = {
+        "reads": [{}], "errors": [], "variants": [],
+        "consensus": {"coverage_percent": 99.0},
+        "cds_reports": [],
+    }
+    res_c = {**base, "homopolymers": [
+        {"tier": "poly", "count_reliable": False, "run_verdict": "contradictory"}]}
+    out_c = excel_conclusion("p", res_c, 1, True)
+    assert "计数互证矛盾" in out_c and "不可信" in out_c
+    res_u = {**base, "homopolymers": [
+        {"tier": "poly", "count_reliable": False, "run_verdict": "undetermined"}]}
+    out_u = excel_conclusion("p", res_u, 1, True)
+    assert "无法判读" in out_u and "不可判定" in out_u
