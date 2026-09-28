@@ -464,6 +464,28 @@ function runVerdictLabel(h: Hp): string {
   return h.count_reliable ? '峰图与调用一致' : '峰图证据与调用不一致，建议核对峰图'
 }
 
+/** 判定依据行：投票 read 明细（含联合覆盖段的拼接读数） */
+function verdictBasis(h: Hp): string {
+  const parts: string[] = []
+  for (const v of h.verdict_votes ?? []) {
+    if (v.joint) {
+      const reads = (v.reads ?? []).map((r) => `${r.filename} 峰${r.peak_count ?? '?'}`).join('＋')
+      parts.push(`联合覆盖拼接 ${v.observed_total ?? '?'} 个（${reads}）`)
+    } else {
+      const d = v.direction === '-' ? '反向' : '正向'
+      const anc = v.anchor && v.anchor !== 'reliable' ? '（锚定一般）' : ''
+      parts.push(`${v.filename}${d}峰 ${v.peak_count ?? '?'} 个${anc}`)
+    }
+  }
+  return parts.join('；') || '—'
+}
+function voteCounts(h: Hp): string {
+  return (h.verdict_votes ?? [])
+    .filter((v) => !v.joint)
+    .map((v) => `${v.filename}峰${v.peak_count ?? '?'}`)
+    .join(' / ') || '—'
+}
+
 /** 逐引物判读行：优先用后端 Step A 的 resolution 判读（resolvable 峰图
  *  证据完整 / merged 峰合并不可判定 / deficit 可见缺失 / noisy 肩峰）；
  *  无 resolution 字段的旧记录回退本地推断 */
@@ -1458,6 +1480,47 @@ function drawSeq() {
     }
     const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
     for (const d of read.mixed_detail || []) mixedMap.set(d.pos - 1, d)
+    // 合并压缩区灰罩（poly_merged_zones：该 read 对此段无可分辨证据，
+    // 逐位判读无效——画在 trace 之下，让"这段峰图不可信"一眼可辨）
+    const zoneSpan = new Map<string, { x0: number; x1: number; label: string }>()
+    for (const z of read.poly_merged_zones ?? []) {
+      let x0 = Infinity
+      let x1 = -Infinity
+      for (const p of z.positions || []) {
+        const c = cols.find((cc) => cc.origIdx === p - 1)
+        if (!c || c.read === '-') continue
+        const x = seqX(c.xu)
+        if (x < x0) x0 = x
+        if (x > x1) x1 = x
+      }
+      if (x0 === Infinity) continue
+      x0 = Math.max(x0 - colW / 2, 0)
+      x1 = Math.min(x1 + colW / 2, w)
+      if (x1 <= 0 || x0 >= w) continue
+      const key = `${z.ref_start}-${z.ref_end}`
+      const prev = zoneSpan.get(key)
+      if (prev) {
+        prev.x0 = Math.min(prev.x0, x0)
+        prev.x1 = Math.max(prev.x1, x1)
+      } else {
+        zoneSpan.set(key, { x0, x1, label: `poly(${z.base}) 压缩` })
+      }
+    }
+    for (const z of zoneSpan.values()) {
+      if (z.x1 < 0 || z.x0 > w) continue
+      ctx.fillStyle = 'rgba(120,120,128,0.13)'
+      ctx.fillRect(z.x0, L.stripTop, z.x1 - z.x0, L.stripH)
+      ctx.strokeStyle = 'rgba(120,120,128,0.35)'
+      ctx.setLineDash([3, 3])
+      ctx.strokeRect(z.x0, L.stripTop, z.x1 - z.x0, L.stripH)
+      ctx.setLineDash([])
+      if (z.x1 - z.x0 > 34 && colW >= 5) {
+        ctx.fillStyle = 'rgba(90,90,96,0.8)'
+        ctx.font = '9px Arial'
+        ctx.textAlign = 'left'
+        ctx.fillText('压缩不可判读', z.x0 + 3, L.stripTop + L.stripH - 4)
+      }
+    }
     // 差异列浅红 / 双峰列橙底贯穿本条带（只画本 read 自己的列）
     for (const c of cols) {
       const cx = seqX(c.xu)
@@ -1739,6 +1802,13 @@ async function downloadConsensus(format: string) {
             </p>
             <p class="cds-detail" v-if="h.read_counts?.length && !h.read_counts.some((rc) => rc.coverage === 'full')">
               <span>↳ 无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）</span>
+            </p>
+            <!-- 判定依据（Step B）：哪些 read 投的票、锚定状态；联合覆盖时标注 -->
+            <p class="cds-detail" v-if="h.verdict_votes?.length && h.run_verdict === 'accepted'">
+              <span>↳ 判定依据：{{ verdictBasis(h) }}</span>
+            </p>
+            <p class="cds-detail" v-if="h.run_verdict === 'contradictory'">
+              <span>↳ 判定依据：可分辨 read 计数互不一致（{{ voteCounts(h) }}），需人工核对峰图或换引物复测</span>
             </p>
             <p class="cds-detail" v-if="h.run_covered != null && h.run_covered < h.ref_repeat_count">
               <span>↳ 各 read 合并覆盖该结构 {{ h.run_covered }}/{{ h.ref_repeat_count }} 个位置，未覆盖段无峰图证据</span>
