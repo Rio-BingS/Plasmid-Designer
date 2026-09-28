@@ -1565,6 +1565,30 @@ def analyze(
     poly_runs = find_repeat_runs(ref)
     _annotate_homopolymer(ref, variants, poly_runs)
 
+    # 比对端点落在同聚物区内部 → 落点歧义标注（不改变判定）：
+    # local 比对在同聚物内的起止随打分滑移，read 端部悬空也源于此——
+    # 覆盖边界与跨引物互检的参考定位在该端点附近可能有数 bp 偏差
+    poly_p1 = [run for run in poly_runs
+               if run["period"] == 1 and run.get("tier") == "poly"]
+    edge_ambiguous_reads: List[Dict] = []
+    for r in read_results:
+        aln = r["alignment"]
+        if aln.get("ref_end", 0) <= 0:
+            continue
+        hits = []
+        for edge_key, edge_label in (("ref_start", "起点"), ("ref_end", "终点")):
+            pos = aln[edge_key]
+            run = next((rn for rn in poly_p1
+                        if rn["start"] <= pos <= rn["end"]), None)
+            if run:
+                hits.append({"edge": edge_label, "ref_pos": pos,
+                             "base": run.get("base") or "",
+                             "start": run["start"], "end": run["end"]})
+        if hits:
+            r["homopolymer_edge_hits"] = hits
+            edge_ambiguous_reads.append({
+                "filename": r["filename"], "hits": hits})
+
     # 每 read 的信号层分析（B4/B5）：滑移 echo 位置 → 从 mixed 中剔除；
     # poly 末端下游骤降记录。mixed 判定在此进行（P17 顺序：stutter 先于 merge）
     poly_runs_p1 = [r for r in poly_runs if r["period"] == 1]
@@ -2089,6 +2113,15 @@ def analyze(
                 "——峰压缩区，以峰图可分辨峰为准，建议人工核对峰图"
             )
         lines.extend(dropout_notes)
+        if edge_ambiguous_reads:
+            names = "、".join(x["filename"] for x in edge_ambiguous_reads[:3])
+            more = f" 等 {len(edge_ambiguous_reads)} 条" if len(edge_ambiguous_reads) > 3 else ""
+            first = edge_ambiguous_reads[0]["hits"][0]
+            run_txt = f"poly({first['base']}) {first['start']}-{first['end']}" if first["base"] else f"{first['start']}-{first['end']}"
+            lines.append(
+                f"注意：{names}{more} 的比对端点落在同聚物区内部"
+                f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
+                "互检定位可能有数 bp 偏差，建议对照图谱核对")
         lines.append(end_note)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""
