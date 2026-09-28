@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（333 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（336 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -102,6 +102,24 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 修复（2026-09-28）**三大挂账项清账（落库/属主扩展/同聚物标注）**：①分析记录
+  落库——新表 sequencing_analyses（payload JSON + trace_data zlib+base64 压缩，
+  不含峰图双份驻留）+ app/sequencing_store.py（db_enabled/_ensure_table 幂等
+  建表/persist/load/delete/list，list 属主过滤只取元数据列）；内存 _ANALYSES
+  退化为 15 分钟 TTL 读取缓存，未命中回灌数据库，重启后端不再丢记录；4 个创建
+  端点落库、删除双清、trace/详情/列表全链路接库；测试 test_analysis_persists_
+  across_restart（清内存模拟重启→详情/峰图/列表/属主/删除全链路）。
+  ②design/batch 资源属主校验——DesignResult/BatchDesignStatus 加 user_id，
+  _ensure_design_access/_ensure_batch_access（无属主公开/创建者可见/管理员
+  全见/否则 403），创建端点 Depends(get_current_user) 绑定，批量任务内 design
+  继承 job.user_id，DBDesignStore/DBBatchStore 串列；测试 TestDesignBatchOwnership。
+  ③poly-A 落点歧义标注——read 比对端点落在 period=1 tier=poly 的 run 内时
+  homopolymer_edge_hits + 结论注意行（同聚物内比对落点存在歧义，覆盖边界与
+  互检定位可能数 bp 偏差，建议对照图谱）。验证：后端 336/前端 101 全绿、
+  build 过、vue-tsc 0；真机重启持久化烟雾过（kill→重启→详情/峰图/列表仍在）。
+  挂账清除：design/batch 资源属主改造✓、poly-A 比对歧义（已标注，算法级
+  解决未做）✓、分析记录落库✓。注意：database 模式下 15 分钟"过期"记录仍可
+  读（回灌），仅 memory 模式过期即 404（测试按 db_enabled 分支断言）。
 - 检查（2026-09-20）**全方位检查（第二轮，发现即修）**：①vue-tsc 全仓清零——
   修复 8 个历史错误：AuthModal 未用导入、AnalysisView 未用导出+overhang 索引
   any（提 OVERHANG_LABELS 常量）、VectorsView seqId 隐式 any×2 + importingId
