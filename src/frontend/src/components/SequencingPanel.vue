@@ -449,19 +449,57 @@ function readCountLabel(rc: NonNullable<Hp['read_counts']>[number]): string {
   return `${rc.filename}${d}调用${called}/峰${pk}`
 }
 
-/** 逐引物判读行：调用数 vs 可分辨峰 → 是否出入；覆盖情况与证据边界 */
+/** 综合评判标签（Step B 三态/五档）：verdict 缺失（旧记录）回退本地推断 */
+const RUN_VERDICT_LABELS: Record<string, string> = {
+  accepted: '峰图计数确证（可分辨 read 互证一致）',
+  caller_only: '峰图与调用一致',
+  deficit_observed: '可见缺失证据，以峰图为准（计数不确证）',
+  contradictory: '可分辨 read 之间计数互证矛盾，不可信',
+  undetermined: '峰合并不可分辨，重复数不可判定',
+}
+function runVerdictLabel(h: Hp): string {
+  if (h.run_verdict && RUN_VERDICT_LABELS[h.run_verdict]) {
+    return RUN_VERDICT_LABELS[h.run_verdict]
+  }
+  return h.count_reliable ? '峰图与调用一致' : '峰图证据与调用不一致，建议核对峰图'
+}
+
+/** 逐引物判读行：优先用后端 Step A 的 resolution 判读（resolvable 峰图
+ *  证据完整 / merged 峰合并不可判定 / deficit 可见缺失 / noisy 肩峰）；
+ *  无 resolution 字段的旧记录回退本地推断 */
+const ANCHOR_LABELS: Record<string, string> = {
+  marginal: '可信度一般（路标在信号边缘区）',
+  unreliable: '不可靠（路标踩信号异常区）',
+  'one-sided': '单侧锚定',
+}
 function readVerdictLine(rc: NonNullable<Hp['read_counts']>[number]): string {
   const d = rc.direction === '-' ? '反向' : '正向'
   const called = rc.called_count ?? '?'
   const pk = rc.peak_count ?? '?'
+  const seg = rc.coverage === 'partial' && rc.covered_span
+    ? `仅覆盖该结构 ${rc.covered_span[0]}-${rc.covered_span[1]}，未完整跨过（read 在结构内截断/起始）——覆盖段峰图已参与核对`
+    : '完整跨过该结构'
+  const anchor = rc.anchor_grade && rc.anchor_grade !== 'reliable'
+    ? `；锚定${ANCHOR_LABELS[rc.anchor_grade] ?? rc.anchor_grade}`
+    : ''
+  if (rc.resolution === 'resolvable') {
+    return `${rc.filename}（${d}）：调用 ${called}，可分辨峰 ${pk} → 峰图与调用一致，计数确证；${seg}${anchor}`
+  }
+  if (rc.resolution === 'merged') {
+    return `${rc.filename}（${d}）：峰合并不可分辨（${rc.reason || '无独立可辨峰'}）→ 该 read 对此结构不可判定${rc.length_estimate != null ? `，宽度法估计 ${rc.length_estimate} 仅供参考` : ''}；${seg}${anchor}`
+  }
+  if (rc.resolution === 'deficit') {
+    const gap = typeof called === 'number' && typeof pk === 'number' ? called - pk : '?'
+    return `${rc.filename}（${d}）：调用 ${called}，可分辨峰 ${pk} → 可见缺失 ${gap} 个（以峰图为准，计数不确证）；${seg}${anchor}`
+  }
+  if (rc.resolution === 'noisy') {
+    return `${rc.filename}（${d}）：调用 ${called}，可分辨峰 ${pk} → 峰数多于调用（疑似滑移肩峰），计数不可作证据；${seg}${anchor}`
+  }
   const arrow = (rc.peak_count != null && rc.called_count != null)
     ? (rc.peak_count === rc.called_count
         ? '峰图与调用一致'
         : `峰图与调用有出入（差 ${Math.abs(rc.peak_count - rc.called_count)}），标记矛盾`)
     : '峰数不可计'
-  const seg = rc.coverage === 'partial' && rc.covered_span
-    ? `仅覆盖该结构 ${rc.covered_span[0]}-${rc.covered_span[1]}，未完整跨过（read 在结构内截断/起始）——覆盖段峰图已参与核对`
-    : '完整跨过该结构'
   return `${rc.filename}（${d}）：调用 ${called}，可分辨峰 ${pk} → ${arrow}；${seg}`
 }
 
@@ -1677,7 +1715,7 @@ async function downloadConsensus(format: string) {
               {{ polyName(h) }}
               <span class="cds-coord">{{ h.start }}-{{ h.end }}（参考 {{ h.ref_repeat_count }} {{ polyUnitLabel(h) }}）</span>
               <span class="cds-cov" :class="h.count_reliable ? 'full' : 'partial'">
-                {{ h.count_reliable ? '峰图与调用一致' : '峰图证据与调用不一致，建议核对峰图' }}
+                {{ runVerdictLabel(h) }}
               </span>
             </p>
             <!-- 主判读：以解读的峰图数据开头 -->
