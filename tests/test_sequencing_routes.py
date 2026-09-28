@@ -251,3 +251,60 @@ def test_analysis_persists_across_restart(client):
     assert client.delete(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 200
     seq_routes._ANALYSES.clear()
     assert client.get(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 404
+
+
+def test_export_consensus_carries_poly_verdict(client):
+    """共识序列导出带 verdict 注释：GenBank misc_feature 标注判读状态，
+    FASTA 头带 poly_verified/poly_unverified 摘要"""
+    import app.routes.sequencing_routes as seq_routes
+    ref = ">ref\n" + "AAG" * 40
+    blob = make_ab1("AAG" * 40, [40] * 120)
+    r = client.post("/api/sequencing/analyze",
+                    files={"reference": ("ref.fasta", ref, "text/plain"),
+                           "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    aid = r.json()["analysis_id"]
+    rec = seq_routes._ANALYSES[aid]
+    rec["homopolymers"] = [
+        {"tier": "poly", "base": "A", "start": 30, "end": 50,
+         "run_verdict": "accepted", "observed_repeat_count": 21,
+         "joint_coverage": True},
+        {"tier": "poly", "base": "T", "start": 70, "end": 95,
+         "run_verdict": "undetermined"},
+    ]
+    gb = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank")
+    assert gb.status_code == 200
+    assert "misc_feature    30..50" in gb.text
+    assert "重复数确证 21 个" in gb.text and "联合覆盖拼接" in gb.text
+    assert "不可判定" in gb.text
+    fa = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta")
+    assert fa.status_code == 200
+    assert "poly_unverified=70-95" in fa.text
+    # 清理
+    client.delete(f"/api/sequencing/analyses/{aid}")
+
+
+def test_db_retention_prunes_oldest(client, monkeypatch):
+    """保留上限：SEQUENCING_DB_MAX_RECORDS 超出后按创建时间淘汰最旧记录"""
+    from app import sequencing_store as store
+    import app.routes.sequencing_routes as seq_routes
+    monkeypatch.setattr(store, "MAX_DB_RECORDS", 2)
+
+    def _mk(name):
+        ref = ">ref\n" + "AAG" * 40
+        blob = make_ab1("AAG" * 40, [40] * 120)
+        r = client.post("/api/sequencing/analyze",
+                        files={"reference": ("ref.fasta", ref, "text/plain"),
+                               "reads": (name, blob, "application/octet-stream")})
+        assert r.status_code == 200
+        return r.json()["analysis_id"]
+
+    a1, a2, a3 = _mk("r1.ab1"), _mk("r2.ab1"), _mk("r3.ab1")
+    # 内存缓存清掉，只看数据库与列表
+    seq_routes._ANALYSES.clear()
+    ids = [x["analysis_id"] for x in client.get("/api/sequencing/analyses").json()]
+    assert a1 not in ids and a2 in ids and a3 in ids
+    assert store.load_record(a1) is None
+    assert store.load_record(a3) is not None
+    for aid in (a2, a3):
+        client.delete(f"/api/sequencing/analyses/{aid}")
