@@ -5,11 +5,12 @@ import logging
 import uuid
 import zipfile
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.auth.jwt_auth import User, get_current_user
 from app.design_service import run_design
 from app.routes.design_routes import (
     generate_genbank_content,
@@ -59,8 +60,19 @@ def _load_batch(batch_id: str) -> BatchDesignStatus | None:
     return None
 
 
+def _ensure_batch_access(job: Optional[BatchDesignStatus], user: Optional[User]) -> BatchDesignStatus:
+    """批量任务属主校验：管理员全可见；创建者可见；匿名创建（无属主）公开"""
+    if job is None:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+    owner = job.user_id
+    if owner and (user is None or (user.id != owner and not user.is_admin)):
+        raise HTTPException(status_code=403, detail="无权访问该批量任务")
+    return job
+
+
 @router.post("", response_model=Dict)
-async def create_batch_design(request: BatchDesignRequest, background_tasks: BackgroundTasks):
+async def create_batch_design(request: BatchDesignRequest, background_tasks: BackgroundTasks,
+                              user: Optional[User] = Depends(get_current_user)):
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     names = request.sequence_names or [f"sequence_{i+1}" for i in range(len(request.sequences))]
 
@@ -72,6 +84,7 @@ async def create_batch_design(request: BatchDesignRequest, background_tasks: Bac
         status="pending",
         results=[],
         errors=[],
+        user_id=user.id if user else None,
     )
     _persist_batch(job)
 
@@ -84,10 +97,8 @@ async def create_batch_design(request: BatchDesignRequest, background_tasks: Bac
 
 
 @router.get("/{batch_id}", response_model=BatchProgressResponse)
-async def get_batch_progress(batch_id: str):
-    job = _load_batch(batch_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Batch job not found")
+async def get_batch_progress(batch_id: str, user: Optional[User] = Depends(get_current_user)):
+    job = _ensure_batch_access(_load_batch(batch_id), user)
 
     completed_results = []
     for design_id in job.results:
@@ -117,11 +128,9 @@ async def get_batch_progress(batch_id: str):
 
 
 @router.get("/{batch_id}/download")
-async def download_batch_results(batch_id: str):
+async def download_batch_results(batch_id: str, user: Optional[User] = Depends(get_current_user)):
     # 统一走 _load_batch/_load：进程重启后仍可从存储层恢复（与进度端点行为一致）
-    job = _load_batch(batch_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Batch job not found")
+    job = _ensure_batch_access(_load_batch(batch_id), user)
     if job.status != "completed":
         raise HTTPException(status_code=400, detail="Batch job not completed")
 
@@ -142,11 +151,9 @@ async def download_batch_results(batch_id: str):
 
 
 @router.get("/{batch_id}/report")
-async def get_batch_report(batch_id: str):
+async def get_batch_report(batch_id: str, user: Optional[User] = Depends(get_current_user)):
     # 统一走 _load_batch/_load，与下载端点保持一致
-    job = _load_batch(batch_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Batch job not found")
+    job = _ensure_batch_access(_load_batch(batch_id), user)
 
     report = {
         "batch_id": batch_id,
@@ -197,6 +204,8 @@ def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: Lis
                 sequence_name=sequence_name,
             )
             result = run_design(design_id, single)
+            # 批量任务内创建的 design 继承批量属主（匿名批量 → None 公开）
+            result.user_id = job.user_id
             _persist(result)
 
             if result.status == DesignStatus.COMPLETED:
