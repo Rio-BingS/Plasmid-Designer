@@ -595,12 +595,10 @@ async def analyze_design_sequencing(
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对设计结果（构建体序列）做全自动测序验证"""
-    from app.routes.design_routes import _load
+    from app.routes.design_routes import _ensure_design_access, _load
     from app.routes.models import DesignStatus
 
-    result = _load(design_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Design not found")
+    result = _ensure_design_access(_load(design_id), user)
 
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")

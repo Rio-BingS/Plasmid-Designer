@@ -105,6 +105,8 @@ class DesignResult(BaseModel):
     """设计结果"""
     design_id: str
     status: DesignStatus
+    # 创建者（匿名创建为 None → 公开可读，与测序分析记录同一口径）
+    user_id: Optional[str] = None
 
     # 序列信息
     input_sequence: str
@@ -182,6 +184,7 @@ class BatchDesignStatus(BaseModel):
     """批量设计状态"""
     batch_id: str
     total: int
+    user_id: Optional[str] = None  # 创建者（匿名创建为 None → 公开可读）
     completed: int
     failed: int
     status: str  # pending, running, completed

@@ -8,6 +8,7 @@ from .base import DesignStoreBase, BatchStoreBase
 
 # DesignDB 上存在的可透传列（save/update 共用）
 _DESIGN_COLUMN_FIELDS = (
+    "user_id",
     "optimized_sequence", "cai", "gc_content", "final_length",
     "status", "validation_passed",
     "construct_sequence", "insert_start", "insert_end", "vector_name",
@@ -245,6 +246,8 @@ class DBBatchStore(BatchStoreBase):
             batch = db.query(BatchJobDB).filter_by(id=batch_id).first()
             if batch is not None:
                 # 关键修复：更新既有行而非静默返回；errors 以 JSON 文本落库
+                if data.get("user_id") and not batch.user_id:
+                    batch.user_id = data.get("user_id")
                 batch.total = data.get("total", batch.total)
                 batch.completed = data.get("completed", batch.completed)
                 batch.failed = data.get("failed", batch.failed)
@@ -254,7 +257,8 @@ class DBBatchStore(BatchStoreBase):
                 db.commit()
             else:
                 # 关键修复：显式传既有 batch_id
-                db_create_batch(db, total=data.get("total", 0), id=batch_id)
+                db_create_batch(db, total=data.get("total", 0), id=batch_id,
+                                user_id=data.get("user_id"))
                 known_ids = []
 
             for rid in data.get("results") or []:
@@ -352,6 +356,7 @@ class DBBatchStore(BatchStoreBase):
             errors = []
         return {
             "batch_id": batch.id,
+            "user_id": batch.user_id,
             "total": batch.total,
             "completed": batch.completed,
             "failed": batch.failed,
