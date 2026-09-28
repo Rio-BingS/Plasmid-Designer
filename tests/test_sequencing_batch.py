@@ -716,3 +716,37 @@ def test_group_report_read_end_margin_zones():
     assert "| 1–20、581–600 |" in md       # 正常长度：首尾各 20bp 两段
     assert "| 101–130（整段） |" in md      # 覆盖 ≤ 2×margin：整段标注
     assert "信号爬升/下降段" in md
+
+
+def test_match_files_reference_two_segment_names():
+    """质粒模式图谱匹配与克隆模式同口径：两段式名称的任一段可命中，
+    双向包含需 ≥4 字符，候选不唯一不猜"""
+    from core.sanger.batch import match_files
+
+    def row(name, primers):
+        return {"name": name, "primers": primers}
+
+    def ref(stem):
+        return {"ext": ".fasta", "stem": stem, "name": stem + ".fasta"}
+
+    # 图谱文件名只写一段（DEMOAB），质粒名两段（40008 DEMOAB）→ 段一致命中
+    rows = [row("40008 DEMOAB", ["M13F", "M13R"])]
+    per, unmatched = match_files(rows, [ref("DEMOAB")])
+    assert per["40008 DEMOAB"]["reference"] is not None
+    assert per["40008 DEMOAB"]["reference"]["how"].__contains__("组成部分一致")
+    assert not unmatched
+
+    # 双向包含："40008DEMOAB" 图谱 ↔ "40008 DEMOAB"（忽略分隔符包含）
+    per, unmatched = match_files(rows, [ref("40008DEMOAB")])
+    assert per["40008 DEMOAB"]["reference"] is not None
+    assert not unmatched
+
+    # 候选不唯一（两行都含段 DEMOAB）→ 不猜，未匹配
+    rows2 = [row("40008 DEMOAB", ["M13F"]), row("40009 DEMOAB", ["M13F"])]
+    per, unmatched = match_files(rows2, [ref("DEMOAB")])
+    assert len(unmatched) == 1 and "无法唯一确定" in unmatched[0]["reason"]
+
+    # 短侧 <4 字符不参与双向包含（"MX" 不命中 "MX2"）
+    rows3 = [row("MX2", ["M13F"])]
+    per, unmatched = match_files(rows3, [ref("MX")])
+    assert len(unmatched) == 1
