@@ -9,6 +9,7 @@ STORAGE_MODE=memory（HF 等无持久化场景）时与历史行为一致，不�
 import base64
 import json
 import logging
+import os
 import zlib
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -16,6 +17,11 @@ from typing import Dict, List, Optional
 from app.storage import STORAGE_MODE
 
 logger = logging.getLogger(__name__)
+
+# 数据库记录保留上限（增长管理）：payload 含比对/变体明细，trace_data 含
+# 压缩峰图，长年累月会无限膨胀——超出上限时按创建时间淘汰最旧记录。
+# 0 表示不限制。批量克隆模式一次可产生上百条，默认值给足余量。
+MAX_DB_RECORDS = int(os.environ.get("SEQUENCING_DB_MAX_RECORDS", "2000") or "2000")
 
 
 def db_enabled() -> bool:
@@ -80,12 +86,31 @@ def persist_record(record: Dict) -> None:
     try:
         db.merge(row)
         db.commit()
+        _prune(db)
     except Exception as e:
         db.rollback()
         # 持久化失败不阻断分析主流程：记录仍在内存缓存中可用，但必须留痕
         logger.error("测序分析记录落库失败 (%s): %s", record["analysis_id"], e)
     finally:
         db.close()
+
+
+def _prune(db) -> None:
+    """保留上限外的最旧记录淘汰（与 persist 同事务外调用，失败仅留痕）"""
+    if MAX_DB_RECORDS <= 0:
+        return
+    from app.database.models import SequencingAnalysisDB
+    total = db.query(SequencingAnalysisDB.id).count()
+    if total <= MAX_DB_RECORDS:
+        return
+    stale = (db.query(SequencingAnalysisDB.id)
+             .order_by(SequencingAnalysisDB.created_at.asc())
+             .limit(total - MAX_DB_RECORDS).all())
+    ids = [x[0] for x in stale]
+    db.query(SequencingAnalysisDB).filter(
+        SequencingAnalysisDB.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    logger.info("测序分析记录超出保留上限 %s，淘汰最旧 %s 条", MAX_DB_RECORDS, len(ids))
 
 
 def load_record(analysis_id: str) -> Optional[Dict]:
@@ -129,9 +154,11 @@ def delete_record(analysis_id: str) -> None:
         db.close()
 
 
-def list_records(user: Optional[object], is_admin: bool) -> List[Dict]:
+def list_records(user: Optional[object], is_admin: bool,
+                 limit: int = 200, offset: int = 0) -> List[Dict]:
     """历史列表元数据（不加载 payload/trace 大列），按属主过滤，时间倒序。
 
+    分页：limit/offset 由路由透传（默认 200 条，0 表示不限制）。
     属主规则与内存模式一致：管理员全可见；登录用户见自己创建的；
     无属主记录（匿名创建）公开。"""
     if not db_enabled():
@@ -150,7 +177,12 @@ def list_records(user: Optional[object], is_admin: bool) -> List[Dict]:
             if user is not None:
                 cond.append(SequencingAnalysisDB.owner_id == user.id)
             q = q.filter(or_(*cond))
-        rows = q.order_by(SequencingAnalysisDB.created_at.desc()).all()
+        q = q.order_by(SequencingAnalysisDB.created_at.desc())
+        if offset:
+            q = q.offset(int(offset))
+        if limit:
+            q = q.limit(min(int(limit), 1000))
+        rows = q.all()
         return [
             {
                 "analysis_id": r.id,
