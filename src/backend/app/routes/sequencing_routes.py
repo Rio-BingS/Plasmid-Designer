@@ -689,14 +689,23 @@ async def get_read_trace(analysis_id: str, read_index: int,
 
 @router.get("/sequencing/analyses/{analysis_id}/consensus/export")
 async def export_consensus(analysis_id: str, format: str = "fasta",
+                           covered_only: bool = False,
                            user: Optional[User] = Depends(get_current_user)):
-    """导出拼接结果（共识序列，FASTA / GenBank）"""
+    """导出拼接结果（共识序列，FASTA / GenBank）
+
+    covered_only=True 按「部分测序是常规策略」只导出 read 实测覆盖的区域：
+    - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
+    - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
+      misc_feature 注记。无覆盖区间信息时回退全量导出。
+    """
     record = _get_analysis(analysis_id, user)
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
     safe_name = re.sub(r"[^A-Za-z0-9._\-一-鿿]+", "_",
                        f"{record['sample_name']}-consensus").strip("._") or "consensus"
+    segs = ([(int(s), int(e)) for s, e in (record.get("coverage_ranges") or [])]
+            if covered_only else [])
 
     if format.lower() == "genbank":
         # poly run 判读注释（Step B verdict）：确证的重复区写入确认注释，
@@ -719,9 +728,22 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
             )
             feats.append(f"     misc_feature    {e['start']}..{e['end']}\n"
                          f"                     /note=\"{label} {e['start']}-{e['end']}：{txt}\"")
+        definition = "Sanger consensus sequence"
+        if segs:
+            # 未测位置 N 屏蔽：坐标与特征不位移，下游软件可直接定位实测段
+            seq = "".join(
+                "N" if not any(s <= i + 1 <= e for s, e in segs) else b
+                for i, b in enumerate(seq)
+            )
+            feats = [
+                f"     misc_feature    {s}..{e}\n"
+                f"                     /note=\"实测覆盖区 {s}-{e}（未测位置已按 N 屏蔽）\""
+                for s, e in segs
+            ] + feats
+            definition = "Sanger consensus (unverified positions N-masked)"
         lines = [
             f"LOCUS       {safe_name[:16]:<16} {len(seq)} bp DNA",
-            "DEFINITION  Sanger consensus sequence",
+            f"DEFINITION  {definition}",
             f"ACCESSION   {analysis_id}",
             "FEATURES             Location/Qualifiers",
             *feats,
@@ -745,10 +767,19 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
             flag = f" poly_unverified={spans}" + ("..." if len(bad) > 3 else "")
         elif hps:
             flag = f" poly_verified={ok_n}/{len(hps)}"
-        content = (
-            f">{safe_name} coverage={record['consensus']['coverage_percent']}%"
-            f"{flag}\n{seq}"
-        )
+        if segs:
+            # 每段连续覆盖区间一条记录——不携带未测的参考填充序列
+            records = []
+            for i, (s, e) in enumerate(segs, 1):
+                records.append(
+                    f">{safe_name}_verified_{s}-{e} ref_pos={s}-{e}"
+                    f" region={i}/{len(segs)}{flag}\n{seq[s - 1:e]}")
+            content = "\n".join(records)
+        else:
+            content = (
+                f">{safe_name} coverage={record['consensus']['coverage_percent']}%"
+                f"{flag}\n{seq}"
+            )
         ext = "fasta"
 
     return PlainTextResponse(
