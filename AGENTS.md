@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（356 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（357 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -101,6 +101,15 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 调整（2026-09-29）**结论一句话总结 + 未覆盖 CDS 不进卡片**：用户反馈
+  结论详细段落信息密度高、未覆盖 CDS 条目是噪音——①pipeline 新增
+  _conclusion_summary：结论头部一句话总结（△疑似混合 > ✗确认差异/
+  蛋白不一致 > ✓一致+低置信伪影注记 > ✓完全一致），空两行后接原详细
+  段落（scattered 双峰只提示不升级，不算混合）；②前端 CDS 结论卡过滤
+  coverage_status=uncovered 条目（全未覆盖则整卡不显示）；③覆盖缺口
+  提示去掉"建议补充引物/补测"（与覆盖区优先口径一致，改为中性陈述
+  "未测区域按设计序列对待"）。后端 357/前端 101 全绿。
 
 - 调整（2026-09-29）**覆盖区优先口径（部分测序是常规策略）**：用户明确
   "大部分时候只测质粒的一部分，分析以首尾引物覆盖区为准"——①未覆盖 CDS

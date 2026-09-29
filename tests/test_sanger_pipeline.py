@@ -1712,7 +1712,9 @@ def test_mixed_multi_read_aggregated_conclusion():
     part = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330)}
     result = analyze([("a.ab1", _mixed_ab1(ref, full)),
                       ("b.ab1", _mixed_ab1(ref, part))], ref, [])
-    lines = [x for x in result["conclusion"].splitlines() if "疑似混合" in x]
+    # 头部总结行（△ 结论：…）之外，mixed_lines 聚合行不重复报
+    lines = [x for x in result["conclusion"].splitlines()
+             if "疑似混合" in x and not x.startswith("△")]
     assert len(lines) == 1
     assert "2 条 read 均疑似混合样品" in lines[0]
     assert "每条双峰位点 5–8 处" in lines[0]
@@ -2125,10 +2127,41 @@ def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
 
 
 def test_variants_branch_conclusion_shows_covered_ranges(reference):
-    """有差异时结论首行同样携带实测区间"""
+    """有差异时结论以一句话总结开头（空两行），详细首行携带实测区间"""
     seg = list(reference[100:200])
     seg[30] = "A" if seg[30] != "A" else "G"
     blob = make_ab1("".join(seg), [40] * 100)
     result = analyze([("r.ab1", blob)], reference, [])
     assert result["variants"]
-    assert "实测区间 101-200" in result["conclusion"].splitlines()[0]
+    lines = result["conclusion"].splitlines()
+    # 头部结构：总结行 + 两个空行 + 详细段落
+    assert lines[0].startswith("✗") and "结论" in lines[0]
+    assert lines[1] == "" and lines[2] == ""
+    assert "实测区间 101-200" in lines[3]
+
+
+def test_conclusion_summary_headline():
+    """一句话总结三态：确认差异→✗、全低置信→✓（带伪影注记）、
+    混合样品→△；混合优先级最高，蛋白不一致信息不丢"""
+    from core.sanger.pipeline import _conclusion_summary
+    cds_bad = [{"name": "CSQ", "protein_identical": False}]
+    cds_ok = [{"name": "Kan", "protein_identical": True}]
+    conf = [{"confidence": "high"}]
+    low = [{"confidence": "low"}]
+    # 确认差异 + 蛋白不一致：两者都报，蛋白在前
+    head = _conclusion_summary(conf, cds_bad, has_mixed=False)
+    assert head.startswith("✗") and "CSQ蛋白与设计不一致" in head
+    assert "1 处确认差异" in head
+    # 蛋白一致但有 CDS 外确认差异
+    head = _conclusion_summary(conf, cds_ok, has_mixed=False)
+    assert head.startswith("✗") and "1 处确认差异" in head and "不一致" not in head
+    # 仅低置信差异：判一致但点名伪影
+    head = _conclusion_summary(low, cds_ok, has_mixed=False)
+    assert head.startswith("✓") and "低置信" in head and "未计入判定" in head
+    # 无变体
+    assert _conclusion_summary([], [], has_mixed=False).startswith("✓")
+    # 混合优先；混有蛋白不一致时不丢
+    head = _conclusion_summary(low, cds_ok, has_mixed=True)
+    assert head.startswith("△") and "重新挑单克隆" in head
+    head = _conclusion_summary(conf, cds_bad, has_mixed=True)
+    assert head.startswith("△") and "CSQ蛋白与设计不一致" in head

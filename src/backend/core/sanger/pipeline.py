@@ -236,6 +236,31 @@ def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
     return f"，实测区间 {spans}"
 
 
+def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
+                        has_mixed: bool) -> str:
+    """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
+    优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致"""
+    confirmed = [v for v in variants if v.get("confidence") != "low"]
+    bad = [c for c in cds_reports if c.get("protein_identical") is False]
+    names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
+    if has_mixed:
+        head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
+        if bad:
+            head += f"，{names}蛋白与设计不一致"
+        return head + "——建议重新挑单克隆复测"
+    if confirmed or bad:
+        bits = []
+        if bad:
+            bits.append(f"{names}蛋白与设计不一致")
+        if confirmed:
+            bits.append(f"检出 {len(confirmed)} 处确认差异")
+        return "✗ 结论：" + "，".join(bits)
+    if variants:
+        return (f"✓ 结论：构建与设计一致"
+                f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）")
+    return "✓ 结论：构建与设计一致，未检出差异"
+
+
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
     """返回保留区间 [start, end)（0-based）：Mott/Phred 式累积分数修剪
 
@@ -2554,11 +2579,22 @@ def analyze(
             if coverage_gaps:
                 g = coverage_gaps[0]
                 gap_hint = (
-                    f"；共 {len(coverage_gaps)} 段未覆盖缺口（最大 {g['start']}-{g['end']}，{g['length']}bp），"
-                    "建议从已测区边缘设计引物补测"
+                    f"；共 {len(coverage_gaps)} 段未覆盖缺口"
+                    f"（最大 {g['start']}-{g['end']}，{g['length']}bp）"
                 )
-            lines.append(f"注意：仍有 {100 - consensus['coverage_percent']:.1f}% 区域未被测序覆盖，建议补充引物{gap_hint}")
+            lines.append(
+                f"注意：本次实测覆盖 {consensus['coverage_percent']:.1f}%，"
+                f"未测区域按设计序列对待（部分测序是常规策略，无需测全）{gap_hint}"
+            )
         conclusion = "\n".join(lines)
+
+    # 结论头部一句话总结：详细段落（差异明细/CDS 结论/注意事项）信息密度高，
+    # ✓/✗/△ 先给判读结果，空两行后再展开——回答“到底行不行”只用一眼
+    # （scattered 双峰只提示不升级，不算混合）
+    if read_results:
+        has_mixed = any("疑似混合样品" in x for x in mixed_lines)
+        conclusion = (_conclusion_summary(variants, cds_reports, has_mixed)
+                      + "\n\n\n" + conclusion)
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
