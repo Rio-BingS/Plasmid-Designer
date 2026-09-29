@@ -224,6 +224,18 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
     return gaps[:cap]
 
 
+def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
+    """实测覆盖区间的紧凑文本（结论首行用）：部分测序是常规策略，
+    结论围绕引物实际覆盖的区域组织，把"测的是哪段"直接摆出来。
+    逗号前缀形态，可无缝嵌入既有括号短语（如「覆盖 5.0%，实测区间 21-110」）"""
+    if not covered_ranges:
+        return ""
+    spans = "、".join(f"{s}-{e}" for s, e in covered_ranges[:3])
+    if len(covered_ranges) > 3:
+        spans += f" 等 {len(covered_ranges)} 段"
+    return f"，实测区间 {spans}"
+
+
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
     """返回保留区间 [start, end)（0-based）：Mott/Phred 式累积分数修剪
 
@@ -1443,7 +1455,7 @@ def _build_cds_reports(
                 "consequences": [],
                 "synonymous_count": 0,
                 "pending_low_confidence": 0,
-                "verdict": "未被测序覆盖，无法判定，建议补充覆盖该区域的引物",
+                "verdict": "未测：不参与判读（覆盖区外按设计序列对待——部分测序是常规策略，无需测全）",
             })
             continue
 
@@ -2410,6 +2422,7 @@ def analyze(
         conclusion = (
             f"构建序列与设计一致：{len(read_results)} 条 read 全部匹配，"
             f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
+            f"{_coverage_ranges_text(coverage_ranges)}"
         )
         # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）；
         # 三态 verdict 分措辞（Step B）：矛盾→不可信，不可判定→需换引物
@@ -2446,7 +2459,8 @@ def analyze(
                      + dropout_notes + [end_note])
         conclusion = "\n".join(x for x in all_lines if x)
     else:
-        lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%）："]
+        lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
+                 f"{_coverage_ranges_text(coverage_ranges)}）："]
         lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
         lines.extend(summarize_severity(variants))
         # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）

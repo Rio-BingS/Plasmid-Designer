@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（353 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（356 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -101,6 +101,16 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 调整（2026-09-29）**覆盖区优先口径（部分测序是常规策略）**：用户明确
+  "大部分时候只测质粒的一部分，分析以首尾引物覆盖区为准"——①未覆盖 CDS
+  判读改中性（"未测：不参与判读（覆盖区外按设计序列对待）"，不再建议补
+  引物）；②结论首行带实测区间（"覆盖 5.0%，实测区间 101-200"，逗号嵌入
+  避免双括号嵌套，_coverage_ranges_text）；③共识导出新增 covered_only
+  参数：FASTA 每段连续覆盖一条记录（ref_pos 入头可溯源），GenBank 全长
+  保留、未测位置 N 屏蔽（坐标/特征不位移）+ 实测段 misc_feature 注记，
+  无覆盖区间信息时回退全量；④前端导出默认勾选「仅导出实测覆盖区」。
+  后端 356/前端 101 全绿。
 
 - 优化（2026-09-29）**跨 read indel 反证（Step B 推广到非 poly 区）**：
   用户实测难例——正向 read 在 3×A 短 run 边缘多报 1 个 A（伪影峰），反向

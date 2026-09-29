@@ -719,8 +719,9 @@ export async function getReadTrace(analysisId: string, readIndex: number): Promi
   return response.data
 }
 
-export async function exportConsensus(analysisId: string, format: string): Promise<string> {
-  const response = await api.get(`/sequencing/analyses/${analysisId}/consensus/export?format=${format}`, {
+export async function exportConsensus(analysisId: string, format: string, coveredOnly = false): Promise<string> {
+  const response = await api.get(`/sequencing/analyses/${analysisId}/consensus/export`, {
+    params: { format, covered_only: coveredOnly },
     responseType: 'text',
     transformResponse: [(data) => data]
   })
