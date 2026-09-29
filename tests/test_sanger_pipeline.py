@@ -1235,10 +1235,10 @@ def test_excel_conclusion_flags_poly_count_mismatch():
         "homopolymers": [{"tier": "poly", "count_reliable": False}],
     }
     out = excel_conclusion("p", res, 1, True)
-    assert "poly 区峰图计数与碱基调用不一致" in out
+    assert "poly 区计数存疑" in out and "详见报告" not in out
     # 观察级 run 不触发该告警
     res2 = {**res, "homopolymers": [{"tier": "observed", "count_reliable": False}]}
-    assert "poly 区峰图计数" not in excel_conclusion("p", res2, 1, True)
+    assert "poly 区计数" not in excel_conclusion("p", res2, 1, True)
 
 
 # ==================== B1：property map 与局部压缩比 ====================
@@ -2022,11 +2022,11 @@ def test_excel_conclusion_verdict_specific_wording():
     res_c = {**base, "homopolymers": [
         {"tier": "poly", "count_reliable": False, "run_verdict": "contradictory"}]}
     out_c = excel_conclusion("p", res_c, 1, True)
-    assert "计数互证矛盾" in out_c and "不可信" in out_c
+    assert "计数互证矛盾" in out_c and "详见报告" not in out_c
     res_u = {**base, "homopolymers": [
         {"tier": "poly", "count_reliable": False, "run_verdict": "undetermined"}]}
     out_u = excel_conclusion("p", res_u, 1, True)
-    assert "无法判读" in out_u and "不可判定" in out_u
+    assert "不可判定" in out_u and "详见报告" not in out_u
 
 
 def test_single_read_insertion_vetoed_by_clean_other_read():

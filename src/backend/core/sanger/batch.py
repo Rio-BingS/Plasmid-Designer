@@ -411,12 +411,6 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     return ordered, unmatched
 
 
-def main_sentence(verdict: str) -> str:
-    """从 CDS verdict 中取核心主句（去掉覆盖度前缀与待复核尾句）。"""
-    seg = verdict.split("。")
-    return seg[1] if len(seg) > 1 else verdict
-
-
 def _count_range(ps: List[Dict]) -> str:
     """read 间双峰位点数区间：相同只给一个数，不同给 min–max。"""
     counts = sorted(p["count"] for p in ps)
@@ -455,8 +449,7 @@ def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
         chk = by_read.get(fn) or {}
         if n_reads >= 2 and chk.get("multi", 0) == 0 \
                 and chk.get("clean", 0) >= max(1, p["count"] // 2):
-            tails.append(f"{fn} 检出 {p['count']} 处双峰，跨引物互检多数被其他"
-                         "引物覆盖且峰形单一，倾向该 read 信号噪声（详见报告）")
+            tails.append(f"{fn} 检出 {p['count']} 处双峰，互检倾向该 read 信号噪声")
             return tails, []
         tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰"
                      "，建议重新挑单克隆复测")
@@ -469,12 +462,16 @@ def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
     if scattered:
         n = sum(p["count"] for _fn, p in scattered)
         names = "、".join(fn for fn, _p in scattered[:2])
-        tails.append(f"{names} 有 {n} 个双峰位点，建议核对峰图")
+        tails.append(f"{names} 有 {n} 个双峰位点")
     return tails, widespread
 
 
 def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
-    """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。"""
+    """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。
+
+    表格单元格以简洁为先：合格/不合格/疑似混合 前缀供批量筛选分拣，
+    差异细节与伪影鉴别解释一律不进表（互检矛盾与一般低置信合并为
+    "疑似伪影"，逐条证据在网页报告里）"""
     if not has_ref:
         return f"已整理 {n_reads} 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对"
     if res is None:
@@ -488,66 +485,51 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     bad = [c for c in res["cds_reports"]
            if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
     mixed_tails, widespread = _mixed_tails(res)
-    tail = []
-    # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了），混合降为提示；
-    # 否则疑似混合样品升级为结论主句——混合培养物无法自动判定
-    if not bad and widespread:
+
+    # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了，混合降为
+    # 提示）；否则疑似混合样品升级为结论主句——混合培养物无法自动判定
+    if bad:
+        names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
+        hint = "（移码）" if any(c.get("frameshift_count") for c in bad) else ""
+        out = f"不合格：{names} 蛋白与设计不一致{hint}"
+    elif widespread:
         if len(widespread) == 1:
             fn, p = widespread[0]
-            parts = [f"{fn} 检出 {p['count']} 处双峰"]
+            main = f"{fn} 检出 {p['count']} 处双峰"
         else:
-            parts = [f"{len(widespread)} 条 read 均检出双峰"
-                     f"（每条 {_count_range([p for _f, p in widespread])} 处）"]
+            main = (f"{len(widespread)} 条 read 均检出双峰"
+                    f"（每条 {_count_range([p for _f, p in widespread])} 处）")
         fr_txt = _frac_range([p for _f, p in widespread])
-        if fr_txt:
-            parts.append(f"估计次要克隆占比{fr_txt}")
-        out = ("疑似混合：" + "，".join(parts)
-               + "，无法自动判定，建议重新挑单克隆划线培养后复测")
+        out = ("疑似混合：" + main
+               + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
+               + "，无法自动判定，建议重新挑单克隆复测")
         if confirmed:
-            out += f"；按主峰判读编码区蛋白与设计一致，另有 {len(confirmed)} 处确证差异（详见报告）"
+            out += f"；按主峰判读蛋白与设计一致，另有 {len(confirmed)} 处确证差异"
         return out
-    tail.extend(mixed_tails)
+    elif confirmed:
+        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
+        out = f"合格：编码区蛋白一致；编码区外 {len(confirmed)} 处确证差异（{feats}）"
+    else:
+        out = "合格：与设计一致"
+
+    tail = []
     if pending:
-        # 互检矛盾（单 read 报告、其他 read 干净跨过同一位点）与一般疑似噪声
-        # 分开点名：前者另一条 read 已给出反向证据，更可能是伪影
-        n_conflict = sum(
-            1 for v in res["variants"]
-            if v.get("confidence") == "low" and v.get("cross_read_conflict"))
-        n_plain = pending - n_conflict
-        if n_conflict:
-            tail.append(f"{n_conflict} 处差异仅单 read 报告、其他 read 跨过同一位点"
-                        "未见差异（互检矛盾，疑似伪影，详见报告）")
-        if n_plain:
-            tail.append(f"{n_plain} 处低置信差异疑似测序噪声（详见报告）")
-    # A4：poly 区峰图判读存疑——按 run_verdict 分态措辞（contradictory
-    # 互证矛盾对克隆批量筛查最致命，单独点名；undetermined 无可分辨证据；
-    # 其余（deficit_observed 等）归入一般"计数不一致"）
+        tail.append(f"{pending} 处低置信差异疑似伪影")
+    # A4：poly 区峰图判读存疑——按 run_verdict 分态（contradictory 互证
+    # 矛盾对克隆批量筛查最致命，单独点名）
     hp_bad = [e for e in (res.get("homopolymers") or [])
               if e.get("tier", "poly") == "poly" and e.get("count_reliable") is False]
     if hp_bad:
         vt = {e.get("run_verdict") for e in hp_bad}
         if "contradictory" in vt:
-            tail.append("poly 区可分辨 read 之间计数互证矛盾（重复数不可信，"
-                        "疑似两克隆混合或需换引物复测，详见报告）")
+            tail.append("poly 区计数互证矛盾")
         elif "undetermined" in vt:
-            tail.append("poly 区峰完全合并无法判读（重复数不可判定，"
-                        "建议换引物或人工核对峰图，详见报告）")
+            tail.append("poly 区计数不可判定")
         else:
-            tail.append("poly 区峰图计数与碱基调用不一致（重复数存疑，详见报告）")
+            tail.append("poly 区计数存疑")
+    tail.extend(mixed_tails)
     if cov < 95:
         tail.append(f"测序覆盖 {cov:.0f}%")
-
-    if bad:
-        body = "；".join(f"[{c['name']}] {main_sentence(c['verdict'])}" for c in bad[:2])
-        if len(bad) > 2:
-            body += f"（另有 {len(bad) - 2} 个 CDS 不一致）"
-        out = f"不合格：{body}"
-    elif confirmed:
-        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
-        out = (f"合格：编码区蛋白与设计一致；编码区外有 {len(confirmed)} 处确证差异"
-               f"（位于 {feats}），不影响编码产物")
-    else:
-        out = "合格：与设计一致"
     if tail:
         out += "；" + "；".join(tail)
     return out
