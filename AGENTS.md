@@ -40,7 +40,7 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（349 用例，含 test_sanger_pipeline/test_enzyme_sites/
+tests/                      后端 pytest（353 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
                             合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
 ```
@@ -101,6 +101,22 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 优化（2026-09-29）**跨 read indel 反证（Step B 推广到非 poly 区）**：
+  用户实测难例——正向 read 在 3×A 短 run 边缘多报 1 个 A（伪影峰），反向
+  read 干净跨过同一位点，结论却断言"7241 处插入、蛋白与设计不一致"。
+  根因：变体聚合只计正向支持（support_reads），其他 read 的干净覆盖从未
+  参与判定；插入峰强比 0.3-0.6 的伪影峰落 medium 档即进 confirmed。修复：
+  ①_clean_cover_reads——indel 仅单 read 支持时，查其他 read 是否完整跨过
+  junction（插入=anchor|anchor+1 相邻，缺失=左翼 anchor-1 与右翼
+  anchor+vlen 相邻）且未报该 indel；junction 落 read 首尾 END_MARGIN 区
+  或 Q<20（CROSS_CHECK_MIN_Q）不构成反证；该 read 窗口内报了其他 indel
+  则既不算支持也不算干净。命中 → cross_read_conflict 标记 + 置信度强制
+  low（与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识）。②CDS 结论
+  待复核拆分：互检矛盾差异单独点名（"X 处的插入（rev 跨过同一位点未见差
+  异）——真实变异应被覆盖该位的每条 read 独立报出"）。③顶层摘要与批量
+  Excel 同口径三支文案。④单 read 独覆盖区域不回退（峰证据分级照旧），
+  双 read 独立报告仍互证确证。后端 353/前端 101 全绿。
 
 - 优化（2026-09-28）**优先级清单批量落地（联合覆盖/锚压缩/verdict 下沉）**：
   ①联合覆盖判定（用户点名）——无完整覆盖 read 时，部分覆盖且段内自洽的

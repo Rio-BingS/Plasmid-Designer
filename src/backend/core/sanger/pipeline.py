@@ -41,6 +41,7 @@ POLY_OBSERVE_MIN = 8     # 观察级：8-19bp 同聚物入报告（不触发结�
 POLY_MIN_UNITS = 4       # 二/三核苷酸重复：≥4 个重复单元入报告
 POLY_COMPRESSION_RATIO = 0.5  # poly 区峰幅 / 局部主峰幅 低于此值视为峰压缩
 POLY_PEAK_HEIGHT_RATIO = 0.3  # 峰图计数：低于窗口中位峰高 30% 的波动视为噪声
+CROSS_CHECK_MIN_Q = 20   # 跨 read 反证：junction 处 Q 低于此值时"未报"不构成反证
 
 
 def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float, int]:
@@ -728,6 +729,54 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
                     }
             ref_pos += 1
     return read2ref, ref2call
+
+
+def _clean_cover_reads(v: Dict, read_results: List[Dict],
+                       ref2call_by_read: Dict[str, Dict[int, Dict]],
+                       keys_by_read: Dict[str, set]) -> List[str]:
+    """跨 read 干净覆盖反证：哪些其他 read 完整跨过该 indel 的 junction
+    （且在质量可靠区内）却未报该 indel。
+
+    clonal 样品中真实存在的变异会被每条覆盖该位的 read 独立报出；仅单
+    read 报告、而另一条 read 干净跨过同一位点，是滑移/比对补偿伪影的
+    高发形态（短同聚物边缘的 1bp 插入尤其常见，poly 机制只覆盖 ≥20bp
+    的 run，更短的 run 落在空白区）。junction 落在 read 首/尾 END_MARGIN
+    区或 Q 过低时，"未报"不构成反证；该 read 自己在此区域报了其他 indel
+    时既不算支持也不算干净（它反对这个 call，但同样不支持参考序列）。
+    """
+    anchor = int(v["ref_pos"])
+    vlen = max(1, int(v.get("length") or 1))
+    if v.get("type") == "insertion":
+        # 插入点在 anchor 与 anchor+1 之间：read 无此插入时两位恰好相邻
+        junctions = [(anchor, anchor + 1)]
+        win = (anchor - 1, anchor + 1)
+    else:
+        # 缺失 anchor..anchor+vlen-1：跨过即左翼 anchor-1 与右翼 anchor+vlen
+        # 相邻；缺失紧贴 read 覆盖起点时右翼侧 junction 亦可
+        junctions = [(anchor - 1, anchor + vlen),
+                     (anchor + vlen, anchor + vlen + 1)]
+        win = (anchor - 1, anchor + vlen + 1)
+    by_name = {r["filename"]: r for r in read_results}
+    hits: List[str] = []
+    for fname, r2c in ref2call_by_read.items():
+        if fname == v.get("read"):
+            continue
+        if any(win[0] <= k[0] <= win[1] and k[1] in ("insertion", "deletion")
+               for k in keys_by_read.get(fname, ())):
+            continue
+        n_trim = by_name[fname].get("trimmed_length") or 0
+        for a, b in junctions:
+            c0, c1 = r2c.get(a), r2c.get(b)
+            if not c0 or not c1 or abs(c0["read_pos"] - c1["read_pos"]) != 1:
+                continue
+            if not all(END_MARGIN < c["read_pos"] <= n_trim - END_MARGIN
+                       for c in (c0, c1)):
+                continue
+            if min(c0["q"], c1["q"]) < CROSS_CHECK_MIN_Q:
+                continue
+            hits.append(fname)
+            break
+    return hits
 
 
 def _corroborate_mixed(read_results: List[Dict]) -> Dict:
@@ -1538,17 +1587,36 @@ def _build_cds_reports(
                     ) + ("等" if len(confirmed_subs) > 4 else "")
                     main += f"；另有 {len(confirmed_subs)} 处确证的碱基替换（{preview}）"
             main = f"{name} 蛋白与设计不一致：{main}"
-        # 待复核提示：低置信变异未计入以上判定，告知其潜在影响
+        # 待复核提示：低置信变异未计入以上判定，告知其潜在影响。
+        # 互检矛盾（单 read 报告 indel、其他 read 干净跨过同一位点）单独
+        # 点名——它与"疑似测序噪声"不同：另一条 read 已给出反向证据，
+        # 更可能是伪影而非漏检，人工核对有明确抓手
         if pending:
-            worst_q = max(int(v.get("read_q") or 0) for v in pending)
+            conflicted = [v for v in pending if v.get("cross_read_conflict")]
+            plain = [v for v in pending if not v.get("cross_read_conflict")]
             would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
-            if would_change:
+            if plain:
+                worst_q = max(int(v.get("read_q") or 0) for v in plain)
+                if would_change:
+                    main += (
+                        f"。另有 {len(plain)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
+                        "——若为真蛋白还会改变，建议核对峰图"
+                    )
+                else:
+                    main += f"。另有 {len(plain)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声），不影响以上判定"
+            if conflicted:
+                parts = []
+                for v in conflicted[:2]:
+                    kind = "插入" if v.get("type") == "insertion" else "缺失"
+                    rd = (v.get("cross_read_conflict") or {}).get("reads") or []
+                    reads = "、".join(rd[:2]) + ("等" if len(rd) > 2 else "")
+                    parts.append(f"{v['ref_pos']} 处的{kind}（{reads} 跨过同一位点未见差异）")
+                head = (f"等 {len(conflicted)} 处" if len(conflicted) > 2
+                        else f"{len(conflicted)} 处")
                 main += (
-                    f"。另有 {len(pending)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
-                    "——若为真蛋白还会改变，建议核对峰图"
+                    f"。另有 {head}互检矛盾差异未计入判定：{'；'.join(parts)}"
+                    "——真实变异应被覆盖该位的每条 read 独立报出，如需确认请核对峰图或换引物复测"
                 )
-            else:
-                main += f"。另有 {len(pending)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声），不影响以上判定"
         verdict = (
             f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证）。{main}"
             if cov_pct < 99
@@ -1820,6 +1888,12 @@ def analyze(
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
     mixed_by_read = {r["filename"]: set(r["mixed_positions"]) for r in read_results}
+    # 跨 read 反证预计算：每 read 的 参考坐标→比对列 映射与自身变体 key 集
+    ref2call_by_read = {r["filename"]: _read_ref_maps(r)[1] for r in read_results}
+    keys_by_read = {
+        r["filename"]: {_variant_key(vv) for vv in r["alignment"]["variants"]}
+        for r in read_results
+    }
     for v in variants:
         src = by_read.get(v.get("read", ""))
         evidence = None
@@ -1869,6 +1943,16 @@ def analyze(
                 hp["peak_count"] = None
         if src is not None and v.get("read_pos") in set(src.get("slippage_positions") or []):
             v["slippage_artifact"] = True
+        # 跨 read 干净覆盖反证（Step B 推广到非 poly 区）：indel 仅单 read
+        # 支持、另一条 read 完整跨过同一 junction 却未报 → 互检矛盾。
+        # 真实变异（clonal）必然被覆盖该位的每条 read 独立报出，单 read
+        # 独有的 indel 是伪影高发形态，不能单独驱动"蛋白与设计不一致"
+        if (v.get("type") in ("insertion", "deletion")
+                and (v.get("support_reads") or 1) == 1):
+            contradicts = _clean_cover_reads(
+                v, read_results, ref2call_by_read, keys_by_read)
+            if contradicts:
+                v["cross_read_conflict"] = {"reads": contradicts}
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             read_len=src["trimmed_length"] if src is not None else None,
@@ -1883,6 +1967,10 @@ def analyze(
                     v["confidence"] = "low"
                     v["merged_zone_artifact"] = True
                     break
+        # 互检矛盾：另一条 read 的干净覆盖压过单 read 的 indel 报告——
+        # 与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识
+        if v.get("cross_read_conflict") and v.get("confidence") != "low":
+            v["confidence"] = "low"
 
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不

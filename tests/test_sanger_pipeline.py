@@ -2025,3 +2025,81 @@ def test_excel_conclusion_verdict_specific_wording():
         {"tier": "poly", "count_reliable": False, "run_verdict": "undetermined"}]}
     out_u = excel_conclusion("p", res_u, 1, True)
     assert "无法判读" in out_u and "不可判定" in out_u
+
+
+def test_single_read_insertion_vetoed_by_clean_other_read():
+    """跨 read 反证（Step B 推广到非 poly 区）：短同聚物（3×A）边缘的 1bp
+    插入仅单 read 报告、反向 read 干净跨过同一位点 → 降为低置信，CDS 结论
+    不再断言蛋白不一致、改为点名互检矛盾（用户实测：7241 处插入伪影仅单
+    read 支持却改写了结论；poly 机制只覆盖 ≥20bp run，更短的 run 落空白区）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25  # AAA 在 106-108
+    seg = ref[50:150]                       # 覆盖 51-150
+    fwd = seg[:58] + "A" + seg[58:]         # 108 后多 1 个 A（run 边缘伪影）
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert ins[0]["confidence"] == "low"
+    assert ins[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"]
+    assert "互检矛盾" in cds["verdict"] and "rev.ab1" in cds["verdict"]
+    # 顶层变体摘要同口径：点名反证原因而非笼统"疑似测序噪声"
+    assert any("互检矛盾" in x for x in result["conclusion"].splitlines())
+    # 低置信不进共识：构建体序列回到参考
+    assert result["consensus"]["sequence"] == ref.upper()
+
+
+def test_single_read_deletion_vetoed_by_clean_other_read():
+    """同上，缺失方向：单 read 缺 1 个 T（短 run 边缘）、反向 read 干净
+    跨过 junction（左翼-右翼相邻）→ 低置信 + 互检矛盾点名"""
+    ref = "ACGT" * 25 + "GGATGTTTCCAACCTGACCGGTTAC" + "ACGT" * 25  # TTT 在 106-108
+    seg = ref[50:150]
+    fwd = seg[:55] + seg[56:]               # 删 ref 106（run 首 T）
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    dele = [v for v in result["variants"] if v["type"] == "deletion"]
+    assert len(dele) == 1
+    assert dele[0]["confidence"] == "low"
+    assert dele[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"]
+    assert "互检矛盾" in cds["verdict"]
+
+
+def test_indel_backed_by_both_reads_stays_confirmed():
+    """双 read 独立报同一 indel → 互证确证，不触发反证，结论照常断言
+    （真实变异会被覆盖该位的每条 read 独立报出）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(fwd), [40] * len(fwd)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1 and ins[0]["support_reads"] == 2
+    assert ins[0]["confidence"] == "high"
+    assert "cross_read_conflict" not in ins[0]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" in cds["verdict"]
+
+
+def test_single_coverage_indel_keeps_peak_evidence_grading():
+    """只有一条 read 覆盖（无其他 read 可反证）→ 维持原有峰证据分级，
+    单覆盖区域不回退（用户明确：一般没必要测全，单 read 区域照旧判读）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze([("fwd.ab1", make_ab1(fwd, [40] * len(fwd)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert ins[0]["confidence"] == "high"
+    assert "cross_read_conflict" not in ins[0]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" in cds["verdict"]
