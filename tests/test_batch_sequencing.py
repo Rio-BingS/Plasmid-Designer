@@ -122,15 +122,19 @@ def _res(variants, cds, coverage=100.0, reads=1, errors=None):
     }
 
 
-def test_excel_conclusion不合格_引用CDS主句():
+def test_excel_conclusion不合格_点名CDS():
+    """不合格主句只点名 CDS 与判读结果：verdict 里的移码/替换细节不进表
+    （表格单元格以简洁为先，逐条证据在网页报告里）"""
     cds = [{"name": "MX", "coverage_status": "full", "protein_identical": False,
+            "frameshift_count": 1,
             "verdict": "CDS 已完整覆盖。MX 蛋白与设计不一致：5076 处的插入使阅读框移码，"
                        "翻译提前终止（产物 25 aa，设计为 600 aa）；另有 1 处确证的碱基替换"
                        "（5269 C>T）。另有 5 处低置信差异（最高 Q 25，疑似测序噪声）未计入判定"}]
     res = _res([{"confidence": "medium"}, {"confidence": "high"}, {"confidence": "low"}], cds)
     out = batch.excel_conclusion("MX", res, 3, True)
-    assert out.startswith("不合格：[MX] MX 蛋白与设计不一致")
-    assert "5269 C>T" in out and "低置信差异疑似测序噪声" in out
+    assert out.startswith("不合格：MX 蛋白与设计不一致（移码）")
+    assert "5269 C>T" not in out and "详见报告" not in out
+    assert "1 处低置信差异疑似伪影" in out
 
 
 def test_excel_conclusion_编码区外差异():
@@ -138,7 +142,7 @@ def test_excel_conclusion_编码区外差异():
     v = {"confidence": "medium", "features": [{"name": "lac operator", "type": "other"}]}
     res = _res([v], cds, coverage=42.0)
     out = batch.excel_conclusion("MX", res, 1, True)
-    assert out.startswith("合格：编码区蛋白与设计一致")
+    assert out.startswith("合格：编码区蛋白一致")
     assert "lac operator" in out and "测序覆盖 42%" in out
 
 
@@ -150,10 +154,14 @@ def test_excel_conclusion_完全一致与缺参考():
     assert batch.excel_conclusion("MX", failed, 1, True).startswith("分析失败：修剪后过短")
 
 
-def test_main_sentence_extracts_middle():
-    v = ("CDS 已完整覆盖。MX 蛋白与设计不一致：5076 处的插入使阅读框移码（产物 25 aa）。"
-         "另有 5 处低置信差异（最高 Q 25，疑似测序噪声）未计入判定")
-    assert batch.main_sentence(v) == "MX 蛋白与设计不一致：5076 处的插入使阅读框移码（产物 25 aa）"
+def test_excel_conclusion_互检矛盾合并为疑似伪影():
+    """简洁口径：互检矛盾与一般低置信不再分开解释，合并为
+    "N 处低置信差异疑似伪影"；全净克隆输出恰好一句主句"""
+    conflict = {"confidence": "low", "cross_read_conflict": {"reads": ["b.ab1"]}}
+    res = _res([conflict, {"confidence": "low"}], [], coverage=42.0)
+    out = batch.excel_conclusion("MX", res, 2, True)
+    assert out == "合格：与设计一致；2 处低置信差异疑似伪影；测序覆盖 42%"
+    assert "互检矛盾" not in out and "详见报告" not in out
 
 
 # ---------------------------------------------------------------- 端到端
