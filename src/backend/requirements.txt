@@ -1,35 +1,37 @@
 # Web Framework
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
+# 版本精确 pin（2026-09-29 审核）：与本地 .venv 及生产容器实测一致的组合，
+# 保证镜像构建可复现；升级时显式 bump 版本并跑全量测试
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
 
 # Database（STORAGE_MODE=database 时使用；本地开发默认 SQLite，无需额外驱动）
-sqlalchemy>=2.0.25
-psycopg2-binary>=2.9.9
-redis>=5.0.1
+sqlalchemy==2.0.52
+psycopg2-binary==2.9.12
+redis==8.1.0
 
 # Utilities
-pyyaml>=6.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-python-dotenv>=1.0.0
-passlib>=1.7.4
+pyyaml==6.0.3
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+passlib==1.7.4
 # bcrypt 5.0 与 passlib 1.7.4 不兼容（移除 __about__ 探测、72 字节密码改为抛错）
-bcrypt>=4.0.0,<5
-PyJWT>=2.8.0
-email-validator>=2.1.0
+bcrypt==4.3.0
+PyJWT==2.13.0
+email-validator==2.3.0
 
 # Sanger 测序分析（比对核心 + ab1 解析主路径 Bio.SeqIO("abi")；
 # Biopython 导入失败时回退内置解析器）
-biopython>=1.81
+biopython==1.88
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
-snapgene-reader>=0.1.23
+snapgene-reader==0.1.23
 # 批量测序整理分析脚本（scripts/batch_sequencing_report.py）读写 Excel 信息表
-openpyxl>=3.1.0
+openpyxl==3.1.5
 
 # Testing
-pytest>=7.4.0
-httpx>=0.26.0
+pytest==9.1.1
+httpx==0.28.1
 
 # 说明：Sanger 测序分析（core/sanger/）依赖 biopython（比对 + ab1 解析）。
 # "核心算法纯标准库实现"已不再是项目约束（2026-09-12 解除，见
