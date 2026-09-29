@@ -38,7 +38,6 @@ from core.sanger.batch import (  # noqa: E402
     REF_EXTS,
     excel_conclusion,
     load_excel,
-    main_sentence,
     match_files,
     norm_stem as _norm,
     rows_have_clones,
