@@ -508,7 +508,17 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         return out
     tail.extend(mixed_tails)
     if pending:
-        tail.append(f"{pending} 处低置信差异疑似测序噪声（详见报告）")
+        # 互检矛盾（单 read 报告、其他 read 干净跨过同一位点）与一般疑似噪声
+        # 分开点名：前者另一条 read 已给出反向证据，更可能是伪影
+        n_conflict = sum(
+            1 for v in res["variants"]
+            if v.get("confidence") == "low" and v.get("cross_read_conflict"))
+        n_plain = pending - n_conflict
+        if n_conflict:
+            tail.append(f"{n_conflict} 处差异仅单 read 报告、其他 read 跨过同一位点"
+                        "未见差异（互检矛盾，疑似伪影，详见报告）")
+        if n_plain:
+            tail.append(f"{n_plain} 处低置信差异疑似测序噪声（详见报告）")
     # A4：poly 区峰图判读存疑——按 run_verdict 分态措辞（contradictory
     # 互证矛盾对克隆批量筛查最致命，单独点名；undetermined 无可分辨证据；
     # 其余（deficit_observed 等）归入一般"计数不一致"）
