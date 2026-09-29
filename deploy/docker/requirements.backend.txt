@@ -1,28 +1,29 @@
 # Web Framework
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
+# 版本精确 pin（与 src/backend/requirements.txt 同步维护，见该文件头部说明）
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
 
 # Database
-sqlalchemy>=2.0.25
-psycopg2-binary>=2.9.9
-redis>=5.0.1
+sqlalchemy==2.0.52
+psycopg2-binary==2.9.12
+redis==8.1.0
 
 # Utilities
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-python-dotenv>=1.0.0
-pyyaml>=6.0
-passlib>=1.7.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+pyyaml==6.0.3
+passlib==1.7.4
 # bcrypt 5.0 与 passlib 1.7.4 不兼容（移除 __about__ 探测、72 字节密码改为抛错）
-bcrypt>=4.0.0,<5
-PyJWT>=2.8.0
-email-validator>=2.1.0
+bcrypt==4.3.0
+PyJWT==2.13.0
+email-validator==2.3.0
 
 # 说明：核心设计算法（core/ 设计主线）为纯 Python 标准库实现；
 # Sanger 测序分析（core/sanger/）使用 biopython（Dockerfile 第二层安装）。
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
-snapgene-reader>=0.1.23
+snapgene-reader==0.1.23
 # 批量测序归组解析 Excel 信息表（core/sanger/batch.py，离线脚本与网页版共用）
-openpyxl>=3.1.0
+openpyxl==3.1.5
 # primer3-py / pydna / pandas / scipy 等无代码引用，未纳入。
