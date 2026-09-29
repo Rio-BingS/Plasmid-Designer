@@ -2103,3 +2103,32 @@ def test_single_coverage_indel_keeps_peak_evidence_grading():
     assert "cross_read_conflict" not in ins[0]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" in cds["verdict"]
+
+
+def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
+    """覆盖区优先：未覆盖 CDS 措辞中性（不再建议补引物——部分测序是常规
+    策略），结论首行给出实测区间（回答"测的是哪段、结果如何"）"""
+    feats = [
+        {"name": "COVERED", "type": "CDS", "start": 101, "end": 200, "strand": "+"},
+        {"name": "UNTOUCHED", "type": "CDS", "start": 401, "end": 450, "strand": "+"},
+    ]
+    blob = make_ab1(reference[100:200], [40] * 100)  # 覆盖 101-200
+    result = analyze([("r.ab1", blob)], reference, feats)
+    unc = next(c for c in result["cds_reports"] if c["name"] == "UNTOUCHED")
+    assert unc["coverage_status"] == "uncovered"
+    assert "补充" not in unc["verdict"] and "不参与判读" in unc["verdict"]
+    cov = next(c for c in result["cds_reports"] if c["name"] == "COVERED")
+    assert cov["coverage_status"] != "uncovered"
+    assert "实测区间 101-200" in result["conclusion"]
+    # 未覆盖 CDS 不占结论篇幅（既有口径：自动结论只列有覆盖的 CDS）
+    assert "UNTOUCHED" not in result["conclusion"]
+
+
+def test_variants_branch_conclusion_shows_covered_ranges(reference):
+    """有差异时结论首行同样携带实测区间"""
+    seg = list(reference[100:200])
+    seg[30] = "A" if seg[30] != "A" else "G"
+    blob = make_ab1("".join(seg), [40] * 100)
+    result = analyze([("r.ab1", blob)], reference, [])
+    assert result["variants"]
+    assert "实测区间 101-200" in result["conclusion"].splitlines()[0]

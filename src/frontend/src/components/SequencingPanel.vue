@@ -361,6 +361,8 @@ const gapSummary = computed(() => {
 // 共识与 CDS 结论，只是收起避免刷屏；点开展开供人工核对峰图
 const showLowConf = ref(false)
 const showMixedDetail = ref(false)
+// 导出默认只取实测覆盖区：部分测序是常规策略，未测的参考填充段通常不需要带走
+const coveredOnly = ref(true)
 const lowConfVariants = computed(() =>
   (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
 const shownVariants = computed(() => {
@@ -1628,7 +1630,7 @@ const consensusSegments = computed(() => {
 })
 
 async function downloadConsensus(format: string) {
-  const text = await exportConsensus(analysis.value!.analysis_id, format)
+  const text = await exportConsensus(analysis.value!.analysis_id, format, coveredOnly.value)
   const blob = new Blob([text], { type: 'text/plain' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -1995,6 +1997,9 @@ async function downloadConsensus(format: string) {
         <div class="trace-toolbar">
           <h4 class="section-title">拼接结果（Consensus，{{ analysis.consensus.sequence.length }} bp）</h4>
           <div>
+            <label class="cov-only-toggle" title="部分测序是常规策略：只导出 read 实测覆盖的区域（FASTA 按段、GenBank 未测位置 N 屏蔽）">
+              <input type="checkbox" v-model="coveredOnly">仅导出实测覆盖区
+            </label>
             <button class="mini-btn" @click="downloadConsensus('fasta')">导出 FASTA</button>
             <button class="mini-btn" @click="downloadConsensus('genbank')">导出 GenBank</button>
           </div>
@@ -2133,6 +2138,12 @@ async function downloadConsensus(format: string) {
   font-size: 0.78rem; padding: 0.2rem 0.6rem; cursor: pointer; margin-left: 0.25rem;
 }
 .mini-btn:hover { background: var(--bg-secondary, #f5f5f5); }
+
+.cov-only-toggle {
+  font-size: 0.78rem; margin-right: 0.5rem; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  vertical-align: middle; color: var(--text-secondary, #555);
+}
 
 .consensus-pre {
   font-family: Consolas, monospace; font-size: 0.72rem; line-height: 1.5;

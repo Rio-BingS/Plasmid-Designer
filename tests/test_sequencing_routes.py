@@ -308,3 +308,33 @@ def test_db_retention_prunes_oldest(client, monkeypatch):
     assert store.load_record(a3) is not None
     for aid in (a2, a3):
         client.delete(f"/api/sequencing/analyses/{aid}")
+
+
+def test_export_consensus_covered_only(client):
+    """covered_only 导出只取实测覆盖区（部分测序是常规策略）：
+    FASTA 每段连续覆盖一条记录、参考坐标入头；GenBank 全长保留、
+    未测位置 N 屏蔽并注记实测段；默认不带参数仍是全量导出"""
+    ref = ">ref\n" + "AAG" * 40  # 120bp
+    blob = make_ab1("AAG" * 20, [40] * 60)  # 只测前 60bp
+    r = client.post("/api/sequencing/analyze",
+                    files={"reference": ("ref.fasta", ref, "text/plain"),
+                           "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    aid = r.json()["analysis_id"]
+    fa = client.get(
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta&covered_only=true")
+    assert fa.status_code == 200
+    assert "ref_pos=1-60" in fa.text and "region=1/1" in fa.text
+    seq_lines = [ln for ln in fa.text.splitlines() if not ln.startswith(">")]
+    assert "".join(seq_lines) == "AAG" * 20  # 只有覆盖段，无参考填充
+    gb = client.get(
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank&covered_only=true")
+    assert gb.status_code == 200
+    assert "实测覆盖区 1-60" in gb.text and "N-masked" in gb.text
+    assert " 120 bp" in gb.text  # 全长保留（坐标不位移）
+    body = gb.text.split("ORIGIN")[1]
+    assert body.count("N") >= 60  # 未测位置全部 N
+    fa_full = client.get(
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta")
+    assert "ref_pos=" not in fa_full.text  # 默认全量口径不变
+    client.delete(f"/api/sequencing/analyses/{aid}")
