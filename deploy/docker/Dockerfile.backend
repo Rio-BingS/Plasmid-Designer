@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
 # biopython：Sanger 测序分析（ab1 解析 + 序列比对）。其余 numpy/pandas/scipy/
 # matplotlib/primer3-py/pydna 等后端代码均未 import，不再安装（拖慢构建且徒增失败面）
-RUN pip install --no-cache-dir --timeout=300 --retries=5 "biopython>=1.81"
+RUN pip install --no-cache-dir --timeout=300 --retries=5 "biopython==1.88"
 
 # Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
 # 下载预编译二进制；失败不阻断构建（管线会自动降级为内置实现）
