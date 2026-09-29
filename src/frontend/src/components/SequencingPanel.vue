@@ -402,6 +402,11 @@ function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number 
   return `覆盖 ${c.covered_percent}%`
 }
 
+// 未覆盖的 CDS 不进卡片：部分测序是常规策略，未测区域按设计序列对待，
+// 列一堆"未覆盖"条目只会稀释真正有判读结果的编码区
+const judgedCdsReports = computed(() =>
+  (analysis.value?.cds_reports ?? []).filter((c) => c.coverage_status !== 'uncovered'))
+
 // ==================== poly 同聚物 / 重复结构卡片 ====================
 type Hp = NonNullable<SequencingAnalysis['homopolymers']>[number]
 
@@ -1732,14 +1737,14 @@ async function downloadConsensus(format: string) {
         </div>
         <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
         <p class="coverage-gaps" v-if="analysis.coverage_gaps?.length">
-          覆盖缺口 {{ analysis.coverage_gaps.length }} 段（按长度排序）：{{ gapSummary }} —— 建议从已测区边缘设计引物补测
+          覆盖缺口 {{ analysis.coverage_gaps.length }} 段（按长度排序）：{{ gapSummary }}（未测区域按设计序列对待）
         </p>
       </div>
 
-      <!-- CDS 编码区测序结论：整段编码序列是否与参考一致 -->
-      <div class="conclusion-card cds-card" v-if="analysis.cds_reports?.length">
+      <!-- CDS 编码区测序结论：整段编码序列是否与参考一致（未覆盖的不显示） -->
+      <div class="conclusion-card cds-card" v-if="judgedCdsReports.length">
         <h4 class="section-title">编码区（CDS）测序结论</h4>
-        <div v-for="c in analysis.cds_reports" :key="c.name + c.start" class="cds-row">
+        <div v-for="c in judgedCdsReports" :key="c.name + c.start" class="cds-row">
           <span class="cds-dot" :class="c.protein_identical === null ? 'na' : (c.protein_identical ? 'pass' : 'fail')"></span>
           <div class="cds-main">
             <p class="cds-name">
