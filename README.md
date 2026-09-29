@@ -348,3 +348,7 @@ npm run test:run
 | 生物信息 | 纯 Python 标准库自研实现（无第三方生信依赖） |
 | 认证 | JWT (PyJWT) + bcrypt (passlib) |
 | 部署 | Docker Compose / HuggingFace Spaces |
+
+## License
+
+[MIT](LICENSE)
