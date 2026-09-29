@@ -30,6 +30,15 @@ async def lifespan(app: FastAPI):
     print(f"🧬 Plasmid Designer API v{settings.APP_VERSION}")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
+    # JWT 密钥占位值告警：compose 兜底值或开发默认值进入生产 = 任何人可自签
+    # 令牌冒充任意用户。只告警不阻断（保持本地开发零配置可用）
+    _SECRET_PLACEHOLDERS = ("dev-insecure-secret-key-change-me",
+                            "change_this_in_production")
+    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS:
+        print("🚨 SECRET_KEY 仍是公开仓库中的占位值——JWT 任何人可伪造！"
+              "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32；"
+              "deploy.sh 首次部署会自动生成）")
+
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
     # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
     try:
