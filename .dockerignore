@@ -11,6 +11,8 @@ build
 .env
 .venv
 venv
+*.db
+*.sqlite3
 *.log
 *.tmp
 .DS_Store
