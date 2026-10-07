@@ -12,6 +12,7 @@ import sys
 from app.config import BACKEND_DIR
 sys.path.insert(0, str(BACKEND_DIR))
 
+from core.seq_utils import revcomp as _seq_revcomp
 from core.primer_designer import PrimerDesigner, Primer, PrimerPair
 
 
@@ -288,11 +289,8 @@ class AdvancedPrimerDesigner(PrimerDesigner):
         }
     
     def _reverse_complement(self, sequence: str) -> str:
-        """反向互补"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
-                      'N': 'N', 'R': 'Y', 'Y': 'R', 'M': 'K',
-                      'K': 'M', 'S': 'S', 'W': 'W'}
-        return ''.join(complement.get(b, 'N') for b in reversed(sequence.upper()))
+        """反向互补（收敛到 core.seq_utils.revcomp）"""
+        return _seq_revcomp(sequence.upper())
     
     def _design_single_primer(
         self,

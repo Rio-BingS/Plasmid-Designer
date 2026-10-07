@@ -7,6 +7,8 @@
 import re
 from typing import Dict, List, Optional
 
+from core.seq_utils import revcomp as _revcomp
+
 # 内置常用限制酶。cutoff 相对识别序列 5' 端（正向链），overhang 描述切割后
 # 突出端：'5prime'/'3prime'/None(blunt)。cut_offsets = (正向链切割位, 反向链切割位)
 # 相对识别序列起点的偏移（可与识别序列长度相等，即切在识别序列外）。
@@ -69,12 +71,6 @@ _IUPAC = {
     "K": "[GT]", "M": "[AC]", "B": "[CGT]", "D": "[AGT]",
     "H": "[ACT]", "V": "[ACG]", "N": "[ACGT]",
 }
-
-_COMPLEMENT = str.maketrans("ACGTRYKMSWBDHVN", "TGCAYRMKSWVHDBN")
-
-
-def _revcomp(seq: str) -> str:
-    return seq.translate(_COMPLEMENT)[::-1]
 
 
 def _site_regex(site: str) -> "re.Pattern":

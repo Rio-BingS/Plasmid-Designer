@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from core.seq_utils import gc_percent, revcomp
+
 
 class PrimerType(Enum):
     PRIMER = "primer"
@@ -573,22 +575,18 @@ class PrimerDesigner:
             return 64.9 + 41 * (g_count + c_count - 16.4) / len(seq)
     
     def _calculate_gc(self, seq: str) -> float:
-        """计算GC含量（百分比）"""
-        seq = seq.upper()
-        gc_count = seq.count('G') + seq.count('C')
-        return gc_count / len(seq) * 100 if len(seq) > 0 else 0
-    
+        """计算GC含量（百分比，收敛到 core.seq_utils）"""
+        return gc_percent(seq)
+
     def _calculate_annealing_temp(self, tm1: float, tm2: float) -> float:
         """计算推荐退火温度"""
         # 通常比最低Tm低3-5度
         min_tm = min(tm1, tm2)
         return max(min_tm - 3, 50)  # 最低不低于50度
-    
+
     def _reverse_complement(self, seq: str) -> str:
-        """反向互补"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
-                     'a': 't', 't': 'a', 'g': 'c', 'c': 'g'}
-        return ''.join(complement.get(b, b) for b in reversed(seq))
+        """反向互补（收敛到 core.seq_utils.revcomp）"""
+        return revcomp(seq)
     
     def _max_self_complementarity(self, seq: str) -> int:
         """计算最大自互补碱基数"""

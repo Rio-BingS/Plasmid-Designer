@@ -19,6 +19,7 @@ from app.cache import cache
 from app.config import settings
 from app.design_service import get_vector_library, invalidate_vector_library_cache
 from app.auth.jwt_auth import get_admin_user
+from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
     BatchImportRequest, PlasmidMapData
@@ -353,8 +354,7 @@ async def preview_ncbi_vector(seq_id: str):
 
     # 计算 GC 含量
     seq = vector.sequence.upper()
-    gc_count = seq.count('G') + seq.count('C')
-    gc_content = (gc_count / len(seq) * 100) if seq else 0
+    gc_content = gc_percent(seq)
 
     warnings = []
     if len(seq) < 1000:

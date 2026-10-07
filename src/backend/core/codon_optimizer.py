@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from collections import Counter
 import math
 
+from core.seq_utils import CODON_TABLE, gc_fraction
+
 
 @dataclass
 class CodonOptimizationResult:
@@ -56,36 +58,9 @@ HOST_CLASS = {
 }
 
 
-# 标准遗传密码表
-CODON_TABLE = {
-    'F': ['TTT', 'TTC'],
-    'L': ['TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG'],
-    'I': ['ATT', 'ATC', 'ATA'],
-    'M': ['ATG'],
-    'V': ['GTT', 'GTC', 'GTA', 'GTG'],
-    'S': ['TCT', 'TCC', 'TCA', 'TCG', 'AGT', 'AGC'],
-    'P': ['CCT', 'CCC', 'CCA', 'CCG'],
-    'T': ['ACT', 'ACC', 'ACA', 'ACG'],
-    'A': ['GCT', 'GCC', 'GCA', 'GCG'],
-    'Y': ['TAT', 'TAC'],
-    'H': ['CAT', 'CAC'],
-    'Q': ['CAA', 'CAG'],
-    'N': ['AAT', 'AAC'],
-    'K': ['AAA', 'AAG'],
-    'D': ['GAT', 'GAC'],
-    'E': ['GAA', 'GAG'],
-    'C': ['TGT', 'TGC'],
-    'W': ['TGG'],
-    'R': ['CGT', 'CGC', 'CGA', 'CGG', 'AGA', 'AGG'],
-    'G': ['GGT', 'GGC', 'GGA', 'GGG'],
-    '*': ['TAA', 'TAG', 'TGA'],
-}
-
-# 反向密码子表
-AMINO_ACID_TABLE = {}
-for aa, codons in CODON_TABLE.items():
-    for codon in codons:
-        AMINO_ACID_TABLE[codon] = aa
+# 标准遗传密码表收敛到 core.seq_utils
+# AMINO_ACID_TABLE（密码子 → 氨基酸）保留为兼容别名
+from core.seq_utils import CODON_TO_AA as AMINO_ACID_TABLE
 
 
 class CodonOptimizer:
@@ -752,11 +727,8 @@ class CodonOptimizer:
         return cai
     
     def _calculate_gc_content(self, dna_seq: str) -> float:
-        """计算GC含量"""
-        if not dna_seq:
-            return 0.0
-        gc = dna_seq.count('G') + dna_seq.count('C')
-        return gc / len(dna_seq)
+        """计算GC含量（0-1 比例，收敛到 core.seq_utils）"""
+        return gc_fraction(dna_seq)
     
     def _calculate_gc_distribution(self, dna_seq: str, window: int = 50) -> List[float]:
         """计算GC分布（滑动窗口）"""
