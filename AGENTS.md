@@ -40,9 +40,9 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（357 用例，含 test_sanger_pipeline/test_enzyme_sites/
-                            test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
+tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
+                            test_sequencing_routes/test_batch_sequencing/test_seq_utils；
+                            tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（113 用例）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处） |
 | docs/CACHE.md | 缓存策略与现状 |
 | docs/FIXPLAN.md | 历史修复记录（2025 核查） |
-| deploy/DEPLOY_GUIDE.md | 三种部署方式 |
+| deploy/DEPLOY_GUIDE.md | HF Spaces 部署（Gradio/Docker 两模式；自托管见 deploy/docker 与 deploy/bare） |
 
 ## 已知坑
 

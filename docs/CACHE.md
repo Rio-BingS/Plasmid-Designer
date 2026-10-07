@@ -39,6 +39,9 @@ export REDIS_ENABLED=true
 
 # Redis 连接 URL (可选，默认 redis://localhost:6379/0)
 export REDIS_URL=redis://localhost:6379/0
+
+# 生产环境必须设置密码（redis-cli CONFIG SET requirepass "<密码>" 或 redis.conf
+# 中 requirepass 行），REDIS_URL 同步改为 redis://:<密码>@localhost:6379/0
 ```
 
 ## 使用方式
@@ -97,6 +100,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    # 生产环境务必加 requirepass 并同步 REDIS_URL（redis://:<密码>@redis:6379/0）
     command: redis-server --appendonly yes
   
   backend:
