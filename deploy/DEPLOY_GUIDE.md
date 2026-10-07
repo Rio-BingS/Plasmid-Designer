@@ -1,6 +1,10 @@
 # Plasmid Designer v2 — HuggingFace Spaces 部署教程
 
-本文档提供两种部署方式的完整教程，以及自动化部署工具和 CI/CD 配置说明。
+本文档**只覆盖 HuggingFace Spaces 部署**（Gradio / Docker 两种模式 +
+自动化脚本 + CI/CD）。其他部署方式不在本文档范围：
+
+- docker-compose 自托管：见 `deploy/docker/`
+- Ubuntu systemd 裸机部署：见 `deploy/bare/`
 
 ---
 
