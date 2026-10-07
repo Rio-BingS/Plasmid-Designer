@@ -13,6 +13,8 @@ import re
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
+from core.seq_utils import CODON_TO_AA as _CODON_TO_AA, gc_percent
+
 
 @dataclass
 class ValidationResult:
@@ -37,25 +39,8 @@ class SequenceValidator:
     START_CODONS = ['ATG', 'GTG', 'TTG']  # ATG最常见
     STOP_CODONS = ['TAA', 'TAG', 'TGA']
     
-    # 遗传密码表
-    CODON_TABLE = {
-        'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-        'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-        'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-        'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-        'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-        'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-        'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-        'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-        'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-        'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-        'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-        'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-        'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-        'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-        'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-        'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
-    }
+    # 遗传密码表（收敛到 core.seq_utils；方向：密码子 → 氨基酸）
+    CODON_TABLE = _CODON_TO_AA
     
     def validate(
         self,
@@ -162,9 +147,8 @@ class SequenceValidator:
     
     def _validate_gc_content(self, sequence: str, result: ValidationResult):
         """验证GC含量"""
-        gc_count = sequence.count('G') + sequence.count('C')
-        gc_content = gc_count / len(sequence) * 100 if sequence else 0
-        
+        gc_content = gc_percent(sequence)
+
         result.details['gc_content'] = gc_content
         
         if gc_content < 30:
@@ -226,15 +210,12 @@ class SequenceValidator:
     def _calculate_gc_distribution(self, sequence: str, window: int = 50) -> List[float]:
         """计算GC分布"""
         if len(sequence) < window:
-            gc = (sequence.count('G') + sequence.count('C')) / len(sequence) * 100 if sequence else 0
-            return [gc]
-        
+            return [gc_percent(sequence)]
+
         distribution = []
         for i in range(0, len(sequence) - window + 1, window // 2):
-            segment = sequence[i:i+window]
-            gc = (segment.count('G') + segment.count('C')) / window * 100
-            distribution.append(gc)
-        
+            distribution.append(gc_percent(sequence[i:i+window]))
+
         return distribution
     
     def find_orfs(
@@ -303,10 +284,10 @@ class SequenceValidator:
 def analyze_sequence_composition(sequence: str) -> Dict:
     """分析序列组成"""
     sequence = sequence.upper()
-    
+
     return {
         'length': len(sequence),
-        'gc_content': (sequence.count('G') + sequence.count('C')) / len(sequence) * 100 if sequence else 0,
+        'gc_content': gc_percent(sequence),
         'at_content': (sequence.count('A') + sequence.count('T')) / len(sequence) * 100 if sequence else 0,
         'composition': {
             'A': sequence.count('A'),
@@ -314,7 +295,7 @@ def analyze_sequence_composition(sequence: str) -> Dict:
             'G': sequence.count('G'),
             'C': sequence.count('C'),
         },
-        'gc_ratio': (sequence.count('G') + sequence.count('C')) / len(sequence) if sequence else 0,
+        'gc_ratio': gc_percent(sequence) / 100,
     }
 
 

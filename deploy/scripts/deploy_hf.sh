@@ -36,6 +36,7 @@ copy_core_modules() {
     # 基础核心模块 (无 app.config 依赖)
     local core_modules=(
         "__init__.py"
+        "seq_utils.py"
         "codon_optimizer.py"
         "primer_designer.py"
         "vector_library.py"
@@ -128,7 +129,7 @@ deploy_gradio() {
     # 验证关键文件
     info "验证文件..."
     local missing=0
-    for f in app.py requirements.txt README.md backend/core/__init__.py backend/core/codon_optimizer.py; do
+    for f in app.py requirements.txt README.md backend/core/__init__.py backend/core/seq_utils.py backend/core/codon_optimizer.py; do
         if [ ! -f "$target_dir/$f" ]; then
             error "缺少关键文件: $f"
             missing=1
@@ -225,7 +226,7 @@ deploy_docker() {
     info "验证文件..."
     local missing=0
     for f in Dockerfile nginx.conf start.sh requirements.txt main.py README.md \
-             frontend/dist/index.html backend/core/__init__.py backend/core/codon_optimizer.py; do
+             frontend/dist/index.html backend/core/__init__.py backend/core/seq_utils.py backend/core/codon_optimizer.py; do
         if [ ! -f "$target_dir/$f" ]; then
             error "缺少关键文件: $f"
             missing=1

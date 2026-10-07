@@ -139,6 +139,7 @@ mkdir -p backend/core
 cp $PROJECT/src/backend/core/__init__.py backend/core/
 
 # 复制核心引擎模块
+cp $PROJECT/src/backend/core/seq_utils.py backend/core/
 cp $PROJECT/src/backend/core/codon_optimizer.py backend/core/
 cp $PROJECT/src/backend/core/primer_designer.py backend/core/
 cp $PROJECT/src/backend/core/vector_library.py backend/core/
@@ -177,6 +178,7 @@ hf-space/
 │   ├── __init__.py
 │   └── core/
 │       ├── __init__.py
+│       ├── seq_utils.py
 │       ├── codon_optimizer.py
 │       ├── primer_designer.py
 │       ├── vector_library.py
@@ -317,6 +319,7 @@ chmod +x start.sh
 # ---- 复制后端核心代码 ----
 mkdir -p backend/core
 cp $PROJECT/src/backend/core/__init__.py backend/core/
+cp $PROJECT/src/backend/core/seq_utils.py backend/core/
 cp $PROJECT/src/backend/core/codon_optimizer.py backend/core/
 cp $PROJECT/src/backend/core/primer_designer.py backend/core/
 cp $PROJECT/src/backend/core/vector_library.py backend/core/
@@ -359,6 +362,7 @@ hf-space-docker/
 │   ├── __init__.py
 │   └── core/
 │       ├── __init__.py
+│       ├── seq_utils.py
 │       ├── codon_optimizer.py
 │       ├── primer_designer.py
 │       ├── vector_library.py
@@ -575,6 +579,7 @@ HF Spaces 免费版在 48 小时无访问后会自动休眠。首次访问需要
 cd hf-space  # 或 hf-space-docker
 
 # 重新复制修改过的文件
+cp $PROJECT/src/backend/core/seq_utils.py backend/core/
 cp $PROJECT/src/backend/core/codon_optimizer.py backend/core/
 # ... 其他修改的文件
 
