@@ -6,6 +6,7 @@ import PlasmidMap from '@/components/PlasmidMap.vue'
 import type { PlasmidFeature, EnzymeSite } from '@/components/PlasmidMap.vue'
 import SequenceView from '@/components/SequenceView.vue'
 import { getVectorMapData, getVectorSequence, getVector } from '@/api'
+import { downloadTextFile } from '@/utils/download'
 
 interface MapData {
   name: string
@@ -106,15 +107,7 @@ async function downloadSeq(format: string) {
   try {
     const data = await getVectorSequence(vectorId.value, format)
     const ext = format === 'genbank' ? 'gb' : 'fasta'
-    const blob = new Blob([data], { type: 'text/plain' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `${vectorId.value}.${ext}`)
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.URL.revokeObjectURL(url)
+    downloadTextFile(data, `${vectorId.value}.${ext}`)
   } catch (e: any) {
     alert('下载失败: ' + (e.message || '未知错误'))
   }
