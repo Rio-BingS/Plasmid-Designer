@@ -85,6 +85,20 @@ def test_golden_gate_primer_design():
     assert pair.forward.restriction_site == "BsaI"
 
 
+def test_golden_gate_unknown_enzyme_raises():
+    """回归：未知酶曾静默回退 BsaI——传错酶名会得到错误引物而不被察觉"""
+    import pytest as _pytest
+    designer = PrimerDesigner()
+    insert = "ATG" + "GCT" * 20 + "TAA"
+    with _pytest.raises(ValueError, match="不支持"):
+        designer.design_golden_gate_primers(
+            insert,
+            enzyme_name="EcoRI",  # 非 IIS 酶，不在支持列表
+            overhang_seq_5="AATG",
+            overhang_seq_3="GCTT"
+        )
+
+
 def test_primer_quality_check():
     """测试引物质量检查
 

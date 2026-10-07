@@ -1,11 +1,14 @@
 """
 引物设计模块
 
-基于 Primer3 算法，支持：
+支持：
 - 普通PCR引物设计
 - Gibson Assembly 引物设计（带同源臂）
 - Golden Gate 引物设计（带IIS酶位点）
 - 测序引物设计
+
+Tm 计算为经验公式粗估（Wallace/Marmur-Doty，无盐校正），并非
+Primer3 的最近邻算法；Tm 仅供筛选参考。
 """
 
 import math
@@ -248,8 +251,14 @@ class PrimerDesigner:
             'BsmBI': 'CGTCTC',
             'BbsI': 'GAAGAC',
         }
-        
-        enzyme_site = enzyme_sites.get(enzyme_name, 'GGTCTC')
+
+        if enzyme_name not in enzyme_sites:
+            # 不静默回退 BsaI：传错酶名会得到完全错误的引物而不被察觉
+            raise ValueError(
+                f"不支持的 Golden Gate 酶: {enzyme_name}，"
+                f"可选: {', '.join(sorted(enzyme_sites))}"
+            )
+        enzyme_site = enzyme_sites[enzyme_name]
         
         # 正向引物结构：酶切位点(1N) + overhang + 插入片段
         # 5' - [酶切位点] - N - [overhang] - [插入片段] - 3'
@@ -544,9 +553,13 @@ class PrimerDesigner:
     
     def _calculate_tm(self, seq: str) -> float:
         """
-        计算Tm值（最近邻法简化版）
-        对于 < 14bp: Tm = 2*(A+T) + 4*(G+C)
-        对于 >= 14bp: Tm = 64.9 + 41*(G+C-16.4)/(A+T+G+C)
+        计算 Tm 值（经验公式粗估，非最近邻法）。
+
+        < 14bp 用 Wallace 规则 Tm = 2*(A+T) + 4*(G+C)；
+        >= 14bp 用 Marmur-Doty 式 Tm = 64.9 + 41*(G+C-16.4)/N。
+        两者均无盐浓度/寡核苷酸浓度校正，18-25mer 与最近邻法相比
+        常见 1-3°C 偏差——Tm 仅供筛选参考，订单前建议用引物供应商
+        工具或 Primer3 复核。
         """
         seq = seq.upper()
         a_count = seq.count('A')
