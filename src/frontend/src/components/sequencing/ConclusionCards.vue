@@ -7,19 +7,20 @@
  * - 覆盖条带图与缺口摘要；
  * - CDS 逐条结论（覆盖状态/SO 后果标签/移码·无义·蛋白长度明细）。
  *
- * showLowConf 用 defineModel 与父组件共享：同一状态也控制突变表的
- * 低置信行折叠（总览里展开 → 突变表同步展开，行为与拆分前一致）。
+ * showLowConf / showMixedDetail 用 defineModel 与父组件共享：showLowConf
+ * 同时控制突变表的低置信行折叠（总览里展开 → 突变表同步展开）；退出历史
+ * 回看时父组件 preset watch 会把两者一起复位（行为与拆分前一致）。
  */
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import type { SequencingAnalysis } from '@/api'
 
 const props = defineProps<{
   analysis: SequencingAnalysis
 }>()
 
-// 低置信折叠态与父组件（突变表）共享：拆分前是同一个 ref
+// 低置信/双峰折叠态与父组件共享：拆分前是同一个 ref
 const showLowConf = defineModel<boolean>('showLowConf', { default: false })
-const showMixedDetail = ref(false)
+const showMixedDetail = defineModel<boolean>('showMixedDetail', { default: false })
 
 // ==================== 覆盖条带 ====================
 const coverageSegments = computed(() => {
@@ -150,3 +151,48 @@ function soLevel(t: string): string {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 结论卡/覆盖条带/CDS 卡样式：随模板从 SequencingPanel.vue 迁入
+   （Vue scoped 样式不会穿透到子组件内部节点，父级规则管不到这里） */
+.conclusion-card {
+  background: #FDF3F3; border: 1px solid #F2C6C6; border-radius: 10px; padding: 1rem 1.25rem;
+}
+.conclusion-card.ok { background: #F0FAF2; border-color: #BFE5C8; }
+.conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
+.lowconf-toggle {
+  display: inline-block; margin: 0.1rem 0 0.4rem; padding: 0.15rem 0.6rem;
+  font-size: 0.78rem; color: #8a6a1f; background: #FBF3DF;
+  border: 1px solid #E8D9A8; border-radius: 12px; cursor: pointer;
+}
+.lowconf-toggle:hover { background: #F5E9C8; }
+.lowconf-lines { font-weight: 400; font-size: 0.85rem; color: #8a6a1f; }
+.cds-card { margin-top: 0.75rem; }
+.cds-row { display: flex; gap: 0.6rem; padding: 0.5rem 0; border-top: 1px dashed #E8E8E8; }
+.cds-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: none; }
+.cds-dot.pass { background: #2E9E44; }
+.cds-dot.fail { background: #C0392B; }
+.cds-dot.na { background: #BBB; }
+.cds-dot.mid { background: #E6A700; }
+.cds-name { font-weight: 600; margin: 0; }
+.cds-coord { font-weight: 400; color: #888; font-size: 0.78rem; font-family: Consolas, monospace; }
+.cds-cov { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; }
+.cds-cov.full { background: #E5F5E9; color: #227A36; }
+.cds-cov.partial { background: #FCF3DC; color: #9A6D00; }
+.cds-cov.uncovered { background: #EEE; color: #777; }
+.cds-so { font-size: 0.7rem; padding: 1px 7px; border-radius: 10px; margin-left: 5px; vertical-align: 1px; }
+.cds-so.high { background: #FBEAE8; color: #A03227; }
+.cds-so.mid { background: #FDF2E3; color: #A8641A; }
+.cds-so.low { background: #EDF2EE; color: #5E7A64; }
+.cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
+.cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+.poly-read-detail { color: #777; }
+.section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.conclusion-meta { display: flex; gap: 1.5rem; font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }
+.coverage-bar {
+  position: relative; height: 14px; background: #EEE; border-radius: 7px; overflow: hidden;
+}
+.coverage-seg { position: absolute; top: 0; bottom: 0; background: #2E9E44; }
+.coverage-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #999; margin-top: 2px; }
+.coverage-gaps { margin: 0.4rem 0 0; font-size: 0.78rem; color: #9A6D00; }
+</style>

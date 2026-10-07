@@ -37,7 +37,10 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
   src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
   src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图
-                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
+                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出；
+                                     展示卡拆到 components/sequencing/（PolyCard/ConclusionCards/
+                                     ReadTable/VariantTable/AlleleCard/ConsensusCard，纯展示+
+                                     defineModel 共享折叠态；scoped 样式随模板各自携带）
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / bare(Ubuntu systemd)
 tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
@@ -101,6 +104,20 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 重构（2026-09-29）**SequencingPanel 按 UI 区块拆分收尾 + 子组件样式修复**：
+  ①拆出 6 个展示子组件到 components/sequencing/——PolyCard（同聚物卡）、
+  ConclusionCards（结论总览+CDS 卡）、ReadTable（read 摘要表，@view 上报
+  峰图联动）、VariantTable（突变表，showLowConf defineModel 共享+confTitle
+  迁入）、AlleleCard（解卷积）、ConsensusCard（共识导出，coveredOnly
+  defineModel 共享，导出动作 @download 回传父组件调 API）；父组件
+  2147→1660 行。②修复上轮拆分遗留的两个回归——子组件原本无 <style>，
+  而 Vue scoped 样式不穿透子组件内部节点（结论卡/CDS 卡/覆盖条带的
+  内部样式实际丢失），样式已随模板迁入各子组件；ConclusionCards 的
+  showMixedDetail 由内部孤立 ref 改 defineModel 共享，恢复退出历史回看时
+  父组件 watch 的复位语义。③坑（必记）：**从父组件拆子组件时，模板用到
+  的 scoped CSS 必须随迁**，父级 <style scoped> 规则只作用到子组件根节点。
+  vue-tsc 0 / vitest 113 / build 过。
 
 - 调整（2026-09-29）**批量表格结论简洁化**：用户要求 Excel/结果表里的
   结论也简洁——excel_conclusion 重写：合格/不合格/疑似混合前缀保留
