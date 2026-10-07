@@ -54,7 +54,7 @@ python main.py
 | 模式 | 环境变量 | 适用场景 |
 |------|----------|----------|
 | database (默认) | `STORAGE_MODE=database` | Docker/生产，数据持久化 |
-| memory | `STORAGE_MODE=memory` | HuggingFace/测试，重启丢失 |
+| memory | `STORAGE_MODE=memory` | 测试/演示，重启丢失 |
 
 ## API 文档
 
