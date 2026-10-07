@@ -1,7 +1,7 @@
 /** utils/seqPanelModel 的单元测试：Sanger 融合视图纯函数模型 */
 
 import { describe, expect, it } from 'vitest'
-import { buildSeqCols, packLanes } from '@/utils/seqPanelModel'
+import { buildSeqCols, packLanes, shortName } from '@/utils/seqPanelModel'
 
 const base = {
   trimmed_length: 6,
@@ -107,5 +107,14 @@ describe('packLanes', () => {
 
   it('空输入返回空泳道', () => {
     expect(packLanes([])).toEqual({ lanes: [], laneOf: [] })
+  })
+})
+
+describe('shortName', () => {
+  it('≤18 字符原样返回，>18 截断为前 17 位加省略号', () => {
+    expect(shortName('r1.ab1')).toBe('r1.ab1')
+    expect(shortName('S99680-M13F-75.ab1')).toHaveLength(18)  // 恰好 18 不截
+    expect(shortName('S99680-M13F-75.ab1x')).toBe('S99680-M13F-75.ab…')  // 19 → 截断（17+…）
+    expect(shortName('S99680-10855-1seqF1.ab1')).toBe('S99680-10855-1seq…')
   })
 })
