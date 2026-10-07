@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 /**
  * Sanger 测序全自动分析面板
  * 参考序列文件（.gb/.fasta/.dna）与 .ab1 放同一文件夹一起导入 →
@@ -12,6 +12,7 @@ import {
 import { downloadTextFile } from '@/utils/download'
 import { buildSeqCols, packLanes, type SeqCol } from '@/utils/seqPanelModel'
 import PolyCard from '@/components/sequencing/PolyCard.vue'
+import ConclusionCards from '@/components/sequencing/ConclusionCards.vue'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -185,14 +186,6 @@ async function runAnalysis() {
   }
 }
 
-// ==================== 覆盖率条带 ====================
-const coverageSegments = computed(() => {
-  const a = analysis.value
-  if (!a) return []
-  const L = a.reference_length
-  return a.coverage_ranges.map(([s, e]) => ({ left: ((s - 1) / L) * 100, width: ((e - s + 1) / L) * 100 }))
-})
-
 // ==================== 比对峰图（SnapGene 式融合视图） ====================
 // 参考碱基行 + 各 read 碱基行 + 四通道峰图画在同一个参考坐标轴上：差异列的
 // 证据（参考碱基/read 碱基/Q/峰形/次级峰占比）一屏看完，不再在比对网格与
@@ -282,81 +275,8 @@ function resetSeqViz() {
   for (const k of Object.keys(seqColCache)) delete seqColCache[Number(k)]
 }
 
-/** 覆盖缺口摘要（取最长 3 段展示） */
-const gapSummary = computed(() => {
-  const gs = analysis.value?.coverage_gaps ?? []
-  const parts = gs.slice(0, 3).map((g) => `${g.start}-${g.end}（${g.length}bp）`)
-  return parts.join('、') + (gs.length > 3 ? ' 等' : '')
-})
-
-// 低置信差异（单 read 支持 / 低 Q / 疑似混合峰）默认折叠：不删除、不影响
-// 共识与 CDS 结论，只是收起避免刷屏；点开展开供人工核对峰图
-const showLowConf = ref(false)
-const showMixedDetail = ref(false)
-// 导出默认只取实测覆盖区：部分测序是常规策略，未测的参考填充段通常不需要带走
-const coveredOnly = ref(true)
-const lowConfVariants = computed(() =>
-  (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
-const shownVariants = computed(() => {
-  const all = analysis.value?.variants ?? []
-  return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
-})
-// 结论文本按组折叠：低置信行（后端标注"低置信（/低置信度（"）连同紧随的
-// "↳ 破坏/新增酶切位点"子注释行一起收起；poly 判读等独立行不受牵连。
-// 逐 read 双峰位点范围行（"↳ …双峰 N 处，位于 read …"）单独一组默认收起，
-// 展开后可核对位点是否落在 read 首尾不可信区
-const conclusionParts = computed(() => {
-  const lines = (analysis.value?.conclusion ?? '').split('\n')
-  const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
-  const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
-  const isMixedDetail = (l: string) => l.trimStart().startsWith('↳') && l.includes('双峰')
-  const main: string[] = []
-  const low: string[] = []
-  const mixed: string[] = []
-  let prevFolded = false
-  for (const l of lines) {
-    if (isMixedDetail(l)) {
-      mixed.push(l)
-      prevFolded = false
-      continue
-    }
-    const folded: boolean = isLowHead(l) || (isSubNote(l) && prevFolded)
-    ;(folded ? low : main).push(l)
-    prevFolded = folded
-  }
-  return { main: main.join('\n'), low, mixed }
-})
-
-/** CDS 结论卡的覆盖标签 */
-function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
-  if (c.coverage_status === 'uncovered') return '未覆盖'
-  if (c.coverage_status === 'full') return '完整覆盖'
-  return `覆盖 ${c.covered_percent}%`
-}
-
-// 未覆盖的 CDS 不进卡片：部分测序是常规策略，未测区域按设计序列对待，
-// 列一堆"未覆盖"条目只会稀释真正有判读结果的编码区
-const judgedCdsReports = computed(() =>
-  (analysis.value?.cds_reports ?? []).filter((c) => c.coverage_status !== 'uncovered'))
-
-// SO 标准后果词表 → 中文标签与影响等级（VEP/snpEff 同款分级）
-const SO_LABELS: Record<string, string> = {
-  stop_gained: '无义突变',
-  stop_lost: '终止丢失',
-  start_lost: '起始丢失',
-  frameshift_variant: '移码',
-  inframe_insertion: '框内插入',
-  inframe_deletion: '框内缺失',
-  missense_variant: '错义',
-  synonymous_variant: '同义',
-}
-const SO_HIGH = new Set(['stop_gained', 'stop_lost', 'start_lost', 'frameshift_variant'])
-const SO_MID = new Set(['inframe_insertion', 'inframe_deletion', 'missense_variant'])
-function soLevel(t: string): string {
-  if (SO_HIGH.has(t)) return 'high'
-  if (SO_MID.has(t)) return 'mid'
-  return 'low'
-}
+// 覆盖率条带/缺口摘要/结论分组/CDS 覆盖标签/SO 词表已迁入
+// sequencing/ConclusionCards.vue（低置信折叠态经 defineModel 共享）
 
 /** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比 / 插入峰强度比） */
 function confTitle(v: { confidence?: string; corroborated_by_basecall?: boolean; peak_evidence?: { mutant_pct?: number | null; snr?: number | null; insertion_peak_ratio?: number | null } }): string {
@@ -623,6 +543,11 @@ function shortName(name: string): string {
 
 // ==================== 峰图数据加载 ====================
 
+// 低置信差异折叠态：结论卡与突变表共享（须在 preset 的 immediate watch
+// 之前声明，watch 里会复位这两个状态）
+const showLowConf = ref(false)
+const showMixedDetail = ref(false)
+
 // 历史回看：注入已完成分析后直接展示（immediate 覆盖挂载时即带 preset 的场景）
 watch(() => props.preset, (p) => {
   if (p) {
@@ -648,6 +573,15 @@ watch(() => props.preset, (p) => {
     showMixedDetail.value = false
   }
 }, { immediate: true })
+
+const coveredOnly = ref(true)      // 共识导出默认只取实测覆盖区
+
+const lowConfVariants = computed(() =>
+  (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
+const shownVariants = computed(() => {
+  const all = analysis.value?.variants ?? []
+  return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
+})
 
 const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: '#222222', C: '#2456C8' }
 
@@ -1512,61 +1446,8 @@ async function downloadConsensus(format: string) {
     </div>
 
     <template v-if="analysis">
-      <!-- 结论总览 -->
-      <div class="conclusion-card" :class="{ ok: analysis.variants.length === 0 }">
-        <p class="conclusion-text">{{ conclusionParts.main }}</p>
-        <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-          {{ showLowConf ? '▾ 收起低置信' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
-        </button>
-        <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
-        <button v-if="conclusionParts.mixed.length" class="lowconf-toggle" @click="showMixedDetail = !showMixedDetail">
-          {{ showMixedDetail ? '▾ 收起双峰位点范围' : `▸ ${conclusionParts.mixed.length} 条 read 的双峰位点范围已折叠（read 坐标，展开核对是否落在首尾）` }}
-        </button>
-        <p v-if="showMixedDetail && conclusionParts.mixed.length" class="conclusion-text lowconf-lines">{{ conclusionParts.mixed.join('\n') }}</p>
-        <div class="conclusion-meta">
-          <span>引擎: {{ analysis.engine }}</span>
-          <span>共识覆盖率: {{ analysis.consensus.coverage_percent }}%</span>
-          <span>差异: {{ analysis.variants.length }} 处</span>
-        </div>
-        <!-- 覆盖条带图 -->
-        <div class="coverage-bar">
-          <div
-            v-for="(seg, i) in coverageSegments"
-            :key="i"
-            class="coverage-seg"
-            :style="{ left: seg.left + '%', width: seg.width + '%' }"
-          ></div>
-        </div>
-        <div class="coverage-labels"><span>1</span><span>{{ analysis.reference_length }} bp</span></div>
-        <p class="coverage-gaps" v-if="analysis.coverage_gaps?.length">
-          覆盖缺口 {{ analysis.coverage_gaps.length }} 段（按长度排序）：{{ gapSummary }}（未测区域按设计序列对待）
-        </p>
-      </div>
-
-      <!-- CDS 编码区测序结论：整段编码序列是否与参考一致（未覆盖的不显示） -->
-      <div class="conclusion-card cds-card" v-if="judgedCdsReports.length">
-        <h4 class="section-title">编码区（CDS）测序结论</h4>
-        <div v-for="c in judgedCdsReports" :key="c.name + c.start" class="cds-row">
-          <span class="cds-dot" :class="c.protein_identical === null ? 'na' : (c.protein_identical ? 'pass' : 'fail')"></span>
-          <div class="cds-main">
-            <p class="cds-name">
-              {{ c.name }}
-              <span class="cds-coord">{{ c.start }}-{{ c.end }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
-              <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
-              <span v-for="t in c.consequences ?? []" :key="t" class="cds-so" :class="soLevel(t)">{{ SO_LABELS[t] ?? t }}</span>
-              <span v-if="c.pending_low_confidence" class="cds-so mid"
-                    title="低置信变异（疑似测序噪声）未计入本结论，见结论末尾待复核说明">待复核 {{ c.pending_low_confidence }} 处</span>
-            </p>
-            <p class="cds-verdict">{{ c.verdict }}</p>
-            <p class="cds-detail" v-if="c.protein_identical === false">
-              <span v-if="c.premature_stop_aa">无义突变：翻译提前终止于第 {{ c.premature_stop_aa }} aa</span>
-              <span v-if="c.frameshift_count">移码 {{ c.frameshift_count }} 处</span>
-              <span v-if="c.ref_protein_length != null && c.alt_protein_length != null && c.ref_protein_length !== c.alt_protein_length">蛋白长度 {{ c.ref_protein_length }} → {{ c.alt_protein_length }} aa</span>
-              <span v-if="c.aa_changes?.length">氨基酸替换（{{ c.aa_changes.slice(0, 5).join('、') }}{{ c.aa_changes.length > 5 ? '…' : '' }}）</span>
-            </p>
-          </div>
-        </div>
-      </div>
+      <!-- 结论总览 + CDS 结论卡（子组件；低置信折叠态与突变表共享） -->
+      <ConclusionCards v-model:show-low-conf="showLowConf" :analysis="analysis" />
 
       <!-- poly 同聚物/重复结构（子组件，含阈值筛选与逐 read 判读） -->
       <PolyCard :homopolymers="analysis.homopolymers ?? []" />
