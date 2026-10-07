@@ -39,8 +39,8 @@ plasmid-designer-v2/
 │           ├── components/     # 通用组件
 │           └── types/          # TypeScript 类型
 ├── deploy/                     # 部署配置（与源码分离）
-│   ├── hf-docker/              # HuggingFace Spaces 部署
 │   ├── docker/                 # Docker Compose 部署
+│   ├── bare/                   # Ubuntu systemd 裸机部署
 │   └── scripts/                # 部署脚本
 ├── data/                       # 静态数据
 │   ├── codon_tables/           # 密码子表 (YAML)
@@ -82,7 +82,7 @@ npm run dev
 | 模式 | 环境变量 | 适用场景 | 说明 |
 |------|----------|----------|------|
 | **database** | `STORAGE_MODE=database` (默认) | Docker/生产部署 | SQLAlchemy + PostgreSQL/SQLite，数据持久化 |
-| **memory** | `STORAGE_MODE=memory` | HuggingFace Spaces | 纯内存 dict，重启丢失，无需数据库 |
+| **memory** | `STORAGE_MODE=memory` | 测试/演示 | 纯内存 dict，重启丢失，无需数据库 |
 
 ```bash
 # 本地开发（默认使用数据库模式，SQLite）
@@ -92,17 +92,9 @@ uvicorn app.main:app --reload
 STORAGE_MODE=memory uvicorn app.main:app --reload
 ```
 
-### 部署到 HuggingFace Spaces
+### 部署
 
-```bash
-# 只需拷贝 deploy/hf-docker/ 目录 + src/ 目录
-cp -r deploy/hf-docker/* <hf-repo>/
-cp -r src/ <hf-repo>/src/
-```
-
-HF Spaces 使用独立的 `deploy/hf-docker/main.py`（精简版，纯内存存储，无数据库/Redis/认证依赖），自动设置 `STORAGE_MODE=memory`。
-
-### Docker Compose 部署
+#### Docker Compose（推荐）
 
 ```bash
 cd deploy/docker
@@ -335,7 +327,7 @@ npm run test:run
 | 缓存子系统（app/cache.py + cache_routes） | ✅ 已接线 | 设计结果（24h）/ 密码子优化（24h）/ 载体列表与详情（7天）/ 密码子表与酶表（7天）已接入读写，写操作统一失效；批量进度与 analysis POST 不缓存（状态频繁变化 / 键空间不可控），详见 docs/CACHE.md |
 | 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer Token 写入 request.state.user，匿名请求仍按 IP 限流 |
 | enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer / vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
-| output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但 HF 部署入口（deploy/hf-docker/main.py、deploy/hf-gradio/app.py）依赖它生成导出文件，删除前须确认 |
+| output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但分析页导出与 Sanger 报告生成依赖其数据结构，删除前须确认 |
 | task_queue.py + celery/flower | ❌ 已移除 | 全库零引用，实际使用 FastAPI BackgroundTasks |
 | BioPython / primer3-py / pydna / pandas 等 | ❌ 已移除声明 | core 算法为纯 Python 标准库自研实现；requirements 已同步瘦身并补上实际缺失的 bcrypt、psycopg2-binary |
 
@@ -347,7 +339,7 @@ npm run test:run
 | 后端 | FastAPI + Pydantic + SQLAlchemy + Redis |
 | 生物信息 | 纯 Python 标准库自研实现（无第三方生信依赖） |
 | 认证 | JWT (PyJWT) + bcrypt (passlib) |
-| 部署 | Docker Compose / HuggingFace Spaces |
+| 部署 | Docker Compose / bare systemd |
 
 ## License
 
