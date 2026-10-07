@@ -39,8 +39,11 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
   src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图
                                      （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出；
                                      展示卡拆到 components/sequencing/（PolyCard/ConclusionCards/
-                                     ReadTable/VariantTable/AlleleCard/ConsensusCard，纯展示+
-                                     defineModel 共享折叠态；scoped 样式随模板各自携带）
+                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap，
+                                     纯展示+defineModel 共享折叠态；scoped 样式随模板各自携带）；
+                                     峰图融合视图状态/交互/绘制在 composables/useSeqViz.ts
+  src/composables/useSeqViz.ts       ★ 峰图融合视图 composable（列宽/可见read/trace缓存状态、
+                                     勾选/缩放/点选交互、drawSeq canvas 绘制；组件侧解构绑定名不变）
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / bare(Ubuntu systemd)
 tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
@@ -104,6 +107,18 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 重构（2026-09-29）**SequencingPanel 拆分第二轮：匹配简图 + 峰图融合视图**：
+  ①匹配简图整块迁入 sequencing/MatchMap.vue（read 箭头分道/刻度轴/参考
+  特征/去重开关/图例；open-read/jump-variant 事件回传父组件走峰图联动，
+  dedupMapFeats 纯 UI 留子组件）；②峰图融合视图状态/交互/canvas 绘制
+  （drawSeq 全家）迁入 composables/useSeqViz.ts（接收 analysis/errorMsg
+  两个 ref），组件只留解构绑定+上传区+preset watch+导出——父组件
+  1660→487 行；③shortName 下沉 utils/seqPanelModel（+3 单测）——简图
+  标签/字母行芯片/工具栏复选框共用同一截断口径。坑：**PowerShell 数组
+  切片改文件会整文件清空（再次踩雷），结构化编辑一律用小步 edit 锚点**；
+  composable 解构的绑定模板没用会报 TS6133，测试要经 wrapper.vm 调用的
+  （rowLayouts）需保留并 void 引用。vue-tsc 0 / vitest 114 / build 过。
 
 - 重构（2026-09-29）**SequencingPanel 按 UI 区块拆分收尾 + 子组件样式修复**：
   ①拆出 6 个展示子组件到 components/sequencing/——PolyCard（同聚物卡）、
