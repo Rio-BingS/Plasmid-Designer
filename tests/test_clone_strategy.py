@@ -176,5 +176,52 @@ def test_generate_cloning_strategy_restriction():
     assert "BamHI" in strategy.enzymes
 
 
+def test_restriction_protocol_has_no_unfilled_placeholder():
+    """回归：PCR 条件曾输出未填充的字面量 {Tm-5}°C 占位符"""
+    strategy = generate_cloning_strategy(
+        method=CloningMethod.RESTRICTION,
+        insert_seq="ATG" + "A" * 50 + "TAA",
+        insert_name="test",
+        vector_seq="N" * 1000,
+        vector_name="pTest",
+        enzyme_5="EcoRI",
+        enzyme_3="XhoI",
+    )
+    protocol = strategy.to_protocol(language="zh") + strategy.to_protocol(language="en")
+    assert "{Tm-5}" not in protocol
+    # 退火温度应给出可读的通用参考
+    assert "Tm-5" in protocol or "退火" in protocol or "anneal" in protocol.lower()
+
+
+def test_restriction_dephosphorylate_flag_respected():
+    """回归：dephosphorylate=False 时不应再出现去磷酸化步骤"""
+    def gen(flag):
+        return RestrictionCloningStrategy().generate(
+            insert_seq="ATG" + "A" * 30 + "TAA",
+            insert_name="t", vector_seq="N" * 500, vector_name="pT",
+            enzyme_5="EcoRI", enzyme_3="XhoI", dephosphorylate=flag,
+        )
+    on = gen(True)
+    off = gen(False)
+    on_conds = " ".join(str(c) for s in on.steps for c in s.conditions.values())
+    off_conds = " ".join(str(c) for s in off.steps for c in s.conditions.values())
+    assert "CIP" in on_conds or "去磷酸" in "".join(s.description_zh for s in on.steps)
+    assert "CIP" not in off_conds
+
+
+def test_golden_gate_warning_names_actual_enzyme():
+    """回归：警告曾硬编码 BsaI/BsmBI，与实际所选酶无关"""
+    strategy = generate_cloning_strategy(
+        method=CloningMethod.GOLDEN_GATE,
+        insert_seq="ATG" + "A" * 50 + "TAA",
+        insert_name="test",
+        vector_seq="N" * 1000,
+        vector_name="pTest",
+        enzyme="BsmBI",
+    )
+    warnings_text = " ".join(strategy.warnings + strategy.warnings_zh)
+    assert "BsmBI" in warnings_text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
