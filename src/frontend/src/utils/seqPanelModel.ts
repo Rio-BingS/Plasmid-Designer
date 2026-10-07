@@ -111,3 +111,11 @@ export function packLanes(
   }
   return { lanes, laneOf }
 }
+
+/**
+ * 长文件名截断：>18 字符取前 17 位加省略号。
+ * 匹配简图标签 / 峰图字母行芯片 / 工具栏复选框三处共用同一口径。
+ */
+export function shortName(name: string): string {
+  return name.length > 18 ? name.slice(0, 17) + '…' : name
+}
