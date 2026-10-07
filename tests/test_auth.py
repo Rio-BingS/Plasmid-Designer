@@ -88,6 +88,21 @@ class TestPasswordHashing:
         assert verify_password(password, hash1)
         assert verify_password(password, hash2)
 
+    def test_long_password_does_not_raise(self):
+        """超过 bcrypt 72 字节的密码不再抛错（显式截断）"""
+        password = "L" * 100
+        hashed = hash_password(password)
+        assert verify_password(password, hashed) is True
+
+    def test_password_clamped_to_72_bytes(self):
+        """72 字节后的部分不参与哈希（bcrypt 固有语义，显式化）"""
+        prefix = "P" * 72
+        hashed = hash_password(prefix + "EXTRA")
+        # 前 72 字节相同即视为同一密码——与 bcrypt 实际行为一致
+        assert verify_password(prefix, hashed) is True
+        assert verify_password(prefix + "EXTRA", hashed) is True
+        assert verify_password("Q" * 72, hashed) is False
+
 
 # ==================== JWT Token 测试 ====================
 
