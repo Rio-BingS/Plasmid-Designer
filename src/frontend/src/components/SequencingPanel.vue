@@ -9,6 +9,7 @@ import {
   analyzeSequencingFiles, getReadTrace, exportConsensus, formatApiError,
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
 } from '@/api'
+import { downloadTextFile } from '@/utils/download'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -1636,13 +1637,8 @@ const consensusSegments = computed(() => {
 
 async function downloadConsensus(format: string) {
   const text = await exportConsensus(analysis.value!.analysis_id, format, coveredOnly.value)
-  const blob = new Blob([text], { type: 'text/plain' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `consensus.${format === 'genbank' ? 'gb' : 'fasta'}`
-  link.click()
-  URL.revokeObjectURL(url)
+  const ext = format === 'genbank' ? 'gb' : 'fasta'
+  downloadTextFile(text, `consensus.${ext}`)
 }
 </script>
 
