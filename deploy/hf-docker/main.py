@@ -49,11 +49,12 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# CORS
+# CORS：HF Spaces 公开演示、无 Cookie 凭证诉求——通配源必须关闭凭证模式
+# （与主应用 app/main.py 修复后口径一致，「*」+credentials 组合不符合 CORS 规范）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
