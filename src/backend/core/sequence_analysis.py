@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from collections import defaultdict
 import logging
 
+from core.seq_utils import CODON_TO_AA, revcomp, gc_percent, translate
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,25 +99,9 @@ RESTRICTION_ENZYMES = {
 START_CODONS = ["ATG", "GTG", "TTG"]
 STOP_CODONS = ["TAA", "TAG", "TGA"]
 
-# 遗传密码表
-CODON_TABLE = {
-    'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-    'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-    'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-    'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-    'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-    'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-    'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-    'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-    'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-    'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-    'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-    'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-    'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-    'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-    'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-    'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
-}
+# 遗传密码表收敛到 core.seq_utils（CODON_TABLE：氨基酸 → 密码子列表）
+# 兼容别名：本模块历史导出方向为 密码子 → 氨基酸
+CODON_TABLE = CODON_TO_AA
 
 
 class RestrictionSiteAnalyzer:
@@ -207,10 +193,9 @@ class RestrictionSiteAnalyzer:
         return unique
     
     def _reverse_complement(self, sequence: str) -> str:
-        """获取反向互补序列"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(complement.get(base, 'N') for base in reversed(sequence))
-    
+        """获取反向互补序列（收敛到 core.seq_utils.revcomp）"""
+        return revcomp(sequence)
+
     def check_compatibility(self, enzyme1: str, enzyme2: str) -> bool:
         """
         检查两个酶是否产生兼容的末端
@@ -405,27 +390,16 @@ class ORFPredictor:
         return orfs
     
     def _translate(self, sequence: str) -> str:
-        """翻译 DNA 序列为蛋白质"""
-        protein = []
-        for i in range(0, len(sequence) - 2, 3):
-            codon = sequence[i:i+3]
-            aa = CODON_TABLE.get(codon, 'X')
-            if aa == '*':
-                break
-            protein.append(aa)
-        return ''.join(protein)
-    
-    def _calculate_gc(self, sequence: str) -> float:
-        """计算 GC 含量"""
-        if not sequence:
-            return 0.0
-        gc = sequence.count('G') + sequence.count('C')
-        return gc / len(sequence) * 100
-    
+        """翻译 DNA 序列为蛋白质（遇终止密码子截断）"""
+        return translate(sequence, stop_at_stop=True)
+
     def _reverse_complement(self, sequence: str) -> str:
-        """反向互补"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(complement.get(base, 'N') for base in reversed(sequence))
+        """反向互补（收敛到 core.seq_utils.revcomp）"""
+        return revcomp(sequence)
+
+    def _calculate_gc(self, sequence: str) -> float:
+        """计算 GC 含量（百分数）"""
+        return gc_percent(sequence)
 
 
 class GCAnalyzer:
@@ -498,11 +472,8 @@ class GCAnalyzer:
         return extremes
     
     def _calculate_gc(self, sequence: str) -> float:
-        """计算 GC 含量"""
-        if not sequence:
-            return 0.0
-        gc = sequence.count('G') + sequence.count('C')
-        return gc / len(sequence) * 100
+        """计算 GC 含量（收敛到 core.seq_utils）"""
+        return gc_percent(sequence)
 
 
 class SequenceAnalyzer:
