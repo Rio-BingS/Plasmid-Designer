@@ -199,3 +199,34 @@ function readVerdictLine(rc: NonNullable<Hp['read_counts']>[number]): string {
     </p>
   </div>
 </template>
+
+<style scoped>
+/* poly 卡样式：随模板从 SequencingPanel.vue 迁入
+   （Vue scoped 样式不会穿透到子组件内部节点，父级规则管不到这里）。
+   卡片底座 .conclusion-card/.cds-* 与 ConclusionCards.vue 保持同款 */
+.conclusion-card {
+  background: #FDF3F3; border: 1px solid #F2C6C6; border-radius: 10px; padding: 1rem 1.25rem;
+}
+.cds-card { margin-top: 0.75rem; }
+.cds-row { display: flex; gap: 0.6rem; padding: 0.5rem 0; border-top: 1px dashed #E8E8E8; }
+.cds-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: none; }
+.cds-dot.pass { background: #2E9E44; }
+.cds-dot.fail { background: #C0392B; }
+.cds-dot.na { background: #BBB; }
+.cds-dot.mid { background: #E6A700; }
+.cds-name { font-weight: 600; margin: 0; }
+.cds-coord { font-weight: 400; color: #888; font-size: 0.78rem; font-family: Consolas, monospace; }
+.cds-cov { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; }
+.cds-cov.full { background: #E5F5E9; color: #227A36; }
+.cds-cov.partial { background: #FCF3DC; color: #9A6D00; }
+.cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
+.cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+.poly-thresh {
+  width: auto; min-width: 0; padding: 0 2px; font-size: 0.75rem; font-weight: 400;
+  border: 1px solid #CBD5E1; border-radius: 4px; background: #fff; color: #334155;
+  vertical-align: middle;
+}
+.poly-read-detail { color: #777; }
+.section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.map-sub { font-size: 0.75rem; color: #999; font-weight: 400; }
+</style>

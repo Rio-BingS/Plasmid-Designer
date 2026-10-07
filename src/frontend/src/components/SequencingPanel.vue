@@ -13,6 +13,10 @@ import { downloadTextFile } from '@/utils/download'
 import { buildSeqCols, packLanes, type SeqCol } from '@/utils/seqPanelModel'
 import PolyCard from '@/components/sequencing/PolyCard.vue'
 import ConclusionCards from '@/components/sequencing/ConclusionCards.vue'
+import ReadTable from '@/components/sequencing/ReadTable.vue'
+import VariantTable from '@/components/sequencing/VariantTable.vue'
+import AlleleCard from '@/components/sequencing/AlleleCard.vue'
+import ConsensusCard from '@/components/sequencing/ConsensusCard.vue'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -278,23 +282,6 @@ function resetSeqViz() {
 // 覆盖率条带/缺口摘要/结论分组/CDS 覆盖标签/SO 词表已迁入
 // sequencing/ConclusionCards.vue（低置信折叠态经 defineModel 共享）
 
-/** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比 / 插入峰强度比） */
-function confTitle(v: { confidence?: string; corroborated_by_basecall?: boolean; peak_evidence?: { mutant_pct?: number | null; snr?: number | null; insertion_peak_ratio?: number | null } }): string {
-  const ev = v.peak_evidence
-  let peak = ''
-  if (ev && ev.mutant_pct != null) {
-    peak = `峰级证据：突变峰占比 ${ev.mutant_pct}%，信噪比 ${ev.snr ?? '—'}`
-  } else if (ev && ev.insertion_peak_ratio != null) {
-    peak = `峰级证据：插入峰强度为邻峰的 ${Math.round(ev.insertion_peak_ratio * 100)}%（≥60% 说明插入峰真实存在，Q 值在峰压缩区偏低属正常）`
-  }
-  if (v.corroborated_by_basecall) {
-    peak += (peak ? '；' : '') + 'tracy 重 basecall 也报出此变异（同一测序信号的两个读出，仅供参考）'
-  }
-  if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
-  if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
-  return `高置信${peak ? '：' + peak : ''}`
-}
-
 // ==================== 匹配简图（SnapGene 风格线性图谱） ====================
 // 上方 read 深红块状箭头（方向见箭头），中间刻度轴（绿段=已测覆盖、轴上红块=变异），
 // 下方参考特征彩色块状箭头（类型配色与环形图谱一致，放不下的名字引线外置）。
@@ -543,10 +530,13 @@ function shortName(name: string): string {
 
 // ==================== 峰图数据加载 ====================
 
-// 低置信差异折叠态：结论卡与突变表共享（须在 preset 的 immediate watch
-// 之前声明，watch 里会复位这两个状态）
+// 低置信/双峰位点折叠态：结论卡（defineModel 共享）与突变表（defineModel
+// 共享）用同一状态——总览里展开 → 突变表同步展开。须在 preset 的 immediate
+// watch 之前声明，watch 里退出回看时会复位这两个状态
 const showLowConf = ref(false)
 const showMixedDetail = ref(false)
+// 共识导出默认只取实测覆盖区（状态留在父组件，ConsensusCard 经 defineModel 共享）
+const coveredOnly = ref(true)
 
 // 历史回看：注入已完成分析后直接展示（immediate 覆盖挂载时即带 preset 的场景）
 watch(() => props.preset, (p) => {
@@ -574,14 +564,8 @@ watch(() => props.preset, (p) => {
   }
 }, { immediate: true })
 
-const coveredOnly = ref(true)      // 共识导出默认只取实测覆盖区
-
-const lowConfVariants = computed(() =>
-  (analysis.value?.variants ?? []).filter((v) => v.confidence === 'low'))
-const shownVariants = computed(() => {
-  const all = analysis.value?.variants ?? []
-  return showLowConf.value ? all : all.filter((v) => v.confidence !== 'low')
-})
+// 低置信/差异明细过滤与置信度徽章悬停说明已迁入
+// sequencing/VariantTable.vue（showLowConf 经 defineModel 共享）
 
 const CHANNEL_COLORS: Record<string, string> = { A: '#2E9E44', T: '#D0342C', G: '#222222', C: '#2456C8' }
 
@@ -1356,24 +1340,8 @@ onBeforeUnmount(() => {
 })
 
 // ==================== 共识序列 ====================
-/** 分段渲染：与参考不同的位点高亮（cons_index 精确对应共识序列下标） */
-const consensusSegments = computed(() => {
-  const a = analysis.value
-  if (!a) return []
-  const seq = a.consensus.sequence
-  const diffAt = new Set<number>()
-  for (const d of a.consensus.diffs || []) {
-    if (d.cons_index != null) diffAt.add(d.cons_index)
-  }
-  const out: { text: string; diff: boolean }[] = []
-  for (let i = 0; i < seq.length; i++) {
-    const d = diffAt.has(i)
-    const last = out[out.length - 1]
-    if (last && last.diff === d) last.text += seq[i]
-    else out.push({ text: seq[i], diff: d })
-  }
-  return out
-})
+// 分段渲染（差异位高亮）与 coveredOnly 状态已迁入
+// sequencing/ConsensusCard.vue（coveredOnly 经 defineModel 共享）
 
 async function downloadConsensus(format: string) {
   const text = await exportConsensus(analysis.value!.analysis_id, format, coveredOnly.value)
@@ -1518,73 +1486,14 @@ async function downloadConsensus(format: string) {
         </p>
       </div>
 
-      <!-- Read 摘要 -->
-      <table class="seq-table" v-if="analysis.reads.length">
-        <thead>
-          <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>质量</th><th>一致性</th><th>证据查看</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in analysis.reads" :key="r.index">
-            <td>{{ r.filename }}</td>
-            <td>{{ r.direction === '+' ? '正向' : '反向' }}</td>
-            <td>{{ r.ref_start }} - {{ r.ref_end }}</td>
-            <td>{{ r.trimmed_length }} bp</td>
-            <td>{{ r.mean_q }}</td>
-            <td>
-              <span v-if="r.grade" class="grade-chip" :class="'grade-' + r.grade"
-                    :title="r.q20_ratio != null ? `Q20 比例 ${(r.q20_ratio * 100).toFixed(0)}%` : ''">
-                {{ r.grade }}
-              </span>
-              <span v-else>-</span>
-            </td>
-            <td>{{ (r.identity * 100).toFixed(1) }}%</td>
-            <td>
-              <button class="mini-btn" @click="openReadInSeqviz(r.index)">查看</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="analysis.errors.length" class="error-msg">
-        {{ analysis.errors.map((e) => `${e.filename}: ${e.error}`).join('；') }}
-      </p>
+      <!-- Read 摘要（子组件；查看按钮回传给峰图联动） -->
+      <ReadTable v-if="analysis.reads.length"
+                 :reads="analysis.reads" :errors="analysis.errors"
+                 @view="openReadInSeqviz" />
 
-      <!-- 突变表 -->
-      <div v-if="analysis.variants.length">
-        <h4 class="section-title">差异明细（点击行查看峰图）
-          <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-            {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
-          </button>
-        </h4>
-        <table class="seq-table clickable">
-          <thead>
-            <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="v in shownVariants" :key="`${v.ref_pos}-${v.type}-${v.alt_base ?? ''}-${v.read ?? ''}`" @click="jumpToVariant(v)">
-              <td>{{ v.ref_pos }}</td>
-              <td>{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}</td>
-              <td class="mono">{{ v.ref_base }} → {{ v.alt_base }}</td>
-              <td>{{ (v.features || []).map((f) => f.name).join(', ') || '非编码区' }}</td>
-              <td>{{ v.aa_change || (v.type === 'substitution' ? '同义' : '-') }}</td>
-              <td><span v-if="v.frameshift" class="badge bad">移码</span><span v-else>-</span></td>
-              <td>
-                <span v-if="v.enzyme_sites_lost?.length" class="badge bad">破坏: {{ v.enzyme_sites_lost.join(', ') }}</span>
-                <span v-if="v.enzyme_sites_gained?.length" class="badge">新增: {{ v.enzyme_sites_gained.join(', ') }}</span>
-                <span v-if="!v.enzyme_sites_lost?.length && !v.enzyme_sites_gained?.length">-</span>
-              </td>
-              <td>{{ v.support_reads || 1 }}</td>
-              <td>{{ v.read_q ?? '-' }}</td>
-              <td>
-                <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
-                      :title="confTitle(v)">
-                  {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
-                </span>
-                <span v-else>-</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <!-- 突变表（子组件；低置信折叠态与结论卡共享，点击行跳峰图） -->
+      <VariantTable v-model:show-low-conf="showLowConf"
+                    :variants="analysis.variants" @jump="jumpToVariant" />
 
       <!-- 比对峰图：参考行 + 各 read 碱基行 + 四通道峰图画在同一参考坐标轴上
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
@@ -1613,32 +1522,13 @@ async function downloadConsensus(format: string) {
         <p v-else class="hint">点击简图箭头选中引物并放大到其覆盖区，点简图空白跳到对应位置；只显示覆盖当前视野的引物（字母行下方直接衔接其峰图，随滚动自动增减），点字母行或条带选中它；点任意列查看各 read 在该位的碱基/质量/双峰证据；差异明细行与红块可跳到对应位置</p>
       </div>
 
-      <!-- 解卷积结果 -->
-      <div v-if="Object.keys(analysis.decomposed_alleles || {}).length" class="allele-box">
-        <h4 class="section-title">混合样品解卷积结果（tracy）</h4>
-        <div v-for="(alleles, fname) in analysis.decomposed_alleles" :key="fname" class="allele-item">
-          <strong>{{ fname }}</strong>:
-          <span v-for="(a, i) in alleles" :key="i" class="mono allele-seq">{{ a.sequence.slice(0, 60) }}…</span>
-        </div>
-      </div>
+      <!-- 解卷积结果（子组件） -->
+      <AlleleCard v-if="analysis.decomposed_alleles"
+                  :decomposed-alleles="analysis.decomposed_alleles" />
 
-      <!-- 共识序列 -->
-      <div class="consensus-box">
-        <div class="trace-toolbar">
-          <h4 class="section-title">拼接结果（Consensus，{{ analysis.consensus.sequence.length }} bp）</h4>
-          <div>
-            <label class="cov-only-toggle" title="部分测序是常规策略：只导出 read 实测覆盖的区域（FASTA 按段、GenBank 未测位置 N 屏蔽）">
-              <input type="checkbox" v-model="coveredOnly">仅导出实测覆盖区
-            </label>
-            <button class="mini-btn" @click="downloadConsensus('fasta')">导出 FASTA</button>
-            <button class="mini-btn" @click="downloadConsensus('genbank')">导出 GenBank</button>
-          </div>
-        </div>
-        <pre class="consensus-pre"><span v-for="(s, i) in consensusSegments" :key="i" :class="{ 'cons-diff': s.diff }">{{ s.text }}</span></pre>
-        <p v-if="analysis.consensus.diffs?.length" class="hint cons-hint">
-          黄色高亮 = 共识序列与参考不同的位点（由测序证据投票写入，点击上方差异明细可核对峰图与比对）
-        </p>
-      </div>
+      <!-- 共识序列（子组件；coveredOnly 共享，导出动作回传父组件调 API） -->
+      <ConsensusCard v-model:covered-only="coveredOnly"
+                     :analysis="analysis" @download="downloadConsensus" />
     </template>
   </div>
 </template>
@@ -1691,75 +1581,14 @@ async function downloadConsensus(format: string) {
 .analyze-btn:disabled { background: #aaa; cursor: not-allowed; }
 .error-msg { color: #c0392b; font-size: 0.85rem; margin-top: 0.5rem; }
 
-.conclusion-card {
-  background: #FDF3F3; border: 1px solid #F2C6C6; border-radius: 10px; padding: 1rem 1.25rem;
-}
-.conclusion-card.ok { background: #F0FAF2; border-color: #BFE5C8; }
-.conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
-.lowconf-toggle {
-  display: inline-block; margin: 0.1rem 0 0.4rem; padding: 0.15rem 0.6rem;
-  font-size: 0.78rem; color: #8a6a1f; background: #FBF3DF;
-  border: 1px solid #E8D9A8; border-radius: 12px; cursor: pointer;
-}
-.lowconf-toggle:hover { background: #F5E9C8; }
-.lowconf-lines { font-weight: 400; font-size: 0.85rem; color: #8a6a1f; }
-.cds-card { margin-top: 0.75rem; }
-.cds-row { display: flex; gap: 0.6rem; padding: 0.5rem 0; border-top: 1px dashed #E8E8E8; }
-.cds-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: none; }
-.cds-dot.pass { background: #2E9E44; }
-.cds-dot.fail { background: #C0392B; }
-.cds-dot.na { background: #BBB; }
-.cds-dot.mid { background: #E6A700; }
-.cds-name { font-weight: 600; margin: 0; }
-.cds-coord { font-weight: 400; color: #888; font-size: 0.78rem; font-family: Consolas, monospace; }
-.cds-cov { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; }
-.cds-cov.full { background: #E5F5E9; color: #227A36; }
-.cds-cov.partial { background: #FCF3DC; color: #9A6D00; }
-.cds-cov.uncovered { background: #EEE; color: #777; }
-.cds-so { font-size: 0.7rem; padding: 1px 7px; border-radius: 10px; margin-left: 5px; vertical-align: 1px; }
-.cds-so.high { background: #FBEAE8; color: #A03227; }
-.cds-so.mid { background: #FDF2E3; color: #A8641A; }
-.cds-so.low { background: #EDF2EE; color: #5E7A64; }
-.cds-verdict { margin: 0.2rem 0 0; font-size: 0.86rem; }
-.cds-detail { margin: 0.3rem 0 0; font-size: 0.78rem; color: #A03A2E; display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
-.poly-thresh {
-  width: auto; min-width: 0; padding: 0 2px; font-size: 0.75rem; font-weight: 400;
-  border: 1px solid #CBD5E1; border-radius: 4px; background: #fff; color: #334155;
-  vertical-align: middle;
-}
-.poly-read-detail { color: #777; }
-.conclusion-meta { display: flex; gap: 1.5rem; font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }
-.coverage-bar {
-  position: relative; height: 14px; background: #EEE; border-radius: 7px; overflow: hidden;
-}
-.coverage-seg { position: absolute; top: 0; bottom: 0; background: #2E9E44; }
-.coverage-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #999; margin-top: 2px; }
-
-.seq-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.seq-table th, .seq-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border-color, #eee); text-align: left; }
-.seq-table th { background: var(--bg-secondary, #f7f7f7); }
-.seq-table.clickable tr { cursor: pointer; }
-.seq-table.clickable tr:hover { background: var(--bg-secondary, #f7f7f7); }
-.grade-chip { display: inline-block; min-width: 20px; text-align: center; font-weight: 700; border-radius: 6px; padding: 1px 7px; font-size: 0.8rem; }
-.grade-A { background: #E5F5E9; color: #227A36; }
-.grade-B { background: #FCF3DC; color: #9A6D00; }
-.grade-C { background: #FBEAE8; color: #A03227; }
-.conf-chip { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 0.78rem; }
-.conf-high { background: #E5F5E9; color: #227A36; }
-.conf-medium { background: #FCF3DC; color: #9A6D00; }
-.conf-low { background: #FBEAE8; color: #A03227; }
-.coverage-gaps { margin: 0.4rem 0 0; font-size: 0.78rem; color: #9A6D00; }
-.mono { font-family: Consolas, monospace; }
+/* 结论总览/CDS 卡样式 → sequencing/ConclusionCards.vue */
+/* poly 卡样式 → sequencing/PolyCard.vue */
+/* read 摘要表/突变表/解卷积/共识卡样式 → sequencing/ReadTable / VariantTable /
+   AlleleCard / ConsensusCard.vue（scoped 样式不穿透子组件，需随模板各自携带） */
 
 .section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
-.badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; background: #EEE; }
-.badge.bad { background: #FDE8E8; color: #C0392B; }
 
-.allele-box { background: var(--bg-secondary, #f9f9f9); border-radius: 8px; padding: 0.75rem 1rem; }
-.allele-item { font-size: 0.85rem; margin: 0.35rem 0; }
-.allele-seq { margin: 0 0.75rem; }
-
-.seqviz-box, .consensus-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
+.seqviz-box { background: #fff; border: 1px solid var(--border-color, #eee); border-radius: 10px; padding: 0.75rem 1rem; }
 .trace-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
 .hint { color: #999; font-size: 0.85rem; }
 
@@ -1768,20 +1597,6 @@ async function downloadConsensus(format: string) {
   font-size: 0.78rem; padding: 0.2rem 0.6rem; cursor: pointer; margin-left: 0.25rem;
 }
 .mini-btn:hover { background: var(--bg-secondary, #f5f5f5); }
-
-.cov-only-toggle {
-  font-size: 0.78rem; margin-right: 0.5rem; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 0.25rem;
-  vertical-align: middle; color: var(--text-secondary, #555);
-}
-
-.consensus-pre {
-  font-family: Consolas, monospace; font-size: 0.72rem; line-height: 1.5;
-  background: var(--bg-secondary, #f9f9f9); padding: 0.75rem; border-radius: 6px;
-  max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
-}
-.cons-diff { background: #FFF3B8; border-radius: 2px; padding: 0 1px; }
-.cons-hint { margin-top: 0.4rem; }
 
 /* ==================== 比对峰图融合视图 ==================== */
 .seqviz-controls { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; justify-content: flex-end; }
