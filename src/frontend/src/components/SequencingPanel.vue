@@ -10,6 +10,7 @@ import {
   type SequencingAnalysis, type SequencingVariant, type ReadTrace
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
+import { buildSeqCols, packLanes, type SeqCol } from '@/utils/seqPanelModel'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -226,23 +227,8 @@ function ovLayoutFor(laneCount: number) {
   const arrowBlock = 6 + laneCount * (OV_ARROW_H + OV_LANE_GAP)
   return { arrowBlock, ovCovY: arrowBlock + 6, ovH: arrowBlock + 6 + 8 }
 }
-// 泳道分配：按落点起点贪心装箱，同泳道内 read 互不重叠（与匹配简图同思路）
-const ovLanes = computed(() => {
-  const reads = analysis.value?.reads ?? []
-  const lanes: number[][] = []
-  const laneOf: number[] = reads.map(() => -1)
-  const order = reads.map((_, i) => i).sort((x, y) => reads[x].ref_start - reads[y].ref_start)
-  for (const i of order) {
-    const r = reads[i]
-    if (r.ref_end <= 0) continue   // 无对齐 read 没有落点，不上图
-    let placed = false
-    for (let l = 0; l < lanes.length; l++) {
-      if (lanes[l].every((j) => reads[j].ref_end < r.ref_start)) { lanes[l].push(i); laneOf[i] = l; placed = true; break }
-    }
-    if (!placed) { lanes.push([i]); laneOf[i] = lanes.length - 1 }
-  }
-  return { lanes, laneOf }
-})
+// 泳道分配抽离到 @/utils/seqPanelModel.packLanes（贪心装箱，可独立单测）
+const ovLanes = computed(() => packLanes(analysis.value?.reads ?? []))
 const ovLaneCount = computed(() => Math.max(1, ovLanes.value.lanes.length))
 // 覆盖简图的坐标域：只取引物实际覆盖的区段（四周留 2% 边距）——
 // 参考序列上没有引物覆盖的部分不占位，箭头才能铺满整个简图宽度
@@ -270,65 +256,9 @@ const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqC
 // 当前峰图带展示哪条 read（简图/字母行/复选框点选都汇聚到这里）
 const selectedReadIdx = ref<number | null>(null)
 
-interface SeqCol {
-  ref: string
-  read: string
-  q: number
-  mm: boolean
-  ins: boolean
-  refPos: number
-  origIdx: number   // 原始电泳顺序的 read 碱基下标（0-based；read 缺口列 = -1）
-  xu: number        // 横轴坐标（参考 bp 单位；插入列在缝内插值）
-  xEnd: number
-}
-
-// 逐 read 列模型缓存：alignment_view 是参考方向的逐列对齐（反向 read 已折算）
+// 逐列列模型与泳道装箱已抽离到 @/utils/seqPanelModel（可独立单测）；
+// 组件只保留缓存壳：alignment_view 是参考方向的逐列对齐（反向 read 已折算）
 const seqColCache: Record<number, SeqCol[] | null> = {}
-
-function buildSeqCols(read: SequencingAnalysis['reads'][number]): SeqCol[] | null {
-  const av = read.alignment_view
-  if (!av || !av.ref_aligned) return null
-  const L = read.trimmed_length
-  const cols: SeqCol[] = []
-  let refPos = av.ref_start
-  let qi = -1
-  for (let i = 0; i < av.ref_aligned.length; i++) {
-    const rb = av.ref_aligned[i]
-    const qb = av.read_aligned[i]
-    if (qb !== '-') qi++
-    // 反向 read 的 query 是 revcomp：原始下标 = L-1-query 下标（与后端镜像同式）
-    const origIdx = qb === '-' ? -1 : (read.direction === '-' ? L - 1 - qi : qi)
-    cols.push({
-      ref: rb, read: qb, q: av.q_aligned?.[i] ?? 0,
-      mm: rb !== '-' && qb !== '-' && rb !== qb,
-      ins: rb === '-' && qb !== '-',
-      refPos: rb !== '-' ? refPos : 0,
-      origIdx, xu: 0, xEnd: 0,
-    })
-    if (rb !== '-') refPos++
-  }
-  // 横轴坐标：常规列落在其参考 bp 中心；连续插入列在左右两列之间等分插缝
-  let i = 0
-  let prevXu = -1
-  while (i < cols.length) {
-    if (!cols[i].ins) {
-      cols[i].xu = cols[i].refPos - 0.5
-      prevXu = cols[i].xu
-      i++
-      continue
-    }
-    let j = i
-    while (j < cols.length && cols[j].ins) j++
-    const nextXu = j < cols.length ? cols[j].refPos - 0.5 : prevXu + 1
-    const n = j - i
-    for (let m = i; m < j; m++) cols[m].xu = prevXu + (nextXu - prevXu) * ((m - i + 1) / (n + 1))
-    i = j
-  }
-  for (let k = 0; k < cols.length; k++) {
-    cols[k].xEnd = k + 1 < cols.length ? cols[k + 1].xu : cols[k].xu + 1
-  }
-  return cols
-}
 
 function seqColsFor(readIndex: number): SeqCol[] | null {
   if (!(readIndex in seqColCache)) {
