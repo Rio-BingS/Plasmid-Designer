@@ -36,6 +36,7 @@ class CodonOptimizationResult:
     gc_distribution: List[float]
     warnings: List[str]
     avoided_motifs: List[str]
+    codon_table_used: str = ""  # 实际使用的密码子表名（终审 A-05 透明度）
     score: float = 0.0  # 综合评分 (0-100)
 
 
@@ -80,8 +81,10 @@ class CodonOptimizer:
         """
         self.species = species
         self.codon_freq = self._load_codon_frequency(species)
+        self.codon_table_used = self._resolved_table_name
         if custom_codon_table:
             self.codon_freq.update(custom_codon_table)
+            self.codon_table_used = "custom"
     
     def _load_codon_frequency(self, species: str) -> Dict[str, float]:
         """
@@ -114,10 +117,19 @@ class CodonOptimizer:
             'TAA': 0.61, 'TAG': 0.09, 'TGA': 0.30,
         }
 
-        yaml_freq = self._load_codon_frequency_from_yaml(species)
+        yaml_freq, table_name = self._load_codon_frequency_from_yaml(species)
         if yaml_freq:
+            self._resolved_table_name = table_name
             return yaml_freq
-        return ecoli_freq
+        # 终审 A-05：未知物种曾静默回退大肠杆菌表（pichia/insect/bacillus/
+        # martian 全部静默返回 COMPLETED 且无任何告警）——用户拿到「看起来
+        # 有 CAI 数值、实际是错误物种偏好」的序列。改为显式报错，调用方
+        # API 层转 400。
+        self._resolved_table_name = None
+        raise ValueError(
+            f"未知目标物种: {species!r}。可用物种: ecoli, human, yeast, cho"
+            "（或通过 custom_codon_table 传入自定义频率表）"
+        )
 
     def _load_codon_frequency_from_yaml(self, species: str) -> Optional[Dict[str, float]]:
         """从 data/codon_tables 加载 YAML 频率表。"""
@@ -149,12 +161,12 @@ class CodonOptimizer:
 
         table_dir = next((p for p in candidates if p and p.is_dir()), None)
         if not table_dir:
-            return None
+            return None, None
 
         # 文件名匹配
         files = list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))
         if not files:
-            return None
+            return None, None
 
         def score_file(path: Path) -> int:
             stem = path.stem.lower()
@@ -171,7 +183,7 @@ class CodonOptimizer:
         ranked = sorted(files, key=score_file, reverse=True)
         if score_file(ranked[0]) == 0 and species_key not in ("ecoli", "e.coli"):
             # 无匹配时不强制用错误物种表
-            return None
+            return None, None
 
         target = ranked[0]
         if score_file(target) == 0:
@@ -182,7 +194,7 @@ class CodonOptimizer:
         try:
             data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
         except Exception:
-            return None
+            return None, None
 
         freq: Dict[str, float] = {}
         for k, v in data.items():
@@ -191,7 +203,10 @@ class CodonOptimizer:
                     freq[k.upper()] = float(v)
                 except (TypeError, ValueError):
                     continue
-        return freq or None
+        if not freq:
+            return None, None
+        # 终审 A-05：返回实际命中的表名（codon_table_used 透传给用户）
+        return freq, target.stem
 
     def back_translate(self, amino_acid_sequence: str) -> str:
         """不进行迭代优化，仅按频率表选最优密码子反翻译。"""
@@ -297,6 +312,7 @@ class CodonOptimizer:
             warnings=warnings,
             avoided_motifs=[m for m in all_avoid if m not in final_motifs],
             score=score,
+            codon_table_used=self.codon_table_used or "",
         )
 
     def _sliding_window_refinement(
