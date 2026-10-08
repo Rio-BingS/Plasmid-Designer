@@ -72,3 +72,18 @@ def test_all_enzymes_no_crash_on_random():
         assert 1 <= s["position"] <= 5000
         assert 1 <= s["cut_fwd"] <= 5000
         assert 1 <= s["cut_rev"] <= 5000
+
+
+def test_bsahi_recognition_is_grcgyc():
+    """BsaHI 识别序列回归锁：必须是 GRCGYC（NEB；2026-10-07 从误写的 GAYG
+    修正，commit a3e73d3）。R=A/Y=T 与 R=G/Y=C 两种真实实例都应命中；
+    旧误码 GAYG 的实例（GATG）绝不能再命中——防将来被改回去不红"""
+    seq_r_a = "TTTAGACGTCTTT"   # GACGTC（R=A, Y=T）
+    seq_r_g = "TTTAGGCGCCTTT"   # GGCGCC（R=G, Y=C）
+    seq_old_wrong = "AAAGATGCAAA"   # 含 GATG——旧误写 GAYG 会命中的形态
+    for s in (seq_r_a, seq_r_g):
+        hits = [x for x in find_enzyme_sites(s) if x["name"] == "BsaHI"]
+        assert hits, f"BsaHI 应命中 {s}"
+        assert hits[0]["position"] == 5
+        assert {x["strand"] for x in hits} == {"+", "-"}   # 双向识别
+    assert "BsaHI" not in [x["name"] for x in find_enzyme_sites(seq_old_wrong)]
