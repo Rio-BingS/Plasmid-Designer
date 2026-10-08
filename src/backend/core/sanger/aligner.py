@@ -126,6 +126,11 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
             v["read_pos"] = max(1, n - v["read_pos"] + 1)
 
     identity = matches / compared if compared else 0.0
+    # 终审 A-20：局部比对的 query 起止（0-based）此前未输出——软剪切
+    # （junk/低质量端）被剪掉的碱基数丢失，下游用「对齐内相对列号」当
+    # trimmed read 坐标造成整体错位（t1 实测 read2ref[130]→230 应为 200）
+    query_start = int(coords[1][0])       # 0-based：对齐块在原始 query 内的起点
+    query_end = int(coords[1][-1])        # 0-based 排他
     ref_start = int(coords[0][0]) + 1
     ref_end = int(coords[0][-1])
 
@@ -143,6 +148,14 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
         "direction": direction,
         "ref_start": ref_start,
         "ref_end": max(ref_end, ref_start),
+        # 1-based 原始 query 坐标（软剪切后对齐块的真实起止）：
+        # 正向 read 对齐块覆盖原始 [query_start+1, query_end]；
+        # 反向 read 的 query 是 revcomp，原始电泳坐标 = n - query 坐标 + 1，
+        # 对齐块对应原始 [n-query_end+1, n-query_start]
+        "query_start": (len(read_up) - query_end + 1) if direction == "-"
+                       else (query_start + 1),
+        "query_end": (len(read_up) - query_start) if direction == "-"
+                     else query_end,
         "score": float(score),
         "identity": round(identity, 4),
         "variants": variants,

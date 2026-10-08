@@ -54,6 +54,33 @@ describe('buildSeqCols', () => {
     expect(cols.map((c) => c.origIdx)).toEqual([5, 4, 3, 2, 1, 0])
   })
 
+  it('终审 A-20：软剪切偏移——正向 origIdx 从 query_start-1 起算', () => {
+    // read 长 10，对齐块只覆盖原始 [5..10]（前 4bp junk 被软剪）
+    const cols = buildSeqCols({
+      ...base,
+      trimmed_length: 10,
+      query_start: 5,
+      query_end: 10,
+    })!
+    expect(cols.map((c) => c.origIdx)).toEqual([4, 5, 6, 7, 8, 9])
+  })
+
+  it('终审 A-20：反向 read 对齐块第 0 列在原始 query_end 位置，向左递减', () => {
+    const cols = buildSeqCols({
+      ...base,
+      direction: '-',
+      trimmed_length: 10,
+      query_start: 5,
+      query_end: 10,
+    })!
+    expect(cols.map((c) => c.origIdx)).toEqual([9, 8, 7, 6, 5, 4])
+  })
+
+  it('无 query_start/end 的旧记录回退原行为（块首=1）', () => {
+    const cols = buildSeqCols(base)!
+    expect(cols.map((c) => c.origIdx)).toEqual([0, 1, 2, 3, 4, 5])
+  })
+
   it('插入列（参考缺口）在左右两列之间等分插缝', () => {
     const cols = buildSeqCols({
       ...base,
