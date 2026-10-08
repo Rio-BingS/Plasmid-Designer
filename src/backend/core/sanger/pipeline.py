@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import align_read, merge_coverage
 from core.sanger.annotator import annotate_variants, summarize_severity
+from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length, peak_heights,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
@@ -1284,8 +1285,7 @@ def _find_orf(ref: str, start: int, end: int, strand: str) -> Optional[Dict]:
     """
     win = ref[start - 1:end]
     if strand == "-":
-        from Bio.Seq import Seq
-        win = str(Seq(win).reverse_complement())
+        win = _seq_revcomp(win)
     N = len(win)
     best: Optional[Tuple[tuple, int, int]] = None  # (score, a, b) win 内 0-based 半开 [a,b)
 
@@ -1339,7 +1339,7 @@ def _build_cds_reports(
     ALT_START_CODONS = set(_ALT_STARTS)
 
     def _translate(seq: str, strand: str) -> str:
-        s = str(Seq(seq).reverse_complement()) if strand == "-" else seq
+        s = _seq_revcomp(seq) if strand == "-" else seq
         s = s[:len(s) - len(s) % 3]  # 移码可能留下不足整密码子的尾部
         prot = str(Seq(s).translate(table=11))
         if prot and s[:3] in ALT_START_CODONS:
@@ -1526,7 +1526,7 @@ def _build_cds_reports(
         from Bio.SeqUtils import seq3
 
         def _orient(s: str) -> str:
-            return str(Seq(s).reverse_complement()) if strand == "-" else s
+            return _seq_revcomp(s) if strand == "-" else s
 
         start_codons = {"ATG"} | ALT_START_CODONS
         stop_codons = {"TAA", "TAG", "TGA"}

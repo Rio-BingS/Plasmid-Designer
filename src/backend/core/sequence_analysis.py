@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from collections import defaultdict
 import logging
 
+from core.seq_utils import CODON_TO_AA, revcomp, gc_percent, translate
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,7 +78,7 @@ RESTRICTION_ENZYMES = {
     "SmaI": ("CCCGGG", 3, 'b'),  # blunt
     "SbfI": ("CCTGCAGG", 6, '3'),
     "NotI": ("GCGGCCGC", 2, '5'),
-    "NdeI": ("CATATG", 2, 'b'),
+    "NdeI": ("CATATG", 2, '5'),  # CAT|ATG → 5' 突出 TA（REBASE）
     "NcoI": ("CCATGG", 1, '5'),
     "SacI": ("GAGCTC", 5, '3'),
     "BglII": ("AGATCT", 1, '5'),
@@ -87,31 +89,19 @@ RESTRICTION_ENZYMES = {
     "BsaI": ("GGTCTC", 7, '5'),  # Type IIS
     "BsmBI": ("CGTCTC", 7, '5'),  # Type IIS
     "BbsI": ("GAAGAC", 8, '5'),  # Type IIS
+    "EcoRV": ("GATATC", 3, 'b'),  # blunt
+    "DraI": ("TTTAAA", 3, 'b'),   # blunt
+    "PvuII": ("CAGCTG", 3, 'b'),  # blunt
+    "StuI": ("AGGCCT", 3, 'b'),   # blunt
 }
 
 # 起始密码子和终止密码子
 START_CODONS = ["ATG", "GTG", "TTG"]
 STOP_CODONS = ["TAA", "TAG", "TGA"]
 
-# 遗传密码表
-CODON_TABLE = {
-    'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-    'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-    'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-    'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-    'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-    'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-    'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-    'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-    'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-    'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-    'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-    'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-    'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-    'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-    'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-    'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
-}
+# 遗传密码表收敛到 core.seq_utils（CODON_TABLE：氨基酸 → 密码子列表）
+# 兼容别名：本模块历史导出方向为 密码子 → 氨基酸
+CODON_TABLE = CODON_TO_AA
 
 
 class RestrictionSiteAnalyzer:
@@ -203,32 +193,85 @@ class RestrictionSiteAnalyzer:
         return unique
     
     def _reverse_complement(self, sequence: str) -> str:
-        """获取反向互补序列"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(complement.get(base, 'N') for base in reversed(sequence))
-    
+        """获取反向互补序列（收敛到 core.seq_utils.revcomp）"""
+        return revcomp(sequence)
+
     def check_compatibility(self, enzyme1: str, enzyme2: str) -> bool:
         """
         检查两个酶是否产生兼容的末端
-        
+
+        兼容的判定按**实际突出端序列**而非仅突出端类型：EcoRI（AATT）与
+        BamHI（GATC）虽同为 5' 突出，末端序列不同、不可互连；SpeI/XbaI
+        这类产生相同突出端（CTAG）的酶才判兼容。平末端一律互相兼容。
+        同一酶自身恒兼容；Type IIS 酶（BsaI 等）的突出端由侧翼序列决定、
+        无法从识别序列推导，仅同一酶名时判兼容。
+
         Args:
             enzyme1, enzyme2: 酶名称
-        
+
         Returns:
             是否兼容（可连接）
         """
         if enzyme1 not in self.enzymes or enzyme2 not in self.enzymes:
             return False
-        
-        _, _, overhang1 = self.enzymes[enzyme1]
-        _, _, overhang2 = self.enzymes[enzyme2]
-        
-        # 平末端都与平末端兼容
-        if overhang1 == 'b' and overhang2 == 'b':
+        if enzyme1 == enzyme2:
             return True
-        
-        # 相同类型的粘性末端可能兼容（需要检查实际序列）
+
+        overhang1 = self._overhang_sequence(enzyme1)
+        overhang2 = self._overhang_sequence(enzyme2)
+
+        # 平末端（无突出）都与平末端兼容
+        if overhang1 is None and overhang2 is None:
+            return True
+        # 一平一粘不可连接
+        if overhang1 is None or overhang2 is None:
+            return False
+        # IIS 酶标记：突出端取决于侧翼序列，不同 IIS 酶之间不预设兼容
+        if overhang1 == "IIS" or overhang2 == "IIS":
+            return False
+        # 相同的突出端序列才可互连（5'/3' 突出端不会互连，序列方向已隐含）
         return overhang1 == overhang2
+
+    def _overhang_sequence(self, enzyme_name: str) -> Optional[str]:
+        """
+        推导酶切后留下的粘性末端序列（突出端 5'→3'）。
+
+        依据 RESTRICTION_ENZYMES 的 (识别序列, cut_offset, overhang_type)：
+        - '5' 突出：取识别序列切割点右侧 overhang_len = site_len - 2*cut_offset
+          个碱基（如 EcoRI GAATTC cut=1 → AATT）；
+        - '3' 突出：取切割点左侧段反向互补的前 overhang_len = 2*cut_offset -
+          site_len 个碱基（如 PstI CTGCAG cut=5 → TGCA）；
+        - 'b'（平端）→ None；
+        - IIS 酶（切点在识别序列之外）→ "IIS"（突出端随侧翼变化，不可推导）。
+
+        无法推导（识别序列含非 ACGT 或切割点越界）时返回 None 并记警告。
+        """
+        if enzyme_name not in self.enzymes:
+            return None
+        recognition_seq, cut_offset, overhang = self.enzymes[enzyme_name]
+        if overhang == 'b':
+            return None
+
+        site_len = len(recognition_seq)
+        if not (0 < cut_offset < site_len):
+            # 切割点在识别序列之外（Type IIS）：突出端由侧翼决定
+            return "IIS"
+
+        if overhang == '5':
+            overhang_len = site_len - 2 * cut_offset
+            if overhang_len <= 0:
+                return None
+            sticky = recognition_seq[cut_offset:cut_offset + overhang_len]
+        else:  # '3'
+            overhang_len = 2 * cut_offset - site_len
+            if overhang_len <= 0:
+                return None
+            sticky = self._reverse_complement(recognition_seq[:cut_offset])[:overhang_len]
+
+        if not sticky or any(b not in "ACGT" for b in sticky):
+            logger.warning(f"酶 {enzyme_name} 突出端含非 ACGT 碱基，无法判定兼容性")
+            return None
+        return sticky
 
 
 class ORFPredictor:
@@ -293,10 +336,19 @@ class ORFPredictor:
                     if orf_length >= self.min_length:
                         protein = self._translate(sequence[start:i+3])
                         gc = self._calculate_gc(sequence[start:i+3])
-                        
+
+                        if strand == '+':
+                            orf_start, orf_end = start + 1, i + 3
+                        else:
+                            # 反链换回参考序列坐标（1-indexed、start<end、
+                            # strand='-'，与 GenBank complement 特征约定一致）：
+                            # revcomp 空间 [start, i+3) 对应参考空间
+                            # [L-i-2, L-start]，推导见 tests/test_sequence_analysis.py
+                            orf_start = len(sequence) - i - 2
+                            orf_end = len(sequence) - start
                         orf = ORFResult(
-                            start=start + 1 if strand == '+' else len(sequence) - i,
-                            end=i + 3 if strand == '+' else len(sequence) - start,
+                            start=orf_start,
+                            end=orf_end,
                             strand=strand,
                             length=orf_length,
                             frame=frame,
@@ -307,17 +359,23 @@ class ORFPredictor:
                             is_complete=True
                         )
                         orfs.append(orf)
-        
+
         # 处理未终止的 ORF
         for start in start_positions:
             orf_length = len(sequence) - start
             if orf_length >= self.min_length:
                 protein = self._translate(sequence[start:])
                 gc = self._calculate_gc(sequence[start:])
-                
+
+                if strand == '+':
+                    orf_start, orf_end = start + 1, len(sequence)
+                else:
+                    # 反链：revcomp 空间 [start, L) 对应参考空间 [1, L-start]
+                    orf_start = 1
+                    orf_end = len(sequence) - start
                 orf = ORFResult(
-                    start=start + 1,
-                    end=len(sequence),
+                    start=orf_start,
+                    end=orf_end,
                     strand=strand,
                     length=orf_length,
                     frame=frame,
@@ -332,27 +390,16 @@ class ORFPredictor:
         return orfs
     
     def _translate(self, sequence: str) -> str:
-        """翻译 DNA 序列为蛋白质"""
-        protein = []
-        for i in range(0, len(sequence) - 2, 3):
-            codon = sequence[i:i+3]
-            aa = CODON_TABLE.get(codon, 'X')
-            if aa == '*':
-                break
-            protein.append(aa)
-        return ''.join(protein)
-    
-    def _calculate_gc(self, sequence: str) -> float:
-        """计算 GC 含量"""
-        if not sequence:
-            return 0.0
-        gc = sequence.count('G') + sequence.count('C')
-        return gc / len(sequence) * 100
-    
+        """翻译 DNA 序列为蛋白质（遇终止密码子截断）"""
+        return translate(sequence, stop_at_stop=True)
+
     def _reverse_complement(self, sequence: str) -> str:
-        """反向互补"""
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(complement.get(base, 'N') for base in reversed(sequence))
+        """反向互补（收敛到 core.seq_utils.revcomp）"""
+        return revcomp(sequence)
+
+    def _calculate_gc(self, sequence: str) -> float:
+        """计算 GC 含量（百分数）"""
+        return gc_percent(sequence)
 
 
 class GCAnalyzer:
@@ -425,11 +472,8 @@ class GCAnalyzer:
         return extremes
     
     def _calculate_gc(self, sequence: str) -> float:
-        """计算 GC 含量"""
-        if not sequence:
-            return 0.0
-        gc = sequence.count('G') + sequence.count('C')
-        return gc / len(sequence) * 100
+        """计算 GC 含量（收敛到 core.seq_utils）"""
+        return gc_percent(sequence)
 
 
 class SequenceAnalyzer:

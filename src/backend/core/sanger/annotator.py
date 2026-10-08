@@ -8,28 +8,19 @@
 from typing import Dict, List
 
 from core.enzyme_sites import ENZYME_TABLE, find_enzyme_sites
+from core.seq_utils import revcomp as _revcomp
+from core.seq_utils import CODON_TO_AA as _STD_TABLE
 
-_COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+# 兼容别名（方向：密码子 → 氨基酸，大写值，与历史表一致）
+CODON_TABLE = _STD_TABLE
 
-CODON_TABLE = {
-    "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L", "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
-    "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M", "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
-    "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S", "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
-    "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T", "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
-    "TAT": "Y", "TAC": "Y", "TAA": "*", "TAG": "*", "CAT": "H", "CAC": "H", "CAA": "Q", "CAG": "Q",
-    "AAT": "N", "AAC": "N", "AAA": "K", "AAG": "K", "GAT": "D", "GAC": "D", "GAA": "E", "GAG": "E",
-    "TGT": "C", "TGC": "C", "TGA": "*", "TGG": "W", "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R",
-    "AGT": "S", "AGC": "S", "AGA": "R", "AGG": "R", "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G",
-}
+# 反向互补收敛到 core.seq_utils（导入名 _revcomp 与原函数名一致，调用点无需改动）
 
 
 def translate(seq: str) -> str:
+    """按标准遗传密码直译（U→T；未识别密码子 → 'x'，沿用历史口径）"""
     seq = seq.upper().replace("U", "T")
-    return "".join(CODON_TABLE.get(seq[i:i + 3], "x") for i in range(0, len(seq) - len(seq) % 3, 3))
-
-
-def _revcomp(seq: str) -> str:
-    return seq.translate(_COMPLEMENT)[::-1]
+    return "".join(_STD_TABLE.get(seq[i:i + 3], "x") for i in range(0, len(seq) - len(seq) % 3, 3))
 
 
 def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dict:
@@ -72,7 +63,8 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
             # 负链上变体的 alt_base 是参考链坐标，编码方向需取互补
             mut_base = variant["alt_base"][:1]
             if strand == "-":
-                mut_base = mut_base.translate(_COMPLEMENT)
+                # 单碱基取互补 = 单碱基的 revcomp（core.seq_utils 支持 IUPAC/大小写）
+                mut_base = _revcomp(mut_base)
             mut_codon[cpos % 3] = mut_base
             aa_ref = CODON_TABLE.get(codon_ref, "x")
             aa_alt = CODON_TABLE.get("".join(mut_codon).upper(), "x")

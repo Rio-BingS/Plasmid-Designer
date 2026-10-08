@@ -201,3 +201,23 @@ def test_five_prime_hairpin_count_detects_gc_stems():
     # 5' 窗口内构造茎区含 G/C 的发夹：GGAC ... GTCC（GTCC 为 GGAC 的反向互补）
     with_hairpin = "GGAC" + "A" * 8 + "GTCC" + "A" * 40
     assert opt._five_prime_hairpin_count(with_hairpin) >= 1
+
+
+def test_ramp_does_not_prefer_rare_codons_for_two_codon_families():
+    """回归：ramp 中等频率曾用「排序取中位」，对双密码子家族（12 种氨基酸）
+    固定选到低频密码子——与 ramp「避开稀有密码子」目标相反。
+
+    Lys 家族 E. coli 频率 AAA=0.74 / AAG=0.26：频率中位 0.5 下
+    ramp 区应选更接近中位的 AAA（0.26 的高频侧），而非低频 AAG；
+    ramp 结束后回到最高频 AAA。
+    """
+    from core.codon_optimizer import CodonOptimizer, RAMP_CODONS
+
+    opt = CodonOptimizer(species="ecoli")
+    dna = opt._initial_optimization("K" * (RAMP_CODONS + 5), use_ramp=True)
+    ramp_codon = dna[3:6]  # 第 2 个 Lys（ramp 区）
+    assert ramp_codon == "AAA", (
+        f"ramp 区对双密码子家族应选频率中位附近的高频侧 AAA，实际 {ramp_codon}"
+    )
+    post_codon = dna[RAMP_CODONS * 3:RAMP_CODONS * 3 + 3]
+    assert post_codon == "AAA"  # ramp 后回到最高频
