@@ -348,6 +348,29 @@ class TestDesignBatchOwnership:
         assert c.get(f"/api/design/batch/{batch_id}", headers=ha).status_code == 200
         assert c.get(f"/api/design/batch/{batch_id}/report", headers=hb).status_code == 403
 
+    def test_design_export_owner_scoped(self, client, db):
+        """终审 B-01 回归锁：/api/analysis/design/{id}/export 此前无属主校验，
+        匿名可导出他人完整构建序列（IDOR）——现与 /api/design/{id} 同口径"""
+        c, _ = client
+        ua = _make_user(db, email="export-a@test.com")
+        ub = _make_user(db, email="export-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        r = c.post("/api/design", json=self._REQ, headers=ha)
+        assert r.status_code == 200, r.text
+        design_id = r.json()["design_id"]
+
+        # 匿名导出他人设计必须 403（修复前为 200 + 完整序列）
+        assert c.get(f"/api/analysis/design/{design_id}/export").status_code == 403
+        # 其他用户同样 403；属主本人与匿名创建的设计不受影响
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=hb).status_code == 403
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=ha).status_code == 200
+        r2 = c.post("/api/design", json=self._REQ)
+        anon_id = r2.json()["design_id"]
+        assert c.get(f"/api/analysis/design/{anon_id}/export", headers=hb).status_code == 200
+
 
 
 # ==================== 管理员 API ====================
