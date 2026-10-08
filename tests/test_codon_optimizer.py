@@ -132,23 +132,37 @@ if __name__ == "__main__":
 
 
 def test_five_prime_ramp_uses_medium_codons():
-    """v2：5' 翻译起始区使用中等频率密码子，ramp 之后回到最高频"""
+    """v2：5' 翻译起始区使用中等频率密码子，ramp 之后回到最高频。
+
+    两层验证：①纯 ramp 语义看 _initial_optimization（不受后续 GC 平滑
+    干扰）；②端到端产物中 ramp 区 CTG 占比显著低于 ramp 后（GC 平滑
+    在越界时合法覆盖 ramp 选择，但不应整体抹平 ramp 设计）。"""
     from core.codon_optimizer import CodonOptimizer, RAMP_CODONS
 
     opt = CodonOptimizer(species="ecoli")
-    aa = "L" * 40  # L 有 6 个同义密码子，ramp 效果可观察
-    result = opt.optimize(aa)
+    aa = "MKVL" * 30  # L 在 aa 下标 3,7,11,…（i % 4 == 3）
 
-    ramp_codon = result.dna_sequence[3:6]        # 第 2 个 L（ramp 区）
-    post_codon = result.dna_sequence[RAMP_CODONS * 3:RAMP_CODONS * 3 + 3]  # ramp 之后
-    assert ramp_codon != post_codon or len(set(c for c in ["CTA"])) == 0
-    # ramp 区不使用最高频密码子 CTG
-    assert ramp_codon != "CTG"
-    # ramp 之后回到最高频密码子
-    assert post_codon == "CTG"
+    # ① 纯 ramp 选择：ramp 区 L 一律不取最高频 CTG
+    init = opt._initial_optimization(aa, use_ramp=True)
+    init_ramp_ls = [init[i * 3:(i + 1) * 3] for i in range(3, RAMP_CODONS, 4)]
+    assert all(c != "CTG" for c in init_ramp_ls), f"ramp 选择不应取最高频 CTG: {init_ramp_ls}"
+    # ramp 之后的 L 回到最高频 CTG
+    init_post_ls = [init[i * 3:(i + 1) * 3] for i in range(RAMP_CODONS + 3, len(aa), 4)]
+    assert init_post_ls and all(c == "CTG" for c in init_post_ls), init_post_ls[:5]
+
+    # ② 端到端：GC 平滑允许个别替换，但 ramp 区 CTG 占比必须低于 ramp 后
+    result = opt.optimize(aa)
+    seq = result.dna_sequence
+    ramp_ls = [seq[i * 3:(i + 1) * 3] for i in range(3, RAMP_CODONS, 4)]
+    post_ls = [seq[i * 3:(i + 1) * 3] for i in range(RAMP_CODONS + 3, len(aa), 4)]
+    ramp_ctg = sum(1 for c in ramp_ls if c == "CTG") / len(ramp_ls)
+    post_ctg = sum(1 for c in post_ls if c == "CTG") / len(post_ls)
+    assert ramp_ctg < post_ctg, (
+        f"ramp 区 CTG 占比 {ramp_ctg:.0%} 应低于 ramp 后 {post_ctg:.0%}"
+    )
     # 翻译产物不变
     from core.codon_optimizer import translate_dna
-    assert translate_dna(result.dna_sequence).rstrip("*") == aa
+    assert translate_dna(seq).rstrip("*") == aa
 
 
 def test_censor_motifs_auto_avoided():

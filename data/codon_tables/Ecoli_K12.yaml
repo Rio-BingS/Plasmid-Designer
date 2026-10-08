@@ -1,136 +1,135 @@
-# 大肠杆菌 K12 密码子使用频率表
-# 来源: Kazusa 密码子使用数据库
-# 格式: 密码子 -> 相对使用频率 (已归一化)
+# 大肠杆菌（K-12 菌株 W3110）密码子使用频率表（终审 A-04：按 Kazusa 原始值重建）
+# 数据源: Kazusa Codon Usage Database (https://www.kazusa.or.jp/codon/)
+# taxonomy 316407 = E. coli W3110（4332 CDS / 1372057 密码子；原 83333 条目仅 14 CDS 无统计意义）
+# 抓取日期: 2026-10-09；字段: per_thousand = 每千密码子次数, fraction = 同义家族内占比
 
-species: Escherichia coli K-12
-taxonomy_id: 83333
+species: Escherichia coli K-12 (W3110)
+taxonomy_id: 316407
+data_provenance: kazusa:316407 (fetched 2026-10-09, per-thousand originals preserved)
 
 # 苯丙氨酸 Phe (F)
-TTT: 0.58
-TTC: 0.42
+TTT: 0.57  # per_thousand=22.2
+TTC: 0.43  # per_thousand=16.5
+#   最优: TTT
 
 # 亮氨酸 Leu (L)
-TTA: 0.14
-TTG: 0.13
-CTT: 0.12
-CTC: 0.10
-CTA: 0.04
-CTG: 0.47
+TTA: 0.13  # per_thousand=13.8
+TTG: 0.13  # per_thousand=13.6
+CTT: 0.10  # per_thousand=11.0
+CTC: 0.10  # per_thousand=11.1
+CTA: 0.04  # per_thousand=3.8
+CTG: 0.50  # per_thousand=53.1
+#   最优: CTG
 
 # 异亮氨酸 Ile (I)
-ATT: 0.49
-ATC: 0.39
-ATA: 0.12
+ATT: 0.51  # per_thousand=30.4
+ATC: 0.42  # per_thousand=25.2
+ATA: 0.07  # per_thousand=4.2
+#   最优: ATT
 
-# 甲硫氨酸 Met (M) - 起始密码子
-ATG: 1.00
+# 甲硫氨酸 Met (M)
+ATG: 1.00  # per_thousand=27.8
 
 # 缬氨酸 Val (V)
-GTT: 0.28
-GTC: 0.20
-GTA: 0.17
-GTG: 0.35
+GTT: 0.26  # per_thousand=18.2
+GTC: 0.22  # per_thousand=15.3
+GTA: 0.15  # per_thousand=10.9
+GTG: 0.37  # per_thousand=26.3
+#   最优: GTG
 
 # 丝氨酸 Ser (S)
-TCT: 0.17
-TCC: 0.15
-TCA: 0.14
-TCG: 0.14
-AGT: 0.16
-AGC: 0.25
+TCT: 0.15  # per_thousand=8.4
+TCC: 0.15  # per_thousand=8.6
+TCA: 0.12  # per_thousand=7.0
+TCG: 0.15  # per_thousand=8.9
+AGT: 0.15  # per_thousand=8.7
+AGC: 0.28  # per_thousand=16.1
+#   最优: AGC
 
 # 脯氨酸 Pro (P)
-CCT: 0.18
-CCC: 0.13
-CCA: 0.20
-CCG: 0.49
+CCT: 0.16  # per_thousand=7.0
+CCC: 0.12  # per_thousand=5.5
+CCA: 0.19  # per_thousand=8.4
+CCG: 0.53  # per_thousand=23.4
+#   最优: CCG
 
 # 苏氨酸 Thr (T)
-ACT: 0.19
-ACC: 0.40
-ACA: 0.17
-ACG: 0.25
+ACT: 0.16  # per_thousand=8.8
+ACC: 0.44  # per_thousand=23.5
+ACA: 0.13  # per_thousand=6.9
+ACG: 0.27  # per_thousand=14.4
+#   最优: ACC
 
 # 丙氨酸 Ala (A)
-GCT: 0.18
-GCC: 0.26
-GCA: 0.23
-GCG: 0.33
+GCT: 0.16  # per_thousand=15.2
+GCC: 0.27  # per_thousand=25.7
+GCA: 0.21  # per_thousand=20.1
+GCG: 0.36  # per_thousand=33.9
+#   最优: GCG
 
 # 酪氨酸 Tyr (Y)
-TAT: 0.59
-TAC: 0.41
+TAT: 0.57  # per_thousand=16.1
+TAC: 0.43  # per_thousand=12.2
+#   最优: TAT
 
-# 组氨酸 His (H)
-CAT: 0.57
-CAC: 0.43
-
-# 谷氨酰胺 Gln (Q)
-CAA: 0.34
-CAG: 0.66
-
-# 天冬酰胺 Asn (N)
-AAT: 0.49
-AAC: 0.51
-
-# 赖氨酸 Lys (K)
-AAA: 0.74
-AAG: 0.26
-
-# 天冬氨酸 Asp (D)
-GAT: 0.63
-GAC: 0.37
-
-# 谷氨酸 Glu (E)
-GAA: 0.68
-GAG: 0.32
-
-# 半胱氨酸 Cys (C)
-TGT: 0.46
-TGC: 0.54
+# 终止密码子 (Stop)
+TAA: 0.65  # per_thousand=2.0
+TAG: 0.06  # per_thousand=0.2
+TGA: 0.29  # per_thousand=0.9
 
 # 色氨酸 Trp (W)
-TGG: 1.00
+TGG: 1.00  # per_thousand=15.2
+
+# 组氨酸 His (H)
+CAT: 0.57  # per_thousand=13.0
+CAC: 0.43  # per_thousand=9.8
+#   最优: CAT
+
+# 谷氨酰胺 Gln (Q)
+CAA: 0.35  # per_thousand=15.4
+CAG: 0.65  # per_thousand=29.0
+#   最优: CAG
+
+# 天冬酰胺 Asn (N)
+AAT: 0.45  # per_thousand=17.6
+AAC: 0.55  # per_thousand=21.6
+#   最优: AAC
+
+# 赖氨酸 Lys (K)
+AAA: 0.77  # per_thousand=33.6
+AAG: 0.23  # per_thousand=10.3
+#   最优: AAA
+
+# 天冬氨酸 Asp (D)
+GAT: 0.63  # per_thousand=32.2
+GAC: 0.37  # per_thousand=19.1
+#   最优: GAT
+
+# 谷氨酸 Glu (E)
+GAA: 0.69  # per_thousand=39.7
+GAG: 0.31  # per_thousand=18.0
+#   最优: GAA
+
+# 半胱氨酸 Cys (C)
+TGT: 0.44  # per_thousand=5.1
+TGC: 0.56  # per_thousand=6.4
+#   最优: TGC
 
 # 精氨酸 Arg (R)
-CGT: 0.36
-CGC: 0.36
-CGA: 0.07
-CGG: 0.11
-AGA: 0.07
-AGG: 0.04
+CGT: 0.38  # per_thousand=21.0
+CGC: 0.40  # per_thousand=22.3
+CGA: 0.06  # per_thousand=3.5
+CGG: 0.10  # per_thousand=5.4
+AGA: 0.04  # per_thousand=2.0
+AGG: 0.02  # per_thousand=1.1
+#   最优: CGC
 
 # 甘氨酸 Gly (G)
-GGT: 0.35
-GGC: 0.37
-GGA: 0.13
-GGG: 0.15
+GGT: 0.34  # per_thousand=24.7
+GGC: 0.41  # per_thousand=29.8
+GGA: 0.11  # per_thousand=7.9
+GGG: 0.15  # per_thousand=11.0
+#   最优: GGC
 
-# 终止密码子
-TAA: 0.61
-TAG: 0.09
-TGA: 0.30
-
-# CAI 参考值
-# 最优密码子（频率最高）用于CAI计算
-optimal_codons:
-  F: TTC
-  L: CTG
-  I: ATC
-  M: ATG
-  V: GTG
-  S: AGC
-  P: CCG
-  T: ACC
-  A: GCG
-  Y: TAC
-  H: CAC
-  Q: CAG
-  N: AAC
-  K: AAA
-  D: GAC
-  E: GAA
-  C: TGC
-  W: TGG
-  R: CGC
-  G: GGC
+# 注：optimal_codons 段已移除（与频率行易自相矛盾且加载器不读取，
+# 最优密码子见各家族「最优」注释）

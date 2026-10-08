@@ -1,134 +1,117 @@
-# CHO 细胞 (中国仓鼠卵巢细胞) 密码子使用频率表
-# 来源: Kazusa 密码子使用数据库
+# Mesocricetus auratus (CHO 细胞来源仓鼠) 密码子使用频率表（终审 A-04：按 Kazusa 原始值重建）
+# 数据源: Kazusa Codon Usage Database (https://www.kazusa.or.jp/codon/)
+# 抓取日期: 2026-10-09；字段: per_thousand = 每千密码子次数, fraction = 同义家族内占比
+# CDS 统计: 见上方数据源链接（原表头注明 CDS 数与密码子总数）
 
-species: CHO (Chinese Hamster Ovary)
-taxonomy_id: 10029
+species: Mesocricetus auratus (CHO 细胞来源仓鼠)
+taxonomy_id: 10036
+data_provenance: kazusa:10036 (fetched 2026-10-09, per-thousand originals preserved)
 
-# 使用仓鼠 (Cricetulus griseus) 的密码子频率
 # 苯丙氨酸 Phe (F)
-TTT: 0.44
-TTC: 0.56
+TTT: 0.41  # per_thousand=17.4
+TTC: 0.59  # per_thousand=25.1
 
 # 亮氨酸 Leu (L)
-TTA: 0.07
-TTG: 0.13
-CTT: 0.13
-CTC: 0.20
-CTA: 0.07
-CTG: 0.40
+TTA: 0.05  # per_thousand=5.4
+TTG: 0.13  # per_thousand=13.2
+CTT: 0.13  # per_thousand=12.6
+CTC: 0.20  # per_thousand=20.3
+CTA: 0.07  # per_thousand=6.9
+CTG: 0.42  # per_thousand=41.7
 
 # 异亮氨酸 Ile (I)
-ATT: 0.35
-ATC: 0.48
-ATA: 0.17
+ATT: 0.34  # per_thousand=15.6
+ATC: 0.52  # per_thousand=24.1
+ATA: 0.14  # per_thousand=6.3
 
 # 甲硫氨酸 Met (M)
-ATG: 1.00
+ATG: 1.00  # per_thousand=24.1
 
 # 缬氨酸 Val (V)
-GTT: 0.11
-GTC: 0.23
-GTA: 0.10
-GTG: 0.56
+GTT: 0.15  # per_thousand=9.4
+GTC: 0.26  # per_thousand=16.2
+GTA: 0.11  # per_thousand=6.6
+GTG: 0.48  # per_thousand=30.2
 
 # 丝氨酸 Ser (S)
-TCT: 0.17
-TCC: 0.23
-TCA: 0.14
-TCG: 0.05
-AGT: 0.15
-AGC: 0.26
+TCT: 0.19  # per_thousand=15.1
+TCC: 0.23  # per_thousand=18.2
+TCA: 0.13  # per_thousand=10.5
+TCG: 0.05  # per_thousand=4.0
+AGT: 0.15  # per_thousand=11.7
+AGC: 0.24  # per_thousand=18.9
 
 # 脯氨酸 Pro (P)
-CCT: 0.27
-CCC: 0.34
-CCA: 0.26
-CCG: 0.13
+CCT: 0.30  # per_thousand=17.8
+CCC: 0.33  # per_thousand=19.6
+CCA: 0.29  # per_thousand=17.1
+CCG: 0.09  # per_thousand=5.5
 
 # 苏氨酸 Thr (T)
-ACT: 0.24
-ACC: 0.37
-ACA: 0.30
-ACG: 0.09
+ACT: 0.24  # per_thousand=13.5
+ACC: 0.38  # per_thousand=21.8
+ACA: 0.28  # per_thousand=15.7
+ACG: 0.10  # per_thousand=5.8
 
 # 丙氨酸 Ala (A)
-GCT: 0.25
-GCC: 0.41
-GCA: 0.23
-GCG: 0.11
+GCT: 0.29  # per_thousand=19.3
+GCC: 0.41  # per_thousand=27.2
+GCA: 0.22  # per_thousand=14.5
+GCG: 0.09  # per_thousand=5.8
 
 # 酪氨酸 Tyr (Y)
-TAT: 0.43
-TAC: 0.57
+TAT: 0.42  # per_thousand=12.7
+TAC: 0.58  # per_thousand=17.7
 
-# 组氨酸 His (H)
-CAT: 0.56
-CAC: 0.44
-
-# 谷氨酰胺 Gln (Q)
-CAA: 0.26
-CAG: 0.74
-
-# 天冬酰胺 Asn (N)
-AAT: 0.46
-AAC: 0.54
-
-# 赖氨酸 Lys (K)
-AAA: 0.41
-AAG: 0.59
-
-# 天冬氨酸 Asp (D)
-GAT: 0.45
-GAC: 0.55
-
-# 谷氨酸 Glu (E)
-GAA: 0.40
-GAG: 0.60
-
-# 半胱氨酸 Cys (C)
-TGT: 0.44
-TGC: 0.56
+# 终止密码子 (Stop)
+TAA: 0.27  # per_thousand=0.7
+TAG: 0.27  # per_thousand=0.7
+TGA: 0.46  # per_thousand=1.2
 
 # 色氨酸 Trp (W)
-TGG: 1.00
+TGG: 1.00  # per_thousand=12.9
+
+# 组氨酸 His (H)
+CAT: 0.40  # per_thousand=10.0
+CAC: 0.60  # per_thousand=15.1
+
+# 谷氨酰胺 Gln (Q)
+CAA: 0.23  # per_thousand=10.7
+CAG: 0.77  # per_thousand=34.9
+
+# 天冬酰胺 Asn (N)
+AAT: 0.41  # per_thousand=15.9
+AAC: 0.59  # per_thousand=23.1
+
+# 赖氨酸 Lys (K)
+AAA: 0.36  # per_thousand=20.0
+AAG: 0.64  # per_thousand=35.6
+
+# 天冬氨酸 Asp (D)
+GAT: 0.41  # per_thousand=19.7
+GAC: 0.59  # per_thousand=28.5
+
+# 谷氨酸 Glu (E)
+GAA: 0.39  # per_thousand=24.7
+GAG: 0.61  # per_thousand=38.7
+
+# 半胱氨酸 Cys (C)
+TGT: 0.43  # per_thousand=9.4
+TGC: 0.57  # per_thousand=12.6
 
 # 精氨酸 Arg (R)
-CGT: 0.09
-CGC: 0.19
-CGA: 0.10
-CGG: 0.22
-AGA: 0.20
-AGG: 0.20
+CGT: 0.09  # per_thousand=4.9
+CGC: 0.18  # per_thousand=9.5
+CGA: 0.12  # per_thousand=6.3
+CGG: 0.19  # per_thousand=9.8
+AGA: 0.21  # per_thousand=11.0
+AGG: 0.21  # per_thousand=11.1
 
 # 甘氨酸 Gly (G)
-GGT: 0.16
-GGC: 0.35
-GGA: 0.25
-GGG: 0.24
+GGT: 0.18  # per_thousand=11.6
+GGC: 0.32  # per_thousand=21.3
+GGA: 0.25  # per_thousand=16.7
+GGG: 0.24  # per_thousand=16.0
 
-# 终止密码子
-TAA: 0.62
-TAG: 0.12
-TGA: 0.26
-
-optimal_codons:
-  F: TTC
-  L: CTG
-  I: ATC
-  M: ATG
-  V: GTG
-  S: AGC
-  P: CCC
-  T: ACC
-  A: GCC
-  Y: TAC
-  H: CAC
-  Q: CAG
-  N: AAC
-  K: AAG
-  D: GAC
-  E: GAG
-  C: TGC
-  W: TGG
-  R: CGC
-  G: GGC
+# 注：optimal_codons 段已移除（与频率行易自相矛盾且加载器不读取，
+# 最优密码子见各家族「最优」注释）
