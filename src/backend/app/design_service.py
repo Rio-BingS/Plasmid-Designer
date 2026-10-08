@@ -252,6 +252,9 @@ def process_sequence(
                 )
         return seq, None, None, warnings
 
+    # 终审 A-05：未知物种在此显式失败（设计结果 FAILED + 错误明细），
+    # 不再静默回退大肠杆菌表——此前 pichia/insect/bacillus/martian 全部
+    # 静默返回 COMPLETED。CodonOptimizer 构造抛 ValueError。
     optimizer = CodonOptimizer(species=target_species)
     if optimize_codons:
         # 密码子优化结果缓存（24h TTL）：同 (序列, 物种, GC 区间, 排除酶) 直接复用
