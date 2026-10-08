@@ -36,6 +36,7 @@ GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 
 import os
 import re
+import secrets
 import time
 import uuid
 import tempfile
@@ -43,7 +44,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
@@ -90,16 +91,35 @@ def _sweep_expired() -> None:
         del _BATCHES[bid]
 
 
-def _can_access(record: Dict, user: Optional[User]) -> bool:
-    """分析记录属主校验：管理员全可见；创建者可见；无属主记录（匿名创建或
-    属主改造前遗留）保持公开——匿名分析本来就没法归属"""
+def _can_access(record: Dict, user: Optional[User],
+                access_token: Optional[str] = None) -> bool:
+    """分析记录属主校验：管理员全可见；创建者可见；无属主记录（匿名创建）
+    凭 access_token 访问——终审 B-02：匿名记录曾对所有访客公开可列举、
+    可读取、可删除（实测访客 B 列出 A 的记录、读取成功、DELETE 200 后
+    创建者 404）。登录用户创建的记录仍按属主判定。"""
     owner = record.get("owner_id")
     if owner is None:
-        return True
+        # 匿名创建的记录：仅当持有创建响应下发的 access_token 才可见；
+        # 旧记录（改造前创建，无 token）保持公开以兼容历史链接
+        expected = record.get("access_token")
+        if expected is None:
+            return True
+        return bool(access_token) and secrets.compare_digest(
+            str(access_token), str(expected))
     return user is not None and (user.id == owner or user.is_admin)
 
 
-def _get_analysis(analysis_id: str, user: Optional[User] = None) -> Dict:
+def _request_access_token(request: Request) -> Optional[str]:
+    """从请求提取匿名记录访问令牌：优先 X-Access-Token 头，兼容 ?token= 查询参数
+    （<a> 下载链接没法带自定义头）。"""
+    tok = request.headers.get("X-Access-Token")
+    if tok:
+        return tok
+    return request.query_params.get("token")
+
+
+def _get_analysis(analysis_id: str, user: Optional[User] = None,
+                  access_token: Optional[str] = None) -> Dict:
     _sweep_expired()
     result = _ANALYSES.get(analysis_id)
     if result is None:
@@ -110,7 +130,7 @@ def _get_analysis(analysis_id: str, user: Optional[User] = None) -> Dict:
             _ANALYSES[analysis_id] = result
     if result is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    if not _can_access(result, user):
+    if not _can_access(result, user, access_token):
         raise HTTPException(status_code=403, detail="无权访问该分析记录")
     return result
 
@@ -186,8 +206,9 @@ def _run_full_analysis(
 
 
 def _register_analysis(sample_name: str, reference: str, features: List[Dict], result: Dict,
-                       owner_id: Optional[str] = None) -> str:
-    """把一次完整分析写入内存存储（单样品与批量共用），返回 analysis_id
+                       owner_id: Optional[str] = None,
+                       access_token: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """把一次完整分析写入内存存储（单样品与批量共用），返回 (analysis_id, access_token)
 
     批量克隆模式一次可产生上百条记录：分析记录本体（变体/共识/比对）很小，
     上限放宽到 MAX_STORED；峰图原始数据（四通道全分辨率采样）体积大，
@@ -197,6 +218,13 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     """
     _sweep_expired()
     analysis_id = f"seq_{uuid.uuid4().hex[:12]}"
+    # 终审 B-02：匿名创建的记录需要随机访问令牌——后续读取/导出/删除必须
+    # 携带（登录用户创建的记录走属主校验，不需要令牌）。批量一次产生上百
+    # 条记录，整批共用一个令牌（由调用方生成后传入）。
+    if owner_id is None and access_token is None:
+        access_token = secrets.token_urlsafe(16)
+    elif owner_id is not None:
+        access_token = None
     record = {
         "analysis_id": analysis_id,
         "sample_name": sample_name,
@@ -205,6 +233,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         "created_at": datetime.now().isoformat(),
         "_created_ts": time.time(),
         "owner_id": owner_id,
+        "access_token": access_token,
         **result,
     }
     # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
@@ -224,7 +253,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         for aid, rec in _ANALYSES.items():
             if aid not in keep and rec.get("_trace_data"):
                 rec["_trace_data"] = {}
-    return analysis_id
+    return analysis_id, access_token
 
 
 async def _analyze_endpoint(
@@ -244,9 +273,14 @@ async def _analyze_endpoint(
         _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose
     )
 
-    analysis_id = _register_analysis(sample_name, reference, features, result,
-                                     owner_id=user.id if user else None)
-    return _summary(_ANALYSES[analysis_id])
+    analysis_id, access_token = _register_analysis(
+        sample_name, reference, features, result,
+        owner_id=user.id if user else None)
+    summary = _summary(_ANALYSES[analysis_id])
+    if access_token:
+        # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
+        summary["access_token"] = access_token
+    return summary
 
 
 @router.post(
@@ -334,6 +368,7 @@ def _group_batch_uploads(
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
+    access_token: Optional[str] = None,
 ) -> Tuple[Dict, List[Dict], List[Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -412,9 +447,10 @@ def _run_batch(
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 res = analyze(ab1s, ref_seq, features, min_q=min_q)
-                item["analysis_id"] = _register_analysis(
+                aid, _tok = _register_analysis(
                     label, ref_seq, features, res,
-                    owner_id=owner_id)
+                    owner_id=owner_id, access_token=access_token)
+                item["analysis_id"] = aid
                 item["reference_length"] = len(ref_seq)
                 confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
                 item["variant_count"] = len(confirmed)
@@ -528,9 +564,13 @@ async def analyze_sequencing_batch(
                 detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
         excel_pack = (excel.filename or "信息表.xlsx", excel_bytes, wb, cols, excel_rows)
 
+    # 匿名批量：整批共用一个访问令牌（终审 B-02），随响应下发一次
+    batch_token = secrets.token_urlsafe(16) if user is None else None
     payload, groups, raw_unmatched = await run_in_threadpool(
         _run_batch, reads, refs, excel_rows, ignored, min_q,
-        owner_id=user.id if user else None)
+        owner_id=user.id if user else None, access_token=batch_token)
+    if batch_token:
+        payload["access_token"] = batch_token
 
     # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
     # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）；
@@ -557,6 +597,8 @@ async def analyze_sequencing_batch(
                 "created_ts": time.time(),
                 "zip": zip_bytes,
                 "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
+                # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者
+                "owner_id": user.id if user else None,
             }
 
         await run_in_threadpool(_pack)
@@ -567,13 +609,19 @@ async def analyze_sequencing_batch(
     "/sequencing/batches/{batch_id}/report",
     dependencies=[Depends(require_feature("sequencing_batch"))],
 )
-async def download_batch_report(batch_id: str):
+async def download_batch_report(batch_id: str,
+                                user: Optional[User] = Depends(get_current_user)):
     """下载批量分析整理包（同一质粒一个文件夹、其下 正确/错误 按结论分置副本
     与各组分析报告 + 整理清单 + 结论回填的信息表）；生成 15 分钟后随缓存自动
-    清理，可重复下载。"""
+    清理，可重复下载。终审 B-03：非创建者（且非管理员）一律 404——包内含
+    全部原始数据，不暴露存在性。"""
     _sweep_expired()
     rec = _BATCHES.get(batch_id)
     if rec is None:
+        raise HTTPException(status_code=404,
+                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    owner = rec.get("owner_id")
+    if owner and not (user and (user.id == owner or user.is_admin)):
         raise HTTPException(status_code=404,
                             detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
     # HTTP 头仅限 latin-1：中文文件名走 RFC 5987 filename*，ASCII 名兜底
@@ -647,14 +695,21 @@ async def list_analyses(limit: int = 200, offset: int = 0,
     """历史分析列表（摘要，按时间倒序；不含 reads/变体明细）。
 
     分页：limit（默认 200，0 不限）+ offset。属主校验：只返回自己创建的
-    （管理员全可见；无属主的匿名遗留记录公开）"""
+    （管理员全可见）。终审 B-02：列表不再把匿名记录的 ID 交出去——匿名
+    记录凭创建响应下发的 access_token 访问，匿名列表返回空（改造前的
+    无 token 遗留记录保持公开）。"""
     _sweep_expired()
     if sequencing_store.db_enabled():
         return sequencing_store.list_records(
             user, is_admin=bool(user and user.is_admin),
             limit=limit, offset=offset)
-    items = sorted((r for r in _ANALYSES.values() if _can_access(r, user)),
-                   key=lambda r: r["created_at"], reverse=True)
+    # 终审 B-02：匿名记录不进列表（持有 token 也不列——列表接口不该交出
+    # 他人记录的 ID），仅改造前无 token 的遗留公开记录例外（兼容历史链接）
+    items = sorted(
+        (r for r in _ANALYSES.values()
+         if r.get("owner_id") is None and r.get("access_token") is None
+         or (r.get("owner_id") is not None and _can_access(r, user))),
+        key=lambda r: r["created_at"], reverse=True)
     return [
         {
             "analysis_id": r["analysis_id"],
@@ -672,16 +727,18 @@ async def list_analyses(limit: int = 200, offset: int = 0,
 
 
 @router.get("/sequencing/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str, user: Optional[User] = Depends(get_current_user)):
+async def get_analysis(analysis_id: str, request: Request,
+                       user: Optional[User] = Depends(get_current_user)):
     """获取分析结果（不含峰图原始数据；非创建者且非管理员返回 403）"""
-    return _summary(_get_analysis(analysis_id, user))
+    return _summary(_get_analysis(analysis_id, user,
+                                  _request_access_token(request)))
 
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")
-async def get_read_trace(analysis_id: str, read_index: int,
+async def get_read_trace(analysis_id: str, read_index: int, request: Request,
                          user: Optional[User] = Depends(get_current_user)):
     """获取单条 read 的峰图数据（四通道 + 碱基 + 质量值 + 峰位置）"""
-    record = _get_analysis(analysis_id, user)
+    record = _get_analysis(analysis_id, user, _request_access_token(request))
     trace_data = record.get("_trace_data", {})
     if not trace_data:
         raise HTTPException(status_code=404,
@@ -692,7 +749,8 @@ async def get_read_trace(analysis_id: str, read_index: int,
 
 
 @router.get("/sequencing/analyses/{analysis_id}/consensus/export")
-async def export_consensus(analysis_id: str, format: str = "fasta",
+async def export_consensus(analysis_id: str, request: Request,
+                           format: str = "fasta",
                            covered_only: bool = False,
                            user: Optional[User] = Depends(get_current_user)):
     """导出拼接结果（共识序列，FASTA / GenBank）
@@ -702,7 +760,7 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
     - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
       misc_feature 注记。无覆盖区间信息时回退全量导出。
     """
-    record = _get_analysis(analysis_id, user)
+    record = _get_analysis(analysis_id, user, _request_access_token(request))
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
@@ -794,8 +852,9 @@ async def export_consensus(analysis_id: str, format: str = "fasta",
 
 
 @router.delete("/sequencing/analyses/{analysis_id}")
-async def delete_analysis(analysis_id: str, user: Optional[User] = Depends(get_current_user)):
-    _get_analysis(analysis_id, user)
+async def delete_analysis(analysis_id: str, request: Request,
+                          user: Optional[User] = Depends(get_current_user)):
+    _get_analysis(analysis_id, user, _request_access_token(request))
     _ANALYSES.pop(analysis_id, None)
     sequencing_store.delete_record(analysis_id)
     return {"deleted": True, "analysis_id": analysis_id}

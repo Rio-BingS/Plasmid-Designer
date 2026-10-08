@@ -657,6 +657,8 @@ export interface SequencingAnalysis {
     variant: { ref_pos: number; type: string; length: number; confidence: string } | null
   }[]
   mixed_detected: Record<string, number[]>
+  /** 匿名创建时下发的访问令牌（终审 B-02：后续读取/导出/删除需携带） */
+  access_token?: string
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
   errors: { filename: string; error: string }[]
   reference_length: number
@@ -686,7 +688,39 @@ export async function analyzeSequencingFiles(
   form.append('min_q', String(minQ))
   form.append('allow_decompose', String(allowDecompose))
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
-  return response.data
+  const data = response.data as SequencingAnalysis
+  // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
+  // （sessionStorage，随标签页生命周期），后续详情/峰图/导出/删除带上
+  if (data?.access_token && data.analysis_id) {
+    rememberAnalysisToken(data.analysis_id, data.access_token)
+  }
+  return data
+}
+
+const TOKEN_KEY = 'pd_seq_tokens'
+
+/** 匿名分析记录访问令牌表（analysis_id → token），仅本标签页会话内有效 */
+export function rememberAnalysisToken(analysisId: string, token: string): void {
+  try {
+    const raw = sessionStorage.getItem(TOKEN_KEY)
+    const map = raw ? JSON.parse(raw) : {}
+    map[analysisId] = token
+    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(map))
+  } catch {
+    /* 隐私模式下 sessionStorage 不可用：令牌丢失即不可回看，不影响本次分析 */
+  }
+}
+
+export function analysisTokenHeaders(analysisId?: string): Record<string, string> | undefined {
+  if (!analysisId) return undefined
+  try {
+    const raw = sessionStorage.getItem(TOKEN_KEY)
+    const map = raw ? JSON.parse(raw) : {}
+    const tok = map[analysisId]
+    return tok ? { 'X-Access-Token': tok } : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** 取设计结果的 GenBank 文件（测序页深链自动带入参考序列用） */
@@ -715,13 +749,15 @@ export async function fetchVectorGenbankFile(vectorId: string): Promise<File> {
 }
 
 export async function getReadTrace(analysisId: string, readIndex: number): Promise<ReadTrace> {
-  const response = await api.get(`/sequencing/analyses/${analysisId}/trace/${readIndex}`)
+  const response = await api.get(`/sequencing/analyses/${analysisId}/trace/${readIndex}`,
+    { headers: analysisTokenHeaders(analysisId) })
   return response.data
 }
 
 export async function exportConsensus(analysisId: string, format: string, coveredOnly = false): Promise<string> {
   const response = await api.get(`/sequencing/analyses/${analysisId}/consensus/export`, {
     params: { format, covered_only: coveredOnly },
+    headers: analysisTokenHeaders(analysisId),
     responseType: 'text',
     transformResponse: [(data) => data]
   })
@@ -746,12 +782,15 @@ export async function listSequencingAnalyses(): Promise<SequencingAnalysisSummar
 }
 
 export async function getSequencingAnalysis(analysisId: string): Promise<SequencingAnalysis> {
-  const response = await api.get(`/sequencing/analyses/${analysisId}`)
+  // 终审 B-02：匿名记录凭创建时下发的令牌访问
+  const response = await api.get(`/sequencing/analyses/${analysisId}`,
+    { headers: analysisTokenHeaders(analysisId) })
   return response.data
 }
 
 export async function deleteSequencingAnalysis(analysisId: string): Promise<void> {
-  await api.delete(`/sequencing/analyses/${analysisId}`)
+  await api.delete(`/sequencing/analyses/${analysisId}`,
+    { headers: analysisTokenHeaders(analysisId) })
 }
 
 // ==================== 批量测序分析（独立入口，与单样品 /sequencing/analyze 平级） ====================
@@ -787,6 +826,8 @@ export interface SequencingBatchResult {
   ignored_files: string[]
   /** true=整理包已生成，可经 downloadBatchSequencingReport 下载（15 分钟有效） */
   report_ready?: boolean
+  /** 匿名批量下发的整批访问令牌（终审 B-02/B-03：该批记录共用） */
+  access_token?: string
 }
 
 /** 批量测序分析：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表一次上传 */
@@ -800,7 +841,14 @@ export async function analyzeSequencingBatch(
   if (excel) form.append('excel', excel, excel.name)
   form.append('min_q', String(minQ))
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
-  return response.data
+  const data = response.data as SequencingBatchResult
+  // 终审 B-02/B-03：匿名批量下发整批令牌——该批每条记录共用它（详情/下载）
+  if (data?.access_token) {
+    for (const it of data.items || []) {
+      if (it.analysis_id) rememberAnalysisToken(it.analysis_id, data.access_token)
+    }
+  }
+  return data
 }
 
 /** 下载批量分析的整理包：按质粒/克隆归档的原始文件副本 + 各组分析报告 +
