@@ -311,3 +311,39 @@ def test_cross_hybridization_ignores_designed_adjacent_overlap():
     b = Primer("b", designer._reverse_complement("T" * 12 + shared + "G" * 8),
                PrimerType.SYNTHESIS_OLIGO, 60, 50, 32, target_start=20, target_end=52)
     assert designer.cross_hybridization_count([a, b]) == 0
+
+
+def test_clone_primer_annealing_anchored_to_insert_ends():
+    """终审 A-07 回归锁：克隆引物退火区曾被允许整体平移 0-4 nt，
+    静默截短插入片段首尾（实测 200 次 5' 端 52 次、3' 端 49 次，
+    示例删掉的正是 ATG）——Gibson/Golden Gate 退火区必须精确锚定
+    插入片段两端，且 target_start/end 回填真实坐标。"""
+    from core.primer_designer import PrimerDesigner
+
+    designer = PrimerDesigner()
+    # ATG 开头、GAATTC 富 GC 混合的插入片段
+    insert = "ATG" + "GCTAGCTTGAAGCTTGCAT" * 10 + "TAA"
+    vector = "ACGT" * 30
+
+    # Gibson
+    pair = designer.design_gibson_primers(insert, vector, 60, homology_arm=20)
+    f, r = pair.forward, pair.reverse
+    # 退火区必须从插入片段 5' 端第 0 位开始（含 ATG）、3' 端精确到末尾
+    assert f.target_start == 0, f"Gibson F 退火区起点 {f.target_start} != 0"
+    assert insert.startswith(f.sequence), "Gibson F 退火区不是插入片段前缀（ATG 被截短）"
+    assert r.target_end == len(insert), f"Gibson R 退火区终点 {r.target_end} != {len(insert)}"
+    from core.seq_utils import revcomp
+    assert insert[r.target_start:r.target_end] == revcomp(r.sequence)[: r.target_end - r.target_start] or \
+        insert[r.target_start:r.target_end] == r.sequence[-(r.target_end - r.target_start):][::-1] or \
+        revcomp(insert[r.target_start:r.target_end]) == r.sequence, (
+        "Gibson R 退火区不落在插入片段末尾")
+    # target 坐标完整回填（不再是 0/硬编码）
+    assert f.target_end == f.target_start + f.length
+    assert r.target_start == r.target_end - r.length
+
+    # Golden Gate
+    gg = designer.design_golden_gate_primers(insert, "BsaI", "AACC", "GGTT")
+    gf, gr = gg.forward, gg.reverse
+    assert gf.target_start == 0 and insert.startswith(gf.sequence)
+    assert gr.target_end == len(insert)
+    assert gr.target_start == gr.target_end - gr.length
