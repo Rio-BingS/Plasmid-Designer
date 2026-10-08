@@ -1,7 +1,7 @@
 """
 序列分析和导出 API 路由
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from typing import List, Dict, Optional
@@ -21,6 +21,7 @@ from core.export_formats import (
     create_export_data_from_design,
     create_export_data_from_vector
 )
+from app.auth.jwt_auth import User, get_current_user
 from app.cache import cached
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -464,7 +465,8 @@ def _export_response(data, format: str, filename_base: str):
 
 
 @router.get("/design/{design_id}/export")
-async def export_design(design_id: str, format: str = "genbank"):
+async def export_design(design_id: str, format: str = "genbank",
+                        user: Optional[User] = Depends(get_current_user)):
     """
     导出设计结果为指定格式
 
@@ -472,9 +474,10 @@ async def export_design(design_id: str, format: str = "genbank"):
         design_id: 设计任务 ID
         format: genbank / snapgene / benchling / fasta / sbol
     """
-    from app.routes.design_routes import _load
+    from app.routes.design_routes import _ensure_design_access, _load
 
-    result = _load(design_id)
+    # 属主校验（终审 B-01：此前匿名可导出他人完整构建序列——IDOR）
+    result = _ensure_design_access(_load(design_id), user)
     if not result:
         raise HTTPException(status_code=404, detail="Design not found")
 
