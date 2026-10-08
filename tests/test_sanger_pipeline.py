@@ -1685,6 +1685,40 @@ def test_mixed_equal_ratio_sites_not_shielded():
     assert detail == []
 
 
+def test_soft_clip_query_offset_in_ref_maps():
+    """终审 A-20 回归锁：局部比对软剪切（junk/低质量端）的 query 偏移
+    曾被丢弃——read2ref 用对齐内相对列号当 trimmed 坐标整体错位
+    （t1 实测 read2ref[130]→230 应为 200）。aligner 现输出 query_start/
+    query_end，映射按块首偏移换算，正反向 read 均精确。"""
+    random.seed(42)
+    from core.sanger.aligner import align_read, revcomp
+    from core.sanger.pipeline import _read_ref_maps
+
+    ref = "".join(random.choice("ACGT") for _ in range(300))
+    read = ref[99:249]  # 真实片段对应 ref 100..249（1-based）
+    junk = "A" * 40 + "TTTTTTTTTT"
+
+    # 正向 + junk 前缀
+    aln = align_read(junk + read, ref)
+    assert aln["query_start"] == 51 and aln["query_end"] == 200
+    assert aln["ref_start"] == 100
+    m, _ = _read_ref_maps({"alignment": aln, "trimmed_bases": junk + read})
+    assert m[51] == 100 and m[130] == 179 and m[200] == 249
+
+    # 无软剪切：块首=1，坐标不回归
+    aln2 = align_read(read, ref)
+    assert aln2["query_start"] == 1
+    m2, _ = _read_ref_maps({"alignment": aln2, "trimmed_bases": read})
+    assert m2[1] == 100 and m2[150] == 249
+
+    # 反向 read：电泳坐标 p ↔ ref 300-p（junk 在电泳前端）
+    full_rev = junk + revcomp(read)
+    aln3 = align_read(full_rev, ref)
+    assert aln3["direction"] == "-"
+    m3, _ = _read_ref_maps({"alignment": aln3, "trimmed_bases": full_rev})
+    assert m3[200] == 100 and m3[51] == 249 and m3[130] == 170
+
+
 def test_traces_payload_trim_start_and_mixed_detail():
     """前端比对峰图融合视图的数据契约：traces 载荷带 trim_start（peak_indices
     按原始 read 碱基索引，前端换算采样窗需要修剪偏移）；per-read mixed_detail

@@ -817,6 +817,10 @@ def _summary(record: Dict) -> Dict:
             "direction": r["alignment"]["direction"],
             "ref_start": r["alignment"]["ref_start"],
             "ref_end": r["alignment"]["ref_end"],
+            # 终审 A-20：对齐块在原始电泳 read 内的 1-based 起止（软剪切
+            # 偏移），前端 origIdx 换算与 read2ref 同口径
+            "query_start": r["alignment"].get("query_start"),
+            "query_end": r["alignment"].get("query_end"),
             "identity": r["alignment"]["identity"],
             "mixed_positions": r.get("mixed_positions", []),
             "mixed_detail": r.get("mixed_detail", []),
