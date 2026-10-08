@@ -328,12 +328,19 @@ def _detect_mixed_detail(bases: str, trace: Dict[str, List[int]],
         if sorted_a[0] < main_floor:
             continue
         # 退化窗口护栏：四通道面积接近相等（无主导通道）说明基线校正后
-        # 该窗口无真实信号差异，按混合峰处理只会整段误报
-        if sorted_a[1] >= 0.9 * sorted_a[0]:
+        # 该窗口无真实信号差异，按混合峰处理只会整段误报。
+        # 终审 A-19：判据改为「第四名通道仍有显著信号」——真实 1:1 混合/
+        # 杂合的双通道窗口里第三、四通道只有本底噪声（≪ 主峰），而基线
+        # 校正失效的无信号窗口四通道同高。旧判据 sorted_a[1] >= 0.9 主峰
+        # 恰好屏蔽了最典型的 1:1 双峰（实测 ratio 0.92/0.95/1.00 检出 0/5）
+        if sorted_a[3] >= 0.8 * sorted_a[0]:
             continue
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
-            if ratio > MIXED_PEAK_RATIO and areas[base] == sorted_a[0]:
+            # 终审 A-19：去掉 areas[base]==sorted_a[0] 硬要求——真实混合中
+            # basecaller 可能恰好把次要碱基作为 called（次要克隆占多数的位点），
+            # 此时次要通道才是主峰，位点同样应计入双峰
+            if ratio > MIXED_PEAK_RATIO:
                 sec_base = next((b for b in "ACGT" if b != base
                                  and areas.get(b) == sorted_a[1]), None)
                 pullup = False
