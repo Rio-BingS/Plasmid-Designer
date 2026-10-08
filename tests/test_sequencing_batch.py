@@ -193,6 +193,35 @@ def test_batch_rejects_excel_without_plasmid_header(client):
     assert "质粒" in resp.json()["detail"]
 
 
+def test_batch_file_limit_enforced_before_reading(client, monkeypatch):
+    """文件数上限必须在读取任何字节之前生效（2026-10-07 修复，回归锁）：
+
+    旧缺陷——超限请求先把全部文件读进内存再拒绝（每个 20MB × 数百文件 =
+    GB 级 OOM 面）。断言两点：①超限直接 400 且报错文案带上限值；②读取
+    阶段从未执行（_read_limited 打桩为不可调用标记，一旦被碰到测试即失败）
+    """
+    from app.routes import sequencing_routes
+
+    def _must_not_read(f, max_bytes=None):
+        raise AssertionError("超限请求不应读取任何文件字节")
+
+    n = sequencing_routes.MAX_BATCH_FILES + 1
+    files = [("files", (f"{i}.ab1", b"x", "application/octet-stream")) for i in range(n)]
+    with monkeypatch.context() as m:
+        m.setattr(sequencing_routes, "_read_limited", _must_not_read)
+        resp = client.post("/api/sequencing/analyze-batch", files=files)
+    assert resp.status_code == 400
+    assert str(sequencing_routes.MAX_BATCH_FILES) in resp.json()["detail"]
+
+    # 边界内（上限之下）请求不受影响：正常走读取与分析流程
+    resp_ok = client.post("/api/sequencing/analyze-batch", files=[
+        ("files", ("MX-T1.ab1", make_ab1(REF_MX, [40] * len(REF_MX)), "application/octet-stream")),
+        ("files", ("MX.fasta", f">MX\n{REF_MX}\n".encode(), "application/octet-stream")),
+    ])
+    assert resp_ok.status_code == 200, resp_ok.text
+    assert all(it["status"] == "analyzed" for it in resp_ok.json()["items"])
+
+
 def test_batch_rejects_excel_lock_file_by_name(client):
     """Excel 打开信息表时留下的 ~$ 锁文件应被明确拒绝（而非 500 或含糊报错）"""
     resp = _post(client, [_ab1("T1.ab1", REF_MX)],
