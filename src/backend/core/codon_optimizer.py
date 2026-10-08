@@ -131,13 +131,13 @@ class CodonOptimizer:
             "（或通过 custom_codon_table 传入自定义频率表）"
         )
 
-    def _load_codon_frequency_from_yaml(self, species: str) -> Optional[Dict[str, float]]:
-        """从 data/codon_tables 加载 YAML 频率表。"""
+    def _load_codon_frequency_from_yaml(self, species: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+        """从 data/codon_tables 加载 YAML 频率表，返回 (freq, 表名)。"""
         try:
             import yaml
             from pathlib import Path
         except ImportError:
-            return None
+            return None, None
 
         species_key = (species or "ecoli").lower().strip()
         aliases = {
