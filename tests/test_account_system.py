@@ -484,3 +484,58 @@ class TestAdminBootstrap:
         monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "")
         monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "")
         assert bootstrap.bootstrap_admin() is None
+
+    def test_bootstrap_never_promotes_existing_account(self, monkeypatch, db):
+        """终审 B-05 回归锁：已存在的同邮箱普通账号曾被自动提升为管理员
+        并保留原密码、强制 email_verified=True——抢注 ADMIN_EMAIL 即可提权。
+        现在必须拒绝自动提升并保持账号原状。"""
+        from app.config import settings as app_settings
+        from app.auth import bootstrap
+        from app.auth.jwt_auth import hash_password
+        from app.database.crud import create_user, get_user_by_email
+
+        create_user(TestingSession(), email="hijack@test.com", username="hijack",
+                    hashed_password=hash_password("attacker-password"),
+                    is_admin=False, email_verified=False)
+        db.commit()
+
+        monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "hijack@test.com")
+        monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "legit-admin-pass")
+        monkeypatch.setattr("app.database.SessionLocal", TestingSession)
+        assert bootstrap.bootstrap_admin() == "exists_non_admin"
+        u = get_user_by_email(TestingSession(), "hijack@test.com")
+        assert not u.is_admin, "抢注账号不得被自动提升"
+        assert not u.email_verified, "email_verified 不得被强制置真"
+
+
+class TestSecretKeyEnforcement:
+    """终审 B-04 回归锁：占位/弱 SECRET_KEY 在非 DEBUG 下必须拒绝启动。"""
+
+    def _run_lifespan(self, monkeypatch, key: str, debug: bool):
+        import asyncio
+        import app.main as app_main
+        from app.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "SECRET_KEY", key)
+        monkeypatch.setattr(app_settings, "DEBUG", debug)
+
+        async def _drive():
+            async with app_main.lifespan(app_main.app):
+                pass
+
+        return asyncio.run(_drive())
+
+    def test_placeholder_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "change_this_in_production", debug=False)
+
+    def test_short_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "a" * 31, debug=False)
+
+    def test_placeholder_secret_warns_only_in_debug(self, monkeypatch):
+        # DEBUG 下不抛错（本地开发零配置可用）
+        self._run_lifespan(monkeypatch, "dev-insecure-secret-key-change-me", debug=True)
+
+    def test_strong_secret_passes_when_not_debug(self, monkeypatch):
+        self._run_lifespan(monkeypatch, "x" * 64, debug=False)

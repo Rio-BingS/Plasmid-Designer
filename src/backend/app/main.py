@@ -30,14 +30,21 @@ async def lifespan(app: FastAPI):
     print(f"🧬 Plasmid Designer API v{settings.APP_VERSION}")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
-    # JWT 密钥占位值告警：compose 兜底值或开发默认值进入生产 = 任何人可自签
-    # 令牌冒充任意用户。只告警不阻断（保持本地开发零配置可用）
+    # JWT 密钥治理（终审 B-04）：占位值/弱密钥在非 DEBUG 下直接拒绝启动——
+    # 公开仓库默认值进入生产 = 任何人可自签令牌冒充任意用户，仅告警不够。
+    # DEBUG=True（本地开发）保留占位值可用，维持零配置体验。
     _SECRET_PLACEHOLDERS = ("dev-insecure-secret-key-change-me",
-                            "change_this_in_production")
-    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS:
-        print("🚨 SECRET_KEY 仍是公开仓库中的占位值——JWT 任何人可伪造！"
-              "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32；"
-              "deploy.sh 首次部署会自动生成）")
+                            "change_this_in_production",
+                            "change_this_in_production_use_strong_random_string")
+    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS or len(settings.SECRET_KEY) < 32:
+        if settings.DEBUG:
+            print("🚨 SECRET_KEY 是占位值/弱密钥（DEBUG 模式仅告警）——"
+                  "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32）")
+        else:
+            raise RuntimeError(
+                "SECRET_KEY 为占位值或长度 <32，拒绝启动（生产环境必须在 .env "
+                "设置强随机密钥：openssl rand -hex 32。本地开发请设 DEBUG=true）"
+            )
 
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
     # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
