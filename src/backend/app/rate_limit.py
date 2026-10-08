@@ -225,7 +225,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # 跳过健康检查和静态文件
         if request.url.path in ["/health", "/"] or request.url.path.startswith(("/static", "/assets")):
             return await call_next(request)
-        
+
+        # 终审 C-05：预检 OPTIONS 不计入限流配额（浏览器对跨域预检无法重试，
+        # 计入配额会让正常前端被 429 卡死；429 响应本身已由最外层 CORS 补头）
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # 确定端点类型
         endpoint = self._get_endpoint_type(request)
         limit_config = self.limits.get(endpoint, self.limits["default"])

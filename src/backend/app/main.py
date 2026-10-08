@@ -72,19 +72,9 @@ app = FastAPI(
 
 # ==================== 中间件 ====================
 
-# CORS 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或 JSON 数组），
-# 生产环境务必配置具体域名而非通配
-_cors_origins = settings.cors_origins_list
-_allow_all_origins = "*" in _cors_origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
-    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
-    allow_credentials=not _allow_all_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# （CORS 中间件在本文件末尾、所有中间件之后添加——add_middleware
+# 后添加者为外层，CORS 必须位于最外层才能给 429/5xx 响应补 CORS 头，
+# 否则浏览器只看到 Network Error 而非真实状态码，见终审 C-05）
 
 
 # ==================== 根路径 & 健康检查 ====================
@@ -152,6 +142,22 @@ app.add_middleware(AuthStateMiddleware)
 # 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
 from app.middleware import setup_middleware
 setup_middleware(app)
+
+# CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
+# 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。
+# 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或
+# JSON 数组）；生产环境务必配置具体域名而非通配
+_cors_origins = settings.cors_origins_list
+_allow_all_origins = "*" in _cors_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
+    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
+    allow_credentials=not _allow_all_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ==================== 直接运行 ====================

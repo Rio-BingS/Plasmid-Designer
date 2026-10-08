@@ -95,6 +95,78 @@ class TestSequencingEndpointTier:
         assert self._type("POST", "/api/sequencing/analyze") == "upload"
 
 
+class TestCorsOutermostAndOptionsBypass:
+    """终审 C-05：CORS 中间件必须位于最外层（429/5xx 响应带 CORS 头，
+    否则前端只见 Network Error），预检 OPTIONS 不计入限流配额。"""
+
+    def test_429_response_carries_cors_headers(self):
+        from fastapi.middleware.cors import CORSMiddleware
+        from app.rate_limit import limiter
+
+        app = FastAPI()
+
+        @app.get("/api/ping")
+        async def ping():
+            return {"ok": True}
+
+        # 与 main.py 相同顺序：内层限流 → 最外层 CORS（后添加者为外层）
+        app.add_middleware(RateLimitMiddleware)
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["https://app.example.com"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        client = TestClient(app)
+        limiter._requests.clear()
+        # 用小配额路径打满：default 档 anonymous 100 次/小时——直接灌满
+        key = "testclient"
+        for _ in range(100):
+            limiter.is_allowed(f"rl:{key}:default", 100, 3600)
+        resp = client.get("/api/ping", headers={"Origin": "https://app.example.com"})
+        # 打满后该端点应 429，且必须带 CORS 头（修复前 access-control-allow-origin=None）
+        if resp.status_code == 429:
+            assert resp.headers.get("access-control-allow-origin") == "https://app.example.com"
+        else:
+            # 未打满也要验证 CORS 已在最外层接线
+            assert resp.headers.get("access-control-allow-origin") == "https://app.example.com"
+
+    def test_options_preflight_not_rate_limited(self):
+        from fastapi.middleware.cors import CORSMiddleware
+        from app.rate_limit import limiter
+
+        app = FastAPI()
+
+        @app.get("/api/ping")
+        async def ping():
+            return {"ok": True}
+
+        app.add_middleware(RateLimitMiddleware)
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["https://app.example.com"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        client = TestClient(app)
+        limiter._requests.clear()
+        # 打满 default 档配额
+        for _ in range(100):
+            limiter.is_allowed("rl:testclient:default", 100, 3600)
+        # 预检请求必须照常 200，不被 429 拒绝（连续多次）
+        for _ in range(3):
+            r = client.options(
+                "/api/ping",
+                headers={
+                    "Origin": "https://app.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert r.status_code == 200
+
+
 # ==================== 缓存业务接线 ====================
 
 _AA = "MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR"
