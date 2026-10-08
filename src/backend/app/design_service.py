@@ -276,6 +276,10 @@ def process_sequence(
             gc_target=(gc_min / 100, gc_max / 100),
             avoid_motifs=motifs,
         )
+        # 终审 D-04：未知限制酶、经优化仍无法排除的位点这两条局部告警
+        # 此前被整体丢弃（exclude_enzymes=["NotAnEnzyme"] 返回 warnings=[]，
+        # 用户以为序列干净直接下单合成），必须合并进返回值
+        warnings.extend(result.warnings)
         if motifs:
             kept = [m for m in motifs if m in result.dna_sequence]
             if kept:
@@ -293,12 +297,13 @@ def process_sequence(
                     "dna_sequence": result.dna_sequence,
                     "cai": result.cai,
                     "gc_content": result.gc_content * 100,
-                    "warnings": list(result.warnings),
+                    # 缓存键含 exclude_enzymes，告警与该输入绑定，可整体缓存
+                    "warnings": list(warnings),
                 },
             )
         except Exception:
             pass
-        return result.dna_sequence, result.cai, result.gc_content * 100, list(result.warnings)
+        return result.dna_sequence, result.cai, result.gc_content * 100, list(warnings)
 
     # 不优化：按物种频率忠实反翻译（最高频密码子，不做 GC 迭代）
     dna = optimizer.back_translate(seq)
