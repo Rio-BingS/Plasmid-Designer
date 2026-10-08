@@ -746,16 +746,29 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
 
     反向 read 的 query 是 revcomp：query 列索引 qi ↔ 原始电泳坐标 n-qi
     （1-based，与 aligner 的 read_pos 镜像同式），mixed_detail 的 pos 即
-    原始电泳坐标，经此表即可与参考坐标互换。"""
+    原始电泳坐标，经此表即可与参考坐标互换。
+
+    终审 A-20：局部比对会把 read 端部的 junk/低质量段软剪切掉——对齐内
+    相对列号不是 trimmed read 坐标，必须加上 query_start 偏移（aligner
+    已输出对齐块在原始 query 内的 1-based 起止）。"""
     aligned = (r.get("alignment") or {}).get("aligned") or {}
     ref_s = (aligned.get("ref_aligned") or "").upper()
     read_s = (aligned.get("read_aligned") or "").upper()
     if not ref_s or len(ref_s) != len(read_s):
         return {}, {}
-    direction = (r.get("alignment") or {}).get("direction", "+")
+    aln = r.get("alignment") or {}
+    direction = aln.get("direction", "+")
     n = len(r.get("trimmed_bases") or "")
     q_aligned = aligned.get("q_aligned") or []
-    ref_pos = int(aligned.get("ref_start") or (r.get("alignment") or {}).get("ref_start") or 1)
+    ref_pos = int(aligned.get("ref_start") or aln.get("ref_start") or 1)
+    # 对齐块在原始（修剪后）read 内的 1-based 起点：正向 = query_start；
+    # 反向 read 的 query 是 revcomp，对齐块第 0 列对应原始电泳的 query_end 位置
+    qs = aln.get("query_start")
+    qe = aln.get("query_end")
+    if qs is not None and qe is not None:
+        block_first = int(qs) if direction == "+" else int(qe)
+    else:
+        block_first = 1  # 旧记录回退（无软剪切时恰为 1）
     read2ref: Dict[int, int] = {}
     ref2call: Dict[int, Dict] = {}
     qi = -1
@@ -763,7 +776,9 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
         qb = read_s[i]
         if qb != "-":
             qi += 1
-            orig = (n - qi) if direction == "-" else (qi + 1)
+            # 原始电泳 1-based 坐标：正向从 block_first 递增；
+            # 反向 read 对齐块第 0 列位于 block_first（=query_end），向左递减
+            orig = (block_first - qi) if direction == "-" else (block_first + qi)
         else:
             orig = None
         if rb != "-":
