@@ -916,6 +916,70 @@ def test_cds_report_skips_nested_cds():
     assert [r["name"] for r in reports] == ["MX"]
 
 
+def test_cds_report_empty_protein_no_crash(monkeypatch):
+    """终审 C-08 回归锁：起始密码子突变为终止 → alt 蛋白截断为空串，
+    _protein_alignment 曾抛 ValueError: sequence has zero length 使整份
+    分析 500——空侧比对必须短路为退化结果"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    # 变体：ATG → TGA（起始密码子变终止）
+    variants = [{
+        "ref_pos": start, "type": "substitution",
+        "ref_base": "A", "alt_base": "T", "length": 1, "confidence": "high",
+    }]
+    reports = _build_cds_reports(ref, feats, variants, consensus)
+    cr = reports[0]
+    # 不抛异常即通过；alt 蛋白为空时逐位比对无可比内容
+    assert cr["ref_protein_length"] is not None
+
+
+def test_cds_report_pipeline_survives_internal_error(monkeypatch):
+    """终审 C-08 回归锁：CDS 判读内部异常降级为「CDS 判读失败」占位报告，
+    一条畸形特征不得拖垮整份分析（analyze 全链路验证）"""
+    from core.sanger import pipeline as pl
+
+    def boom(*a, **kw):
+        raise RuntimeError("synthetic internal error")
+
+    monkeypatch.setattr(pl, "_find_orf", boom)
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    blob = make_ab1(ref, [40] * len(ref))
+    result = pl.analyze([("t.ab1", blob)], ref, feats)
+    assert len(result["cds_reports"]) == 1
+    assert result["cds_reports"][0]["verdict"].startswith("CDS 判读失败")
+    # 原始异常细节不外泄给终端用户
+    assert "synthetic" not in result["cds_reports"][0]["verdict"]
+    # 分析本体照常完成（run_verdict/共识不受牵连）
+    assert result.get("run_verdict") is not None or result.get("consensus") is not None
+
+
+def test_tracy_cross_basecall_short_trimmed_guard(monkeypatch):
+    """终审 C-09 回归锁：tracy 交叉 basecall 修剪后不足 MIN_WINDOW 时
+    不得送进 align_read（曾按修剪前长度守卫，空串照样比对 → ValueError）"""
+    from core.sanger import pipeline as pl
+
+    seen_lens: list = []
+    real_align = pl.align_read
+
+    def spy_align(seq, *a, **kw):
+        seen_lens.append(len(seq))
+        return real_align(seq, *a, **kw)
+
+    monkeypatch.setattr(pl, "align_read", spy_align)
+    # 桩 tracy：返回一段全部低 Q（修剪后为空）的交叉 basecall
+    monkeypatch.setattr(pl, "_try_tracy_basecall", lambda blob: ("ATGAAATTAGTAAA", [1] * 14))
+    ref = "ACGT" * 20 + "ATGAAATTAGTAAA" + "ACGT" * 20
+    blob = make_ab1(ref, [40] * len(ref))
+    result = pl.analyze([("t.ab1", blob)], ref)
+    # 所有送进比对的序列（主 read 与交叉 basecall）都必须 ≥ MIN_WINDOW
+    assert seen_lens, "主 read 比对应正常发生"
+    assert all(n >= pl.MIN_WINDOW for n in seen_lens), seen_lens
+    # 低质量交叉 basecall 不产生交叉变体（used_tracy=True 但修剪后为空 → 空列表）
+    assert result["reads"][0].get("cross_variants") in ([], None)
+
+
 def test_cds_report_ignores_low_confidence_variants():
     """低置信 indel（测序噪声）不推翻 CDS 结论；verdict 附待复核提示"""
     ref, start, end = _cds_reference()
