@@ -1652,6 +1652,39 @@ def test_mixed_sample_widespread_end_to_end():
     assert "8 处双峰" in out and "无法自动判定" in out
 
 
+def test_mixed_equal_ratio_sites_not_shielded():
+    """终审 A-19 回归锁：退化窗口护栏曾用「次峰 >= 0.9 主峰 → 整体屏蔽」，
+    最典型的 1:1 杂合/混合（ratio 0.92/0.95/1.00）被整体判无——这是最危险
+    的假阴性（批量归入「正确」文件夹）。护栏改判第四名通道后，ratio≈1
+    的真双峰必须全部检出；同时 called=次要碱基（次要克隆占多数）的位点
+    不再因 areas[base]!=主峰 被丢掉。"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+
+    def _mix(level, equal=False):
+        traces = {ch: [] for ch in "ATGC"}
+        for b in ref:
+            for ch in "ATGC":
+                traces[ch].append(100 if ch == b else 4)
+        for pos, alt in sites.items():
+            traces[alt][pos] = 100 if equal else level
+        return make_ab1(ref, [40] * len(ref), traces=[traces[c] for c in "ATGC"])
+
+    for label, level, equal in (("ratio 0.92", 92, False), ("ratio 0.96", 96, False),
+                                ("1:1 equal", 0, True)):
+        r = analyze([("m.ab1", _mix(level, equal))], ref, [])
+        prof = r.get("mixed_profiles", {}).get("m.ab1", {})
+        assert prof.get("class") == "widespread", f"{label}: {prof}"
+        assert prof.get("count") == 8, f"{label}: {prof}"
+
+    # 无信号窗口（四通道全 4）仍被护栏屏蔽——不因放宽而整段误报
+    flat = {ch: [4] * 600 for ch in "ATGC"}
+    from core.sanger.pipeline import _detect_mixed_detail
+    detail = _detect_mixed_detail(ref, flat, list(range(600)))
+    assert detail == []
+
+
 def test_traces_payload_trim_start_and_mixed_detail():
     """前端比对峰图融合视图的数据契约：traces 载荷带 trim_start（peak_indices
     按原始 read 碱基索引，前端换算采样窗需要修剪偏移）；per-read mixed_detail
