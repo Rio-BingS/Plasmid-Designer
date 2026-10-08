@@ -564,7 +564,7 @@ def _base_variant(**kw):
 
 
 def test_deletion_shifts_downstream_site_not_reported():
-    """缺失使下游 BsaHI(GAYG) 位点整体平移：不应误报为 破坏+新增"""
+    """缺失使下游 BsaHI(GRCGYC) 位点整体平移：不应误报为 破坏+新增"""
     ref = "A" * 15 + "GACG" + "C" * 15   # BsaHI 位于 16-19
     v = _base_variant(ref_pos=13, type="deletion", length=3, ref_base="AAA", alt_base="-")
     annotate_variant(v, [], ref)
@@ -1307,7 +1307,7 @@ def test_estimate_run_length_rescues_merged_peaks():
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
     result = analyze([("f.ab1", blob)], ref, [])
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
-    assert hp["peak_count_estimate"] == 0     # 峰数法失效（现有行为）
+    assert hp["peak_count_estimate"] is None  # 合并 read 的 pc=0 是"无可分辨峰"非真实计数，不进估计（2026-10-08 起）
     assert hp["count_reliable"] is False
     assert 28 <= hp["length_estimate"] <= 32
     assert hp["length_method"] == "width"
@@ -1939,6 +1939,51 @@ def test_poly_joint_coverage_partial_reads_accepted():
     assert hp["observed_repeat_count"] == 30
     assert hp["count_reliable"] is True
     assert {v["filename"] for v in hp["verdict_votes"]} == {"a.ab1", "b.ab1"}
+
+
+def test_poly_accepted_with_unreliable_anchor_notes_position_doubt():
+    """锚定分级「只标注、不把关」的补强（2026-10-08）：accepted 只确证
+    「重复数」不确证「位置」——投票 read 的锚定路标踩在信号异常区
+    （read 边缘）时，结论必须显式写明「计数确证但定位存疑」；
+    锚可靠时不出现该注记（零回归）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # 边缘 read（54bp，过最短读长门槛）：左右路标都落在 read 首尾 20bp
+    # 信号爬升/下降区 → anchor_grade=marginal，投票 accepted 照旧成立
+    edge = ref[60:114]
+    traces = _shaped_traces(edge, poly_span=(20, 50), real_peaks=30)
+    blob = make_ab1(edge, [40] * len(edge), traces=traces, samples_per_base=4)
+    result = analyze([("edge.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "accepted"
+    assert hp.get("vote_anchor_grade") in ("marginal", "unreliable")
+    assert "计数确证但定位存疑" in result["conclusion"]
+
+    # 对照：完整 read、锚可靠 → 无注记
+    full = ref[40:170]
+    t_full = _shaped_traces(full, poly_span=(40, 70), real_peaks=30)
+    r2 = analyze([("f.ab1", make_ab1(full, [40] * len(full),
+                                     traces=t_full, samples_per_base=4))], ref, [])
+    assert "计数确证但定位存疑" not in r2["conclusion"]
+
+
+def test_poly_peak_count_estimate_ignores_merged_zero_counts():
+    """peak_count_estimate 潜伏污染回归锁（2026-10-08）：合并 read 的
+    peak_count=0 是「无可分辨峰」不是真实计数——极端 [30,0,0] 旧口径
+    中位数为 0，把可分辨 read 的 30 压没；新口径只聚合 >0 的计数。
+    混合场景：正向可分辨 30 峰 + 反向合并高台（pc=0）→ estimate=30"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    fwd = ref[40:170]
+    t_fwd = _shaped_traces(fwd, poly_span=(40, 70), real_peaks=30)
+    rev = fwd.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    t_rev = _shaped_traces(rev, poly_span=(60, 90), real_peaks=30, channel="T")
+    t_rev[1][60 * 4:90 * 4] = [100] * 120   # 反向 polyT 高台 → pc=0
+    reads = [
+        ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
+        ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["peak_count_estimate"] == 30   # 旧口径会算出 0
 
 
 def test_poly_joint_coverage_gap_falls_back():

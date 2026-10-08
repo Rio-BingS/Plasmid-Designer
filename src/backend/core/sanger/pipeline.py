@@ -950,6 +950,35 @@ def _peak_verdict_phrase(e: Dict) -> str:
     return f"poly({e['base']}) 碱基类型完整：实测 {m} 个，参考 {ref} 个"
 
 
+# 锚定分级劣序（rank 越大越差）：取投票 read 的最差分级用
+_ANCHOR_RANK = {"reliable": 0, "one-sided": 1, "marginal": 2, "unreliable": 3}
+
+
+def _poly_anchor_notes(homopolymer_report: List[Dict]) -> List[str]:
+    """accepted 但投票 read 的锚定分级不可靠的 run → 「计数确证但定位存疑」
+
+    run_verdict=accepted 只由可分辨峰计数互证产生，确证的是「重复数」；
+    run 起止定位依赖两侧路标碱基（锚），锚踩在信号异常区（边缘/低 Q/
+    混合峰/压缩区）时位置仍可能整体偏移。此前该信息只藏在逐 read 的
+    anchor_grade 字段里，结论不体现——用户容易误以为位置也确证了。
+    """
+    notes: List[str] = []
+    for e in homopolymer_report:
+        if e.get("run_verdict") != "accepted":
+            continue
+        g = e.get("vote_anchor_grade") or "reliable"
+        if _ANCHOR_RANK.get(g, 1) < _ANCHOR_RANK["marginal"]:
+            continue
+        reason = ("路标落在信号异常区" if g == "unreliable"
+                  else "路标处于信号边缘或单侧锚定")
+        notes.append(
+            f"注意：{_run_label(e)} {e['start']}-{e['end']} 重复数已由峰图"
+            f"计数确证（{e.get('observed_repeat_count', '?')} 个），但该 run"
+            f"的锚定路标不可靠（{reason}）——计数确证但定位存疑，run 起止"
+            "可能整体偏移数 bp，建议对照图谱核对边界")
+    return notes
+
+
 def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
     """单个路标碱基的信号可靠度分级（run 定位置信度 = 两侧路标中较差者）
 
@@ -2148,10 +2177,12 @@ def analyze(
                         *_anchor_verdict_for_read(r, run, aln)),
                 })
         entry["read_counts"] = run_reads
-        full_pcs = [x["peak_count"] for x in run_reads
-                    if x["coverage"] == "full" and x["peak_count"] is not None]
         # 整段重复数的峰图估计只聚合完整覆盖 read：部分覆盖 read 的峰数
-        # 只对应覆盖段，混入会把"段内计数"误当"整段计数"
+        # 只对应覆盖段，混入会把"段内计数"误当"整段计数"；合并 read 的
+        # peak_count=0 是"无可分辨峰"而非真实计数，混进中位数会把极端
+        # [30,0,0] 压成 0——只取 >0 的可分辨计数（全合并则无证据 → None）
+        full_pcs = [x["peak_count"] for x in run_reads
+                    if x["coverage"] == "full" and x["peak_count"]]
         entry["peak_count_estimate"] = (sorted(full_pcs)[len(full_pcs) // 2]
                                         if full_pcs else None)
         est_pool = [x for x in run_reads if x["length_estimate"] is not None]
@@ -2214,6 +2245,13 @@ def analyze(
             else:
                 break                          # 段间缺口
         joint_ok = bool(joint_votes) and _cursor == run["end"]
+        # 投票 read 的锚定分级最差者（accepted 只确证「重复数」，不确证
+        # 「位置」——路标踩在信号异常区时 run 起止定位仍可能偏移，结论
+        # 需显式写明，见 _poly_anchor_notes）
+        if votes or joint_votes:
+            entry["vote_anchor_grade"] = max(
+                (x.get("anchor_grade") or "reliable" for x in (votes or joint_votes)),
+                key=lambda g: _ANCHOR_RANK.get(g, 1))
         if votes:
             pcs = sorted({x["peak_count"] for x in votes})
             if len(pcs) == 1 and (not joint_ok or joint_total == pcs[0]):
@@ -2479,6 +2517,8 @@ def analyze(
                 f"注意：{names}{more} 的比对端点落在同聚物区内部"
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
+        poly_warnings.extend(_poly_anchor_notes(homopolymer_report))
         # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
         all_lines = ([conclusion] + mixed_lines + cds_lines + poly_warnings
                      + dropout_notes + [end_note])
@@ -2573,6 +2613,8 @@ def analyze(
                 f"注意：{names}{more} 的比对端点落在同聚物区内部"
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
+        lines.extend(_poly_anchor_notes(homopolymer_report))
         lines.append(end_note)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""
