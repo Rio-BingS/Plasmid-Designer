@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from collections import Counter
 import math
 
-from core.seq_utils import CODON_TABLE, gc_fraction
+from core.seq_utils import CODON_TABLE, gc_fraction, revcomp as _seq_revcomp
 
 
 @dataclass
@@ -231,9 +231,17 @@ class CodonOptimizer:
             if aa not in valid_aa:
                 raise ValueError(f"无效的氨基酸代码: {aa}")
 
-        # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重
+        # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重。
+        # 终审 A-03：motif 匹配此前只扫正链——非回文 Type IIS 位点
+        # （BsaI GGTCTC/GAGACC、BsmBI CGTCTC/GAGACG、BbsI GAAGAC/GTCTTC）
+        # 的反向互补形式在反链残留（实测 100 条随机蛋白 3 条带反链 BsaI）。
+        # 每个避让 motif 同时加入其反向互补序列。
         censor = self._censor_motifs()
-        all_avoid = list(dict.fromkeys([m.upper() for m in avoid_motifs] + censor))
+        expanded: List[str] = []
+        for m in avoid_motifs:
+            m = m.upper()
+            expanded.extend((m, _seq_revcomp(m)))
+        all_avoid = list(dict.fromkeys(expanded + censor))
 
         # 初始优化：5' 翻译起始区用中等频率密码子（translational ramp），
         # 其余位置选最高频密码子
