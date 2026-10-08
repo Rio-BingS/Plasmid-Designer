@@ -1,4 +1,4 @@
-"""内存存储实现 — 用于 HuggingFace 等无需持久化的部署"""
+"""内存存储实现 — 无需持久化的部署（测试/演示）用"""
 
 from copy import deepcopy
 from typing import Optional, List, Dict, Any

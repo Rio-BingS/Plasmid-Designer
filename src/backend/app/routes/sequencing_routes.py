@@ -478,6 +478,10 @@ async def analyze_sequencing_batch(
     """
     if not files:
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
+    # 文件数上限在读取任何字节之前生效：否则超限请求会把全部文件读进内存
+    # （每个 20MB 上限 × 数百个文件 = GB 级 OOM 面）才被拒绝
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
 
     reads: List[Dict] = []
     refs: List[Dict] = []

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Plasmid Designer Docker 部署脚本
-# 在 deploy/docker/ 目录下运行
+# 在仓库任意位置运行均可（脚本自行切换到 deploy/docker/）
 
 set -e
 
@@ -32,8 +32,8 @@ fi
 echo "使用 Compose 命令: $COMPOSE_CMD"
 echo ""
 
-# 切换到 docker 目录
-cd "$SCRIPT_DIR"
+# 切换到 compose 文件所在目录（.env.example、docker-compose.yml 都在这里）
+cd "$SCRIPT_DIR/../docker"
 
 # 创建环境文件
 if [ ! -f .env ]; then
@@ -71,7 +71,7 @@ FRONTEND_PORT=${FRONTEND_PORT:-80}
 
 # 创建必要目录
 echo "创建数据目录..."
-mkdir -p "$PROJECT_ROOT/data/vectors" "$PROJECT_ROOT/data/codon_tables" "$PROJECT_ROOT/output" "$SCRIPT_DIR/ssl" 2>/dev/null || true
+mkdir -p "$PROJECT_ROOT/data/vectors" "$PROJECT_ROOT/data/codon_tables" "$PROJECT_ROOT/output" "$SCRIPT_DIR/../docker/ssl" 2>/dev/null || true
 
 # 确认数据文件存在
 if [ ! -f "$PROJECT_ROOT/data/vectors/pET-28a.yaml" ]; then

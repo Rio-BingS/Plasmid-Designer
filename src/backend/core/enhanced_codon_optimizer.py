@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
+from core.seq_utils import CODON_TABLE as _STD_CODON_TABLE, gc_fraction
+
 
 class OptimizationLevel(Enum):
     AGGRESSIVE = "aggressive"
@@ -42,30 +44,8 @@ class EnhancedCodonOptimizer:
     # 稀有密码子阈值 (使用频率 < 10%)
     RARE_CODON_THRESHOLD = 0.10
     
-    # 标准遗传密码表
-    CODON_TABLE = {
-        'F': ['TTT', 'TTC'],
-        'L': ['TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG'],
-        'I': ['ATT', 'ATC', 'ATA'],
-        'M': ['ATG'],
-        'V': ['GTT', 'GTC', 'GTA', 'GTG'],
-        'S': ['TCT', 'TCC', 'TCA', 'TCG', 'AGT', 'AGC'],
-        'P': ['CCT', 'CCC', 'CCA', 'CCG'],
-        'T': ['ACT', 'ACC', 'ACA', 'ACG'],
-        'A': ['GCT', 'GCC', 'GCA', 'GCG'],
-        'Y': ['TAT', 'TAC'],
-        'H': ['CAT', 'CAC'],
-        'Q': ['CAA', 'CAG'],
-        'N': ['AAT', 'AAC'],
-        'K': ['AAA', 'AAG'],
-        'D': ['GAT', 'GAC'],
-        'E': ['GAA', 'GAG'],
-        'C': ['TGT', 'TGC'],
-        'W': ['TGG'],
-        'R': ['CGT', 'CGC', 'CGA', 'CGG', 'AGA', 'AGG'],
-        'G': ['GGT', 'GGC', 'GGA', 'GGG'],
-        '*': ['TAA', 'TAG', 'TGA'],
-    }
+    # 标准遗传密码表（收敛到 core.seq_utils）
+    CODON_TABLE = _STD_CODON_TABLE
     
     def __init__(
         self,
@@ -354,10 +334,8 @@ class EnhancedCodonOptimizer:
         return math.exp(log_sum / len(w_values)) if w_values else 0
     
     def _calculate_gc_content(self, dna_seq) -> float:
-        """计算GC含量"""
-        if not dna_seq:
-            return 0
-        return (dna_seq.count('G') + dna_seq.count('C')) / len(dna_seq)
+        """计算GC含量（收敛到 core.seq_utils）"""
+        return gc_fraction(dna_seq or "")
     
     def _calculate_gc_distribution(self, dna_seq, window=50) -> List[float]:
         """计算GC分布"""

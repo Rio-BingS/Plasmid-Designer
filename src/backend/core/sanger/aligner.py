@@ -8,13 +8,9 @@ from typing import Dict, List, Optional, Tuple
 
 from Bio.Align import PairwiseAligner
 
+from core.seq_utils import revcomp  # noqa: F401  # 共享实现；测试与 pipeline 亦从此处导入
+
 _ALIGNER = None
-
-_COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
-
-
-def revcomp(seq: str) -> str:
-    return seq.translate(_COMPLEMENT)[::-1]
 
 
 def _get_aligner() -> PairwiseAligner:

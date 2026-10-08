@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from collections import Counter
 import math
 
+from core.seq_utils import CODON_TABLE, gc_fraction
+
 
 @dataclass
 class CodonOptimizationResult:
@@ -56,36 +58,9 @@ HOST_CLASS = {
 }
 
 
-# 标准遗传密码表
-CODON_TABLE = {
-    'F': ['TTT', 'TTC'],
-    'L': ['TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG'],
-    'I': ['ATT', 'ATC', 'ATA'],
-    'M': ['ATG'],
-    'V': ['GTT', 'GTC', 'GTA', 'GTG'],
-    'S': ['TCT', 'TCC', 'TCA', 'TCG', 'AGT', 'AGC'],
-    'P': ['CCT', 'CCC', 'CCA', 'CCG'],
-    'T': ['ACT', 'ACC', 'ACA', 'ACG'],
-    'A': ['GCT', 'GCC', 'GCA', 'GCG'],
-    'Y': ['TAT', 'TAC'],
-    'H': ['CAT', 'CAC'],
-    'Q': ['CAA', 'CAG'],
-    'N': ['AAT', 'AAC'],
-    'K': ['AAA', 'AAG'],
-    'D': ['GAT', 'GAC'],
-    'E': ['GAA', 'GAG'],
-    'C': ['TGT', 'TGC'],
-    'W': ['TGG'],
-    'R': ['CGT', 'CGC', 'CGA', 'CGG', 'AGA', 'AGG'],
-    'G': ['GGT', 'GGC', 'GGA', 'GGG'],
-    '*': ['TAA', 'TAG', 'TGA'],
-}
-
-# 反向密码子表
-AMINO_ACID_TABLE = {}
-for aa, codons in CODON_TABLE.items():
-    for codon in codons:
-        AMINO_ACID_TABLE[codon] = aa
+# 标准遗传密码表收敛到 core.seq_utils
+# AMINO_ACID_TABLE（密码子 → 氨基酸）保留为兼容别名
+from core.seq_utils import CODON_TO_AA as AMINO_ACID_TABLE
 
 
 class CodonOptimizer:
@@ -393,6 +368,11 @@ class CodonOptimizer:
         use_ramp=True 时，5' 翻译起始区（前 RAMP_CODONS 个密码子）使用
         中等频率密码子（translational ramp：起始区避免高频/稀有聚集），
         其余位置选最高频密码子。
+
+        中等频率按**频率中位**取：在该氨基酸同义密码子家族的频率值中位数
+        附近选密码子。对双密码子家族（如 Lys 0.74/0.26）排序取中位会选到
+        低频密码子，与 ramp「避开稀有密码子」的目标相反——改为选频率最接近
+        频率中位数的密码子（并列取更高频，避免滑向稀有端）。
         """
         codons = []
         for idx, aa in enumerate(aa_sequence):
@@ -402,8 +382,13 @@ class CodonOptimizer:
 
             ranked = sorted(available_codons, key=lambda c: -self.codon_freq.get(c, 0))
             if use_ramp and idx < RAMP_CODONS and len(ranked) > 1:
-                # 中等频率：排序后取中位（避开最高频与稀有密码子）
-                codon = ranked[len(ranked) // 2]
+                freqs = sorted(self.codon_freq.get(c, 0.0) for c in ranked)
+                mid = (len(freqs) - 1) // 2
+                freq_median = (freqs[mid] + freqs[mid + 1]) / 2 \
+                    if len(freqs) % 2 == 0 else freqs[mid]
+                # 频率最接近中位者；并列取更高频（ranked 已按频率降序，先出现者胜）
+                codon = min(ranked, key=lambda c: abs(
+                    self.codon_freq.get(c, 0.0) - freq_median))
             else:
                 codon = ranked[0]
             codons.append(codon)
@@ -646,12 +631,28 @@ class CodonOptimizer:
             if nt * threshold in dna:
                 return True
         return False
-    
+
+    @staticmethod
+    def _longest_homopolymer_run(dna: str) -> int:
+        """最长同聚 run 长度（任意碱基）"""
+        best = cur = 1
+        for a, b in zip(dna, dna[1:]):
+            cur = cur + 1 if a == b else 1
+            if cur > best:
+                best = cur
+        return best if dna else 0
+
     def _break_poly_x(self, dna_list: List[str], aa_seq: str) -> List[str]:
-        """尝试替换覆盖同聚核苷酸区的同义密码子，并保证算法终止。"""
+        """尝试替换覆盖同聚核苷酸区的同义密码子，并保证算法终止。
+
+        进展判据是「最长同聚 run 缩短或消除」而非「count(4-mer) 减少」：
+        对长度 ≥8 的 run，3 倍步长的密码子平移会让 count(4-mer) 保持不变
+        （窗口滑动），旧判据会在原地卡死、poly 区永远无法被打破。
+        """
         for nt in 'ATGC':
             pattern = nt * 4
             max_replacements = max(1, len(aa_seq) * 2)
+            base_run = self._longest_homopolymer_run(''.join(dna_list))
 
             for _ in range(max_replacements):
                 dna = ''.join(dna_list)
@@ -678,8 +679,12 @@ class CodonOptimizer:
                     )
                     for alternative in alternatives:
                         candidate = dna[:start] + alternative + dna[start + 3:]
-                        if candidate.count(pattern) < dna.count(pattern):
-                            dna_list[start:start + 3] = alternative
+                        # 接受条件：poly 总数下降 **或** 最长 run 缩短
+                        if (candidate.count(pattern) < dna.count(pattern)
+                                or self._longest_homopolymer_run(candidate)
+                                < self._longest_homopolymer_run(dna)):
+                            # 只替换同义密码子，保持翻译产物
+                            dna_list[start:start + 3] = list(alternative)
                             changed = True
                             break
                     if changed:
@@ -722,11 +727,8 @@ class CodonOptimizer:
         return cai
     
     def _calculate_gc_content(self, dna_seq: str) -> float:
-        """计算GC含量"""
-        if not dna_seq:
-            return 0.0
-        gc = dna_seq.count('G') + dna_seq.count('C')
-        return gc / len(dna_seq)
+        """计算GC含量（0-1 比例，收敛到 core.seq_utils）"""
+        return gc_fraction(dna_seq)
     
     def _calculate_gc_distribution(self, dna_seq: str, window: int = 50) -> List[float]:
         """计算GC分布（滑动窗口）"""
