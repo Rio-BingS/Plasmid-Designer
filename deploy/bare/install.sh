@@ -367,13 +367,21 @@ fi
 # 创建 symlink
 ln -sf /etc/nginx/sites-available/plasmid-designer /etc/nginx/sites-enabled/plasmid-designer
 
-# 删除默认站点（如果存在）
+# 终审 H-02：先校验再删默认站点——校验失败立即中止（set -e 不作用于
+# AND-OR 列表的非末位命令，"nginx -t && reload" 曾在 nginx -t 失败时
+# 继续执行并打印「部署完成」，且此时 default 站点已删、旧站也没了）
+if ! nginx -t; then
+    echo "  ✗ Nginx 配置校验失败，中止部署（默认站点未删除，可回滚 symlink）：">&2
+    echo "    nginx -t 的错误输出见上方">&2
+    exit 1
+fi
+
+# 校验通过后才删除默认站点（如果存在）
 if [ -L /etc/nginx/sites-enabled/default ]; then
     rm -f /etc/nginx/sites-enabled/default
 fi
 
-# 测试并重载 Nginx
-nginx -t && systemctl reload nginx
+systemctl reload nginx
 
 echo "  ✓ Nginx 已配置"
 
