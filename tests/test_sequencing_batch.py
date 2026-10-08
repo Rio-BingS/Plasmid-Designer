@@ -634,6 +634,62 @@ def _gb_mx() -> bytes:
     ).encode()
 
 
+def test_global_store_lock_survives_concurrent_mutation(client):
+    """终审 C-07 回归锁：_ANALYSES/_BATCHES 被事件循环线程与线程池并发
+    增删遍历且曾无锁——并发下会抛 dictionary changed size during iteration。
+    这里用多线程同时做「登记记录 + 清理过期 + 遍历列表」验证不再崩溃。"""
+    import threading as _th
+    from app.routes import sequencing_routes as sr
+
+    ref = ">ref\n" + "AAG" * 40
+    blob = make_ab1("AAG" * 40, [40] * 120)
+    errors: list = []
+
+    def register_worker(n: int):
+        try:
+            for i in range(n):
+                r = client.post("/api/sequencing/analyze",
+                                files={"reference": ("ref.fasta", ref, "text/plain"),
+                                       "reads": (f"w{i}.ab1", blob, "application/octet-stream")})
+                assert r.status_code == 200
+        except Exception as e:  # noqa: BLE001
+            errors.append(("register", e))
+
+    def sweep_worker(n: int):
+        try:
+            for _ in range(n):
+                sr._sweep_expired()
+        except Exception as e:  # noqa: BLE001
+            errors.append(("sweep", e))
+
+    def list_worker(n: int):
+        try:
+            for _ in range(n):
+                client.get("/api/sequencing/analyses")
+        except Exception as e:  # noqa: BLE001
+            errors.append(("list", e))
+
+    threads = [
+        _th.Thread(target=register_worker, args=(3,)),
+        _th.Thread(target=sweep_worker, args=(15,)),
+        _th.Thread(target=list_worker, args=(8,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"并发访问全局存储抛异常: {errors}"
+    # 清理
+    with sr._STORE_LOCK:
+        aids = list(sr._ANALYSES.keys())
+    for aid in aids:
+        try:
+            client.delete(f"/api/sequencing/analyses/{aid}")
+        except Exception:
+            pass
+
+
 def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
     """同一质粒的不同写法（'17648'/'17648 MBYSTC'）并档到一个质粒文件夹：
     图谱在文件夹根，各组文件按结论分入 正确/错误 子文件夹"""
