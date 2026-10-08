@@ -223,6 +223,27 @@ def test_break_poly_x_respects_avoid_motifs():
     assert translate_dna(result.dna_sequence).rstrip("*") == aa
 
 
+def test_reverse_strand_iis_sites_avoided():
+    """终审 A-03 回归锁：非回文 Type IIS 位点此前只在正链避让——
+    BsaI 反链形式 GAGACC 曾在产物中残留（100 条随机蛋白 3 条中招）。
+    用户给定正链记法位点后，反向互补形式同样必须被消除。"""
+    from core.codon_optimizer import CodonOptimizer, translate_dna
+    from core.seq_utils import revcomp
+
+    opt = CodonOptimizer(species="ecoli")
+    # 多样化蛋白（含 Lys/Ser/Leu 高频族，变异空间大）
+    aa = "MKSSLLKKSSLLKKSSLLKKSSLLKKSSLLGGSSRRKKSSLL"
+    for site in ("GGTCTC",   # BsaI 正链记法 → 反链 GAGACC
+                 "CGTCTC",   # BsmBI → 反链 GAGACG
+                 "GAAGAC"):  # BbsI → 反链 GTCTTC
+        result = opt.optimize(aa, avoid_motifs=[site])
+        assert site not in result.dna_sequence, site
+        assert revcomp(site) not in result.dna_sequence, (
+            f"{site} 的反链形式 {revcomp(site)} 残留"
+        )
+        assert translate_dna(result.dna_sequence).rstrip("*") == aa
+
+
 def test_result_has_score_and_hairpin_reduction():
     """v2：结果带综合评分；5' 发夹计数不应高于基线（正确 rc 下基线常为 0，旧版断言依赖错误 maketrans 的假阳性）"""
     from core.codon_optimizer import CodonOptimizer
