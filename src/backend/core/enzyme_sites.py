@@ -7,6 +7,8 @@
 import re
 from typing import Dict, List, Optional
 
+from core.seq_utils import revcomp as _revcomp
+
 # 内置常用限制酶。cutoff 相对识别序列 5' 端（正向链），overhang 描述切割后
 # 突出端：'5prime'/'3prime'/None(blunt)。cut_offsets = (正向链切割位, 反向链切割位)
 # 相对识别序列起点的偏移（可与识别序列长度相等，即切在识别序列外）。
@@ -57,7 +59,9 @@ ENZYME_TABLE: List[Dict] = [
     {"name": "StuI", "site": "AGGCCT", "cut": (3, 3), "overhang": None},
     {"name": "SwaI", "site": "ATTTAAAT", "cut": (4, 4), "overhang": None},
     {"name": "XcmI", "site": "CCANNNNNNNTGG", "cut": (8, 9), "overhang": "3prime"},
-    {"name": "BsaHI", "site": "GAYG", "cut": (2, 2), "overhang": "5prime"},
+    # BsaHI 识别 GR^CG_YC（NEB）：位点 GRCGYC，正向切割位在 R 后（offset 2），
+    # 反向链对称位 offset 4，切后留 5' 突出 ACGT（与 TaqI-v2 同款末端）
+    {"name": "BsaHI", "site": "GRCGYC", "cut": (2, 4), "overhang": "5prime"},
 ]
 
 # IUPAC 模糊码 → 正则字符类
@@ -67,12 +71,6 @@ _IUPAC = {
     "K": "[GT]", "M": "[AC]", "B": "[CGT]", "D": "[AGT]",
     "H": "[ACT]", "V": "[ACG]", "N": "[ACGT]",
 }
-
-_COMPLEMENT = str.maketrans("ACGTRYKMSWBDHVN", "TGCAYRMKSWVHDBN")
-
-
-def _revcomp(seq: str) -> str:
-    return seq.translate(_COMPLEMENT)[::-1]
 
 
 def _site_regex(site: str) -> "re.Pattern":

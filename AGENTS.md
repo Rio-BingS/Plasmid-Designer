@@ -37,12 +37,18 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
   src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
   src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图
-                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出
+                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出；
+                                     展示卡拆到 components/sequencing/（PolyCard/ConclusionCards/
+                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap，
+                                     纯展示+defineModel 共享折叠态；scoped 样式随模板各自携带）；
+                                     峰图融合视图状态/交互/绘制在 composables/useSeqViz.ts
+  src/composables/useSeqViz.ts       ★ 峰图融合视图 composable（列宽/可见read/trace缓存状态、
+                                     勾选/缩放/点选交互、drawSeq canvas 绘制；组件侧解构绑定名不变）
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
-deploy/                     docker-compose / hf-docker / hf-gradio / bare(Ubuntu systemd)
-tests/                      后端 pytest（357 用例，含 test_sanger_pipeline/test_enzyme_sites/
-                            test_sequencing_routes/test_batch_sequencing；tests/abif_utils.py
-                            合成 ab1 生成器）+ 前端 vitest（101 用例，src/frontend/tests）
+deploy/                     docker-compose / bare(Ubuntu systemd)
+tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
+                            test_sequencing_routes/test_batch_sequencing/test_seq_utils；
+                            tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（135 用例）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -89,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处） |
 | docs/CACHE.md | 缓存策略与现状 |
 | docs/FIXPLAN.md | 历史修复记录（2025 核查） |
-| deploy/DEPLOY_GUIDE.md | 三种部署方式 |
+| 部署 | 见 deploy/docker（docker-compose）与 deploy/bare（Ubuntu systemd）各自 README |
 
 ## 已知坑
 
@@ -101,6 +107,47 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 测试（2026-10-08）**useSeqViz composable 独立单测（拆分收尾挂账项清账）**：
+  tests/frontend_useSeqViz.test.ts 21 例——最小宿主组件挂 composable（不经
+  SequencingPanel），覆盖峰图缓存在途去重（并发第二调用返回 null 是设计行为）/失败
+  缓存 null、toggleRead 选中回退与视窗外自动跳转（假 wrap 注入 seqBox 提供
+  clientWidth/scrollTo）、rowLayouts 视野过滤/排序/选中加高、jumpToRefPos 越界
+  忽略、jumpToVariant 自动显示目标 read、seqZoom 中心锚 1-28 钳制、Ctrl 滚轮
+  系数 1.2、seqFit Math.max(1,·)、点选简图命中 read 缩放/空白跳列/字母行切
+  read/越界守卫、resetSeqViz、deep watch 补拉、seqWrapH 布局公式逐项（空视图
+  102/双泳道+行 124…）。坑：①ref 缓存取出的是 reactive 代理，断言用 toEqual
+  不是 toBe；②内部函数（seqZoomAt/composeSeqInfo）经 onSeqWheel/onSeqClick
+  公开路径驱动；③缩放锚点读 seqScrollX ref 不读 wrap.scrollLeft，测试要同步
+  复位两者。前端 vitest 114→135（vue-tsc 0）。坑（环境）：**git 全局代理
+  127.0.0.1:7890 但代理客户端没开时，push 用 `-c http.proxy= -c https.proxy=`
+  绕过也常直连超时（GitHub 443 被断），提交留本地等代理恢复再推**。
+
+- 重构（2026-09-29）**SequencingPanel 拆分第二轮：匹配简图 + 峰图融合视图**：
+  ①匹配简图整块迁入 sequencing/MatchMap.vue（read 箭头分道/刻度轴/参考
+  特征/去重开关/图例；open-read/jump-variant 事件回传父组件走峰图联动，
+  dedupMapFeats 纯 UI 留子组件）；②峰图融合视图状态/交互/canvas 绘制
+  （drawSeq 全家）迁入 composables/useSeqViz.ts（接收 analysis/errorMsg
+  两个 ref），组件只留解构绑定+上传区+preset watch+导出——父组件
+  1660→487 行；③shortName 下沉 utils/seqPanelModel（+3 单测）——简图
+  标签/字母行芯片/工具栏复选框共用同一截断口径。坑：**PowerShell 数组
+  切片改文件会整文件清空（再次踩雷），结构化编辑一律用小步 edit 锚点**；
+  composable 解构的绑定模板没用会报 TS6133，测试要经 wrapper.vm 调用的
+  （rowLayouts）需保留并 void 引用。vue-tsc 0 / vitest 114 / build 过。
+
+- 重构（2026-09-29）**SequencingPanel 按 UI 区块拆分收尾 + 子组件样式修复**：
+  ①拆出 6 个展示子组件到 components/sequencing/——PolyCard（同聚物卡）、
+  ConclusionCards（结论总览+CDS 卡）、ReadTable（read 摘要表，@view 上报
+  峰图联动）、VariantTable（突变表，showLowConf defineModel 共享+confTitle
+  迁入）、AlleleCard（解卷积）、ConsensusCard（共识导出，coveredOnly
+  defineModel 共享，导出动作 @download 回传父组件调 API）；父组件
+  2147→1660 行。②修复上轮拆分遗留的两个回归——子组件原本无 <style>，
+  而 Vue scoped 样式不穿透子组件内部节点（结论卡/CDS 卡/覆盖条带的
+  内部样式实际丢失），样式已随模板迁入各子组件；ConclusionCards 的
+  showMixedDetail 由内部孤立 ref 改 defineModel 共享，恢复退出历史回看时
+  父组件 watch 的复位语义。③坑（必记）：**从父组件拆子组件时，模板用到
+  的 scoped CSS 必须随迁**，父级 <style scoped> 规则只作用到子组件根节点。
+  vue-tsc 0 / vitest 113 / build 过。
 
 - 调整（2026-09-29）**批量表格结论简洁化**：用户要求 Excel/结果表里的
   结论也简洁——excel_conclusion 重写：合格/不合格/疑似混合前缀保留

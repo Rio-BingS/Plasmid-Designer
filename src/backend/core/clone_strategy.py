@@ -537,11 +537,11 @@ class GoldenGateStrategy:
 
         warnings_en = [
             "Ensure overhang sequences are unique and don't self-anneal",
-            "Check for internal BsaI/BsmBI sites in insert sequence"
+            f"Check for internal {enzyme} sites in insert sequence"
         ]
         warnings_zh = [
             "确保overhang序列唯一且不会自退火",
-            "检查插入片段内部是否存在BsaI/BsmBI位点"
+            f"检查插入片段内部是否存在{enzyme}位点"
         ]
 
         return CloningStrategy(
@@ -584,7 +584,9 @@ class RestrictionCloningStrategy:
                 reagents_zh=["PCR预混液", "模板DNA", "正向引物", "反向引物"],
                 conditions={
                     "Initial denaturation": "98°C, 30s",
-                    "Cycling (30 cycles)": "98°C 10s, {Tm-5}°C 15s, 72°C 30s/kb",
+                    # 退火温度按 Tm-5°C 原则给出通用参考（PCR 步骤尚未知引物 Tm），
+                    # 需按实际引物 Tm 调整——不再是未填充的字面量占位符
+                    "Cycling (30 cycles)": "98°C 10s, 55-65°C（按引物 Tm-5°C 调整）15s, 72°C 30s/kb",
                     "Final extension": "72°C, 5min"
                 },
                 duration="~1.5 hours",
@@ -616,7 +618,9 @@ class RestrictionCloningStrategy:
                 conditions={
                     "Temperature": "37°C",
                     "Time": "1-2 hours",
-                    "Dephosphorylation": "Add CIP/SAP if needed"
+                    # 仅在用户要求时才加入去磷酸化提示（此前该参数被无条件忽略）
+                    **({"Dephosphorylation": "Add CIP/SAP, 37°C 30min then heat inactivate"}
+                       if dephosphorylate else {})
                 },
                 duration="1-2 hours",
                 duration_zh="1-2小时"

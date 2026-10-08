@@ -13,6 +13,7 @@ import {
   previewNcbi,
   importFromNcbiId
 } from '@/api'
+import { downloadTextFile } from '@/utils/download'
 
 const router = useRouter()
 const vectors = ref<VectorInfo[]>([])
@@ -161,15 +162,7 @@ async function downloadSequence(vectorId: string, format: string, event: Event) 
     downloadingId.value = vectorId
     const content = await getVectorSequence(vectorId, format)
     const ext = format === 'genbank' ? 'gb' : 'fasta'
-    const blob = new Blob([content], { type: 'text/plain' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `${vectorId}.${ext}`)
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.URL.revokeObjectURL(url)
+    downloadTextFile(content, `${vectorId}.${ext}`)
   } catch (e: any) {
     alert(`下载失败: ${e.response?.data?.detail || e.message}`)
   } finally {

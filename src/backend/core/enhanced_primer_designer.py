@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import math
 import re
 
+from core.seq_utils import revcomp as _seq_revcomp
+
 
 @dataclass
 class EnhancedPrimerResult:
@@ -61,7 +63,12 @@ class EnhancedPrimerDesigner:
     }
     
     # DNA互补配对
-    COMPLEMENT = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
+    # IUPAC 感知互补映射（收敛到 core.seq_utils；A↔T、C↔G、模糊码对称）
+    COMPLEMENT = {
+        "A": "T", "T": "A", "G": "C", "C": "G",
+        "R": "Y", "Y": "R", "K": "M", "M": "K",
+        "S": "S", "W": "W", "B": "V", "V": "B", "D": "H", "H": "D", "N": "N",
+    }
     
     def __init__(self, params: Optional[Dict] = None):
         """初始化引物设计器"""
@@ -388,8 +395,8 @@ class EnhancedPrimerDesigner:
         return max_comp
     
     def _reverse_complement(self, seq: str) -> str:
-        """反向互补"""
-        return ''.join(self.COMPLEMENT.get(b, b) for b in reversed(seq.upper()))
+        """反向互补（收敛到 core.seq_utils.revcomp）"""
+        return _seq_revcomp(seq.upper())
     
     def check_primer_specificity(
         self,

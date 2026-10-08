@@ -84,14 +84,27 @@ class TokenData(BaseModel):
 
 # ==================== 密码工具 ====================
 
+# bcrypt 只取输入的前 72 字节：bcrypt 4.x 会静默截断，5.x 直接抛错。
+# 显式截断让两端语义一致，且注册时即确定边界——73 字节起的长密码
+# 不会被静默砍到与 72 字节前缀等价而不留痕
+_BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def _clamp_password(password: str) -> str:
+    """把密码截到 bcrypt 实际参与哈希的前 72 字节（按 UTF-8 字节计）"""
+    return password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES].decode(
+        "utf-8", errors="ignore"
+    )
+
+
 def hash_password(password: str) -> str:
     """生成密码哈希"""
-    return pwd_context.hash(password)
+    return pwd_context.hash(_clamp_password(password))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """验证密码"""
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_clamp_password(plain_password), hashed_password)
 
 
 # ==================== JWT 工具 ====================
