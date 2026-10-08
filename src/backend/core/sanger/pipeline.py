@@ -11,11 +11,14 @@ pull-up）→ read 级分级（widespread 疑似混合 / scattered 个别双峰�
 可选：检测到 tracy 可执行文件时，对疑似混合样品执行 tracy decompose 解卷积。
 """
 
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import align_read, merge_coverage
@@ -1413,6 +1416,18 @@ def _build_cds_reports(
         """
         from Bio import Align
 
+        # 终审 C-08：任一侧为空（如起始密码子突变为终止 → alt 截断为空串）
+        # 时 Biopython 抛 ValueError: sequence has zero length，整份分析 500。
+        # 空比对 = 全部残基为 gap 事件的退化对齐，直接构造结果。
+        if not ref_prot or not alt_prot:
+            return {
+                "identical": 0,
+                "aligned_ref": 0,
+                "aligned_alt": 0,
+                "first_diff": 0,
+                "subs": [],
+                "gap_residues": len(ref_prot) + len(alt_prot),
+            }
         aligner = Align.PairwiseAligner()
         try:
             from Bio.Align import substitution_matrices
@@ -1782,13 +1797,17 @@ def analyze(
             v["quality"] = trimmed_q[qi]
 
         # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
+        # 终审 C-09：tracy 全流程降级隔离——一条低质量 ab1 的交叉 basecall
+        # 异常不得拖垮整份多 read 分析
         cross = _try_tracy_basecall(blob)
         used_tracy = cross is not None
         cross_variants: List[Dict] = []
         if used_tracy:
             cb, cq = cross
-            if len(cb) >= MIN_WINDOW:
-                cs, ce = _trim_by_quality(cb, cq, min_q)
+            cs, ce = _trim_by_quality(cb, cq, min_q)
+            # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
+            # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
+            if ce - cs >= MIN_WINDOW:
                 caln = align_read(cb[cs:ce], ref, cq[cs:ce])
                 for v in caln["variants"]:
                     rp = v.get("read_pos") or 1
@@ -2319,7 +2338,30 @@ def analyze(
         entry["run_covered"] = len(cov_pos)
         homopolymer_report.append(entry)
 
-    cds_reports = _build_cds_reports(ref, features, variants, consensus)
+    # 终审 C-08：CDS 判读的意外异常降级为单条失败报告，不得让一条
+    # 畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析
+    try:
+        cds_reports = _build_cds_reports(ref, features, variants, consensus)
+    except Exception as e:
+        logger.exception("CDS 判读整体失败，降级为占位报告")
+        cds_reports = [{
+            "name": "CDS",
+            "start": 0,
+            "end": 0,
+            "strand": "+",
+            "covered_percent": 0.0,
+            "coverage_status": "partial",
+            "ref_protein_length": None,
+            "alt_protein_length": None,
+            "protein_identical": None,
+            "premature_stop_aa": None,
+            "frameshift_count": 0,
+            "aa_changes": [],
+            "consequences": [],
+            "synonymous_count": 0,
+            "pending_low_confidence": 0,
+            "verdict": f"CDS 判读失败（内部异常：{type(e).__name__}），变体明细见突变表，可核对峰图或反馈日志",
+        }]
 
     # B5：poly 下游信号骤降注记（end_truncation 属 read 末端正常下降，不算）。
     # 与"未覆盖"明确区分：覆盖区内的骤降段碱基判读不可信，不是没测到
