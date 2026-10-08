@@ -239,14 +239,19 @@ class CodonOptimizer:
         # 其余位置选最高频密码子
         dna_sequence = self._initial_optimization(amino_acid_sequence, use_ramp=True)
 
+        # 告警收集：迭代优化的未满足约束也会写入（见 _iterative_optimization）
+        warnings: List[str] = []
+
         # 迭代优化
-        dna_sequence = self._iterative_optimization(
+        dna_sequence, unsatisfied = self._iterative_optimization(
             dna_sequence,
             amino_acid_sequence,
             all_avoid,
             gc_target,
             optimize_level
         )
+        if unsatisfied:
+            warnings.extend(unsatisfied)
 
         # GeneOptimizer 式变窗多参数精修（跳过 5' 起始区，保持 ramp 设计）
         dna_sequence = self._sliding_window_refinement(
@@ -266,7 +271,6 @@ class CodonOptimizer:
         gc_distribution = self._calculate_gc_distribution(dna_sequence)
 
         # 检查并记录警告
-        warnings = []
         final_motifs = self._find_motifs(dna_sequence, all_avoid)
         if final_motifs:
             warnings.append(f"警告：序列中仍存在需要避免的motif: {final_motifs}")
@@ -437,29 +441,51 @@ class CodonOptimizer:
             # 2. 5' 端发夹削弱（起始区稳定结构抑制翻译）
             if self._five_prime_hairpin_count(''.join(dna_list)) > HAIRPIN_TOLERANCE:
                 new_list = self._reduce_five_prime_hairpins(dna_list, aa_seq, avoid_motifs)
-                if new_list != dna_list:
-                    dna_list = new_list
+                # 终审 A-01：部分子例程原地改 list 并返回同一对象，
+                # 对象不等式恒 False——必须按「内容」比较才能感知进展
+                if new_list != dna_list or ''.join(new_list) != ''.join(dna_list):
+                    dna_list = list(new_list)
                     improved = True
 
             # 3. GC 平滑（如果需要）
             gc = self._calculate_gc_content(''.join(dna_list))
             if gc < gc_target[0] or gc > gc_target[1]:
+                before = ''.join(dna_list)
                 new_list = self._smooth_gc(dna_list, aa_seq, gc_target, avoid_motifs)
-                if new_list != dna_list:
-                    dna_list = new_list
+                if ''.join(new_list) != before:
+                    dna_list = list(new_list)
                     improved = True
 
             # 4. 避免poly-X (4个以上连续相同碱基)
             if self._has_poly_x(''.join(dna_list), 4):
-                new_list = self._break_poly_x(dna_list, aa_seq)
-                if new_list != dna_list:
-                    dna_list = new_list
+                before = ''.join(dna_list)
+                new_list = self._break_poly_x(dna_list, aa_seq, avoid_motifs)
+                if ''.join(new_list) != before:
+                    dna_list = list(new_list)
                     improved = True
 
+            # 终审 A-01：连续两轮无进展即收敛退出（原来 improved 恒 False
+            # 使循环第一轮就退出，optimize_level 三档输出完全相同）
             if not improved:
                 break
 
-        return ''.join(dna_list)
+        # 收敛后结构化写出未满足的约束（静默失败比失败更危险——终审总评）
+        unsatisfied: List[str] = []
+        final_dna = ''.join(dna_list)
+        residual_motifs = self._find_motifs(final_dna, avoid_motifs)
+        if residual_motifs:
+            unsatisfied.append(
+                f"警告：迭代优化收敛后仍存在需要避免的 motif: {residual_motifs}"
+            )
+        gc_final = self._calculate_gc_content(final_dna)
+        if gc_final < gc_target[0] or gc_final > gc_target[1]:
+            unsatisfied.append(
+                f"警告：迭代优化收敛后 GC 含量 {gc_final:.1%} 仍超出目标范围 "
+                f"{gc_target[0]:.0%}-{gc_target[1]:.0%}"
+            )
+        if self._has_poly_x(final_dna, 4):
+            unsatisfied.append("警告：迭代优化收敛后仍存在 ≥4 连续同聚碱基（poly-X）")
+        return final_dna, unsatisfied
 
     def _five_prime_hairpin_count(
         self,
@@ -642,13 +668,22 @@ class CodonOptimizer:
                 best = cur
         return best if dna else 0
 
-    def _break_poly_x(self, dna_list: List[str], aa_seq: str) -> List[str]:
+    def _break_poly_x(
+        self,
+        dna_list: List[str],
+        aa_seq: str,
+        avoid_motifs: Optional[List[str]] = None
+    ) -> List[str]:
         """尝试替换覆盖同聚核苷酸区的同义密码子，并保证算法终止。
 
         进展判据是「最长同聚 run 缩短或消除」而非「count(4-mer) 减少」：
         对长度 ≥8 的 run，3 倍步长的密码子平移会让 count(4-mer) 保持不变
         （窗口滑动），旧判据会在原地卡死、poly 区永远无法被打破。
+
+        终审 A-02：接受候选前检查 avoid_motifs——打断同聚物可能重新引入
+        用户要求排除的限制酶位点（实测曾引入 HindIII），此类替换必须拒绝。
         """
+        motifs = [m.upper() for m in (avoid_motifs or [])]
         for nt in 'ATGC':
             pattern = nt * 4
             max_replacements = max(1, len(aa_seq) * 2)
@@ -679,7 +714,10 @@ class CodonOptimizer:
                     )
                     for alternative in alternatives:
                         candidate = dna[:start] + alternative + dna[start + 3:]
-                        # 接受条件：poly 总数下降 **或** 最长 run 缩短
+                        # 接受条件：不引入需避让的 motif（终审 A-02），
+                        # 且 poly 总数下降或最长 run 缩短
+                        if any(m in candidate for m in motifs):
+                            continue
                         if (candidate.count(pattern) < dna.count(pattern)
                                 or self._longest_homopolymer_run(candidate)
                                 < self._longest_homopolymer_run(dna)):

@@ -161,9 +161,66 @@ def test_censor_motifs_auto_avoided():
 
     # 构造含 AATAAA（N=AAT + K=AAA）的起始 dna，迭代应将其移除
     aa = "NK"
-    dna_list = list("AATAAA")
-    fixed = opt._iterative_optimization("AATAAA", aa, opt._censor_motifs(), (0.4, 0.6), "balanced")
+    fixed, unsatisfied = opt._iterative_optimization("AATAAA", aa, opt._censor_motifs(), (0.4, 0.6), "balanced")
     assert "AATAAA" not in fixed
+    # motif 已移除 → 不应有「收敛后仍存在 motif」的未满足约束
+    assert not any("仍存在需要避免的 motif" in w for w in unsatisfied)
+
+
+def test_iterative_loop_runs_until_no_progress(monkeypatch):
+    """终审 A-01 回归锁：循环曾因「原地改 list + 对象不等式恒假」第一轮
+    即退出——即使约束尚未满足。桩掉 _smooth_gc 模拟「每轮内容有变化但
+    约束永不满足」（旧失明形态：原地改 + 返回同一对象），循环必须持续
+    迭代到轮数上限，而不是一轮收工。"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    aa = "MKLV"
+    calls = {"smooth": 0}
+
+    def fake_smooth(self, dna_list, aa_seq, gc_target, avoid_motifs=()):
+        calls["smooth"] += 1
+        # 原地改 + 返回同一对象：旧判据（对象不等式）对此恒假
+        dna_list[-1] = "C" if dna_list[-1] == "A" else "A"
+        return dna_list
+
+    monkeypatch.setattr(CodonOptimizer, "_smooth_gc", fake_smooth)
+
+    # GC 14%（0.30-0.70 区间外）且无 poly-X/发夹 → 每轮只有 GC 步可走，
+    # 桩每次只翻转末位碱基，GC 永不进区间 → balanced 档应跑满 50 轮
+    opt._iterative_optimization(
+        "ATGAAATTAGTAAA", aa, [], (0.30, 0.70), "balanced"
+    )
+    assert calls["smooth"] >= 10, (
+        f"迭代循环在第一轮附近就退出（smooth 仅调用 {calls['smooth']} 次）"
+    )
+
+
+def test_iterative_reports_unsatisfied_constraints():
+    """终审 A-01 收敛检查：迭代收敛后仍未满足的约束必须结构化写出"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    # W-G 相邻必然产生不可消除的 GGGG（W=UGG、G=GGG 拼接），
+    # poly-X 约束在收敛后必须以告警形式透出而不是静默放弃
+    aa = "WGWGWGWG"
+    result = opt.optimize(aa)
+    assert any("poly-X" in w or "poly" in w.lower() for w in result.warnings), result.warnings
+
+
+def test_break_poly_x_respects_avoid_motifs():
+    """终审 A-02 回归锁：打断同聚物不得重新引入需排除的酶切位点
+    （实测曾把 HindIII AAGCTT 重新引入）"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    # 富 Lys 蛋白：AAA run 打断路径高频触发
+    aa = "MKKKKKKKKKKKKSSSKKKKKKKKKK"
+    result = opt.optimize(aa, avoid_motifs=["AAGCTT"])
+    assert "AAGCTT" not in result.dna_sequence
+    # 同义性守恒
+    from core.codon_optimizer import translate_dna
+    assert translate_dna(result.dna_sequence).rstrip("*") == aa
 
 
 def test_result_has_score_and_hairpin_reduction():
