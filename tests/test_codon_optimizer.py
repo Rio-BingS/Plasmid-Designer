@@ -244,6 +244,29 @@ def test_reverse_strand_iis_sites_avoided():
         assert translate_dna(result.dna_sequence).rstrip("*") == aa
 
 
+def test_unknown_species_raises_instead_of_silent_fallback():
+    """终审 A-05 回归锁：未知物种曾静默回退大肠杆菌表（pichia/insect/
+    bacillus/martian 全部静默 COMPLETED 无告警）——现在必须显式报错；
+    合法物种带 codon_table_used 透明字段。"""
+    import pytest as _pytest
+    from core.codon_optimizer import CodonOptimizer
+
+    for bad in ("pichia", "insect", "bacillus", "martian"):
+        with _pytest.raises(ValueError, match="未知目标物种"):
+            CodonOptimizer(species=bad)
+
+    # 合法物种解析出实际表名（透明度）
+    for sp, expect in (("ecoli", "Ecoli_K12"), ("human", "Human"), ("cho", "CHO"), ("yeast", "Yeast")):
+        opt = CodonOptimizer(species=sp)
+        assert opt.codon_table_used == expect, (sp, opt.codon_table_used)
+        r = opt.optimize("MKV")
+        assert r.codon_table_used == expect
+
+    # 别名同样命中（E.coli / s_cerevisiae）
+    assert CodonOptimizer(species="E.coli").codon_table_used == "Ecoli_K12"
+    assert CodonOptimizer(species="s_cerevisiae").codon_table_used == "Yeast"
+
+
 def test_result_has_score_and_hairpin_reduction():
     """v2：结果带综合评分；5' 发夹计数不应高于基线（正确 rc 下基线常为 0，旧版断言依赖错误 maketrans 的假阳性）"""
     from core.codon_optimizer import CodonOptimizer
