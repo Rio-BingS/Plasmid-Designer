@@ -48,7 +48,7 @@ data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / bare(Ubuntu systemd)
 tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
                             test_sequencing_routes/test_batch_sequencing/test_seq_utils；
-                            tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（113 用例）
+                            tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（135 用例）
 ```
 
 ## 命令（Windows Git Bash，均已验证）
@@ -107,6 +107,21 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 测试（2026-10-08）**useSeqViz composable 独立单测（拆分收尾挂账项清账）**：
+  tests/frontend_useSeqViz.test.ts 21 例——最小宿主组件挂 composable（不经
+  SequencingPanel），覆盖峰图缓存在途去重（并发第二调用返回 null 是设计行为）/失败
+  缓存 null、toggleRead 选中回退与视窗外自动跳转（假 wrap 注入 seqBox 提供
+  clientWidth/scrollTo）、rowLayouts 视野过滤/排序/选中加高、jumpToRefPos 越界
+  忽略、jumpToVariant 自动显示目标 read、seqZoom 中心锚 1-28 钳制、Ctrl 滚轮
+  系数 1.2、seqFit Math.max(1,·)、点选简图命中 read 缩放/空白跳列/字母行切
+  read/越界守卫、resetSeqViz、deep watch 补拉、seqWrapH 布局公式逐项（空视图
+  102/双泳道+行 124…）。坑：①ref 缓存取出的是 reactive 代理，断言用 toEqual
+  不是 toBe；②内部函数（seqZoomAt/composeSeqInfo）经 onSeqWheel/onSeqClick
+  公开路径驱动；③缩放锚点读 seqScrollX ref 不读 wrap.scrollLeft，测试要同步
+  复位两者。前端 vitest 114→135（vue-tsc 0）。坑（环境）：**git 全局代理
+  127.0.0.1:7890 但代理客户端没开时，push 用 `-c http.proxy= -c https.proxy=`
+  绕过也常直连超时（GitHub 443 被断），提交留本地等代理恢复再推**。
 
 - 重构（2026-09-29）**SequencingPanel 拆分第二轮：匹配简图 + 峰图融合视图**：
   ①匹配简图整块迁入 sequencing/MatchMap.vue（read 箭头分道/刻度轴/参考
