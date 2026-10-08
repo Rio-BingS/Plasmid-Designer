@@ -46,8 +46,9 @@ src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api �
                                      勾选/缩放/点选交互、drawSeq canvas 绘制；组件侧解构绑定名不变）
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
 deploy/                     docker-compose / bare(Ubuntu systemd)
-tests/                      后端 pytest（407 用例，含 test_sanger_pipeline/test_enzyme_sites/
-                            test_sequencing_routes/test_batch_sequencing/test_seq_utils；
+tests/                      后端 pytest（416 用例，含 test_sanger_pipeline/test_enzyme_sites/
+                            test_sequencing_routes/test_batch_sequencing/test_seq_utils/
+                            test_real_data_regression 真实ab1回归(skip-if-missing)；
                             tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（135 用例）
 ```
 
@@ -107,6 +108,31 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
   （conftest.py 会重新注入正确路径）
 
 ## 当前状态（2026-09-20）
+
+- 清账（2026-10-08）**历次审核遗留清单批量清账（KNOWN_ISSUES 留痕 + 回归钉死 + 真实数据回归集）**：
+  ①docs/KNOWN_ISSUES.md 从 8/31 审计状态更新到 10/08——新增 10/7 修复批次
+  章节（6.1-6.8：BsaHI GRCGYC/批量上限读取前生效/克隆方案占位符+去磷/酶兼容
+  实际突出端+ORF 反链/ramp 打断卡死/Tm 如实+GoldenGate 报错/bcrypt 72 字节/
+  部署链清理，逐项带提交哈希）与 10/8 清账章节（7.1-7.4）；②BsaHI 回归锁
+  （GACGTC/GGCGCC 双实例双向命中 + 旧误码 GATG 绝不命中）+ stale docstring
+  GAYG→GRCGYC；③批量上限回归锁（_read_limited 打桩「碰到即失败」，超限
+  400 不读字节；monkeypatch.context() 限定——直接 setattr 会把合法请求也拦）；
+  ④peak_count_estimate 潜伏污染——合并 read 的 pc=0 不再进中位数（[30,0,0]
+  旧口径算出 0；改仅取 >0，全合并→None），旧断言 rescue 测试同步新语义；
+  ⑤anchor_grade 补「计数确证但定位存疑」——run 级 vote_anchor_grade（投票
+  read 锚分级最差者），accepted 且 ≥marginal 时结论加注记行（两分支均接入，
+  锚可靠零变化）；测试夹具：边缘 read 用 54bp（左右路标都落 20bp 边缘区，
+  <50bp 被最短读长门槛拒收）；⑥**真实 .ab1 回归集** tests/test_real_data_
+  regression.py（skip-if-missing：数据在 plasmid-designer V1.01/sequencing
+  results/ 本机目录不入库，缺席自动跳过）——5 项基线锁：归组形状（MX 3
+  read 全匹配）/基本形状（7039bp 14 特征 覆盖 27.3%）/混合检测基线（**该批
+  真实判定就是疑似混合**：3 read 各 19-27 双峰 widespread + 4 处跨引物同报
+  ——不是误报，勿按理想断言改）/置信分层与互检反证（5269 高置信同义、
+  6653+6666 单 read 缺失被反证压低且 CDS 未计入）/poly 判读有据；坑：
+  match_files 的 files 项 stem 须先 norm_stem（契约是归一化主干，传原始
+  文件名全落 unmatched）。后端 407→416（+411 全绿）/前端 135 不动。遗留
+  明确挂账：CI 未加（skip-if-missing 前置障碍已清）、顶层 docs/seqdemo_tmp
+  归档待用户定夺、poly 内部缺第几个 A 信息论不可解维持标注。
 
 - 测试（2026-10-08）**useSeqViz composable 独立单测（拆分收尾挂账项清账）**：
   tests/frontend_useSeqViz.test.ts 21 例——最小宿主组件挂 composable（不经
