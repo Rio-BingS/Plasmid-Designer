@@ -127,6 +127,31 @@ def test_full_sequencing_flow(client, completed_design):
     assert client.get(f"/api/sequencing/analyses/{analysis_id}").status_code == 404
 
 
+def test_reference_length_capped(client, monkeypatch):
+    """终审 C-01 回归锁：参考序列此前只校验 ≥50bp 无上限——局部比对是
+    O(len(ref)×len(read)) 且正反向各做一次完整回溯，实测 300 kb 参考 ×
+    1 条 read = 11 s / 1.09 GB。超过 MAX_REF_BP 必须被拒绝。"""
+    import app.routes.sequencing_routes as seq_routes
+
+    monkeypatch.setattr(seq_routes, "MAX_REF_BP", 1000)
+    blob = make_ab1("ATG" * 100, [40] * 300)
+
+    # 单样品上传入口
+    too_long = ">ref\n" + "ACGT" * 400   # 1600bp > 1000
+    r = client.post("/api/sequencing/analyze",
+                    files={"reference": ("ref.fasta", too_long, "text/plain"),
+                           "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r.status_code == 413, r.text
+    assert "过长" in r.json()["detail"]
+
+    # 上限之内的请求照常受理（不误伤）
+    ok = ">ref\n" + "ACGT" * 100  # 400bp
+    r3 = client.post("/api/sequencing/analyze",
+                     files={"reference": ("ref.fasta", ok, "text/plain"),
+                            "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r3.status_code == 200, r3.text
+
+
 def test_analyze_rejects_non_ab1(client, completed_design):
     resp = client.post(
         f"/api/designs/{completed_design['design_id']}/sequencing/analyze",
