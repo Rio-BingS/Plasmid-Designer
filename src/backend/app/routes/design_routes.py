@@ -1,5 +1,6 @@
 """设计任务路由 — 统一走 DesignService"""
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -24,6 +25,8 @@ from app.routes.models import (
 from app.storage import get_design_store
 
 router = APIRouter(prefix="/api/design", tags=["design"])
+
+logger = logging.getLogger(__name__)
 
 # 兼容旧代码/批量路由：内存镜像 + 存储层双写
 designs_db: Dict[str, DesignResult] = {}
@@ -55,8 +58,11 @@ def _load(design_id: str) -> DesignResult | None:
             result = DesignResult.model_validate(data)
             designs_db[design_id] = result
             return result
-    except Exception:
-        pass
+    except Exception as e:
+        # 终审 D-01：此处裸 pass 曾把 model_validate 的 ValidationError
+        # 静默吞成 404——DB 模式下失败态设计永久读不回来且毫无痕迹。
+        # 存储层读取失败不是「记录不存在」，必须留日志。
+        logger.warning("读取设计 %s 失败（存储层数据无法回载）: %s", design_id, e)
     return None
 
 
