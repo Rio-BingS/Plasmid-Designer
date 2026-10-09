@@ -542,6 +542,42 @@ def test_batch_report_zip_archives_and_backfills_excel(client):
     assert "测序整理/原始备份_测序.xlsx" in names
 
 
+def test_batch_request_total_bytes_capped(client, monkeypatch):
+    """终审 C-02 回归锁：批量接口此前无请求级总字节上限——400 文件 ×
+    20MB = 8GB 会先全部读进内存。累计超限必须在读取过程中即时中断。"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_REQUEST_BYTES", 512)
+    # 任何一条合成 ab1 都远大于 512B → 读取后立即中断
+    payload = [_ab1("b0.ab1", REF_MX)]
+    r = _post(client, payload)
+    assert r.status_code == 413, r.text
+    assert "总字节超过上限" in r.json()["detail"]
+
+
+def test_batch_cache_evicts_oldest_over_global_cap(monkeypatch):
+    """终审 C-02 回归锁：_BATCHES 整理包缓存此前无全局条数/总量上限——
+    单个批次虽受 MAX_BATCH_CACHE_BYTES 约束，但 15 分钟 TTL 内不限批次
+    数量，反复提交即可打满内存。超限后必须淘汰最旧的一条。"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_CACHE_ENTRIES", 3)
+    sr._BATCHES.clear()
+    now = sr.time.time()
+    for i in range(5):
+        sr._BATCHES[f"bid{i}"] = {
+            "created_ts": now - (5 - i),  # bid0 最旧
+            "zip": b"x" * 1024,
+            "zip_name": f"n{i}",
+            "owner_id": None,
+        }
+    sr._sweep_expired()
+    assert len(sr._BATCHES) <= 3
+    assert "bid0" not in sr._BATCHES   # 最旧的先被淘汰
+    assert "bid4" in sr._BATCHES       # 最新的保留
+    sr._BATCHES.clear()
+
+
 def test_batch_report_owner_scoped(client):
     """终审 B-03 回归锁：整理包含全部原始 .ab1 与图谱，此前下载无属主绑定。
     登录用户创建的批次：他人下载 404（不泄露存在性）、管理员与本人可下。"""

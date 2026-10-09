@@ -84,6 +84,15 @@ MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分�
 ANALYSIS_TTL = 15 * 60                # 分析记录 15 分钟后自动删除
 BATCH_TTL = 15 * 60                   # 批量整理包同样 15 分钟后清理
 MAX_BATCH_CACHE_BYTES = 256 * 1024 * 1024   # 整理包缓存上限（超出则本次不提供下载）
+# 终审 C-01：参考序列长度上限（质粒 50-200 kb 足够；无上限时局部比对
+# O(len(ref)×len(read)) 会让单个匿名请求占满内存与线程池）
+MAX_REF_BP = 200_000
+# 终审 C-02：批量请求级总字节上限（单文件上限挡不住多文件叠加：
+# 400 × 20MB = 8GB 会先读进内存才被拒绝）
+MAX_BATCH_REQUEST_BYTES = 500 * 1024 * 1024
+# _BATCHES 整理包缓存的全局上限（此前无条数/总量上限：单批 256MB ×
+# 15 分钟内不限批次 → 内存可被反复打满）
+MAX_BATCH_CACHE_ENTRIES = 8
 
 
 def _sweep_expired() -> None:
@@ -98,6 +107,15 @@ def _sweep_expired() -> None:
             del _ANALYSES[aid]
         for bid in [bid for bid, r in _BATCHES.items()
                     if now - r["created_ts"] > BATCH_TTL]:
+            del _BATCHES[bid]
+        # 终审 C-02：整理包缓存再加一层「条数 + 总字节」硬上限（LRU）。
+        # 15 分钟 TTL 内不限批次时，单批最大 256MB × 任意次数即可打满内存
+        total_zip = sum(len(r.get("zip") or b"") for r in _BATCHES.values())
+        by_age = sorted(_BATCHES.items(), key=lambda kv: kv[1]["created_ts"])
+        while by_age and (len(_BATCHES) > MAX_BATCH_CACHE_ENTRIES
+                          or total_zip > MAX_BATCH_CACHE_BYTES * MAX_BATCH_CACHE_ENTRIES):
+            bid, rec = by_age.pop(0)
+            total_zip -= len(rec.get("zip") or b"")
             del _BATCHES[bid]
 
 
@@ -283,6 +301,14 @@ async def _analyze_endpoint(
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
+    # 终审 C-01：此前只校验 ≥50bp 无上限——局部比对是 O(len(ref)×len(read))
+    # 且正反向各做一次完整回溯，实测 300 kb 参考 × 1 条 read = 11 s / 1.09 GB，
+    # 单个匿名请求即可打满内存与线程池。质粒/病毒基因组 200 kb 足够覆盖。
+    if len(reference) > MAX_REF_BP:
+        raise HTTPException(
+            status_code=413,
+            detail=f"参考序列过长（{len(reference)} bp > {MAX_REF_BP} bp）："
+                   "请截取待验证区段后重新分析（局部比对开销随参考长度线性增长）")
     ab1_blobs = await _read_ab1_files(files)
 
     result = await run_in_threadpool(
@@ -327,6 +353,11 @@ async def analyze_sequencing_upload(
         raise HTTPException(status_code=400, detail=str(e))
     if len(ref_seq) < 50:
         raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
+    # 终审 C-01：长度上限（见 _analyze_endpoint 同款校验）
+    if len(ref_seq) > MAX_REF_BP:
+        raise HTTPException(
+            status_code=413,
+            detail=f"参考序列过长（{len(ref_seq)} bp > {MAX_REF_BP} bp）：请截取待验证区段后重新分析")
 
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
@@ -454,6 +485,12 @@ def _run_batch(
                         ref_file["file"]["name"], ref_file["file"]["bytes"])
                     if len(ref_seq) < 50:
                         raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
+                    # 终审 C-01：长度上限（批量一次可能解析多个大图谱，
+                    # 无上限时逐个跑局部比对会拖垮整批）
+                    if len(ref_seq) > MAX_REF_BP:
+                        raise ValueError(
+                            f"参考序列过长（{len(ref_seq)} bp > {MAX_REF_BP} bp）："
+                            "请截取待验证区段后重新分析")
                     ref_entry = (ref_seq, features)
                 except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
                     ref_entry = e
@@ -545,9 +582,19 @@ async def analyze_sequencing_batch(
     reads: List[Dict] = []
     refs: List[Dict] = []
     ignored: List[str] = []
+    # 终审 C-02：批量接口此前无请求级总字节上限——400 文件 × 20MB = 8 GB
+    # 会先全部读进内存。单文件上限挡不住「多文件叠加」，这里按累计值
+    # 在读取过程中即时中断（未读的文件不再读）
+    total_bytes = 0
     for f in files:
         name = f.filename or "unnamed"
         blob = await _read_limited(f)
+        total_bytes += len(blob)
+        if total_bytes > MAX_BATCH_REQUEST_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"本次上传总字节超过上限（>{MAX_BATCH_REQUEST_BYTES // (1024 * 1024)}MB），"
+                       "请拆分为多个批次提交")
         if name.startswith("~$") or not blob:
             continue
         ext = os.path.splitext(name)[1].lower()
