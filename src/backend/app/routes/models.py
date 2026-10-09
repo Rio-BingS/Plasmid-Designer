@@ -1,9 +1,27 @@
 """共享 Pydantic 模型 — 从 main.py 提取"""
 
+import os
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict, Literal
 from enum import Enum
 from datetime import datetime
+
+
+# ==================== 序列长度上限（终审 C-03） ====================
+# 原固定值 100_000 不是防护而是 CPU DoS 入口：_sliding_window_refinement
+# 是 O(n²)（每个候选都重拼整条序列并全串扫 motif/polyX），实测 1k aa
+# 0.33s / 4k aa 1.7s / 10k aa 19.6s，且无超时不可取消。按序列类型收紧：
+# 氨基酸 5000 aa、DNA 20000 nt，均可用环境变量覆盖（自部署可放宽）。
+MAX_INPUT_AA = int(os.environ.get("MAX_INPUT_AA", "5000"))
+MAX_INPUT_DNA = int(os.environ.get("MAX_INPUT_DNA", "20000"))
+# Field 的 max_length 只能给一个绝对值（类型未知），取两者上界兜底；
+# 真正的类型化校验在 model_validator 里做
+MAX_INPUT_SEQ_CHARS = max(MAX_INPUT_AA, MAX_INPUT_DNA) * 3
+
+
+def _seq_limit_for(sequence_type) -> int:
+    """按序列类型返回长度上限（氨基酸按残基、DNA 按碱基）"""
+    return MAX_INPUT_AA if sequence_type == SequenceType.AMINO_ACID else MAX_INPUT_DNA
 
 
 # ==================== 枚举 ====================
@@ -80,9 +98,22 @@ class DesignOptions(BaseModel):
 
 class DesignRequest(DesignOptions):
     """设计请求"""
-    sequence: str = Field(..., min_length=1, max_length=100_000, description="输入序列（氨基酸或DNA）")
+    sequence: str = Field(..., min_length=1, max_length=MAX_INPUT_SEQ_CHARS,
+                          description="输入序列（氨基酸或DNA）")
     sequence_name: str = Field(default="insert", min_length=1, max_length=100, description="序列名称")
     include_report: bool = Field(default=True, description="生成设计报告")
+
+    @model_validator(mode="after")
+    def validate_sequence_length(self):
+        # 终审 C-03：max_length=100_000 不是防护而是 CPU DoS 入口——
+        # _sliding_window_refinement 是 O(n²)（每个候选重拼整条序列并全串
+        # 扫 motif/polyX），实测 1k aa 0.33s / 4k aa 1.7s / 10k aa 19.6s。
+        # 按序列类型收紧（氨基酸 5000 aa、DNA 20000 nt，可环境变量覆盖）
+        limit = _seq_limit_for(self.sequence_type)
+        if len(self.sequence) > limit:
+            kind = "氨基酸残基" if self.sequence_type == SequenceType.AMINO_ACID else "碱基"
+            raise ValueError(f"序列过长（{len(self.sequence)} > {limit} {kind}），请分段设计")
+        return self
 
 
 class PrimerInfo(BaseModel):
@@ -171,10 +202,15 @@ class BatchDesignRequest(DesignOptions):
     def validate_batch(self):
         if any(not sequence.strip() for sequence in self.sequences):
             raise ValueError("批量序列不能为空")
-        if any(len(sequence) > 100_000 for sequence in self.sequences):
-            raise ValueError("单条序列长度不能超过 100000")
-        if sum(len(sequence) for sequence in self.sequences) > 1_000_000:
-            raise ValueError("批量序列总长度不能超过 1000000")
+        # 终审 C-03：同样按序列类型收紧（单条）与总量上限
+        limit = _seq_limit_for(self.sequence_type)
+        if any(len(sequence) > limit for sequence in self.sequences):
+            kind = "氨基酸残基" if self.sequence_type == SequenceType.AMINO_ACID else "碱基"
+            raise ValueError(f"批量中有序列过长（>{limit} {kind}），请分段设计")
+        # 批量总量也留一半余量：N 条都顶到上限时单请求计算量仍然过大
+        batch_total = max(limit, limit * len(self.sequences) // 2)
+        if sum(len(sequence) for sequence in self.sequences) > batch_total:
+            raise ValueError(f"批量序列总长度不能超过 {batch_total}")
         if self.sequence_names is not None and len(self.sequence_names) != len(self.sequences):
             raise ValueError("sequence_names 数量必须与 sequences 一致")
         return self
