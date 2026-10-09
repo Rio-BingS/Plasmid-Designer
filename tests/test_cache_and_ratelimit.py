@@ -95,6 +95,53 @@ class TestSequencingEndpointTier:
         assert self._type("POST", "/api/sequencing/analyze") == "upload"
 
 
+class TestRouteLevelRateLimitClassification:
+    """终审 C-04：限流曾按路径子串分类——轮询 GET /api/design/{id} 被
+    "/design" 命中写档（实测提交后第 10 次轮询 429），GET /api/auth/verify
+    与 /auth/me 也计入 auth 档（第 6 次 429 → 前端 catch 直接 clearAuth
+    强制登出）。改为按（方法 + 路由模板）后，只读端点必须走 default 档。"""
+
+    def _type(self, method, path):
+        mw = RateLimitMiddleware(app=None)
+        req = SimpleNamespace(url=SimpleNamespace(path=path), method=method)
+        return mw._get_endpoint_type(req)
+
+    def test_polling_design_status_is_read_tier(self):
+        """轮询设计进度（提交后可能轮询数十次）不得计入 design 写配额"""
+        assert self._type("GET", "/api/design/design_abc123") == "default"
+        assert self._type("GET", "/api/design/design_abc123/map") == "default"
+        assert self._type("GET", "/api/design/batch/batch_abc123") == "default"
+
+    def test_auth_reads_are_read_tier(self):
+        """checkAuth（/auth/me）与邮箱校验只读不得计入 auth 档"""
+        assert self._type("GET", "/api/auth/me") == "default"
+        assert self._type("GET", "/api/auth/verify") == "default"
+
+    def test_write_operations_keep_business_tiers(self):
+        """真正的写操作仍按业务档计（不因放宽只读而失去防护）"""
+        assert self._type("POST", "/api/design") == "design"
+        assert self._type("POST", "/api/design/batch") == "batch"
+        assert self._type("POST", "/api/auth/login") == "auth"
+        assert self._type("POST", "/api/auth/register") == "auth"
+        assert self._type("POST", "/api/sequencing/analyze-batch") == "upload"
+
+    def test_thirty_polls_after_one_submit_never_429(self):
+        """端到端：提交一次设计后连续轮询 30 次，不得出现 429
+        （终审实测第 10 次即被拦）"""
+        from fastapi.testclient import TestClient
+        from app.main import app as real_app
+        from app.rate_limit import limiter
+
+        limiter._requests.clear()
+        client = TestClient(real_app)
+        ids = []
+        for _ in range(30):
+            r = client.get("/api/design/design_poll_test")
+            ids.append(r.status_code)
+        # 404（不存在的设计）也不该变成 429（限流先于路由执行）
+        assert 429 not in ids, f"轮询被限流拦截: {ids}"
+
+
 class TestCorsOutermostAndOptionsBypass:
     """终审 C-05：CORS 中间件必须位于最外层（429/5xx 响应带 CORS 头，
     否则前端只见 Network Error），预检 OPTIONS 不计入限流配额。"""

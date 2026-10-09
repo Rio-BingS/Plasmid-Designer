@@ -5,7 +5,7 @@
 import time
 import ipaddress
 from functools import lru_cache
-from typing import Dict, Optional, Callable
+from typing import Dict, List, Optional, Tuple, Callable
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import APIKeyHeader
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -214,6 +214,57 @@ def get_rate_limit_key(request: Request, endpoint: str) -> str:
     return f"rate:ip:{ip}:{endpoint}"
 
 
+# ==================== 路由级限流分类（终审 C-04） ====================
+# 规则表：(HTTP 方法, 路径模板) → 限流档位。模板里 {param} 之后用前缀
+# 匹配（/api/design/ 覆盖 /api/design/{id}）。
+_ENDPOINT_RULES: List[Tuple[str, str, str]] = [
+    # 测序上传（含批量）
+    ("POST", "/api/sequencing/analyze-batch", "upload"),
+    ("POST", "/api/sequencing/analyze", "upload"),
+    ("POST", "/api/designs/{id}/sequencing/analyze", "upload"),
+    ("POST", "/api/vectors/{id}/sequencing/analyze", "upload"),
+    # 批量设计
+    ("POST", "/api/design/batch", "batch"),
+    # 单条设计
+    ("POST", "/api/design", "design"),
+    # 认证写操作（登录爆破面）
+    ("POST", "/api/auth/login", "auth"),
+    ("POST", "/api/auth/register", "auth"),
+    ("POST", "/api/auth/verify", "auth"),
+    ("POST", "/api/auth/resend-code", "auth"),
+    # 其余上传/导入类写操作
+    ("POST", "/api/vectors/import", "upload"),
+]
+
+
+def classify_endpoint(method: str, path: str) -> str:
+    """按（方法 + 路径模板）判定限流档位。
+
+    只读请求（GET/HEAD/OPTIONS）一律走宽松的 default 档——轮询设计进度、
+    拉取峰图、checkAuth 都是高频只读，计入业务写配额会让用户在提交一次
+    后就被 429 卡死（终审 C-04 实测：匿名 POST /api/design 后第 10 次轮询
+    429；GET /api/auth/verify 第 6 次 429 → 前端 catch 直接 clearAuth
+    把用户强制登出）。
+    """
+    method = (method or "GET").upper()
+    for rule_method, template, bucket in _ENDPOINT_RULES:
+        if rule_method != method:
+            continue
+        prefix = template.split("{")[0]
+        if path == template or path.startswith(prefix):
+            return bucket
+    # 未命中规则表：只读一律 default，写操作按路径回退业务档
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return "default"
+    if "/sequencing" in path:
+        return "upload"
+    if "/design" in path:
+        return "design"
+    if "/auth" in path:
+        return "auth"
+    return "default"
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """速率限制中间件"""
     
@@ -283,26 +334,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         return response
     
+    # 终审 C-04：此前按路径子串分类——轮询 GET /api/design/{id} 被 "/design"
+    # 命中写档（实测提交后第 10 次轮询即 429），GET /api/auth/verify、/auth/me
+    # 也计入 auth 档（第 6 次 429），前端 checkAuth 收到 429 就清会话 →
+    # 用户被强制登出。改为按（HTTP 方法 + 路由模板）匹配：只读端点统一走
+    # 宽松的 default 档，只有真正的写操作才计入业务配额。
     def _get_endpoint_type(self, request: Request) -> str:
-        """根据路径确定端点类型"""
-        path = request.url.path
-        
-        if "/design/batch" in path:
-            return "batch"
-        elif "/design" in path:
-            return "design"
-        elif "/sequencing" in path:
-            # 上传（.ab1/参考图谱 analyze）按 upload 档限流；只读 GET
-            # （分析详情/trace 峰图等）走 default 档——峰图带叠加一次要拉
-            # 多条 trace，不能烧 upload 的 20 次/小时配额
-            if request.method in ("GET", "HEAD", "OPTIONS"):
-                return "default"
-            return "upload"
-        elif "/upload" in path or "/import" in path:
-            return "upload"
-        elif "/auth" in path:
-            return "auth"
-        return "default"
+        """按（方法 + 路由模板）确定限流档位
+
+        匹配顺序：先查精确的 (method, path) 特殊规则，再按路由模板前缀
+        匹配，最后回退 method 判定（写操作按业务档、只读一律 default）。
+        """
+        return classify_endpoint(request.method, request.url.path)
 
 
 # 依赖注入：用于单个路由的速率限制
