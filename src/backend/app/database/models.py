@@ -132,6 +132,9 @@ class DesignDB(Base):
     insert_start = Column(Integer, nullable=True)
     insert_end = Column(Integer, nullable=True)
     vector_name = Column(String(100), nullable=True)
+    # 克隆方案文本（终审 D-01：DesignResult 有该字段但此前不落库，
+    # 数据库模式下回看设计会静默丢失方案说明）
+    clone_protocol = Column(Text, nullable=True)
     
     # 状态
     status = Column(String(20), default="pending")
@@ -399,6 +402,8 @@ def _migrate_designs_table():
         "insert_start": "ALTER TABLE designs ADD COLUMN insert_start INTEGER NULL",
         "insert_end": "ALTER TABLE designs ADD COLUMN insert_end INTEGER NULL",
         "vector_name": "ALTER TABLE designs ADD COLUMN vector_name VARCHAR(100) NULL",
+        # 终审 D-01：克隆方案文本（DesignResult 有此字段，此前不落库）
+        "clone_protocol": "ALTER TABLE designs ADD COLUMN clone_protocol TEXT NULL",
     }
     with engine.begin() as conn:
         for col, ddl in stmts.items():

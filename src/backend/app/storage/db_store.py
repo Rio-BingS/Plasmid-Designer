@@ -7,11 +7,13 @@ from datetime import datetime
 from .base import DesignStoreBase, BatchStoreBase
 
 # DesignDB 上存在的可透传列（save/update 共用）
+# 终审 D-01：clone_protocol 此前不在列表里，落库即丢（回看设计没有方案说明）
 _DESIGN_COLUMN_FIELDS = (
     "user_id",
     "optimized_sequence", "cai", "gc_content", "final_length",
     "status", "validation_passed",
     "construct_sequence", "insert_start", "insert_end", "vector_name",
+    "clone_protocol",
 )
 
 
@@ -206,7 +208,11 @@ class DBDesignStore(DesignStoreBase):
             "construct_sequence": design.construct_sequence,
             "construct_features": (
                 json.loads(design.construct_features)
-                if design.construct_features else None
+                if design.construct_features else []
+                # 终审 D-01：此前回读为 None，DesignResult 的
+                # construct_features 是 List 字段 → model_validate 抛
+                # ValidationError，被 _load 的 except: pass 吞成 404，
+                # 失败态设计在 database 模式下永久读不回来
             ),
             "insert_start": design.insert_start,
             "insert_end": design.insert_end,
@@ -227,6 +233,10 @@ class DBDesignStore(DesignStoreBase):
             ],
             "warnings": [w.message for w in (design.warnings or [])],
             "errors": [e.message for e in (design.errors or [])],
+            # 终审 D-01：属主与克隆方案必须往返——丢 user_id 会让落库的
+            # 完成态设计属主变 None，被 _can_access 当成匿名公开记录
+            "user_id": design.user_id,
+            "clone_protocol": design.clone_protocol,
         }
 
 
