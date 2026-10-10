@@ -29,7 +29,9 @@ services:
       # 可信反向代理：前端 nginx 经 compose 默认 bridge 网络（172.16.0.0/12）访问后端，
       # 只有来自这些对端的 X-Real-IP 才被采信为限流维度；自定义网段时同步修改
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # 前端经 nginx 同源反代 /api，默认无需跨域；不再回退到通配 *。
+      # 前端另域部署时在 .env 设为实际来源（逗号分隔）
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       # 管理员账号引导（启动时创建/提升管理员，见 .env.example）
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
