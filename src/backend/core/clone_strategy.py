@@ -556,6 +556,15 @@ class GoldenGateStrategy:
         )
 
 
+
+def _dedupe_cuts(hits: List[dict]) -> List[dict]:
+    """同一切点按正/反链各命中一次（回文识别序列）——按切点去重后排序"""
+    seen: Dict[int, dict] = {}
+    for h in hits:
+        seen.setdefault(h["cut_fwd"], h)
+    return [seen[c] for c in sorted(seen)]
+
+
 class RestrictionCloningStrategy:
     """限制性酶切克隆策略生成器"""
 
@@ -581,22 +590,30 @@ class RestrictionCloningStrategy:
         vector_len = len(vector_seq)
         product_size = vector_len + insert_len
 
-        # 真实切点：扫描载体上这两把酶的位点（各取识别位置最靠前的代表位）
-        cut_points: Dict[str, Optional[dict]] = {enzyme_5: None, enzyme_3: None}
-        try:
-            from core.enzyme_sites import find_enzyme_sites
-            for site in find_enzyme_sites(vector_seq, enzymes=[enzyme_5, enzyme_3]):
-                name = site["name"]
-                if cut_points.get(name) is None:
-                    cut_points[name] = site
-        except Exception:  # noqa: BLE001 扫描失败只降级为「不显示坐标」，不阻断方案
-            pass
+        # 真实切点：扫描载体（环状质粒）上这两把酶的全部位点。
+        # 只取第一个切点会漏掉后续切点——多切点既影响酶切可行性，
+        # 也会漏报落在必需元件内的切割
+        cut_points: Dict[str, List[dict]] = {enzyme_5: [], enzyme_3: []}
+        for enzyme in (enzyme_5, enzyme_3):
+            try:
+                from core.enzyme_sites import find_enzyme_sites
+                cut_points[enzyme] = _dedupe_cuts(
+                    find_enzyme_sites(vector_seq, enzymes=[enzyme], circular=True))
+            except Exception:  # noqa: BLE001 扫描失败只降级为「不显示坐标」，不阻断方案
+                cut_points[enzyme] = []
 
         def _cut_desc(enzyme: str) -> str:
-            s = cut_points.get(enzyme)
-            if not s:
+            hits = cut_points.get(enzyme) or []
+            if not hits:
                 return ""
-            return f"（载体 {s['cut_fwd']} bp 处切割，识别序列 {s['recognition']} 位于 {s['position']} bp）"
+            first = hits[0]
+            txt = (f"（载体 {first['cut_fwd']} bp 处切割，"
+                   f"识别序列 {first['recognition']} 位于 {first['position']} bp")
+            if len(hits) > 1:
+                others = "、".join(str(h["cut_fwd"]) for h in hits[1:4])
+                more = "等" if len(hits) > 4 else ""
+                txt += f"；另有 {len(hits) - 1} 个切点：{others}{more} bp"
+            return txt + "）"
 
         step_digest_vector_desc_zh = (
             f"使用{enzyme_5}{_cut_desc(enzyme_5)}和{enzyme_3}{_cut_desc(enzyme_3)}"
@@ -729,25 +746,23 @@ class RestrictionCloningStrategy:
                 return []
             broken: List[str] = []
             for enzyme in (enzyme_5, enzyme_3):
-                s = cut_points.get(enzyme)
-                if not s:
-                    continue
-                cut = s["cut_fwd"]
-                for f in vector_features:
-                    start = int(f.get("start") or 0)
-                    end = int(f.get("end") or 0)
-                    if not (start and end) or end < start:
-                        continue
-                    if start <= cut <= end:
-                        ftype = str(f.get("type") or "")
-                        label = next((zh for kw, zh in _ESSENTIAL_KEYWORDS
-                                      if kw.lower() in ftype.lower() or kw.lower() in str(f.get("name", "")).lower()),
-                                     "注释元件")
-                        broken.append(
-                            f"{enzyme} 切点（{cut} bp）落在{label} "
-                            f"{f.get('name', '')}（{start}-{end} bp）内部——该元件会被切断，"
-                            "请确认是否破坏必需功能或换用其他酶组合")
-                        break
+                for s in cut_points.get(enzyme) or []:
+                    cut = s["cut_fwd"]
+                    for f in vector_features:
+                        start = int(f.get("start") or 0)
+                        end = int(f.get("end") or 0)
+                        if not (start and end) or end < start:
+                            continue
+                        if start <= cut <= end:
+                            ftype = str(f.get("type") or "")
+                            label = next((zh for kw, zh in _ESSENTIAL_KEYWORDS
+                                          if kw.lower() in ftype.lower() or kw.lower() in str(f.get("name", "")).lower()),
+                                         "注释元件")
+                            broken.append(
+                                f"{enzyme} 切点（{cut} bp）落在{label} "
+                                f"{f.get('name', '')}（{start}-{end} bp）内部——该元件会被切断，"
+                                "请确认是否破坏必需功能或换用其他酶组合")
+                            break
             return broken
 
         broken = _broken_features()
