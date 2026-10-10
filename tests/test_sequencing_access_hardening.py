@@ -86,3 +86,65 @@ def test_query_string_token_rejected():
     assert c.get(base, params={"token": tok}).status_code == 403
     assert c.get(base + "/consensus/export", params={"token": tok}).status_code == 403
     assert c.get(base, headers={"X-Access-Token": tok}).status_code == 200
+
+
+# ---------------- 令牌只存摘要 ----------------
+
+def test_token_stored_as_sha256_hash_only():
+    import hashlib
+    from app.database import SessionLocal
+    from app.database.models import SequencingAnalysisDB
+    aid, tok, rec = _anon_record()
+    assert "access_token" not in rec
+    assert rec["access_token_hash"] == hashlib.sha256(tok.encode()).hexdigest()
+    db = SessionLocal()
+    try:
+        row = db.get(SequencingAnalysisDB, aid)
+        assert tok not in row.payload
+    finally:
+        db.close()
+    sr._ANALYSES.pop(aid, None)  # 强制走库回灌
+    c = TestClient(app)
+    assert c.get(f"/api/sequencing/analyses/{aid}", headers={"X-Access-Token": tok}).status_code == 200
+    assert c.get(f"/api/sequencing/analyses/{aid}",
+                 headers={"X-Access-Token": rec["access_token_hash"]}).status_code == 403
+
+
+def _plaintext_legacy_row(aid, tok):
+    """模拟升级前落库的记录：payload 内明文 access_token"""
+    from app import sequencing_store
+    rec = {"analysis_id": aid, "sample_name": "old", "reference": "ACGT" * 20,
+           "features": [], "created_at": datetime.now().isoformat(), "owner_id": None,
+           "access_token": tok, **_fake_result(), "_trace_data": {}}
+    rec.pop("traces", None)
+    sequencing_store.persist_record(rec)
+
+
+def test_plaintext_token_rows_migrated_and_still_usable():
+    from app import sequencing_store
+    from app.database import SessionLocal
+    from app.database.models import SequencingAnalysisDB
+    tok = "legacy-plaintext-token-0001"
+    _plaintext_legacy_row("seq_plainrc00001", tok)
+    assert sequencing_store.migrate_plaintext_tokens() >= 1
+    assert sequencing_store.migrate_plaintext_tokens() == 0  # 幂等
+    db = SessionLocal()
+    try:
+        assert tok not in db.get(SequencingAnalysisDB, "seq_plainrc00001").payload
+    finally:
+        db.close()
+    sr._ANALYSES.pop("seq_plainrc00001", None)
+    c = TestClient(app)
+    base = "/api/sequencing/analyses/seq_plainrc00001"
+    assert c.get(base).status_code == 403
+    assert c.get(base, headers={"X-Access-Token": tok}).status_code == 200
+
+
+def test_unmigrated_plaintext_row_still_works_via_lazy_hash():
+    tok = "legacy-plaintext-token-0002"
+    _plaintext_legacy_row("seq_plainrc00002", tok)
+    sr._ANALYSES.pop("seq_plainrc00002", None)
+    c = TestClient(app)
+    base = "/api/sequencing/analyses/seq_plainrc00002"
+    assert c.get(base, headers={"X-Access-Token": "wrong"}).status_code == 403
+    assert c.get(base, headers={"X-Access-Token": tok}).status_code == 200

@@ -7,6 +7,7 @@ STORAGE_MODE=database（默认）时，分析记录随创建写入数据库 sequ
 STORAGE_MODE=memory（HF 等无持久化场景）时与历史行为一致，不落库。
 """
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,23 @@ logger = logging.getLogger(__name__)
 # 压缩峰图，长年累月会无限膨胀——超出上限时按创建时间淘汰最旧记录。
 # 0 表示不限制。批量克隆模式一次可产生上百条，默认值给足余量。
 MAX_DB_RECORDS = int(os.environ.get("SEQUENCING_DB_MAX_RECORDS", "2000") or "2000")
+
+
+def hash_access_token(token: str) -> str:
+    """匿名记录访问令牌的存储形式：SHA-256 十六进制摘要。
+
+    令牌本身是 128 bit 随机值，无需加盐/慢哈希；只存摘要后，数据库或
+    内存快照泄露不再等于令牌泄露。"""
+    return hashlib.sha256(str(token).encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _hash_plaintext_token(record: Dict) -> bool:
+    """把旧版记录里的明文 access_token 换成摘要（原地修改）；有改动返回 True"""
+    tok = record.pop("access_token", None)
+    if isinstance(tok, str) and tok and not record.get("access_token_hash"):
+        record["access_token_hash"] = hash_access_token(tok)
+        return True
+    return tok is not None
 
 
 def db_enabled() -> bool:
@@ -127,12 +145,48 @@ def load_record(analysis_id: str) -> Optional[Dict]:
         if row is None:
             return None
         record = json.loads(row.payload)
+        _hash_plaintext_token(record)  # 未迁移的旧行：读出即转摘要
         record["_trace_data"] = _decode_trace(row.trace_data)
         return record
     except Exception:
         return None
     finally:
         db.close()
+
+
+def migrate_plaintext_tokens() -> int:
+    """启动迁移：把库中匿名记录 payload 里的明文 access_token 改存 SHA-256
+    摘要（幂等；返回改写条数）。旧客户端持有的令牌照常可用。"""
+    if not db_enabled():
+        return 0
+    from app.database import SessionLocal
+    from app.database.models import SequencingAnalysisDB
+
+    _ensure_table()
+    db = SessionLocal()
+    changed = 0
+    try:
+        rows = (db.query(SequencingAnalysisDB)
+                .filter(SequencingAnalysisDB.owner_id.is_(None))
+                .filter(SequencingAnalysisDB.payload.like('%"access_token":%'))
+                .all())
+        for row in rows:
+            try:
+                payload = json.loads(row.payload)
+            except ValueError:
+                continue
+            if _hash_plaintext_token(payload):
+                row.payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                changed += 1
+        db.commit()
+        if changed:
+            logger.info("测序分析记录明文访问令牌已迁移为摘要: %s 条", changed)
+    except Exception as e:
+        db.rollback()
+        logger.error("测序分析记录令牌迁移失败: %s", e)
+    finally:
+        db.close()
+    return changed
 
 
 def delete_record(analysis_id: str) -> None:
