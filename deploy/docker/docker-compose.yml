@@ -13,9 +13,9 @@ services:
     volumes:
       - ../../data:/app/data
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-plasmid}:${DB_PASSWORD:-plasmid_secure_2026}@db:5432/plasmid_designer
+      - DATABASE_URL=postgresql://${DB_USER:-plasmid}:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/plasmid_designer
       # Redis 已启用 requirepass，连接串需携带密码（与 redis 服务保持同一默认值）
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-plasmid_redis_2026}@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
       - REDIS_ENABLED=${REDIS_ENABLED:-true}
       # 无默认值：未设置时 compose 直接报错，不再回退到公开占位值
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
@@ -87,7 +87,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-plasmid}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-plasmid_secure_2026}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       POSTGRES_DB: plasmid_designer
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
@@ -112,8 +112,8 @@ services:
     image: redis:7-alpine
     container_name: plasmid-redis
     restart: unless-stopped
-    # 安全：启用 requirepass（默认值与 backend 的 REDIS_URL 保持一致，生产环境用 .env 覆盖）
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:-plasmid_redis_2026}"
+    # 安全：启用 requirepass；REDIS_PASSWORD 无默认值，未设置时 compose 拒绝启动
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     # 安全：不对公网暴露，仅绑定本机回环供宿主机调试；backend 经内部网络访问 redis:6379
     ports:
       - "127.0.0.1:6379:6379"
@@ -122,7 +122,7 @@ services:
     networks:
       - plasmid-network
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD:-plasmid_redis_2026}' ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD:?REDIS_PASSWORD must be set}' ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
