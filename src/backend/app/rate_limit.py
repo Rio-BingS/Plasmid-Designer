@@ -14,6 +14,8 @@ import logging
 from collections import defaultdict
 from threading import Lock
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,43 +158,67 @@ RATE_LIMITS = {
 limiter = InMemoryRateLimiter()
 
 
-@lru_cache(maxsize=4096)
-def _is_trusted_proxy(host: str) -> bool:
-    """socket 直连对端为回环/私网地址时视为可信前置代理（nginx 位于 docker 内网/本机）。
+@lru_cache(maxsize=16)
+def _parse_trusted_proxies(raw: str) -> Tuple:
+    """解析 TRUSTED_PROXIES（逗号分隔 IP/CIDR）；非法项忽略并告警"""
+    nets = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            logger.warning("TRUSTED_PROXIES 含非法项，已忽略: %r", item)
+    return tuple(nets)
 
-    公网客户端直连后端时，其自带的 X-Real-IP / X-Forwarded-For 一律不采信，
-    防止伪造请求头获得全新限流 key 绕过限流（KNOWN_ISSUES 1.2）。
+
+def _is_trusted_proxy(host: str) -> bool:
+    """socket 对端是否为配置的可信前置代理（settings.TRUSTED_PROXIES）。
+
+    此前凡回环/私网对端一律信任——同一 docker 网络或内网里的任何主机
+    都能伪造 X-Real-IP 换取全新限流 key（KNOWN_ISSUES 1.2）。现在只信
+    显式允许清单，默认仅本机。
     """
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return ip.is_loopback or ip.is_private
+    return any(ip in net for net in _parse_trusted_proxies(settings.TRUSTED_PROXIES))
+
+
+def _valid_ip(value: str) -> Optional[str]:
+    value = (value or "").strip()
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        return None
 
 
 def get_client_ip(request: Request) -> str:
     """获取客户端 IP（限流维度）。
 
-    仅当对端是可信内网代理时才采信 X-Real-IP——nginx.conf 中
-    `proxy_set_header X-Real-IP $remote_addr` 强制覆写，客户端无法伪造；
-    X-Forwarded-For 只取最后一段（由本机代理追加的那段）。
-    对端为公网地址时直接使用 socket 对端地址。
+    仅当对端是可信代理时才采信转发头：优先 X-Real-IP（nginx 用
+    `proxy_set_header X-Real-IP $remote_addr` 强制覆写）；否则从右向左
+    遍历 X-Forwarded-For，跳过可信代理，取第一个不可信地址。
+    对端不可信时直接使用 socket 对端地址。
     """
     client_host = request.client.host if request.client else "unknown"
     if not _is_trusted_proxy(client_host):
         return client_host
 
-    real_ip = request.headers.get("X-Real-IP", "").strip()
+    real_ip = _valid_ip(request.headers.get("X-Real-IP", ""))
     if real_ip:
-        try:
-            ipaddress.ip_address(real_ip)
-            return real_ip
-        except ValueError:
-            pass  # 非法值视为未提供，继续走 XFF / 对端地址
+        return real_ip
 
     forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[-1].strip()
+    for hop in reversed([h.strip() for h in forwarded.split(",") if h.strip()]):
+        ip = _valid_ip(hop)
+        if ip is None:
+            break
+        if not _is_trusted_proxy(ip):
+            return ip
     return client_host
 
 
