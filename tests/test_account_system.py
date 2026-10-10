@@ -607,7 +607,10 @@ class TestAdminBootstrap:
 
 
 class TestSecretKeyEnforcement:
-    """终审 B-04 回归锁：占位/弱 SECRET_KEY 在非 DEBUG 下必须拒绝启动。"""
+    """终审 B-04 回归锁：占位/弱 SECRET_KEY 一律拒绝启动，DEBUG 不再豁免；
+    校验同时在 jwt_auth 导入时执行，`--lifespan off` 也绕不过。"""
+
+    STRONG = "9f2c7e41b0d85a36c1e4f7a92b6d0c58e3a17f4b9d2c60e8"
 
     def _run_lifespan(self, monkeypatch, key: str, debug: bool):
         import asyncio
@@ -631,9 +634,51 @@ class TestSecretKeyEnforcement:
         with pytest.raises(RuntimeError, match="SECRET_KEY"):
             self._run_lifespan(monkeypatch, "a" * 31, debug=False)
 
-    def test_placeholder_secret_warns_only_in_debug(self, monkeypatch):
-        # DEBUG 下不抛错（本地开发零配置可用）
-        self._run_lifespan(monkeypatch, "dev-insecure-secret-key-change-me", debug=True)
+    def test_placeholder_secret_blocks_startup_even_in_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "dev-insecure-secret-key-change-me", debug=True)
 
     def test_strong_secret_passes_when_not_debug(self, monkeypatch):
-        self._run_lifespan(monkeypatch, "x" * 64, debug=False)
+        self._run_lifespan(monkeypatch, self.STRONG, debug=False)
+
+    @pytest.mark.parametrize("key", [
+        "",
+        "dev-insecure-secret-key-change-me",
+        "change_this_in_production",
+        "change_this_in_production_use_strong_random_string",
+        "short-key-31-chars-xxxxxxxxxxxx",
+        "a" * 32,
+        "0123456789abcdef" * 2,
+        "abababababababababababababababab",
+    ])
+    def test_validate_rejects_weak_keys(self, key):
+        from app.config import validate_secret_key
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            validate_secret_key(key)
+
+    @pytest.mark.parametrize("key", [
+        "9f2c7e41b0d85a36c1e4f7a92b6d0c58e3a17f4b9d2c60e8",
+        "s" * 16 + "0123456789abcdef0123456789abcdef",
+    ])
+    def test_validate_accepts_random_keys(self, key):
+        from app.config import validate_secret_key
+        validate_secret_key(key)
+
+    def test_validate_accepts_generated_keys(self):
+        import secrets as _secrets
+        from app.config import validate_secret_key
+        for _ in range(200):
+            validate_secret_key(_secrets.token_hex(16))
+            validate_secret_key(_secrets.token_urlsafe(32))
+
+    @pytest.mark.parametrize("debug", ["true", "false"])
+    def test_import_refuses_placeholder_without_lifespan(self, debug):
+        """不进 lifespan（--lifespan off / 嵌入式 ASGI 宿主）也必须拒绝"""
+        import os
+        import subprocess
+        import sys as _sys
+        env = dict(os.environ, SECRET_KEY="dev-insecure-secret-key-change-me", DEBUG=debug)
+        r = subprocess.run([_sys.executable, "-c", "import app.main"], cwd=str(BACKEND),
+                           env=env, capture_output=True, text=True, timeout=120)
+        assert r.returncode != 0
+        assert "SECRET_KEY" in r.stderr
