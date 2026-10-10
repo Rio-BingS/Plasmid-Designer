@@ -167,3 +167,34 @@ def test_vector_genbank_export_round_trips(client):
     # 导出的特征坐标必须落回序列内
     assert features, "导出的 GenBank 应带特征表"
     assert all(f["end"] <= len(seq) for f in features)
+
+
+# ==================== 参考拓扑（环状/线性）====================
+
+def _gb(seq: str, topology: str) -> str:
+    return (f"LOCUS       TopoRef          {len(seq)} bp    DNA     {topology} SYN 01-JAN-2026\n"
+            "DEFINITION  topology test.\nACCESSION   toporef\n"
+            "FEATURES             Location/Qualifiers\n"
+            f"     source          1..{len(seq)}\n"
+            "                     /organism=\"synthetic construct\"\n"
+            f"ORIGIN\n{_origin_block(seq)}\n//\n")
+
+
+def test_parse_reference_topology_flags():
+    from core.sanger.reference_parser import parse_reference_topology
+    assert parse_reference_topology("a.gb", _gb(REF_SEQ, "circular").encode())[2] is True
+    assert parse_reference_topology("a.gb", _gb(REF_SEQ, "linear").encode())[2] is False
+    assert parse_reference_topology("a.fasta", f">r\n{REF_SEQ}\n".encode())[2] is None
+    # 旧接口保持二元组
+    seq, feats = parse_reference("a.gb", _gb(REF_SEQ, "circular").encode())
+    assert seq == REF_SEQ
+
+
+def test_parse_snapgene_topology(monkeypatch):
+    import snapgene_reader
+    from core.sanger.reference_parser import parse_reference_topology
+    fake = {"seq": REF_SEQ, "features": [], "dna": {"topology": "circular"}}
+    monkeypatch.setattr(snapgene_reader, "snapgene_file_to_dict", lambda path: fake)
+    seq, _f, circ = parse_reference_topology("p.dna", b"SNAPGENE-BYTES")
+    assert seq == REF_SEQ and circ is True
+
