@@ -706,7 +706,11 @@ class TestSecretKeyEnforcement:
         import subprocess
         import sys as _sys
         env = dict(os.environ, SECRET_KEY="dev-insecure-secret-key-change-me", DEBUG=debug)
+        # 中文 Windows 下子进程默认按 GBK 解码 stderr，而我们的报错文本是
+        # UTF-8（含中文与全角符号）——text=True 会抛 UnicodeDecodeError 并把
+        # stderr 整个置成 None（断言随之 TypeError）。改字节捕获 + 显式 UTF-8。
         r = subprocess.run([_sys.executable, "-c", "import app.main"], cwd=str(BACKEND),
-                           env=env, capture_output=True, text=True, timeout=120)
+                           env=env, capture_output=True, timeout=120)
+        err = (r.stderr or b"").decode("utf-8", errors="replace")
         assert r.returncode != 0
-        assert "SECRET_KEY" in r.stderr
+        assert "SECRET_KEY" in err
