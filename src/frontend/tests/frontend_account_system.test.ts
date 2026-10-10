@@ -76,6 +76,16 @@ describe('auth store 功能门控', () => {
     expect(store.featureAllowed('batch')).toBe(false)
   })
 
+  it('功能清单显式为空时全部关闭，不回退默认', async () => {
+    vi.mocked(api.getSiteConfig).mockResolvedValue(
+      siteConfig({ features: { anonymous: [], user: [] }, effective_features: [] })
+    )
+    const store = useAuthStore()
+    await store.refreshSiteConfig()
+    expect(store.effectiveFeatures).toEqual([])
+    for (const f of fullFeatures) expect(store.featureAllowed(f)).toBe(false)
+  })
+
   it('管理员不受功能开关限制', async () => {
     vi.mocked(api.getSiteConfig).mockResolvedValue(
       siteConfig({ tier: 'admin', features: { anonymous: [], user: [] }, effective_features: [] })
@@ -109,6 +119,13 @@ describe('NavBar 按功能开关过滤导航', () => {
   it('全开放时显示全部 7 个导航项', async () => {
     const wrapper = await mountNav(siteConfig())
     expect(wrapper.findAll('.nav-link').length).toBe(7)
+  })
+
+  it('功能清单为空时只剩首页', async () => {
+    const wrapper = await mountNav(
+      siteConfig({ features: { anonymous: [], user: [] }, effective_features: [] })
+    )
+    expect(wrapper.findAll('.nav-link').map((l) => l.text())).toEqual(['首页'])
   })
 
   it('匿名用户只看到开放的功能入口', async () => {
