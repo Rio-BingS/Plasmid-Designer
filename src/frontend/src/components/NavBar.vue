@@ -12,7 +12,7 @@ const user = ref<any>(null)  // will be set from authStore
 const showUserMenu = ref(false)
 
 onMounted(() => {
-  authStore.initFromStorage()
+  authStore.initSession()
   user.value = authStore.user
 })
 

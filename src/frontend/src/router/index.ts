@@ -43,8 +43,11 @@ router.beforeEach(async (to) => {
   if (!auth.siteConfig) {
     await auth.refreshSiteConfig()
   }
-  if (to.meta.adminOnly && !auth.isAdmin) {
-    return { name: 'home' }
+  if (to.meta.adminOnly) {
+    // 登录态来自后端核实（httpOnly Cookie，前端无本地副本）：
+    // 刷新直达管理页时先等会话核实完成，否则会被误判为未登录
+    await auth.ensureSession()
+    if (!auth.isAdmin) return { name: 'home' }
   }
   const anyFeature = to.meta.anyFeature as string[] | undefined
   if (anyFeature?.length) {

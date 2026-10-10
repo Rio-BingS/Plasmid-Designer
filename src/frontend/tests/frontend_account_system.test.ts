@@ -70,7 +70,6 @@ describe('auth store 功能门控', () => {
     )
     const store = useAuthStore()
     store.user = { username: 'u', is_admin: false }
-    store.token = 't'
     await store.refreshSiteConfig()
     expect(store.featureAllowed('design')).toBe(true)
     expect(store.featureAllowed('batch')).toBe(false)
@@ -92,7 +91,6 @@ describe('auth store 功能门控', () => {
     )
     const store = useAuthStore()
     store.user = { username: 'boss', is_admin: true }
-    store.token = 't'
     await store.refreshSiteConfig()
     expect(store.isAdmin).toBe(true)
     expect(store.featureAllowed('design')).toBe(true)
