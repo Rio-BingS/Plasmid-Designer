@@ -14,7 +14,9 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { Ref } from 'vue'
 import { getReadTrace, type SequencingAnalysis, type SequencingVariant, type ReadTrace } from '@/api'
-import { buildSeqCols, packLanes, shortName, type SeqCol } from '@/utils/seqPanelModel'
+import {
+  buildSeqCols, packLanes, readOverlaps, readSegments, readSpanText, shortName, type SeqCol,
+} from '@/utils/seqPanelModel'
 
 interface UseSeqVizOptions {
   /** 分析结果（父组件持有；preset 注入或分析完成时写入） */
@@ -79,10 +81,11 @@ export function useSeqViz(options: UseSeqVizOptions) {
   // 参考序列上没有引物覆盖的部分不占位，箭头才能铺满整个简图宽度
   const ovDomain = computed(() => {
     const refLen = analysis.value?.reference_length ?? 0
-    const cov = (analysis.value?.reads ?? []).filter((r) => r.ref_end > 0)
-    if (!cov.length || !refLen) return { lo: 0, hi: Math.max(1, refLen) }
-    const lo0 = Math.min(...cov.map((r) => r.ref_start))
-    const hi0 = Math.max(...cov.map((r) => r.ref_end))
+    // 环状参考跨原点 read 按折回后的区段取域（展开坐标 ref_end 可 > refLen）
+    const segs = (analysis.value?.reads ?? []).flatMap((r) => readSegments(r))
+    if (!segs.length || !refLen) return { lo: 0, hi: Math.max(1, refLen) }
+    const lo0 = Math.min(...segs.map(([s]) => s))
+    const hi0 = Math.max(...segs.map(([, e]) => e))
     const pad = Math.max(5, Math.round((hi0 - lo0) * 0.02))
     return { lo: Math.max(1, lo0 - 1 - pad), hi: Math.min(refLen, hi0 + pad) }
   })
@@ -108,7 +111,8 @@ export function useSeqViz(options: UseSeqVizOptions) {
   function seqColsFor(readIndex: number): SeqCol[] | null {
     if (!(readIndex in seqColCache)) {
       const r = analysis.value?.reads[readIndex]
-      seqColCache[readIndex] = r ? buildSeqCols(r) : null
+      // 传参考长度：跨原点 read 的列坐标按环折回（线性 read 不受影响）
+      seqColCache[readIndex] = r ? buildSeqCols(r, analysis.value?.reference_length ?? 0) : null
     }
     return seqColCache[readIndex]
   }
@@ -198,7 +202,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
     if (read && wrap && wrap.clientWidth > 0) {
       const uL = seqScrollX.value / seqColW.value
       const uR = (seqScrollX.value + wrap.clientWidth) / seqColW.value
-      if (read.ref_end < uL || read.ref_start > uR) scrollToRefPos(read.ref_start, true)
+      if (!readOverlaps(read, uL, uR)) scrollToRefPos(read.ref_start, true)
     }
   }
 
@@ -270,10 +274,12 @@ export function useSeqViz(options: UseSeqVizOptions) {
       visibleReads.value.push(ri)
       loadSeqTrace(ri)
     }
-    seqInfo.value = `已选中 ${shortName(read.filename)}（${read.direction === '-' ? '←' : '→'} ${read.ref_start}–${read.ref_end} · Q${read.mean_q}）${first ? '，峰图条带已切换到该引物' : ''}`
+    seqInfo.value = `已选中 ${shortName(read.filename)}（${read.direction === '-' ? '←' : '→'} ${readSpanText(read)} · Q${read.mean_q}）${first ? '，峰图条带已切换到该引物' : ''}`
     const wrap = seqBox.value
     if (zoom && wrap && wrap.clientWidth > 0) {
-      const span = Math.max(1, read.ref_end - read.ref_start + 1)
+      // 跨原点 read 两段分处参考两端，放大到较长的一段（线性即整条 read）
+      const [zs, ze] = readSegments(read).reduce((m, sg) => (sg[1] - sg[0] > m[1] - m[0] ? sg : m))
+      const span = Math.max(1, ze - zs + 1)
       const avail = wrap.clientWidth - 24
       // 可读性下限 6px/碱基：长 read 不再硬塞进一屏把峰压瘪（列宽 <1 时峰形不可辨）
       let nu = Math.min(28, avail / span)
@@ -282,12 +288,12 @@ export function useSeqViz(options: UseSeqVizOptions) {
       nu = Math.round(nu * 100) / 100
       if (nu !== seqColW.value) seqColW.value = nu
       if (fits) {
-        scrollToRefPos((read.ref_start + read.ref_end) / 2, true)
+        scrollToRefPos((zs + ze) / 2, true)
       } else {
         // 塞不下整条 read：以可读密度落在 read 起点处（起点闪黄标识），向右浏览
-        seqScrollX.value = Math.max(0, (read.ref_start - 1) * nu - 12)
+        seqScrollX.value = Math.max(0, (zs - 1) * nu - 12)
         safeScrollTo(seqScrollX.value, false)
-        flashRefPos.value = read.ref_start
+        flashRefPos.value = zs
         if (flashTimer) clearTimeout(flashTimer)
         flashTimer = setTimeout(() => {
           flashRefPos.value = null
@@ -314,7 +320,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
     const eligible = visibleReads.value
       .filter((ri) => {
         const r = a.reads[ri]
-        return r && r.ref_end > 0 && r.ref_end >= uLeft - 2 && r.ref_start <= uRight + 2
+        return r && r.ref_end > 0 && readOverlaps(r, uLeft - 2, uRight + 2)
       })
       .sort((x, y) => a.reads[x].ref_start - a.reads[y].ref_start)
     const layouts: { ri: number; rowY: number; stripTop: number; stripH: number; baseline: number }[] = []
@@ -404,10 +410,12 @@ export function useSeqViz(options: UseSeqVizOptions) {
       if (lane >= 0 && lane < lanes.length) {
         let best = Infinity
         for (const i of lanes[lane]) {
-          const r = a.reads[i]
-          if (refPos < r.ref_start - 1 || refPos > r.ref_end + 1) continue
-          const d = refPos < r.ref_start ? r.ref_start - refPos : refPos > r.ref_end ? refPos - r.ref_end : 0
-          if (d < best) { best = d; hit = i }
+          // 跨原点 read 按折回的两段各自判距离（线性即单段）
+          for (const [rs, re] of readSegments(a.reads[i])) {
+            if (refPos < rs - 1 || refPos > re + 1) continue
+            const d = refPos < rs ? rs - refPos : refPos > re ? refPos - re : 0
+            if (d < best) { best = d; hit = i }
+          }
         }
       }
       if (hit >= 0) {
@@ -523,10 +531,17 @@ export function useSeqViz(options: UseSeqVizOptions) {
       ctx.strokeStyle = CHANNEL_COLORS[b]
       ctx.lineWidth = lineWidth
       let started = false
+      let lastXu = -Infinity
       for (const w of wins) {
         const c = cols[w.ci]
-        const prevXu = w.ci > 0 ? cols[w.ci - 1].xu : c.xu - 1
-        const nextXu = w.ci + 1 < cols.length ? cols[w.ci + 1].xu : c.xu + 1
+        // 环状跨原点 read：列坐标在原点处折回到参考起点——邻列取 ±1 并断开折线，
+        // 不画一条横跨整个视图的连线（线性 read 列坐标单调，不受影响）
+        if (c.xu < lastXu) started = false
+        lastXu = c.xu
+        let prevXu = w.ci > 0 ? cols[w.ci - 1].xu : c.xu - 1
+        let nextXu = w.ci + 1 < cols.length ? cols[w.ci + 1].xu : c.xu + 1
+        if (prevXu > c.xu) prevXu = c.xu - 1
+        if (nextXu < c.xu) nextXu = c.xu + 1
         const xL = seqX((c.xu + prevXu) / 2)
         const xR = seqX((c.xu + nextXu) / 2)
         const xc = seqX(c.xu)
@@ -606,55 +621,68 @@ export function useSeqViz(options: UseSeqVizOptions) {
       const isSel = sel === i
       const y = 6 + lane * (OV_ARROW_H + OV_LANE_GAP) + (isSel ? -1 : 0)
       const ah = OV_ARROW_H + (isSel ? 2 : 0)
-      const x1 = ovX(read.ref_start - 1)
-      const x2 = ovX(read.ref_end)
-      const bw = Math.max(x2 - x1, 4)
-      const inView = read.ref_end >= uLeft && read.ref_start <= uRight
       const vis = isReadVisible(i)
       const fwd = read.direction !== '-'
-      const head = Math.min(14, Math.max(7, bw * 0.12))
-      ctx.beginPath()
-      if (fwd) {
-        ctx.moveTo(x1, y); ctx.lineTo(x1 + bw - head, y); ctx.lineTo(x1 + bw, y + ah / 2)
-        ctx.lineTo(x1 + bw - head, y + ah); ctx.lineTo(x1, y + ah)
-      } else {
-        ctx.moveTo(x1 + bw, y); ctx.lineTo(x1 + head, y); ctx.lineTo(x1, y + ah / 2)
-        ctx.lineTo(x1 + head, y + ah); ctx.lineTo(x1 + bw, y + ah)
-      }
-      ctx.closePath()
       const rc = readColor(i)
-      ctx.fillStyle = isSel ? rc
-        : vis ? (inView ? hexA(rc, 0.85) : hexA(rc, 0.5))
-        : (inView ? hexA(rc, 0.42) : hexA(rc, 0.24))
-      ctx.fill()
-      if (isSel) { ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.5; ctx.stroke() }
-      ctx.save()
-      ctx.clip()
-      // 两端不可信区（后端 END_MARGIN=20bp：信号爬升/下降段判读不可靠）
-      ctx.fillStyle = 'rgba(255,255,255,0.45)'
-      const eL = ovX(read.ref_start - 1 + UNTRUST)
-      if (eL > x1) ctx.fillRect(x1, y, eL - x1, ah)
-      const eR = ovX(read.ref_end - UNTRUST)
-      if (eR < x1 + bw) ctx.fillRect(eR, y, x1 + bw - eR, ah)
-      // 双峰位点（read 坐标 → 参考坐标），密集时自然连成"范围"
-      ctx.fillStyle = '#F5A623'
+      // 跨原点 read 按折回的两段分别绘制（[s, L] 与 [1, e']）：箭头头部只画在
+      // read 的 3' 端所在段，首尾不可信区各落在 read 两端所在段；线性即单段
+      const segs = readSegments(read)
       const ocols = seqColsFor(i)
-      if (ocols) {
-        for (const d of read.mixed_detail || []) {
-          const c = ocols.find((cc) => cc.origIdx === d.pos - 1)
-          if (!c || c.ref === '-') continue
-          const x = ovX(c.xu)
-          if (x >= x1 - 2 && x <= x1 + bw + 2) ctx.fillRect(x - 1, y, 2, ah)
+      segs.forEach(([ss, se], k) => {
+        const isFirst = k === 0
+        const isLast = k === segs.length - 1
+        const x1 = ovX(ss - 1)
+        const x2 = ovX(se)
+        const bw = Math.max(x2 - x1, 4)
+        const inView = se >= uLeft && ss <= uRight
+        const withHead = fwd ? isLast : isFirst
+        const head = withHead ? Math.min(14, Math.max(7, bw * 0.12)) : 0
+        ctx.beginPath()
+        if (fwd) {
+          ctx.moveTo(x1, y); ctx.lineTo(x1 + bw - head, y); ctx.lineTo(x1 + bw, y + ah / 2)
+          ctx.lineTo(x1 + bw - head, y + ah); ctx.lineTo(x1, y + ah)
+        } else {
+          ctx.moveTo(x1 + bw, y); ctx.lineTo(x1 + head, y); ctx.lineTo(x1, y + ah / 2)
+          ctx.lineTo(x1 + head, y + ah); ctx.lineTo(x1 + bw, y + ah)
         }
-      }
-      ctx.restore()
-      // 名字居中印在箭头内（放得下才画）
-      if (bw >= 44) {
-        ctx.font = '9px Arial'
-        ctx.textAlign = 'center'
-        ctx.fillStyle = 'rgba(255,255,255,0.95)'
-        ctx.fillText(shortName(read.filename), (x1 + x2) / 2, y + ah - 6, bw - head - 8)
-      }
+        ctx.closePath()
+        ctx.fillStyle = isSel ? rc
+          : vis ? (inView ? hexA(rc, 0.85) : hexA(rc, 0.5))
+          : (inView ? hexA(rc, 0.42) : hexA(rc, 0.24))
+        ctx.fill()
+        if (isSel) { ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.5; ctx.stroke() }
+        ctx.save()
+        ctx.clip()
+        // 两端不可信区（后端 END_MARGIN=20bp：信号爬升/下降段判读不可靠）
+        ctx.fillStyle = 'rgba(255,255,255,0.45)'
+        if (isFirst) {
+          const eL = ovX(ss - 1 + UNTRUST)
+          if (eL > x1) ctx.fillRect(x1, y, eL - x1, ah)
+        }
+        if (isLast) {
+          const eR = ovX(se - UNTRUST)
+          if (eR < x1 + bw) ctx.fillRect(eR, y, x1 + bw - eR, ah)
+        }
+        // 双峰位点（read 坐标 → 参考坐标），密集时自然连成"范围"
+        ctx.fillStyle = '#F5A623'
+        if (ocols) {
+          for (const d of read.mixed_detail || []) {
+            const c = ocols.find((cc) => cc.origIdx === d.pos - 1)
+            if (!c || c.ref === '-') continue
+            const x = ovX(c.xu)
+            if (x >= x1 - 2 && x <= x1 + bw + 2) ctx.fillRect(x - 1, y, 2, ah)
+          }
+        }
+        ctx.restore()
+        // 名字居中印在箭头内（放得下才画；跨原点 read 印在较长的一段）
+        const longest = segs.every(([s2, e2]) => e2 - s2 <= se - ss)
+        if (bw >= 44 && longest) {
+          ctx.font = '9px Arial'
+          ctx.textAlign = 'center'
+          ctx.fillStyle = 'rgba(255,255,255,0.95)'
+          ctx.fillText(shortName(read.filename), (x1 + x2) / 2, y + ah - 6, bw - Math.max(head, 7) - 8)
+        }
+      })
     }
 
     // 1) 刻度尺 + 纵向网格线（主视图坐标，从简图下沿开始）

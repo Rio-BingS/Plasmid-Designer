@@ -7,6 +7,7 @@
  * 峰图联动逻辑（自动显示、选中、滚动）留在父组件。
  */
 import type { SequencingAnalysis } from '@/api'
+import { readSpanText } from '@/utils/seqPanelModel'
 
 type ReadRow = SequencingAnalysis['reads'][number]
 
@@ -31,7 +32,7 @@ const emit = defineEmits<{
         <tr v-for="r in reads" :key="r.index">
           <td>{{ r.filename }}</td>
           <td>{{ r.direction === '+' ? '正向' : '反向' }}</td>
-          <td>{{ r.ref_start }} - {{ r.ref_end }}</td>
+          <td :title="r.wraps_origin ? '跨越环状参考原点' : undefined">{{ readSpanText(r, ' - ') }}</td>
           <td>{{ r.trimmed_length }} bp</td>
           <td>{{ r.mean_q }}</td>
           <td>

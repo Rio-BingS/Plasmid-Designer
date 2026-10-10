@@ -595,7 +595,12 @@ export interface SequencingAnalysis {
     mean_q: number
     direction: string
     ref_start: number
+    /** 环状参考跨原点时为展开坐标（> reference_length），折回见 ref_segments */
     ref_end: number
+    /** 仅环状参考跨原点的 read 返回：true */
+    wraps_origin?: boolean
+    /** 仅跨原点 read 返回：折回后的覆盖区段 [[s, L], [1, e-L]] */
+    ref_segments?: [number, number][] | null
     identity: number
     mixed_positions: number[]
     mixed_detail?: { pos: number; ratio: number; secondary_base: string }[]
@@ -619,6 +624,8 @@ export interface SequencingAnalysis {
   }
   coverage_ranges: [number, number][]
   coverage_gaps?: { start: number; end: number; length: number }[]
+  /** 参考是否按环状比对（旧记录无此字段） */
+  circular?: boolean
   cds_reports?: CdsReport[]
   homopolymers?: {
     base: string | null
