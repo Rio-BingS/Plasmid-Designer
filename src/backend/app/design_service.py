@@ -252,6 +252,9 @@ def process_sequence(
                 )
         return seq, None, None, warnings
 
+    # 终审 A-05：未知物种在此显式失败（设计结果 FAILED + 错误明细），
+    # 不再静默回退大肠杆菌表——此前 pichia/insect/bacillus/martian 全部
+    # 静默返回 COMPLETED。CodonOptimizer 构造抛 ValueError。
     optimizer = CodonOptimizer(species=target_species)
     if optimize_codons:
         # 密码子优化结果缓存（24h TTL）：同 (序列, 物种, GC 区间, 排除酶) 直接复用
@@ -276,6 +279,10 @@ def process_sequence(
             gc_target=(gc_min / 100, gc_max / 100),
             avoid_motifs=motifs,
         )
+        # 终审 D-04：未知限制酶、经优化仍无法排除的位点这两条局部告警
+        # 此前被整体丢弃（exclude_enzymes=["NotAnEnzyme"] 返回 warnings=[]，
+        # 用户以为序列干净直接下单合成），必须合并进返回值
+        warnings.extend(result.warnings)
         if motifs:
             kept = [m for m in motifs if m in result.dna_sequence]
             if kept:
@@ -293,12 +300,13 @@ def process_sequence(
                     "dna_sequence": result.dna_sequence,
                     "cai": result.cai,
                     "gc_content": result.gc_content * 100,
-                    "warnings": list(result.warnings),
+                    # 缓存键含 exclude_enzymes，告警与该输入绑定，可整体缓存
+                    "warnings": list(warnings),
                 },
             )
         except Exception:
             pass
-        return result.dna_sequence, result.cai, result.gc_content * 100, list(result.warnings)
+        return result.dna_sequence, result.cai, result.gc_content * 100, list(warnings)
 
     # 不优化：按物种频率忠实反翻译（最高频密码子，不做 GC 迭代）
     dna = optimizer.back_translate(seq)
@@ -546,9 +554,16 @@ def run_design(
                 "overhang_3": overhang_3,
             }
         elif request.cloning_method == CloningMethod.RESTRICTION:
+            # 终审 A-09：传入载体元件（elements，1-indexed），切点破坏必需
+            # 元件时出告警；转成 find_enzyme_sites 消费的 {name,type,start,end} 形
             strategy_kwargs = {
                 "enzyme_5": request.enzyme_5 or request.enzyme,
                 "enzyme_3": request.enzyme_3 or request.enzyme,
+                "vector_features": (
+                    [{"name": el.name, "type": el.element_type.value,
+                      "start": el.start, "end": el.end}
+                     for el in vector.elements] if vector else None
+                ),
             }
         elif request.cloning_method == CloningMethod.GENE_SYNTHESIS:
             strategy_kwargs = {

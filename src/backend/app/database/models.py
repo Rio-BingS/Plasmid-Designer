@@ -77,8 +77,11 @@ class SiteSettingsDB(Base):
     id = Column(Integer, primary_key=True, default=1)
     registration_open = Column(Boolean, default=True)
     email_verification_required = Column(Boolean, default=False)
+    # 终审 D-02：功能清单列是 nullable=False default="[]"，无法用 NULL 区分
+    # 「从未设置」与「管理员显式清空」——补一个显式的已初始化标记列
     anonymous_features = Column(Text, nullable=False, default="[]")
     user_features = Column(Text, nullable=False, default="[]")
+    features_initialized = Column(Boolean, nullable=False, default=False)
     feature_migrations = Column(String(200), nullable=False, default="")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -132,6 +135,9 @@ class DesignDB(Base):
     insert_start = Column(Integer, nullable=True)
     insert_end = Column(Integer, nullable=True)
     vector_name = Column(String(100), nullable=True)
+    # 克隆方案文本（终审 D-01：DesignResult 有该字段但此前不落库，
+    # 数据库模式下回看设计会静默丢失方案说明）
+    clone_protocol = Column(Text, nullable=True)
     
     # 状态
     status = Column(String(20), default="pending")
@@ -323,6 +329,13 @@ def _migrate_site_settings_table():
                 "ALTER TABLE site_settings ADD COLUMN feature_migrations VARCHAR(200) "
                 "NOT NULL DEFAULT ''"))
             print("✅ site_settings 表已迁移：新增 feature_migrations 列")
+        # 终审 D-02：功能清单的「已初始化」标记（存量行 FALSE → 首次读取
+        # 补默认并置位；此后管理员的显式空集不会再被默认值覆盖）
+        if "features_initialized" not in cols:
+            conn.execute(text(
+                "ALTER TABLE site_settings ADD COLUMN features_initialized BOOLEAN "
+                "NOT NULL DEFAULT FALSE"))
+            print("✅ site_settings 表已迁移：新增 features_initialized 列")
 
 
 def _migrate_feature_lists(eng=None):
@@ -372,7 +385,7 @@ def _migrate_feature_lists(eng=None):
 
         conn.execute(text(
             "UPDATE site_settings SET anonymous_features = :a, user_features = :u, "
-            "feature_migrations = :m WHERE id = 1"),
+            "feature_migrations = :m, features_initialized = TRUE WHERE id = 1"),
             {"a": _patch(anon), "u": _patch(userf),
              "m": ",".join(sorted(done | set(pending)))})
         # 用户个人功能覆盖同步补齐（get_current_user 每请求查库，重启后即时生效）
@@ -399,6 +412,8 @@ def _migrate_designs_table():
         "insert_start": "ALTER TABLE designs ADD COLUMN insert_start INTEGER NULL",
         "insert_end": "ALTER TABLE designs ADD COLUMN insert_end INTEGER NULL",
         "vector_name": "ALTER TABLE designs ADD COLUMN vector_name VARCHAR(100) NULL",
+        # 终审 D-01：克隆方案文本（DesignResult 有此字段，此前不落库）
+        "clone_protocol": "ALTER TABLE designs ADD COLUMN clone_protocol TEXT NULL",
     }
     with engine.begin() as conn:
         for col, ddl in stmts.items():

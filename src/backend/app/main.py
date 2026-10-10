@@ -30,14 +30,21 @@ async def lifespan(app: FastAPI):
     print(f"🧬 Plasmid Designer API v{settings.APP_VERSION}")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
-    # JWT 密钥占位值告警：compose 兜底值或开发默认值进入生产 = 任何人可自签
-    # 令牌冒充任意用户。只告警不阻断（保持本地开发零配置可用）
+    # JWT 密钥治理（终审 B-04）：占位值/弱密钥在非 DEBUG 下直接拒绝启动——
+    # 公开仓库默认值进入生产 = 任何人可自签令牌冒充任意用户，仅告警不够。
+    # DEBUG=True（本地开发）保留占位值可用，维持零配置体验。
     _SECRET_PLACEHOLDERS = ("dev-insecure-secret-key-change-me",
-                            "change_this_in_production")
-    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS:
-        print("🚨 SECRET_KEY 仍是公开仓库中的占位值——JWT 任何人可伪造！"
-              "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32；"
-              "deploy.sh 首次部署会自动生成）")
+                            "change_this_in_production",
+                            "change_this_in_production_use_strong_random_string")
+    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS or len(settings.SECRET_KEY) < 32:
+        if settings.DEBUG:
+            print("🚨 SECRET_KEY 是占位值/弱密钥（DEBUG 模式仅告警）——"
+                  "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32）")
+        else:
+            raise RuntimeError(
+                "SECRET_KEY 为占位值或长度 <32，拒绝启动（生产环境必须在 .env "
+                "设置强随机密钥：openssl rand -hex 32。本地开发请设 DEBUG=true）"
+            )
 
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
     # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）
@@ -72,19 +79,9 @@ app = FastAPI(
 
 # ==================== 中间件 ====================
 
-# CORS 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或 JSON 数组），
-# 生产环境务必配置具体域名而非通配
-_cors_origins = settings.cors_origins_list
-_allow_all_origins = "*" in _cors_origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
-    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
-    allow_credentials=not _allow_all_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# （CORS 中间件在本文件末尾、所有中间件之后添加——add_middleware
+# 后添加者为外层，CORS 必须位于最外层才能给 429/5xx 响应补 CORS 头，
+# 否则浏览器只看到 Network Error 而非真实状态码，见终审 C-05）
 
 
 # ==================== 根路径 & 健康检查 ====================
@@ -152,6 +149,22 @@ app.add_middleware(AuthStateMiddleware)
 # 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
 from app.middleware import setup_middleware
 setup_middleware(app)
+
+# CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
+# 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。
+# 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或
+# JSON 数组）；生产环境务必配置具体域名而非通配
+_cors_origins = settings.cors_origins_list
+_allow_all_origins = "*" in _cors_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
+    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
+    allow_credentials=not _allow_all_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ==================== 直接运行 ====================

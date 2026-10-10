@@ -179,11 +179,11 @@ class PrimerDesigner:
         insert_seq = insert_seq.upper()
         vector_seq = vector_seq.upper()
         
-        # 正向引物：载体同源臂 + 插入片段起始
+        # 正向引物：载体同源臂 + 插入片段起始（退火区锚定插入片段 5' 端，A-07）
         vector_upstream = vector_seq[
             max(0, insert_start_in_vector - homology_arm):insert_start_in_vector
         ]
-        forward_annealing = self._design_forward_primer(insert_seq, 0, "temp")
+        forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
         forward = Primer(
             name=f"{primer_name}_F",
             sequence=forward_annealing.sequence,
@@ -191,7 +191,8 @@ class PrimerDesigner:
             tm=forward_annealing.tm,
             gc_content=forward_annealing.gc_content,
             length=forward_annealing.length,
-            target_start=0,
+            target_start=forward_annealing.target_start,
+            target_end=forward_annealing.target_end,
             overhang=vector_upstream,
             notes=f"Gibson forward, {homology_arm}bp homology arm"
         )
@@ -201,7 +202,7 @@ class PrimerDesigner:
         vector_downstream = vector_seq[
             insert_start_in_vector:insert_start_in_vector + homology_arm
         ]
-        reverse_annealing = self._design_reverse_primer(insert_seq, insert_end, "temp")
+        reverse_annealing = self._design_reverse_primer(insert_seq, insert_end, "temp", anchor=True)
         # 载体下游序列的反向互补作为overhang
         vector_downstream_rc = self._reverse_complement(vector_downstream)
         reverse = Primer(
@@ -211,7 +212,8 @@ class PrimerDesigner:
             tm=reverse_annealing.tm,
             gc_content=reverse_annealing.gc_content,
             length=reverse_annealing.length,
-            target_end=insert_end,
+            target_start=reverse_annealing.target_start,
+            target_end=reverse_annealing.target_end,
             overhang=vector_downstream_rc,
             notes=f"Gibson reverse, {homology_arm}bp homology arm"
         )
@@ -264,9 +266,10 @@ class PrimerDesigner:
         
         # 正向引物结构：酶切位点(1N) + overhang + 插入片段
         # 5' - [酶切位点] - N - [overhang] - [插入片段] - 3'
-        forward_annealing = self._design_forward_primer(insert_seq, 0, "temp")
+        # 退火区锚定插入片段两端（A-07）
+        forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
         forward_overhang = f"GG{enzyme_site}A{overhang_seq_5}"  # A是spacer
-        
+
         forward = Primer(
             name=f"{primer_name}_F",
             sequence=forward_annealing.sequence,
@@ -274,18 +277,19 @@ class PrimerDesigner:
             tm=forward_annealing.tm,
             gc_content=forward_annealing.gc_content,
             length=forward_annealing.length,
-            target_start=0,
+            target_start=forward_annealing.target_start,
+            target_end=forward_annealing.target_end,
             overhang=forward_overhang,
             restriction_site=enzyme_name,
             notes=f"Golden Gate forward, {enzyme_name}, overhang: {overhang_seq_5}"
         )
-        
+
         # 反向引物：酶切位点的反向互补 + overhang的反向互补
-        reverse_annealing = self._design_reverse_primer(insert_seq, len(insert_seq), "temp")
+        reverse_annealing = self._design_reverse_primer(insert_seq, len(insert_seq), "temp", anchor=True)
         enzyme_site_rc = self._reverse_complement(enzyme_site)
         overhang_3_rc = self._reverse_complement(overhang_seq_3)
         reverse_overhang = f"GG{enzyme_site_rc}A{overhang_3_rc}"
-        
+
         reverse = Primer(
             name=f"{primer_name}_R",
             sequence=reverse_annealing.sequence,
@@ -293,7 +297,8 @@ class PrimerDesigner:
             tm=reverse_annealing.tm,
             gc_content=reverse_annealing.gc_content,
             length=reverse_annealing.length,
-            target_end=len(insert_seq),
+            target_start=reverse_annealing.target_start,
+            target_end=reverse_annealing.target_end,
             overhang=reverse_overhang,
             restriction_site=enzyme_name,
             notes=f"Golden Gate reverse, {enzyme_name}, overhang: {overhang_seq_3}"
@@ -389,41 +394,61 @@ class PrimerDesigner:
         self,
         template: str,
         start_pos: int,
-        name: str
+        name: str,
+        anchor: bool = False
     ) -> Primer:
-        """设计正向引物"""
+        """设计正向引物
+
+        终审 A-07：anchor=True 时退火区 5' 端严格锚定在 start_pos（只枚举
+        长度、不枚举偏移）——克隆引物（Gibson/Golden Gate/双酶切）的退火区
+        若被允许整体平移 0–4 nt，会静默截短插入片段首尾碱基（实测 200 次
+        5' 端 52 次、3' 端 49 次，示例删掉的正是 ATG 起始密码子）。
+        """
         best_primer = None
         best_score = -1
-        
+
         for length in range(self.length_min, self.length_max + 1):
-            for offset in range(0, 5):  # 允许小范围偏移
-                seq_start = start_pos + offset
-                seq_end = seq_start + length
-                
-                if seq_end > len(template):
+            if anchor:
+                seq_start = start_pos  # 锚定：只枚举长度
+            else:
+                seq_start = None
+                for offset in range(0, 5):  # 允许小范围偏移
+                    cand_start = start_pos + offset
+                    cand_seq = template[cand_start:cand_start + length]
+                    if len(cand_seq) == length and self._check_primer_quality(cand_seq):
+                        cand_score = self._score_primer(cand_seq)
+                        if cand_score > best_score:
+                            best_score = cand_score
+                            seq_start = cand_start
+                if seq_start is None:
                     continue
-                
-                seq = template[seq_start:seq_end]
-                
-                # 检查是否满足条件
-                if not self._check_primer_quality(seq):
-                    continue
-                
-                # 计算评分
-                score = self._score_primer(seq)
-                
-                if score > best_score:
-                    best_score = score
-                    best_primer = Primer(
-                        name=name,
-                        sequence=seq,
-                        primer_type=PrimerType.PRIMER,
-                        tm=self._calculate_tm(seq),
-                        gc_content=self._calculate_gc(seq),
-                        length=length,
-                        target_start=seq_start,
-                        target_end=seq_end
-                    )
+
+            seq_end = seq_start + length
+
+            if seq_end > len(template):
+                continue
+
+            seq = template[seq_start:seq_end]
+
+            # 检查是否满足条件
+            if not self._check_primer_quality(seq):
+                continue
+
+            # 计算评分
+            score = self._score_primer(seq)
+
+            if score > best_score:
+                best_score = score
+                best_primer = Primer(
+                    name=name,
+                    sequence=seq,
+                    primer_type=PrimerType.PRIMER,
+                    tm=self._calculate_tm(seq),
+                    gc_content=self._calculate_gc(seq),
+                    length=length,
+                    target_start=seq_start,
+                    target_end=seq_end
+                )
         
         if not best_primer:
             # 如果没找到完美引物，放宽条件
@@ -446,41 +471,59 @@ class PrimerDesigner:
         self,
         template: str,
         end_pos: int,
-        name: str
+        name: str,
+        anchor: bool = False
     ) -> Primer:
-        """设计反向引物"""
+        """设计反向引物（anchor=True 时 3' 侧严格锚定 end_pos，见 A-07）"""
         best_primer = None
         best_score = -1
-        
+
         for length in range(self.length_min, self.length_max + 1):
-            for offset in range(0, 5):
-                seq_end = end_pos - offset
-                seq_start = seq_end - length
-                
-                if seq_start < 0:
+            if anchor:
+                seq_end = end_pos  # 锚定：只枚举长度
+            else:
+                seq_end = None
+                for offset in range(0, 5):
+                    cand_end = end_pos - offset
+                    cand_start = cand_end - length
+                    if cand_start < 0:
+                        continue
+                    cand_seq = template[cand_start:cand_end]
+                    cand_rc = self._reverse_complement(cand_seq)
+                    if self._check_primer_quality(cand_rc):
+                        cand_score = self._score_primer(cand_rc)
+                        if cand_score > best_score:
+                            best_score = cand_score
+                            seq_end = cand_end
+                if seq_end is None:
                     continue
-                
-                # 反向引物需要取反向互补
-                seq = template[seq_start:seq_end]
-                seq_rc = self._reverse_complement(seq)
-                
-                if not self._check_primer_quality(seq_rc):
-                    continue
-                
-                score = self._score_primer(seq_rc)
-                
-                if score > best_score:
-                    best_score = score
-                    best_primer = Primer(
-                        name=name,
-                        sequence=seq_rc,
-                        primer_type=PrimerType.PRIMER,
-                        tm=self._calculate_tm(seq_rc),
-                        gc_content=self._calculate_gc(seq_rc),
-                        length=length,
-                        target_start=seq_start,
-                        target_end=seq_end
-                    )
+
+            seq_start = seq_end - length
+
+            if seq_start < 0:
+                continue
+
+            # 反向引物需要取反向互补
+            seq = template[seq_start:seq_end]
+            seq_rc = self._reverse_complement(seq)
+
+            if not self._check_primer_quality(seq_rc):
+                continue
+
+            score = self._score_primer(seq_rc)
+
+            if score > best_score:
+                best_score = score
+                best_primer = Primer(
+                    name=name,
+                    sequence=seq_rc,
+                    primer_type=PrimerType.PRIMER,
+                    tm=self._calculate_tm(seq_rc),
+                    gc_content=self._calculate_gc(seq_rc),
+                    length=length,
+                    target_start=seq_start,
+                    target_end=seq_end
+                )
         
         if not best_primer:
             seq = template[end_pos - 20:end_pos]

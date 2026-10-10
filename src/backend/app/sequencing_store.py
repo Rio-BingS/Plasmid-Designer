@@ -165,7 +165,6 @@ def list_records(user: Optional[object], is_admin: bool,
         return []
     from app.database import SessionLocal
     from app.database.models import SequencingAnalysisDB
-    from sqlalchemy import or_
 
     _ensure_table()
 
@@ -173,10 +172,11 @@ def list_records(user: Optional[object], is_admin: bool,
     try:
         q = db.query(SequencingAnalysisDB)
         if not is_admin:
-            cond = [SequencingAnalysisDB.owner_id.is_(None)]
-            if user is not None:
-                cond.append(SequencingAnalysisDB.owner_id == user.id)
-            q = q.filter(or_(*cond))
+            # 终审 B-02：匿名访客列表为空（风险来自列表接口主动交出 ID）；
+            # 登录用户只见自己创建的——匿名记录凭 access_token 直接访问
+            if user is None:
+                return []
+            q = q.filter(SequencingAnalysisDB.owner_id == user.id)
         q = q.order_by(SequencingAnalysisDB.created_at.desc())
         if offset:
             q = q.offset(int(offset))

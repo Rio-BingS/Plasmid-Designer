@@ -236,3 +236,190 @@
 | 2026-09-11 | 5.2 | `jwt_auth.decode_token` 拒绝携带 `purpose` 声明的令牌（验证令牌不能再当登录令牌）；顺带 `get_current_user` 补 `is_active` 检查（5.4.1） | 实测：`decode_token(create_verify_token(...))` 返回 None；登录令牌解码正常 |
 | 2026-09-11 | 5.3 | `batch_routes.run_batch_design_task` 改为 `DesignRequest(**request.model_dump(exclude={"sequences","sequence_names"}), ...)` 整体转发 DesignOptions 全部参数；后台任务改用 `_load_batch` 取任务（顺带 5.4.3，消除对内存字典的隐性耦合） | 实测：批量请求的 insert_source/enzyme_5/enzyme_3/oligo_length_min/max/exclude_enzymes/gibson_site 全部转发无遗漏 |
 | 2026-09-11 | 5.4 | ① `get_current_user` 补 `is_active` 检查（随 5.2）；② 前端 `api/index.ts` 401 拦截器同步清理 Pinia auth store（`clearAuth`，动态导入避免循环依赖）；③ 批量后台任务改走 `_load_batch`（随 5.3） | 代码审查；前端需构建后人工冒烟 |
+
+---
+
+## 2026-10-07 真实数据修复批次（源于 9/11 → 10/8 多轮真实数据审核，✅ 已全部落地）
+
+> 触发：真实交付数据（V1.01 批次）实测暴露的缺陷 + 代码审核（9/11、9/26、10/7）。
+> 逐项对应提交哈希见括号。2026-10-08 补齐回归测试与本文档留痕。
+
+### 6.1 🔴 酶表错误：BsaHI 识别序列误写为 GAYG ✅（a3e73d3）
+
+- **位置**：`core/enzyme_sites.py` ENZYME_TABLE
+- **现象**：BsaHI 正确识别序列为 **GRCGYC**（NEB；R=A/G、Y=C/T，非回文），
+  表中误写为 `GAYG`（GATG，回文形态）——图谱酶切位点扫描/变异注释
+  「破坏/新增酶切位点」全链路失真，且现有测试只间接覆盖。
+- **修复**：条目改为 `{"name": "BsaHI", "site": "GRCGYC", "cut": (2, 4),
+  "overhang": "5prime"}`（切点与 TaqI-v2 同款 5' 突出 ACGT）。
+- **回归锁（2026-10-08）**：`test_enzyme_sites.py::test_bsahi_recognition_is_grcgyc`
+  ——GACGTC/GGCGCC 两种 R/Y 实例双向命中 + GATG（旧误码）绝不命中；
+  顺带修正 `test_sanger_pipeline.py` 中 stale docstring「BsaHI(GAYG)」→ GRCGYC。
+
+### 6.2 🟡 批量文件数上限在读取之后才生效 ✅（df7148d）
+
+- **位置**：`app/routes/sequencing_routes.py` `analyze_sequencing_batch`
+- **现象**：`MAX_BATCH_FILES=400` 检查发生在逐文件 `_read_limited` 之后——
+  超限请求先把全部文件读进内存（每个 ≤20MB × 数百文件 = GB 级 OOM 面）才拒绝。
+- **修复**：端点入口（读取任何字节之前）先检查 `len(files) > MAX_BATCH_FILES`
+  直接 400；`_run_batch` 内的检查保留作纵深防御。
+- **回归锁（2026-10-08）**：`test_sequencing_batch.py::
+  test_batch_file_limit_enforced_before_reading`——`_read_limited` 打桩为
+  「碰到即失败」，超限请求必须 400 且不读任何字节；上限之下正常分析。
+
+### 6.3 🟡 克隆方案文本：占位符残留 + 去磷参数被忽略 ✅（7e241ae）
+
+- **位置**：`core/clone_strategy.py`
+- **现象**：①方案文本残留未填充的占位符；②「5' 去磷」选项在方案文本
+  生成中被忽略，选了去磷方案里却写不去磷步骤。
+- **回归**：随 `tests/test_clone_strategy.py` 既有用例锁定。
+
+### 6.4 🟡 序列分析：酶兼容按理论突出端而非实际突出端判定 + ORF 反链坐标错 ✅（df7cac3）
+
+- **位置**：`core/sequence_analysis.py`（兼容性）+ ORF 反向链坐标换算
+- **现象**：①酶兼容性按识别序列理论突出端判定，而非限制酶实际切割产生的
+  突出端——理论 compatible（如产生同款末端的酶对）与实际不符；②ORF 反向链
+  坐标换算错位。
+- **回归**：`test_sequencing_*` / analysis 相关用例锁定。
+
+### 6.5 🟡 密码子优化：5' ramp 低频打点在 poly 结构打断时死循环 ✅（0db5df7）
+
+- **位置**：`core/codon_optimizer.py`（v2 ramp）
+- **现象**：ramp 低频打点遇 poly 结构打断时未收敛（卡死）。
+- **修复**：低频频率取「已用频率中位数」推进而非固定重试。
+- **注意**：缓存键含 `algo="v2"` 未变（行为修复，非口径升级，不递增）。
+
+### 6.6 🟢 引物设计：Tm 宣称与实际算法不符 + GoldenGate 未知酶报错不清 ✅（59058c3）
+
+- **位置**：`core/primer_designer.py`
+- **修复**：Tm 数值口径如实化（不再宣称与实现不符的精度/公式）；GoldenGate
+  遇到库里没有的酶时给出可行动报错。
+
+### 6.7 🟢 认证：密码散列未按 bcrypt 72 字节限制截断 ✅（7af608e）
+
+- **位置**：`app/auth/`（passlib+bcrypt）
+- **现象**：bcrypt 只取前 72 字节，超长密码第 72 字节之后的差异被忽略
+  （行为怪癖，非漏洞）；改为显式截断 72 字节后散列，行为可预期。
+- **回归**：`tests/test_account_system.py` 既有用例锁定。
+
+### 6.8 🟢 部署链清理 ✅（3dabb27/3f89160/0cb6000/1bf9c51/be207ec/a556b96）
+
+- HuggingFace 部署方式废弃移除（代码注释/文档/docker 构建排除本地 SQLite 库）；
+  `deploy.sh` 与 Makefile 失效路径修正；HF 版 CORS 通配源关闭凭证模式。
+
+---
+
+## 2026-10-08 审计清账（第三轮审查遗留项，✅ 本轮完成）
+
+> 来源：整合历次审核（9/11 → 10/8）后的遗留问题清单，按优先级清账。
+
+### 7.1 🟢 `peak_count_estimate` 潜伏污染 ✅（本轮）
+
+- **位置**：`core/sanger/pipeline.py`（poly 结构报告聚合）
+- **现象**：合并 read 的 `peak_count=0`（「无可分辨峰」）会混进完整覆盖
+  read 的中位数统计——极端 [30,0,0] → 中位 0，把可分辨 read 的真实计数
+  压没。该字段此前无消费方（潜伏）。
+- **修复**：聚合过滤改为 `peak_count` 真值（仅 >0 的可分辨计数参与；
+  全合并 → None，不再编造 0）。前端 `api/index.ts` 类型保持可选兼容。
+- **回归锁**：`test_poly_peak_count_estimate_ignores_merged_zero_counts`
+  （正向可分辨 30 峰 + 反向合并高台 → estimate=30，旧口径会算出 0）；
+  旧断言 `test_estimate_run_length_rescues_merged_peaks` 同步为新语义（None）。
+
+### 7.2 🟢 锚定分级「只标注、不把关」→ accepted 结论补定位存疑注记 ✅（本轮）
+
+- **位置**：`core/sanger/pipeline.py`
+- **现象**：`anchor_grade`（路标质量）只写进逐 read 字段，不参与任何结论
+  判定——accepted（计数确证）时若投票 read 的路标踩在信号异常区，
+  结论不写明「位置存疑」，用户易误以为 run 起止也确证了。
+- **修复**（保守口径，不拦截投票——计数证据本身仍然成立）：
+  ①run 级新增 `vote_anchor_grade`（投票 read 锚分级最差者）；
+  ②accepted 且最差分级 ≥ marginal 时，结论追加注记行
+  「重复数已由峰图计数确证（N 个），但该 run 的锚定路标不可靠（原因）
+  ——计数确证但定位存疑，run 起止可能整体偏移数 bp，建议对照图谱核对
+  边界」；锚可靠时零变化。无变体分支与变体分支均已接入。
+- **回归锁**：`test_poly_accepted_with_unreliable_anchor_notes_position_doubt`
+  （边缘 read 投票 accepted → 注记出现；完整 read 对照 → 注记不出现）。
+
+### 7.3 🟡 真实 .ab1 回归集建立 ✅（本轮）
+
+- **位置**：`tests/test_real_data_regression.py`（新增）
+- **背景**：所有 poly/峰图用例此前全部基于 `make_ab1` 合成数据，造不出
+  真实峰型的病态（染料压缩、真实拖尾、信号衰减、真实滑移）。
+- **机制**：skip-if-missing——数据目录（`plasmid-designer V1.01/sequencing
+  results/`，本机目录、**不入库不推 GitHub**）在场才运行，CI/新机器自动
+  跳过不计失败；按交付信息表走 `batch.match_files` 归组口径逐质粒跑管线。
+- **基线锁（MX 交付批次，2026-10-08）**：归组形状（1 质粒/3 read 全匹配）、
+  管线基本形状（7039bp/14 特征/覆盖 27.3%）、混合检测基线（3 read 各
+  19-27 处双峰 widespread → 结论「疑似混合样品」+ 跨引物互检章节——这是
+  该批数据的真实判定，不是误报）、置信分层与互检反证（5269 高置信同义 /
+  6653、6666 单 read 缺失被反证压低 + CDS 判定未计入）、poly 判读有据
+  （accepted 必带 votes / 不可靠必带实测证据）。换批次时更新
+  `REAL_DATA_DIR` 并人工核对后调整断言。
+
+### 7.4 ⬜ 遗留（未做，明确挂账）
+
+1. **CI（GitHub Actions）仍未加**：测试全绿靠手动跑；push/PR 强制跑
+   pytest + vitest 是防回潮最后一道锁，此前明确暂缓（成本：~40 行
+   workflow，但需先确认 CI 环境的 Python/Node 版本矩阵与 tracy 等可选依赖
+   的可跳过性）。测试侧 skip-if-missing 机制已就绪，接入 CI 的前置障碍已清除。
+2. **批量 Excel 结论简洁化等 9/26 起的行为调整未逐条入本文档**：正文记录在
+   AGENTS.md「当前状态」章节（按时间倒序），本文件保持「审计发现 → 修复」
+   视角，避免双头维护。
+3. **poly 内部「缺第几个 A」信息论不可解**：维持标注（定位存疑注记）即正确
+   答案，非 bug。边界滑移反卷积（B4 升 NNLS）、贝叶斯长度后验见
+   `docs/ALGORITHM_ROADMAP.md` 暂缓项。
+4. **工程整洁**：顶层 `docs/`（研究草稿）与 `seqdemo_tmp/`（调试产物）归档
+   与主项目隔离——未动，待用户确认取舍。
+
+## 2026-10-09 终审报告 P0 全量清账（独立第 11 轮审查 22 项 P0，✅ 本轮完成）
+
+主审 @ main `8a95a3c`（Merge PR #2）。190 项发现中的 22 项 P0（P0-a 十项
+快修 + P0-b 十二项）全部落地，每项带回归测试；pytest 416→485、vitest
+138→140、vue-tsc 0。分六批推送（0603b77 / 8428e16 / 78b9d7c / a7a5857 /
+585503d+cccba59 / bdaf64c）。
+
+### P0-a 快修（十项，0603b77 批 + 8428e16 部分前置批）
+
+| 项 | 修复 | 回归 |
+|---|---|---|
+| G-01/G-02 | conftest 模块导入期注入 DATA_DIR/DATABASE_URL/PLASMID_LOG_DIR + 预建库，测试不再写开发库 | test_test_isolation 3 项 |
+| B-01 | export_design 补 `_ensure_design_access`（导出曾绕过属主校验） | ownership 导出用例 |
+| D-04 | design_service 丢 warnings（warnings.extend 位置 + 缓存/返回三处透传） | 3 项 |
+| A-02/A-03 | motif 避让带反向链 + expanded 含 revcomp | 各 1 项 |
+| C-08/C-09 | CDS 判读整体 try/except 兜底；tracy 修剪窗过窄守卫 | 各 1 项 |
+| C-05 | CORS 移到最外层 + OPTIONS 不计限流（429 带补头可被浏览器读取） | TestCorsOutermostAndOptionsBypass |
+| B-04 | 占位/过短 SECRET_KEY 启动即抛（DEBUG 豁免） | TestSecretKeyEnforcement 4 项 |
+| B-05 | bootstrap 不再提升既有非管理员账号 | 1 项 |
+| H-01/H-02 | Dockerfile 只 COPY data 子目录；.dockerignore 重写（`**/` 锚定）；nginx -t 先校验再删默认站点 | deploy 侧 |
+
+### P0-b（十二项）
+
+| 项 | 修复 | 回归 |
+|---|---|---|
+| A-01 | 密码子迭代循环 content-based 收敛检查 + 结构化 unsatisfied | stub 循环用例 |
+| A-04 | 4 物种密码子表按 Kazusa 原始 per-thousand 重建，去除 optimal_codons 主观节 | test_codon_tables_data 13 项 |
+| A-05 | 未知物种改 ValueError + codon_table_used 回传 | 1 项 |
+| A-07 | Gibson/GoldenGate 引物 anchor 坐标回填（曾硬编码 0/len） | 1 项 |
+| A-19 | 双峰锚判据放宽（0.8×主峰） | 管线用例 + 真实数据回归 5 断言不变 |
+| A-20 | Sanger read↔ref 映射改用比对块绝对坐标（query_start/end 贯穿后端→API→前端） | 3 前端 + 1 后端 |
+| B-02/B-03 | 匿名测序记录下发 access_token（批量整批共用）；读取/峰图/导出/删除须携带；列表不再外泄匿名 ID；整理包绑 owner | 后端 4 项 + 前端 2 项 |
+| C-01 | MAX_REF_BP=200000 三入口校验（实测 300kb×1 read = 11s/1.09GB） | 2 项 |
+| C-02 | 批量请求级总字节上限 + _BATCHES 全局 LRU | 2 项 |
+| C-03/C-06 | 设计序列按类型收紧（aa 5000/DNA 20000 可环境变量覆盖）；分析类 7 模型统一上限 + 窗口下限 | test_input_limits 8 项 |
+| C-04 | 限流改（方法+路由模板）分类——轮询/auth 只读不再吃业务配额（实测轮询 10 次即 429 → 强制登出） | 4 项含端到端 30 轮询 |
+| C-07 | _ANALYSES/_BATCHES 全路径 RLock；打包改用批次产物快照不再回查全局 dict | 并发回归 1 项 |
+| D-01 | 存储往返补 user_id/clone_protocol（新列+迁移）、construct_features 空值取 []；_load 裸 except 改 warning | test_storage_contract 5 项 |
+| D-02 | 功能清单空集不再被默认值覆盖（features_initialized 显式标记列 + 轻量迁移） | 4 项 |
+| A-09 | 酶切方案带真实切点坐标；切点破坏必需元件（CDS/复制起点/抗性/启动子）告警点名 | test_clone_strategy_cuts 4 项 |
+| H-03/H-04/H-05 | 安装目录 751（nginx worker 可遍历）；后端只监听 127.0.0.1、/docs 内网限制；卸载交互确认 + --yes | deploy 侧人工核验 |
+
+### 本轮新增的防回潮约束（后续会话必读）
+
+- **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
+  文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并
+  `invalidate_cache()`，否则污染同进程后续模块（设计端点会 403）。
+- 匿名 sequencing 记录的行为契约：创建响应下发 `access_token`（批量整批
+  共用），前端存 sessionStorage 自动带头；列表不返回任何匿名记录 ID
+  （含持令牌者）；改造前无 token 的遗留记录保持公开。
+- 前端 A-20：read↔ref 映射用 `query_start/query_end`（比对块绝对坐标），
+  不要回退到 `L-1-qi` 镜像式。

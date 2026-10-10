@@ -26,7 +26,10 @@ from app.database.crud import (  # noqa: E402
     create_user, get_site_settings_row, save_site_settings_row,
 )
 from app import site_settings  # noqa: E402
-from app.features import ALL_FEATURES, valid_features  # noqa: E402
+from app.features import (
+    ALL_FEATURES, DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES,
+    valid_features,
+)  # noqa: E402
 
 engine = create_engine(
     "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -209,6 +212,101 @@ class TestFeatureGating:
         assert valid_features(["codon", "bogus", "codon", "vectors"]) == ["vectors", "codon"]
 
 
+class TestFeatureListThreeState:
+    """终审 D-02：功能清单列是 nullable=False default="[]"，此前读取侧把
+    空集当「未初始化」强行补默认——管理员「关闭全部功能」保存后又被覆盖
+    回默认值（fail-open）。改用显式 features_initialized 标记后：
+    未初始化 → 补默认并置位；已初始化 → 空集就是空集。
+
+    注意：site_settings 读写走 app.database.SessionLocal（conftest 隔离的
+    文件库），不是本模块的内存库——这里必须用同一连接观察真实行为。
+    """
+
+    def _session(self):
+        from app.database import SessionLocal
+        return SessionLocal()
+
+    def _invalidate(self):
+        site_settings.invalidate_cache()
+
+    @pytest.fixture(autouse=True)
+    def _restore_settings(self):
+        """用例在共享文件库改写了 site_settings（初始化标记/空清单），
+        结束后恢复默认并失效缓存，避免污染同进程后续测试模块"""
+        yield
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps(DEFAULT_ANONYMOUS_FEATURES)
+            row.user_features = json.dumps(DEFAULT_USER_FEATURES)
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_explicit_empty_features_survive_read(self):
+        """管理员显式清空后重新读取，不再被默认值覆盖"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps([])
+            row.user_features = json.dumps([])
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert data["anonymous_features"] == [], "显式空集被默认值覆盖（fail-open 复发）"
+        assert data["user_features"] == []
+        site_settings.invalidate_cache()
+
+    def test_uninitialized_row_gets_defaults_and_marks(self):
+        """未初始化（存量 "[]" 行 + FALSE 标记）首次读取补默认并置位"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = "[]"
+            row.user_features = "[]"
+            row.features_initialized = False
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert set(data["anonymous_features"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+        # 标记已置位：第二次读取不再改写（管理员后续清空能保住）
+        db = self._session()
+        try:
+            row2 = get_site_settings_row(db)
+            assert row2.features_initialized is True
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_admin_save_initializes_marker(self):
+        """update_settings 保存功能清单即置位（管理员保存的空集立即生效）"""
+        site_settings.update_settings({"anonymous_features": [], "user_features": []})
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            assert row.features_initialized is True
+            assert json.loads(row.anonymous_features) == []
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_migration_adds_initialized_column(self):
+        """存量库轻量迁移补 features_initialized 列（幂等）"""
+        from app.database.models import _migrate_site_settings_table
+        from app.database import engine
+        from sqlalchemy import inspect
+        _migrate_site_settings_table()
+        cols = {c["name"] for c in inspect(engine).get_columns("site_settings")}
+        assert "features_initialized" in cols
+
+
 # ==================== 注册邮箱验证 ====================
 
 class TestEmailVerification:
@@ -348,6 +446,29 @@ class TestDesignBatchOwnership:
         assert c.get(f"/api/design/batch/{batch_id}", headers=ha).status_code == 200
         assert c.get(f"/api/design/batch/{batch_id}/report", headers=hb).status_code == 403
 
+    def test_design_export_owner_scoped(self, client, db):
+        """终审 B-01 回归锁：/api/analysis/design/{id}/export 此前无属主校验，
+        匿名可导出他人完整构建序列（IDOR）——现与 /api/design/{id} 同口径"""
+        c, _ = client
+        ua = _make_user(db, email="export-a@test.com")
+        ub = _make_user(db, email="export-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        r = c.post("/api/design", json=self._REQ, headers=ha)
+        assert r.status_code == 200, r.text
+        design_id = r.json()["design_id"]
+
+        # 匿名导出他人设计必须 403（修复前为 200 + 完整序列）
+        assert c.get(f"/api/analysis/design/{design_id}/export").status_code == 403
+        # 其他用户同样 403；属主本人与匿名创建的设计不受影响
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=hb).status_code == 403
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=ha).status_code == 200
+        r2 = c.post("/api/design", json=self._REQ)
+        anon_id = r2.json()["design_id"]
+        assert c.get(f"/api/analysis/design/{anon_id}/export", headers=hb).status_code == 200
+
 
 
 # ==================== 管理员 API ====================
@@ -461,3 +582,58 @@ class TestAdminBootstrap:
         monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "")
         monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "")
         assert bootstrap.bootstrap_admin() is None
+
+    def test_bootstrap_never_promotes_existing_account(self, monkeypatch, db):
+        """终审 B-05 回归锁：已存在的同邮箱普通账号曾被自动提升为管理员
+        并保留原密码、强制 email_verified=True——抢注 ADMIN_EMAIL 即可提权。
+        现在必须拒绝自动提升并保持账号原状。"""
+        from app.config import settings as app_settings
+        from app.auth import bootstrap
+        from app.auth.jwt_auth import hash_password
+        from app.database.crud import create_user, get_user_by_email
+
+        create_user(TestingSession(), email="hijack@test.com", username="hijack",
+                    hashed_password=hash_password("attacker-password"),
+                    is_admin=False, email_verified=False)
+        db.commit()
+
+        monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "hijack@test.com")
+        monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "legit-admin-pass")
+        monkeypatch.setattr("app.database.SessionLocal", TestingSession)
+        assert bootstrap.bootstrap_admin() == "exists_non_admin"
+        u = get_user_by_email(TestingSession(), "hijack@test.com")
+        assert not u.is_admin, "抢注账号不得被自动提升"
+        assert not u.email_verified, "email_verified 不得被强制置真"
+
+
+class TestSecretKeyEnforcement:
+    """终审 B-04 回归锁：占位/弱 SECRET_KEY 在非 DEBUG 下必须拒绝启动。"""
+
+    def _run_lifespan(self, monkeypatch, key: str, debug: bool):
+        import asyncio
+        import app.main as app_main
+        from app.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "SECRET_KEY", key)
+        monkeypatch.setattr(app_settings, "DEBUG", debug)
+
+        async def _drive():
+            async with app_main.lifespan(app_main.app):
+                pass
+
+        return asyncio.run(_drive())
+
+    def test_placeholder_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "change_this_in_production", debug=False)
+
+    def test_short_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "a" * 31, debug=False)
+
+    def test_placeholder_secret_warns_only_in_debug(self, monkeypatch):
+        # DEBUG 下不抛错（本地开发零配置可用）
+        self._run_lifespan(monkeypatch, "dev-insecure-secret-key-change-me", debug=True)
+
+    def test_strong_secret_passes_when_not_debug(self, monkeypatch):
+        self._run_lifespan(monkeypatch, "x" * 64, debug=False)

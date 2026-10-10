@@ -49,6 +49,13 @@ def _fasta(name: str, seq: str) -> tuple:
     return (name, f">{name}\n{seq}\n".encode(), "application/octet-stream")
 
 
+def _tok_header(resp) -> dict:
+    """终审 B-02：匿名批量响应下发的整批 access_token → 后续请求头。"""
+    tok = resp.json().get("access_token")
+    assert tok, "匿名批量应下发 access_token"
+    return {"X-Access-Token": tok}
+
+
 def _ab1(name: str, seq: str) -> tuple:
     return (name, make_ab1(seq, [40] * len(seq)), "application/octet-stream")
 
@@ -77,11 +84,41 @@ def _xlsx_clone(rows) -> tuple:
     return ("测序.xlsx", buf.getvalue(), "application/octet-stream")
 
 
-def _post(client, file_parts, excel_part=None, min_q="20"):
+def _post(client, file_parts, excel_part=None, min_q="20", headers=None):
     files = [("files", fp) for fp in file_parts]
     if excel_part:
         files.append(("excel", excel_part))
-    return client.post("/api/sequencing/analyze-batch", files=files, data={"min_q": min_q})
+    return client.post("/api/sequencing/analyze-batch", files=files,
+                       data={"min_q": min_q}, headers=headers)
+
+
+def _ensure_user(email: str, is_admin: bool = False) -> str:
+    """在隔离测试库 get_or_create 测试用户（固定邮箱可重复运行），返回邮箱
+
+    注意：返回 ORM 对象会在 session 关闭后 Detached，后续只用到邮箱，
+    因此这里只回传邮箱字符串。
+    """
+    from app.database import SessionLocal
+    from app.database.crud import create_user, get_user_by_email
+    from app.auth.jwt_auth import hash_password
+
+    db = SessionLocal()
+    try:
+        u = get_user_by_email(db, email)
+        if u is None:
+            u = create_user(db, email=email, username=email.split("@")[0],
+                            hashed_password=hash_password("password123"),
+                            is_admin=is_admin, email_verified=True)
+            db.commit()
+        return email
+    finally:
+        db.close()
+
+
+def _login_header(client, email: str, password: str = "password123"):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
 def test_batch_with_excel_analyzes_each_plasmid(client):
@@ -106,11 +143,13 @@ def test_batch_with_excel_analyzes_each_plasmid(client):
         assert it["variant_count"] == 0 and it["coverage_percent"] == 100.0
         assert it["reference_length"] == len(REF_MX)
 
-    # 成功分析已注册为标准记录：详情/历史端点可用
-    got = client.get(f"/api/sequencing/analyses/{data['items'][0]['analysis_id']}").json()
+    # 成功分析已注册为标准记录：详情端点凭整批令牌可读（终审 B-02）；
+    # 匿名记录不进历史列表，故列表断言改为「不出现」
+    got = client.get(f"/api/sequencing/analyses/{data['items'][0]['analysis_id']}",
+                     headers=_tok_header(resp)).json()
     assert got["sample_name"] == "MX"
     listing = client.get("/api/sequencing/analyses").json()
-    assert any(h["analysis_id"] == data["items"][1]["analysis_id"] for h in listing)
+    assert not any(h["analysis_id"] == data["items"][1]["analysis_id"] for h in listing)
 
     assert {u["filename"] for u in data["unmatched"]} == {"孤儿.ab1"}
     assert data["ignored_files"] == ["说明.txt"]
@@ -193,6 +232,35 @@ def test_batch_rejects_excel_without_plasmid_header(client):
     assert "质粒" in resp.json()["detail"]
 
 
+def test_batch_file_limit_enforced_before_reading(client, monkeypatch):
+    """文件数上限必须在读取任何字节之前生效（2026-10-07 修复，回归锁）：
+
+    旧缺陷——超限请求先把全部文件读进内存再拒绝（每个 20MB × 数百文件 =
+    GB 级 OOM 面）。断言两点：①超限直接 400 且报错文案带上限值；②读取
+    阶段从未执行（_read_limited 打桩为不可调用标记，一旦被碰到测试即失败）
+    """
+    from app.routes import sequencing_routes
+
+    def _must_not_read(f, max_bytes=None):
+        raise AssertionError("超限请求不应读取任何文件字节")
+
+    n = sequencing_routes.MAX_BATCH_FILES + 1
+    files = [("files", (f"{i}.ab1", b"x", "application/octet-stream")) for i in range(n)]
+    with monkeypatch.context() as m:
+        m.setattr(sequencing_routes, "_read_limited", _must_not_read)
+        resp = client.post("/api/sequencing/analyze-batch", files=files)
+    assert resp.status_code == 400
+    assert str(sequencing_routes.MAX_BATCH_FILES) in resp.json()["detail"]
+
+    # 边界内（上限之下）请求不受影响：正常走读取与分析流程
+    resp_ok = client.post("/api/sequencing/analyze-batch", files=[
+        ("files", ("MX-T1.ab1", make_ab1(REF_MX, [40] * len(REF_MX)), "application/octet-stream")),
+        ("files", ("MX.fasta", f">MX\n{REF_MX}\n".encode(), "application/octet-stream")),
+    ])
+    assert resp_ok.status_code == 200, resp_ok.text
+    assert all(it["status"] == "analyzed" for it in resp_ok.json()["items"])
+
+
 def test_batch_rejects_excel_lock_file_by_name(client):
     """Excel 打开信息表时留下的 ~$ 锁文件应被明确拒绝（而非 500 或含糊报错）"""
     resp = _post(client, [_ab1("T1.ab1", REF_MX)],
@@ -243,7 +311,8 @@ def test_batch_clone_mode_analyzes_each_clone(client):
     assert "S99681" in items[2]["conclusion"]
     # 每个克隆一条独立分析记录，sample_name = 克隆号 + 质粒名
     assert items[0]["analysis_id"] != items[1]["analysis_id"]
-    got = client.get(f"/api/sequencing/analyses/{items[0]['analysis_id']}").json()
+    got = client.get(f"/api/sequencing/analyses/{items[0]['analysis_id']}",
+                     headers=_tok_header(resp)).json()
     assert got["sample_name"] == "S99678 123-1 AB2C"
     assert {u["filename"] for u in data["unmatched"]} == {"S99999-M13F-75.ab1"}
 
@@ -473,6 +542,87 @@ def test_batch_report_zip_archives_and_backfills_excel(client):
     assert "测序整理/原始备份_测序.xlsx" in names
 
 
+def test_batch_request_total_bytes_capped(client, monkeypatch):
+    """终审 C-02 回归锁：批量接口此前无请求级总字节上限——400 文件 ×
+    20MB = 8GB 会先全部读进内存。累计超限必须在读取过程中即时中断。"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_REQUEST_BYTES", 512)
+    # 任何一条合成 ab1 都远大于 512B → 读取后立即中断
+    payload = [_ab1("b0.ab1", REF_MX)]
+    r = _post(client, payload)
+    assert r.status_code == 413, r.text
+    assert "总字节超过上限" in r.json()["detail"]
+
+
+def test_batch_cache_evicts_oldest_over_global_cap(monkeypatch):
+    """终审 C-02 回归锁：_BATCHES 整理包缓存此前无全局条数/总量上限——
+    单个批次虽受 MAX_BATCH_CACHE_BYTES 约束，但 15 分钟 TTL 内不限批次
+    数量，反复提交即可打满内存。超限后必须淘汰最旧的一条。"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_CACHE_ENTRIES", 3)
+    sr._BATCHES.clear()
+    now = sr.time.time()
+    for i in range(5):
+        sr._BATCHES[f"bid{i}"] = {
+            "created_ts": now - (5 - i),  # bid0 最旧
+            "zip": b"x" * 1024,
+            "zip_name": f"n{i}",
+            "owner_id": None,
+        }
+    sr._sweep_expired()
+    assert len(sr._BATCHES) <= 3
+    assert "bid0" not in sr._BATCHES   # 最旧的先被淘汰
+    assert "bid4" in sr._BATCHES       # 最新的保留
+    sr._BATCHES.clear()
+
+
+def test_batch_report_owner_scoped(client):
+    """终审 B-03 回归锁：整理包含全部原始 .ab1 与图谱，此前下载无属主绑定。
+    登录用户创建的批次：他人下载 404（不泄露存在性）、管理员与本人可下。"""
+    ua = _ensure_user("batch-owner@test.com")
+    ub = _ensure_user("batch-other@test.com")
+    admin = _ensure_user("batch-admin@test.com", is_admin=True)
+    ha, hb, hadm = (_login_header(client, e) for e in (ua, ub, admin))
+
+    resp = _post(client, [
+        _fasta("MX.fasta", REF_MX),
+        _ab1("T1.ab1", REF_MX),
+    ], excel_part=_xlsx([("MX", ["T1"])]), headers=ha)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["report_ready"] is True
+    assert "access_token" not in data  # 登录用户走属主校验，不下发令牌
+    bid = data["batch_id"]
+    url = f"/api/sequencing/batches/{bid}/report"
+
+    # 他人 404（不泄露存在性）；本人与管理员可下载
+    other = client.get(url, headers=hb)
+    assert other.status_code == 404
+    assert client.get(url, headers=ha).status_code == 200
+    assert client.get(url, headers=hadm).status_code == 200
+
+
+def test_anonymous_batch_report_needs_token(client):
+    """终审 B-02/B-03 回归锁：匿名批量下发整批 access_token，记录详情与
+    整理包下载需携带；无令牌时不可访问。"""
+    resp = _post(client, [
+        _fasta("MX.fasta", REF_MX),
+        _ab1("T1.ab1", REF_MX),
+    ], excel_part=_xlsx([("MX", ["T1"])]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    tok = _tok_header(resp)
+    aid = data["items"][0]["analysis_id"]
+
+    # 带令牌：详情可读；不带令牌：403（不再是人人可读的公开记录）
+    assert client.get(f"/api/sequencing/analyses/{aid}", headers=tok).status_code == 200
+    assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 403
+    # 匿名批次的整理包无属主 → 持有令牌者即可下载（令牌即凭证）
+    assert client.get(f"/api/sequencing/batches/{data['batch_id']}/report").status_code == 200
+
+
 def test_batch_report_clone_mode_backfills_per_clone(client):
     """克隆模式整理包：同一质粒一个文件夹、各克隆文件按结论分入 正确/错误，
     同桶多克隆的报告带克隆号后缀；结论按（质粒, 克隆）回填到对应行"""
@@ -518,6 +668,62 @@ def _gb_mx() -> bytes:
         "                     /label=\"MX\"\n"
         f"ORIGIN\n{_origin_block(REF_MX)}\n//\n"
     ).encode()
+
+
+def test_global_store_lock_survives_concurrent_mutation(client):
+    """终审 C-07 回归锁：_ANALYSES/_BATCHES 被事件循环线程与线程池并发
+    增删遍历且曾无锁——并发下会抛 dictionary changed size during iteration。
+    这里用多线程同时做「登记记录 + 清理过期 + 遍历列表」验证不再崩溃。"""
+    import threading as _th
+    from app.routes import sequencing_routes as sr
+
+    ref = ">ref\n" + "AAG" * 40
+    blob = make_ab1("AAG" * 40, [40] * 120)
+    errors: list = []
+
+    def register_worker(n: int):
+        try:
+            for i in range(n):
+                r = client.post("/api/sequencing/analyze",
+                                files={"reference": ("ref.fasta", ref, "text/plain"),
+                                       "reads": (f"w{i}.ab1", blob, "application/octet-stream")})
+                assert r.status_code == 200
+        except Exception as e:  # noqa: BLE001
+            errors.append(("register", e))
+
+    def sweep_worker(n: int):
+        try:
+            for _ in range(n):
+                sr._sweep_expired()
+        except Exception as e:  # noqa: BLE001
+            errors.append(("sweep", e))
+
+    def list_worker(n: int):
+        try:
+            for _ in range(n):
+                client.get("/api/sequencing/analyses")
+        except Exception as e:  # noqa: BLE001
+            errors.append(("list", e))
+
+    threads = [
+        _th.Thread(target=register_worker, args=(3,)),
+        _th.Thread(target=sweep_worker, args=(15,)),
+        _th.Thread(target=list_worker, args=(8,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"并发访问全局存储抛异常: {errors}"
+    # 清理
+    with sr._STORE_LOCK:
+        aids = list(sr._ANALYSES.keys())
+    for aid in aids:
+        try:
+            client.delete(f"/api/sequencing/analyses/{aid}")
+        except Exception:
+            pass
 
 
 def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
@@ -590,13 +796,13 @@ def test_analyses_and_batch_expire_after_ttl(client):
     # 记录已落库（database 模式）：内存淘汰后详情/列表仍可回看；
     # memory 模式无持久层 → 记录消失。批量整理包是内存产物，两种模式都过期
     from app import sequencing_store
+    tok = _tok_header(resp)
     if sequencing_store.db_enabled():
-        assert any(x["analysis_id"] == aid
-                   for x in client.get("/api/sequencing/analyses").json())
-        assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 200
+        # 匿名记录不进列表（B-02），直接查详情端点验证落库回灌
+        assert client.get(f"/api/sequencing/analyses/{aid}", headers=tok).status_code == 200
     else:
         assert client.get("/api/sequencing/analyses").json() == []
-        assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 404
+        assert client.get(f"/api/sequencing/analyses/{aid}", headers=tok).status_code == 404
     got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
     assert got.status_code == 404 and "过期" in got.json()["detail"]
 

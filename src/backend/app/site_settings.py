@@ -46,13 +46,15 @@ def _fetch() -> dict:
     try:
         row = get_site_settings_row(db)
         data = _row_to_dict(row)
-        # 存量行为兼容：开关列建库默认 False/True，功能清单为空时补默认
-        if not data["anonymous_features"]:
+        # 终审 D-02：功能清单列是 nullable=False default="[]"，NULL 与
+        # 「管理员显式清空」不可区分，此前 `if not data[...]` 把空集当成
+        # 未初始化强行补默认（fail-open：关闭全部功能保存后又被覆盖回
+        # 默认值）。用显式 features_initialized 标记：未初始化 → 补默认并
+        # 置位；已初始化 → 完全尊重存储值（空集就是空集）。
+        if not getattr(row, "features_initialized", False):
             row.anonymous_features = json.dumps(DEFAULT_ANONYMOUS_FEATURES)
-            save_site_settings_row(db, row)
-            data = _row_to_dict(row)
-        if not data["user_features"]:
             row.user_features = json.dumps(DEFAULT_USER_FEATURES)
+            row.features_initialized = True
             save_site_settings_row(db, row)
             data = _row_to_dict(row)
         return data
@@ -102,6 +104,9 @@ def update_settings(patch: dict) -> dict:
             row.anonymous_features = json.dumps(valid_features(patch["anonymous_features"]))
         if "user_features" in patch:
             row.user_features = json.dumps(valid_features(patch["user_features"]))
+        # 终审 D-02：管理员保存过功能清单即视为已初始化（显式空集保持为空）
+        if "anonymous_features" in patch or "user_features" in patch:
+            row.features_initialized = True
         save_site_settings_row(db, row)
     finally:
         db.close()

@@ -1,134 +1,117 @@
-# 人源密码子使用频率表
-# 来源: Kazusa 密码子使用数据库
+# Homo sapiens 密码子使用频率表（终审 A-04：按 Kazusa 原始值重建）
+# 数据源: Kazusa Codon Usage Database (https://www.kazusa.or.jp/codon/)
+# 抓取日期: 2026-10-09；字段: per_thousand = 每千密码子次数, fraction = 同义家族内占比
+# CDS 统计: 见上方数据源链接（原表头注明 CDS 数与密码子总数）
 
 species: Homo sapiens
 taxonomy_id: 9606
+data_provenance: kazusa:9606 (fetched 2026-10-09, per-thousand originals preserved)
 
 # 苯丙氨酸 Phe (F)
-TTT: 0.46
-TTC: 0.54
+TTT: 0.46  # per_thousand=17.6
+TTC: 0.54  # per_thousand=20.3
 
 # 亮氨酸 Leu (L)
-TTA: 0.07
-TTG: 0.13
-CTT: 0.13
-CTC: 0.20
-CTA: 0.07
-CTG: 0.40
+TTA: 0.08  # per_thousand=7.7
+TTG: 0.13  # per_thousand=12.9
+CTT: 0.13  # per_thousand=13.2
+CTC: 0.20  # per_thousand=19.6
+CTA: 0.07  # per_thousand=7.2
+CTG: 0.40  # per_thousand=39.6
 
 # 异亮氨酸 Ile (I)
-ATT: 0.36
-ATC: 0.47
-ATA: 0.17
+ATT: 0.36  # per_thousand=16.0
+ATC: 0.47  # per_thousand=20.8
+ATA: 0.17  # per_thousand=7.5
 
 # 甲硫氨酸 Met (M)
-ATG: 1.00
+ATG: 1.00  # per_thousand=22.0
 
 # 缬氨酸 Val (V)
-GTT: 0.11
-GTC: 0.22
-GTA: 0.11
-GTG: 0.56
+GTT: 0.18  # per_thousand=11.0
+GTC: 0.24  # per_thousand=14.5
+GTA: 0.12  # per_thousand=7.1
+GTG: 0.46  # per_thousand=28.1
 
 # 丝氨酸 Ser (S)
-TCT: 0.18
-TCC: 0.22
-TCA: 0.15
-TCG: 0.05
-AGT: 0.15
-AGC: 0.25
+TCT: 0.19  # per_thousand=15.2
+TCC: 0.22  # per_thousand=17.7
+TCA: 0.15  # per_thousand=12.2
+TCG: 0.05  # per_thousand=4.4
+AGT: 0.15  # per_thousand=12.1
+AGC: 0.24  # per_thousand=19.5
 
 # 脯氨酸 Pro (P)
-CCT: 0.28
-CCC: 0.32
-CCA: 0.27
-CCG: 0.13
+CCT: 0.29  # per_thousand=17.5
+CCC: 0.32  # per_thousand=19.8
+CCA: 0.28  # per_thousand=16.9
+CCG: 0.11  # per_thousand=6.9
 
 # 苏氨酸 Thr (T)
-ACT: 0.25
-ACC: 0.36
-ACA: 0.30
-ACG: 0.09
+ACT: 0.25  # per_thousand=13.1
+ACC: 0.36  # per_thousand=18.9
+ACA: 0.28  # per_thousand=15.1
+ACG: 0.11  # per_thousand=6.1
 
 # 丙氨酸 Ala (A)
-GCT: 0.26
-GCC: 0.40
-GCA: 0.23
-GCG: 0.11
+GCT: 0.27  # per_thousand=18.4
+GCC: 0.40  # per_thousand=27.7
+GCA: 0.23  # per_thousand=15.8
+GCG: 0.11  # per_thousand=7.4
 
 # 酪氨酸 Tyr (Y)
-TAT: 0.44
-TAC: 0.56
+TAT: 0.44  # per_thousand=12.2
+TAC: 0.56  # per_thousand=15.3
 
-# 组氨酸 His (H)
-CAT: 0.57
-CAC: 0.43
-
-# 谷氨酰胺 Gln (Q)
-CAA: 0.27
-CAG: 0.73
-
-# 天冬酰胺 Asn (N)
-AAT: 0.47
-AAC: 0.53
-
-# 赖氨酸 Lys (K)
-AAA: 0.42
-AAG: 0.58
-
-# 天冬氨酸 Asp (D)
-GAT: 0.46
-GAC: 0.54
-
-# 谷氨酸 Glu (E)
-GAA: 0.42
-GAG: 0.58
-
-# 半胱氨酸 Cys (C)
-TGT: 0.46
-TGC: 0.54
+# 终止密码子 (Stop)
+TAA: 0.29  # per_thousand=1.0
+TAG: 0.24  # per_thousand=0.8
+TGA: 0.47  # per_thousand=1.6
 
 # 色氨酸 Trp (W)
-TGG: 1.00
+TGG: 1.00  # per_thousand=13.2
+
+# 组氨酸 His (H)
+CAT: 0.42  # per_thousand=10.9
+CAC: 0.58  # per_thousand=15.1
+
+# 谷氨酰胺 Gln (Q)
+CAA: 0.26  # per_thousand=12.3
+CAG: 0.74  # per_thousand=34.2
+
+# 天冬酰胺 Asn (N)
+AAT: 0.47  # per_thousand=17.0
+AAC: 0.53  # per_thousand=19.1
+
+# 赖氨酸 Lys (K)
+AAA: 0.43  # per_thousand=24.4
+AAG: 0.57  # per_thousand=31.9
+
+# 天冬氨酸 Asp (D)
+GAT: 0.46  # per_thousand=21.8
+GAC: 0.54  # per_thousand=25.1
+
+# 谷氨酸 Glu (E)
+GAA: 0.42  # per_thousand=29.0
+GAG: 0.58  # per_thousand=39.6
+
+# 半胱氨酸 Cys (C)
+TGT: 0.46  # per_thousand=10.6
+TGC: 0.54  # per_thousand=12.6
 
 # 精氨酸 Arg (R)
-CGT: 0.08
-CGC: 0.18
-CGA: 0.11
-CGG: 0.21
-AGA: 0.21
-AGG: 0.21
+CGT: 0.08  # per_thousand=4.5
+CGC: 0.18  # per_thousand=10.4
+CGA: 0.11  # per_thousand=6.2
+CGG: 0.20  # per_thousand=11.4
+AGA: 0.22  # per_thousand=12.2
+AGG: 0.21  # per_thousand=12.0
 
 # 甘氨酸 Gly (G)
-GGT: 0.16
-GGC: 0.34
-GGA: 0.25
-GGG: 0.25
+GGT: 0.16  # per_thousand=10.8
+GGC: 0.34  # per_thousand=22.2
+GGA: 0.25  # per_thousand=16.5
+GGG: 0.25  # per_thousand=16.5
 
-# 终止密码子
-TAA: 0.61
-TAG: 0.13
-TGA: 0.26
-
-# 最优密码子
-optimal_codons:
-  F: TTC
-  L: CTG
-  I: ATC
-  M: ATG
-  V: GTG
-  S: AGC
-  P: CCC
-  T: ACC
-  A: GCC
-  Y: TAC
-  H: CAC
-  Q: CAG
-  N: AAC
-  K: AAG
-  D: GAC
-  E: GAG
-  C: TGC
-  W: TGG
-  R: CGC
-  G: GGC
+# 注：optimal_codons 段已移除（与频率行易自相矛盾且加载器不读取，
+# 最优密码子见各家族「最优」注释）
