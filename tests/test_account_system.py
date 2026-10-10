@@ -26,7 +26,10 @@ from app.database.crud import (  # noqa: E402
     create_user, get_site_settings_row, save_site_settings_row,
 )
 from app import site_settings  # noqa: E402
-from app.features import ALL_FEATURES, valid_features  # noqa: E402
+from app.features import (
+    ALL_FEATURES, DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES,
+    valid_features,
+)  # noqa: E402
 
 engine = create_engine(
     "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -207,6 +210,101 @@ class TestFeatureGating:
 
     def test_valid_features_cleans_unknown_keys(self):
         assert valid_features(["codon", "bogus", "codon", "vectors"]) == ["vectors", "codon"]
+
+
+class TestFeatureListThreeState:
+    """终审 D-02：功能清单列是 nullable=False default="[]"，此前读取侧把
+    空集当「未初始化」强行补默认——管理员「关闭全部功能」保存后又被覆盖
+    回默认值（fail-open）。改用显式 features_initialized 标记后：
+    未初始化 → 补默认并置位；已初始化 → 空集就是空集。
+
+    注意：site_settings 读写走 app.database.SessionLocal（conftest 隔离的
+    文件库），不是本模块的内存库——这里必须用同一连接观察真实行为。
+    """
+
+    def _session(self):
+        from app.database import SessionLocal
+        return SessionLocal()
+
+    def _invalidate(self):
+        site_settings.invalidate_cache()
+
+    @pytest.fixture(autouse=True)
+    def _restore_settings(self):
+        """用例在共享文件库改写了 site_settings（初始化标记/空清单），
+        结束后恢复默认并失效缓存，避免污染同进程后续测试模块"""
+        yield
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps(DEFAULT_ANONYMOUS_FEATURES)
+            row.user_features = json.dumps(DEFAULT_USER_FEATURES)
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_explicit_empty_features_survive_read(self):
+        """管理员显式清空后重新读取，不再被默认值覆盖"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps([])
+            row.user_features = json.dumps([])
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert data["anonymous_features"] == [], "显式空集被默认值覆盖（fail-open 复发）"
+        assert data["user_features"] == []
+        site_settings.invalidate_cache()
+
+    def test_uninitialized_row_gets_defaults_and_marks(self):
+        """未初始化（存量 "[]" 行 + FALSE 标记）首次读取补默认并置位"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = "[]"
+            row.user_features = "[]"
+            row.features_initialized = False
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert set(data["anonymous_features"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+        # 标记已置位：第二次读取不再改写（管理员后续清空能保住）
+        db = self._session()
+        try:
+            row2 = get_site_settings_row(db)
+            assert row2.features_initialized is True
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_admin_save_initializes_marker(self):
+        """update_settings 保存功能清单即置位（管理员保存的空集立即生效）"""
+        site_settings.update_settings({"anonymous_features": [], "user_features": []})
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            assert row.features_initialized is True
+            assert json.loads(row.anonymous_features) == []
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_migration_adds_initialized_column(self):
+        """存量库轻量迁移补 features_initialized 列（幂等）"""
+        from app.database.models import _migrate_site_settings_table
+        from app.database import engine
+        from sqlalchemy import inspect
+        _migrate_site_settings_table()
+        cols = {c["name"] for c in inspect(engine).get_columns("site_settings")}
+        assert "features_initialized" in cols
 
 
 # ==================== 注册邮箱验证 ====================
