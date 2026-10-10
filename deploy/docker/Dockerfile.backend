@@ -33,7 +33,11 @@ RUN curl -fsSL -o /usr/local/bin/tracy       "https://github.com/gear-genomics/t
 
 # Copy application code
 COPY src/backend/ ./backend/
-COPY data/ ./data/
+# 终审 H-01：只 COPY 需要随镜像分发的数据子目录（载体/密码子表），
+# 不再整目录 COPY data/ ——开发库 plasmid_designer.db（含用户邮箱与
+# bcrypt 哈希）曾随镜像层分发
+COPY data/vectors/ ./data/vectors/
+COPY data/codon_tables/ ./data/codon_tables/
 
 # Set permissions
 RUN chown -R plasmid:plasmid /app

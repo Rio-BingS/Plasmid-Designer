@@ -11,11 +11,14 @@ pull-up）→ read 级分级（widespread 疑似混合 / scattered 个别双峰�
 可选：检测到 tracy 可执行文件时，对疑似混合样品执行 tracy decompose 解卷积。
 """
 
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import align_read, merge_coverage
@@ -325,12 +328,19 @@ def _detect_mixed_detail(bases: str, trace: Dict[str, List[int]],
         if sorted_a[0] < main_floor:
             continue
         # 退化窗口护栏：四通道面积接近相等（无主导通道）说明基线校正后
-        # 该窗口无真实信号差异，按混合峰处理只会整段误报
-        if sorted_a[1] >= 0.9 * sorted_a[0]:
+        # 该窗口无真实信号差异，按混合峰处理只会整段误报。
+        # 终审 A-19：判据改为「第四名通道仍有显著信号」——真实 1:1 混合/
+        # 杂合的双通道窗口里第三、四通道只有本底噪声（≪ 主峰），而基线
+        # 校正失效的无信号窗口四通道同高。旧判据 sorted_a[1] >= 0.9 主峰
+        # 恰好屏蔽了最典型的 1:1 双峰（实测 ratio 0.92/0.95/1.00 检出 0/5）
+        if sorted_a[3] >= 0.8 * sorted_a[0]:
             continue
         if sorted_a[1] > 0 and sorted_a[0] > 0:
             ratio = sorted_a[1] / sorted_a[0]
-            if ratio > MIXED_PEAK_RATIO and areas[base] == sorted_a[0]:
+            # 终审 A-19：去掉 areas[base]==sorted_a[0] 硬要求——真实混合中
+            # basecaller 可能恰好把次要碱基作为 called（次要克隆占多数的位点），
+            # 此时次要通道才是主峰，位点同样应计入双峰
+            if ratio > MIXED_PEAK_RATIO:
                 sec_base = next((b for b in "ACGT" if b != base
                                  and areas.get(b) == sorted_a[1]), None)
                 pullup = False
@@ -736,16 +746,29 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
 
     反向 read 的 query 是 revcomp：query 列索引 qi ↔ 原始电泳坐标 n-qi
     （1-based，与 aligner 的 read_pos 镜像同式），mixed_detail 的 pos 即
-    原始电泳坐标，经此表即可与参考坐标互换。"""
+    原始电泳坐标，经此表即可与参考坐标互换。
+
+    终审 A-20：局部比对会把 read 端部的 junk/低质量段软剪切掉——对齐内
+    相对列号不是 trimmed read 坐标，必须加上 query_start 偏移（aligner
+    已输出对齐块在原始 query 内的 1-based 起止）。"""
     aligned = (r.get("alignment") or {}).get("aligned") or {}
     ref_s = (aligned.get("ref_aligned") or "").upper()
     read_s = (aligned.get("read_aligned") or "").upper()
     if not ref_s or len(ref_s) != len(read_s):
         return {}, {}
-    direction = (r.get("alignment") or {}).get("direction", "+")
+    aln = r.get("alignment") or {}
+    direction = aln.get("direction", "+")
     n = len(r.get("trimmed_bases") or "")
     q_aligned = aligned.get("q_aligned") or []
-    ref_pos = int(aligned.get("ref_start") or (r.get("alignment") or {}).get("ref_start") or 1)
+    ref_pos = int(aligned.get("ref_start") or aln.get("ref_start") or 1)
+    # 对齐块在原始（修剪后）read 内的 1-based 起点：正向 = query_start；
+    # 反向 read 的 query 是 revcomp，对齐块第 0 列对应原始电泳的 query_end 位置
+    qs = aln.get("query_start")
+    qe = aln.get("query_end")
+    if qs is not None and qe is not None:
+        block_first = int(qs) if direction == "+" else int(qe)
+    else:
+        block_first = 1  # 旧记录回退（无软剪切时恰为 1）
     read2ref: Dict[int, int] = {}
     ref2call: Dict[int, Dict] = {}
     qi = -1
@@ -753,7 +776,9 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
         qb = read_s[i]
         if qb != "-":
             qi += 1
-            orig = (n - qi) if direction == "-" else (qi + 1)
+            # 原始电泳 1-based 坐标：正向从 block_first 递增；
+            # 反向 read 对齐块第 0 列位于 block_first（=query_end），向左递减
+            orig = (block_first - qi) if direction == "-" else (block_first + qi)
         else:
             orig = None
         if rb != "-":
@@ -948,6 +973,35 @@ def _peak_verdict_phrase(e: Dict) -> str:
     if e.get("peak_inserted"):
         return f"插入 {e['peak_inserted']} 个 {e['base']}：实测 {m} 个，参考 {ref} 个"
     return f"poly({e['base']}) 碱基类型完整：实测 {m} 个，参考 {ref} 个"
+
+
+# 锚定分级劣序（rank 越大越差）：取投票 read 的最差分级用
+_ANCHOR_RANK = {"reliable": 0, "one-sided": 1, "marginal": 2, "unreliable": 3}
+
+
+def _poly_anchor_notes(homopolymer_report: List[Dict]) -> List[str]:
+    """accepted 但投票 read 的锚定分级不可靠的 run → 「计数确证但定位存疑」
+
+    run_verdict=accepted 只由可分辨峰计数互证产生，确证的是「重复数」；
+    run 起止定位依赖两侧路标碱基（锚），锚踩在信号异常区（边缘/低 Q/
+    混合峰/压缩区）时位置仍可能整体偏移。此前该信息只藏在逐 read 的
+    anchor_grade 字段里，结论不体现——用户容易误以为位置也确证了。
+    """
+    notes: List[str] = []
+    for e in homopolymer_report:
+        if e.get("run_verdict") != "accepted":
+            continue
+        g = e.get("vote_anchor_grade") or "reliable"
+        if _ANCHOR_RANK.get(g, 1) < _ANCHOR_RANK["marginal"]:
+            continue
+        reason = ("路标落在信号异常区" if g == "unreliable"
+                  else "路标处于信号边缘或单侧锚定")
+        notes.append(
+            f"注意：{_run_label(e)} {e['start']}-{e['end']} 重复数已由峰图"
+            f"计数确证（{e.get('observed_repeat_count', '?')} 个），但该 run"
+            f"的锚定路标不可靠（{reason}）——计数确证但定位存疑，run 起止"
+            "可能整体偏移数 bp，建议对照图谱核对边界")
+    return notes
 
 
 def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
@@ -1384,6 +1438,18 @@ def _build_cds_reports(
         """
         from Bio import Align
 
+        # 终审 C-08：任一侧为空（如起始密码子突变为终止 → alt 截断为空串）
+        # 时 Biopython 抛 ValueError: sequence has zero length，整份分析 500。
+        # 空比对 = 全部残基为 gap 事件的退化对齐，直接构造结果。
+        if not ref_prot or not alt_prot:
+            return {
+                "identical": 0,
+                "aligned_ref": 0,
+                "aligned_alt": 0,
+                "first_diff": 0,
+                "subs": [],
+                "gap_residues": len(ref_prot) + len(alt_prot),
+            }
         aligner = Align.PairwiseAligner()
         try:
             from Bio.Align import substitution_matrices
@@ -1753,13 +1819,17 @@ def analyze(
             v["quality"] = trimmed_q[qi]
 
         # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
+        # 终审 C-09：tracy 全流程降级隔离——一条低质量 ab1 的交叉 basecall
+        # 异常不得拖垮整份多 read 分析
         cross = _try_tracy_basecall(blob)
         used_tracy = cross is not None
         cross_variants: List[Dict] = []
         if used_tracy:
             cb, cq = cross
-            if len(cb) >= MIN_WINDOW:
-                cs, ce = _trim_by_quality(cb, cq, min_q)
+            cs, ce = _trim_by_quality(cb, cq, min_q)
+            # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
+            # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
+            if ce - cs >= MIN_WINDOW:
                 caln = align_read(cb[cs:ce], ref, cq[cs:ce])
                 for v in caln["variants"]:
                     rp = v.get("read_pos") or 1
@@ -2148,10 +2218,12 @@ def analyze(
                         *_anchor_verdict_for_read(r, run, aln)),
                 })
         entry["read_counts"] = run_reads
-        full_pcs = [x["peak_count"] for x in run_reads
-                    if x["coverage"] == "full" and x["peak_count"] is not None]
         # 整段重复数的峰图估计只聚合完整覆盖 read：部分覆盖 read 的峰数
-        # 只对应覆盖段，混入会把"段内计数"误当"整段计数"
+        # 只对应覆盖段，混入会把"段内计数"误当"整段计数"；合并 read 的
+        # peak_count=0 是"无可分辨峰"而非真实计数，混进中位数会把极端
+        # [30,0,0] 压成 0——只取 >0 的可分辨计数（全合并则无证据 → None）
+        full_pcs = [x["peak_count"] for x in run_reads
+                    if x["coverage"] == "full" and x["peak_count"]]
         entry["peak_count_estimate"] = (sorted(full_pcs)[len(full_pcs) // 2]
                                         if full_pcs else None)
         est_pool = [x for x in run_reads if x["length_estimate"] is not None]
@@ -2214,6 +2286,13 @@ def analyze(
             else:
                 break                          # 段间缺口
         joint_ok = bool(joint_votes) and _cursor == run["end"]
+        # 投票 read 的锚定分级最差者（accepted 只确证「重复数」，不确证
+        # 「位置」——路标踩在信号异常区时 run 起止定位仍可能偏移，结论
+        # 需显式写明，见 _poly_anchor_notes）
+        if votes or joint_votes:
+            entry["vote_anchor_grade"] = max(
+                (x.get("anchor_grade") or "reliable" for x in (votes or joint_votes)),
+                key=lambda g: _ANCHOR_RANK.get(g, 1))
         if votes:
             pcs = sorted({x["peak_count"] for x in votes})
             if len(pcs) == 1 and (not joint_ok or joint_total == pcs[0]):
@@ -2281,7 +2360,30 @@ def analyze(
         entry["run_covered"] = len(cov_pos)
         homopolymer_report.append(entry)
 
-    cds_reports = _build_cds_reports(ref, features, variants, consensus)
+    # 终审 C-08：CDS 判读的意外异常降级为单条失败报告，不得让一条
+    # 畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析
+    try:
+        cds_reports = _build_cds_reports(ref, features, variants, consensus)
+    except Exception as e:
+        logger.exception("CDS 判读整体失败，降级为占位报告")
+        cds_reports = [{
+            "name": "CDS",
+            "start": 0,
+            "end": 0,
+            "strand": "+",
+            "covered_percent": 0.0,
+            "coverage_status": "partial",
+            "ref_protein_length": None,
+            "alt_protein_length": None,
+            "protein_identical": None,
+            "premature_stop_aa": None,
+            "frameshift_count": 0,
+            "aa_changes": [],
+            "consequences": [],
+            "synonymous_count": 0,
+            "pending_low_confidence": 0,
+            "verdict": f"CDS 判读失败（内部异常：{type(e).__name__}），变体明细见突变表，可核对峰图或反馈日志",
+        }]
 
     # B5：poly 下游信号骤降注记（end_truncation 属 read 末端正常下降，不算）。
     # 与"未覆盖"明确区分：覆盖区内的骤降段碱基判读不可信，不是没测到
@@ -2479,6 +2581,8 @@ def analyze(
                 f"注意：{names}{more} 的比对端点落在同聚物区内部"
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
+        poly_warnings.extend(_poly_anchor_notes(homopolymer_report))
         # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
         all_lines = ([conclusion] + mixed_lines + cds_lines + poly_warnings
                      + dropout_notes + [end_note])
@@ -2573,6 +2677,8 @@ def analyze(
                 f"注意：{names}{more} 的比对端点落在同聚物区内部"
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
+        lines.extend(_poly_anchor_notes(homopolymer_report))
         lines.append(end_note)
         if consensus["coverage_percent"] < 95:
             gap_hint = ""

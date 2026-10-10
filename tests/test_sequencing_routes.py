@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from typing import Dict
 
 import pytest
 
@@ -94,34 +95,61 @@ def test_full_sequencing_flow(client, completed_design):
     assert data["consensus"]["sequence"][diffs[0]["cons_index"]] == diffs[0]["cons_base"]
 
     analysis_id = data["analysis_id"]
+    # 匿名创建 → 携带创建响应下发的 access_token（终审 B-02）
+    tok = _anon_token_header(resp)
 
     # 结果摘要端点
-    got = client.get(f"/api/sequencing/analyses/{analysis_id}").json()
+    got = client.get(f"/api/sequencing/analyses/{analysis_id}", headers=tok).json()
     assert got["analysis_id"] == analysis_id
 
-    # 历史列表端点（含刚完成的分析，删除后消失）
+    # 历史列表：匿名记录 ID 不进列表（B-02），不出现
     listing = client.get("/api/sequencing/analyses").json()
     ids = [item["analysis_id"] for item in listing]
-    assert analysis_id in ids
-    item = next(i for i in listing if i["analysis_id"] == analysis_id)
-    assert item["read_count"] >= 1
-    assert item["reference_length"] == len(ref)
-    assert "coverage_percent" in item and "conclusion" in item
+    assert analysis_id not in ids
 
     # 峰图端点
-    trace = client.get(f"/api/sequencing/analyses/{analysis_id}/trace/0").json()
+    trace = client.get(f"/api/sequencing/analyses/{analysis_id}/trace/0",
+                       headers=tok).json()
     assert set(trace["channels"].keys()) == {"A", "T", "G", "C"}
     assert trace["bases"]
 
     # 共识导出
-    fasta = client.get(f"/api/sequencing/analyses/{analysis_id}/consensus/export?format=fasta").text
+    fasta = client.get(f"/api/sequencing/analyses/{analysis_id}/consensus/export?format=fasta",
+                       headers=tok).text
     assert fasta.startswith(">")
-    gb = client.get(f"/api/sequencing/analyses/{analysis_id}/consensus/export?format=genbank").text
+    gb = client.get(f"/api/sequencing/analyses/{analysis_id}/consensus/export?format=genbank",
+                    headers=tok).text
     assert gb.startswith("LOCUS")
 
     # 删除
-    assert client.delete(f"/api/sequencing/analyses/{analysis_id}").status_code == 200
+    assert client.delete(f"/api/sequencing/analyses/{analysis_id}",
+                         headers=tok).status_code == 200
     assert client.get(f"/api/sequencing/analyses/{analysis_id}").status_code == 404
+
+
+def test_reference_length_capped(client, monkeypatch):
+    """终审 C-01 回归锁：参考序列此前只校验 ≥50bp 无上限——局部比对是
+    O(len(ref)×len(read)) 且正反向各做一次完整回溯，实测 300 kb 参考 ×
+    1 条 read = 11 s / 1.09 GB。超过 MAX_REF_BP 必须被拒绝。"""
+    import app.routes.sequencing_routes as seq_routes
+
+    monkeypatch.setattr(seq_routes, "MAX_REF_BP", 1000)
+    blob = make_ab1("ATG" * 100, [40] * 300)
+
+    # 单样品上传入口
+    too_long = ">ref\n" + "ACGT" * 400   # 1600bp > 1000
+    r = client.post("/api/sequencing/analyze",
+                    files={"reference": ("ref.fasta", too_long, "text/plain"),
+                           "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r.status_code == 413, r.text
+    assert "过长" in r.json()["detail"]
+
+    # 上限之内的请求照常受理（不误伤）
+    ok = ">ref\n" + "ACGT" * 100  # 400bp
+    r3 = client.post("/api/sequencing/analyze",
+                     files={"reference": ("ref.fasta", ok, "text/plain"),
+                            "reads": ("r1.ab1", blob, "application/octet-stream")})
+    assert r3.status_code == 200, r3.text
 
 
 def test_analyze_rejects_non_ab1(client, completed_design):
@@ -169,6 +197,20 @@ def _login_header(client, email: str, password: str = "password123"):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+def _anon_token_header(resp) -> Dict[str, str]:
+    """终审 B-02：匿名创建响应下发的 access_token → 后续请求头。"""
+    tok = resp.json().get("access_token")
+    assert tok, f"匿名创建应下发 access_token: {resp.json().get('analysis_id')}"
+    return {"X-Access-Token": tok}
+
+
+def _anon_query(resp) -> str:
+    """token 查询参数形式（下载链接无自定义头场景）。"""
+    tok = resp.json().get("access_token")
+    assert tok, "匿名创建应下发 access_token"
+    return f"?token={tok}"
+
+
 def test_analysis_record_ownership(client):
     """分析记录绑定创建者：非创建者读/导出/删除一律 403，列表看不到；
     管理员全可见；创建者本人不受影响（无属主的匿名遗留记录保持公开）"""
@@ -200,14 +242,19 @@ def test_analysis_record_ownership(client):
                for x in client.get("/api/sequencing/analyses", headers=ha).json())
     assert client.delete(f"/api/sequencing/analyses/{aid}", headers=ha).status_code == 200
 
-    # 匿名创建的记录无属主 → 保持公开（历史行为，匿名分析本来无法归属）
+    # 匿名创建的记录 → 凭创建响应下发的 access_token 访问（终审 B-02）
     blob2 = make_ab1("AAG" * 40, [40] * 120)
     r2 = client.post("/api/sequencing/analyze",
                      files={"reference": ref, "reads": ("r2.ab1", blob2, "application/octet-stream")})
     assert r2.status_code == 200
     aid2 = r2.json()["analysis_id"]
-    assert client.get(f"/api/sequencing/analyses/{aid2}", headers=ha).status_code == 200
-    client.delete(f"/api/sequencing/analyses/{aid2}")
+    tok2 = _anon_token_header(r2)
+    # 无令牌的他人（登录用户 B）不可见；持令牌可读、列表不可见（令牌是持有者凭证）、可删
+    assert client.get(f"/api/sequencing/analyses/{aid2}", headers=ha).status_code == 403
+    assert client.get(f"/api/sequencing/analyses/{aid2}", headers=tok2).status_code == 200
+    assert all(x["analysis_id"] != aid2
+               for x in client.get("/api/sequencing/analyses", headers=tok2).json())
+    assert client.delete(f"/api/sequencing/analyses/{aid2}", headers=tok2).status_code == 200
 
 
 def test_analysis_persists_across_restart(client):
@@ -264,6 +311,7 @@ def test_export_consensus_carries_poly_verdict(client):
                            "reads": ("r1.ab1", blob, "application/octet-stream")})
     assert r.status_code == 200, r.text
     aid = r.json()["analysis_id"]
+    tok = _anon_token_header(r)
     rec = seq_routes._ANALYSES[aid]
     rec["homopolymers"] = [
         {"tier": "poly", "base": "A", "start": 30, "end": 50,
@@ -272,16 +320,18 @@ def test_export_consensus_carries_poly_verdict(client):
         {"tier": "poly", "base": "T", "start": 70, "end": 95,
          "run_verdict": "undetermined"},
     ]
-    gb = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank")
+    gb = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank",
+                    headers=tok)
     assert gb.status_code == 200
     assert "misc_feature    30..50" in gb.text
     assert "重复数确证 21 个" in gb.text and "联合覆盖拼接" in gb.text
     assert "不可判定" in gb.text
-    fa = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta")
+    fa = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta",
+                    headers=tok)
     assert fa.status_code == 200
     assert "poly_unverified=70-95" in fa.text
     # 清理
-    client.delete(f"/api/sequencing/analyses/{aid}")
+    client.delete(f"/api/sequencing/analyses/{aid}", headers=tok)
 
 
 def test_db_retention_prunes_oldest(client, monkeypatch):
@@ -297,14 +347,19 @@ def test_db_retention_prunes_oldest(client, monkeypatch):
                         files={"reference": ("ref.fasta", ref, "text/plain"),
                                "reads": (name, blob, "application/octet-stream")})
         assert r.status_code == 200
-        return r.json()["analysis_id"]
+        aid = r.json()["analysis_id"]
+        # 本用例只验证「按创建时间淘汰最旧」：清掉 token 让记录成为改造前
+        # 的遗留公开记录，才能通过列表端点观察淘汰结果（匿名记录不进列表）
+        seq_routes._ANALYSES[aid]["access_token"] = None
+        store.persist_record(seq_routes._ANALYSES[aid])
+        return aid
 
     a1, a2, a3 = _mk("r1.ab1"), _mk("r2.ab1"), _mk("r3.ab1")
-    # 内存缓存清掉，只看数据库与列表
+    # 内存缓存清掉，只看数据库（终审 B-02 后匿名记录不再进列表端点，
+    # 淘汰效果直接查库更准确）
     seq_routes._ANALYSES.clear()
-    ids = [x["analysis_id"] for x in client.get("/api/sequencing/analyses").json()]
-    assert a1 not in ids and a2 in ids and a3 in ids
     assert store.load_record(a1) is None
+    assert store.load_record(a2) is not None
     assert store.load_record(a3) is not None
     for aid in (a2, a3):
         client.delete(f"/api/sequencing/analyses/{aid}")
@@ -321,20 +376,23 @@ def test_export_consensus_covered_only(client):
                            "reads": ("r1.ab1", blob, "application/octet-stream")})
     assert r.status_code == 200, r.text
     aid = r.json()["analysis_id"]
+    tok = _anon_token_header(r)
     fa = client.get(
-        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta&covered_only=true")
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta&covered_only=true",
+        headers=tok)
     assert fa.status_code == 200
     assert "ref_pos=1-60" in fa.text and "region=1/1" in fa.text
     seq_lines = [ln for ln in fa.text.splitlines() if not ln.startswith(">")]
     assert "".join(seq_lines) == "AAG" * 20  # 只有覆盖段，无参考填充
     gb = client.get(
-        f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank&covered_only=true")
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank&covered_only=true",
+        headers=tok)
     assert gb.status_code == 200
     assert "实测覆盖区 1-60" in gb.text and "N-masked" in gb.text
     assert " 120 bp" in gb.text  # 全长保留（坐标不位移）
     body = gb.text.split("ORIGIN")[1]
     assert body.count("N") >= 60  # 未测位置全部 N
     fa_full = client.get(
-        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta")
+        f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta", headers=tok)
     assert "ref_pos=" not in fa_full.text  # 默认全量口径不变
-    client.delete(f"/api/sequencing/analyses/{aid}")
+    client.delete(f"/api/sequencing/analyses/{aid}", headers=tok)

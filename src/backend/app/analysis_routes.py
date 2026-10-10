@@ -1,7 +1,7 @@
 """
 序列分析和导出 API 路由
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from typing import List, Dict, Optional
@@ -21,6 +21,7 @@ from core.export_formats import (
     create_export_data_from_design,
     create_export_data_from_vector
 )
+from app.auth.jwt_auth import User, get_current_user
 from app.cache import cached
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -28,54 +29,64 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 # ==================== 请求模型 ====================
 
+# 终审 C-06：分析类接口此前全部不限长、窗口/步长下限为 1——实测 1Mb
+# 序列 + window_size=1/step_size=1 → 200 且响应体 108 MB / 3.0 s，单请求
+# 即可拖垮服务。这里统一上限（与 C-03 的设计序列上限同数量级）并给窗口
+# 类参数设合理下限（窗口 <10bp 无统计意义）。
+MAX_ANALYSIS_SEQ_BP = 200_000
+MIN_WINDOW_SIZE = 10
+
+
 class SequenceAnalysisRequest(BaseModel):
     """序列分析请求"""
-    sequence: str = Field(..., description="DNA 序列")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     sequence_type: str = Field(default="dna", description="序列类型（dna/amino_acid，当前分析均按 DNA 处理）")
     check_restriction: bool = Field(default=True, description="是否检测限制性位点")
     check_orf: bool = Field(default=True, description="是否预测 ORF")
     check_gc: bool = Field(default=True, description="是否分析 GC 含量")
-    enzymes: Optional[List[str]] = Field(default=None, description="要检测的酶列表")
+    enzymes: Optional[List[str]] = Field(default=None, max_length=100,
+                                         description="要检测的酶列表")
 
 
 class RestrictionSitesRequest(BaseModel):
     """限制性酶切位点请求（body 传递，避免长序列进入 URL）"""
-    sequence: str = Field(..., description="DNA 序列")
-    enzymes: Optional[List[str]] = Field(default=None, description="要检测的酶列表，默认全部常用酶")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    enzymes: Optional[List[str]] = Field(default=None, max_length=100,
+                                         description="要检测的酶列表，默认全部常用酶")
 
 
 class ORFRequest(BaseModel):
     """ORF 预测请求"""
-    sequence: str = Field(..., description="DNA 序列")
-    min_length: int = Field(default=150, ge=1, description="最小 ORF 长度（碱基数）")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    min_length: int = Field(default=150, ge=30, description="最小 ORF 长度（碱基数）")
 
 
 class DigestRequest(BaseModel):
     """酶切消化模拟请求"""
-    sequence: str = Field(..., description="DNA 序列")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     enzymes: List[str] = Field(..., min_length=1, max_length=6, description="用于模拟消化的酶（1-6 个）")
 
 
 class GCAnalysisRequest(BaseModel):
     """GC 含量分析请求"""
-    sequence: str = Field(..., description="DNA 序列")
-    window_size: int = Field(default=100, ge=1, description="滑动窗口大小")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    window_size: int = Field(default=100, ge=MIN_WINDOW_SIZE, description="滑动窗口大小")
     step_size: int = Field(default=50, ge=1, description="步长")
 
 
 class CompatibilityRequest(BaseModel):
     """克隆兼容性检查请求"""
-    insert_sequence: str = Field(..., description="插入片段序列")
-    vector_sequence: str = Field(..., description="载体序列")
-    enzymes: List[str] = Field(..., description="计划使用的酶列表")
+    insert_sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="插入片段序列")
+    vector_sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="载体序列")
+    enzymes: List[str] = Field(..., max_length=50, description="计划使用的酶列表")
 
 
 class ExportRequest(BaseModel):
     """导出请求"""
-    name: str = Field(..., description="序列名称")
-    sequence: str = Field(..., description="DNA 序列")
-    features: List[Dict] = Field(default=[], description="序列特征")
-    description: str = Field(default="", description="描述")
+    name: str = Field(..., max_length=100, description="序列名称")
+    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    features: List[Dict] = Field(default=[], max_length=2000, description="序列特征")
+    description: str = Field(default="", max_length=2000, description="描述")
     is_circular: bool = Field(default=True, description="是否环状")
     format: str = Field(default="genbank", description="导出格式")
 
@@ -464,7 +475,8 @@ def _export_response(data, format: str, filename_base: str):
 
 
 @router.get("/design/{design_id}/export")
-async def export_design(design_id: str, format: str = "genbank"):
+async def export_design(design_id: str, format: str = "genbank",
+                        user: Optional[User] = Depends(get_current_user)):
     """
     导出设计结果为指定格式
 
@@ -472,9 +484,10 @@ async def export_design(design_id: str, format: str = "genbank"):
         design_id: 设计任务 ID
         format: genbank / snapgene / benchling / fasta / sbol
     """
-    from app.routes.design_routes import _load
+    from app.routes.design_routes import _ensure_design_access, _load
 
-    result = _load(design_id)
+    # 属主校验（终审 B-01：此前匿名可导出他人完整构建序列——IDOR）
+    result = _ensure_design_access(_load(design_id), user)
     if not result:
         raise HTTPException(status_code=404, detail="Design not found")
 

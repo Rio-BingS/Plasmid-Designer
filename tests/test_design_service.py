@@ -210,6 +210,58 @@ def test_exclude_enzymes_dna_input_warns_only():
     assert any("仍包含需排除的位点" in w for w in warns)
 
 
+def test_unknown_enzyme_warning_not_dropped():
+    """终审 D-04 回归锁：未知限制酶告警曾被整体丢弃
+    （exclude_enzymes=["NotAnEnzyme"] 返回 warnings=[]，用户以为序列
+    干净直接下单合成）——优化与非优化两条路径都必须透出"""
+    from app.routes.models import SequenceType
+    from app.design_service import process_sequence
+
+    aa = "MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR"
+    for optimize in (True, False):
+        _, _, _, warns = process_sequence(
+            aa, SequenceType.AMINO_ACID, optimize, "ecoli", 40, 60,
+            exclude_enzymes=["NotAnEnzyme"],
+        )
+        assert any("忽略未知限制酶" in w for w in warns), (optimize, warns)
+
+
+def test_unknown_enzyme_warning_survives_cache_roundtrip():
+    """终审 D-04 回归锁：局部告警必须进缓存写回并在命中路径返回
+    （键含 exclude_enzymes，告警与该输入绑定）"""
+    from app.routes.models import SequenceType
+    from app.design_service import process_sequence
+
+    aa = "MKVL"
+    for _ in range(2):  # 第一次写缓存，第二次命中
+        _, _, _, warns = process_sequence(
+            aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60,
+            exclude_enzymes=["NotAnEnzyme"],
+        )
+        assert any("忽略未知限制酶" in w for w in warns), warns
+
+
+def test_residual_site_warning_not_dropped(monkeypatch):
+    """终审 D-04 回归锁：经优化仍无法排除的位点告警曾被丢弃——
+    固定优化器输出含 HindIII 位点，process_sequence 必须产出残留告警"""
+    from app.routes.models import SequenceType
+    from app import design_service
+    from core.codon_optimizer import CodonOptimizer
+
+    class FakeResult:
+        dna_sequence = "ATG" + "AAGCTT" + "GGC"  # 含 HindIII (AAGCTT)
+        cai = 0.8
+        gc_content = 0.5
+        warnings = []
+
+    monkeypatch.setattr(CodonOptimizer, "optimize", lambda self, seq, **kw: FakeResult())
+    _, _, _, warns = design_service.process_sequence(
+        "MKL", SequenceType.AMINO_ACID, True, "ecoli", 40, 60,
+        exclude_enzymes=["HindIII"],
+    )
+    assert any("无法完全排除" in w and "AAGCTT" in w for w in warns), warns
+
+
 def test_gibson_site_anchor_resolves_cut_position():
     """Gibson 定位位点：解析为该酶切位点的切割位置（0-based）"""
     from app.routes.models import CloningMethod, DesignRequest
