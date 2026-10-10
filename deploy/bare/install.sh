@@ -5,6 +5,7 @@
 #   sudo bash install.sh --db postgresql    # PostgreSQL 模式
 #   sudo bash install.sh --uninstall        # 卸载
 #   sudo bash install.sh --db postgresql --project-dir /home/user/plasmid  # 自定义路径
+#   sudo bash install.sh --uninstall --yes   # 卸载（跳过确认，自动化用）
 
 set -euo pipefail
 
@@ -13,6 +14,7 @@ set -euo pipefail
 INSTALL_DIR="/opt/plasmid-designer"
 DB_MODE="sqlite"
 UNINSTALL=false
+ASSUME_YES=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
@@ -44,8 +46,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --db sqlite|postgresql   数据库模式 (默认: sqlite)"
             echo "  --project-dir PATH       安装目录 (默认: /opt/plasmid-designer)"
             echo "  --uninstall              卸载 Plasmid Designer"
+            echo "  --yes                    跳过卸载确认（自动化/CI 用；交互卸载仍建议不加）"
             echo "  -h, --help               显示帮助"
             exit 0
+            ;;
+        --yes)
+            ASSUME_YES=1
+            shift
             ;;
         *)
             echo "未知参数: $1"
@@ -59,6 +66,25 @@ done
 if $UNINSTALL; then
     echo "=== 卸载 Plasmid Designer ==="
     echo ""
+    echo "即将执行以下破坏性操作:"
+    echo "  - 删除项目目录: $INSTALL_DIR（--project-dir 可指向任意目录，含你自己的工作副本）"
+    echo "  - 删除 PostgreSQL 数据库 $PG_DB 与用户 $PG_USER（若本机装有 psql，不区分当初是否用 PG）"
+    echo "  - 删除 systemd 服务 / Nginx 配置 / plasmid 系统用户"
+    echo ""
+
+    # 终审 H-05：卸载曾不经确认就 DROP DATABASE 并 rm -rf $INSTALL_DIR
+    #（--project-dir 任意指定，可能是用户自己的 git 克隆）。交互 TTY 下
+    # 必须显式输入 yes；--yes 跳过（自动化/CI 用）；非 TTY 且无 --yes 拒绝执行。
+    if [ -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
+        read -r -p "确认卸载？输入 yes 继续（其他任意输入取消）: " REPLY
+        if [ "$REPLY" != "yes" ]; then
+            echo "已取消，未做任何更改。"
+            exit 0
+        fi
+    elif [ "$ASSUME_YES" != "1" ]; then
+        echo "✗ 非交互环境且未指定 --yes，拒绝执行破坏性卸载（加 --yes 强制）。">&2
+        exit 1
+    fi
 
     # 停止服务
     if systemctl is-active --quiet plasmid-backend 2>/dev/null; then
@@ -336,7 +362,11 @@ fi
 
 # 设置目录权限
 chown -R plasmid:plasmid "$INSTALL_DIR"
-chmod 750 "$INSTALL_DIR"
+# 终审 H-03：750 只有 plasmid 能进——nginx worker（www-data）没有路径 x
+# 权限，前端静态资源 /src/frontend/dist 全部 403。补「其他用户仅目录
+# 遍历（x 不给 r）」：www-data 能穿过目录读到文件（文件权限由自身 644
+# 控制），但列不出目录内容，不泄露目录清单
+chmod 751 "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
 
 # 创建数据目录（载体库/密码子表随项目文件一同复制）
@@ -413,9 +443,9 @@ echo "║           部署完成！                         ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 echo "访问地址:"
-echo "  前端:    http://$SERVER_IP"
-echo "  后端:    http://$SERVER_IP:8000"
-echo "  API文档: http://$SERVER_IP:8000/docs"
+echo "  前端/API: http://$SERVER_IP（Nginx 统一入口）"
+# 终审 H-04：后端只监听 127.0.0.1:8000（经 Nginx 反代），不再提示暴露公网
+echo "  后端:     仅 127.0.0.1:8000（Nginx 反代，不经公网直连）"
 echo ""
 
 if [[ "$DB_MODE" == "postgresql" ]]; then
