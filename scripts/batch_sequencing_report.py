@@ -102,11 +102,14 @@ def organize(plasmid: str, items, out_dir: Path, manifest, dry_run=False):
 
 def analyze_plasmid(reference: Path, reads, min_q: int):
     from core.sanger.pipeline import analyze
-    from core.sanger.reference_parser import parse_reference
+    from core.sanger.reference_parser import parse_reference_topology
 
-    ref_seq, features = parse_reference(reference.name, reference.read_bytes())
+    ref_seq, features, topology = parse_reference_topology(
+        reference.name, reference.read_bytes())
     ab1s = [(p["file"]["path"].name, p["file"]["path"].read_bytes()) for p in reads]
-    res = analyze(ab1s, ref_seq, features, min_q=min_q)
+    # 与网页批量端点同口径：文件明确标 linear 才按线性，其余按环状质粒
+    res = analyze(ab1s, ref_seq, features, min_q=min_q,
+                  circular=topology is not False)
     res["_ref_len"] = len(ref_seq)
     res["_n_features"] = len(features)
     return res

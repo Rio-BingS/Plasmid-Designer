@@ -198,3 +198,51 @@ def test_parse_snapgene_topology(monkeypatch):
     seq, _f, circ = parse_reference_topology("p.dna", b"SNAPGENE-BYTES")
     assert seq == REF_SEQ and circ is True
 
+
+def _wrap_case():
+    import random
+    rng = random.Random(17)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    read = list(ref[750:] + ref[:200])          # 跨原点 350bp
+    read[100] = "A" if read[100] != "A" else "C"   # 参考 851
+    read[250] = "A" if read[250] != "A" else "C"   # 参考 101
+    return ref, "".join(read)
+
+
+def test_analyze_upload_circular_genbank_wraps_origin(client):
+    """环状 GenBank：跨原点 read 的摘要带折回区段，覆盖拆两段，两处差异都在"""
+    ref, read = _wrap_case()
+    resp = client.post(
+        "/api/sequencing/analyze",
+        files=[("reference", ("circ.gb", _gb(ref, "circular").encode(), "application/octet-stream")),
+               ("reads", ("w.ab1", make_ab1(read, [40] * len(read)), "application/octet-stream"))],
+        data={"allow_decompose": "false"},
+    )
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["circular"] is True
+    r0 = d["reads"][0]
+    assert r0["wraps_origin"] is True
+    assert (r0["ref_start"], r0["ref_end"]) == (751, 1100)
+    assert r0["ref_segments"] == [[751, 900], [1, 200]]
+    assert d["coverage_ranges"] == [[1, 200], [751, 900]]
+    assert sorted(v["ref_pos"] for v in d["variants"]) == [101, 851]
+
+
+def test_analyze_upload_linear_genbank_not_wrapped(client):
+    """GenBank 标 linear：按线性比对，read 摘要不带跨原点字段（向后兼容）"""
+    ref, read = _wrap_case()
+    resp = client.post(
+        "/api/sequencing/analyze",
+        files=[("reference", ("lin.gb", _gb(ref, "linear").encode(), "application/octet-stream")),
+               ("reads", ("w.ab1", make_ab1(read, [40] * len(read)), "application/octet-stream"))],
+        data={"allow_decompose": "false"},
+    )
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["circular"] is False
+    r0 = d["reads"][0]
+    assert "wraps_origin" not in r0 and "ref_segments" not in r0
+    assert (r0["ref_start"], r0["ref_end"]) == (1, 200)
+    assert d["coverage_ranges"] == [[1, 200]]
+    assert [v["ref_pos"] for v in d["variants"]] == [101]

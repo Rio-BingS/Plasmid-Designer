@@ -63,7 +63,7 @@ from core.sanger.batch import (
     match_files, norm_stem, rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
-from core.sanger.reference_parser import parse_reference
+from core.sanger.reference_parser import parse_reference_topology
 
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
@@ -259,9 +259,12 @@ def _run_full_analysis(
     ab1_blobs: List[Tuple[str, bytes]],
     min_q: int,
     allow_decompose: bool,
+    circular: bool = True,
 ) -> Dict:
-    """同步执行全自动分析（调用方负责移交线程池）"""
-    result = analyze(ab1_blobs, reference, features, min_q=min_q)
+    """同步执行全自动分析（调用方负责移交线程池）
+
+    circular：参考是否按环状比对（跨原点 read 整条比对、坐标折回）。"""
+    result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular)
 
     # 混合样品解卷积（tracy 可用时）：只对 read 级判为「疑似混合样品」
     # （widespread）的 read 执行——个别双峰位点（scattered）多为噪声，
@@ -359,6 +362,7 @@ async def _analyze_endpoint(
     min_q: int,
     allow_decompose: bool,
     user: Optional[User] = None,
+    circular: bool = True,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
@@ -373,7 +377,8 @@ async def _analyze_endpoint(
     ab1_blobs = await _read_ab1_files(files)
 
     result = await _run_heavy(
-        _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose
+        _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose,
+        circular,
     )
 
     analysis_id, access_token, _rec = _register_analysis(
@@ -402,14 +407,15 @@ async def analyze_sequencing_upload(
 
     样品名取参考文件名主干，特征注释直接来自参考文件（GenBank/SnapGene 特征表）。
     """
-    from core.sanger.reference_parser import parse_reference, ReferenceParseError
+    from core.sanger.reference_parser import ReferenceParseError
 
     ref_name = reference.filename or "reference.gb"
     ref_bytes = await _read_limited(reference)
     if not ref_bytes:
         raise HTTPException(status_code=400, detail="参考文件为空")
     try:
-        ref_seq, features = await run_in_threadpool(parse_reference, ref_name, ref_bytes)
+        ref_seq, features, topology = await run_in_threadpool(
+            parse_reference_topology, ref_name, ref_bytes)
     except ReferenceParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if len(ref_seq) < 50:
@@ -422,7 +428,15 @@ async def analyze_sequencing_upload(
 
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
-                                   allow_decompose, user=user)
+                                   allow_decompose, user=user,
+                                   circular=_reference_circular(topology))
+
+
+def _reference_circular(topology: Optional[bool]) -> bool:
+    """参考拓扑 → 是否按环状比对：文件明确标 linear 才按线性；标 circular
+    或未标明（FASTA）按环状——测序验证的参考绝大多数是质粒，且环状比对
+    对不跨原点的 read 结果与线性完全一致，误判为环状的代价最低。"""
+    return topology is not False
 
 
 # ---------------------------------------------------------------- 批量分析（独立入口）
@@ -542,7 +556,7 @@ def _run_batch(
             ref_entry = ref_cache.get(plasmid)
             if ref_entry is None:
                 try:
-                    ref_seq, features = parse_reference(
+                    ref_seq, features, topology = parse_reference_topology(
                         ref_file["file"]["name"], ref_file["file"]["bytes"])
                     if len(ref_seq) < 50:
                         raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
@@ -552,7 +566,7 @@ def _run_batch(
                         raise ValueError(
                             f"参考序列过长（{len(ref_seq)} bp > {MAX_REF_BP} bp）："
                             "请截取待验证区段后重新分析")
-                    ref_entry = (ref_seq, features)
+                    ref_entry = (ref_seq, features, _reference_circular(topology))
                 except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
                     ref_entry = e
                 ref_cache[plasmid] = ref_entry
@@ -561,10 +575,10 @@ def _run_batch(
                 item["conclusion"] = f"分析失败：{ref_entry}"
                 items.append(item)
                 continue
-            ref_seq, features = ref_entry
+            ref_seq, features, circular = ref_entry
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
-                res = analyze(ab1s, ref_seq, features, min_q=min_q)
+                res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular)
                 aid, _tok, rec = _register_analysis(
                     label, ref_seq, features, res,
                     owner_id=owner_id, access_token=access_token)
@@ -808,9 +822,11 @@ async def analyze_design_sequencing(
         raise HTTPException(status_code=400, detail="Design not completed")
 
     reference = result.construct_sequence or result.optimized_sequence or ""
+    # 有构建体序列即环状质粒；仅优化序列（无载体）时是线性片段
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,
+        circular=bool(result.construct_sequence),
     )
 
 
@@ -836,8 +852,10 @@ async def analyze_vector_sequencing(
          "end": e.end, "strand": e.strand, "description": e.description}
         for e in vector.elements
     ]
+    # 载体库条目均为环状质粒
     return await _analyze_endpoint(
         vector.sequence, vector.name, features, files, min_q, allow_decompose, user=user,
+        circular=True,
     )
 
 
@@ -1030,7 +1048,13 @@ def _summary(record: Dict) -> Dict:
             "q20_ratio": r.get("q20_ratio"),
             "direction": r["alignment"]["direction"],
             "ref_start": r["alignment"]["ref_start"],
+            # 环状参考跨原点的 read：ref_end 为展开坐标（> reference_length，
+            # 按 ((p-1) % L) + 1 折回），wraps_origin/ref_segments 给出折回
+            # 后的两段；线性/不跨原点时两字段缺省（向后兼容）
             "ref_end": r["alignment"]["ref_end"],
+            **({"wraps_origin": True,
+                "ref_segments": r["alignment"].get("ref_segments")}
+               if r["alignment"].get("wraps_origin") else {}),
             # 终审 A-20：对齐块在原始电泳 read 内的 1-based 起止（软剪切
             # 偏移），前端 origIdx 换算与 read2ref 同口径
             "query_start": r["alignment"].get("query_start"),
@@ -1054,6 +1078,8 @@ def _summary(record: Dict) -> Dict:
         "consensus": record["consensus"],
         "coverage_ranges": record["coverage_ranges"],
         "coverage_gaps": record.get("coverage_gaps", []),
+        # 参考是否按环状比对（旧记录无此字段，按 False 呈现）
+        "circular": bool(record.get("circular", False)),
         "cds_reports": record.get("cds_reports", []),
         "homopolymers": record.get("homopolymers", []),
         "mixed_detected": record.get("mixed_detected", {}),
