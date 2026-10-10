@@ -11,8 +11,8 @@ RUN npm config set registry ${NPM_REGISTRY}
 # Copy dependency files
 COPY src/frontend/package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies（npm ci 严格按 lock 安装，构建可复现）
+RUN npm ci
 
 # Copy source code
 COPY src/frontend/ ./
