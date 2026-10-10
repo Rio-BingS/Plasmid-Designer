@@ -4,6 +4,7 @@
 """
 import ipaddress
 import json
+import re
 import time
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Callable
@@ -147,6 +148,9 @@ RATE_LIMITS = {
     "upload": {"requests": 20, "window": 3600},  # 20 上传/小时
     "auth": {"requests": 5, "window": 60},       # 5 次/分钟（同 IP + 同目标邮箱）
     "auth_ip": {"requests": 20, "window": 60},   # 20 次/分钟（同 IP 全部认证写操作）
+    # 重型只读：打包/导出下载与 NCBI 外呼代理（终审 C-04 后曾退化到 default 档）
+    "export": {"requests": 10, "window": 60},
+    "ncbi": {"requests": 10, "window": 60},
     
     # 用户级别限制（已登录用户更高配额）
     # 生效条件：request.state.user 由 AuthStateMiddleware（app/auth/middleware.py）
@@ -154,6 +158,8 @@ RATE_LIMITS = {
     "user_default": {"requests": 200, "window": 60},
     "user_design": {"requests": 30, "window": 60},
     "user_batch": {"requests": 10, "window": 60},
+    "user_export": {"requests": 30, "window": 60},
+    "user_ncbi": {"requests": 30, "window": 60},
 }
 
 # 全局限制器实例
@@ -296,6 +302,28 @@ _ENDPOINT_RULES: List[Tuple[str, str, str]] = [
 ]
 
 
+# 只读但重型的端点：整段模板匹配（{param} 匹配单个路径段）
+_READ_RULES: List[Tuple[str, str]] = [
+    ("/api/design/batch/{id}/download", "export"),
+    ("/api/design/batch/{id}/report", "export"),
+    ("/api/design/{id}/download/{fmt}", "export"),
+    ("/api/analysis/design/{id}/export", "export"),
+    ("/api/analysis/vector/{id}/export", "export"),
+    ("/api/sequencing/batches/{id}/report", "export"),
+    ("/api/sequencing/analyses/{id}/consensus/export", "export"),
+    ("/api/vectors/search/ncbi", "ncbi"),
+    ("/api/vectors/preview/ncbi/{id}", "ncbi"),
+]
+
+
+def _template_regex(template: str) -> "re.Pattern":
+    parts = re.split(r"\{[^}]+\}", template)
+    return re.compile("^" + "[^/]+".join(re.escape(p) for p in parts) + "/?$")
+
+
+_READ_RULES_RE = [(_template_regex(t), b) for t, b in _READ_RULES]
+
+
 def classify_endpoint(method: str, path: str) -> str:
     """按（方法 + 路径模板）判定限流档位。
 
@@ -312,8 +340,12 @@ def classify_endpoint(method: str, path: str) -> str:
         prefix = template.split("{")[0]
         if path == template or path.startswith(prefix):
             return bucket
-    # 未命中规则表：只读一律 default，写操作按路径回退业务档
+    # 未命中规则表：只读除重型下载/外呼外一律 default，写操作按路径回退业务档
     if method in ("GET", "HEAD", "OPTIONS"):
+        if method != "OPTIONS":
+            for rx, bucket in _READ_RULES_RE:
+                if rx.match(path):
+                    return bucket
         return "default"
     if "/sequencing" in path:
         return "upload"
