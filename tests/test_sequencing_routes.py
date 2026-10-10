@@ -204,13 +204,6 @@ def _anon_token_header(resp) -> Dict[str, str]:
     return {"X-Access-Token": tok}
 
 
-def _anon_query(resp) -> str:
-    """token 查询参数形式（下载链接无自定义头场景）。"""
-    tok = resp.json().get("access_token")
-    assert tok, "匿名创建应下发 access_token"
-    return f"?token={tok}"
-
-
 def test_analysis_record_ownership(client):
     """分析记录绑定创建者：非创建者读/导出/删除一律 403，列表看不到；
     管理员全可见；创建者本人不受影响（无属主的匿名遗留记录保持公开）"""

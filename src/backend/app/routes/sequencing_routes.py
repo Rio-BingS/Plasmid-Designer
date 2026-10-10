@@ -142,12 +142,11 @@ def _can_access(record: Dict, user: Optional[User],
 
 
 def _request_access_token(request: Request) -> Optional[str]:
-    """从请求提取匿名记录访问令牌：优先 X-Access-Token 头，兼容 ?token= 查询参数
-    （<a> 下载链接没法带自定义头）。"""
-    tok = request.headers.get("X-Access-Token")
-    if tok:
-        return tok
-    return request.query_params.get("token")
+    """从请求提取匿名记录访问令牌：只认 X-Access-Token 头。
+
+    不再接受 ?token= 查询参数——查询串会进 uvicorn/nginx 访问日志，令牌
+    随日志外泄；前端所有调用都走请求头。"""
+    return request.headers.get("X-Access-Token") or None
 
 
 def _get_analysis(analysis_id: str, user: Optional[User] = None,
