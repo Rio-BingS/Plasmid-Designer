@@ -369,3 +369,18 @@ def test_gibson_placeholder_backbone_warns():
     backbone = ensure_vector_backbone(vector)
     if "N" in backbone:
         assert any("N 占位" in w for w in result.warnings)
+
+
+def test_map_data_scans_construct_as_circular():
+    """构建体为环状质粒：跨原点的 EcoRI 位点要出现在图谱数据里"""
+    from datetime import datetime
+    from app.routes.models import DesignResult
+
+    construct = "TTC" + "A" * 50 + "GAA"
+    res = DesignResult(
+        design_id="circ", status=DesignStatus.COMPLETED, input_sequence="ATG",
+        construct_sequence=construct, vector_id="v", cloning_method=CloningMethod.GIBSON,
+        created_at=datetime.now(),
+    )
+    sites = [s for s in map_data_from_result(res)["enzyme_sites"] if s["name"] == "EcoRI"]
+    assert sites and sites[0]["position"] == len(construct) - 2

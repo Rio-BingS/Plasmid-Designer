@@ -675,5 +675,9 @@ def map_data_from_result(result: DesignResult) -> Dict:
         "length": len(construct) or result.final_length or 0,
         "sequence": construct,
         "features": features,
-        "enzyme_sites": find_enzyme_sites(construct) if construct else [],
+        # 有载体构建体时为环状质粒，需扫描跨原点位点；仅优化序列时为线性
+        "enzyme_sites": (
+            find_enzyme_sites(construct, circular=bool(result.construct_sequence))
+            if construct else []
+        ),
     }
