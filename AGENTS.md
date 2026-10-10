@@ -673,7 +673,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 2026-09-05：SnapGene 风格图谱初版 + Sanger 测序全自动分析（core/sanger/ +
   sequencing_routes + SequencingPanel，依赖 biopython，可选 tracy 解卷积；分析记录为进程内存存储）
 - 旧状态：2026-09-04 pytest 126 / vitest 42；冒烟 20 通过；GitHub main 已同步
-- 版本 v2.0.0（tag）；远程 https://github.com/gui123a1/Plasmid-Designer
+- 当前版本 v2.6.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+  （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
+- 测试基线（2026-10-09 合并/同步后）：pytest 625 + 1 skip / vitest 174 / vue-tsc 0
 - 未竟事项：分析页「双酶消化模拟」UI 全流程曾因会话中断未走完最后一步
   （后端 /analysis/digest 已有 4 个单测覆盖，EcoRI 单酶 UI 实测通过）
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
