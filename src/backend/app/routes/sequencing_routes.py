@@ -644,6 +644,13 @@ async def analyze_sequencing_batch(
         excel_bytes = await _read_limited(excel)
         if not excel_bytes:
             raise HTTPException(status_code=400, detail="信息表文件为空")
+        # 信息表同样计入本次请求总字节（此前只累计测序/图谱文件）
+        total_bytes += len(excel_bytes)
+        if total_bytes > MAX_BATCH_REQUEST_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"本次上传总字节超过上限（>{MAX_BATCH_REQUEST_BYTES // (1024 * 1024)}MB），"
+                       "请拆分为多个批次提交")
         if (excel.filename or "").startswith("~$"):
             raise HTTPException(
                 status_code=400,
