@@ -454,8 +454,17 @@ class PrimerDesigner:
                 )
         
         if not best_primer:
-            # 如果没找到完美引物，放宽条件
-            seq = template[start_pos:start_pos + 20]
+            # 如果没找到完美引物，放宽条件（边界钳制在模板内）
+            fb_start = max(0, start_pos)
+            seq = template[fb_start:fb_start + 20]
+            # 普通 PCR 不能给出短于最短长度的"引物"；锚定的克隆引物
+            # 退火区可覆盖整个短插入片段（另有 5' 尾），仅空片段报错
+            if not seq or (not anchor and len(seq) < self.length_min):
+                raise ValueError(
+                    f"模板过短：位置 {start_pos} 起仅剩 {len(seq)}bp，"
+                    f"不足最短引物长度 {self.length_min}bp"
+                )
+            start_pos = fb_start
             best_primer = Primer(
                 name=name,
                 sequence=seq,
@@ -531,7 +540,15 @@ class PrimerDesigner:
                 )
         
         if not best_primer:
-            seq = template[end_pos - 20:end_pos]
+            # 边界钳制：负索引切片会得到错误片段与负的 target_start（R2）
+            fb_end = min(end_pos, len(template))
+            fb_start = max(0, fb_end - 20)
+            seq = template[fb_start:fb_end]
+            if not seq or (not anchor and len(seq) < self.length_min):
+                raise ValueError(
+                    f"模板过短：位置 {end_pos} 前仅有 {len(seq)}bp，"
+                    f"不足最短引物长度 {self.length_min}bp"
+                )
             seq_rc = self._reverse_complement(seq)
             best_primer = Primer(
                 name=name,
@@ -540,8 +557,8 @@ class PrimerDesigner:
                 tm=self._calculate_tm(seq_rc),
                 gc_content=self._calculate_gc(seq_rc),
                 length=len(seq_rc),
-                target_start=end_pos - 20,
-                target_end=end_pos,
+                target_start=fb_start,
+                target_end=fb_end,
                 notes="Warning: May not meet all quality criteria"
             )
         
