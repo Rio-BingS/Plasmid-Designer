@@ -6,12 +6,14 @@ from .models import (
     Base, engine, SessionLocal, get_db, init_db, drop_db,
     UserDB, DesignDB, PrimerDB, DesignWarningDB, DesignErrorDB,
     BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB,
-    SiteSettingsDB, EmailVerificationDB
+    SiteSettingsDB, EmailVerificationDB, RevokedTokenDB
 )
 from .crud import (
     # 用户
     create_user, get_user_by_email, get_user_by_id, get_users,
     update_user, delete_user, count_admins,
+    # 令牌吊销
+    bump_token_version, prune_revoked_tokens, revoke_token, is_token_revoked,
     # 站点设置
     get_site_settings_row, save_site_settings_row,
     # 邮箱验证码
@@ -30,10 +32,11 @@ __all__ = [
     "Base", "engine", "SessionLocal", "get_db", "init_db", "drop_db",
     "UserDB", "DesignDB", "PrimerDB", "DesignWarningDB", "DesignErrorDB",
     "BatchJobDB", "BatchDesignDB", "VectorDB", "VectorFeatureDB",
-    "SiteSettingsDB", "EmailVerificationDB",
+    "SiteSettingsDB", "EmailVerificationDB", "RevokedTokenDB",
     # CRUD
     "create_user", "get_user_by_email", "get_user_by_id", "get_users",
     "update_user", "delete_user", "count_admins",
+    "bump_token_version", "prune_revoked_tokens", "revoke_token", "is_token_revoked",
     "get_site_settings_row", "save_site_settings_row",
     "create_email_verification", "get_latest_email_verification", "consume_email_verification",
     "create_design", "get_design", "get_designs_by_user", "update_design",

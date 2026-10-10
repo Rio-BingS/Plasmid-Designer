@@ -6,6 +6,7 @@
 - 认证依赖函数（基于数据库）
 """
 
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel, EmailStr
@@ -17,7 +18,7 @@ import jwt
 
 from app.config import settings, validate_secret_key
 from app.database import get_db
-from app.database.crud import get_user_by_id, get_user_by_email
+from app.database.crud import get_user_by_id, get_user_by_email, is_token_revoked
 
 # 配置 — 密钥来自环境变量/配置。导入即校验：占位/过短/低熵密钥直接抛错，
 # 不依赖 lifespan，也不因 DEBUG 豁免（签发与验签都用到它，无从绕过）
@@ -82,6 +83,11 @@ class TokenData(BaseModel):
     """令牌数据"""
     user_id: Optional[str] = None
     email: Optional[str] = None
+    # 令牌唯一 ID（登出黑名单键；旧版令牌无此声明）
+    jti: Optional[str] = None
+    # 签发时的用户令牌版本（旧版令牌无此声明，按 0 处理）
+    token_version: int = 0
+    expires_at: Optional[datetime] = None
 
 
 # ==================== 密码工具 ====================
@@ -111,13 +117,19 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # ==================== JWT 工具 ====================
 
-def create_access_token(user: User) -> str:
-    """生成访问令牌"""
+def create_access_token(user: User, token_version: int = 0) -> str:
+    """生成访问令牌。
+
+    jti：每枚令牌唯一，服务端登出按它吊销单个会话；
+    tv：签发时的用户令牌版本，禁用/改密递增后旧令牌整体失效
+    """
     expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": user.id,
         "email": user.email,
         "username": user.username,
+        "jti": uuid.uuid4().hex,
+        "tv": int(token_version or 0),
         "exp": expire,
         "iat": datetime.utcnow()
     }
@@ -131,11 +143,15 @@ def decode_token(token: str) -> Optional[TokenData]:
         if payload.get("purpose"):
             # purpose 令牌（create_verify_token 签发）不能当登录令牌使用
             return None
+        exp = payload.get("exp")
         return TokenData(
             user_id=payload.get("sub"),
-            email=payload.get("email")
+            email=payload.get("email"),
+            jti=payload.get("jti") or None,
+            token_version=int(payload.get("tv") or 0),
+            expires_at=datetime.utcfromtimestamp(exp) if isinstance(exp, (int, float)) else None,
         )
-    except jwt.ExpiredSignatureError:
+    except (jwt.ExpiredSignatureError, TypeError, ValueError):
         return None
     except jwt.InvalidTokenError:
         return None
@@ -245,7 +261,7 @@ def extract_token(request: Request) -> "tuple[Optional[str], Optional[str]]":
 # ==================== 认证依赖 ====================
 
 def _user_from_token(token: str, db: Session) -> User:
-    """校验登录令牌并返回用户：无效/过期/用户不存在 → 401，用户被禁用 → 403"""
+    """校验登录令牌并返回用户：无效/过期/已吊销/用户不存在 → 401，用户被禁用 → 403"""
     token_data = decode_token(token)
     if token_data is None or not token_data.user_id:
         raise HTTPException(
@@ -265,6 +281,14 @@ def _user_from_token(token: str, db: Session) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="用户已被禁用"
+        )
+    # 已登出（jti 黑名单）或签发后用户令牌版本已递增（禁用过/改过密码）
+    if (token_data.token_version != (getattr(db_user, "token_version", 0) or 0)
+            or (token_data.jti and is_token_revoked(db, token_data.jti))):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return db_user_to_user(db_user)
