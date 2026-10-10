@@ -431,3 +431,31 @@ def test_restriction_primers_reject_type_iis():
             PrimerDesigner().design_restriction_primers(seq, enz, "EcoRI", "t")
         with pytest.raises(ValueError, match="Type IIS"):
             PrimerDesigner().design_restriction_primers(seq, "EcoRI", enz, "t")
+
+
+def test_restriction_primers_warn_on_internal_site():
+    """插入片段内部含所选酶位点时必须告警：酶切会切断插入片段"""
+    from core.primer_designer import PrimerDesigner
+
+    seq = "ATGAAACAGCTT" + "GAATTC" + "GGTAAACAGCTTGGTTAA"
+    pair = PrimerDesigner().design_restriction_primers(seq, "EcoRI", "XhoI", "t")
+    assert "警告" in pair.forward.notes and "EcoRI" in pair.forward.notes
+    assert "警告" in pair.reverse.notes
+
+    clean = "ATG" + "AAACAGCTTGGT" * 5 + "TAA"
+    ok = PrimerDesigner().design_restriction_primers(clean, "EcoRI", "XhoI", "t")
+    assert "警告" not in ok.forward.notes
+
+
+def test_run_design_warns_internal_restriction_site():
+    req = DesignRequest(
+        sequence="ATGAAACAGCTTGAATTCGGTAAACAGCTTGGTAAACAGCTTGGTTAA",
+        sequence_type=SequenceType.DNA,
+        optimize_codons=False,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="EcoRI", enzyme_3="XhoI",
+        vector_id="pET-28a",
+    )
+    result = run_design("design_internal_site", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert any("EcoRI" in w and "内部" in w for w in result.warnings)
