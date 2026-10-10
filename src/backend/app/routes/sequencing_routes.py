@@ -95,6 +95,9 @@ MAX_BATCH_REQUEST_BYTES = 500 * 1024 * 1024
 # _BATCHES 整理包缓存的全局上限（此前无条数/总量上限：单批 256MB ×
 # 15 分钟内不限批次 → 内存可被反复打满）
 MAX_BATCH_CACHE_ENTRIES = 8
+# 整理包缓存的总字节上限（此前按「单包上限 × 条数」= 2 GB 计算，形同虚设）
+MAX_BATCH_CACHE_TOTAL_BYTES = int(os.environ.get(
+    "SEQUENCING_BATCH_CACHE_TOTAL_BYTES", str(512 * 1024 * 1024)))
 # 重型比对（单样品分析 / 批量分析）的进程级并发上限：200 kb 参考 × 1 条
 # read 即约 6 s / 650 MB，不限并发时少量请求就能占满线程池与内存。
 # 超出的请求排队，等待超过 HEAVY_QUEUE_TIMEOUT 秒返回 503
@@ -147,7 +150,7 @@ def _sweep_expired() -> None:
         total_zip = sum(len(r.get("zip") or b"") for r in _BATCHES.values())
         by_age = sorted(_BATCHES.items(), key=lambda kv: kv[1]["created_ts"])
         while by_age and (len(_BATCHES) > MAX_BATCH_CACHE_ENTRIES
-                          or total_zip > MAX_BATCH_CACHE_BYTES * MAX_BATCH_CACHE_ENTRIES):
+                          or total_zip > MAX_BATCH_CACHE_TOTAL_BYTES):
             bid, rec = by_age.pop(0)
             total_zip -= len(rec.get("zip") or b"")
             del _BATCHES[bid]
@@ -714,7 +717,7 @@ async def analyze_sequencing_batch(
                       for g in groups
                       for e in ([g["reference"]] if g["reference"] else []) + g["reads"])
     total_bytes += sum(len(u["file"]["bytes"]) for u in raw_unmatched)
-    report_ready = total_bytes <= MAX_BATCH_CACHE_BYTES
+    report_ready = total_bytes <= min(MAX_BATCH_CACHE_BYTES, MAX_BATCH_CACHE_TOTAL_BYTES)
     payload["report_ready"] = report_ready
     if report_ready:
         def _pack() -> None:
@@ -728,7 +731,6 @@ async def analyze_sequencing_batch(
             # 并发淘汰时 KeyError
             zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
                                         excel_original, excel_filled, records_by_id)
-            _sweep_expired()
             with _STORE_LOCK:
                 _BATCHES[payload["batch_id"]] = {
                     "created_ts": time.time(),
@@ -740,6 +742,8 @@ async def analyze_sequencing_batch(
                     "access_token_hash": (sequencing_store.hash_access_token(batch_token)
                                           if batch_token else None),
                 }
+                # 插入后再淘汰：条数与总字节上限任何时刻都不被突破
+                _sweep_expired()
 
         await run_in_threadpool(_pack)
     return payload
