@@ -411,14 +411,17 @@ class PrimerDesigner:
             if anchor:
                 seq_start = start_pos  # 锚定：只枚举长度
             else:
+                # 预扫描只在本长度内选最优偏移，不能抬高全局 best_score，
+                # 否则下方同一序列的复评永远不会胜出，best_primer 恒为 None
                 seq_start = None
+                offset_best = -1
                 for offset in range(0, 5):  # 允许小范围偏移
                     cand_start = start_pos + offset
                     cand_seq = template[cand_start:cand_start + length]
                     if len(cand_seq) == length and self._check_primer_quality(cand_seq):
                         cand_score = self._score_primer(cand_seq)
-                        if cand_score > best_score:
-                            best_score = cand_score
+                        if cand_score > offset_best:
+                            offset_best = cand_score
                             seq_start = cand_start
                 if seq_start is None:
                     continue
@@ -482,7 +485,9 @@ class PrimerDesigner:
             if anchor:
                 seq_end = end_pos  # 锚定：只枚举长度
             else:
+                # 同正向：预扫描用局部变量，不抬高全局 best_score
                 seq_end = None
+                offset_best = -1
                 for offset in range(0, 5):
                     cand_end = end_pos - offset
                     cand_start = cand_end - length
@@ -492,8 +497,8 @@ class PrimerDesigner:
                     cand_rc = self._reverse_complement(cand_seq)
                     if self._check_primer_quality(cand_rc):
                         cand_score = self._score_primer(cand_rc)
-                        if cand_score > best_score:
-                            best_score = cand_score
+                        if cand_score > offset_best:
+                            offset_best = cand_score
                             seq_end = cand_end
                 if seq_end is None:
                     continue
