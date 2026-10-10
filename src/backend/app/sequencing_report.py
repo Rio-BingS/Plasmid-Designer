@@ -32,7 +32,8 @@ from core.sanger.batch import _squash
 # 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
 # 网页、结论文本、整理包报告里说法一致，避免各写各的）
 from core.sanger.pipeline import (END_MARGIN, _peak_verdict_phrase,
-                                  _pos_ranges_str, _run_label)
+                                  _pos_ranges_str, _run_label,
+                                  alignment_span_text)
 
 ZIP_ROOT = "测序整理"
 
@@ -240,12 +241,16 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict]) -> 
         for r in record["reads"]:
             a = r["alignment"]
             s, e = int(a["ref_start"]), int(a["ref_end"])
+            # 环状跨原点 read：展开坐标（e 可 > L）折回到参考坐标再展示，
+            # 跨原点的区段拆成两段（线性即原样「s–e」）
+            def span(x: int, y: int) -> str:
+                return alignment_span_text({**a, "ref_start": x, "ref_end": y})
             if e - s + 1 <= 2 * END_MARGIN:
-                zones = f"{s}–{e}（整段）"
+                zones = f"{span(s, e)}（整段）"
             else:
-                zones = f"{s}–{s + END_MARGIN - 1}、{e - END_MARGIN + 1}–{e}"
+                zones = f"{span(s, s + END_MARGIN - 1)}、{span(e - END_MARGIN + 1, e)}"
             lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
-                         f"| {a['ref_start']}–{a['ref_end']} | {zones} |")
+                         f"| {alignment_span_text(a)} | {zones} |")
         lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
                   "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
                   "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
