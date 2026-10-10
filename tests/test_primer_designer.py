@@ -371,3 +371,14 @@ def test_pcr_primers_not_forced_into_relaxed_fallback():
     # 8a95a3c 基线约 52%；回归时为 100%
     assert fallback < 45
 
+
+def test_reverse_fallback_clamped_on_short_template():
+    """R2 回归：短模板不得负索引切片出过短引物与负 target_start。"""
+    designer = PrimerDesigner()
+    with pytest.raises(ValueError, match="模板过短"):
+        designer.design_pcr_primers("ACGTACGTCCGGAATT")
+
+    # 锚定克隆引物：退火区钳制为整个短插入片段，坐标非负
+    rp = designer._design_reverse_primer("ATGAAAGTGCTG", 12, "r", anchor=True)
+    assert rp.target_start == 0 and rp.target_end == 12
+    assert rp.length == 12
