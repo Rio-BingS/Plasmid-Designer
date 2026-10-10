@@ -501,3 +501,88 @@ describe('useSeqViz composable', () => {
     expect(viz.seqWrapH.value).toBe(124 + 16 + 62 + 14)
   })
 })
+
+describe('useSeqViz 切换分析时的峰图时序', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.unstubAllGlobals()
+  })
+
+  /** 手动控制每次 getReadTrace 的返回时机 */
+  function deferredTraces() {
+    const pending: { aid: string; ri: number; resolve: (t: ReadTrace) => void }[] = []
+    vi.mocked(getReadTrace).mockImplementation((aid: string, ri: number) =>
+      new Promise<ReadTrace>((resolve) => { pending.push({ aid, ri, resolve }) }))
+    return pending
+  }
+  const traceOf = (name: string): ReadTrace => ({ ...mockTrace, filename: name })
+
+  it('切换分析后旧分析迟到的峰图不写入新分析的缓存', async () => {
+    const pending = deferredTraces()
+    const { analysis, viz } = mountViz()
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'A' })
+    const oldLoad = viz.loadSeqTrace(0)
+
+    // 切换到分析 B（与父组件 preset watch 一致：先换 analysis 再复位视图）
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'B' })
+    viz.resetSeqViz()
+    const newLoad = viz.loadSeqTrace(0)
+
+    // 复位清掉了在途标记：B 的 read 0 必须真正发出请求
+    expect(pending.map((p) => p.aid)).toEqual(['A', 'B'])
+
+    pending[0].resolve(traceOf('A.ab1'))
+    expect(await oldLoad).toBeNull()
+    expect(viz.traceCache.value[0]).toBeUndefined()
+
+    pending[1].resolve(traceOf('B.ab1'))
+    expect((await newLoad)?.filename).toBe('B.ab1')
+    expect(viz.traceCache.value[0]?.filename).toBe('B.ab1')
+    expect(viz.seqTraceLoading.value).toBe(false)
+  })
+
+  it('未复位直接换 analysis 时也丢弃旧响应', async () => {
+    const pending = deferredTraces()
+    const { analysis, viz } = mountViz()
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'A' })
+    const oldLoad = viz.loadSeqTrace(0)
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'B' })
+    pending[0].resolve(traceOf('A.ab1'))
+    expect(await oldLoad).toBeNull()
+    expect(viz.traceCache.value[0]).toBeUndefined()
+  })
+
+  it('旧分析迟到的失败不写 errorMsg、不缓存 null', async () => {
+    let reject!: (e: unknown) => void
+    vi.mocked(getReadTrace).mockImplementationOnce(() =>
+      new Promise<ReadTrace>((_r, rj) => { reject = rj }))
+    const { analysis, errorMsg, viz } = mountViz()
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'A' })
+    const oldLoad = viz.loadSeqTrace(0)
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'B' })
+    viz.resetSeqViz()
+    reject({ response: { data: { detail: '旧分析已过期' } } })
+    await oldLoad
+    expect(errorMsg.value).toBe('')
+    expect(viz.traceCache.value[0]).toBeUndefined()
+  })
+
+  it('缓存按分析 ID 区分，同序号 read 不串用', async () => {
+    vi.mocked(getReadTrace).mockImplementation(async (aid: string) => traceOf(`${aid}.ab1`))
+    const { analysis, viz } = mountViz()
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'A' })
+    await viz.loadSeqTrace(0)
+    analysis.value = mkAnalysis([mkRead()], { analysis_id: 'B' })
+    expect(viz.traceCache.value[0]).toBeUndefined()
+    await viz.loadSeqTrace(0)
+    expect(getReadTrace).toHaveBeenLastCalledWith('B', 0)
+    expect(viz.traceCache.value[0]?.filename).toBe('B.ab1')
+  })
+})
