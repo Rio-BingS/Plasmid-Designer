@@ -151,3 +151,53 @@ def test_logout_clears_cookie(client):
 def test_logout_without_session_is_idempotent(client):
     r = client.post("/api/auth/logout", headers={"X-Requested-With": "XMLHttpRequest"})
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------- CSRF
+
+CSRF = {"X-Requested-With": "XMLHttpRequest"}
+WRITE = "/api/analysis/analyze"  # 任意写端点：CSRF 拒绝发生在路由之前
+BODY = {"sequence": "ATGAAACGTTAA"}
+
+
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_cookie_write_without_csrf_header_rejected(client, method):
+    _login(client, _new_user())
+    r = getattr(client, method)(WRITE)
+    assert r.status_code == 403
+    assert "CSRF" in r.json()["detail"]
+
+
+def test_cookie_logout_without_csrf_header_rejected(client):
+    _login(client, _new_user())
+    assert client.post("/api/auth/logout").status_code == 403
+    # 会话未被登出
+    assert client.get("/api/auth/me").status_code == 200
+
+
+def test_cookie_write_with_csrf_header_passes_csrf(client):
+    _login(client, _new_user())
+    assert client.post(WRITE, headers=CSRF, json=BODY).status_code == 200
+
+
+def test_cookie_read_needs_no_csrf_header(client):
+    _login(client, _new_user())
+    assert client.get("/api/auth/me").status_code == 200
+
+
+def test_bearer_write_needs_no_csrf_header(client):
+    token = _login(client, _new_user()).json()["access_token"]
+    # 即便同时带着 Cookie，Bearer 头请求也不做 CSRF 检查
+    r = client.post(WRITE, headers={"Authorization": f"Bearer {token}"}, json=BODY)
+    assert r.status_code == 200
+
+
+def test_anonymous_write_needs_no_csrf_header(client):
+    assert client.post(WRITE, json=BODY).status_code == 200
+
+
+def test_relogin_with_stale_cookie_not_blocked_by_csrf(client):
+    """登录类端点不读现有会话：Cookie 罐残留旧会话也能直接重新登录"""
+    email = _new_user()
+    _login(client, email)
+    _login(client, email)  # 无 X-Requested-With 头
