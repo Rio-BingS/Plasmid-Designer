@@ -284,11 +284,12 @@ class PrimerDesigner:
             notes=f"Golden Gate forward, {enzyme_name}, overhang: {overhang_seq_5}"
         )
 
-        # 反向引物：酶切位点的反向互补 + overhang的反向互补
+        # 反向引物：位点按引物自身 5'->3' 书写（与正向引物同向），
+        # 这样在扩增产物上它落在负链、朝内切割，才能释放 3' 端 overhang；
+        # 写成识别序列的反向互补会让位点朝外，overhang 永远切不下来
         reverse_annealing = self._design_reverse_primer(insert_seq, len(insert_seq), "temp", anchor=True)
-        enzyme_site_rc = self._reverse_complement(enzyme_site)
         overhang_3_rc = self._reverse_complement(overhang_seq_3)
-        reverse_overhang = f"GG{enzyme_site_rc}A{overhang_3_rc}"
+        reverse_overhang = f"GG{enzyme_site}A{overhang_3_rc}"
 
         reverse = Primer(
             name=f"{primer_name}_R",
