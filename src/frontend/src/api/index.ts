@@ -847,6 +847,8 @@ export async function analyzeSequencingBatch(
     for (const it of data.items || []) {
       if (it.analysis_id) rememberAnalysisToken(it.analysis_id, data.access_token)
     }
+    // 匿名批次的整理包同样凭整批令牌下载（以 batch_id 为键存同一张表）
+    if (data.batch_id) rememberAnalysisToken(data.batch_id, data.access_token)
   }
   return data
 }
@@ -856,7 +858,8 @@ export async function analyzeSequencingBatch(
 export async function downloadBatchSequencingReport(batchId: string): Promise<void> {
   const response = await api.get(`/sequencing/batches/${batchId}/report`, {
     responseType: 'blob',
-    timeout: 300000
+    timeout: 300000,
+    headers: analysisTokenHeaders(batchId)
   })
   await saveBlobResponse(response, `测序整理_${batchId.slice(-6)}.zip`)
 }

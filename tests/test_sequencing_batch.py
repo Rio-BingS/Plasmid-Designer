@@ -519,7 +519,7 @@ def test_batch_report_zip_archives_and_backfills_excel(client):
     data = resp.json()
     assert data["report_ready"] is True and data["batch_id"]
 
-    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp))
     assert got.status_code == 200
     assert got.headers["content-type"] == "application/zip"
     zf = _open_zip(got)
@@ -619,8 +619,11 @@ def test_anonymous_batch_report_needs_token(client):
     # 带令牌：详情可读；不带令牌：403（不再是人人可读的公开记录）
     assert client.get(f"/api/sequencing/analyses/{aid}", headers=tok).status_code == 200
     assert client.get(f"/api/sequencing/analyses/{aid}").status_code == 403
-    # 匿名批次的整理包无属主 → 持有令牌者即可下载（令牌即凭证）
-    assert client.get(f"/api/sequencing/batches/{data['batch_id']}/report").status_code == 200
+    # 匿名批次的整理包绑定整批令牌：无令牌/错令牌 404，持有令牌可下载
+    url = f"/api/sequencing/batches/{data['batch_id']}/report"
+    assert client.get(url).status_code == 404
+    assert client.get(url, headers={"X-Access-Token": "wrong"}).status_code == 404
+    assert client.get(url, headers=tok).status_code == 200
 
 
 def test_batch_report_clone_mode_backfills_per_clone(client):
@@ -634,7 +637,7 @@ def test_batch_report_clone_mode_backfills_per_clone(client):
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["clone_mode"] is True
-    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()
     assert "测序整理/MX/正确/S1-T1.ab1" in names
     assert "测序整理/MX/正确/S2-T2.ab1" in names
@@ -741,7 +744,7 @@ def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
     data = resp.json()
     assert data["items"][0]["conclusion"].startswith("合格")
     assert data["items"][1]["conclusion"].startswith("不合格")
-    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()
     assert not any(n.startswith("测序整理/17648/") for n in names)   # 两种写法已并档
     assert "测序整理/17648 MBYSTC/17648.gb" in names                 # 图谱在质粒文件夹根
@@ -761,7 +764,7 @@ def test_batch_report_includes_unmatched_files(client):
         _ab1("孤儿.ab1", REF_MX),
     ], excel_part=_xlsx([("MX", ["T1"])]))
     assert resp.status_code == 200
-    zf = _open_zip(client.get(f"/api/sequencing/batches/{resp.json()['batch_id']}/report"))
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{resp.json()['batch_id']}/report", headers=_tok_header(resp)))
     assert "测序整理/未匹配文件/孤儿.ab1" in zf.namelist()
 
 
@@ -774,7 +777,7 @@ def test_batch_report_skipped_when_over_cache_cap(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["report_ready"] is False
-    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp))
     assert got.status_code == 404
     assert "过期" in got.json()["detail"] or "不存在" in got.json()["detail"]
 
@@ -787,7 +790,7 @@ def test_analyses_and_batch_expire_after_ttl(client):
     data = resp.json()
     aid = data["items"][0]["analysis_id"]
     assert sr._ANALYSES.get(aid) is not None
-    assert client.get(f"/api/sequencing/batches/{data['batch_id']}/report").status_code == 200
+    assert client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)).status_code == 200
 
     for rec in sr._ANALYSES.values():
         rec["_created_ts"] -= sr.ANALYSIS_TTL + 10
@@ -803,7 +806,7 @@ def test_analyses_and_batch_expire_after_ttl(client):
     else:
         assert client.get("/api/sequencing/analyses").json() == []
         assert client.get(f"/api/sequencing/analyses/{aid}", headers=tok).status_code == 404
-    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report")
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp))
     assert got.status_code == 404 and "过期" in got.json()["detail"]
 
     # 清理落库记录，避免影响其他用例的列表断言
@@ -842,7 +845,7 @@ def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
     assert it["conclusion"].startswith("疑似混合：")
     assert "无法自动判定" in it["conclusion"]
 
-    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report"))
+    zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()
     assert "测序整理/MX/无法判定/T1.ab1" in names
     assert not any(n.startswith("测序整理/MX/正确/T1") for n in names)
