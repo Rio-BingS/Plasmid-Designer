@@ -43,9 +43,9 @@ if [ ! -f .env ]; then
     if command -v openssl &> /dev/null; then
         SECRET=$(openssl rand -hex 32)
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s/change_this_in_production_use_strong_random_string/$SECRET/" .env
+            sed -i '' "s/^SECRET_KEY=.*/SECRET_KEY=$SECRET/" .env
         else
-            sed -i "s/change_this_in_production_use_strong_random_string/$SECRET/" .env
+            sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$SECRET/" .env
         fi
         echo "已生成随机 SECRET_KEY"
     else
