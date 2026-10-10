@@ -118,6 +118,9 @@ def _ensure_user(email: str, is_admin: bool = False) -> str:
 def _login_header(client, email: str, password: str = "password123"):
     r = client.post("/api/auth/login", json={"email": email, "password": password})
     assert r.status_code == 200, r.text
+    # 本模块按 Bearer 头鉴权：丢弃登录下发的会话 Cookie，免得共享的
+    # TestClient 之后发出的「匿名」请求被 Cookie 认证成已登录
+    client.cookies.clear()
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 

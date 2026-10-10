@@ -9,7 +9,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel, EmailStr
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -29,8 +29,14 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24
 # 密码加密
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Bearer Token 认证
+# Bearer Token 认证（API / 脚本客户端）；浏览器走 httpOnly Cookie
 security = HTTPBearer(auto_error=False)
+
+# 浏览器会话 Cookie：httpOnly（脚本读不到，XSS 偷不走令牌）、SameSite=Lax、
+# Path=/api（只随 API 请求发送）。有效期与令牌一致
+AUTH_COOKIE_NAME = "pd_session"
+AUTH_COOKIE_PATH = "/api"
+AUTH_COOKIE_MAX_AGE = ACCESS_TOKEN_EXPIRE_HOURS * 3600
 
 
 # ==================== 模型 ====================
@@ -184,22 +190,63 @@ def db_user_to_user(db_user) -> User:
     )
 
 
+# ==================== 会话 Cookie ====================
+
+def _cookie_secure(request: Request) -> bool:
+    """Secure 标记：配置 true/false 优先；auto 按请求实际协议判定"""
+    mode = (settings.AUTH_COOKIE_SECURE or "auto").strip().lower()
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    if mode in ("0", "false", "no", "off"):
+        return False
+    if request.url.scheme == "https":
+        return True
+    # 反向代理终止 TLS：仅当对端是可信代理时才采信 X-Forwarded-Proto
+    from app.rate_limit import _is_trusted_proxy
+
+    peer = request.client.host if request.client else ""
+    proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+    return proto == "https" and _is_trusted_proxy(peer)
+
+
+def set_auth_cookie(response: Response, request: Request, token: str) -> None:
+    """登录/注册/验证成功后下发会话 Cookie"""
+    response.set_cookie(
+        AUTH_COOKIE_NAME, token,
+        max_age=AUTH_COOKIE_MAX_AGE, path=AUTH_COOKIE_PATH,
+        httponly=True, samesite="lax", secure=_cookie_secure(request),
+    )
+
+
+def clear_auth_cookie(response: Response, request: Request) -> None:
+    """删除会话 Cookie（属性须与下发时一致，浏览器才认作同一个）"""
+    response.delete_cookie(
+        AUTH_COOKIE_NAME, path=AUTH_COOKIE_PATH,
+        httponly=True, samesite="lax", secure=_cookie_secure(request),
+    )
+
+
+def extract_token(request: Request) -> "tuple[Optional[str], Optional[str]]":
+    """取请求携带的登录令牌 → (token, 来源)；来源为 "header" / "cookie" / None。
+
+    Authorization: Bearer 优先（API / 脚本客户端），否则读会话 Cookie。
+    """
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token:
+            return token, "header"
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if token:
+        return token, "cookie"
+    return None, None
+
+
 # ==================== 认证依赖 ====================
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
-) -> Optional[User]:
-    """获取当前用户（可选认证）。
-
-    未携带令牌 → 匿名（None）；携带了令牌但无效/过期/用户不存在 → 401，
-    用户被禁用 → 403。此前一律降级为匿名，受限/禁用用户只要弄坏令牌就能
-    按访客权限继续调用，前端也无从得知会话已失效。
-    """
-    if credentials is None:
-        return None
-
-    token_data = decode_token(credentials.credentials)
+def _user_from_token(token: str, db: Session) -> User:
+    """校验登录令牌并返回用户：无效/过期/用户不存在 → 401，用户被禁用 → 403"""
+    token_data = decode_token(token)
     if token_data is None or not token_data.user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -223,54 +270,62 @@ async def get_current_user(
     return db_user_to_user(db_user)
 
 
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """获取当前用户（可选认证）。
+
+    未携带令牌 → 匿名（None）；Bearer 头携带了令牌但无效/过期/用户不存在
+    → 401，用户被禁用 → 403。此前一律降级为匿名，受限/禁用用户只要弄坏
+    令牌就能按访客权限继续调用，前端也无从得知会话已失效。
+
+    会话 Cookie 失效（过期/吊销）在可选认证下按匿名处理：浏览器端的
+    httpOnly Cookie 前端删不掉，若这里 401，残留 Cookie 会让匿名访问
+    处处 401；而丢弃 Cookie 本就等同匿名，不构成绕过。必须登录的端点
+    （get_current_user_required）仍 401，前端据此清理登录态。
+    """
+    token, source = extract_token(request)
+    if token is None:
+        return None
+    if source == "cookie":
+        try:
+            return _user_from_token(token, db)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+                return None
+            raise
+    return _user_from_token(token, db)
+
+
 async def get_current_user_soft(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> Optional[User]:
     """宽松版：任何令牌问题都视为匿名。仅供 /auth/verify、/auth/site-config
     这类「探测会话状态」的公开端点使用，不得用于权限判断。"""
     try:
-        return await get_current_user(credentials, db)
+        return await get_current_user(request, credentials, db)
     except HTTPException:
         return None
 
 
 async def get_current_user_required(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
-    """获取当前用户（必须认证）"""
-    if credentials is None:
+    """获取当前用户（必须认证；Bearer 头或会话 Cookie 均可）"""
+    token, _source = extract_token(request)
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    token = credentials.credentials
-    token_data = decode_token(token)
-
-    if token_data is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌无效或已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    db_user = get_user_by_id(db, token_data.user_id)
-    if db_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在",
-        )
-
-    if not db_user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户已被禁用"
-        )
-
-    return db_user_to_user(db_user)
+    return _user_from_token(token, db)
 
 
 async def get_admin_user(

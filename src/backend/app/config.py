@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # docker compose 下前端 nginx 位于容器网络，需在 compose 中显式配置其网段
     TRUSTED_PROXIES: str = "127.0.0.1,::1"
 
+    # 登录会话 Cookie（httpOnly + SameSite=Lax）的 Secure 标记：
+    # auto  — 请求为 https 时置位（可信代理 TRUSTED_PROXIES 转发的
+    #         X-Forwarded-Proto 同样采信）；
+    # true  — 总是置位（TLS 在更外层代理终止、内层只见 http 时用它）；
+    # false — 从不置位（仅限纯 http 的本地开发）
+    AUTH_COOKIE_SECURE: str = "auto"
+
     # ==================== 管理员引导 ====================
     # 启动时若数据库中不存在该邮箱的用户，则自动创建为管理员（并视为已验证邮箱）；
     # 该邮箱已被非管理员账号注册时不会提升（防抢注接管），仅记录错误日志需人工处理。
