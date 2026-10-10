@@ -280,6 +280,13 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
 PARTIAL_ALIGN_RATIO = 0.8
 
 
+def alignment_span_text(aln: Dict, sep: str = "–") -> str:
+    """read 比对区段的展示文本（报告用）：线性即「s–e」；环状跨原点按折回
+    坐标分两段「s–L、1–e'」"""
+    return "、".join(f"{a}{sep}{b}" for a, b in aln_segments(aln)) or \
+        f"{aln.get('ref_start', 0)}{sep}{aln.get('ref_end', 0)}"
+
+
 def _circ_len(aln: Dict) -> int:
     """环状比对的参考长度（线性比对返回 0：坐标不折回）"""
     return int(aln.get("ref_length") or 0) if aln.get("circular") else 0

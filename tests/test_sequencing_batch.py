@@ -960,6 +960,32 @@ def test_group_report_read_end_margin_zones():
     assert "信号爬升/下降段" in md
 
 
+def test_group_report_circular_read_spans_folded():
+    """整理包报告：环状参考跨原点 read 的比对区段与首尾不可信区按折回坐标
+    分段展示（展开坐标 ref_end > L 不能原样写进报告）"""
+    from app.sequencing_report import _group_report_md
+    record = {
+        "engine": "internal+biopython", "reference": "A" * 1000, "features": [],
+        "reads": [
+            {"filename": "W.ab1", "grade": "A", "mean_q": 40, "trimmed_length": 400,
+             "alignment": {"ref_start": 851, "ref_end": 1250, "direction": "+",
+                           "circular": True, "ref_length": 1000, "wraps_origin": True},
+             "mixed_profile": {"count": 0, "class": "none"}},
+            {"filename": "E.ab1", "grade": "A", "mean_q": 40, "trimmed_length": 100,
+             "alignment": {"ref_start": 990, "ref_end": 1089, "direction": "+",
+                           "circular": True, "ref_length": 1000, "wraps_origin": True},
+             "mixed_profile": {"count": 0, "class": "none"}},
+        ],
+        "errors": [], "consensus": {"coverage_percent": 40.0},
+        "cds_reports": [], "variants": [], "homopolymers": [],
+    }
+    item = {"plasmid": "MX", "clone": None, "conclusion": "合格：与设计一致",
+            "reference_name": "MX.gb"}
+    md = _group_report_md(item, record, [])
+    assert "| 851–1000、1–250 | 851–870、231–250 |" in md
+    assert "| 990–1000、1–89 | 990–1000、1–9、70–89 |" in md
+
+
 def test_match_files_reference_two_segment_names():
     """质粒模式图谱匹配与克隆模式同口径：两段式名称的任一段可命中，
     双向包含需 ≥4 字符，候选不唯一不猜"""

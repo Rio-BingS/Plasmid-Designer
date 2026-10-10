@@ -186,6 +186,9 @@ def aln_segments(aln: Dict) -> List[Tuple[int, int]]:
     L = int(aln.get("ref_length") or 0)
     if e <= 0:
         return []
+    if L and s > L:  # 起点也在展开段（如原点后段的子区间）：整体平移回 1..L
+        k = (s - 1) // L * L
+        s, e = s - k, e - k
     if L and e > L:
         return [(s, L), (1, e - L)]
     return [(s, e)]
