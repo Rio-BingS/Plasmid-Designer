@@ -30,7 +30,7 @@ help:
 # 安装依赖
 install:
 	cd $(BACKEND_DIR) && ../../$(VENV_PY) -m pip install -r requirements.txt
-	cd $(FRONTEND_DIR) && npm install
+	cd $(FRONTEND_DIR) && npm ci
 
 # 开发模式
 dev-backend:
