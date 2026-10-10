@@ -17,7 +17,7 @@ pyyaml==6.0.3
 passlib==1.7.4
 # bcrypt 5.0 与 passlib 1.7.4 不兼容（移除 __about__ 探测、72 字节密码改为抛错）
 bcrypt==4.3.0
-PyJWT==2.13.0
+PyJWT==2.15.1
 email-validator==2.3.0
 
 # 说明：核心设计算法（core/ 设计主线）为纯 Python 标准库实现；
