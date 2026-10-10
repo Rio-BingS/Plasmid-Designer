@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from typing import List, Dict, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import io
 
 from core.sequence_analysis import (
@@ -35,6 +35,10 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 # 类参数设合理下限（窗口 <10bp 无统计意义）。
 MAX_ANALYSIS_SEQ_BP = 200_000
 MIN_WINDOW_SIZE = 10
+# GC 滑窗输出放大：step_size=1 时 200 kb 序列产出 20 万个区间（实测 13 MB
+# 响应）。步长不得小于窗口的 1/10，且区间总数封顶
+MIN_STEP_WINDOW_RATIO = 10
+MAX_GC_REGIONS = 20_000
 
 
 class SequenceAnalysisRequest(BaseModel):
@@ -70,8 +74,21 @@ class DigestRequest(BaseModel):
 class GCAnalysisRequest(BaseModel):
     """GC 含量分析请求"""
     sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
-    window_size: int = Field(default=100, ge=MIN_WINDOW_SIZE, description="滑动窗口大小")
-    step_size: int = Field(default=50, ge=1, description="步长")
+    window_size: int = Field(default=100, ge=MIN_WINDOW_SIZE, le=MAX_ANALYSIS_SEQ_BP,
+                             description="滑动窗口大小")
+    step_size: int = Field(default=50, ge=1, description="步长（≥ 窗口/10）")
+
+    @model_validator(mode="after")
+    def _limit_regions(self):
+        min_step = -(-self.window_size // MIN_STEP_WINDOW_RATIO)
+        if self.step_size < min_step:
+            raise ValueError(
+                f"step_size 不得小于窗口的 1/{MIN_STEP_WINDOW_RATIO}（当前窗口至少 {min_step}）")
+        regions = max(0, len(self.sequence) - self.window_size) // self.step_size + 1
+        if regions > MAX_GC_REGIONS:
+            raise ValueError(
+                f"滑窗区间数 {regions} 超过上限 {MAX_GC_REGIONS}，请增大 step_size")
+        return self
 
 
 class CompatibilityRequest(BaseModel):
