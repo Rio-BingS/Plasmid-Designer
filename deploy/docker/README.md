@@ -111,8 +111,8 @@ cat .env
 ```bash
 # .env 文件内容
 DB_USER=plasmid
-DB_PASSWORD=plasmid_secure_2026    # 生产环境请改为强密码（deploy.sh 自动随机化）
-REDIS_PASSWORD=plasmid_redis_2026  # 同上，deploy.sh 自动随机化
+DB_PASSWORD=<随机生成>              # 必填，留空 compose 拒绝启动（deploy.sh 自动生成）
+REDIS_PASSWORD=<随机生成>           # 同上
 SECRET_KEY=<自动生成的64位hex>      # 不要用默认值（deploy.sh 自动生成）
 DEBUG=false
 LOG_LEVEL=INFO

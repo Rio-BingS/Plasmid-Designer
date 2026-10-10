@@ -53,15 +53,29 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# 生成随机 DB/Redis 密码（.env.example 中的默认值仅用于本地体验）
-if grep -q "^DB_PASSWORD=plasmid_secure_2026$" .env; then
-    sed -i "s/^DB_PASSWORD=plasmid_secure_2026$/DB_PASSWORD=$(openssl rand -hex 12)/" .env
-    echo "已生成随机 DB_PASSWORD"
-fi
-if grep -q "^REDIS_PASSWORD=plasmid_redis_2026$" .env; then
-    sed -i "s/^REDIS_PASSWORD=plasmid_redis_2026$/REDIS_PASSWORD=$(openssl rand -hex 12)/" .env
-    echo "已生成随机 REDIS_PASSWORD"
-fi
+# 生成随机 DB/Redis 密码：.env 中为空或仍是旧版公开占位值时替换
+# （旧版占位值仅在尚未初始化数据卷时替换才安全，已有数据卷请手动 ALTER USER）
+set_random_secret() {
+    local key="$1" placeholder="$2" value
+    if grep -qE "^${key}=(${placeholder})?$" .env; then
+        if ! command -v openssl &> /dev/null; then
+            echo "错误: openssl 不可用，请手动在 .env 中设置 ${key}" >&2
+            exit 1
+        fi
+        value=$(openssl rand -hex 16)
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' -E "s/^${key}=.*/${key}=${value}/" .env
+        else
+            sed -i -E "s/^${key}=.*/${key}=${value}/" .env
+        fi
+        echo "已生成随机 ${key}"
+    elif ! grep -qE "^${key}=.+" .env; then
+        echo "错误: .env 缺少 ${key}，请补上后重试" >&2
+        exit 1
+    fi
+}
+set_random_secret DB_PASSWORD plasmid_secure_2026
+set_random_secret REDIS_PASSWORD plasmid_redis_2026
 
 # 读取端口配置（.env 中可改）
 BACKEND_PORT=$(grep -E "^BACKEND_PORT=" .env | cut -d= -f2 | tr -d '[:space:]')
