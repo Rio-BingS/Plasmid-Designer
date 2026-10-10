@@ -17,7 +17,8 @@ services:
       # Redis 已启用 requirepass，连接串需携带密码（与 redis 服务保持同一默认值）
       - REDIS_URL=redis://:${REDIS_PASSWORD:-plasmid_redis_2026}@redis:6379/0
       - REDIS_ENABLED=${REDIS_ENABLED:-true}
-      - SECRET_KEY=${SECRET_KEY:-change_this_in_production}
+      # 无默认值：未设置时 compose 直接报错，不再回退到公开占位值
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
       - DEBUG=${DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATA_DIR=/app/data
