@@ -34,7 +34,7 @@ install:
 
 # 开发模式
 dev-backend:
-	cd $(BACKEND_DIR) && ../../$(VENV_PY) -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+	cd $(BACKEND_DIR) && ../../$(VENV_PY) -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 dev-frontend:
 	cd $(FRONTEND_DIR) && npm run dev
