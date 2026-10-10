@@ -10,7 +10,7 @@
  */
 import { computed, ref } from 'vue'
 import type { SequencingAnalysis } from '@/api'
-import { shortName } from '@/utils/seqPanelModel'
+import { readSegments, readSpanText, shortName } from '@/utils/seqPanelModel'
 
 type ReadRow = SequencingAnalysis['reads'][number]
 type Feature = SequencingAnalysis['features'][number]
@@ -56,22 +56,27 @@ function darkenColor(hex: string, amount: number): string {
   return `rgb(${r},${g},${b})`
 }
 
-type MapRead = ReadRow & { diffs: number[]; lane: number; nameInside: boolean }
+/** 一段箭头：跨原点 read 折回成两段，head 标记 3' 端所在段（只在该段画箭头头部），
+ *  nameSeg 为印名字的最长段；线性 read 恰一段 */
+interface MapSeg { x1: number; w: number; head: boolean; nameSeg: boolean }
+type MapRead = ReadRow & { diffs: number[]; lane: number; nameInside: boolean; segs: MapSeg[] }
 
-/** 该 read 全部差异（替换/插入/缺失）在参考上的位置 */
+/** 该 read 全部差异（替换/插入/缺失）在参考上的位置（环状跨原点按参考长度折回） */
 function readDiffPositions(r: ReadRow): number[] {
   const av = r.alignment_view
   if (!av) return []
+  const L = props.referenceLength
+  const fold = (p: number) => (r.wraps_origin && L > 0 && p > L ? p - L : p)
   const out = new Set<number>()
   let pos = av.ref_start
   for (let i = 0; i < av.ref_aligned.length; i++) {
     const rb = av.ref_aligned[i]
     const qb = av.read_aligned[i]
     if (rb !== '-') {
-      if (qb === '-' || qb !== rb) out.add(pos)
+      if (qb === '-' || qb !== rb) out.add(fold(pos))
       pos++
     } else if (qb !== '-') {
-      out.add(Math.max(1, pos - 1))  // 插入列：记在左翼参考位置
+      out.add(Math.max(1, fold(pos - 1)))  // 插入列：记在左翼参考位置
     }
   }
   return [...out].sort((x, y) => x - y)
@@ -106,8 +111,38 @@ function arrowHeadW(w: number): number {
   return Math.min(26, Math.max(8, w * 0.2))
 }
 
-function readWidth(r: { ref_start: number; ref_end: number }): number {
-  return Math.max(6, (r.ref_end - r.ref_start + 1) * mapScale.value)
+function segWidth(s: number, e: number): number {
+  return Math.max(6, (e - s + 1) * mapScale.value)
+}
+
+/** read 的箭头段（折回坐标）：正向 read 头部在最后一段右端，反向在第一段左端 */
+function readMapSegs(r: ReadRow): MapSeg[] {
+  const segs = readSegments(r)
+  if (!segs.length) segs.push([r.ref_start, r.ref_end])  // 无对齐：与旧版同样按原坐标画
+  const longest = segs.reduce((m, sg, k) => (sg[1] - sg[0] > segs[m][1] - segs[m][0] ? k : m), 0)
+  return segs.map(([s, e], k) => ({
+    x1: mapX(s), w: segWidth(s, e),
+    head: r.direction === '+' ? k === segs.length - 1 : k === 0,
+    nameSeg: k === longest,
+  }))
+}
+
+/** 首次适配分道（按区段判重叠）：跨原点 read 的两段都要与同道其他 read 不相交；
+ *  线性 read 按起点排序时与 assignLanes 的「起点 > 道尾」判据等价 */
+function assignReadLanes(items: ReadRow[]): number[] {
+  const laneSegs: [number, number][][] = []
+  return items.map((it) => {
+    const segs = readSegments(it)
+    if (!segs.length) segs.push([it.ref_start, it.ref_end])
+    let li = laneSegs.findIndex((occ) =>
+      !occ.some(([s1, e1]) => segs.some(([s2, e2]) => e1 >= s2 && e2 >= s1)))
+    if (li === -1) {
+      laneSegs.push([])
+      li = laneSegs.length - 1
+    }
+    laneSegs[li].push(...segs)
+    return li
+  })
 }
 
 /** 按落位排序的 read 行（附差异位置、堆叠道号；名字放得下画进箭头内） */
@@ -115,12 +150,13 @@ const mapRows = computed<MapRead[]>(() => {
   const sorted = [...props.reads]
     .sort((x, y) => x.ref_start - y.ref_start || x.index - y.index)
     .map((r) => ({ ...r, diffs: readDiffPositions(r) }))
-  const lanes = assignLanes(sorted, (r) => r.ref_start, (r) => r.ref_end)
+  const lanes = assignReadLanes(sorted)
   return sorted.map((r, i) => {
-    const w = readWidth(r)
+    const segs = readMapSegs(r)
+    const ns = segs.find((g) => g.nameSeg)!
     const nameW = shortName(r.filename).length * 7 + 8
-    const nameInside = w - arrowHeadW(w) - 10 >= nameW
-    return { ...r, lane: lanes[i], nameInside }
+    const nameInside = ns.w - (ns.head ? arrowHeadW(ns.w) : 0) - 10 >= nameW
+    return { ...r, lane: lanes[i], nameInside, segs }
   })
 })
 
@@ -249,10 +285,12 @@ const mapLegendTypes = computed(() => {
   return out
 })
 
-/** 块状箭头路径（forward 箭头朝右，否则朝左） */
-function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolean): string {
+/** 块状箭头路径（forward 箭头朝右，否则朝左）；head=false 画无头的矩形段
+ *  （跨原点 read 折回后不含 3' 端的那一段） */
+function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolean,
+  head = true): string {
   const w = Math.max(2, x2 - x1)
-  const aw = arrowHeadW(w)
+  const aw = head ? arrowHeadW(w) : 0
   if (forward) {
     const bx = Math.max(x1, x2 - aw)
     return `M ${x1} ${y} L ${bx} ${y} L ${x2} ${y + h / 2} L ${bx} ${y + h} L ${x1} ${y + h} Z`
@@ -277,14 +315,17 @@ function arrowPath(x1: number, x2: number, y: number, h: number, forward: boolea
             :y1="READS_TOP - 4" :y2="mapHeight - 2" class="map-grid" />
       <!-- read 行：深红块状箭头（方向见箭头），名字放得下画进箭头内，差异位点空心圆 -->
       <g v-for="r in mapRows" :key="r.index" class="map-row" @click="emit('open-read', r.index)">
-        <title>{{ r.filename }}：{{ r.ref_start }}-{{ r.ref_end }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击在比对峰图中查看</title>
+        <title>{{ r.filename }}：{{ readSpanText(r, '-') }}{{ r.wraps_origin ? '，跨越环状参考原点' : '' }}（{{ r.direction === '+' ? '正向' : '反向' }}，一致性 {{ (r.identity * 100).toFixed(1) }}%）——点击在比对峰图中查看</title>
         <text v-if="!r.nameInside" :x="MAP_GUTTER - 8" :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="end" class="map-label">
           {{ r.direction === '+' ? '→' : '←' }} {{ shortName(r.filename) }}
         </text>
-        <path :d="arrowPath(mapX(r.ref_start), mapX(r.ref_start) + readWidth(r), readY(r.lane), READ_H, r.direction === '+')"
+        <path v-for="(g, k) in r.segs" :key="k"
+              :d="arrowPath(g.x1, g.x1 + g.w, readY(r.lane), READ_H, r.direction === '+', g.head)"
               :class="r.direction === '+' ? 'map-arrow-fwd' : 'map-arrow-rev'" />
-        <text v-if="r.nameInside" :x="mapX(r.ref_start) + (readWidth(r) - arrowHeadW(readWidth(r))) / 2"
-              :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="middle" class="map-read-name">{{ shortName(r.filename) }}</text>
+        <template v-for="(g, k) in r.segs" :key="'n' + k">
+          <text v-if="r.nameInside && g.nameSeg" :x="g.x1 + (g.w - (g.head ? arrowHeadW(g.w) : 0)) / 2"
+                :y="readY(r.lane) + READ_H / 2 + 4" text-anchor="middle" class="map-read-name">{{ shortName(r.filename) }}</text>
+        </template>
         <circle v-for="p in r.diffs" :key="p" :cx="mapX(p) + 1" :cy="readY(r.lane) + READ_H / 2" r="4.5" class="map-dot" />
       </g>
       <!-- 刻度轴：灰底 + 绿色已测覆盖段 + 黑轴线 + 刻度数字 -->
