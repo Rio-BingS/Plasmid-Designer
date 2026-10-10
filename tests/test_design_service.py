@@ -174,6 +174,8 @@ def test_legacy_gene_synthesis_method_normalized():
     req = DesignRequest(
         sequence="MKVLWAALLVTFLAGCDDAKRVRELTY",
         cloning_method=CloningMethod.GENE_SYNTHESIS,
+        enzyme_5="EcoRI",
+        enzyme_3="HindIII",
     )
     assert req.insert_source == "gene_synthesis"
     assert req.cloning_method == CloningMethod.RESTRICTION
@@ -384,3 +386,30 @@ def test_map_data_scans_construct_as_circular():
     )
     sites = [s for s in map_data_from_result(res)["enzyme_sites"] if s["name"] == "EcoRI"]
     assert sites and sites[0]["position"] == len(construct) - 2
+
+def test_restriction_request_requires_enzyme():
+    """回归：enzyme 曾默认 BsaI，经典双酶切请求被静默套上 Type IIS 酶。
+    现在缺酶必须校验失败（API 层即 422）"""
+    import pytest
+    from app.routes.models import CloningMethod, DesignRequest, SequenceType
+
+    with pytest.raises(ValueError, match="限制酶"):
+        DesignRequest(
+            sequence="ATG" + "AAACAG" * 10 + "TAA",
+            sequence_type=SequenceType.DNA,
+            cloning_method=CloningMethod.RESTRICTION,
+        )
+    with pytest.raises(ValueError, match="Type IIS 酶"):
+        DesignRequest(
+            sequence="ATG" + "AAACAG" * 10 + "TAA",
+            sequence_type=SequenceType.DNA,
+            cloning_method=CloningMethod.GOLDEN_GATE,
+        )
+    # 显式给酶则通过
+    req = DesignRequest(
+        sequence="ATG" + "AAACAG" * 10 + "TAA",
+        sequence_type=SequenceType.DNA,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="EcoRI", enzyme_3="XhoI",
+    )
+    assert req.enzyme is None
