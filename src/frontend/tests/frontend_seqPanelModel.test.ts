@@ -1,7 +1,9 @@
 /** utils/seqPanelModel 的单元测试：Sanger 融合视图纯函数模型 */
 
 import { describe, expect, it } from 'vitest'
-import { buildSeqCols, packLanes, shortName } from '@/utils/seqPanelModel'
+import {
+  buildSeqCols, packLanes, readOverlaps, readSegments, readSpanText, shortName,
+} from '@/utils/seqPanelModel'
 
 const base = {
   trimmed_length: 6,
@@ -143,5 +145,59 @@ describe('shortName', () => {
     expect(shortName('S99680-M13F-75.ab1')).toHaveLength(18)  // 恰好 18 不截
     expect(shortName('S99680-M13F-75.ab1x')).toBe('S99680-M13F-75.ab…')  // 19 → 截断（17+…）
     expect(shortName('S99680-10855-1seqF1.ab1')).toBe('S99680-10855-1seq…')
+  })
+})
+
+describe('环状参考跨原点 read', () => {
+  // 参考长 20：read 落在 18..23（展开坐标），折回为 18-20 与 1-3
+  const wrapped = {
+    ref_start: 18, ref_end: 23, ref_segments: [[18, 20], [1, 3]] as [number, number][],
+  }
+
+  it('readSegments / readSpanText / readOverlaps 按折回区段', () => {
+    expect(readSegments(wrapped)).toEqual([[18, 20], [1, 3]])
+    expect(readSegments({ ref_start: 5, ref_end: 9 })).toEqual([[5, 9]])
+    expect(readSegments({ ref_start: 0, ref_end: 0 })).toEqual([])
+    expect(readSpanText(wrapped)).toBe('18–20、1–3')
+    expect(readSpanText({ ref_start: 5, ref_end: 9 }, ' - ')).toBe('5 - 9')
+    expect(readOverlaps(wrapped, 2, 2)).toBe(true)
+    expect(readOverlaps(wrapped, 5, 15)).toBe(false)
+  })
+
+  it('buildSeqCols 传参考长度时折回原点后的列，xEnd 不跨折回点', () => {
+    const cols = buildSeqCols({
+      trimmed_length: 6, direction: '+',
+      alignment_view: { ref_start: 18, ref_aligned: 'ACGTAC', read_aligned: 'ACGTAC' },
+    }, 20)!
+    expect(cols.map((c) => c.refPos)).toEqual([18, 19, 20, 1, 2, 3])
+    expect(cols[2].xu).toBe(19.5)
+    expect(cols[2].xEnd).toBe(20.5)   // 折回处按 1bp 宽
+    expect(cols[3].xu).toBe(0.5)
+    // 不传参考长度（线性）维持展开坐标
+    const lin = buildSeqCols({
+      trimmed_length: 6, direction: '+',
+      alignment_view: { ref_start: 18, ref_aligned: 'ACGTAC', read_aligned: 'ACGTAC' },
+    })!
+    expect(lin.map((c) => c.refPos)).toEqual([18, 19, 20, 21, 22, 23])
+  })
+
+  it('原点处插入列落在左翼之后', () => {
+    const cols = buildSeqCols({
+      trimmed_length: 5, direction: '+',
+      alignment_view: { ref_start: 19, ref_aligned: 'AC-GT', read_aligned: 'ACTGT' },
+    }, 20)!
+    expect(cols.map((c) => c.refPos)).toEqual([19, 20, 0, 1, 2])
+    expect(cols[2].ins).toBe(true)
+    expect(cols[2].xu).toBeGreaterThan(cols[1].xu)
+  })
+
+  it('packLanes：跨原点 read 与参考起点处的 read 不同道', () => {
+    const { laneOf } = packLanes([
+      wrapped,
+      { ref_start: 2, ref_end: 8 },
+      { ref_start: 10, ref_end: 15 },
+    ])
+    expect(laneOf[0]).not.toBe(laneOf[1])
+    expect(laneOf[2]).toBe(0)
   })
 })
