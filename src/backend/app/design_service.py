@@ -554,9 +554,16 @@ def run_design(
                 "overhang_3": overhang_3,
             }
         elif request.cloning_method == CloningMethod.RESTRICTION:
+            # 终审 A-09：传入载体元件（elements，1-indexed），切点破坏必需
+            # 元件时出告警；转成 find_enzyme_sites 消费的 {name,type,start,end} 形
             strategy_kwargs = {
                 "enzyme_5": request.enzyme_5 or request.enzyme,
                 "enzyme_3": request.enzyme_3 or request.enzyme,
+                "vector_features": (
+                    [{"name": el.name, "type": el.element_type.value,
+                      "start": el.start, "end": el.end}
+                     for el in vector.elements] if vector else None
+                ),
             }
         elif request.cloning_method == CloningMethod.GENE_SYNTHESIS:
             strategy_kwargs = {
