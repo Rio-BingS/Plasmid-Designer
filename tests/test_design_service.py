@@ -133,9 +133,11 @@ def test_design_restriction_primers_double_digest():
            "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG")
     pair = designer.design_restriction_primers(seq, "BamHI", "EcoRI", "t")
 
-    assert pair.forward.sequence.startswith("GGATCC")          # BamHI 位点在 5' 端
+    spacer = PrimerDesigner.PROTECTIVE_SPACER
+    # 5' 端保护碱基 + BamHI 位点（末端切割效率低，位点前必须留碱基）
+    assert pair.forward.sequence.startswith(spacer + "GGATCC")
     assert pair.forward.sequence.endswith(seq[:20])            # 后接插入片段 5' 退火区
-    assert pair.reverse.sequence.startswith("GAATTC")          # EcoRI 回文，rc 即本身
+    assert pair.reverse.sequence.startswith(spacer + "GAATTC")  # EcoRI 回文，rc 即本身
     assert pair.reverse.sequence.endswith(_rc(seq[-20:]))      # 后接插入片段 3' 端反向互补
     assert pair.product_size == len(seq)
 
@@ -162,8 +164,10 @@ def test_design_primers_gene_synthesis_with_cloning_pair():
     # 87bp、默认长度范围（60/60）→ 2 条错位交替 oligo + 1 对克隆引物
     assert names[:2] == ["syn_S01", "syn_AS02"]
     assert names[-2:] == ["syn_F", "syn_R"]                  # 末端为克隆引物对
-    assert primers[-2].full_sequence.startswith("GGATCC")    # 5' 端 BamHI
-    assert primers[-1].full_sequence.startswith("CTCGAG")    # 3' 端 XhoI（回文）
+    from core.primer_designer import PrimerDesigner as _PD
+    sp = _PD.PROTECTIVE_SPACER
+    assert primers[-2].full_sequence.startswith(sp + "GGATCC")  # 保护碱基 + BamHI
+    assert primers[-1].full_sequence.startswith(sp + "CTCGAG")  # 保护碱基 + XhoI（回文）
     assert len(primers) % 2 == 0                             # 寡核苷酸总数为偶数
 
 
