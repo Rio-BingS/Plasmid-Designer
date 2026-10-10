@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import AuthModal from '@/components/AuthModal.vue'
+import { useAuthStore } from '@/stores/auth'
 import * as api from '@/api'
 
 // Mock API
@@ -153,7 +154,11 @@ describe('AuthModal', () => {
     await flushPromises()
     
     expect(mockLogin).toHaveBeenCalledWith('test@example.com', 'password123')
-    expect(localStorage.getItem('token')).toBe('fake-token')
+    // 令牌只在后端下发的 httpOnly Cookie 里，前端不落本地存储
+    expect(localStorage.getItem('token')).toBeNull()
+    expect(localStorage.getItem('user')).toBeNull()
+    expect(useAuthStore().user?.email).toBe('test@example.com')
+    expect(useAuthStore().isAuthenticated).toBe(true)
   })
 
   it('emits close event when clicking close button', async () => {

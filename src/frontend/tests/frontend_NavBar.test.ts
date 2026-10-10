@@ -5,8 +5,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import NavBar from '@/components/NavBar.vue'
 import * as api from '@/api'
 
-// Mock API —— NavBar 挂载时 authStore.initFromStorage() 会调用 verifyToken，
-// 必须提供有效返回，否则 checkAuth 走 clearAuth 分支清空登录态
+// Mock API —— NavBar 挂载时 authStore.initSession() 调用 verifyToken 按会话
+// Cookie 恢复登录态（前端不再保存令牌），默认返回已登录用户
 vi.mock('@/api', () => ({
   getCurrentUser: vi.fn(),
   login: vi.fn(),
@@ -71,6 +71,7 @@ describe('NavBar', () => {
   })
 
   it('shows login button when user is not logged in', async () => {
+    vi.mocked(api.verifyToken).mockResolvedValueOnce({ valid: false, user: null })
     const wrapper = mount(NavBar, {
       global: {
         plugins: [router],
@@ -80,15 +81,13 @@ describe('NavBar', () => {
       }
     })
     await router.isReady()
-    
+    await flushPromises()
+
     expect(wrapper.find('.login-btn').exists()).toBe(true)
     expect(wrapper.find('.login-btn').text()).toContain('登录')
   })
 
   it('shows user info when logged in', async () => {
-    localStorage.setItem('user', JSON.stringify({ username: 'testuser', email: 'test@example.com' }))
-    localStorage.setItem('token', 'fake-token')
-    
     const wrapper = mount(NavBar, {
       global: {
         plugins: [router],
@@ -98,15 +97,13 @@ describe('NavBar', () => {
       }
     })
     await router.isReady()
-    
+    await flushPromises()
+
     expect(wrapper.find('.user-btn').exists()).toBe(true)
     expect(wrapper.find('.user-name').text()).toBe('testuser')
   })
 
   it('shows user dropdown menu when clicking user button', async () => {
-    localStorage.setItem('user', JSON.stringify({ username: 'testuser', email: 'test@example.com' }))
-    localStorage.setItem('token', 'fake-token')
-    
     const wrapper = mount(NavBar, {
       global: {
         plugins: [router],
@@ -116,15 +113,13 @@ describe('NavBar', () => {
       }
     })
     await router.isReady()
-    
+    await flushPromises()
+
     await wrapper.find('.user-btn').trigger('click')
     expect(wrapper.find('.user-dropdown').isVisible()).toBe(true)
   })
 
-  it('clears localStorage on logout', async () => {
-    localStorage.setItem('user', JSON.stringify({ username: 'testuser' }))
-    localStorage.setItem('token', 'fake-token')
-    
+  it('logs out via server and returns to logged-out state', async () => {
     const wrapper = mount(NavBar, {
       global: {
         plugins: [router],
@@ -134,11 +129,15 @@ describe('NavBar', () => {
       }
     })
     await router.isReady()
-    
+    await flushPromises()
+
     await wrapper.find('.user-btn').trigger('click')
     await wrapper.find('.logout-btn').trigger('click')
-    
-    expect(localStorage.getItem('user')).toBeNull()
+    await flushPromises()
+
+    // 服务端吊销令牌并删除 httpOnly Cookie；前端回到未登录态
+    expect(api.logout).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.login-btn').exists()).toBe(true)
     expect(localStorage.getItem('token')).toBeNull()
   })
 
