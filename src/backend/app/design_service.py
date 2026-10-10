@@ -383,6 +383,10 @@ def design_primers_for_method(
         # restriction：双酶切（5'/3' 端可用不同酶；未提供时回落到单酶 enzyme）
         enzyme_5 = request.enzyme_5 or request.enzyme
         enzyme_3 = request.enzyme_3 or request.enzyme
+        if not enzyme_5 or not enzyme_3:
+            raise ValueError(
+                "限制性克隆需指定限制酶：enzyme_5 与 enzyme_3（或单酶 enzyme）"
+            )
         pair = designer.design_restriction_primers(
             optimized_dna, enzyme_5, enzyme_3, primer_name=name
         )

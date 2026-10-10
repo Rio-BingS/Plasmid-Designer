@@ -60,7 +60,9 @@ class DesignOptions(BaseModel):
     gc_min: float = Field(default=40.0, ge=20, le=50)
     gc_max: float = Field(default=60.0, ge=50, le=80)
     homology_arm: int = Field(default=20, ge=15, le=40, description="Gibson同源臂长度")
-    enzyme: str = Field(default="BsaI", min_length=1, description="克隆酶（Golden Gate Type IIS 酶；restriction 单酶兼容回退）")
+    # 不设默认酶：此前缺省 BsaI，经典双酶切请求会被静默套上一个 Type IIS 酶，
+    # 产出完全错误的引物而无人察觉。按克隆方法在下方校验器中强制要求
+    enzyme: Optional[str] = Field(default=None, min_length=1, description="克隆酶（Golden Gate Type IIS 酶；restriction 单酶兼容回退）")
     # 双酶切：restriction 方法 5'/3' 端分别用不同酶；缺省回落到 enzyme（兼容单酶切）
     enzyme_5: Optional[str] = Field(default=None, description="双酶切 5' 端限制酶")
     enzyme_3: Optional[str] = Field(default=None, description="双酶切 3' 端限制酶")
@@ -93,6 +95,15 @@ class DesignOptions(BaseModel):
         if self.cloning_method == CloningMethod.GENE_SYNTHESIS:
             self.insert_source = "gene_synthesis"
             self.cloning_method = CloningMethod.RESTRICTION
+        # 克隆酶必填（不再默认 BsaI）
+        if self.cloning_method == CloningMethod.GOLDEN_GATE and not self.enzyme:
+            raise ValueError("Golden Gate 需指定 Type IIS 酶（enzyme），如 BsaI/BsmBI/BbsI")
+        if self.cloning_method == CloningMethod.RESTRICTION and not (
+            (self.enzyme_5 and self.enzyme_3) or self.enzyme
+        ):
+            raise ValueError(
+                "限制性克隆需指定限制酶：enzyme_5 与 enzyme_3（或单酶 enzyme）"
+            )
         return self
 
 
