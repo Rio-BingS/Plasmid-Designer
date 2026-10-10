@@ -329,13 +329,26 @@ def _migrate_site_settings_table():
                 "ALTER TABLE site_settings ADD COLUMN feature_migrations VARCHAR(200) "
                 "NOT NULL DEFAULT ''"))
             print("✅ site_settings 表已迁移：新增 feature_migrations 列")
-        # 终审 D-02：功能清单的「已初始化」标记（存量行 FALSE → 首次读取
-        # 补默认并置位；此后管理员的显式空集不会再被默认值覆盖）
+        # 终审 D-02：功能清单的「已初始化」标记。新列加上后存量行必须
+        # 直接置 TRUE：若留 FALSE，首次读取会把管理员已收紧的清单整体覆盖
+        # 为全开放默认值（升级即 fail-open）。旧版逐清单「空即补默认」，
+        # 这里对仍为空的清单按同一语义补一次默认，再置位，行为与升级前一致
         if "features_initialized" not in cols:
+            import json as _json
+
+            from app.features import DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES
+
             conn.execute(text(
                 "ALTER TABLE site_settings ADD COLUMN features_initialized BOOLEAN "
                 "NOT NULL DEFAULT FALSE"))
-            print("✅ site_settings 表已迁移：新增 features_initialized 列")
+            for col, default in (("anonymous_features", DEFAULT_ANONYMOUS_FEATURES),
+                                 ("user_features", DEFAULT_USER_FEATURES)):
+                conn.execute(text(
+                    f"UPDATE site_settings SET {col} = :v "
+                    f"WHERE {col} IS NULL OR TRIM({col}) IN ('', '[]')"),
+                    {"v": _json.dumps(list(default))})
+            conn.execute(text("UPDATE site_settings SET features_initialized = TRUE"))
+            print("✅ site_settings 表已迁移：新增 features_initialized 列（存量行置位）")
 
 
 def _migrate_feature_lists(eng=None):
