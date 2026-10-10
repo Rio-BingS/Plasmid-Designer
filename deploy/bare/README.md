@@ -33,7 +33,7 @@ sudo bash deploy/bare/install.sh --project-dir /home/user/plasmid
 安装脚本会自动完成：
 - 安装系统依赖（gcc、make 等）
 - 安装 Python 3.11（通过 deadsnakes PPA）
-- 安装 Node.js 20（通过 NodeSource）
+- 安装 Node.js 22 LTS（通过 NodeSource）
 - 安装 Nginx
 - 创建 venv 并安装 Python 依赖
 - 构建前端
@@ -64,7 +64,7 @@ sudo apt update
 sudo apt install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils
 ```
 
-### 3. 安装 Node.js 20
+### 3. 安装 Node.js 22 LTS
 
 ```bash
 # 签名 apt 源（不要 curl | sudo bash）；公钥指纹应为
@@ -74,7 +74,7 @@ sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.key
 gpg --show-keys --with-fingerprint /tmp/nodesource.key
 sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
   | sudo tee /etc/apt/sources.list.d/nodesource.list
 sudo apt update
 sudo apt install -y nodejs
