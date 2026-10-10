@@ -264,7 +264,8 @@ if [[ "$DB_MODE" == "postgresql" ]]; then
     echo "  ✓ PostgreSQL 已配置"
     echo "    用户: $PG_USER"
     echo "    数据库: $PG_DB"
-    echo "    密码: $PG_PASSWORD"
+    # 不回显密码：终端回滚/录屏/CI 日志都会留存明文
+    echo "    密码: 已生成，稍后写入 $INSTALL_DIR/.env（权限 600）"
 else
     echo ""
     echo "[5/9] 跳过 PostgreSQL（使用 SQLite）"
@@ -468,8 +469,7 @@ echo ""
 if [[ "$DB_MODE" == "postgresql" ]]; then
     echo "数据库连接信息:"
     echo "  URL:    postgresql://$PG_USER:****@localhost/$PG_DB"
-    echo "  密码:   $PG_PASSWORD"
-    echo "  （密码已保存在 $INSTALL_DIR/.env）"
+    echo "  密码:   见 $INSTALL_DIR/.env 的 DATABASE_URL（仅 root/plasmid 可读）"
     echo ""
 fi
 
