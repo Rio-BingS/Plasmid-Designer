@@ -2,8 +2,9 @@
 速率限制中间件
 防止 API 滥用，支持多种限制策略
 """
-import time
 import ipaddress
+import json
+import time
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Callable
 from fastapi import Request, HTTPException, Depends
@@ -144,7 +145,8 @@ RATE_LIMITS = {
     "design": {"requests": 10, "window": 60},    # 10 设计任务/分钟
     "batch": {"requests": 3, "window": 60},      # 3 批量任务/分钟
     "upload": {"requests": 20, "window": 3600},  # 20 上传/小时
-    "auth": {"requests": 5, "window": 60},       # 5 登录尝试/分钟
+    "auth": {"requests": 5, "window": 60},       # 5 次/分钟（同 IP + 同目标邮箱）
+    "auth_ip": {"requests": 20, "window": 60},   # 20 次/分钟（同 IP 全部认证写操作）
     
     # 用户级别限制（已登录用户更高配额）
     # 生效条件：request.state.user 由 AuthStateMiddleware（app/auth/middleware.py）
@@ -230,14 +232,45 @@ def get_user_id(request: Request) -> Optional[str]:
     return None
 
 
-def get_rate_limit_key(request: Request, endpoint: str) -> str:
-    """生成速率限制键"""
-    user_id = get_user_id(request)
+# 认证类端点不按令牌 sub 计数（登录/注册本就是未登录行为，携带任意令牌
+# 即可换桶），而是按「客户端 IP + 请求体里的目标邮箱」计数
+_AUTH_BUCKETS = ("auth",)
+
+
+def normalize_email(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()[:254]
+
+
+def get_rate_limit_key(request: Request, endpoint: str, identity: Optional[str] = None) -> str:
+    """生成速率限制键。
+
+    - auth 档：`rate:auth:{ip}:{email}`，忽略令牌（identity 为规范化邮箱）
+    - 其余：已登录按用户，匿名按 IP
+    """
     ip = get_client_ip(request)
-    
+    if endpoint in _AUTH_BUCKETS:
+        return f"rate:{endpoint}:{ip}:{identity or '-'}"
+
+    user_id = get_user_id(request)
     if user_id:
         return f"rate:user:{user_id}:{endpoint}"
     return f"rate:ip:{ip}:{endpoint}"
+
+
+async def _auth_identity(request: Request) -> str:
+    """从登录/注册请求体取规范化邮箱；体积过大或非 JSON 时返回空串"""
+    try:
+        if int(request.headers.get("content-length") or 0) > 8192:
+            return ""
+        if "json" not in request.headers.get("content-type", ""):
+            return ""
+        body = await request.body()
+        data = json.loads(body or b"{}")
+    except (ValueError, TypeError):
+        return ""
+    return normalize_email(data.get("email")) if isinstance(data, dict) else ""
 
 
 # ==================== 路由级限流分类（终审 C-04） ====================
@@ -311,39 +344,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # 确定端点类型
         endpoint = self._get_endpoint_type(request)
         limit_config = self.limits.get(endpoint, self.limits["default"])
-        
-        # 检查用户级别限制
-        user_id = get_user_id(request)
-        if user_id:
-            user_endpoint = f"user_{endpoint}"
-            if user_endpoint in self.limits:
-                limit_config = self.limits[user_endpoint]
-        
+
+        identity = None
+        if endpoint in _AUTH_BUCKETS:
+            # 认证写操作：先过同 IP 总量闸，再按 IP+目标邮箱计数；不看令牌
+            ip_cfg = self.limits.get("auth_ip")
+            if ip_cfg:
+                ok, retry = limiter.is_allowed(
+                    f"rate:auth_ip:{get_client_ip(request)}",
+                    ip_cfg["requests"], ip_cfg["window"])
+                if not ok:
+                    return self._too_many("auth_ip", ip_cfg, retry)
+            identity = await _auth_identity(request)
+        else:
+            # 检查用户级别限制
+            user_id = get_user_id(request)
+            if user_id:
+                user_endpoint = f"user_{endpoint}"
+                if user_endpoint in self.limits:
+                    limit_config = self.limits[user_endpoint]
+
         # 生成限制键
-        key = get_rate_limit_key(request, endpoint)
-        
+        key = get_rate_limit_key(request, endpoint, identity)
+
         # 检查限制
         allowed, retry_after = limiter.is_allowed(
             key,
             limit_config["requests"],
             limit_config["window"]
         )
-        
+
         if not allowed:
-            logger.warning(f"Rate limit exceeded: {key}")
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "detail": f"Rate limit exceeded. Retry after {retry_after} seconds.",
-                    "retry_after": retry_after
-                },
-                headers={
-                    "Retry-After": str(retry_after),
-                    "X-RateLimit-Limit": str(limit_config["requests"]),
-                    "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset": str(int(time.time()) + retry_after)
-                }
-            )
+            return self._too_many(key, limit_config, retry_after)
         
         # 添加限制头
         response = await call_next(request)
@@ -360,6 +392,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         return response
     
+    @staticmethod
+    def _too_many(key: str, limit_config: Dict, retry_after: int) -> JSONResponse:
+        logger.warning(f"Rate limit exceeded: {key}")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": f"Rate limit exceeded. Retry after {retry_after} seconds.",
+                "retry_after": retry_after
+            },
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(limit_config["requests"]),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(time.time()) + retry_after)
+            }
+        )
+
     # 终审 C-04：此前按路径子串分类——轮询 GET /api/design/{id} 被 "/design"
     # 命中写档（实测提交后第 10 次轮询即 429），GET /api/auth/verify、/auth/me
     # 也计入 auth 档（第 6 次 429），前端 checkAuth 收到 429 就清会话 →
