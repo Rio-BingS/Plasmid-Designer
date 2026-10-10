@@ -505,6 +505,21 @@ def run_design(
             warning = _golden_gate_site_warning(optimized_dna, request.enzyme)
             if warning:
                 result.warnings.append(warning)
+        elif request.cloning_method == CloningMethod.RESTRICTION:
+            # 插入片段内部含所选酶位点时酶切会切断片段，必须在结果层告警
+            from core.sequence_analysis import RESTRICTION_ENZYMES
+            from core.seq_utils import revcomp as _seq_revcomp
+            for enz in dict.fromkeys(
+                e for e in (request.enzyme_5 or request.enzyme,
+                            request.enzyme_3 or request.enzyme) if e
+            ):
+                site = (RESTRICTION_ENZYMES.get(enz) or (None,))[0]
+                if site and (site in optimized_dna
+                             or _seq_revcomp(site) in optimized_dna):
+                    result.warnings.append(
+                        f"警告：插入序列内部含 {enz} 识别位点 {site}，"
+                        f"酶切会切断插入片段，请改用其他酶或先做定点突变去除"
+                    )
 
         result.final_length = len(assembly.sequence)
         result.construct_sequence = assembly.sequence
