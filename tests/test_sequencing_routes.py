@@ -348,8 +348,8 @@ def test_db_retention_prunes_oldest(client, monkeypatch):
                                "reads": (name, blob, "application/octet-stream")})
         assert r.status_code == 200
         aid = r.json()["analysis_id"]
-        # 本用例只验证「按创建时间淘汰最旧」：清掉 token 让记录成为改造前
-        # 的遗留公开记录，才能通过列表端点观察淘汰结果（匿名记录不进列表）
+        # 本用例只验证「按创建时间淘汰最旧」：清掉 token 模拟改造前的
+        # 遗留记录后落库，淘汰结果直接查库观察（匿名记录不进列表）
         seq_routes._ANALYSES[aid]["access_token"] = None
         store.persist_record(seq_routes._ANALYSES[aid])
         return aid
