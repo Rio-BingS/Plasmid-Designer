@@ -567,12 +567,41 @@ class RestrictionCloningStrategy:
         vector_name: str,
         enzyme_5: str,
         enzyme_3: str,
-        dephosphorylate: bool = True
+        dephosphorylate: bool = True,
+        vector_features: Optional[List[dict]] = None,
     ) -> CloningStrategy:
-        """生成限制性酶切克隆策略"""
+        """生成限制性酶切克隆策略
+
+        终审 A-09：组装点描述此前只有「酶切」没有坐标——补上载体内真实
+        切割位置（find_enzyme_sites 扫描，取每酶第一个切点）；同时检查
+        切点是否落在载体的必需元件（CDS/复制起点/抗性/启动子）内部，
+        落入即告警「该元件会被切断」，此前用户要到图谱里自己找。
+        """
         insert_len = len(insert_seq)
         vector_len = len(vector_seq)
         product_size = vector_len + insert_len
+
+        # 真实切点：扫描载体上这两把酶的位点（各取识别位置最靠前的代表位）
+        cut_points: Dict[str, Optional[dict]] = {enzyme_5: None, enzyme_3: None}
+        try:
+            from core.enzyme_sites import find_enzyme_sites
+            for site in find_enzyme_sites(vector_seq, enzymes=[enzyme_5, enzyme_3]):
+                name = site["name"]
+                if cut_points.get(name) is None:
+                    cut_points[name] = site
+        except Exception:  # noqa: BLE001 扫描失败只降级为「不显示坐标」，不阻断方案
+            pass
+
+        def _cut_desc(enzyme: str) -> str:
+            s = cut_points.get(enzyme)
+            if not s:
+                return ""
+            return f"（载体 {s['cut_fwd']} bp 处切割，识别序列 {s['recognition']} 位于 {s['position']} bp）"
+
+        step_digest_vector_desc_zh = (
+            f"使用{enzyme_5}{_cut_desc(enzyme_5)}和{enzyme_3}{_cut_desc(enzyme_3)}"
+            f"酶切{vector_name}"
+        )
 
         steps = [
             CloningStep(
@@ -612,7 +641,7 @@ class RestrictionCloningStrategy:
                 step_number=3,
                 action="Digest vector",
                 description=f"Digest {vector_name} with {enzyme_5} and {enzyme_3}",
-                description_zh=f"使用{enzyme_5}和{enzyme_3}酶切{vector_name}",
+                description_zh=step_digest_vector_desc_zh,
                 reagents=[enzyme_5, enzyme_3, "Vector plasmid", "CutSmart buffer"],
                 reagents_zh=[enzyme_5, enzyme_3, "载体质粒", "CutSmart缓冲液"],
                 conditions={
@@ -686,6 +715,45 @@ class RestrictionCloningStrategy:
             "检查插入后的阅读框",
             "载体去磷酸化以降低背景"
         ]
+
+        # 终审 A-09：切点落在载体必需元件（CDS/复制起点/抗性/启动子）内部
+        # → 明确告警该元件会被切断（类型关键词匹配 + 区间包含判定）
+        _ESSENTIAL_KEYWORDS = (
+            ("CDS", "CDS 编码区"), ("rep", "复制起点"), ("ori", "复制起点"),
+            ("resistance", "抗性基因"), ("promoter", "启动子"),
+            ("antibiotic", "抗性基因"), (" antibiotic", "抗性基因"),
+        )
+
+        def _broken_features() -> List[str]:
+            if not vector_features:
+                return []
+            broken: List[str] = []
+            for enzyme in (enzyme_5, enzyme_3):
+                s = cut_points.get(enzyme)
+                if not s:
+                    continue
+                cut = s["cut_fwd"]
+                for f in vector_features:
+                    start = int(f.get("start") or 0)
+                    end = int(f.get("end") or 0)
+                    if not (start and end) or end < start:
+                        continue
+                    if start <= cut <= end:
+                        ftype = str(f.get("type") or "")
+                        label = next((zh for kw, zh in _ESSENTIAL_KEYWORDS
+                                      if kw.lower() in ftype.lower() or kw.lower() in str(f.get("name", "")).lower()),
+                                     "注释元件")
+                        broken.append(
+                            f"{enzyme} 切点（{cut} bp）落在{label} "
+                            f"{f.get('name', '')}（{start}-{end} bp）内部——该元件会被切断，"
+                            "请确认是否破坏必需功能或换用其他酶组合")
+                        break
+            return broken
+
+        broken = _broken_features()
+        if broken:
+            warnings_en.extend(f"Cut site disrupts an annotated feature: {b}" for b in broken)
+            warnings_zh.extend(broken)
 
         return CloningStrategy(
             method=CloningMethod.RESTRICTION,
@@ -888,7 +956,8 @@ def generate_cloning_strategy(
             insert_seq, insert_name, vector_seq, vector_name,
             enzyme_5=kwargs.get('enzyme_5', 'EcoRI'),
             enzyme_3=kwargs.get('enzyme_3', 'XhoI'),
-            dephosphorylate=kwargs.get('dephosphorylate', True)
+            dephosphorylate=kwargs.get('dephosphorylate', True),
+            vector_features=kwargs.get('vector_features'),
         )
 
     elif method == CloningMethod.GENE_SYNTHESIS:
