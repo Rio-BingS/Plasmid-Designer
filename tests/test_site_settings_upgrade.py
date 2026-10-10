@@ -60,3 +60,17 @@ def test_upgrade_fills_only_empty_lists_like_old_version(legacy_engine):
     assert set(json.loads(userf)) == {"design", "codon"}
     assert set(DEFAULT_USER_FEATURES)  # 默认清单本身非空（防御性）
 
+
+def test_settings_read_failure_fails_closed(monkeypatch):
+    def _boom(_db):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(site_settings, "get_site_settings_row", _boom)
+    site_settings.invalidate_cache()
+    try:
+        data = site_settings.get_settings(force_refresh=True)
+        assert data["anonymous_features"] == []
+        assert data["user_features"] == []
+        assert data["registration_open"] is False
+    finally:
+        site_settings.invalidate_cache()
