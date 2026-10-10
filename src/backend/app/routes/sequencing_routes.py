@@ -34,10 +34,12 @@ trace 峰图原始数据体积大，只保留最近若干条——更早的分�
 GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 """
 
+import asyncio
 import os
 import re
 import secrets
 import threading
+import weakref
 import time
 import uuid
 import tempfile
@@ -93,6 +95,38 @@ MAX_BATCH_REQUEST_BYTES = 500 * 1024 * 1024
 # _BATCHES 整理包缓存的全局上限（此前无条数/总量上限：单批 256MB ×
 # 15 分钟内不限批次 → 内存可被反复打满）
 MAX_BATCH_CACHE_ENTRIES = 8
+# 重型比对（单样品分析 / 批量分析）的进程级并发上限：200 kb 参考 × 1 条
+# read 即约 6 s / 650 MB，不限并发时少量请求就能占满线程池与内存。
+# 超出的请求排队，等待超过 HEAVY_QUEUE_TIMEOUT 秒返回 503
+MAX_CONCURRENT_ALIGNMENTS = max(1, int(os.environ.get(
+    "SEQUENCING_MAX_CONCURRENT", str(max(2, (os.cpu_count() or 2) // 2)))))
+HEAVY_QUEUE_TIMEOUT = float(os.environ.get("SEQUENCING_QUEUE_TIMEOUT", "30"))
+_HEAVY_SEMAPHORES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _heavy_semaphore() -> asyncio.Semaphore:
+    """当前事件循环的并发闸（按循环区分：测试/多 TestClient 各有自己的循环）"""
+    loop = asyncio.get_running_loop()
+    sem = _HEAVY_SEMAPHORES.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(MAX_CONCURRENT_ALIGNMENTS)
+        _HEAVY_SEMAPHORES[loop] = sem
+    return sem
+
+
+async def _run_heavy(fn, *args, **kwargs):
+    """在并发闸内把重型比对移交线程池；排队超时返回 503"""
+    sem = _heavy_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=HEAVY_QUEUE_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503,
+                            detail="测序分析任务繁忙，请稍后重试",
+                            headers={"Retry-After": "30"})
+    try:
+        return await run_in_threadpool(fn, *args, **kwargs)
+    finally:
+        sem.release()
 
 
 def _sweep_expired() -> None:
@@ -335,7 +369,7 @@ async def _analyze_endpoint(
                    "请截取待验证区段后重新分析（局部比对开销随参考长度线性增长）")
     ab1_blobs = await _read_ab1_files(files)
 
-    result = await run_in_threadpool(
+    result = await _run_heavy(
         _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose
     )
 
@@ -667,7 +701,7 @@ async def analyze_sequencing_batch(
 
     # 匿名批量：整批共用一个访问令牌（终审 B-02），随响应下发一次
     batch_token = secrets.token_urlsafe(16) if user is None else None
-    payload, groups, raw_unmatched, records_by_id = await run_in_threadpool(
+    payload, groups, raw_unmatched, records_by_id = await _run_heavy(
         _run_batch, reads, refs, excel_rows, ignored, min_q,
         owner_id=user.id if user else None, access_token=batch_token)
     if batch_token:
