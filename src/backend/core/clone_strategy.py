@@ -751,16 +751,23 @@ class RestrictionCloningStrategy:
                     for f in vector_features:
                         start = int(f.get("start") or 0)
                         end = int(f.get("end") or 0)
-                        if not (start and end) or end < start:
+                        if not (start and end):
                             continue
-                        if start <= cut <= end:
+                        if end < start:
+                            # 跨越质粒原点的元件（如 ori 140-20）：两段区间之一命中即可
+                            inside = cut >= start or cut <= end
+                            span = f"{start}-{len(vector_seq)}/1-{end} bp，跨原点"
+                        else:
+                            inside = start <= cut <= end
+                            span = f"{start}-{end} bp"
+                        if inside:
                             ftype = str(f.get("type") or "")
                             label = next((zh for kw, zh in _ESSENTIAL_KEYWORDS
                                           if kw.lower() in ftype.lower() or kw.lower() in str(f.get("name", "")).lower()),
                                          "注释元件")
                             broken.append(
                                 f"{enzyme} 切点（{cut} bp）落在{label} "
-                                f"{f.get('name', '')}（{start}-{end} bp）内部——该元件会被切断，"
+                                f"{f.get('name', '')}（{span}）内部——该元件会被切断，"
                                 "请确认是否破坏必需功能或换用其他酶组合")
                             break
             return broken

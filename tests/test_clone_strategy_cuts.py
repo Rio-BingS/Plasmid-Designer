@@ -90,3 +90,20 @@ def test_all_sites_per_enzyme_considered():
     assert "另有 1 个切点" in digest.description_zh and "87" in digest.description_zh
     # 回文位点正反链各命中一次，不得重复告警
     assert len([w for w in s.warnings_zh if "AmpR" in w]) == 1
+
+
+def test_origin_wrapping_feature_is_checked():
+    """回归：start>end 的跨原点元件此前被直接跳过，切断它不会告警"""
+    vector_seq = "A" * 20 + "GAATTC" + "T" * 60 + "C" * 40 + "CTCGAG" + "G" * 20
+    wrapped = [{"name": "ori", "type": "origin", "start": 140, "end": 25}]
+    s = RestrictionCloningStrategy().generate(
+        "ATGAAAGGTTAG", "ins", vector_seq, "testV", "EcoRI", "XhoI",
+        vector_features=wrapped)
+    # EcoRI 切点 21 bp 落在跨原点区间 140-146/1-25 内
+    assert any("ori" in w and "跨原点" in w for w in s.warnings_zh), s.warnings_zh
+    # 区间外的切点不误报
+    outside = [{"name": "ori", "type": "origin", "start": 140, "end": 15}]
+    s2 = RestrictionCloningStrategy().generate(
+        "ATGAAAGGTTAG", "ins", vector_seq, "testV", "EcoRI", "XhoI",
+        vector_features=outside)
+    assert not any("ori" in w and "会被切断" in w for w in s2.warnings_zh)
