@@ -27,9 +27,26 @@ RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 RUN pip install --no-cache-dir --timeout=300 --retries=5 "biopython==1.88"
 
 # Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
-# 下载预编译二进制；失败不阻断构建（管线会自动降级为内置实现）
+# 下载预编译二进制并按固定 sha256 校验，不符或下载失败即中止构建——
+# 未经校验的二进制会以服务身份执行用户上传的 ab1。
+# 校验值取自 GitHub release API 的 asset digest（与本地下载计算结果一致）；
+# 升级 TRACY_VERSION 时须同步更新对应架构的 TRACY_SHA256_*。
 ARG TRACY_VERSION=v0.9.1
-RUN curl -fsSL -o /usr/local/bin/tracy       "https://github.com/gear-genomics/tracy/releases/download/${TRACY_VERSION}/tracy-${TRACY_VERSION}-linux-amd64"       && chmod +x /usr/local/bin/tracy || echo "WARN: tracy download failed, Sanger deconvolution disabled"
+ARG TRACY_SHA256_AMD64=df2dd5016f11aeb16d2df090e06d9fac713d4e74729b44e758165169161bc4d5
+ARG TRACY_SHA256_ARM64=02e091a53093a16fb3a0fdeac75a2ffa99e99a72d89a3c210301074d01c2a60d
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+      amd64) sha="$TRACY_SHA256_AMD64" ;; \
+      arm64) sha="$TRACY_SHA256_ARM64" ;; \
+      *) echo "ERROR: no tracy binary/checksum for arch $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/tracy \
+      "https://github.com/gear-genomics/tracy/releases/download/${TRACY_VERSION}/tracy-${TRACY_VERSION}-linux-${arch}"; \
+    echo "${sha}  /tmp/tracy" | sha256sum -c -; \
+    install -m 0755 /tmp/tracy /usr/local/bin/tracy; \
+    rm -f /tmp/tracy
 
 # Copy application code
 COPY src/backend/ ./backend/
