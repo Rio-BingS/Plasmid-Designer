@@ -169,6 +169,64 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
     }
 
 
+def fold_pos(pos: int, length: int) -> int:
+    """环状参考坐标折回：延长参考上的 1-based 坐标 → 原参考 1..length"""
+    return ((int(pos) - 1) % length) + 1 if length > 0 else int(pos)
+
+
+def aln_segments(aln: Dict) -> List[Tuple[int, int]]:
+    """比对块在参考上的覆盖区段（1-based 闭区间，均落在 1..L 内）
+
+    线性比对即 [(ref_start, ref_end)]；环状比对跨越原点（ref_end > L）时
+    拆成 [(ref_start, L), (1, ref_end - L)] 两段；环状无比对返回 []。
+    线性比对原样返回（与此前直接取 (ref_start, ref_end) 完全一致）。"""
+    s, e = int(aln.get("ref_start") or 0), int(aln.get("ref_end") or 0)
+    if not aln.get("circular"):
+        return [(s, e)]
+    L = int(aln.get("ref_length") or 0)
+    if e <= 0:
+        return []
+    if L and e > L:
+        return [(s, L), (1, e - L)]
+    return [(s, e)]
+
+
+def align_read_circular(read: str, reference: str,
+                        quality: Optional[List[int]] = None) -> Dict:
+    """环状参考比对：对「参考 + 参考[:k]」做局部比对（k = min(read 长, L)），
+    跨越原点的 read 因而能整条比对上，不再被线性局部比对截掉较短一侧。
+
+    坐标约定（下游统一口径）：
+    - 去重：同一 read 在双倍区（参考头 k bp 的两份拷贝）只取一处——对齐
+      块起点落在拷贝段（> L）时整体平移 -L，保证 1 <= ref_start <= L；
+    - ref_start/ref_end 与 aligned.ref_start 保持「起点 <= 终点」的展开坐标，
+      跨原点时 ref_end 介于 L+1..L+k（wraps_origin=True），逐列视图沿展开
+      坐标递增，按 ((p-1) % L) + 1 折回；
+    - variants 的 ref_pos 已折回 1..L；ref_segments 为折回后的覆盖区段
+      （跨原点拆两段），ref_length/circular 标明折回所用长度。
+    """
+    L = len(reference)
+    ext = reference + reference[:min(L, len(read))]
+    aln = align_read(read, ext, quality)
+    aln["circular"] = True
+    aln["ref_length"] = L
+    if aln["ref_end"] <= 0 or L == 0:
+        aln["wraps_origin"] = False
+        aln["ref_segments"] = []
+        return aln
+    if aln["ref_start"] > L:
+        aln["ref_start"] -= L
+        aln["ref_end"] -= L
+        av = aln.get("aligned") or {}
+        if av.get("ref_start"):
+            av["ref_start"] -= L
+    for v in aln["variants"]:
+        v["ref_pos"] = fold_pos(v["ref_pos"], L)
+    aln["wraps_origin"] = aln["ref_end"] > L
+    aln["ref_segments"] = [list(sp) for sp in aln_segments(aln)]
+    return aln
+
+
 def merge_coverage(ranges: List[Tuple[int, int]], length: int) -> List[Tuple[int, int]]:
     """合并多个 read 的覆盖区间（1-based 闭区间），返回合并后区间列表"""
     if not ranges:
