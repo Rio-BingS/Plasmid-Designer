@@ -51,8 +51,8 @@ def test_circular_wrap_cut_position():
 
 
 def test_ambiguous_iupac_site():
-    # XcmI CCANNNNNNNTGG 含 N
-    seq = "CCA" + "A" * 7 + "TGG" + "AAA"  # CCA+7N+TGG（XcmI）
+    # XcmI CCANNNNNNNNNTGG 含 9 个 N（REBASE）
+    seq = "CCA" + "A" * 9 + "TGG" + "AAA"  # CCA+9N+TGG（XcmI）
     sites = [s for s in find_enzyme_sites(seq) if s["name"] == "XcmI"]
     assert sites and sites[0]["position"] == 1, f"XcmI sites: {sites}"
 
@@ -87,3 +87,34 @@ def test_bsahi_recognition_is_grcgyc():
         assert hits[0]["position"] == 5
         assert {x["strand"] for x in hits} == {"+", "-"}   # 双向识别
     assert "BsaHI" not in [x["name"] for x in find_enzyme_sites(seq_old_wrong)]
+
+
+def test_enzyme_table_matches_rebase():
+    """ENZYME_TABLE 全表对照 Biopython Bio.Restriction（REBASE）：识别序列、
+    正/反向链切割偏移（cut = (fst5, size + fst3)）与突出端类型。
+    曾有 7 条（SfoI/XcmI/MluCI/SacII/KasI/AvaI/PacI）写错而无人察觉。"""
+    import pytest
+    Restriction = pytest.importorskip("Bio.Restriction")
+    from core.enzyme_sites import ENZYME_TABLE
+
+    mismatches = []
+    for e in ENZYME_TABLE:
+        b = getattr(Restriction, e["name"], None)
+        assert b is not None, f"{e['name']} 不在 Bio.Restriction 中"
+        bot = b.size + b.fst3
+        ovh = "5prime" if b.is_5overhang() else ("3prime" if b.is_3overhang() else None)
+        got = (e["site"], tuple(e["cut"]), e["overhang"])
+        want = (b.site, (b.fst5, bot), ovh)
+        if got != want:
+            mismatches.append(f"{e['name']}: table={got} rebase={want}")
+    assert not mismatches, "\n".join(mismatches)
+
+
+def test_corrected_entries_cut_coordinates():
+    """抽查修正后的切割坐标：SacII CCGC^GG 留 3' 突出；KasI G^GCGCC"""
+    seq = "AAACCGCGGAAA"
+    s = [x for x in find_enzyme_sites(seq) if x["name"] == "SacII" and x["strand"] == "+"][0]
+    assert s["position"] == 4 and s["cut_fwd"] == 7 and s["overhang"] == "3prime"
+    seq = "AAAGGCGCCAAA"
+    k = [x for x in find_enzyme_sites(seq) if x["name"] == "KasI" and x["strand"] == "+"][0]
+    assert k["cut_fwd"] == 4
