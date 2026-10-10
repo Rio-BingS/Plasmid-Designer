@@ -32,6 +32,9 @@ services:
       # 前端经 nginx 同源反代 /api，默认无需跨域；不再回退到通配 *。
       # 前端另域部署时在 .env 设为实际来源（逗号分隔）
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      # 登录会话 Cookie 的 Secure 标记（auto/true/false，见 .env.example）。
+      # 宿主机 nginx 终止 HTTPS 时容器内只见 http，须设为 true
+      - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-auto}
       # 管理员账号引导（启动时创建管理员，已被普通账号注册则不提升，见 .env.example）
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
