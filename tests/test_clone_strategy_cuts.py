@@ -120,3 +120,23 @@ def test_enzyme_missing_from_enzyme_table_still_gets_coordinates():
     digest = next(st for st in s.steps if st.action == "Digest vector")
     assert "CAGCTG" in digest.description_zh
     assert "33 bp 处切割" in digest.description_zh  # 平末端 CAG^CTG，与 EcoRI 同一坐标口径
+
+
+def test_feature_label_matches_type_not_name_substring():
+    """回归：关键词子串匹配把 "lacI repressor" 标成复制起点（"rep"）"""
+    vector_seq = "A" * 20 + "GAATTC" + "T" * 60 + "C" * 40 + "CTCGAG" + "G" * 20
+    features = [{"name": "lacI repressor", "type": "misc_feature",
+                 "start": 10, "end": 40}]
+    s = RestrictionCloningStrategy().generate(
+        "ATGAAAGGTTAG", "ins", vector_seq, "testV", "EcoRI", "XhoI",
+        vector_features=features)
+    hit = next(w for w in s.warnings_zh if "lacI repressor" in w)
+    assert "复制起点" not in hit
+    assert "注释元件" in hit
+
+    # 真正的复制起点（type=origin）仍要正确标注
+    s2 = RestrictionCloningStrategy().generate(
+        "ATGAAAGGTTAG", "ins", vector_seq, "testV", "EcoRI", "XhoI",
+        vector_features=[{"name": "pUC ori", "type": "origin",
+                          "start": 10, "end": 40}])
+    assert any("复制起点" in w for w in s2.warnings_zh)
