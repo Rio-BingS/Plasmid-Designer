@@ -43,6 +43,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
 
+    # 匿名测序记录的明文访问令牌改存摘要（幂等，失败仅留痕）
+    try:
+        from app.sequencing_store import migrate_plaintext_tokens
+        migrate_plaintext_tokens()
+    except Exception as e:
+        print(f"⚠️ 测序记录令牌迁移失败: {e}")
+
     # 管理员引导：配置了 ADMIN_EMAIL/ADMIN_PASSWORD 时创建或提升管理员
     try:
         from app.auth.bootstrap import bootstrap_admin

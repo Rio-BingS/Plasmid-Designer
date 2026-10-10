@@ -130,10 +130,16 @@ def _can_access(record: Dict, user: Optional[User],
         # 匿名创建的记录：仅当持有创建响应下发的 access_token 才可见。
         # 改造前创建、无 token 的遗留记录不再公开（其 ID 曾可从旧列表接口
         # 批量收集），只有管理员可读/删
+        if user is not None and user.is_admin:
+            return True
+        expected_hash = record.get("access_token_hash")
+        if expected_hash:
+            return _token_hash_matches(access_token, expected_hash)
+        # 兼容：落库迁移前驻留内存/库中的明文令牌
         expected = record.get("access_token")
-        if expected is None:
-            return user is not None and user.is_admin
-        return _token_matches(access_token, expected)
+        if expected:
+            return _token_matches(access_token, expected)
+        return False
     return user is not None and (user.id == owner or user.is_admin)
 
 
@@ -145,6 +151,13 @@ def _token_matches(given: Optional[str], expected: Optional[str]) -> bool:
     return secrets.compare_digest(
         str(given).encode("utf-8", "surrogatepass"),
         str(expected).encode("utf-8", "surrogatepass"))
+
+
+def _token_hash_matches(given: Optional[str], expected_hash: Optional[str]) -> bool:
+    """与存储的 SHA-256 摘要比较（存储侧只留摘要，库/内存泄露不等于令牌泄露）"""
+    if not given or not expected_hash:
+        return False
+    return _token_matches(sequencing_store.hash_access_token(given), expected_hash)
 
 
 def _request_access_token(request: Request) -> Optional[str]:
@@ -275,7 +288,9 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         "created_at": datetime.now().isoformat(),
         "_created_ts": time.time(),
         "owner_id": owner_id,
-        "access_token": access_token,
+        # 只存 SHA-256 摘要：明文令牌仅随创建响应下发一次
+        "access_token_hash": (sequencing_store.hash_access_token(access_token)
+                              if access_token else None),
         **result,
     }
     # trace 峰图数据按 read 序号存放，供 /trace/{read_index} 取用
@@ -681,7 +696,8 @@ async def analyze_sequencing_batch(
                     # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
                     # 匿名批次绑定整批访问令牌
                     "owner_id": user.id if user else None,
-                    "access_token": batch_token,
+                    "access_token_hash": (sequencing_store.hash_access_token(batch_token)
+                                          if batch_token else None),
                 }
 
         await run_in_threadpool(_pack)
@@ -710,8 +726,8 @@ async def download_batch_report(batch_id: str, request: Request,
         allowed = is_admin or (user is not None and user.id == owner)
     else:
         # 匿名批次：整理包同样绑定整批访问令牌（此前知道 batch_id 即可下载）
-        allowed = is_admin or _token_matches(_request_access_token(request),
-                                             rec.get("access_token"))
+        allowed = is_admin or _token_hash_matches(_request_access_token(request),
+                                                  rec.get("access_token_hash"))
     if not allowed:
         raise HTTPException(status_code=404,
                             detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
