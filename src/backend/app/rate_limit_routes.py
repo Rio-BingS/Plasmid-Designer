@@ -57,7 +57,9 @@ async def get_rate_limit_config() -> Dict:
             "batch": "批量任务限制",
             "upload": "文件上传限制",
             "auth": "认证请求限制（同 IP + 同目标邮箱）",
-            "auth_ip": "认证请求限制（同 IP 总量）"
+            "auth_ip": "认证请求限制（同 IP 总量）",
+            "export": "打包/导出下载限制",
+            "ncbi": "NCBI 检索代理限制"
         }
     }
 
