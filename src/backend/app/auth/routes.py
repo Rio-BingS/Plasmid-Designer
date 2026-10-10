@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from .jwt_auth import (
     UserCreate, UserLogin, User, Token,
     verify_password, create_access_token, create_verify_token, decode_verify_token,
-    hash_password, get_current_user, get_current_user_required, db_user_to_user
+    hash_password, get_current_user_soft, get_current_user_required, db_user_to_user
 )
 from app.config import settings
 from app.database import (
@@ -308,7 +308,7 @@ async def resend_verification(payload: ResendVerificationRequest, db: Session = 
 
 
 @router.get("/site-config", response_model=SiteConfigResponse)
-async def site_config(current_user: Optional[User] = Depends(get_current_user),
+async def site_config(current_user: Optional[User] = Depends(get_current_user_soft),
                       db: Session = Depends(get_db)):
     """公开站点配置：注册开关、邮箱验证开关、各级别可用功能（前端渲染依据）"""
     site = _row_to_settings(get_site_settings_row(db))
@@ -358,7 +358,7 @@ async def logout(current_user: User = Depends(get_current_user_required)):
 
 
 @router.get("/verify")
-async def verify_token(current_user: User = Depends(get_current_user)):
+async def verify_token(current_user: Optional[User] = Depends(get_current_user_soft)):
     """
     验证令牌有效性
 
