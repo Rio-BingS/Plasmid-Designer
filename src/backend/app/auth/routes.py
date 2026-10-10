@@ -14,7 +14,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session
 from .jwt_auth import (
     UserCreate, UserLogin, User, Token,
     verify_password, create_access_token, create_verify_token, decode_verify_token,
-    hash_password, get_current_user_soft, get_current_user_required, db_user_to_user
+    hash_password, get_current_user_soft, get_current_user_required, db_user_to_user,
+    set_auth_cookie, clear_auth_cookie,
 )
 from app.config import settings
 from app.database import (
@@ -114,7 +115,8 @@ async def _issue_verification_code(db: Session, user, is_resend: bool) -> bool:
 # ==================== 端点 ====================
 
 @router.post("/register", response_model=RegisterResponse)
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+async def register(user_data: UserCreate, request: Request, response: Response,
+                   db: Session = Depends(get_db)):
     """
     用户注册
 
@@ -164,8 +166,9 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
         except IntegrityError as e:
             raise _duplicate_email_400(e) from e
         user = db_user_to_user(db_user)
-        return RegisterResponse(
-            access_token=create_access_token(user), expires_in=24 * 3600, user=user)
+        token = create_access_token(user)
+        set_auth_cookie(response, request, token)
+        return RegisterResponse(access_token=token, expires_in=24 * 3600, user=user)
 
     # 开启邮箱验证：先建未验证账号，再发码
     try:
@@ -194,12 +197,15 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+async def login(credentials: UserLogin, request: Request, response: Response,
+                db: Session = Depends(get_db)):
     """
     用户登录
 
     - 验证邮箱和密码
     - 开启邮箱验证时，未验证账号返回 verify_token 引导补验证
+    - 成功时令牌写入 httpOnly 会话 Cookie（浏览器）；响应体仍返回
+      access_token，供 API / 脚本客户端以 Authorization: Bearer 使用
     """
     # 查找用户
     user = get_user_by_email(db, credentials.email)
@@ -239,6 +245,7 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
     # 生成令牌
     user_response = db_user_to_user(user)
     access_token = create_access_token(user_response)
+    set_auth_cookie(response, request, access_token)
 
     return Token(
         access_token=access_token,
@@ -249,7 +256,8 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
 
 
 @router.post("/verify-email", response_model=Token)
-async def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+async def verify_email(payload: VerifyEmailRequest, request: Request, response: Response,
+                       db: Session = Depends(get_db)):
     """校验验证码完成注册：成功即视为邮箱已验证并直接登录"""
     user_id = decode_verify_token(payload.verify_token)
     if not user_id:
@@ -262,8 +270,9 @@ async def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db
 
     if user.email_verified:
         user_response = db_user_to_user(user)
-        return Token(access_token=create_access_token(user_response),
-                     expires_in=24 * 3600, user=user_response)
+        token = create_access_token(user_response)
+        set_auth_cookie(response, request, token)
+        return Token(access_token=token, expires_in=24 * 3600, user=user_response)
 
     row = get_latest_email_verification(db, user_id)
     if row is None:
@@ -287,8 +296,9 @@ async def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db
     consume_email_verification(db, row)
     update_user(db, user_id, email_verified=True)
     user_response = db_user_to_user(get_user_by_id(db, user_id))
-    return Token(access_token=create_access_token(user_response),
-                 expires_in=24 * 3600, user=user_response)
+    token = create_access_token(user_response)
+    set_auth_cookie(response, request, token)
+    return Token(access_token=token, expires_in=24 * 3600, user=user_response)
 
 
 @router.post("/resend-verification")
@@ -356,13 +366,14 @@ async def get_me(current_user: User = Depends(get_current_user_required)):
 
 
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user_required)):
+async def logout(request: Request, response: Response):
     """
-    用户登出
+    用户登出：删除会话 Cookie。
 
-    注意：JWT 是无状态的，真正的登出需要服务端维护黑名单
-    这里只返回成功消息，客户端应删除本地令牌
+    幂等：会话已失效时同样成功——httpOnly Cookie 前端删不掉，
+    必须由服务端下发删除，不能因令牌过期而 401 把用户卡在半登录态。
     """
+    clear_auth_cookie(response, request)
     return {"message": "登出成功"}
 
 
