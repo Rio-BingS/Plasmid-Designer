@@ -2343,36 +2343,141 @@ def test_conclusion_summary_headline():
     assert head.startswith("△") and "CSQ蛋白与设计不一致" in head
 
 
-def _wrap_ref_and_read(mutate: bool):
-    rng = random.Random(7)
-    ref = "".join(rng.choice("ACGT") for _ in range(1000))
-    read = list(ref[850:] + ref[:250])  # 跨越环状参考原点的 400bp read
-    i = 950 - 851
-    if mutate:
-        read[i] = "A" if read[i] != "A" else "C"
-    return ref, "".join(read)
+def _circ_case(seed: int = 7, L: int = 1000, left: int = 150, right: int = 250,
+               subs=(950, 100)):
+    """合成环状参考 + 跨原点 read：read = ref[L-left:] + ref[:right]，
+    subs 为参考坐标（1-based）上的单碱基替换（原点两侧各一处）。"""
+    rng = random.Random(seed)
+    ref = "".join(rng.choice("ACGT") for _ in range(L))
+    read = list(ref[L - left:] + ref[:right])
+    alts = {}
+    for p in subs:
+        i = (p - (L - left) - 1) if p > L - left else left + p - 1
+        alt = "A" if ref[p - 1] != "A" else "C"
+        read[i] = alt
+        alts[p] = alt
+    return ref, "".join(read), alts
 
 
-def test_origin_spanning_read_not_reported_as_clean():
-    """回归：跨越质粒原点的 read 被线性比对截断，原点另一侧的真实变异
-    （950 G>A）此前被静默丢弃，结论为干净的「构建与设计一致」。"""
+def _run(read: str, ref: str, **kw):
     logging.disable(logging.WARNING)
     try:
-        ref, read = _wrap_ref_and_read(mutate=True)
-        r = analyze([("wrap.ab1", make_ab1(read, [40] * len(read)))], ref)
+        return analyze([("r.ab1", make_ab1(read, [40] * len(read)))], ref, **kw)
     finally:
         logging.disable(logging.NOTSET)
 
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_circular_origin_spanning_read_folds_positions(reverse):
+    """环状参考：跨原点 read 整条比对，原点两侧各一处替换都按折回坐标报出，
+    覆盖为跨原点拆开的两段且盖满整条 read（此前线性比对静默丢掉较短一侧）"""
+    ref, read, alts = _circ_case()
+    r = _run(revcomp(read) if reverse else read, ref, circular=True)
+    got = sorted((v["ref_pos"], v["type"], v["ref_base"], v["alt_base"])
+                 for v in r["variants"])
+    assert got == [(100, "substitution", ref[99], alts[100]),
+                   (950, "substitution", ref[949], alts[950])]
+    assert all(v["support_reads"] == 1 for v in r["variants"])
+    assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
+    assert r["consensus"]["coverage_percent"] == 40.0
+    assert r["consensus"]["covered_ranges"] == [(1, 250), (851, 1000)]
+    cons = r["consensus"]["sequence"]
+    assert cons[99] == alts[100] and cons[949] == alts[950]
+    assert sorted(d["ref_pos"] for d in r["consensus"]["diffs"]) == [100, 950]
+    aln = r["reads"][0]["alignment"]
+    assert aln["direction"] == ("-" if reverse else "+")
+    assert aln["wraps_origin"] is True
+    assert aln["ref_start"] == 851 and aln["ref_end"] == 1250
+    assert aln["ref_segments"] == [[851, 1000], [1, 250]]
+    assert aln["aligned_read_len"] == 400
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["circular"] is True
     head = r["conclusion"].splitlines()[0]
     assert not head.startswith("✓"), head
+    assert "100" in r["conclusion"] and "950" in r["conclusion"]
+    assert "1-250" in r["conclusion"] and "851-1000" in r["conclusion"]
+
+
+def test_circular_clean_origin_spanning_read_is_consistent():
+    """跨原点 read 与参考一致时：环状参考给出干净的 ✓，不再有截断提示"""
+    ref, read, _ = _circ_case(seed=11, subs=())
+    r = _run(read, ref, circular=True)
+    assert r["variants"] == []
+    assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["conclusion"].startswith("✓")
+
+
+def test_linear_reference_does_not_wrap():
+    """线性参考（默认）：不做环状展开——跨原点 read 只比对较长一侧，
+    较短一侧的差异不报、覆盖不拆段，并保留截断提示与 △ 结论"""
+    ref, read, alts = _circ_case()
+    r = _run(read, ref)
+    aln = r["reads"][0]["alignment"]
+    assert (aln["ref_start"], aln["ref_end"]) == (1, 250)
+    assert "circular" not in aln and "wraps_origin" not in aln
+    assert r["coverage_ranges"] == [(1, 250)]
+    assert [(v["ref_pos"], v["alt_base"]) for v in r["variants"]] == [(100, alts[100])]
     pa = r["reads"][0]["partial_alignment"]
-    assert pa and pa["origin_spanning"] is True
-    assert pa["extra_ranges"] == [(851, 1000)]
-    ev = [(v["ref_pos"], v["ref_base"], v["alt_base"]) for v in pa["extra_variants"]]
-    assert ev == [(950, ref[949], "A" if ref[949] != "A" else "C")]
-    assert "950" in r["conclusion"]
+    assert pa == {"aligned_read_len": 250, "trimmed_length": 400, "circular": False}
+    assert "请按环状参考分析" in r["conclusion"]
+    assert r["circular"] is False
 
 
+def test_read_wholly_inside_unchanged_by_circular_flag():
+    """不跨原点的 read：环状与线性分析结果逐项一致（坐标不平移、不拆段）"""
+    rng = random.Random(3)
+    ref = "".join(rng.choice("ACGT") for _ in range(800))
+    read = list(ref[100:500])
+    read[200] = "A" if read[200] != "A" else "C"   # 参考 301
+    read = "".join(read)
+    lin = _run(read, ref)
+    circ = _run(read, ref, circular=True)
+    for key in ("variants", "coverage_ranges", "coverage_gaps", "consensus",
+                "cds_reports", "homopolymers", "conclusion"):
+        assert lin[key] == circ[key], key
+    la, ca = lin["reads"][0]["alignment"], circ["reads"][0]["alignment"]
+    for key in ("ref_start", "ref_end", "variants", "aligned", "query_start", "query_end"):
+        assert la[key] == ca[key], key
+    assert ca["wraps_origin"] is False and ca["ref_segments"] == [[101, 500]]
+    assert [v["ref_pos"] for v in circ["variants"]] == [301]
+
+
+def test_circular_read_in_doubled_head_reported_once():
+    """read 落在参考头部（延长参考里有两份拷贝）：只按 1..L 坐标报一次"""
+    rng = random.Random(5)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    read = list(ref[0:300])
+    read[150] = "A" if read[150] != "A" else "C"
+    r = _run("".join(read), ref, circular=True)
+    aln = r["reads"][0]["alignment"]
+    assert (aln["ref_start"], aln["ref_end"]) == (1, 300)
+    assert aln["wraps_origin"] is False
+    assert r["coverage_ranges"] == [(1, 300)]
+    assert [v["ref_pos"] for v in r["variants"]] == [151]
+
+
+def test_fold_helpers():
+    from core.sanger.aligner import fold_pos, aln_segments
+    assert [fold_pos(p, 10) for p in (1, 10, 11, 20, 23)] == [1, 10, 1, 10, 3]
+    assert aln_segments({"ref_start": 5, "ref_end": 8}) == [(5, 8)]
+    assert aln_segments({"ref_start": 8, "ref_end": 13, "circular": True,
+                         "ref_length": 10}) == [(8, 10), (1, 3)]
+    assert aln_segments({"ref_start": 0, "ref_end": 0, "circular": True,
+                         "ref_length": 10}) == []
+
+
+def test_partial_alignment_still_flagged_on_circular():
+    """环状参考下仍截断（如载体外序列）：保留截断提示，结论不给 ✓"""
+    rng = random.Random(13)
+    ref = "".join(rng.choice("ACGT") for _ in range(1000))
+    junk = "".join(rng.choice("ACGT") for _ in range(200))
+    read = ref[300:500] + junk
+    r = _run(read, ref, circular=True)
+    pa = r["reads"][0]["partial_alignment"]
+    assert pa and pa["circular"] is True and pa["aligned_read_len"] < 0.8 * len(read)
+    assert not r["conclusion"].startswith("✓")
+    assert "请按环状参考分析" not in r["conclusion"]
 def test_fully_aligned_read_has_no_partial_flag():
     rng = random.Random(3)
     ref = "".join(rng.choice("ACGT") for _ in range(800))
