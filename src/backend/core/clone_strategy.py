@@ -557,6 +557,32 @@ class GoldenGateStrategy:
 
 
 
+# 载体元件类型 → 中文标签。按 ElementType 的取值精确匹配：此前用子串
+# 关键词匹配（"rep" 命中 "lacI repressor"），会把阻遏蛋白标成复制起点
+_ELEMENT_TYPE_LABELS = {
+    "cds": "CDS 编码区",
+    "gene": "基因",
+    "origin": "复制起点",
+    "rep_origin": "复制起点",
+    "resistance": "抗性基因",
+    "promoter": "启动子",
+    "terminator": "终止子",
+    "tag": "标签",
+    "enhancer": "增强子",
+    "regulatory": "调控区",
+    "multiple_cloning_site": "多克隆位点",
+    "signalling_peptide": "信号肽",
+}
+
+
+def _feature_label(feature: dict) -> str:
+    """元件中文标签：按 type 精确匹配，未知类型一律「注释元件」。
+    绝不按名称子串猜测——名称是自由文本（"lacI repressor" 不是复制起点）。
+    """
+    ftype = str(feature.get("type") or "").strip().lower()
+    return _ELEMENT_TYPE_LABELS.get(ftype, "注释元件")
+
+
 def _scan_enzyme_sites(vector_seq: str, enzyme: str) -> List[dict]:
     """扫描载体（按环状质粒）上某把酶的全部位点，返回按切点排序的列表。
 
@@ -777,12 +803,7 @@ class RestrictionCloningStrategy:
         ]
 
         # 终审 A-09：切点落在载体必需元件（CDS/复制起点/抗性/启动子）内部
-        # → 明确告警该元件会被切断（类型关键词匹配 + 区间包含判定）
-        _ESSENTIAL_KEYWORDS = (
-            ("CDS", "CDS 编码区"), ("rep", "复制起点"), ("ori", "复制起点"),
-            ("resistance", "抗性基因"), ("promoter", "启动子"),
-            ("antibiotic", "抗性基因"), (" antibiotic", "抗性基因"),
-        )
+        # → 明确告警该元件会被切断（元件类型精确匹配 + 区间包含判定）
 
         def _broken_features() -> List[str]:
             if not vector_features:
@@ -804,12 +825,8 @@ class RestrictionCloningStrategy:
                             inside = start <= cut <= end
                             span = f"{start}-{end} bp"
                         if inside:
-                            ftype = str(f.get("type") or "")
-                            label = next((zh for kw, zh in _ESSENTIAL_KEYWORDS
-                                          if kw.lower() in ftype.lower() or kw.lower() in str(f.get("name", "")).lower()),
-                                         "注释元件")
                             broken.append(
-                                f"{enzyme} 切点（{cut} bp）落在{label} "
+                                f"{enzyme} 切点（{cut} bp）落在{_feature_label(f)} "
                                 f"{f.get('name', '')}（{span}）内部——该元件会被切断，"
                                 "请确认是否破坏必需功能或换用其他酶组合")
                             break
