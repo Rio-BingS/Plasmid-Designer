@@ -241,9 +241,20 @@ def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
 
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
-                        has_mixed: bool) -> str:
+                        has_mixed: bool, partial_reads: int = 0,
+                        partial_variants: int = 0) -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
-    优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致"""
+    优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致。
+    partial_reads>0（有 read 大段未比对，如跨越环状质粒原点）时不得给出
+    干净的 ✓——未比对部分根本没有验证。"""
+    if partial_reads and not has_mixed:
+        confirmed0 = [v for v in variants if v.get("confidence") != "low"]
+        bad0 = [c for c in cds_reports if c.get("protein_identical") is False]
+        if not confirmed0 and not bad0:
+            tail = (f"，其中跨原点段检出 {partial_variants} 处差异待核对"
+                    if partial_variants else "，该部分未验证")
+            return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
+                    f"有大段未比对上参考（可能跨越环状质粒原点）{tail}")
     confirmed = [v for v in variants if v.get("confidence") != "low"]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
@@ -263,6 +274,73 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         return (f"✓ 结论：构建与设计一致"
                 f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）")
     return "✓ 结论：构建与设计一致，未检出差异"
+
+
+# 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
+PARTIAL_ALIGN_RATIO = 0.8
+
+
+def _check_partial_alignment(trimmed: str, trimmed_q: List[int], ref: str,
+                             aln: Dict) -> Optional[Dict]:
+    """read 大段未比对时给出说明；若是跨越环状参考原点，给出折回坐标。
+
+    主流程按线性参考比对：一条跨越质粒原点的 read 只有较长的一侧能比对
+    上，另一侧被局部比对静默丢弃，其中的真实变异不会报告。这里对部分
+    比对的 read 再比对一次「参考+参考」（双倍长度），若对齐块跨越接点
+    且覆盖明显更多，即判定为跨原点 read，并把双倍参考上的变异按
+    ((p-1) % L) + 1 折回；只保留主比对未覆盖区段的变异（这部分没有
+    经过峰图级复核，单列为待核对）。
+    """
+    n = len(trimmed)
+    aligned = int(aln.get("aligned_read_len") or 0)
+    if n == 0 or aligned >= PARTIAL_ALIGN_RATIO * n:
+        return None
+    L = len(ref)
+    info: Dict = {
+        "aligned_read_len": aligned,
+        "trimmed_length": n,
+        "origin_spanning": False,
+        "extra_ranges": [],
+        "extra_variants": [],
+    }
+    dbl = align_read(trimmed, ref + ref, trimmed_q)
+    d_len = int(dbl.get("aligned_read_len") or 0)
+    rs, re_ = dbl.get("ref_start", 0), dbl.get("ref_end", 0)
+    if d_len > aligned and rs <= L < re_:
+        info["origin_spanning"] = True
+        fold = lambda p: ((p - 1) % L) + 1  # noqa: E731
+        spans = [(fold(rs), L), (1, fold(re_))]
+        p0, p1 = aln.get("ref_start", 0), aln.get("ref_end", 0)
+        # 主比对已覆盖的那一侧不再重复列出
+        info["extra_ranges"] = [sp for sp in spans if not (sp[0] >= p0 and sp[1] <= p1)]
+        for v in dbl.get("variants", []):
+            fp = fold(v["ref_pos"])
+            if p0 <= fp <= p1:
+                continue
+            rp = v.get("read_pos") or 1
+            qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
+            info["extra_variants"].append({
+                **v, "ref_pos": fp, "quality": trimmed_q[qi] if trimmed_q else 0,
+            })
+    return info
+
+
+def _partial_alignment_note(filename: str, info: Dict) -> str:
+    head = (f"注意：{filename} 修剪后 {info['trimmed_length']}bp，仅 "
+            f"{info['aligned_read_len']}bp 比对上参考")
+    if not info["origin_spanning"]:
+        return head + "——其余部分未验证（可能是载体外序列、污染或参考有误），建议核对"
+    rng = "、".join(f"{a}-{b}" for a, b in info["extra_ranges"])
+    txt = head + f"；该 read 跨越环状参考原点，原点另一侧（参考 {rng}）未纳入主判读"
+    ev = info["extra_variants"]
+    if ev:
+        preview = "、".join(
+            f"{v['ref_pos']} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
+            for v in ev[:4]) + ("等" if len(ev) > 4 else "")
+        txt += f"，该段检出 {len(ev)} 处差异（{preview}，未经峰图复核，请核对）"
+    else:
+        txt += "，该段按序列比对未见差异（未经峰图复核）"
+    return txt
 
 
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
@@ -1762,7 +1840,9 @@ def analyze(
     """全自动分析入口
 
     ab1_files: [(filename, bytes), ...]
-    reference: 参考载体序列（环形质粒按线性处理，1-based 坐标）
+    reference: 参考载体序列（按线性比对，1-based 坐标；跨越环状质粒原点的
+    read 经双倍参考复核后单列于 partial_alignment 并写入结论，不会再
+    报出干净的“一致”）
     signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
     显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
     poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
@@ -1809,6 +1889,7 @@ def analyze(
         grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
 
         aln = align_read(trimmed, ref, trimmed_q)
+        partial = _check_partial_alignment(trimmed, trimmed_q, ref, aln)
 
         # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
         # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
@@ -1864,6 +1945,7 @@ def analyze(
             "raw_bases": bases,
             "trim_start": s,
             "cross_variants": cross_variants if used_tracy else None,
+            "partial_alignment": partial,
         })
 
     # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
@@ -2697,9 +2779,18 @@ def analyze(
     # 结论头部一句话总结：详细段落（差异明细/CDS 结论/注意事项）信息密度高，
     # ✓/✗/△ 先给判读结果，空两行后再展开——回答“到底行不行”只用一眼
     # （scattered 双峰只提示不升级，不算混合）
+    partial_reads = [r for r in read_results if r.get("partial_alignment")]
+    if partial_reads:
+        conclusion = "\n".join(
+            [conclusion] + [_partial_alignment_note(r["filename"], r["partial_alignment"])
+                            for r in partial_reads])
     if read_results:
         has_mixed = any("疑似混合样品" in x for x in mixed_lines)
-        conclusion = (_conclusion_summary(variants, cds_reports, has_mixed)
+        conclusion = (_conclusion_summary(variants, cds_reports, has_mixed,
+                                          partial_reads=len(partial_reads),
+                                          partial_variants=sum(
+                                              len(r["partial_alignment"]["extra_variants"])
+                                              for r in partial_reads))
                       + "\n\n\n" + conclusion)
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积

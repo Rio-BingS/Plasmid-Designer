@@ -2341,3 +2341,46 @@ def test_conclusion_summary_headline():
     assert head.startswith("△") and "重新挑单克隆" in head
     head = _conclusion_summary(conf, cds_bad, has_mixed=True)
     assert head.startswith("△") and "CSQ蛋白与设计不一致" in head
+
+
+def _wrap_ref_and_read(mutate: bool):
+    rng = random.Random(7)
+    ref = "".join(rng.choice("ACGT") for _ in range(1000))
+    read = list(ref[850:] + ref[:250])  # 跨越环状参考原点的 400bp read
+    i = 950 - 851
+    if mutate:
+        read[i] = "A" if read[i] != "A" else "C"
+    return ref, "".join(read)
+
+
+def test_origin_spanning_read_not_reported_as_clean():
+    """回归：跨越质粒原点的 read 被线性比对截断，原点另一侧的真实变异
+    （950 G>A）此前被静默丢弃，结论为干净的「构建与设计一致」。"""
+    logging.disable(logging.WARNING)
+    try:
+        ref, read = _wrap_ref_and_read(mutate=True)
+        r = analyze([("wrap.ab1", make_ab1(read, [40] * len(read)))], ref)
+    finally:
+        logging.disable(logging.NOTSET)
+
+    head = r["conclusion"].splitlines()[0]
+    assert not head.startswith("✓"), head
+    pa = r["reads"][0]["partial_alignment"]
+    assert pa and pa["origin_spanning"] is True
+    assert pa["extra_ranges"] == [(851, 1000)]
+    ev = [(v["ref_pos"], v["ref_base"], v["alt_base"]) for v in pa["extra_variants"]]
+    assert ev == [(950, ref[949], "A" if ref[949] != "A" else "C")]
+    assert "950" in r["conclusion"]
+
+
+def test_fully_aligned_read_has_no_partial_flag():
+    rng = random.Random(3)
+    ref = "".join(rng.choice("ACGT") for _ in range(800))
+    read = ref[100:500]
+    logging.disable(logging.WARNING)
+    try:
+        r = analyze([("ok.ab1", make_ab1(read, [40] * len(read)))], ref)
+    finally:
+        logging.disable(logging.NOTSET)
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["conclusion"].startswith("✓")
