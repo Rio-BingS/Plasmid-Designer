@@ -374,6 +374,17 @@ class PrimerDesigner:
 
         pad = self.PROTECTIVE_SPACER if spacer is None else spacer
 
+        # 插入片段内部含所选酶的识别位点时，切下来的会是片段而非完整插入
+        internal = [
+            enz for enz, site in ((enzyme_5, site5), (enzyme_3, site3))
+            if site in seq or self._reverse_complement(site) in seq
+        ]
+        warn = ""
+        if internal:
+            warn = ("；警告：插入片段内部含 "
+                    + "、".join(sorted(set(internal)))
+                    + " 识别位点，酶切会切断插入片段，请换酶")
+
         fwd_anneal = seq[:anneal]
         rev_anneal = self._reverse_complement(seq[-anneal:])
         forward_seq = pad + site5 + fwd_anneal
@@ -393,7 +404,7 @@ class PrimerDesigner:
             target_end=anneal,
             notes=f"Restriction cloning (double digest): {enzyme_5} site at 5' "
                   f"with {len(pad)}nt protective spacer, "
-                  f"annealing {anneal}bp, Tm on annealing region"
+                  f"annealing {anneal}bp, Tm on annealing region{warn}"
         )
         reverse = Primer(
             name=f"{primer_name}_R",
@@ -406,7 +417,7 @@ class PrimerDesigner:
             target_end=len(seq),
             notes=f"Restriction cloning (double digest): {enzyme_3} site (rc) at 5' "
                   f"with {len(pad)}nt protective spacer, "
-                  f"annealing {anneal}bp, Tm on annealing region"
+                  f"annealing {anneal}bp, Tm on annealing region{warn}"
         )
 
         return PrimerPair(
