@@ -112,7 +112,7 @@ Docker Compose 默认使用数据库模式，包含：
 # docker-compose/.env
 DB_USER=plasmid
 DB_PASSWORD=your_secure_password
-SECRET_KEY=your_jwt_secret_key
+SECRET_KEY=<openssl rand -hex 32 生成；必填，占位/过短/低熵值会拒绝启动>
 REDIS_ENABLED=true
 STORAGE_MODE=database
 ```
@@ -322,7 +322,7 @@ npm run test:run
 | 密码子优化 v2 与合成 oligo 设计 | ✅ 已实现 | 5' translational ramp、发夹削弱、隐蔽 motif 审查、变窗精修（GeneOptimizer 式）、Tm 均一化分片、错位交替 oligo、综合评分；插入片段来源与克隆方法正交，限制性克隆支持双酶切。算法路线图（含暂缓项）见 docs/ALGORITHM_ROADMAP.md |
 | 序列分析 API（restriction-sites/orfs/gc-analysis/compatibility） | ✅ 已修复 | 统一为 JSON body 参数 |
 | 数据库持久化（STORAGE_MODE=database） | ✅ 已修复 | id 错位与字段回填问题已解决 |
-| JWT SECRET_KEY | ✅ 已修复 | 从环境变量读取，未设置时使用开发默认值并告警 |
+| JWT SECRET_KEY | ✅ 已修复 | 必须通过环境变量/.env 设置；未设置、占位、过短或低熵一律拒绝启动（含 DEBUG 与本地开发） |
 | 请求追踪/慢请求日志中间件 | ✅ 已接线 | main.py 调用 setup_middleware |
 | 缓存子系统（app/cache.py + cache_routes） | ✅ 已接线 | 设计结果（24h）/ 密码子优化（24h）/ 载体列表与详情（7天）/ 密码子表与酶表（7天）已接入读写，写操作统一失效；批量进度与 analysis POST 不缓存（状态频繁变化 / 键空间不可控），详见 docs/CACHE.md |
 | 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer Token 写入 request.state.user，匿名请求仍按 IP 限流 |
