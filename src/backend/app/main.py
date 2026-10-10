@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 测序记录令牌迁移失败: {e}")
 
-    # 管理员引导：配置了 ADMIN_EMAIL/ADMIN_PASSWORD 时创建或提升管理员
+    # 管理员引导：配置了 ADMIN_EMAIL/ADMIN_PASSWORD 且该邮箱未注册时创建管理员
     try:
         from app.auth.bootstrap import bootstrap_admin
         action = bootstrap_admin()
