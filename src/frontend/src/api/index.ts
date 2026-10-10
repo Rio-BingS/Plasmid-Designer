@@ -100,17 +100,17 @@ export async function submitDesign(request: DesignRequest): Promise<{ design_id:
 }
 
 export async function getDesign(designId: string): Promise<DesignResult> {
-  const response = await api.get(`/design/${designId}`)
+  const response = await api.get(`/design/${encodeURIComponent(designId)}`)
   return response.data
 }
 
 export async function downloadGenbank(designId: string): Promise<void> {
-  const response = await api.get(`/design/${designId}/download/genbank`, { responseType: 'blob' })
+  const response = await api.get(`/design/${encodeURIComponent(designId)}/download/genbank`, { responseType: 'blob' })
   await saveBlobResponse(response, `${designId}.gb`)
 }
 
 export async function downloadPrimers(designId: string): Promise<void> {
-  const response = await api.get(`/design/${designId}/download/primers`, { responseType: 'blob' })
+  const response = await api.get(`/design/${encodeURIComponent(designId)}/download/primers`, { responseType: 'blob' })
   await saveBlobResponse(response, `${designId}_primers.tsv`)
 }
 
@@ -127,7 +127,7 @@ export async function getVectors(
 }
 
 export async function getVector(vectorId: string): Promise<VectorInfo> {
-  const response = await api.get(`/vectors/${vectorId}`)
+  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}`)
   return response.data
 }
 
@@ -139,13 +139,13 @@ export async function getCodonTables(): Promise<CodonTable[]> {
 
 // 载体图谱
 export async function getVectorMapData(vectorId: string): Promise<any> {
-  const response = await api.get(`/vectors/${vectorId}/map`)
+  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}/map`)
   return response.data
 }
 
 // 设计图谱
 export async function getDesignMapData(designId: string): Promise<any> {
-  const response = await api.get(`/design/${designId}/map`)
+  const response = await api.get(`/design/${encodeURIComponent(designId)}/map`)
   return response.data
 }
 
@@ -169,13 +169,13 @@ export async function importFromNcbiId(seqId: string): Promise<any> {
 
 // NCBI 预览
 export async function previewNcbi(seqId: string): Promise<any> {
-  const response = await api.get(`/vectors/preview/ncbi/${seqId}`)
+  const response = await api.get(`/vectors/preview/ncbi/${encodeURIComponent(seqId)}`)
   return response.data
 }
 
 // 删除载体
 export async function deleteVector(vectorId: string): Promise<any> {
-  const response = await api.delete(`/vectors/${vectorId}`)
+  const response = await api.delete(`/vectors/${encodeURIComponent(vectorId)}`)
   return response.data
 }
 
@@ -186,24 +186,24 @@ export async function submitBatchDesign(request: any): Promise<any> {
 }
 
 export async function getBatchProgress(batchId: string): Promise<any> {
-  const response = await api.get(`/design/batch/${batchId}`)
+  const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}`)
   return response.data
 }
 
 export async function getBatchReport(batchId: string): Promise<any> {
-  const response = await api.get(`/design/batch/${batchId}/report`)
+  const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}/report`)
   return response.data
 }
 
 export async function downloadBatchResults(batchId: string): Promise<void> {
-  const response = await api.get(`/design/batch/${batchId}/download`, { responseType: 'blob' })
+  const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}/download`, { responseType: 'blob' })
   await saveBlobResponse(response, `${batchId}_results.zip`)
 }
 
 
 // 载体序列下载
 export async function getVectorSequence(vectorId: string, format: string = 'fasta'): Promise<string> {
-  const response = await api.get(`/vectors/${vectorId}/sequence`, {
+  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}/sequence`, {
     params: { format },
     responseType: 'text'
   })
@@ -223,7 +223,7 @@ export async function updateVector(vectorId: string, data: {
   name?: string; description?: string; vector_type?: string;
   host?: string[]; antibiotic_resistance?: string[]; copy_number?: string
 }): Promise<any> {
-  const response = await api.put(`/vectors/${vectorId}`, data)
+  const response = await api.put(`/vectors/${encodeURIComponent(vectorId)}`, data)
   return response.data
 }
 
@@ -426,12 +426,12 @@ export async function updateAdminUser(
   userId: string,
   patch: { is_admin?: boolean; is_active?: boolean; email_verified?: boolean; allowed_features?: string[] }
 ): Promise<AdminUserInfo> {
-  const response = await api.put(`/admin/users/${userId}`, patch)
+  const response = await api.put(`/admin/users/${encodeURIComponent(userId)}`, patch)
   return response.data
 }
 
 export async function deleteAdminUser(userId: string): Promise<void> {
-  await api.delete(`/admin/users/${userId}`)
+  await api.delete(`/admin/users/${encodeURIComponent(userId)}`)
 }
 
 // 获取导出格式列表
@@ -474,13 +474,13 @@ export async function checkCompatibility(
 
 // 缓存 — 设计缓存失效
 export async function invalidateDesignCache(designId: string): Promise<any> {
-  const response = await api.post(`/cache/invalidate/design/${designId}`)
+  const response = await api.post(`/cache/invalidate/design/${encodeURIComponent(designId)}`)
   return response.data
 }
 
 // 缓存 — 载体缓存失效
 export async function invalidateVectorCache(vectorId: string): Promise<any> {
-  const response = await api.post(`/cache/invalidate/vector/${vectorId}`)
+  const response = await api.post(`/cache/invalidate/vector/${encodeURIComponent(vectorId)}`)
   return response.data
 }
 
@@ -725,7 +725,7 @@ export function analysisTokenHeaders(analysisId?: string): Record<string, string
 
 /** 取设计结果的 GenBank 文件（测序页深链自动带入参考序列用） */
 export async function fetchDesignGenbankFile(designId: string): Promise<File> {
-  const response = await api.get(`/design/${designId}/download/genbank`, { responseType: 'blob' })
+  const response = await api.get(`/design/${encodeURIComponent(designId)}/download/genbank`, { responseType: 'blob' })
   assertBlobIsGenbank(response.data, designId)
   return new File([response.data], `${designId}.gb`, { type: 'application/octet-stream' })
 }
@@ -740,7 +740,7 @@ function assertBlobIsGenbank(data: Blob, name: string): void {
 
 /** 取载体库载体的 GenBank 文件（测序页深链自动带入参考序列用） */
 export async function fetchVectorGenbankFile(vectorId: string): Promise<File> {
-  const response = await api.get(`/vectors/${vectorId}/sequence`, {
+  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}/sequence`, {
     params: { format: 'genbank' },
     responseType: 'blob'
   })
@@ -749,13 +749,13 @@ export async function fetchVectorGenbankFile(vectorId: string): Promise<File> {
 }
 
 export async function getReadTrace(analysisId: string, readIndex: number): Promise<ReadTrace> {
-  const response = await api.get(`/sequencing/analyses/${analysisId}/trace/${readIndex}`,
+  const response = await api.get(`/sequencing/analyses/${encodeURIComponent(analysisId)}/trace/${encodeURIComponent(readIndex)}`,
     { headers: analysisTokenHeaders(analysisId) })
   return response.data
 }
 
 export async function exportConsensus(analysisId: string, format: string, coveredOnly = false): Promise<string> {
-  const response = await api.get(`/sequencing/analyses/${analysisId}/consensus/export`, {
+  const response = await api.get(`/sequencing/analyses/${encodeURIComponent(analysisId)}/consensus/export`, {
     params: { format, covered_only: coveredOnly },
     headers: analysisTokenHeaders(analysisId),
     responseType: 'text',
@@ -783,13 +783,13 @@ export async function listSequencingAnalyses(): Promise<SequencingAnalysisSummar
 
 export async function getSequencingAnalysis(analysisId: string): Promise<SequencingAnalysis> {
   // 终审 B-02：匿名记录凭创建时下发的令牌访问
-  const response = await api.get(`/sequencing/analyses/${analysisId}`,
+  const response = await api.get(`/sequencing/analyses/${encodeURIComponent(analysisId)}`,
     { headers: analysisTokenHeaders(analysisId) })
   return response.data
 }
 
 export async function deleteSequencingAnalysis(analysisId: string): Promise<void> {
-  await api.delete(`/sequencing/analyses/${analysisId}`,
+  await api.delete(`/sequencing/analyses/${encodeURIComponent(analysisId)}`,
     { headers: analysisTokenHeaders(analysisId) })
 }
 
@@ -856,7 +856,7 @@ export async function analyzeSequencingBatch(
 /** 下载批量分析的整理包：按质粒/克隆归档的原始文件副本 + 各组分析报告 +
  *  整理清单 + 结论回填的信息表（离线脚本产物的网页版；生成 15 分钟后过期） */
 export async function downloadBatchSequencingReport(batchId: string): Promise<void> {
-  const response = await api.get(`/sequencing/batches/${batchId}/report`, {
+  const response = await api.get(`/sequencing/batches/${encodeURIComponent(batchId)}/report`, {
     responseType: 'blob',
     timeout: 300000,
     headers: analysisTokenHeaders(batchId)
