@@ -92,3 +92,31 @@ def test_auth_ip_aggregate_limit(monkeypatch):
     c = TestClient(app)
     codes = [_login(c, f"spray{i}@example.com").status_code for i in range(6)]
     assert codes[4:] == [429, 429], codes
+
+
+# ---------------- 重型只读档 ----------------
+
+@pytest.mark.parametrize("method,path,bucket", [
+    ("GET", "/api/design/batch/b1/download", "export"),
+    ("GET", "/api/design/batch/b1/report", "export"),
+    ("GET", "/api/design/d1/download/genbank", "export"),
+    ("GET", "/api/design/d1/download/primers", "export"),
+    ("GET", "/api/analysis/design/d1/export", "export"),
+    ("GET", "/api/sequencing/batches/seqbatch_x/report", "export"),
+    ("GET", "/api/sequencing/analyses/seq_x/consensus/export", "export"),
+    ("GET", "/api/vectors/search/ncbi", "ncbi"),
+    ("GET", "/api/vectors/preview/ncbi/NC_000913", "ncbi"),
+    # 轮询类只读仍是 default
+    ("GET", "/api/design/d1", "default"),
+    ("GET", "/api/design/batch/b1", "default"),
+    ("GET", "/api/design/d1/map", "default"),
+    ("GET", "/api/sequencing/analyses/seq_x", "default"),
+])
+def test_heavy_reads_have_own_buckets(method, path, bucket):
+    assert rate_limit.classify_endpoint(method, path) == bucket
+    assert rate_limit.RATE_LIMITS[bucket]["requests"] <= rate_limit.RATE_LIMITS["default"]["requests"]
+
+
+def test_export_bucket_stricter_than_default():
+    assert rate_limit.RATE_LIMITS["export"]["requests"] < rate_limit.RATE_LIMITS["default"]["requests"]
+    assert rate_limit.RATE_LIMITS["ncbi"]["requests"] < rate_limit.RATE_LIMITS["default"]["requests"]
