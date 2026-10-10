@@ -127,11 +127,12 @@ def _can_access(record: Dict, user: Optional[User],
     创建者 404）。登录用户创建的记录仍按属主判定。"""
     owner = record.get("owner_id")
     if owner is None:
-        # 匿名创建的记录：仅当持有创建响应下发的 access_token 才可见；
-        # 旧记录（改造前创建，无 token）保持公开以兼容历史链接
+        # 匿名创建的记录：仅当持有创建响应下发的 access_token 才可见。
+        # 改造前创建、无 token 的遗留记录不再公开（其 ID 曾可从旧列表接口
+        # 批量收集），只有管理员可读/删
         expected = record.get("access_token")
         if expected is None:
-            return True
+            return user is not None and user.is_admin
         # 按 UTF-8 字节比较：compare_digest(str, str) 遇非 ASCII 会抛
         # TypeError → 500，畸形令牌应与错误令牌一样得到 403
         return bool(access_token) and secrets.compare_digest(
@@ -772,21 +773,21 @@ async def list_analyses(limit: int = 200, offset: int = 0,
 
     分页：limit（默认 200，0 不限）+ offset。属主校验：只返回自己创建的
     （管理员全可见）。终审 B-02：列表不再把匿名记录的 ID 交出去——匿名
-    记录凭创建响应下发的 access_token 访问，匿名列表返回空（改造前的
-    无 token 遗留记录保持公开）。"""
+    记录凭创建响应下发的 access_token 访问，匿名列表返回空；改造前的
+    无 token 遗留记录只对管理员可见。"""
     _sweep_expired()
     if sequencing_store.db_enabled():
         return sequencing_store.list_records(
             user, is_admin=bool(user and user.is_admin),
             limit=limit, offset=offset)
     # 终审 B-02：匿名记录不进列表（持有 token 也不列——列表接口不该交出
-    # 他人记录的 ID），仅改造前无 token 的遗留公开记录例外（兼容历史链接）
+    # 他人记录的 ID）；无 token 遗留记录同样不列（管理员全可见）
     # 终审 C-07：取值快照在锁内完成，避免与写线程并发遍历
+    is_admin = bool(user and user.is_admin)
     with _STORE_LOCK:
         items = sorted(
             (r for r in _ANALYSES.values()
-             if r.get("owner_id") is None and r.get("access_token") is None
-             or (r.get("owner_id") is not None and _can_access(r, user))),
+             if is_admin or (r.get("owner_id") is not None and _can_access(r, user))),
             key=lambda r: r["created_at"], reverse=True)
     return [
         {
