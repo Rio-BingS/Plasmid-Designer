@@ -74,3 +74,19 @@ def test_no_features_no_crash_and_enzyme_without_site_degrades():
     assert "bp 处切割" not in digest_step.description_zh  # 无位点 → 无坐标
     assert not any("会被切断" in w for w in s.warnings_zh)
     assert s.expected_product_size == 100 + 12
+
+
+def test_all_sites_per_enzyme_considered():
+    """回归：每把酶只取第一个切点，落在必需元件内的第二个切点被漏报"""
+    vector_seq = ("A" * 20 + "GAATTC" + "T" * 60 + "GAATTC" + "C" * 40
+                  + "CTCGAG" + "G" * 20)
+    features = [{"name": "AmpR", "type": "resistance", "start": 80, "end": 120}]
+    s = RestrictionCloningStrategy().generate(
+        "ATGAAAGGTTAG", "ins", vector_seq, "testV", "EcoRI", "XhoI",
+        vector_features=features)
+    # 第二个 EcoRI 切点（87 bp）落在 AmpR 内
+    assert any("87 bp" in w and "AmpR" in w for w in s.warnings_zh), s.warnings_zh
+    digest = next(st for st in s.steps if st.action == "Digest vector")
+    assert "另有 1 个切点" in digest.description_zh and "87" in digest.description_zh
+    # 回文位点正反链各命中一次，不得重复告警
+    assert len([w for w in s.warnings_zh if "AmpR" in w]) == 1
