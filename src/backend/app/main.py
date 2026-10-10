@@ -160,8 +160,9 @@ _allow_all_origins = "*" in _cors_origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    # 「通配源 + 允许凭证」组合不符合 CORS 规范（浏览器会拒绝）；本项目认证走
-    # Bearer Token、无 Cookie 凭证诉求，通配时关闭凭证模式
+    # 浏览器登录态走 httpOnly 会话 Cookie：前端另域部署时必须配置显式来源
+    # 才能携带凭证；「通配源 + 允许凭证」不符合 CORS 规范（浏览器会拒绝），
+    # 通配时关闭凭证模式（同源部署不受影响，脚本客户端用 Bearer 头）
     allow_credentials=not _allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],

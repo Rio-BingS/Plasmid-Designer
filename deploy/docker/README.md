@@ -407,7 +407,13 @@ server {
 ```
 
 3. `nginx -t && nginx -s reload`
-4. `.env` 中把 `CORS_ORIGINS` 收紧为具体来源（如 `["https://plasmid.example.com"]`）后重启 backend
+4. `.env` 中把 `CORS_ORIGINS` 收紧为具体来源（如 `["https://plasmid.example.com"]`），
+   并设 `AUTH_COOKIE_SECURE=true`（HTTPS 在宿主机终止，容器内只见 http，auto 判断不出），
+   然后重启 backend
+
+> 登录态保存在 httpOnly 会话 Cookie（Path=/api，SameSite=Lax）中。前端与 API
+> 同源（经 nginx 反代 `/api`）时无需任何 CORS 配置；前端另域部署时 `CORS_ORIGINS`
+> 必须是显式来源——通配 `*` 下浏览器不会携带 Cookie，登录后仍表现为未登录。
 
 > 限流按真实客户端 IP 计：宿主机 nginx 解析真实 IP（Cloudflare 场景用
 > `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 仅对
