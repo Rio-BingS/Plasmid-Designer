@@ -155,7 +155,7 @@ async function handleVerify() {
 
   try {
     const result = await verifyEmail(verifyToken.value, code.value.trim())
-    tokenToSession(result)
+    enterSession(result)
   } catch (e: any) {
     error.value = errText(e)
   } finally {
@@ -179,12 +179,9 @@ async function handleResend() {
   }
 }
 
-function tokenToSession(result: any) {
-  localStorage.setItem('token', result.access_token)
-  localStorage.setItem('user', JSON.stringify(result.user))
-  authStore.token = result.access_token
-  authStore.user = result.user
-  authStore.refreshSiteConfig()
+function enterSession(result: any) {
+  // 令牌已由后端写入 httpOnly Cookie，前端只记录用户信息
+  authStore.setSession(result.user)
   emit('authenticated', result.user)
   emit('close')
   router.push('/')

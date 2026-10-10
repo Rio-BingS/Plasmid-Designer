@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { currentAuthEpoch } from './session'
 import type { DesignRequest, DesignResult, VectorInfo, CodonTable } from '@/types'
 
 const API_BASE = '/api'
@@ -8,30 +9,25 @@ const API_BASE = '/api'
 // FormData 时，会把 FormData 转成 JSON 字符串（File 全变成 {}）发出去，
 // 后端 multipart 接口就会收到空表单并报 "Field required"。
 // 交给 axios 自己判断：普通对象发 application/json，FormData 发 multipart（含 boundary）。
+//
+// 登录态在后端下发的 httpOnly 会话 Cookie 里（前端不保存令牌）：
+// withCredentials 让跨源部署（CORS_ORIGINS 显式来源）也带上 Cookie；
+// X-Requested-With 是后端 CSRF 校验要求的自定义头——Cookie 会话的
+// POST/PUT/PATCH/DELETE 缺它会被 403 拒绝。
 const api = axios.create({
-  baseURL: API_BASE
+  baseURL: API_BASE,
+  withCredentials: true,
+  headers: { 'X-Requested-With': 'XMLHttpRequest' }
 })
 
-// 请求拦截器：自动添加 token
+// 请求拦截器：记下请求发出时的会话代际（见 api/session.ts）
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
+    ;(config as any).authEpoch = currentAuthEpoch()
     return config
   },
   (error) => Promise.reject(error)
 )
-
-/** 取请求发出时携带的 token（由请求拦截器写入 Authorization 头） */
-function tokenSentWith(config: any): string | null {
-  const headers = config?.headers
-  const raw = typeof headers?.get === 'function'
-    ? headers.get('Authorization')
-    : headers?.Authorization ?? headers?.authorization
-  return typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : null
-}
 
 // 响应拦截器：处理 401 错误
 api.interceptors.response.use(
@@ -39,18 +35,17 @@ api.interceptors.response.use(
   async (error) => {
     if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
       // 登录接口本身的 401 是密码错误，不应清除本地会话状态。
-      // 只清理「发出该请求时」的会话：旧 token 发出的请求晚到的 401
-      // 不能把期间重新登录拿到的新会话一并清掉
-      if (tokenSentWith(error.config) === localStorage.getItem('token')) {
-        localStorage.removeItem('token')
-        localStorage.removeItem('user')
+      // 只清理「发出该请求时」的会话：旧会话发出的请求晚到的 401
+      // 不能把期间重新登录建立的新会话一并清掉
+      const sentEpoch = error.config?.authEpoch
+      if (sentEpoch === currentAuthEpoch()) {
         // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
         try {
           const { useAuthStore } = await import('@/stores/auth')
-          // 动态导入期间若已重新登录，不再清理新会话
-          if (localStorage.getItem('token') === null) useAuthStore().clearAuth()
+          // 动态导入期间若会话已切换（重新登录），不再清理新会话
+          if (sentEpoch === currentAuthEpoch()) useAuthStore().clearAuth()
         } catch {
-          // Pinia 未初始化（如单测环境）时仅清理 localStorage 即可
+          // Pinia 未初始化（如单测环境）时无状态可清
         }
       }
     }
@@ -350,8 +345,6 @@ export async function register(email: string, username: string, password: string
 }
 
 export async function getCurrentUser(): Promise<any> {
-  const token = localStorage.getItem('token')
-  if (!token) return null
   try {
     const response = await api.get('/auth/me')
     return response.data
