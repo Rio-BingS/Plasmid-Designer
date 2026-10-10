@@ -5,13 +5,16 @@
 - GenBank (.gb/.gbk/.genbank)：Biopython 解析，特征含名称/类型/坐标/方向
 - FASTA (.fasta/.fa/.fna)：仅序列，无特征
 - SnapGene (.dna)：snapgene-reader 解析（包缺失时报可读错误）
+
+parse_reference_topology 额外返回拓扑：GenBank 读 LOCUS 行的
+circular/linear，SnapGene 读文件的 topology 标记，FASTA 无此信息（None）。
 """
 
 import io
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 GENBANK_EXTS = {"gb", "gbk", "genbank"}
 FASTA_EXTS = {"fasta", "fa", "fna"}
@@ -25,6 +28,14 @@ class ReferenceParseError(ValueError):
 
 def parse_reference(filename: str, data: bytes) -> Tuple[str, List[Dict]]:
     """按扩展名分发解析。失败抛 ReferenceParseError（消息可直接展示）。"""
+    seq, features, _circular = parse_reference_topology(filename, data)
+    return seq, features
+
+
+def parse_reference_topology(filename: str, data: bytes
+                             ) -> Tuple[str, List[Dict], Optional[bool]]:
+    """同 parse_reference，另返回参考拓扑：True 环状 / False 线性 /
+    None 文件未标明（FASTA，或 GenBank/SnapGene 缺少拓扑字段）。"""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     try:
         if ext in GENBANK_EXTS:
@@ -47,7 +58,7 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
-def _from_genbank(data: bytes) -> Tuple[str, List[Dict]]:
+def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
     from Bio import SeqIO
 
     text = data.decode("utf-8", errors="ignore")
@@ -56,6 +67,7 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict]]:
         raise ReferenceParseError("GenBank 文件中没有记录")
     record = records[0]
     seq = str(record.seq).upper()
+    circular = _topology_flag((record.annotations or {}).get("topology"))
     features: List[Dict] = []
     for f in record.features:
         if f.type == "source":
@@ -91,10 +103,19 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict]]:
             "description": _clean(note or name or f.type)[:120],
         })
     features.sort(key=lambda x: (x["start"], x["end"]))
-    return seq, features
+    return seq, features, circular
 
 
-def _from_fasta(data: bytes) -> Tuple[str, List[Dict]]:
+def _topology_flag(value) -> Optional[bool]:
+    v = str(value or "").strip().lower()
+    if v == "circular":
+        return True
+    if v == "linear":
+        return False
+    return None
+
+
+def _from_fasta(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
     from Bio import SeqIO
 
     text = data.decode("utf-8", errors="ignore")
@@ -105,10 +126,10 @@ def _from_fasta(data: bytes) -> Tuple[str, List[Dict]]:
         raise ReferenceParseError(
             f"FASTA 含 {len(records)} 条序列，请只保留参考构建体对应的一条"
         )
-    return str(records[0].seq).upper(), []
+    return str(records[0].seq).upper(), [], None
 
 
-def _from_snapgene(data: bytes) -> Tuple[str, List[Dict]]:
+def _from_snapgene(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
     try:
         from snapgene_reader import snapgene_file_to_dict
     except ImportError as e:
@@ -125,7 +146,9 @@ def _from_snapgene(data: bytes) -> Tuple[str, List[Dict]]:
         except PermissionError:
             pass
 
-    seq = (d.get("seq") or d.get("dna") or "").upper()
+    dna = d.get("dna")
+    circular = _topology_flag(dna.get("topology")) if isinstance(dna, dict) else None
+    seq = (d.get("seq") or (dna if isinstance(dna, str) else "") or "").upper()
     if not seq:
         raise ReferenceParseError(".dna 文件中没有序列")
     features: List[Dict] = []
@@ -152,4 +175,4 @@ def _from_snapgene(data: bytes) -> Tuple[str, List[Dict]]:
             "description": name[:120],
         })
     features.sort(key=lambda x: (x["start"], x["end"]))
-    return seq, features
+    return seq, features, circular
