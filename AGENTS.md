@@ -109,6 +109,21 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 当前状态（2026-09-20）
 
+- 清账（2026-10-09）**终审报告 P0 全量清账（独立第 11 轮审查 22 项 P0 全部落地）**：
+  P0-a 十项快修 + P0-b 十二项，逐项带回归，pytest 416→485 / vitest 138→140 /
+  vue-tsc 0，分六批提交（0603b77→bdaf64c）。要点：①匿名测序记录改 access_token
+  访问（创建响应下发、批量整批共用、前端 sessionStorage 自动带头、列表不再
+  外泄匿名 ID）、批量整理包绑 owner；②输入上限三件套（MAX_REF_BP=200k 三入口、
+  批量请求级总字节 + _BATCHES LRU、设计序列按类型收紧 aa5000/DNA20000 + 分析类
+  7 模型统一上限）；③限流改（方法+路由模板）分类——只读一律 default 档，轮询
+  不再吃业务配额（实测轮询 10 次即 429 强制登出的病根）；④_ANALYSES/_BATCHES
+  全路径 RLock + 打包改批次产物快照；⑤存储往返补 user_id/clone_protocol
+  （新列+轻量迁移）、construct_features 空值取 []、_load 裸 except 改 warning；
+  ⑥站点设置 features_initialized 标记列（空集不再被默认值覆盖）；⑦克隆方案带
+  真实切点坐标 + 破坏必需元件告警；⑧裸机三项（751 权限/127.0.0.1 监听 +
+  /docs 内网限制/卸载确认）。逐项明细与防回潮约束见 docs/KNOWN_ISSUES.md
+  「2026-10-09」章节——注意：测试里改 site_settings 必须用真实 SessionLocal
+  并在结束时恢复默认设置。
 - 清账（2026-10-08）**历次审核遗留清单批量清账（KNOWN_ISSUES 留痕 + 回归钉死 + 真实数据回归集）**：
   ①docs/KNOWN_ISSUES.md 从 8/31 审计状态更新到 10/08——新增 10/7 修复批次
   章节（6.1-6.8：BsaHI GRCGYC/批量上限读取前生效/克隆方案占位符+去磷/酶兼容
