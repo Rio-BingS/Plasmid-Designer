@@ -52,3 +52,43 @@ def test_xff_takes_rightmost_untrusted_hop(monkeypatch):
 def test_invalid_trusted_proxy_entries_ignored(monkeypatch):
     monkeypatch.setattr(rate_limit.settings, "TRUSTED_PROXIES", "not-an-ip, 127.0.0.1")
     assert rate_limit.get_client_ip(_req("127.0.0.1", {"X-Real-IP": "203.0.113.7"})) == "203.0.113.7"
+
+
+# ---------------- 认证档 key ----------------
+
+def test_auth_key_ignores_token_sub():
+    forged = jwt.encode({"sub": "anything-1", "exp": datetime.utcnow() + timedelta(hours=1)},
+                        SECRET_KEY, algorithm=ALGORITHM)
+    from app.auth.middleware import AuthStateMiddleware
+    r = _req("8.8.8.8", {"Authorization": f"Bearer {forged}"})
+    r.state.user = AuthStateMiddleware._resolve_user(r)
+    key = rate_limit.get_rate_limit_key(r, "auth", "victim@example.com")
+    assert "anything-1" not in key
+    assert key == "rate:auth:8.8.8.8:victim@example.com"
+
+
+def _login(c, email, token=None):
+    h = {"Authorization": f"Bearer {token}"} if token else {}
+    return c.post("/api/auth/login", json={"email": email, "password": "wrong-pass-1"}, headers=h)
+
+
+def test_login_limit_per_ip_and_email_not_bypassed_by_tokens(monkeypatch):
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth", {"requests": 3, "window": 60})
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth_ip", {"requests": 100, "window": 60})
+    c = TestClient(app)
+    codes = []
+    for i in range(5):
+        tok = jwt.encode({"sub": f"rotating-{i}", "exp": datetime.utcnow() + timedelta(hours=1)},
+                         SECRET_KEY, algorithm=ALGORITHM)
+        codes.append(_login(c, "  Victim@Example.com ", tok).status_code)
+    assert codes[:3] != [429] * 3 and codes[3:] == [429, 429], codes
+    # 另一个目标邮箱有独立配额
+    assert _login(c, "other@example.com").status_code != 429
+
+
+def test_auth_ip_aggregate_limit(monkeypatch):
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth", {"requests": 100, "window": 60})
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth_ip", {"requests": 4, "window": 60})
+    c = TestClient(app)
+    codes = [_login(c, f"spray{i}@example.com").status_code for i in range(6)]
+    assert codes[4:] == [429, 429], codes
