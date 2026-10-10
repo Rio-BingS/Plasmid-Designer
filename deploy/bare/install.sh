@@ -189,17 +189,19 @@ else
     echo "  ✓ Python 3.11 已安装: $(python3.11 --version)"
 fi
 
-# ---------- Step 3: Node.js 20 ----------
+# ---------- Step 3: Node.js 22 ----------
 
 echo ""
-echo "[3/9] 安装 Node.js 20..."
+echo "[3/9] 安装 Node.js 22..."
 
-if node --version &>/dev/null && [[ "$(node --version)" == v20.* ]]; then
-    echo "  ✓ Node.js 20 已安装: $(node --version)"
+# Vite 8 / Vitest 5 要求 Node >= 22.12，22.x 低于该小版本时同样走升级
+NODE_VER=$(node --version 2>/dev/null || true)
+if [[ "$NODE_VER" =~ ^v22\.([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 12 )); then
+    echo "  ✓ Node.js 22 已安装: $NODE_VER"
 else
-    # NodeSource 20.x：走签名 apt 源（keyring + signed-by），不再以 root
+    # NodeSource 22.x：走签名 apt 源（keyring + signed-by），不再以 root
     # 执行 curl | bash 下载的安装脚本；公钥指纹固定，不符即中止
-    NODE_MAJOR=20
+    NODE_MAJOR=22
     NODESOURCE_KEY_FPR="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
     apt-get install -y --no-install-recommends ca-certificates curl gnupg
     install -d -m 0755 /etc/apt/keyrings
