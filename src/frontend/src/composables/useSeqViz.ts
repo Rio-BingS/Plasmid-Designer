@@ -30,11 +30,27 @@ export function useSeqViz(options: UseSeqVizOptions) {
   const seqCanvas = ref<HTMLCanvasElement | null>(null)
   const seqColW = ref(12)                 // 每个参考 bp 的像素宽（缩放）
   const visibleReads = ref<number[]>([])  // 显示中的 read index（按行序）
-  const traceCache = ref<Record<number, ReadTrace | null>>({})
+  // 峰图缓存按「分析 ID + read 序号」存放：切换分析后旧分析的响应
+  // 不会顶替新分析同序号 read 的峰图
+  const traceKey = (aid: string, ri: number) => `${aid}\u0000${ri}`
+  const traceStore = ref<Record<string, ReadTrace | null>>({})
+  /** 当前分析的峰图缓存视图（按 read 序号，供绘制与测试读取） */
+  const traceCache = computed<Record<number, ReadTrace | null>>(() => {
+    const out: Record<number, ReadTrace | null> = {}
+    const aid = analysis.value?.analysis_id
+    if (!aid) return out
+    const prefix = traceKey(aid, 0).slice(0, -1)
+    for (const [k, v] of Object.entries(traceStore.value)) {
+      if (k.startsWith(prefix)) out[Number(k.slice(prefix.length))] = v
+    }
+    return out
+  })
   const seqTraceLoading = ref(false)
   // 在途去重：preset watch（immediate）与 visibleReads deep watch 同帧触发，
   // 缓存尚未写入时会并发重入拉取同一条峰图
-  const traceInFlight = new Set<number>()
+  const traceInFlight = new Set<string>()
+  // 视图复位代数：resetSeqViz 后到达的旧请求一律丢弃
+  let traceEpoch = 0
   const selRefPos = ref<number | null>(null)   // 点选列（参考坐标）
   const flashRefPos = ref<number | null>(null) // 跳转高亮列（短暂）
   const seqInfo = ref('')
@@ -99,7 +115,10 @@ export function useSeqViz(options: UseSeqVizOptions) {
 
   function resetSeqViz() {
     visibleReads.value = []
-    traceCache.value = {}
+    traceStore.value = {}
+    traceInFlight.clear()
+    traceEpoch++
+    seqTraceLoading.value = false
     selRefPos.value = null
     flashRefPos.value = null
     selectedReadIdx.value = null
@@ -124,23 +143,32 @@ export function useSeqViz(options: UseSeqVizOptions) {
   // 峰图按 read 缓存（多 read 堆叠时各自取用；TTL 清理后为 null，仅剩碱基行）
   async function loadSeqTrace(ri: number): Promise<ReadTrace | null> {
     if (!analysis.value) return null
-    if (traceCache.value[ri] !== undefined || traceInFlight.has(ri)) {
-      return traceCache.value[ri] ?? null   // 已加载/加载中：避免并发重入重复拉取
+    // await 之前固定本次请求所属的分析与代数，响应回来时据此判断是否已过期
+    const aid = analysis.value.analysis_id
+    const epoch = traceEpoch
+    const key = traceKey(aid, ri)
+    if (traceStore.value[key] !== undefined || traceInFlight.has(key)) {
+      return traceStore.value[key] ?? null   // 已加载/加载中：避免并发重入重复拉取
     }
-    traceInFlight.add(ri)
+    const stale = () => epoch !== traceEpoch || analysis.value?.analysis_id !== aid
+    traceInFlight.add(key)
     seqTraceLoading.value = true
     try {
-      const t = await getReadTrace(analysis.value.analysis_id, ri)
-      traceCache.value = { ...traceCache.value, [ri]: t ?? null }
+      const t = await getReadTrace(aid, ri)
+      if (stale()) return null   // 期间已切换分析/复位视图：丢弃旧响应
+      traceStore.value = { ...traceStore.value, [key]: t ?? null }
       nextSeqDraw()
       return t ?? null
     } catch (e: any) {
-      traceCache.value = { ...traceCache.value, [ri]: null }
+      if (stale()) return null
+      traceStore.value = { ...traceStore.value, [key]: null }
       errorMsg.value = e.response?.data?.detail || '峰图加载失败'
       return null
     } finally {
-      traceInFlight.delete(ri)
-      seqTraceLoading.value = false
+      if (epoch === traceEpoch) {
+        traceInFlight.delete(key)
+        seqTraceLoading.value = traceInFlight.size > 0
+      }
     }
   }
 
