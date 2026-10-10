@@ -315,6 +315,10 @@ class PrimerDesigner:
             annealing_temp=annealing_temp
         )
 
+    # 经典双酶切引物 5' 端保护碱基：酶在 DNA 末端切割效率极低，识别位点
+    # 前需留几个碱基。TTTT 非回文、不与常用识别序列拼出新位点
+    PROTECTIVE_SPACER = "TTTT"
+
     # Type IIS（切割位点在识别序列之外）不适用经典双酶切克隆：
     # 它不在识别序列内切，产物末端不含酶位点，按双酶切流程做会得到错误构建
     TYPE_IIS_ENZYMES = ("BsaI", "BsmBI", "BbsI", "BsmAI", "BspQI", "SapI",
@@ -326,7 +330,8 @@ class PrimerDesigner:
         enzyme_5: str,
         enzyme_3: str,
         primer_name: str = "res",
-        anneal_length: int = 20
+        anneal_length: int = 20,
+        spacer: Optional[str] = None,
     ) -> PrimerPair:
         """设计双酶切克隆引物
 
@@ -339,6 +344,7 @@ class PrimerDesigner:
             enzyme_3: 3' 端限制酶名称
             primer_name: 引物名称前缀
             anneal_length: 退火区长度 (默认20bp，超过插入片段长度时自动收缩)
+            spacer: 5' 端保护碱基，None 用 PROTECTIVE_SPACER，"" 显式关闭
 
         Returns:
             PrimerPair 双酶切引物对
@@ -366,10 +372,12 @@ class PrimerDesigner:
         if anneal < 6:
             raise ValueError(f"插入片段过短 ({len(seq)}bp)，无法设计双酶切引物")
 
+        pad = self.PROTECTIVE_SPACER if spacer is None else spacer
+
         fwd_anneal = seq[:anneal]
         rev_anneal = self._reverse_complement(seq[-anneal:])
-        forward_seq = site5 + fwd_anneal
-        reverse_seq = self._reverse_complement(site3) + rev_anneal
+        forward_seq = pad + site5 + fwd_anneal
+        reverse_seq = pad + self._reverse_complement(site3) + rev_anneal
 
         tm_f = self._calculate_tm(fwd_anneal)
         tm_r = self._calculate_tm(rev_anneal)
@@ -383,7 +391,8 @@ class PrimerDesigner:
             length=len(forward_seq),
             target_start=0,
             target_end=anneal,
-            notes=f"Restriction cloning (double digest): {enzyme_5} site at 5', "
+            notes=f"Restriction cloning (double digest): {enzyme_5} site at 5' "
+                  f"with {len(pad)}nt protective spacer, "
                   f"annealing {anneal}bp, Tm on annealing region"
         )
         reverse = Primer(
@@ -395,7 +404,8 @@ class PrimerDesigner:
             length=len(reverse_seq),
             target_start=len(seq) - anneal,
             target_end=len(seq),
-            notes=f"Restriction cloning (double digest): {enzyme_3} site (rc) at 5', "
+            notes=f"Restriction cloning (double digest): {enzyme_3} site (rc) at 5' "
+                  f"with {len(pad)}nt protective spacer, "
                   f"annealing {anneal}bp, Tm on annealing region"
         )
 
