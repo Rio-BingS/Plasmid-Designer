@@ -27,7 +27,9 @@ EnvironmentFile=/opt/plasmid-designer/.env
 
 # 单 worker：进程内限流器/缓存/内存镜像均按单进程设计，
 # 多 worker 会导致限流与缓存计数不一致
-ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+# 终审 H-04：只监听 127.0.0.1——对外统一走 Nginx（80/443），后端 8000
+# 直接暴露公网等于绕过 Nginx 的限速/体积/头部控制，且 /docs 对外可见
+ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 # 重启策略
 Restart=on-failure
