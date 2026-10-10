@@ -167,6 +167,31 @@ class TestSiteConfig:
         data = c.get("/api/auth/site-config", headers=_auth_header(token)).json()
         assert data["tier"] == "user"
 
+    def test_explicit_empty_features_shown_as_empty(self, client, db):
+        """管理员显式清空功能清单（已初始化）后，site-config 如实下发空集，
+        不回退默认（此前前端因此仍显示全部功能入口）"""
+        c, _ = client
+        _set_site_db(db, anonymous_features="[]", user_features="[]",
+                     features_initialized=True)
+        data = c.get("/api/auth/site-config").json()
+        assert data["features"] == {"anonymous": [], "user": []}
+        assert data["effective_features"] == []
+        u = _make_user(db)
+        db.commit()
+        token = _login(c, u.email, "password123")["access_token"]
+        data = c.get("/api/auth/site-config", headers=_auth_header(token)).json()
+        assert data["tier"] == "user"
+        assert data["effective_features"] == []
+
+    def test_uninitialized_empty_features_fall_back_to_defaults(self, client, db):
+        """从未初始化的空行仍按默认清单下发（与门控读侧语义一致）"""
+        c, _ = client
+        _set_site_db(db, anonymous_features="[]", user_features="[]",
+                     features_initialized=False)
+        data = c.get("/api/auth/site-config").json()
+        assert set(data["features"]["anonymous"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+        assert set(data["effective_features"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+
 
 class TestRegistrationToggle:
     def test_closed_registration_rejected(self, client, db):
