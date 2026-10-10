@@ -75,3 +75,14 @@ def test_legacy_tokenless_record_not_listed_in_memory_mode(monkeypatch):
     c = TestClient(app)
     ids = [x["analysis_id"] for x in c.get("/api/sequencing/analyses").json()]
     assert "seq_legacyrc0002" not in ids
+
+
+# ---------------- 令牌只认请求头 ----------------
+
+def test_query_string_token_rejected():
+    aid, tok, _ = _anon_record()
+    c = TestClient(app)
+    base = f"/api/sequencing/analyses/{aid}"
+    assert c.get(base, params={"token": tok}).status_code == 403
+    assert c.get(base + "/consensus/export", params={"token": tok}).status_code == 403
+    assert c.get(base, headers={"X-Access-Token": tok}).status_code == 200
