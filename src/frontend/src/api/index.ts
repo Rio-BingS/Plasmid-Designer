@@ -24,20 +24,34 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
+/** 取请求发出时携带的 token（由请求拦截器写入 Authorization 头） */
+function tokenSentWith(config: any): string | null {
+  const headers = config?.headers
+  const raw = typeof headers?.get === 'function'
+    ? headers.get('Authorization')
+    : headers?.Authorization ?? headers?.authorization
+  return typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : null
+}
+
 // 响应拦截器：处理 401 错误
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
-      // 登录接口本身的 401 是密码错误，不应清除本地会话状态
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
-      try {
-        const { useAuthStore } = await import('@/stores/auth')
-        useAuthStore().clearAuth()
-      } catch {
-        // Pinia 未初始化（如单测环境）时仅清理 localStorage 即可
+      // 登录接口本身的 401 是密码错误，不应清除本地会话状态。
+      // 只清理「发出该请求时」的会话：旧 token 发出的请求晚到的 401
+      // 不能把期间重新登录拿到的新会话一并清掉
+      if (tokenSentWith(error.config) === localStorage.getItem('token')) {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
+        try {
+          const { useAuthStore } = await import('@/stores/auth')
+          // 动态导入期间若已重新登录，不再清理新会话
+          if (localStorage.getItem('token') === null) useAuthStore().clearAuth()
+        } catch {
+          // Pinia 未初始化（如单测环境）时仅清理 localStorage 即可
+        }
       }
     }
     return Promise.reject(error)
