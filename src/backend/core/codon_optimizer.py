@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from collections import Counter
 import math
 
-from core.seq_utils import CODON_TABLE, gc_fraction
+from core.seq_utils import CODON_TABLE, gc_fraction, revcomp as _seq_revcomp
 
 
 @dataclass
@@ -36,6 +36,7 @@ class CodonOptimizationResult:
     gc_distribution: List[float]
     warnings: List[str]
     avoided_motifs: List[str]
+    codon_table_used: str = ""  # 实际使用的密码子表名（终审 A-05 透明度）
     score: float = 0.0  # 综合评分 (0-100)
 
 
@@ -80,8 +81,10 @@ class CodonOptimizer:
         """
         self.species = species
         self.codon_freq = self._load_codon_frequency(species)
+        self.codon_table_used = self._resolved_table_name
         if custom_codon_table:
             self.codon_freq.update(custom_codon_table)
+            self.codon_table_used = "custom"
     
     def _load_codon_frequency(self, species: str) -> Dict[str, float]:
         """
@@ -114,18 +117,27 @@ class CodonOptimizer:
             'TAA': 0.61, 'TAG': 0.09, 'TGA': 0.30,
         }
 
-        yaml_freq = self._load_codon_frequency_from_yaml(species)
+        yaml_freq, table_name = self._load_codon_frequency_from_yaml(species)
         if yaml_freq:
+            self._resolved_table_name = table_name
             return yaml_freq
-        return ecoli_freq
+        # 终审 A-05：未知物种曾静默回退大肠杆菌表（pichia/insect/bacillus/
+        # martian 全部静默返回 COMPLETED 且无任何告警）——用户拿到「看起来
+        # 有 CAI 数值、实际是错误物种偏好」的序列。改为显式报错，调用方
+        # API 层转 400。
+        self._resolved_table_name = None
+        raise ValueError(
+            f"未知目标物种: {species!r}。可用物种: ecoli, human, yeast, cho"
+            "（或通过 custom_codon_table 传入自定义频率表）"
+        )
 
-    def _load_codon_frequency_from_yaml(self, species: str) -> Optional[Dict[str, float]]:
-        """从 data/codon_tables 加载 YAML 频率表。"""
+    def _load_codon_frequency_from_yaml(self, species: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+        """从 data/codon_tables 加载 YAML 频率表，返回 (freq, 表名)。"""
         try:
             import yaml
             from pathlib import Path
         except ImportError:
-            return None
+            return None, None
 
         species_key = (species or "ecoli").lower().strip()
         aliases = {
@@ -149,12 +161,12 @@ class CodonOptimizer:
 
         table_dir = next((p for p in candidates if p and p.is_dir()), None)
         if not table_dir:
-            return None
+            return None, None
 
         # 文件名匹配
         files = list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))
         if not files:
-            return None
+            return None, None
 
         def score_file(path: Path) -> int:
             stem = path.stem.lower()
@@ -171,7 +183,7 @@ class CodonOptimizer:
         ranked = sorted(files, key=score_file, reverse=True)
         if score_file(ranked[0]) == 0 and species_key not in ("ecoli", "e.coli"):
             # 无匹配时不强制用错误物种表
-            return None
+            return None, None
 
         target = ranked[0]
         if score_file(target) == 0:
@@ -182,7 +194,7 @@ class CodonOptimizer:
         try:
             data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
         except Exception:
-            return None
+            return None, None
 
         freq: Dict[str, float] = {}
         for k, v in data.items():
@@ -191,7 +203,10 @@ class CodonOptimizer:
                     freq[k.upper()] = float(v)
                 except (TypeError, ValueError):
                     continue
-        return freq or None
+        if not freq:
+            return None, None
+        # 终审 A-05：返回实际命中的表名（codon_table_used 透传给用户）
+        return freq, target.stem
 
     def back_translate(self, amino_acid_sequence: str) -> str:
         """不进行迭代优化，仅按频率表选最优密码子反翻译。"""
@@ -231,22 +246,35 @@ class CodonOptimizer:
             if aa not in valid_aa:
                 raise ValueError(f"无效的氨基酸代码: {aa}")
 
-        # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重
+        # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重。
+        # 终审 A-03：motif 匹配此前只扫正链——非回文 Type IIS 位点
+        # （BsaI GGTCTC/GAGACC、BsmBI CGTCTC/GAGACG、BbsI GAAGAC/GTCTTC）
+        # 的反向互补形式在反链残留（实测 100 条随机蛋白 3 条带反链 BsaI）。
+        # 每个避让 motif 同时加入其反向互补序列。
         censor = self._censor_motifs()
-        all_avoid = list(dict.fromkeys([m.upper() for m in avoid_motifs] + censor))
+        expanded: List[str] = []
+        for m in avoid_motifs:
+            m = m.upper()
+            expanded.extend((m, _seq_revcomp(m)))
+        all_avoid = list(dict.fromkeys(expanded + censor))
 
         # 初始优化：5' 翻译起始区用中等频率密码子（translational ramp），
         # 其余位置选最高频密码子
         dna_sequence = self._initial_optimization(amino_acid_sequence, use_ramp=True)
 
+        # 告警收集：迭代优化的未满足约束也会写入（见 _iterative_optimization）
+        warnings: List[str] = []
+
         # 迭代优化
-        dna_sequence = self._iterative_optimization(
+        dna_sequence, unsatisfied = self._iterative_optimization(
             dna_sequence,
             amino_acid_sequence,
             all_avoid,
             gc_target,
             optimize_level
         )
+        if unsatisfied:
+            warnings.extend(unsatisfied)
 
         # GeneOptimizer 式变窗多参数精修（跳过 5' 起始区，保持 ramp 设计）
         dna_sequence = self._sliding_window_refinement(
@@ -266,7 +294,6 @@ class CodonOptimizer:
         gc_distribution = self._calculate_gc_distribution(dna_sequence)
 
         # 检查并记录警告
-        warnings = []
         final_motifs = self._find_motifs(dna_sequence, all_avoid)
         if final_motifs:
             warnings.append(f"警告：序列中仍存在需要避免的motif: {final_motifs}")
@@ -285,6 +312,7 @@ class CodonOptimizer:
             warnings=warnings,
             avoided_motifs=[m for m in all_avoid if m not in final_motifs],
             score=score,
+            codon_table_used=self.codon_table_used or "",
         )
 
     def _sliding_window_refinement(
@@ -437,29 +465,51 @@ class CodonOptimizer:
             # 2. 5' 端发夹削弱（起始区稳定结构抑制翻译）
             if self._five_prime_hairpin_count(''.join(dna_list)) > HAIRPIN_TOLERANCE:
                 new_list = self._reduce_five_prime_hairpins(dna_list, aa_seq, avoid_motifs)
-                if new_list != dna_list:
-                    dna_list = new_list
+                # 终审 A-01：部分子例程原地改 list 并返回同一对象，
+                # 对象不等式恒 False——必须按「内容」比较才能感知进展
+                if new_list != dna_list or ''.join(new_list) != ''.join(dna_list):
+                    dna_list = list(new_list)
                     improved = True
 
             # 3. GC 平滑（如果需要）
             gc = self._calculate_gc_content(''.join(dna_list))
             if gc < gc_target[0] or gc > gc_target[1]:
+                before = ''.join(dna_list)
                 new_list = self._smooth_gc(dna_list, aa_seq, gc_target, avoid_motifs)
-                if new_list != dna_list:
-                    dna_list = new_list
+                if ''.join(new_list) != before:
+                    dna_list = list(new_list)
                     improved = True
 
             # 4. 避免poly-X (4个以上连续相同碱基)
             if self._has_poly_x(''.join(dna_list), 4):
-                new_list = self._break_poly_x(dna_list, aa_seq)
-                if new_list != dna_list:
-                    dna_list = new_list
+                before = ''.join(dna_list)
+                new_list = self._break_poly_x(dna_list, aa_seq, avoid_motifs)
+                if ''.join(new_list) != before:
+                    dna_list = list(new_list)
                     improved = True
 
+            # 终审 A-01：连续两轮无进展即收敛退出（原来 improved 恒 False
+            # 使循环第一轮就退出，optimize_level 三档输出完全相同）
             if not improved:
                 break
 
-        return ''.join(dna_list)
+        # 收敛后结构化写出未满足的约束（静默失败比失败更危险——终审总评）
+        unsatisfied: List[str] = []
+        final_dna = ''.join(dna_list)
+        residual_motifs = self._find_motifs(final_dna, avoid_motifs)
+        if residual_motifs:
+            unsatisfied.append(
+                f"警告：迭代优化收敛后仍存在需要避免的 motif: {residual_motifs}"
+            )
+        gc_final = self._calculate_gc_content(final_dna)
+        if gc_final < gc_target[0] or gc_final > gc_target[1]:
+            unsatisfied.append(
+                f"警告：迭代优化收敛后 GC 含量 {gc_final:.1%} 仍超出目标范围 "
+                f"{gc_target[0]:.0%}-{gc_target[1]:.0%}"
+            )
+        if self._has_poly_x(final_dna, 4):
+            unsatisfied.append("警告：迭代优化收敛后仍存在 ≥4 连续同聚碱基（poly-X）")
+        return final_dna, unsatisfied
 
     def _five_prime_hairpin_count(
         self,
@@ -642,13 +692,22 @@ class CodonOptimizer:
                 best = cur
         return best if dna else 0
 
-    def _break_poly_x(self, dna_list: List[str], aa_seq: str) -> List[str]:
+    def _break_poly_x(
+        self,
+        dna_list: List[str],
+        aa_seq: str,
+        avoid_motifs: Optional[List[str]] = None
+    ) -> List[str]:
         """尝试替换覆盖同聚核苷酸区的同义密码子，并保证算法终止。
 
         进展判据是「最长同聚 run 缩短或消除」而非「count(4-mer) 减少」：
         对长度 ≥8 的 run，3 倍步长的密码子平移会让 count(4-mer) 保持不变
         （窗口滑动），旧判据会在原地卡死、poly 区永远无法被打破。
+
+        终审 A-02：接受候选前检查 avoid_motifs——打断同聚物可能重新引入
+        用户要求排除的限制酶位点（实测曾引入 HindIII），此类替换必须拒绝。
         """
+        motifs = [m.upper() for m in (avoid_motifs or [])]
         for nt in 'ATGC':
             pattern = nt * 4
             max_replacements = max(1, len(aa_seq) * 2)
@@ -679,7 +738,10 @@ class CodonOptimizer:
                     )
                     for alternative in alternatives:
                         candidate = dna[:start] + alternative + dna[start + 3:]
-                        # 接受条件：poly 总数下降 **或** 最长 run 缩短
+                        # 接受条件：不引入需避让的 motif（终审 A-02），
+                        # 且 poly 总数下降或最长 run 缩短
+                        if any(m in candidate for m in motifs):
+                            continue
                         if (candidate.count(pattern) < dna.count(pattern)
                                 or self._longest_homopolymer_run(candidate)
                                 < self._longest_homopolymer_run(dna)):

@@ -36,6 +36,9 @@ export interface ReadLike {
   trimmed_length: number
   direction: string
   alignment_view?: AlignmentViewLike | null
+  /** 对齐块在原始电泳 read 内的 1-based 起止（终审 A-20：软剪切偏移）。 */
+  query_start?: number | null
+  query_end?: number | null
 }
 
 /**
@@ -43,6 +46,9 @@ export interface ReadLike {
  * 反向 read 的 query 是 revcomp：原始下标 = L-1-query 下标（与后端镜像同式）。
  * 常规列落在其参考 bp 中心（refPos-0.5）；连续插入列在左右两列之间等分插缝；
  * 末列 xEnd = 末列 xu + 1。
+ * 终审 A-20：局部比对会把 read 端部 junk/低质量段软剪切——对齐内相对列号
+ * qi 不是原始 read 下标，需加 query_start 偏移（正向）；反向 read 对齐块
+ * 第 0 列对应原始电泳 query_end 位置，向左递减。
  */
 export function buildSeqCols(read: ReadLike): SeqCol[] | null {
   const av = read.alignment_view
@@ -51,12 +57,15 @@ export function buildSeqCols(read: ReadLike): SeqCol[] | null {
   const cols: SeqCol[] = []
   let refPos = av.ref_start
   let qi = -1
+  const qs = typeof read.query_start === 'number' ? read.query_start : 1
+  const qe = typeof read.query_end === 'number' ? read.query_end : L
+  const blockFirst = read.direction === '-' ? qe : qs
   for (let i = 0; i < av.ref_aligned.length; i++) {
     const rb = av.ref_aligned[i]
     const qb = av.read_aligned[i]
     if (qb !== '-') qi++
-    // 反向 read 的 query 是 revcomp：原始下标 = L-1-query 下标（与后端镜像同式）
-    const origIdx = qb === '-' ? -1 : (read.direction === '-' ? L - 1 - qi : qi)
+    // 原始电泳下标（0-based）：正向 = blockFirst-1+qi；反向 = blockFirst-1-qi
+    const origIdx = qb === '-' ? -1 : (read.direction === '-' ? blockFirst - 1 - qi : blockFirst - 1 + qi)
     cols.push({
       ref: rb, read: qb, q: av.q_aligned?.[i] ?? 0,
       mm: rb !== '-' && qb !== '-' && rb !== qb,

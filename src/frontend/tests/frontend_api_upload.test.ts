@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 import axios from 'axios'
 
+/** 假 adapter 的响应体队列：默认空对象，测试可压入指定 data */
+let responses: any[] = []
+
 /**
  * FormData 上传的回归测试
  *
@@ -21,7 +24,8 @@ let api: typeof import('@/api')
 /** 假 adapter：不发网络请求，只记录 axios 最终交给它的请求配置 */
 function fakeAdapter(config: any) {
   sent.push(config)
-  return Promise.resolve({ data: {}, status: 200, statusText: 'OK', headers: {}, config })
+  const data = responses.length ? responses.shift() : {}
+  return Promise.resolve({ data, status: 200, statusText: 'OK', headers: {}, config })
 }
 
 beforeAll(async () => {
@@ -75,6 +79,35 @@ describe('测序分析上传', () => {
     const form = cfg.data as FormData
     expect(form.getAll('files').length).toBe(2)
     expect((form.get('excel') as File).name).toBe('info.xlsx')
+  })
+})
+
+describe('匿名分析记录访问令牌（终审 B-02）', () => {
+  it('创建响应下发 token 后，详情/峰图/导出/删除都带上 X-Access-Token', async () => {
+    sent = []
+    responses = [{ analysis_id: 'seq_anon1', access_token: 'tok-abc' }]
+    // 匿名创建：把 token 记进会话
+    await api.analyzeSequencingFiles(new File(['>r\nATG'], 'ref.fasta'),
+      [new File(['a'], 'r1.ab1')])
+
+    // 后续四类请求都必须带令牌头
+    for (const call of [
+      () => api.getSequencingAnalysis('seq_anon1'),
+      () => api.getReadTrace('seq_anon1', 0),
+      () => api.exportConsensus('seq_anon1', 'fasta'),
+      () => api.deleteSequencingAnalysis('seq_anon1'),
+    ]) {
+      await call()
+      const cfg = sent[sent.length - 1]
+      expect(cfg.headers?.['X-Access-Token']).toBe('tok-abc')
+    }
+  })
+
+  it('未持有令牌的记录不带头（登录用户走属主校验，不误传）', async () => {
+    sent = []
+    await api.getSequencingAnalysis('seq_other')
+    const cfg = sent[sent.length - 1]
+    expect(cfg.headers?.['X-Access-Token']).toBeUndefined()
   })
 })
 

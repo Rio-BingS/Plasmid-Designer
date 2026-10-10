@@ -132,23 +132,37 @@ if __name__ == "__main__":
 
 
 def test_five_prime_ramp_uses_medium_codons():
-    """v2：5' 翻译起始区使用中等频率密码子，ramp 之后回到最高频"""
+    """v2：5' 翻译起始区使用中等频率密码子，ramp 之后回到最高频。
+
+    两层验证：①纯 ramp 语义看 _initial_optimization（不受后续 GC 平滑
+    干扰）；②端到端产物中 ramp 区 CTG 占比显著低于 ramp 后（GC 平滑
+    在越界时合法覆盖 ramp 选择，但不应整体抹平 ramp 设计）。"""
     from core.codon_optimizer import CodonOptimizer, RAMP_CODONS
 
     opt = CodonOptimizer(species="ecoli")
-    aa = "L" * 40  # L 有 6 个同义密码子，ramp 效果可观察
-    result = opt.optimize(aa)
+    aa = "MKVL" * 30  # L 在 aa 下标 3,7,11,…（i % 4 == 3）
 
-    ramp_codon = result.dna_sequence[3:6]        # 第 2 个 L（ramp 区）
-    post_codon = result.dna_sequence[RAMP_CODONS * 3:RAMP_CODONS * 3 + 3]  # ramp 之后
-    assert ramp_codon != post_codon or len(set(c for c in ["CTA"])) == 0
-    # ramp 区不使用最高频密码子 CTG
-    assert ramp_codon != "CTG"
-    # ramp 之后回到最高频密码子
-    assert post_codon == "CTG"
+    # ① 纯 ramp 选择：ramp 区 L 一律不取最高频 CTG
+    init = opt._initial_optimization(aa, use_ramp=True)
+    init_ramp_ls = [init[i * 3:(i + 1) * 3] for i in range(3, RAMP_CODONS, 4)]
+    assert all(c != "CTG" for c in init_ramp_ls), f"ramp 选择不应取最高频 CTG: {init_ramp_ls}"
+    # ramp 之后的 L 回到最高频 CTG
+    init_post_ls = [init[i * 3:(i + 1) * 3] for i in range(RAMP_CODONS + 3, len(aa), 4)]
+    assert init_post_ls and all(c == "CTG" for c in init_post_ls), init_post_ls[:5]
+
+    # ② 端到端：GC 平滑允许个别替换，但 ramp 区 CTG 占比必须低于 ramp 后
+    result = opt.optimize(aa)
+    seq = result.dna_sequence
+    ramp_ls = [seq[i * 3:(i + 1) * 3] for i in range(3, RAMP_CODONS, 4)]
+    post_ls = [seq[i * 3:(i + 1) * 3] for i in range(RAMP_CODONS + 3, len(aa), 4)]
+    ramp_ctg = sum(1 for c in ramp_ls if c == "CTG") / len(ramp_ls)
+    post_ctg = sum(1 for c in post_ls if c == "CTG") / len(post_ls)
+    assert ramp_ctg < post_ctg, (
+        f"ramp 区 CTG 占比 {ramp_ctg:.0%} 应低于 ramp 后 {post_ctg:.0%}"
+    )
     # 翻译产物不变
     from core.codon_optimizer import translate_dna
-    assert translate_dna(result.dna_sequence).rstrip("*") == aa
+    assert translate_dna(seq).rstrip("*") == aa
 
 
 def test_censor_motifs_auto_avoided():
@@ -161,9 +175,110 @@ def test_censor_motifs_auto_avoided():
 
     # 构造含 AATAAA（N=AAT + K=AAA）的起始 dna，迭代应将其移除
     aa = "NK"
-    dna_list = list("AATAAA")
-    fixed = opt._iterative_optimization("AATAAA", aa, opt._censor_motifs(), (0.4, 0.6), "balanced")
+    fixed, unsatisfied = opt._iterative_optimization("AATAAA", aa, opt._censor_motifs(), (0.4, 0.6), "balanced")
     assert "AATAAA" not in fixed
+    # motif 已移除 → 不应有「收敛后仍存在 motif」的未满足约束
+    assert not any("仍存在需要避免的 motif" in w for w in unsatisfied)
+
+
+def test_iterative_loop_runs_until_no_progress(monkeypatch):
+    """终审 A-01 回归锁：循环曾因「原地改 list + 对象不等式恒假」第一轮
+    即退出——即使约束尚未满足。桩掉 _smooth_gc 模拟「每轮内容有变化但
+    约束永不满足」（旧失明形态：原地改 + 返回同一对象），循环必须持续
+    迭代到轮数上限，而不是一轮收工。"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    aa = "MKLV"
+    calls = {"smooth": 0}
+
+    def fake_smooth(self, dna_list, aa_seq, gc_target, avoid_motifs=()):
+        calls["smooth"] += 1
+        # 原地改 + 返回同一对象：旧判据（对象不等式）对此恒假
+        dna_list[-1] = "C" if dna_list[-1] == "A" else "A"
+        return dna_list
+
+    monkeypatch.setattr(CodonOptimizer, "_smooth_gc", fake_smooth)
+
+    # GC 14%（0.30-0.70 区间外）且无 poly-X/发夹 → 每轮只有 GC 步可走，
+    # 桩每次只翻转末位碱基，GC 永不进区间 → balanced 档应跑满 50 轮
+    opt._iterative_optimization(
+        "ATGAAATTAGTAAA", aa, [], (0.30, 0.70), "balanced"
+    )
+    assert calls["smooth"] >= 10, (
+        f"迭代循环在第一轮附近就退出（smooth 仅调用 {calls['smooth']} 次）"
+    )
+
+
+def test_iterative_reports_unsatisfied_constraints():
+    """终审 A-01 收敛检查：迭代收敛后仍未满足的约束必须结构化写出"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    # W-G 相邻必然产生不可消除的 GGGG（W=UGG、G=GGG 拼接），
+    # poly-X 约束在收敛后必须以告警形式透出而不是静默放弃
+    aa = "WGWGWGWG"
+    result = opt.optimize(aa)
+    assert any("poly-X" in w or "poly" in w.lower() for w in result.warnings), result.warnings
+
+
+def test_break_poly_x_respects_avoid_motifs():
+    """终审 A-02 回归锁：打断同聚物不得重新引入需排除的酶切位点
+    （实测曾把 HindIII AAGCTT 重新引入）"""
+    from core.codon_optimizer import CodonOptimizer
+
+    opt = CodonOptimizer(species="ecoli")
+    # 富 Lys 蛋白：AAA run 打断路径高频触发
+    aa = "MKKKKKKKKKKKKSSSKKKKKKKKKK"
+    result = opt.optimize(aa, avoid_motifs=["AAGCTT"])
+    assert "AAGCTT" not in result.dna_sequence
+    # 同义性守恒
+    from core.codon_optimizer import translate_dna
+    assert translate_dna(result.dna_sequence).rstrip("*") == aa
+
+
+def test_reverse_strand_iis_sites_avoided():
+    """终审 A-03 回归锁：非回文 Type IIS 位点此前只在正链避让——
+    BsaI 反链形式 GAGACC 曾在产物中残留（100 条随机蛋白 3 条中招）。
+    用户给定正链记法位点后，反向互补形式同样必须被消除。"""
+    from core.codon_optimizer import CodonOptimizer, translate_dna
+    from core.seq_utils import revcomp
+
+    opt = CodonOptimizer(species="ecoli")
+    # 多样化蛋白（含 Lys/Ser/Leu 高频族，变异空间大）
+    aa = "MKSSLLKKSSLLKKSSLLKKSSLLKKSSLLGGSSRRKKSSLL"
+    for site in ("GGTCTC",   # BsaI 正链记法 → 反链 GAGACC
+                 "CGTCTC",   # BsmBI → 反链 GAGACG
+                 "GAAGAC"):  # BbsI → 反链 GTCTTC
+        result = opt.optimize(aa, avoid_motifs=[site])
+        assert site not in result.dna_sequence, site
+        assert revcomp(site) not in result.dna_sequence, (
+            f"{site} 的反链形式 {revcomp(site)} 残留"
+        )
+        assert translate_dna(result.dna_sequence).rstrip("*") == aa
+
+
+def test_unknown_species_raises_instead_of_silent_fallback():
+    """终审 A-05 回归锁：未知物种曾静默回退大肠杆菌表（pichia/insect/
+    bacillus/martian 全部静默 COMPLETED 无告警）——现在必须显式报错；
+    合法物种带 codon_table_used 透明字段。"""
+    import pytest as _pytest
+    from core.codon_optimizer import CodonOptimizer
+
+    for bad in ("pichia", "insect", "bacillus", "martian"):
+        with _pytest.raises(ValueError, match="未知目标物种"):
+            CodonOptimizer(species=bad)
+
+    # 合法物种解析出实际表名（透明度）
+    for sp, expect in (("ecoli", "Ecoli_K12"), ("human", "Human"), ("cho", "CHO"), ("yeast", "Yeast")):
+        opt = CodonOptimizer(species=sp)
+        assert opt.codon_table_used == expect, (sp, opt.codon_table_used)
+        r = opt.optimize("MKV")
+        assert r.codon_table_used == expect
+
+    # 别名同样命中（E.coli / s_cerevisiae）
+    assert CodonOptimizer(species="E.coli").codon_table_used == "Ecoli_K12"
+    assert CodonOptimizer(species="s_cerevisiae").codon_table_used == "Yeast"
 
 
 def test_result_has_score_and_hairpin_reduction():
