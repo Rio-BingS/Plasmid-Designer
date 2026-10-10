@@ -1,6 +1,6 @@
 """认证状态中间件
 
-尽力解析 Bearer JWT 并将用户信息写入 request.state.user，
+尽力解析登录 JWT（Bearer 头或会话 Cookie）并将用户信息写入 request.state.user，
 供下游中间件（速率限制的 user_* 配额）与路由读取。
 
 职责边界：只做令牌签名与有效期校验，不查数据库、不拒绝任何请求——
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthStateMiddleware(BaseHTTPMiddleware):
-    """解析 Bearer Token，将最小用户信息注入 request.state.user。"""
+    """解析登录令牌，将最小用户信息注入 request.state.user。"""
 
     async def dispatch(self, request: Request, call_next):
         user = self._resolve_user(request)
@@ -31,18 +31,14 @@ class AuthStateMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _resolve_user(request: Request) -> Optional[Dict]:
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.lower().startswith("bearer "):
-            return None
-
-        token = auth_header[7:].strip()
-        if not token:
-            return None
-
         try:
             # 函数内导入：jwt_auth 依赖数据库模块，避免其随中间件被提前加载
-            from app.auth.jwt_auth import decode_token
+            from app.auth.jwt_auth import decode_token, extract_token
 
+            # Bearer 头优先，其次浏览器会话 Cookie
+            token, _source = extract_token(request)
+            if not token:
+                return None
             token_data = decode_token(token)
         except Exception:  # pragma: no cover - 防御性兜底
             return None

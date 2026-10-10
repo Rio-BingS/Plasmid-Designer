@@ -125,6 +125,9 @@ def _make_user(db, email="u@test.com", password="password123", is_admin=False, e
 def _login(client, email, password):
     r = client.post("/api/auth/login", json={"email": email, "password": password})
     assert r.status_code == 200, r.text
+    # 本模块按 Bearer 头鉴权：丢弃登录下发的会话 Cookie，免得同一 client
+    # 之后发出的「匿名」请求被 Cookie 认证成已登录
+    client.cookies.clear()
     return r.json()
 
 
