@@ -104,11 +104,19 @@ async def get_design(design_id: str, user: Optional[User] = Depends(get_current_
     cached_data = cache.get_design_result(design_id)
     if cached_data is not None:
         try:
-            return _ensure_design_access(DesignResult.model_validate(cached_data), user)
-        except HTTPException:
-            raise
+            cached = DesignResult.model_validate(cached_data)
         except Exception:
-            pass  # 缓存结构与模型不兼容时回退存储层
+            cached = None  # 缓存结构与模型不兼容时回退存储层
+        # 缓存里「无属主」不可信：v2.4.x 从库回载时丢了 user_id，把属主设计
+        # 以 user_id=None 写进了 24h 缓存。无属主命中一律回存储层核对属主，
+        # 不一致即作废该缓存条目
+        if cached is not None and not cached.user_id:
+            stored = _load(design_id)
+            if stored is not None and stored.user_id:
+                cache.invalidate_design(design_id)
+                cached = None
+        if cached is not None:
+            return _ensure_design_access(cached, user)
 
     result = _load(design_id)
     result = _ensure_design_access(result, user)
