@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest + pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/backend/requirements.txt
+
+      # 每次运行随机生成，不用代码里的开发默认值，也不落进仓库
+      - name: Generate SECRET_KEY
+        run: |
+          key="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::$key"
+          echo "SECRET_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider
+
+      # 阻断：后端依赖全部精确 pin，出现已知漏洞应立即升级
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r src/backend/requirements.txt
+          pip-audit -r deploy/docker/requirements.backend.txt
+
+  frontend:
+    name: Frontend (vue-tsc + vitest + npm audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx vue-tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+      # 阻断：会打进浏览器产物的生产依赖不允许 high 及以上漏洞
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+      # 不阻断：开发工具链（vite/vitest）剩余告警需跨大版本升级，先只展示
+      - name: npm audit (all deps, informational)
+        run: npm audit --audit-level=high
+        continue-on-error: true
