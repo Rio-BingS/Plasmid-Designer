@@ -30,21 +30,10 @@ async def lifespan(app: FastAPI):
     print(f"🧬 Plasmid Designer API v{settings.APP_VERSION}")
     print(f"📦 Storage mode: {STORAGE_MODE}")
 
-    # JWT 密钥治理（终审 B-04）：占位值/弱密钥在非 DEBUG 下直接拒绝启动——
-    # 公开仓库默认值进入生产 = 任何人可自签令牌冒充任意用户，仅告警不够。
-    # DEBUG=True（本地开发）保留占位值可用，维持零配置体验。
-    _SECRET_PLACEHOLDERS = ("dev-insecure-secret-key-change-me",
-                            "change_this_in_production",
-                            "change_this_in_production_use_strong_random_string")
-    if settings.SECRET_KEY in _SECRET_PLACEHOLDERS or len(settings.SECRET_KEY) < 32:
-        if settings.DEBUG:
-            print("🚨 SECRET_KEY 是占位值/弱密钥（DEBUG 模式仅告警）——"
-                  "生产部署务必在 .env 设置强随机密钥（openssl rand -hex 32）")
-        else:
-            raise RuntimeError(
-                "SECRET_KEY 为占位值或长度 <32，拒绝启动（生产环境必须在 .env "
-                "设置强随机密钥：openssl rand -hex 32。本地开发请设 DEBUG=true）"
-            )
+    # JWT 密钥治理（终审 B-04）：导入 jwt_auth 时已校验；这里对运行期的
+    # settings 再校验一次（与 DEBUG 无关），占位/过短/低熵密钥拒绝启动
+    from app.config import validate_secret_key
+    validate_secret_key(settings.SECRET_KEY)
 
     # 无条件初始化数据库表：SQLite 幂等建表，保证本地默认模式下认证可用；
     # PostgreSQL 连接失败仅告警，不阻断主流程（设计主路径不依赖数据库）

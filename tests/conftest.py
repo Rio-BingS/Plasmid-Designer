@@ -6,6 +6,7 @@
 """
 
 import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
@@ -30,6 +31,9 @@ _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="plasmid-test-data-"))
 os.environ["DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["DATABASE_URL"] = "sqlite:///" + (_TEST_DATA_DIR / "plasmid_designer.db").as_posix()
 os.environ["PLASMID_LOG_DIR"] = str(_TEST_DATA_DIR / "logs")
+# jwt_auth 导入即校验 SECRET_KEY（占位/过短/低熵直接拒绝），测试统一注入
+# 每次运行随机生成的强密钥；直接赋值，避免开发者会话里的弱值混进来
+os.environ["SECRET_KEY"] = secrets.token_hex(32)
 
 
 def _init_isolated_db() -> None:
