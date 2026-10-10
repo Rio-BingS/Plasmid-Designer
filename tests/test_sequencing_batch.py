@@ -578,6 +578,36 @@ def test_batch_cache_evicts_oldest_over_global_cap(monkeypatch):
     sr._BATCHES.clear()
 
 
+def test_batch_cache_capped_by_total_bytes(monkeypatch):
+    """整理包缓存按总字节封顶（此前上限是 256MB × 8 = 2GB）"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_CACHE_TOTAL_BYTES", 2500)
+    sr._BATCHES.clear()
+    now = sr.time.time()
+    for i in range(4):
+        sr._BATCHES[f"bid{i}"] = {"created_ts": now - (4 - i), "zip": b"x" * 1000,
+                                  "zip_name": f"n{i}", "owner_id": None}
+    sr._sweep_expired()
+    assert sum(len(r["zip"]) for r in sr._BATCHES.values()) <= 2500
+    assert set(sr._BATCHES) == {"bid2", "bid3"}
+    sr._BATCHES.clear()
+
+
+def test_batch_cache_total_never_exceeded_after_insert(client, monkeypatch):
+    """插入新整理包后立即淘汰，缓存条数任何时刻不超上限"""
+    from app.routes import sequencing_routes as sr
+
+    monkeypatch.setattr(sr, "MAX_BATCH_CACHE_ENTRIES", 1)
+    sr._BATCHES.clear()
+    for _ in range(2):
+        r = _post(client, [_fasta("MX.fasta", REF_MX), _ab1("T1.ab1", REF_MX)],
+                  excel_part=_xlsx([("MX", ["T1"])]))
+        assert r.status_code == 200, r.text
+        assert len(sr._BATCHES) <= 1
+    sr._BATCHES.clear()
+
+
 def test_batch_report_owner_scoped(client):
     """终审 B-03 回归锁：整理包含全部原始 .ab1 与图谱，此前下载无属主绑定。
     登录用户创建的批次：他人下载 404（不泄露存在性）、管理员与本人可下。"""
