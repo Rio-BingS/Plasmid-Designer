@@ -42,6 +42,7 @@ from core.sanger.batch import (  # noqa: E402
     norm_stem as _norm,
     rows_have_clones,
 )
+from core.sanger.pipeline import alignment_span_text  # noqa: E402
 
 
 # ---------------------------------------------------------------- 文件扫描与匹配
@@ -172,7 +173,7 @@ def write_report_md(plasmid: str, out_path: Path, ctx: dict, res, copied):
         for r in res["reads"]:
             a = r["alignment"]
             lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
-                         f"| {a['ref_start']}–{a['ref_end']} |")
+                         f"| {alignment_span_text(a)} |")
         lines.append("")
     if res and res["variants"]:
         lines += ["## 变异明细", "",

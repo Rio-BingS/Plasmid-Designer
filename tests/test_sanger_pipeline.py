@@ -2465,6 +2465,12 @@ def test_fold_helpers():
                          "ref_length": 10}) == [(8, 10), (1, 3)]
     assert aln_segments({"ref_start": 0, "ref_end": 0, "circular": True,
                          "ref_length": 10}) == []
+    from core.sanger.pipeline import alignment_span_text
+    assert alignment_span_text({"ref_start": 5, "ref_end": 8}) == "5–8"
+    assert alignment_span_text({"ref_start": 8, "ref_end": 13, "circular": True,
+                                "ref_length": 10}) == "8–10、1–3"
+    assert aln_segments({"ref_start": 12, "ref_end": 14, "circular": True,
+                         "ref_length": 10}) == [(2, 4)]
 
 
 def test_partial_alignment_still_flagged_on_circular():
