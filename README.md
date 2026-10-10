@@ -56,7 +56,7 @@ plasmid-designer-v2/
 ### 环境要求
 
 - Python 3.11+
-- Node.js 20+
+- Node.js 22.12+（22 LTS）
 - npm 10+
 
 ### 本地开发
