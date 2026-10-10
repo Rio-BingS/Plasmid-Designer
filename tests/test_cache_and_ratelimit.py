@@ -255,6 +255,8 @@ class TestDesignResultCache:
             sequence=_DNA,
             sequence_type=SequenceType.DNA,
             cloning_method=CloningMethod.RESTRICTION,
+            enzyme_5="EcoRI",
+            enzyme_3="HindIII",
         )
         cache.invalidate_design(design_id)
 
