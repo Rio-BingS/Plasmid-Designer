@@ -21,7 +21,9 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
-from core.sanger.aligner import align_read, merge_coverage
+from core.sanger.aligner import (
+    align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
+)
 from core.sanger.annotator import annotate_variants, summarize_severity
 from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
@@ -241,20 +243,18 @@ def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
 
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
-                        has_mixed: bool, partial_reads: int = 0,
-                        partial_variants: int = 0) -> str:
+                        has_mixed: bool, partial_reads: int = 0) -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
     优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致。
-    partial_reads>0（有 read 大段未比对，如跨越环状质粒原点）时不得给出
-    干净的 ✓——未比对部分根本没有验证。"""
+    partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
+    有误，或线性参考上跨原点的 read）时不得给出干净的 ✓——未比对部分
+    根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。"""
     if partial_reads and not has_mixed:
         confirmed0 = [v for v in variants if v.get("confidence") != "low"]
         bad0 = [c for c in cds_reports if c.get("protein_identical") is False]
         if not confirmed0 and not bad0:
-            tail = (f"，其中跨原点段检出 {partial_variants} 处差异待核对"
-                    if partial_variants else "，该部分未验证")
             return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
-                    f"有大段未比对上参考（可能跨越环状质粒原点）{tail}")
+                    "有大段未比对上参考，该部分未验证")
     confirmed = [v for v in variants if v.get("confidence") != "low"]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
@@ -280,67 +280,47 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
 PARTIAL_ALIGN_RATIO = 0.8
 
 
-def _check_partial_alignment(trimmed: str, trimmed_q: List[int], ref: str,
-                             aln: Dict) -> Optional[Dict]:
-    """read 大段未比对时给出说明；若是跨越环状参考原点，给出折回坐标。
+def _circ_len(aln: Dict) -> int:
+    """环状比对的参考长度（线性比对返回 0：坐标不折回）"""
+    return int(aln.get("ref_length") or 0) if aln.get("circular") else 0
 
-    主流程按线性参考比对：一条跨越质粒原点的 read 只有较长的一侧能比对
-    上，另一侧被局部比对静默丢弃，其中的真实变异不会报告。这里对部分
-    比对的 read 再比对一次「参考+参考」（双倍长度），若对齐块跨越接点
-    且覆盖明显更多，即判定为跨原点 read，并把双倍参考上的变异按
-    ((p-1) % L) + 1 折回；只保留主比对未覆盖区段的变异（这部分没有
-    经过峰图级复核，单列为待核对）。
-    """
+
+def _run_offset(aln: Dict, start: int, end: int) -> int:
+    """参考区间 [start,end]（1..L）在该 read 展开坐标中的平移量：环状比对
+    跨原点时，原点后段的区间位于 L+1.. 处（返回 L），否则 0。
+    线性比对恒为 0，与此前的逐位比较完全一致。"""
+    L = _circ_len(aln)
+    if (L and aln.get("ref_end", 0) > L and end < aln.get("ref_start", 0)
+            and start + L <= aln["ref_end"]):
+        return L
+    return 0
+
+
+def _check_partial_alignment(trimmed: str, aln: Dict,
+                             circular: bool = False) -> Optional[Dict]:
+    """read 大段未比对上参考时给出说明（未比对部分没有任何验证）。
+
+    环状参考在主流程中已按「参考 + 参考头部」比对，跨原点的 read 整条
+    比对上、坐标折回，不会落到这里；此处只剩其他原因的截断：载体外序列、
+    污染、参考有误，或参考实为环状却按线性分析。"""
     n = len(trimmed)
     aligned = int(aln.get("aligned_read_len") or 0)
     if n == 0 or aligned >= PARTIAL_ALIGN_RATIO * n:
         return None
-    L = len(ref)
-    info: Dict = {
+    return {
         "aligned_read_len": aligned,
         "trimmed_length": n,
-        "origin_spanning": False,
-        "extra_ranges": [],
-        "extra_variants": [],
+        "circular": bool(circular),
     }
-    dbl = align_read(trimmed, ref + ref, trimmed_q)
-    d_len = int(dbl.get("aligned_read_len") or 0)
-    rs, re_ = dbl.get("ref_start", 0), dbl.get("ref_end", 0)
-    if d_len > aligned and rs <= L < re_:
-        info["origin_spanning"] = True
-        fold = lambda p: ((p - 1) % L) + 1  # noqa: E731
-        spans = [(fold(rs), L), (1, fold(re_))]
-        p0, p1 = aln.get("ref_start", 0), aln.get("ref_end", 0)
-        # 主比对已覆盖的那一侧不再重复列出
-        info["extra_ranges"] = [sp for sp in spans if not (sp[0] >= p0 and sp[1] <= p1)]
-        for v in dbl.get("variants", []):
-            fp = fold(v["ref_pos"])
-            if p0 <= fp <= p1:
-                continue
-            rp = v.get("read_pos") or 1
-            qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
-            info["extra_variants"].append({
-                **v, "ref_pos": fp, "quality": trimmed_q[qi] if trimmed_q else 0,
-            })
-    return info
 
 
 def _partial_alignment_note(filename: str, info: Dict) -> str:
     head = (f"注意：{filename} 修剪后 {info['trimmed_length']}bp，仅 "
             f"{info['aligned_read_len']}bp 比对上参考")
-    if not info["origin_spanning"]:
-        return head + "——其余部分未验证（可能是载体外序列、污染或参考有误），建议核对"
-    rng = "、".join(f"{a}-{b}" for a, b in info["extra_ranges"])
-    txt = head + f"；该 read 跨越环状参考原点，原点另一侧（参考 {rng}）未纳入主判读"
-    ev = info["extra_variants"]
-    if ev:
-        preview = "、".join(
-            f"{v['ref_pos']} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
-            for v in ev[:4]) + ("等" if len(ev) > 4 else "")
-        txt += f"，该段检出 {len(ev)} 处差异（{preview}，未经峰图复核，请核对）"
-    else:
-        txt += "，该段按序列比对未见差异（未经峰图复核）"
-    return txt
+    txt = head + "——其余部分未验证（可能是载体外序列、污染或参考有误"
+    if not info.get("circular"):
+        txt += "；若参考实为环状质粒，请按环状参考分析"
+    return txt + "），建议核对"
 
 
 def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, int]:
@@ -771,6 +751,7 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
     if not ref_s or len(ref_s) != len(read_s):
         return None
     ref_pos = int(aligned.get("ref_start") or aln["ref_start"])
+    L = _circ_len(aln)  # 环状跨原点：展开坐标折回后再与 [cs,ce] 比较
     total = sum(1 for c in read_s if c != "-")
     first = last = None
     called = 0
@@ -779,7 +760,7 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
         b = read_s[k]
         if b != "-":
             if rch != "-":
-                cur = ref_pos
+                cur = fold_pos(ref_pos, L) if L else ref_pos
                 ref_pos += 1
                 if cs <= cur <= ce:
                     if first is None:
@@ -814,7 +795,7 @@ def _pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
     return out
 
 
-def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
+def _read_ref_maps(r: Dict, fold: bool = True) -> Tuple[Dict[int, int], Dict[int, Dict]]:
     """单条 read 的两张坐标映射（基于 alignment_view 的参考方向逐列视图）：
 
     - read2ref: 原始电泳 read 坐标(1-based, 修剪后) -> 参考坐标(1-based)；
@@ -828,13 +809,18 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
 
     终审 A-20：局部比对会把 read 端部的 junk/低质量段软剪切掉——对齐内
     相对列号不是 trimmed read 坐标，必须加上 query_start 偏移（aligner
-    已输出对齐块在原始 query 内的 1-based 起止）。"""
+    已输出对齐块在原始 query 内的 1-based 起止）。
+
+    环状参考跨原点的 read：逐列视图沿展开坐标（可 > L）递增，fold=True
+    时两张表的参考坐标折回 1..L；fold=False 保留展开坐标（单调，供
+    线性内插用）。"""
     aligned = (r.get("alignment") or {}).get("aligned") or {}
     ref_s = (aligned.get("ref_aligned") or "").upper()
     read_s = (aligned.get("read_aligned") or "").upper()
     if not ref_s or len(ref_s) != len(read_s):
         return {}, {}
     aln = r.get("alignment") or {}
+    L = _circ_len(aln) if fold else 0
     direction = aln.get("direction", "+")
     n = len(r.get("trimmed_bases") or "")
     q_aligned = aligned.get("q_aligned") or []
@@ -861,9 +847,10 @@ def _read_ref_maps(r: Dict) -> Tuple[Dict[int, int], Dict[int, Dict]]:
             orig = None
         if rb != "-":
             if qb != "-" and orig is not None:
-                read2ref[orig] = ref_pos
-                if ref_pos not in ref2call:
-                    ref2call[ref_pos] = {
+                rp = fold_pos(ref_pos, L) if L else ref_pos
+                read2ref[orig] = rp
+                if rp not in ref2call:
+                    ref2call[rp] = {
                         "base": qb,
                         "q": q_aligned[i] if i < len(q_aligned) else 0,
                         "read_pos": orig,
@@ -898,6 +885,11 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
                      (anchor + vlen, anchor + vlen + 1)]
         win = (anchor - 1, anchor + vlen + 1)
     by_name = {r["filename"]: r for r in read_results}
+    src = by_name.get(v.get("read", ""))
+    L = _circ_len(src["alignment"]) if src is not None else 0
+    if L:
+        # 环状参考：原点两侧（L 与 1）相邻，junction 坐标按环折回
+        junctions = [(fold_pos(a, L), fold_pos(b, L)) for a, b in junctions]
     hits: List[str] = []
     for fname, r2c in ref2call_by_read.items():
         if fname == v.get("read"):
@@ -932,6 +924,16 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
           multi_total, uncov_total}；单条 read 的分析互检无意义，字段照常
           返回（clean/multi 均为 0），由结论层判断是否展示。"""
     maps = [(r, *_read_ref_maps(r)) for r in read_results]
+    # 环状跨原点 read 的折回坐标在原点处不单调，内插用展开坐标再折回
+    unfolded = {r["filename"]: (_read_ref_maps(r, fold=False)[0], _circ_len(r["alignment"]))
+                for r in read_results if _circ_len(r.get("alignment") or {})}
+
+    def _approx(r: Dict, r2ref: Dict[int, int], pos: int) -> Optional[int]:
+        u = unfolded.get(r["filename"])
+        if u is None:
+            return _approx_ref(r2ref, pos)
+        rp = _approx_ref(u[0], pos)
+        return fold_pos(rp, u[1]) if rp is not None else None
 
     def _approx_ref(r2ref: Dict[int, int], pos: int) -> Optional[int]:
         """位点在 read2ref 查不到时的近似定位。局部比对会在 read 端部留
@@ -954,7 +956,7 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         for e in r.get("mixed_detail") or []:
             rp = r2ref.get(e["pos"])
             if rp is None:
-                rp = _approx_ref(r2ref, e["pos"])
+                rp = _approx(r, r2ref, e["pos"])
             if rp is not None:
                 s.add(rp)
         mixed_ref_by_read[r["filename"]] = s
@@ -970,7 +972,7 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         for e in r.get("mixed_detail") or []:
             rp = r2ref.get(e["pos"])
             if rp is None:
-                rp = _approx_ref(r2ref, e["pos"])
+                rp = _approx(r, r2ref, e["pos"])
                 if rp is None:
                     uncovered.append(e["pos"])
                     continue
@@ -1308,7 +1310,8 @@ def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
 
 
 def _build_consensus(reference: str, read_results: List[Dict],
-                     skip_keys: Optional[set] = None) -> Dict:
+                     skip_keys: Optional[set] = None,
+                     circular: bool = False) -> Dict:
     """按参考坐标逐位质量加权投票生成共识序列
 
     每个 read 以其平均质量为权重为覆盖区间内的参考碱基投票；
@@ -1318,8 +1321,15 @@ def _build_consensus(reference: str, read_results: List[Dict],
     skip_keys：{(ref_pos, type, alt_base)} 低置信变体集合。这些调用不写入
     共识——共识序列代表当前证据下的最佳猜测构建体，疑似测序噪声只在变体
     清单中列出供人工核对，不应固化进共识。
+
+    circular=True：环状参考，跨原点 read 的展开坐标、跨原点的缺失与
+    原点处（L 与 1 之间）的插入都按环折回，不再有「参考末端之后」的插入。
     """
     L = len(reference)
+
+    def _idx(p: int) -> int:  # 1-based 参考坐标 → 0-based 投票下标（环状折回）
+        return (fold_pos(p, L) - 1) if circular else p - 1
+
     votes: List[Dict[str, int]] = [{} for _ in range(L)]
     end_insert_votes: Dict[str, int] = {}  # 参考末端之后的插入（无右侧锚定位）
 
@@ -1327,6 +1337,8 @@ def _build_consensus(reference: str, read_results: List[Dict],
         weight = max(10, int(r["mean_q"]))
         aln = r["alignment"]
         for pos in range(aln["ref_start"], aln["ref_end"] + 1):
+            if circular:
+                pos = fold_pos(pos, L)
             if 1 <= pos <= L:
                 base = reference[pos - 1].upper()
                 votes[pos - 1][base] = votes[pos - 1].get(base, 0) + weight
@@ -1334,17 +1346,17 @@ def _build_consensus(reference: str, read_results: List[Dict],
             if skip_keys and _variant_key(v) in skip_keys:
                 continue
             if v["type"] == "substitution":
-                idx = v["ref_pos"] - 1
+                idx = _idx(v["ref_pos"])
                 if 0 <= idx < L:
                     alt = v["alt_base"].upper()
                     votes[idx][alt] = votes[idx].get(alt, 0) + weight + 5
             elif v["type"] == "deletion":
                 for k in range(v["length"]):
-                    idx = v["ref_pos"] - 1 + k
+                    idx = _idx(v["ref_pos"] + k)
                     if 0 <= idx < L:
                         votes[idx]["-"] = votes[idx].get("-", 0) + weight + 5
             elif v["type"] == "insertion":
-                idx = v["ref_pos"]  # 插入点右侧参考位置
+                idx = _idx(v["ref_pos"] + 1)  # 插入点右侧参考位置
                 key = f"+{v['alt_base'].upper()}"
                 if 0 <= idx < L:
                     votes[idx][key] = votes[idx].get(key, 0) + weight + 5
@@ -1836,13 +1848,16 @@ def analyze(
     allow_decompose: bool = True,
     signal_correct: bool = True,
     poly_local_ratio: bool = True,
+    circular: bool = False,
 ) -> Dict:
     """全自动分析入口
 
     ab1_files: [(filename, bytes), ...]
-    reference: 参考载体序列（按线性比对，1-based 坐标；跨越环状质粒原点的
-    read 经双倍参考复核后单列于 partial_alignment 并写入结论，不会再
-    报出干净的“一致”）
+    reference: 参考载体序列（1-based 坐标）
+    circular: 参考为环状（质粒）时，每条 read 对「参考 + 参考[:k]」比对
+    （k≈read 长），跨越原点的 read 整条比对上；变体、覆盖区间（跨原点
+    拆为两段）、共识、read↔参考坐标映射全部按 ((p-1) % L) + 1 折回。
+    False（默认）按线性参考比对，行为与此前一致。
     signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
     显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
     poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
@@ -1855,6 +1870,20 @@ def analyze(
 
     read_results: List[Dict] = []
     errors: List[Dict] = []
+    L_ref = len(ref)
+    _align = align_read_circular if circular else align_read
+    # indel 最左归一化：环状参考上可越过原点左移——在三倍参考的中间一份
+    # 上归一化（坐标 +L 抬升），结果折回；线性参考维持原口径
+    ref3 = ref * 3 if circular else ""
+
+    def _norm_all(vs: List[Dict]) -> List[Dict]:
+        if not circular:
+            return _normalize_indel_all(ref, vs)
+        out = []
+        for v in vs:
+            nv = _normalize_indel(ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
+            out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
+        return out
 
     for filename, blob in ab1_files:
         try:
@@ -1888,12 +1917,13 @@ def analyze(
         mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
         grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
 
-        aln = align_read(trimmed, ref, trimmed_q)
-        partial = _check_partial_alignment(trimmed, trimmed_q, ref, aln)
+        aln = _align(trimmed, ref, trimmed_q)
+        # 截断提示：环状参考的跨原点 read 已整条比对，仍截断即另有原因
+        partial = _check_partial_alignment(trimmed, aln, circular)
 
         # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
         # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
-        aln["variants"] = _normalize_indel_all(ref, aln["variants"])
+        aln["variants"] = _norm_all(aln["variants"])
         for v in aln["variants"]:
             rp = v.get("read_pos") or 1
             qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
@@ -1911,12 +1941,12 @@ def analyze(
             # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
             # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
             if ce - cs >= MIN_WINDOW:
-                caln = align_read(cb[cs:ce], ref, cq[cs:ce])
+                caln = _align(cb[cs:ce], ref, cq[cs:ce])
                 for v in caln["variants"]:
                     rp = v.get("read_pos") or 1
                     qi = min(max(rp - 1, 0), len(cq[cs:ce]) - 1)
                     v["quality"] = cq[cs:ce][qi]
-                cross_variants = _normalize_indel_all(ref, caln["variants"])
+                cross_variants = _norm_all(caln["variants"])
 
         # 混合峰检测移至 poly 结构识别之后（B4：滑移 echo 先于 mixed 判定剔除）
         # 变体 read_pos 基于 trimmed 碱基（1-based）；峰坐标保持 trace 数据点坐标系，
@@ -1984,6 +2014,8 @@ def analyze(
         hits = []
         for edge_key, edge_label in (("ref_start", "起点"), ("ref_end", "终点")):
             pos = aln[edge_key]
+            if _circ_len(aln):
+                pos = fold_pos(pos, L_ref)
             run = next((rn for rn in poly_p1
                         if rn["start"] <= pos <= rn["end"]), None)
             if run:
@@ -2006,11 +2038,13 @@ def analyze(
         dropouts: List[Dict] = []
         merged_zones: List[Dict] = []
         for run in poly_runs_p1:
+            # 环状跨原点 read：原点后段的 run 在展开坐标中平移 +L
+            off = _run_offset(aln, run["start"], run["end"])
             if aln["direction"] == "-":
-                i0 = aln["ref_end"] - run["end"]
+                i0 = aln["ref_end"] - (run["end"] + off)
                 i1 = i0 + run["length"] - 1
             else:
-                i0 = run["start"] - aln["ref_start"]
+                i0 = (run["start"] + off) - aln["ref_start"]
                 i1 = i0 + run["length"] - 1
             if i1 < 0 or i0 > len(r["trimmed_peaks"]) - 1:
                 continue
@@ -2176,10 +2210,13 @@ def analyze(
     # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
     # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
     low_keys = {_variant_key(v) for v in variants if v.get("confidence") == "low"}
-    consensus = _build_consensus(ref, read_results, skip_keys=low_keys)
+    consensus = _build_consensus(ref, read_results, skip_keys=low_keys,
+                                 circular=circular)
 
+    # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
+    # （线性比对即 (ref_start, ref_end)，与此前一致）
     coverage_ranges = merge_coverage(
-        [(r["alignment"]["ref_start"], r["alignment"]["ref_end"]) for r in read_results],
+        [sp for r in read_results for sp in aln_segments(r["alignment"])],
         len(ref),
     )
     coverage_gaps = _coverage_gaps(coverage_ranges, len(ref))
@@ -2219,14 +2256,18 @@ def analyze(
         if run["period"] == 1:
             for r in read_results:
                 aln = r["alignment"]
-                if aln["ref_end"] < run["start"] or aln["ref_start"] > run["end"]:
+                # 环状跨原点 read：run 位于原点后段时在展开坐标中平移 +L，
+                # 覆盖段 cs/ce 折回 run 自身坐标（线性 off 恒为 0）
+                off = _run_offset(aln, run["start"], run["end"])
+                rs_, re_ = run["start"] + off, run["end"] + off
+                if aln["ref_end"] < rs_ or aln["ref_start"] > re_:
                     continue
                 # 覆盖判读（B4）：完整跨过才给整段证据；截断/起始落在结构内的
                 # read 只对覆盖段负责——人工核对会综合两条 read 而不是整体舍弃，
                 # 部分覆盖的 read 照常数峰、只与其覆盖段比较
-                full_aln = aln["ref_start"] <= run["start"] and aln["ref_end"] >= run["end"]
-                cs = run["start"] if full_aln else max(run["start"], aln["ref_start"])
-                ce = run["end"] if full_aln else min(run["end"], aln["ref_end"])
+                full_aln = aln["ref_start"] <= rs_ and aln["ref_end"] >= re_
+                cs = run["start"] if full_aln else max(rs_, aln["ref_start"]) - off
+                ce = run["end"] if full_aln else min(re_, aln["ref_end"]) - off
                 win = _aligned_run_window(aln, cs, ce, run["base"])
                 called = None
                 pc = None
@@ -2787,10 +2828,7 @@ def analyze(
     if read_results:
         has_mixed = any("疑似混合样品" in x for x in mixed_lines)
         conclusion = (_conclusion_summary(variants, cds_reports, has_mixed,
-                                          partial_reads=len(partial_reads),
-                                          partial_variants=sum(
-                                              len(r["partial_alignment"]["extra_variants"])
-                                              for r in partial_reads))
+                                          partial_reads=len(partial_reads))
                       + "\n\n\n" + conclusion)
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
@@ -2821,6 +2859,7 @@ def analyze(
         "consensus": consensus,
         "coverage_ranges": coverage_ranges,
         "coverage_gaps": coverage_gaps,
+        "circular": bool(circular),
         "cds_reports": cds_reports,
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
