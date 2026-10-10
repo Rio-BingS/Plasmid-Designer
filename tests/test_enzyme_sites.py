@@ -118,3 +118,33 @@ def test_corrected_entries_cut_coordinates():
     seq = "AAAGGCGCCAAA"
     k = [x for x in find_enzyme_sites(seq) if x["name"] == "KasI" and x["strand"] == "+"][0]
     assert k["cut_fwd"] == 4
+
+
+def test_circular_origin_spanning_site_found_once():
+    """环状序列上跨越原点的位点（...GAA | TTC...）必须被识别，且不重复计数；
+    线性扫描时不应凭空出现。"""
+    plasmid = "TTC" + "A" * 50 + "GAATTC" + "A" * 50 + "GAA"
+    n = len(plasmid)
+    lin = [s for s in find_enzyme_sites(plasmid, ["EcoRI"]) if s["strand"] == "+"]
+    assert [s["position"] for s in lin] == [54]
+
+    circ = [s for s in find_enzyme_sites(plasmid, ["EcoRI"], circular=True)
+            if s["strand"] == "+"]
+    assert sorted(s["position"] for s in circ) == [54, n - 2]
+    wrap = [s for s in circ if s["position"] == n - 2][0]
+    # G^AATTC：正向链切在 G 之后，即序列最后一位之前的 GAA 的第 1 位
+    assert wrap["cut_fwd"] == n - 2
+    assert 1 <= wrap["cut_rev"] <= n
+
+    # 一个完全落在序列内的位点不会因扩展扫描被计两次
+    seq = "GAATTC" + "A" * 30
+    circ2 = [s for s in find_enzyme_sites(seq, ["EcoRI"], circular=True) if s["strand"] == "+"]
+    assert [s["position"] for s in circ2] == [1]
+
+
+def test_circular_site_on_tiny_circle_and_nonpalindrome():
+    # 非回文 BsaI：反向链识别序列 GAGACC 跨越原点
+    seq = "ACC" + "T" * 20 + "GAG"
+    hits = find_enzyme_sites(seq, ["BsaI"], circular=True)
+    assert [(h["position"], h["strand"]) for h in hits] == [(len(seq) - 2, "-")]
+    assert find_enzyme_sites(seq, ["BsaI"]) == []

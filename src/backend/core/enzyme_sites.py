@@ -80,16 +80,30 @@ def _site_regex(site: str) -> "re.Pattern":
 def find_enzyme_sites(
     sequence: str,
     enzymes: Optional[List[str]] = None,
+    circular: bool = False,
 ) -> List[Dict]:
     """扫描序列，返回全部酶切位点（1-based 位置，含反向链识别）。
 
     返回条目: {name, position, strand, cut_fwd, cut_rev, overhang}
     position 为识别序列 5' 端在正向链上的 1-based 坐标；
-    cut_fwd/cut_rev 为正向/反向链切割点（1-based，环上可能超出序列长度，需取模）。
+    cut_fwd/cut_rev 为正向/反向链切割点（1-based，已对序列长度取模）。
+
+    circular=True（质粒/载体）时额外扫描跨越原点的位点：在序列末尾接上
+    开头 max_site_len-1 个碱基再扫描，只保留起点落在原序列内的匹配，
+    因此不会重复计数。
     """
     seq = sequence.upper().replace("U", "T")
     seq_len = len(seq)
     results: List[Dict] = []
+    if seq_len == 0:
+        return results
+
+    scan_seq = seq
+    if circular:
+        max_site_len = max(len(e["site"]) for e in ENZYME_TABLE)
+        ext = max_site_len - 1
+        # 极短环：扩展可能超过一圈，按需重复后截取
+        scan_seq = seq + (seq * (ext // seq_len + 1))[:ext]
 
     for enzyme in ENZYME_TABLE:
         if enzymes and enzyme["name"] not in enzymes:
@@ -102,8 +116,10 @@ def find_enzyme_sites(
             ("+", _site_regex(site)),
             ("-", _site_regex(_revcomp(site))),
         ):
-            for m in pattern.finditer(seq):
+            for m in pattern.finditer(scan_seq):
                 a = m.start()  # 0-based：识别序列左端在正向链的位置
+                if a >= seq_len:
+                    continue  # 起点已绕回原序列：由原位置的匹配代表
                 if strand == "+":
                     # 正向链切在识别序列第 c1 位之后，反向链第 c2 位之后
                     cut_fwd = a + c1
