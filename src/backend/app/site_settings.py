@@ -23,11 +23,12 @@ _cache_lock = threading.Lock()
 _cache: Optional[dict] = None
 _cache_at: float = 0.0
 
-_DEFAULTS = {
-    "registration_open": True,
-    "email_verification_required": False,
-    "anonymous_features": list(DEFAULT_ANONYMOUS_FEATURES),
-    "user_features": list(DEFAULT_USER_FEATURES),
+# 读取失败时的兜底：全部收紧（见 _fetch）
+_FAIL_CLOSED = {
+    "registration_open": False,
+    "email_verification_required": True,
+    "anonymous_features": [],
+    "user_features": [],
 }
 
 
@@ -59,10 +60,11 @@ def _fetch() -> dict:
             data = _row_to_dict(row)
         return data
     except Exception:
-        # site_settings 表尚未建（旧库未跑过新版 init_db）等情形：按默认值放行，
-        # 保持既有行为；日志告警便于发现
-        logger.warning("站点设置读取失败，按默认配置放行", exc_info=True)
-        return {k: (list(v) if isinstance(v, list) else v) for k, v in _DEFAULTS.items()}
+        # 读取失败（表未建/库不可用等）一律 fail-closed：关闭注册、访客与普通
+        # 用户功能清单为空。此前按默认值放行会让管理员收紧的限制在数据库
+        # 抖动时整体失效；管理员不受功能清单约束，仍可进入后台排查
+        logger.error("站点设置读取失败，按最严配置拒绝（fail-closed）", exc_info=True)
+        return dict(_FAIL_CLOSED, anonymous_features=[], user_features=[])
     finally:
         try:
             db.close()
