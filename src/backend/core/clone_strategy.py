@@ -557,6 +557,51 @@ class GoldenGateStrategy:
 
 
 
+def _scan_enzyme_sites(vector_seq: str, enzyme: str) -> List[dict]:
+    """扫描载体（按环状质粒）上某把酶的全部位点，返回按切点排序的列表。
+
+    ENZYME_TABLE 之外的酶（PvuII/BbsI/AvrII/SbfI 等只在
+    sequence_analysis.RESTRICTION_ENZYMES 里）回退到后者，
+    此前这些酶在方案里完全拿不到坐标。
+    条目形如 {name, position, cut_fwd, recognition, strand}（1-based）。
+    """
+    from core.enzyme_sites import ENZYME_TABLE, find_enzyme_sites
+
+    if any(e["name"] == enzyme for e in ENZYME_TABLE):
+        hits = find_enzyme_sites(vector_seq, enzymes=[enzyme], circular=True)
+        return _dedupe_cuts(hits)
+
+    from core.seq_utils import revcomp
+    from core.sequence_analysis import RESTRICTION_ENZYMES
+
+    entry = RESTRICTION_ENZYMES.get(enzyme)
+    if not entry:
+        return []
+    site, offset = entry[0], entry[1]
+    seq = vector_seq.upper().replace("U", "T")
+    n = len(seq)
+    if not seq:
+        return []
+    scan = seq + seq[:max(0, len(site) - 1)]
+    out: List[dict] = []
+    for strand, pat in (("+", site), ("-", revcomp(site))):
+        start = 0
+        while True:
+            i = scan.find(pat, start)
+            if i < 0 or i >= n:
+                break
+            start = i + 1
+            cut = i + offset if strand == "+" else i + len(site) - offset
+            out.append({
+                "name": enzyme,
+                "position": i + 1,
+                "strand": strand,
+                "cut_fwd": ((cut - 1) % n) + 1,
+                "recognition": site,
+            })
+    return _dedupe_cuts(out)
+
+
 def _dedupe_cuts(hits: List[dict]) -> List[dict]:
     """同一切点按正/反链各命中一次（回文识别序列）——按切点去重后排序"""
     seen: Dict[int, dict] = {}
@@ -596,9 +641,7 @@ class RestrictionCloningStrategy:
         cut_points: Dict[str, List[dict]] = {enzyme_5: [], enzyme_3: []}
         for enzyme in (enzyme_5, enzyme_3):
             try:
-                from core.enzyme_sites import find_enzyme_sites
-                cut_points[enzyme] = _dedupe_cuts(
-                    find_enzyme_sites(vector_seq, enzymes=[enzyme], circular=True))
+                cut_points[enzyme] = _scan_enzyme_sites(vector_seq, enzyme)
             except Exception:  # noqa: BLE001 扫描失败只降级为「不显示坐标」，不阻断方案
                 cut_points[enzyme] = []
 
