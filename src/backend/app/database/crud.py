@@ -10,7 +10,7 @@ import uuid
 from .models import (
     UserDB, DesignDB, PrimerDB, DesignWarningDB, DesignErrorDB,
     BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB,
-    SiteSettingsDB, EmailVerificationDB
+    SiteSettingsDB, EmailVerificationDB, RevokedTokenDB
 )
 
 
@@ -55,14 +55,24 @@ def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[UserDB]:
 
 
 def update_user(db: Session, user_id: str, **fields) -> Optional[UserDB]:
-    """更新用户指定字段（仅允许角色/状态/验证标记/个人功能权限）"""
-    allowed = {"is_admin", "is_active", "email_verified", "allowed_features"}
+    """更新用户指定字段（仅允许角色/状态/验证标记/个人功能权限/密码哈希）。
+
+    禁用账号或更换密码时递增 token_version，该用户已签发的令牌全部失效
+    （重新启用后旧令牌也不会复活）
+    """
+    allowed = {"is_admin", "is_active", "email_verified", "allowed_features", "hashed_password"}
     user = get_user_by_id(db, user_id)
     if user is None:
         return None
+    revoke_all = (
+        ("is_active" in fields and not fields["is_active"] and user.is_active)
+        or ("hashed_password" in fields and fields["hashed_password"] != user.hashed_password)
+    )
     for k, v in fields.items():
         if k in allowed:
             setattr(user, k, v)
+    if revoke_all:
+        user.token_version = (user.token_version or 0) + 1
     db.commit()
     db.refresh(user)
     return user
@@ -109,6 +119,43 @@ def save_site_settings_row(db: Session, row: SiteSettingsDB) -> SiteSettingsDB:
     db.commit()
     db.refresh(row)
     return row
+
+
+# ==================== 令牌吊销 ====================
+
+def bump_token_version(db: Session, user_id: str) -> None:
+    """递增用户令牌版本：作废其全部已签发令牌"""
+    user = get_user_by_id(db, user_id)
+    if user is not None:
+        user.token_version = (user.token_version or 0) + 1
+        db.commit()
+
+
+def prune_revoked_tokens(db: Session, now: Optional[datetime] = None) -> int:
+    """删除已过期的黑名单行（令牌过期后验签即拒，无需再记），返回删除行数"""
+    now = now or datetime.utcnow()
+    n = db.query(RevokedTokenDB).filter(RevokedTokenDB.expires_at < now).delete(
+        synchronize_session=False)
+    db.commit()
+    return n
+
+
+def revoke_token(db: Session, jti: str, expires_at: datetime,
+                 user_id: Optional[str] = None) -> None:
+    """把令牌 jti 记入黑名单（幂等），顺带清理已过期行"""
+    from sqlalchemy.exc import IntegrityError
+
+    prune_revoked_tokens(db)
+    if db.get(RevokedTokenDB, jti) is None:
+        db.add(RevokedTokenDB(jti=jti, user_id=user_id, expires_at=expires_at))
+        try:
+            db.commit()
+        except IntegrityError:  # 同一令牌并发登出：另一请求已写入
+            db.rollback()
+
+
+def is_token_revoked(db: Session, jti: str) -> bool:
+    return db.get(RevokedTokenDB, jti) is not None
 
 
 # ==================== 邮箱验证码 CRUD ====================

@@ -56,10 +56,29 @@ class UserDB(Base):
     # 个人功能权限覆盖（JSON 数组字符串，键见 features.FEATURE_REGISTRY）；
     # NULL = 跟随「普通用户」层级默认，设值后精确覆盖该用户可用功能
     allowed_features = Column(Text, nullable=True)
+    # 令牌版本：签进 JWT 的 tv 声明，与此不符的令牌一律失效。禁用账号、
+    # 改密码时递增，一次性作废该用户全部已签发令牌
+    token_version = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # 关联
     designs = relationship("DesignDB", back_populates="user")
+
+
+# ==================== 已吊销令牌（登出黑名单） ====================
+
+class RevokedTokenDB(Base):
+    """服务端登出吊销的令牌（按 jti）。
+
+    只需保留到令牌自身过期：过期令牌验签就会被拒，黑名单行随之无用，
+    由 prune_revoked_tokens 按 expires_at 清理
+    """
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(String(50), nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ==================== 站点设置模型 ====================
@@ -440,6 +459,7 @@ def _migrate_users_table():
     - email_verified：历史用户回填为已验证（邮箱验证开关打开时才会校验该字段，
       回填保证存量账号不被新开关锁死）
     - allowed_features：个人功能权限覆盖，NULL 即跟随层级默认，无需回填
+    - token_version：令牌版本，存量用户从 0 起（旧令牌无 tv 声明按 0 处理，升级不掉线）
     """
     from sqlalchemy import inspect, text
 
@@ -457,6 +477,10 @@ def _migrate_users_table():
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN allowed_features TEXT NULL"))
             print("✅ users 表已迁移：新增 allowed_features 列（个人功能权限覆盖）")
+        if "token_version" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
+            print("✅ users 表已迁移：新增 token_version 列（令牌整体失效）")
 
 
 def drop_db():

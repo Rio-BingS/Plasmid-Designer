@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .jwt_auth import (
+    decode_token, extract_token,
     UserCreate, UserLogin, User, Token,
     verify_password, create_access_token, create_verify_token, decode_verify_token,
     hash_password, get_current_user_soft, get_current_user_required, db_user_to_user,
@@ -29,7 +30,7 @@ from app.config import settings
 from app.database import (
     get_db, get_users, create_user as db_create_user, get_user_by_email, get_user_by_id,
     get_site_settings_row, create_email_verification, get_latest_email_verification,
-    consume_email_verification, update_user,
+    consume_email_verification, update_user, revoke_token, bump_token_version,
 )
 from app.features import features_for_tier, features_for_user, tier_for
 from app.mailer import send_email, verification_email_html
@@ -166,7 +167,7 @@ async def register(user_data: UserCreate, request: Request, response: Response,
         except IntegrityError as e:
             raise _duplicate_email_400(e) from e
         user = db_user_to_user(db_user)
-        token = create_access_token(user)
+        token = create_access_token(user, db_user.token_version)
         set_auth_cookie(response, request, token)
         return RegisterResponse(access_token=token, expires_in=24 * 3600, user=user)
 
@@ -244,7 +245,7 @@ async def login(credentials: UserLogin, request: Request, response: Response,
 
     # 生成令牌
     user_response = db_user_to_user(user)
-    access_token = create_access_token(user_response)
+    access_token = create_access_token(user_response, user.token_version)
     set_auth_cookie(response, request, access_token)
 
     return Token(
@@ -270,7 +271,7 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, response: 
 
     if user.email_verified:
         user_response = db_user_to_user(user)
-        token = create_access_token(user_response)
+        token = create_access_token(user_response, user.token_version)
         set_auth_cookie(response, request, token)
         return Token(access_token=token, expires_in=24 * 3600, user=user_response)
 
@@ -295,8 +296,9 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, response: 
     _verify_attempts.pop(row.id, None)
     consume_email_verification(db, row)
     update_user(db, user_id, email_verified=True)
-    user_response = db_user_to_user(get_user_by_id(db, user_id))
-    token = create_access_token(user_response)
+    db_user = get_user_by_id(db, user_id)
+    user_response = db_user_to_user(db_user)
+    token = create_access_token(user_response, db_user.token_version)
     set_auth_cookie(response, request, token)
     return Token(access_token=token, expires_in=24 * 3600, user=user_response)
 
@@ -366,13 +368,23 @@ async def get_me(current_user: User = Depends(get_current_user_required)):
 
 
 @router.post("/logout")
-async def logout(request: Request, response: Response):
+async def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     """
-    用户登出：删除会话 Cookie。
+    用户登出：服务端吊销当前令牌并删除会话 Cookie。
 
+    - 令牌带 jti：记入黑名单（保留到令牌过期，过期行顺带清理），
+      只作废这一个会话，其他设备不受影响
+    - 旧版令牌无 jti：递增用户令牌版本，作废该用户全部令牌
     幂等：会话已失效时同样成功——httpOnly Cookie 前端删不掉，
     必须由服务端下发删除，不能因令牌过期而 401 把用户卡在半登录态。
     """
+    token, _source = extract_token(request)
+    token_data = decode_token(token) if token else None
+    if token_data is not None and token_data.user_id:
+        if token_data.jti and token_data.expires_at is not None:
+            revoke_token(db, token_data.jti, token_data.expires_at, user_id=token_data.user_id)
+        else:
+            bump_token_version(db, token_data.user_id)
     clear_auth_cookie(response, request)
     return {"message": "登出成功"}
 
