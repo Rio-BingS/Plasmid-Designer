@@ -132,8 +132,11 @@ def _can_access(record: Dict, user: Optional[User],
         expected = record.get("access_token")
         if expected is None:
             return True
+        # 按 UTF-8 字节比较：compare_digest(str, str) 遇非 ASCII 会抛
+        # TypeError → 500，畸形令牌应与错误令牌一样得到 403
         return bool(access_token) and secrets.compare_digest(
-            str(access_token), str(expected))
+            str(access_token).encode("utf-8", "surrogatepass"),
+            str(expected).encode("utf-8", "surrogatepass"))
     return user is not None and (user.id == owner or user.is_admin)
 
 
