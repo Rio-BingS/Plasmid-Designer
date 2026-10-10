@@ -370,3 +370,56 @@
    `docs/ALGORITHM_ROADMAP.md` 暂缓项。
 4. **工程整洁**：顶层 `docs/`（研究草稿）与 `seqdemo_tmp/`（调试产物）归档
    与主项目隔离——未动，待用户确认取舍。
+
+## 2026-10-09 终审报告 P0 全量清账（独立第 11 轮审查 22 项 P0，✅ 本轮完成）
+
+主审 @ main `8a95a3c`（Merge PR #2）。190 项发现中的 22 项 P0（P0-a 十项
+快修 + P0-b 十二项）全部落地，每项带回归测试；pytest 416→485、vitest
+138→140、vue-tsc 0。分六批推送（0603b77 / 8428e16 / 78b9d7c / a7a5857 /
+585503d+cccba59 / bdaf64c）。
+
+### P0-a 快修（十项，0603b77 批 + 8428e16 部分前置批）
+
+| 项 | 修复 | 回归 |
+|---|---|---|
+| G-01/G-02 | conftest 模块导入期注入 DATA_DIR/DATABASE_URL/PLASMID_LOG_DIR + 预建库，测试不再写开发库 | test_test_isolation 3 项 |
+| B-01 | export_design 补 `_ensure_design_access`（导出曾绕过属主校验） | ownership 导出用例 |
+| D-04 | design_service 丢 warnings（warnings.extend 位置 + 缓存/返回三处透传） | 3 项 |
+| A-02/A-03 | motif 避让带反向链 + expanded 含 revcomp | 各 1 项 |
+| C-08/C-09 | CDS 判读整体 try/except 兜底；tracy 修剪窗过窄守卫 | 各 1 项 |
+| C-05 | CORS 移到最外层 + OPTIONS 不计限流（429 带补头可被浏览器读取） | TestCorsOutermostAndOptionsBypass |
+| B-04 | 占位/过短 SECRET_KEY 启动即抛（DEBUG 豁免） | TestSecretKeyEnforcement 4 项 |
+| B-05 | bootstrap 不再提升既有非管理员账号 | 1 项 |
+| H-01/H-02 | Dockerfile 只 COPY data 子目录；.dockerignore 重写（`**/` 锚定）；nginx -t 先校验再删默认站点 | deploy 侧 |
+
+### P0-b（十二项）
+
+| 项 | 修复 | 回归 |
+|---|---|---|
+| A-01 | 密码子迭代循环 content-based 收敛检查 + 结构化 unsatisfied | stub 循环用例 |
+| A-04 | 4 物种密码子表按 Kazusa 原始 per-thousand 重建，去除 optimal_codons 主观节 | test_codon_tables_data 13 项 |
+| A-05 | 未知物种改 ValueError + codon_table_used 回传 | 1 项 |
+| A-07 | Gibson/GoldenGate 引物 anchor 坐标回填（曾硬编码 0/len） | 1 项 |
+| A-19 | 双峰锚判据放宽（0.8×主峰） | 管线用例 + 真实数据回归 5 断言不变 |
+| A-20 | Sanger read↔ref 映射改用比对块绝对坐标（query_start/end 贯穿后端→API→前端） | 3 前端 + 1 后端 |
+| B-02/B-03 | 匿名测序记录下发 access_token（批量整批共用）；读取/峰图/导出/删除须携带；列表不再外泄匿名 ID；整理包绑 owner | 后端 4 项 + 前端 2 项 |
+| C-01 | MAX_REF_BP=200000 三入口校验（实测 300kb×1 read = 11s/1.09GB） | 2 项 |
+| C-02 | 批量请求级总字节上限 + _BATCHES 全局 LRU | 2 项 |
+| C-03/C-06 | 设计序列按类型收紧（aa 5000/DNA 20000 可环境变量覆盖）；分析类 7 模型统一上限 + 窗口下限 | test_input_limits 8 项 |
+| C-04 | 限流改（方法+路由模板）分类——轮询/auth 只读不再吃业务配额（实测轮询 10 次即 429 → 强制登出） | 4 项含端到端 30 轮询 |
+| C-07 | _ANALYSES/_BATCHES 全路径 RLock；打包改用批次产物快照不再回查全局 dict | 并发回归 1 项 |
+| D-01 | 存储往返补 user_id/clone_protocol（新列+迁移）、construct_features 空值取 []；_load 裸 except 改 warning | test_storage_contract 5 项 |
+| D-02 | 功能清单空集不再被默认值覆盖（features_initialized 显式标记列 + 轻量迁移） | 4 项 |
+| A-09 | 酶切方案带真实切点坐标；切点破坏必需元件（CDS/复制起点/抗性/启动子）告警点名 | test_clone_strategy_cuts 4 项 |
+| H-03/H-04/H-05 | 安装目录 751（nginx worker 可遍历）；后端只监听 127.0.0.1、/docs 内网限制；卸载交互确认 + --yes | deploy 侧人工核验 |
+
+### 本轮新增的防回潮约束（后续会话必读）
+
+- **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
+  文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并
+  `invalidate_cache()`，否则污染同进程后续模块（设计端点会 403）。
+- 匿名 sequencing 记录的行为契约：创建响应下发 `access_token`（批量整批
+  共用），前端存 sessionStorage 自动带头；列表不返回任何匿名记录 ID
+  （含持令牌者）；改造前无 token 的遗留记录保持公开。
+- 前端 A-20：read↔ref 映射用 `query_start/query_end`（比对块绝对坐标），
+  不要回退到 `L-1-qi` 镜像式。
