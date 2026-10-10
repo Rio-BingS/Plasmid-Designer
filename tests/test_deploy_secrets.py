@@ -21,3 +21,12 @@ def test_env_examples_have_no_usable_secret_key():
         val = m.group(1).strip()
         # 只允许留空或已知占位标记（后端 validate_secret_key 会拒绝）
         assert val == "" or val in SECRET_KEY_PLACEHOLDERS, f"{p}: {val!r}"
+
+
+def test_compose_cors_default_not_wildcard():
+    txt = (DEPLOY / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    m = re.search(r"CORS_ORIGINS=\$\{CORS_ORIGINS:-([^}]*)\}", txt)
+    assert m and m.group(1).strip() and "*" not in m.group(1)
+    env = (DEPLOY / "docker" / ".env.example").read_text(encoding="utf-8")
+    m = re.search(r"^CORS_ORIGINS=(.*)$", env, re.M)
+    assert m and "*" not in m.group(1)
