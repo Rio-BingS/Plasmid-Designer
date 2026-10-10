@@ -190,23 +190,49 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> Optional[User]:
-    """获取当前用户（可选认证）"""
+    """获取当前用户（可选认证）。
+
+    未携带令牌 → 匿名（None）；携带了令牌但无效/过期/用户不存在 → 401，
+    用户被禁用 → 403。此前一律降级为匿名，受限/禁用用户只要弄坏令牌就能
+    按访客权限继续调用，前端也无从得知会话已失效。
+    """
     if credentials is None:
         return None
 
-    token = credentials.credentials
-    token_data = decode_token(token)
-
-    if token_data is None:
-        return None
+    token_data = decode_token(credentials.credentials)
+    if token_data is None or not token_data.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌无效或已过期",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     db_user = get_user_by_id(db, token_data.user_id)
     if db_user is None:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if not db_user.is_active:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="用户已被禁用"
+        )
 
     return db_user_to_user(db_user)
+
+
+async def get_current_user_soft(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """宽松版：任何令牌问题都视为匿名。仅供 /auth/verify、/auth/site-config
+    这类「探测会话状态」的公开端点使用，不得用于权限判断。"""
+    try:
+        return await get_current_user(credentials, db)
+    except HTTPException:
+        return None
 
 
 async def get_current_user_required(
