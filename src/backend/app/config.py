@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # validator 根本没有机会执行（2026-09 VPS 部署踩坑）
     CORS_ORIGINS: str = "*"
 
+    # 可信反向代理（逗号分隔 IP 或 CIDR）。只有 socket 对端落在此列表内时才采信
+    # X-Real-IP / X-Forwarded-For 作为限流维度；默认只信本机（裸机 nginx 同机）。
+    # docker compose 下前端 nginx 位于容器网络，需在 compose 中显式配置其网段
+    TRUSTED_PROXIES: str = "127.0.0.1,::1"
+
     # ==================== 管理员引导 ====================
     # 启动时若数据库中不存在该邮箱的用户，则自动创建为管理员（并视为已验证邮箱）；
     # 已存在则提升为管理员。不设置则不创建（默认开发环境不变）
