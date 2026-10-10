@@ -133,12 +133,18 @@ def _can_access(record: Dict, user: Optional[User],
         expected = record.get("access_token")
         if expected is None:
             return user is not None and user.is_admin
-        # 按 UTF-8 字节比较：compare_digest(str, str) 遇非 ASCII 会抛
-        # TypeError → 500，畸形令牌应与错误令牌一样得到 403
-        return bool(access_token) and secrets.compare_digest(
-            str(access_token).encode("utf-8", "surrogatepass"),
-            str(expected).encode("utf-8", "surrogatepass"))
+        return _token_matches(access_token, expected)
     return user is not None and (user.id == owner or user.is_admin)
+
+
+def _token_matches(given: Optional[str], expected: Optional[str]) -> bool:
+    """常量时间比较访问令牌。按 UTF-8 字节比较：compare_digest(str, str)
+    遇非 ASCII 会抛 TypeError → 500，畸形令牌应与错误令牌一样被拒绝"""
+    if not given or not expected:
+        return False
+    return secrets.compare_digest(
+        str(given).encode("utf-8", "surrogatepass"),
+        str(expected).encode("utf-8", "surrogatepass"))
 
 
 def _request_access_token(request: Request) -> Optional[str]:
@@ -672,8 +678,10 @@ async def analyze_sequencing_batch(
                     "created_ts": time.time(),
                     "zip": zip_bytes,
                     "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
-                    # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者
+                    # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
+                    # 匿名批次绑定整批访问令牌
                     "owner_id": user.id if user else None,
+                    "access_token": batch_token,
                 }
 
         await run_in_threadpool(_pack)
@@ -684,7 +692,7 @@ async def analyze_sequencing_batch(
     "/sequencing/batches/{batch_id}/report",
     dependencies=[Depends(require_feature("sequencing_batch"))],
 )
-async def download_batch_report(batch_id: str,
+async def download_batch_report(batch_id: str, request: Request,
                                 user: Optional[User] = Depends(get_current_user)):
     """下载批量分析整理包（同一质粒一个文件夹、其下 正确/错误 按结论分置副本
     与各组分析报告 + 整理清单 + 结论回填的信息表）；生成 15 分钟后随缓存自动
@@ -697,7 +705,14 @@ async def download_batch_report(batch_id: str,
         raise HTTPException(status_code=404,
                             detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
     owner = rec.get("owner_id")
-    if owner and not (user and (user.id == owner or user.is_admin)):
+    is_admin = bool(user and user.is_admin)
+    if owner:
+        allowed = is_admin or (user is not None and user.id == owner)
+    else:
+        # 匿名批次：整理包同样绑定整批访问令牌（此前知道 batch_id 即可下载）
+        allowed = is_admin or _token_matches(_request_access_token(request),
+                                             rec.get("access_token"))
+    if not allowed:
         raise HTTPException(status_code=404,
                             detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
     # HTTP 头仅限 latin-1：中文文件名走 RFC 5987 filename*，ASCII 名兜底
