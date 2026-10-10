@@ -197,8 +197,26 @@ echo "[3/9] 安装 Node.js 20..."
 if node --version &>/dev/null && [[ "$(node --version)" == v20.* ]]; then
     echo "  ✓ Node.js 20 已安装: $(node --version)"
 else
-    # NodeSource 20.x
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    # NodeSource 20.x：走签名 apt 源（keyring + signed-by），不再以 root
+    # 执行 curl | bash 下载的安装脚本；公钥指纹固定，不符即中止
+    NODE_MAJOR=20
+    NODESOURCE_KEY_FPR="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg
+    install -d -m 0755 /etc/apt/keyrings
+    NS_KEY_TMP=$(mktemp)
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$NS_KEY_TMP"
+    NS_KEY_FPR=$(gpg --show-keys --with-colons "$NS_KEY_TMP" | awk -F: '$1=="fpr"{print $10; exit}')
+    if [[ "$NS_KEY_FPR" != "$NODESOURCE_KEY_FPR" ]]; then
+        echo "  ✗ NodeSource 公钥指纹不符（得到 ${NS_KEY_FPR:-空}），中止安装"
+        rm -f "$NS_KEY_TMP"
+        exit 1
+    fi
+    gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg "$NS_KEY_TMP"
+    rm -f "$NS_KEY_TMP"
+    chmod 0644 /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+    apt-get update
     apt-get install -y nodejs
 
     echo "  ✓ Node.js 已安装: $(node --version), npm: $(npm --version)"
