@@ -142,6 +142,11 @@ app.add_middleware(RateLimitMiddleware)
 from app.auth.middleware import AuthStateMiddleware
 app.add_middleware(AuthStateMiddleware)
 
+# CSRF：会话 Cookie 认证的 POST/PUT/PATCH/DELETE 须带 X-Requested-With 头
+# （Bearer 头请求不检查）。位于限流之外：被拒的伪造请求不消耗业务配额
+from app.auth.middleware import CsrfMiddleware
+app.add_middleware(CsrfMiddleware)
+
 # 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
 from app.middleware import setup_middleware
 setup_middleware(app)
