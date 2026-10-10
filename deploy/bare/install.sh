@@ -325,9 +325,8 @@ echo "[8/9] 构建前端..."
 
 cd "$INSTALL_DIR/src/frontend"
 
-if [ ! -d node_modules ]; then
-    npm install
-fi
+# npm ci 严格按 package-lock.json 安装，依赖与审计过的版本一致
+npm ci
 
 npm run build
 
@@ -483,7 +482,7 @@ echo ""
 echo "更新部署:"
 echo "  cd $INSTALL_DIR && git pull"
 echo "  source venv/bin/activate && pip install -r src/backend/requirements.txt"
-echo "  cd src/frontend && npm install && npm run build"
+echo "  cd src/frontend && npm ci && npm run build"
 echo "  sudo systemctl restart plasmid-backend"
 echo ""
 echo "配置 HTTPS:"

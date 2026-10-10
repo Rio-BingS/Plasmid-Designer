@@ -111,7 +111,7 @@ sudo /opt/plasmid-designer/venv/bin/pip install \
 
 ```bash
 cd /opt/plasmid-designer/src/frontend
-sudo npm install
+sudo npm ci
 sudo npm run build
 ```
 
@@ -212,7 +212,7 @@ sudo -u plasmid /opt/plasmid-designer/venv/bin/pip install -r src/backend/requir
 
 # 重新构建前端（如有变化）
 cd src/frontend
-sudo -u plasmid npm install
+sudo -u plasmid npm ci
 sudo -u plasmid npm run build
 cd /opt/plasmid-designer
 
