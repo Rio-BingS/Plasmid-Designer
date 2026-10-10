@@ -52,19 +52,49 @@ def _cell_str(v) -> str:
     return str(v).strip()
 
 
+# 信息表解析上限（防 xlsx 解压炸弹）：.xlsx 是 zip，20 MB 的上传可解压出
+# GB 级 XML，openpyxl 全量模式会把每个单元格都建成对象。信息表通常只有几十
+# 行，以下上限远高于正常用量
+MAX_EXCEL_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
+MAX_EXCEL_ZIP_ENTRIES = 500
+MAX_EXCEL_ROWS = 5000
+MAX_EXCEL_COLS = 200
+
+
+def _check_xlsx_zip(fp) -> None:
+    """解析前检查 zip 目录：条目数与解压后总字节超限即拒绝（不解压）"""
+    import zipfile
+
+    with zipfile.ZipFile(fp) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_EXCEL_ZIP_ENTRIES:
+            raise ValueError(f"信息表结构异常（压缩条目 {len(infos)} 个），请检查文件")
+        total = sum(max(0, i.file_size) for i in infos)
+        if total > MAX_EXCEL_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                f"信息表解压后过大（>{MAX_EXCEL_UNCOMPRESSED_BYTES // (1024 * 1024)}MB），"
+                "请只保留信息表本身后重新上传")
+
+
 def load_excel(src: Union[str, "Path", bytes, bytearray]):
     """解析信息表，返回 (workbook, header_row, {列名: 列号}, [数据行])
 
     src：文件路径（脚本离线用）或字节流（网页上传用）。
     表头行取第一个含"质粒"的单元格所在行；找不到抛 ValueError。
+    解压后体积 / 行列数超过上限同样抛 ValueError。
     """
     import openpyxl
 
     if isinstance(src, (bytes, bytearray)):
+        _check_xlsx_zip(io.BytesIO(src))
         wb = openpyxl.load_workbook(io.BytesIO(src))
     else:
+        _check_xlsx_zip(src)
         wb = openpyxl.load_workbook(src)
     ws = wb.worksheets[0]
+    if ws.max_row > MAX_EXCEL_ROWS or ws.max_column > MAX_EXCEL_COLS:
+        raise ValueError(
+            f"信息表行列数超过上限（{MAX_EXCEL_ROWS} 行 × {MAX_EXCEL_COLS} 列），请检查文件")
     header_row, cols = None, {}
     for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 20)):
         for c in row:
