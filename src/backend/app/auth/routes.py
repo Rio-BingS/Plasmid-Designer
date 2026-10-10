@@ -326,17 +326,26 @@ async def site_config(current_user: Optional[User] = Depends(get_current_user_so
 
 
 def _row_to_settings(row) -> dict:
-    """site_settings 单行 → dict（空清单回退默认，保持旧行为）"""
+    """site_settings 单行 → dict
+
+    功能清单与门控读侧（site_settings._fetch）同一语义：仅「从未初始化」
+    的行空清单回退默认；features_initialized 置位后空集就是空集——此前
+    这里无条件回退，管理员关闭全部功能后 site-config 仍下发默认清单，
+    前端照常显示入口（后端门控已正确拒绝，只是展示错误）。
+    """
     import json as _json
     from app.features import DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, valid_features
 
     anon = valid_features(_json.loads(row.anonymous_features or "[]"))
     user_f = valid_features(_json.loads(row.user_features or "[]"))
+    if not getattr(row, "features_initialized", False):
+        anon = anon or list(DEFAULT_ANONYMOUS_FEATURES)
+        user_f = user_f or list(DEFAULT_USER_FEATURES)
     return {
         "registration_open": bool(row.registration_open),
         "email_verification_required": bool(row.email_verification_required),
-        "anonymous_features": anon or list(DEFAULT_ANONYMOUS_FEATURES),
-        "user_features": user_f or list(DEFAULT_USER_FEATURES),
+        "anonymous_features": anon,
+        "user_features": user_f,
     }
 
 
