@@ -382,3 +382,41 @@ def test_reverse_fallback_clamped_on_short_template():
     rp = designer._design_reverse_primer("ATGAAAGTGCTG", 12, "r", anchor=True)
     assert rp.target_start == 0 and rp.target_end == 12
     assert rp.length == 12
+
+
+def test_golden_gate_overhangs_released_by_in_silico_digest():
+    """回归：反向引物上的 IIS 识别位点若写成反向互补，会朝外切割，
+    3' 端 overhang 永远释放不出来。这里按 BsaI 的切割规则
+    （GGTCTC(1/5)）在体外模拟消化扩增产物，核对两端 overhang。"""
+    from core.seq_utils import revcomp as _rc
+
+    designer = PrimerDesigner()
+    insert = "ATG" + "ACGTCAGGCTAGCTTAGCAC" * 10 + "TAA"
+    oh5, oh3 = "AATG", "GCTT"
+    pair = designer.design_golden_gate_primers(
+        insert, enzyme_name="BsaI", overhang_seq_5=oh5, overhang_seq_3=oh3
+    )
+
+    # 扩增产物：正向引物全长 + 插入片段中段 + 反向引物全长的反向互补
+    body = insert[len(pair.forward.sequence):len(insert) - len(pair.reverse.sequence)]
+    amplicon = pair.forward.full_sequence + body + _rc(pair.reverse.full_sequence)
+
+    site, (top_off, bot_off) = "GGTCTC", (1, 5)
+
+    plus = [i for i in range(len(amplicon)) if amplicon.startswith(site, i)]
+    minus = [i for i in range(len(amplicon)) if amplicon.startswith(_rc(site), i)]
+    # 两端各一个位点，且方向相反（都朝内）
+    assert len(plus) == 1 and len(minus) == 1, (plus, minus)
+
+    # + 链位点：切点在识别序列下游，顶链留 4nt 5' 突出
+    a = plus[0]
+    top_nick, bot_nick = a + len(site) + top_off, a + len(site) + bot_off
+    assert amplicon[top_nick:bot_nick] == oh5
+
+    # - 链位点：识别序列反向阅读，切点在其上游（左侧）
+    b = minus[0]
+    top_nick_r, bot_nick_r = b - bot_off, b - top_off
+    assert amplicon[top_nick_r:bot_nick_r] == oh3
+
+    # 切下来的中间片段仍完整含有插入片段
+    assert insert in amplicon[top_nick:bot_nick_r]
