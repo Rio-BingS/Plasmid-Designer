@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     # 此前 models.py 用 os.getenv 直读环境变量、不读 .env，导致 .env 配置静默失效
     DATABASE_URL: str = _DATABASE_URL_DEFAULT
 
-    # JWT 密钥 — 生产环境必须通过环境变量 SECRET_KEY 设置，否则使用开发默认值
-    SECRET_KEY: str = "dev-insecure-secret-key-change-me"
+    # JWT 密钥 — 必须通过环境变量 / .env 设置强随机值（openssl rand -hex 32）；
+    # 不再提供默认值，开发环境同样需要配置（校验见 validate_secret_key）
+    SECRET_KEY: str = ""
 
     # Redis 配置
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -90,6 +91,48 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+
+
+# 公开仓库里出现过的占位值：任何人都可用它们自签令牌，永远拒绝
+SECRET_KEY_PLACEHOLDERS = frozenset({
+    "dev-insecure-secret-key-change-me",
+    "change_this_in_production",
+    "change_this_in_production_use_strong_random_string",
+    "your_jwt_secret_key",
+})
+SECRET_KEY_MIN_LENGTH = 32
+_SECRET_KEY_MIN_DISTINCT = 8
+_SECRET_KEY_MIN_BITS = 96.0
+
+
+def _shannon_bits(value: str) -> float:
+    """按字符频率估算的总熵（bit），用于拦截 'a'*32 这类明显弱密钥"""
+    import math
+    from collections import Counter
+
+    n = len(value)
+    return -sum(c / n * math.log2(c / n) for c in Counter(value).values()) * n
+
+
+def validate_secret_key(key: str) -> None:
+    """JWT 密钥校验：占位值、过短或明显低熵（单一/重复模式）一律抛 RuntimeError。
+
+    与 DEBUG 无关、在 jwt_auth 导入时执行——此前只在 lifespan 里检查，
+    DEBUG=true 或 `--lifespan off` 即可绕过，公开默认值可自签管理员令牌。
+    """
+    hint = "请在环境变量或 .env 设置强随机 SECRET_KEY（openssl rand -hex 32）"
+    key = key or ""
+    if not key.strip():
+        raise RuntimeError(f"SECRET_KEY 未设置，拒绝启动：{hint}")
+    if key in SECRET_KEY_PLACEHOLDERS:
+        raise RuntimeError(f"SECRET_KEY 为公开占位值，拒绝启动：{hint}")
+    if len(key) < SECRET_KEY_MIN_LENGTH:
+        raise RuntimeError(
+            f"SECRET_KEY 长度 <{SECRET_KEY_MIN_LENGTH}，拒绝启动：{hint}")
+    periodic = (key + key).find(key, 1) < len(key)
+    if (periodic or len(set(key)) < _SECRET_KEY_MIN_DISTINCT
+            or _shannon_bits(key) < _SECRET_KEY_MIN_BITS):
+        raise RuntimeError(f"SECRET_KEY 熵过低（重复/单一字符模式），拒绝启动：{hint}")
 
 
 settings = Settings()
