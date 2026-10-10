@@ -347,3 +347,27 @@ def test_clone_primer_annealing_anchored_to_insert_ends():
     assert gf.target_start == 0 and insert.startswith(gf.sequence)
     assert gr.target_end == len(insert)
     assert gr.target_start == gr.target_end - gr.length
+
+
+def test_pcr_primers_not_forced_into_relaxed_fallback():
+    """R1 回归：非锚定路径的偏移预扫描不得抬高全局 best_score，
+    否则每次都落入未校验的放宽回退（notes 以 Warning 开头）。"""
+    import random
+
+    designer = PrimerDesigner()
+    # 精心构造的 GC 均衡模板：必有满足全部条件的候选
+    template = ("ATGGCTAGCTTGAAGCTTGCATACGTCAGGCTAGCTTAGCACTTGCATGCATGC"
+                "TAGCTAGCATCGATCGTACGTAGCTAGCTTAGCA") * 3
+    pair = designer.design_pcr_primers(template)
+    assert not pair.forward.notes.startswith("Warning")
+    assert designer._check_primer_quality(pair.forward.sequence)
+
+    rng = random.Random(7)
+    fallback = 0
+    for _ in range(60):
+        t = "".join(rng.choice("ACGT") for _ in range(600))
+        if designer.design_pcr_primers(t).forward.notes.startswith("Warning"):
+            fallback += 1
+    # 8a95a3c 基线约 52%；回归时为 100%
+    assert fallback < 45
+
