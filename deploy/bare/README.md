@@ -67,7 +67,16 @@ sudo apt install -y python3.11 python3.11-venv python3.11-dev python3.11-distuti
 ### 3. 安装 Node.js 20
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+# 签名 apt 源（不要 curl | sudo bash）；公钥指纹应为
+# 6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4
+sudo apt install -y ca-certificates curl gnupg
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.key
+gpg --show-keys --with-fingerprint /tmp/nodesource.key
+sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+sudo apt update
 sudo apt install -y nodejs
 ```
 
