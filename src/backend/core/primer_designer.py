@@ -315,6 +315,11 @@ class PrimerDesigner:
             annealing_temp=annealing_temp
         )
 
+    # Type IIS（切割位点在识别序列之外）不适用经典双酶切克隆：
+    # 它不在识别序列内切，产物末端不含酶位点，按双酶切流程做会得到错误构建
+    TYPE_IIS_ENZYMES = ("BsaI", "BsmBI", "BbsI", "BsmAI", "BspQI", "SapI",
+                        "AarI", "Esp3I", "BtgZI", "BspMI", "PaqCI")
+
     def design_restriction_primers(
         self,
         sequence: str,
@@ -337,10 +342,20 @@ class PrimerDesigner:
 
         Returns:
             PrimerPair 双酶切引物对
+
+        Raises:
+            ValueError: 酶名未知、传入 Type IIS 酶或插入片段过短
         """
         from core.sequence_analysis import RESTRICTION_ENZYMES
 
         seq = sequence.upper()
+        for enz in (enzyme_5, enzyme_3):
+            if enz in self.TYPE_IIS_ENZYMES:
+                raise ValueError(
+                    f"{enz} 是 Type IIS 酶（在识别序列之外切割），"
+                    f"不能用于经典双酶切克隆；请改用 Golden Gate，"
+                    f"或选择 EcoRI/BamHI/XhoI 等在识别序列内切割的酶"
+                )
         site5 = RESTRICTION_ENZYMES.get(enzyme_5, (None,))[0]
         site3 = RESTRICTION_ENZYMES.get(enzyme_3, (None,))[0]
         if not site5 or not site3:

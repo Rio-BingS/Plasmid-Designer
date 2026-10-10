@@ -413,3 +413,17 @@ def test_restriction_request_requires_enzyme():
         enzyme_5="EcoRI", enzyme_3="XhoI",
     )
     assert req.enzyme is None
+
+
+def test_restriction_primers_reject_type_iis():
+    """回归：Type IIS 酶在识别序列外切割，产物末端不含位点，
+    按经典双酶切流程做会得到错误构建——必须明确报错而不是照做"""
+    import pytest
+    from core.primer_designer import PrimerDesigner
+
+    seq = "ATG" + "AAACAGCTTGGT" * 5 + "TAA"
+    for enz in ("BsaI", "BsmBI", "BbsI"):
+        with pytest.raises(ValueError, match="Type IIS"):
+            PrimerDesigner().design_restriction_primers(seq, enz, "EcoRI", "t")
+        with pytest.raises(ValueError, match="Type IIS"):
+            PrimerDesigner().design_restriction_primers(seq, "EcoRI", enz, "t")
