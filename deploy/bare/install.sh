@@ -248,12 +248,22 @@ if [[ "$DB_MODE" == "postgresql" ]]; then
     systemctl start postgresql 2>/dev/null || true
     systemctl enable postgresql 2>/dev/null || true
 
-    # 生成随机密码
-    PG_PASSWORD=$(openssl rand -base64 18 | tr -d '=/+' | head -c 24)
+    # 密码：重复运行时复用已有 .env 里的密码，否则 .env 被跳过而数据库
+    # 用户保留旧密码/新密码二者不一致，后端连不上库
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        PG_PASSWORD=$(sed -n "s#^DATABASE_URL=postgresql://$PG_USER:\([^@]*\)@.*#\1#p" "$INSTALL_DIR/.env" | head -n 1)
+    fi
+    if [ -z "$PG_PASSWORD" ]; then
+        PG_PASSWORD=$(openssl rand -base64 18 | tr -d '=/+' | head -c 24)
+    fi
 
-    # 创建用户和数据库
-    sudo -u postgres psql -c "CREATE USER $PG_USER WITH PASSWORD '$PG_PASSWORD';" 2>/dev/null || \
-        echo "  用户 $PG_USER 已存在，跳过创建"
+    # 创建用户；已存在时把密码同步为 .env 将使用的值
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$PG_USER'" | grep -q 1; then
+        sudo -u postgres psql -c "ALTER USER $PG_USER WITH PASSWORD '$PG_PASSWORD';" >/dev/null
+        echo "  用户 $PG_USER 已存在，已同步密码"
+    else
+        sudo -u postgres psql -c "CREATE USER $PG_USER WITH PASSWORD '$PG_PASSWORD';" >/dev/null
+    fi
     sudo -u postgres psql -c "CREATE DATABASE $PG_DB OWNER $PG_USER;" 2>/dev/null || \
         echo "  数据库 $PG_DB 已存在，跳过创建"
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB TO $PG_USER;"
@@ -376,6 +386,9 @@ ENVEOF
     echo "  ✓ .env 已生成"
 else
     echo "  ✓ .env 已存在，跳过"
+    if [[ "$DB_MODE" == "postgresql" ]] && ! grep -q "^DATABASE_URL=postgresql://" "$INSTALL_DIR/.env"; then
+        echo "  ⚠ 现有 .env 未使用 PostgreSQL，请手动把 DATABASE_URL 改为 postgresql://$PG_USER:<密码>@localhost/$PG_DB"
+    fi
 fi
 
 # 设置目录权限
