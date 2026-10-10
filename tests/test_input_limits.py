@@ -90,6 +90,33 @@ def test_gc_window_size_has_lower_bound():
     assert ok.window_size >= 10
 
 
+def test_gc_step_size_lower_bound_and_region_cap():
+    """gc-analysis 输出放大：200 kb + window 10 + step 1 = 20 万区间 / 13 MB 响应"""
+    from app.analysis_routes import MAX_GC_REGIONS
+    seq = "ATGC" * 50_000
+    with pytest.raises(Exception):
+        GCAnalysisRequest(sequence=seq, window_size=10, step_size=1)
+    with pytest.raises(Exception):
+        GCAnalysisRequest(sequence="ACGT" * 100, window_size=100, step_size=9)
+    # 步长合规但区间数仍超上限
+    with pytest.raises(Exception):
+        GCAnalysisRequest(sequence=seq, window_size=10, step_size=5)
+    ok = GCAnalysisRequest(sequence=seq, window_size=100, step_size=50)  # 前端默认
+    assert (len(seq) - 100) // 50 + 1 <= MAX_GC_REGIONS
+    assert ok.step_size == 50
+
+
+def test_gc_analysis_endpoint_rejects_amplifying_params():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    r = c.post("/api/analysis/gc-analysis",
+               json={"sequence": "ATGC" * 50_000, "window_size": 10, "step_size": 1})
+    assert r.status_code == 422
+    r = c.post("/api/analysis/gc-analysis", json={"sequence": "ATGC" * 500})
+    assert r.status_code == 200
+
+
 def test_orf_min_length_has_lower_bound():
     """min_length=1 会产出无意义的 ORF 洪流"""
     with pytest.raises(Exception):
