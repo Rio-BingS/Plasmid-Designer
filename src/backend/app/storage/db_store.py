@@ -4,6 +4,8 @@ import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+from app.timeutil import utcnow_naive
+
 from .base import DesignStoreBase, BatchStoreBase
 
 # DesignDB 上存在的可透传列（save/update 共用）
@@ -192,7 +194,7 @@ class DBDesignStore(DesignStoreBase):
 
     def _db_to_dict(self, design) -> Dict[str, Any]:
         """将 ORM 对象转换为字典（补齐 DesignResult 必填字段，保证可回载）"""
-        created_at = design.created_at or datetime.utcnow()
+        created_at = design.created_at or utcnow_naive()
         return {
             "design_id": design.id,
             "status": design.status,

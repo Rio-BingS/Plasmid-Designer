@@ -6,11 +6,12 @@
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import json
 from typing import Any, Dict
+
+from app.timeutil import utcnow_naive
 
 # 日志目录：跨平台默认（backend/logs/），可用环境变量 PLASMID_LOG_DIR 覆盖；
 # 创建失败时降级为仅控制台日志，不阻断应用启动
@@ -29,7 +30,7 @@ class StructuredFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """格式化日志记录为 JSON"""
         log_data: Dict[str, Any] = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": utcnow_naive().isoformat() + "Z",
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -58,7 +59,7 @@ class RequestFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """格式化请求日志"""
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
         return f"[{timestamp}] {record.levelname:8} | {record.name:20} | {record.getMessage()}"
 
 
