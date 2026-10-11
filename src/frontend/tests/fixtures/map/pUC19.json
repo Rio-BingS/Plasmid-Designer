@@ -1,0 +1,327 @@
+{
+ "schema": "plasmid-map/1",
+ "name": "pUC19",
+ "topology": "circular",
+ "length": 2686,
+ "sequence": "TCGCGCGTTTCGGTGATGACGGTGAAAACCTCTGACACATGCAGCTCCCGGAGACGGTCACAGCTTGTCTGTAAGCGGATGCCGGGAGCAGACAAGCCCGTCAGGGCGCGTCAGCGGGTGTTGGCGGGTGTCGGGGCTGGCTTAACTATGCGGCATCAGAGCAGATTGTACTGAGAGTGCACCATATGCGGTGTGAAATACCGCACAGATGCGTAAGGAGAAAATACCGCATCAGGCGCCATTCGCCATTCAGGCTGCGCAACTGTTGGGAAGGGCGATCGGTGCGGGCCTCTTCGCTATTACGCCAGCTGGCGAAAGGGGGATGTGCTGCAAGGCGATTAAGTTGGGTAACGCCAGGGTTTTCCCAGTCACGACGTTGTAAAACGACGGCCAGTGAATTCGAGCTCGGTACCCGGGGATCCTCTAGAGTCGACCTGCAGGCATGCAAGCTTGGCGTAATCATGGTCATAGCTGTTTCCTGTGTGAAATTGTTATCCGCTCACAATTCCACACAACATACGAGCCGGAAGCATAAAGTGTAAAGCCTGGGGTGCCTAATGAGTGAGCTAACTCACATTAATTGCGTTGCGCTCACTGCCCGCTTTCCAGTCGGGAAACCTGTCGTGCCAGCTGCATTAATGAATCGGCCAACGCGCGGGGAGAGGCGGTTTGCGTATTGGGCGCTCTTCCGCTTCCTCGCTCACTGACTCGCTGCGCTCGGTCGTTCGGCTGCGGCGAGCGGTATCAGCTCACTCAAAGGCGGTAATACGGTTATCCACAGAATCAGGGGATAACGCAGGAAAGAACATGTGAGCAAAAGGCCAGCAAAAGGCCAGGAACCGTAAAAAGGCCGCGTTGCTGGCGTTTTTCCATAGGCTCCGCCCCCCTGACGAGCATCACAAAAATCGACGCTCAAGTCAGAGGTGGCGAAACCCGACAGGACTATAAAGATACCAGGCGTTTCCCCCTGGAAGCTCCCTCGTGCGCTCTCCTGTTCCGACCCTGCCGCTTACCGGATACCTGTCCGCCTTTCTCCCTTCGGGAAGCGTGGCGCTTTCTCATAGCTCACGCTGTAGGTATCTCAGTTCGGTGTAGGTCGTTCGCTCCAAGCTGGGCTGTGTGCACGAACCCCCCGTTCAGCCCGACCGCTGCGCCTTATCCGGTAACTATCGTCTTGAGTCCAACCCGGTAAGACACGACTTATCGCCACTGGCAGCAGCCACTGGTAACAGGATTAGCAGAGCGAGGTATGTAGGCGGTGCTACAGAGTTCTTGAAGTGGTGGCCTAACTACGGCTACACTAGAAGAACAGTATTTGGTATCTGCGCTCTGCTGAAGCCAGTTACCTTCGGAAAAAGAGTTGGTAGCTCTTGATCCGGCAAACAAACCACCGCTGGTAGCGGTGGTTTTTTTGTTTGCAAGCAGCAGATTACGCGCAGAAAAAAAGGATCTCAAGAAGATCCTTTGATCTTTTCTACGGGGTCTGACGCTCAGTGGAACGAAAACTCACGTTAAGGGATTTTGGTCATGAGATTATCAAAAAGGATCTTCACCTAGATCCTTTTAAATTAAAAATGAAGTTTTAAATCAATCTAAAGTATATATGAGTAAACTTGGTCTGACAGTTACCAATGCTTAATCAGTGAGGCACCTATCTCAGCGATCTGTCTATTTCGTTCATCCATAGTTGCCTGACTCCCCGTCGTGTAGATAACTACGATACGGGAGGGCTTACCATCTGGCCCCAGTGCTGCAATGATACCGCGAGACCCACGCTCACCGGCTCCAGATTTATCAGCAATAAACCAGCCAGCCGGAAGGGCCGAGCGCAGAAGTGGTCCTGCAACTTTATCCGCCTCCATCCAGTCTATTAATTGTTGCCGGGAAGCTAGAGTAAGTAGTTCGCCAGTTAATAGTTTGCGCAACGTTGTTGCCATTGCTACAGGCATCGTGGTGTCACGCTCGTCGTTTGGTATGGCTTCATTCAGCTCCGGTTCCCAACGATCAAGGCGAGTTACATGATCCCCCATGTTGTGCAAAAAAGCGGTTAGCTCCTTCGGTCCTCCGATCGTTGTCAGAAGTAAGTTGGCCGCAGTGTTATCACTCATGGTTATGGCAGCACTGCATAATTCTCTTACTGTCATGCCATCCGTAAGATGCTTTTCTGTGACTGGTGAGTACTCAACCAAGTCATTCTGAGAATAGTGTATGCGGCGACCGAGTTGCTCTTGCCCGGCGTCAATACGGGATAATACCGCGCCACATAGCAGAACTTTAAAAGTGCTCATCATTGGAAAACGTTCTTCGGGGCGAAAACTCTCAAGGATCTTACCGCTGTTGAGATCCAGTTCGATGTAACCCACTCGTGCACCCAACTGATCTTCAGCATCTTTTACTTTCACCAGCGTTTCTGGGTGAGCAAAAACAGGAAGGCAAAATGCCGCAAAAAAGGGAATAAGGGCGACACGGAAATGTTGAATACTCATACTCTTCCTTTTTCAATATTATTGAAGCATTTATCAGGGTTATTGTCTCATGAGCGGATACATATTTGAATGTATTTAGAAAAATAAACAAATAGGGGTTCCGCGCACATTTCCCCGAAAAGTGCCACCTGACGTCTAAGAAACCATTATTATCATGACATTAACCTATAAAAATAGGCGTATCACGAGGCCCTTTCGTC",
+ "features": [
+  {
+   "id": "f1",
+   "name": "lac promoter/operator",
+   "type": "promoter",
+   "start": 108,
+   "end": 208,
+   "strand": 1,
+   "source": "vector",
+   "notes": "lac 启动子与操纵序列（IPTG 诱导）"
+  },
+  {
+   "id": "f2",
+   "name": "lacZ-alpha",
+   "type": "cds",
+   "start": 216,
+   "end": 539,
+   "strand": 1,
+   "source": "vector",
+   "notes": "lacZ alpha 片段（蓝白斑筛选），MCS 嵌入读码框内"
+  },
+  {
+   "id": "f3",
+   "name": "MCS",
+   "type": "mcs",
+   "start": 233,
+   "end": 289,
+   "strand": -1,
+   "source": "vector",
+   "notes": "多克隆位点: HindIII-SphI-PstI-SalI-XbaI-BamHI-SmaI-KpnI-SacI-EcoRI"
+  },
+  {
+   "id": "f4",
+   "name": "AmpR (bla)",
+   "type": "marker",
+   "start": 885,
+   "end": 1745,
+   "strand": 1,
+   "source": "vector",
+   "notes": "氨苄西林抗性（beta-lactamase）"
+  },
+  {
+   "id": "f5",
+   "name": "pUC ori",
+   "type": "rep_origin",
+   "start": 1785,
+   "end": 2535,
+   "strand": 1,
+   "source": "vector",
+   "notes": "ColE1/pBR322 衍生的高拷贝复制起始区"
+  }
+ ],
+ "enzymes": [
+  {
+   "name": "EcoRI",
+   "recognition": "G^AATTC",
+   "ends": "5'",
+   "overhang": "AATT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 396,
+     "cut_top": 396,
+     "cut_bottom": 400,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BamHI",
+   "recognition": "G^GATCC",
+   "ends": "5'",
+   "overhang": "GATC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 417,
+     "cut_top": 417,
+     "cut_bottom": 421,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "HindIII",
+   "recognition": "A^AGCTT",
+   "ends": "5'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 447,
+     "cut_top": 447,
+     "cut_bottom": 451,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SalI",
+   "recognition": "G^TCGAC",
+   "ends": "5'",
+   "overhang": "TCGA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 429,
+     "cut_top": 429,
+     "cut_bottom": 433,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "PstI",
+   "recognition": "CTGCA^G",
+   "ends": "3'",
+   "overhang": "TGCA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 435,
+     "cut_top": 439,
+     "cut_bottom": 435,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SmaI",
+   "recognition": "CCC^GGG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 412,
+     "cut_top": 414,
+     "cut_bottom": 414,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "XbaI",
+   "recognition": "T^CTAGA",
+   "ends": "5'",
+   "overhang": "CTAG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 423,
+     "cut_top": 423,
+     "cut_bottom": 427,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "KpnI",
+   "recognition": "GGTAC^C",
+   "ends": "3'",
+   "overhang": "GTAC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 408,
+     "cut_top": 412,
+     "cut_bottom": 408,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SacI",
+   "recognition": "GAGCT^C",
+   "ends": "3'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 402,
+     "cut_top": 406,
+     "cut_bottom": 402,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SphI",
+   "recognition": "GCATG^C",
+   "ends": "3'",
+   "overhang": "CATG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 441,
+     "cut_top": 445,
+     "cut_bottom": 441,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NdeI",
+   "recognition": "CA^TATG",
+   "ends": "5'",
+   "overhang": "TA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 183,
+     "cut_top": 184,
+     "cut_bottom": 186,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "PvuII",
+   "recognition": "CAG^CTG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 2,
+   "sites": [
+    {
+     "position": 306,
+     "cut_top": 308,
+     "cut_bottom": 308,
+     "strand": 1
+    },
+    {
+     "position": 628,
+     "cut_top": 630,
+     "cut_bottom": 630,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "ScaI",
+   "recognition": "AGT^ACT",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 2177,
+     "cut_top": 2179,
+     "cut_bottom": 2179,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BsaI",
+   "recognition": "GGTCTCN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 1766,
+     "cut_top": 1760,
+     "cut_bottom": 1764,
+     "strand": -1
+    }
+   ]
+  },
+  {
+   "name": "BsmBI",
+   "recognition": "CGTCTCN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 2,
+   "sites": [
+    {
+     "position": 51,
+     "cut_top": 45,
+     "cut_bottom": 49,
+     "strand": -1
+    },
+    {
+     "position": 2683,
+     "cut_top": 3,
+     "cut_bottom": 7,
+     "strand": 1
+    }
+   ]
+  }
+ ],
+ "orfs": [
+  {
+   "start": 146,
+   "end": 469,
+   "strand": -1,
+   "frame": 0,
+   "aa_length": 107
+  },
+  {
+   "start": 186,
+   "end": 542,
+   "strand": 1,
+   "frame": 2,
+   "aa_length": 118
+  },
+  {
+   "start": 1626,
+   "end": 2486,
+   "strand": -1,
+   "frame": 2,
+   "aa_length": 286
+  }
+ ],
+ "primers": [],
+ "meta": {
+  "source_format": "vector",
+  "enzyme_set": "common",
+  "warnings": []
+ }
+}
