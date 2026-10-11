@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
  * 站点管理（仅管理员）
- * - 站点设置：注册开关、注册邮箱验证开关、各层级功能开关
- * - 用户管理：角色/状态/验证标记、删除
+ * - 站点设置：注册开关、注册邮箱验证开关、各层级功能开关、各分组批量测序 read 上限
+ * - 用户管理：角色/状态/验证标记、个人功能权限与 read 上限覆盖、删除
  * 发信渠道（MAIL_PROVIDER）在服务端 .env 配置，此处只读展示
  */
 import { ref, onMounted, computed } from 'vue'
@@ -10,8 +10,9 @@ import { useAuthStore } from '@/stores/auth'
 import {
   getAdminSettings, updateAdminSettings, listAdminUsers,
   updateAdminUser, deleteAdminUser,
-  type AdminSettings, type AdminUserInfo
+  type AdminSettings, type AdminUserInfo, type LimitTier, type BatchReadLimitPair
 } from '@/api'
+import { parseLimitInput, limitToInput } from '@/utils/batchReadLimits'
 
 const authStore = useAuthStore()
 
@@ -30,6 +31,46 @@ const draft = ref({
   anonymous_features: [] as string[],
   user_features: [] as string[]
 })
+
+// ==================== 批量测序 read 上限 ====================
+type LimitField = keyof BatchReadLimitPair
+const LIMIT_TIERS: LimitTier[] = ['anonymous', 'user', 'admin']
+const LIMIT_FIELDS: LimitField[] = ['max_reads_per_group', 'max_total_reads']
+const LIMIT_TIER_LABELS: Record<LimitTier, string> = { anonymous: '匿名访客', user: '普通用户', admin: '管理员' }
+const LIMIT_FIELD_LABELS: Record<LimitField, string> = { max_reads_per_group: '每组最多 read 数', max_total_reads: '整批最多 read 数' }
+const FALLBACK_DEFAULTS = { max_reads_per_group: 24, max_total_reads: 240 }
+const FALLBACK_HARD_MAX = { max_reads_per_group: 384, max_total_reads: 5000 }
+
+type LimitDraft = Record<LimitTier, Record<LimitField, string>>
+const limitDraft = ref<LimitDraft>(emptyLimitDraft())
+
+function emptyLimitDraft(): LimitDraft {
+  return {
+    anonymous: { max_reads_per_group: '', max_total_reads: '' },
+    user: { max_reads_per_group: '', max_total_reads: '' },
+    admin: { max_reads_per_group: '', max_total_reads: '' }
+  }
+}
+
+function limitDraftFrom(s: AdminSettings): LimitDraft {
+  const d = emptyLimitDraft()
+  for (const t of LIMIT_TIERS) {
+    for (const f of LIMIT_FIELDS) d[t][f] = limitToInput(s.batch_read_limits?.[t]?.[f])
+  }
+  return d
+}
+
+const limitDefaults = computed(() => settings.value?.batch_read_limit_defaults ?? FALLBACK_DEFAULTS)
+const limitHardMax = computed(() => settings.value?.batch_read_limit_hard_max ?? FALLBACK_HARD_MAX)
+
+/** 某分组当前生效值（已保存的分组设置，未设置则服务器默认） */
+function tierLimit(tier: LimitTier, field: LimitField): number {
+  return settings.value?.batch_read_limits?.[tier]?.[field] ?? limitDefaults.value[field]
+}
+
+function userTier(u: AdminUserInfo): LimitTier {
+  return u.is_admin ? 'admin' : 'user'
+}
 
 const featureKeys = computed(() => settings.value?.feature_keys ?? [])
 const featureLabels = computed(() => settings.value?.feature_labels ?? {})
@@ -56,6 +97,7 @@ async function load() {
       anonymous_features: [...settings.value.anonymous_features],
       user_features: [...settings.value.user_features]
     }
+    limitDraft.value = limitDraftFrom(settings.value)
     users.value = await listAdminUsers()
     currentUserId.value = authStore.user?.id || ''
   } catch (e: any) {
@@ -66,15 +108,30 @@ async function load() {
 }
 
 async function saveSettings() {
-  savingSettings.value = true
   message.value = ''
   error.value = ''
+  // read 上限先在前端校验（后端同规则 422 兜底）：空白 = 回到服务器默认
+  const limits = {} as Record<LimitTier, BatchReadLimitPair>
+  for (const t of LIMIT_TIERS) {
+    limits[t] = { max_reads_per_group: null, max_total_reads: null }
+    for (const f of LIMIT_FIELDS) {
+      const r = parseLimitInput(limitDraft.value[t][f], limitHardMax.value[f],
+        `「${LIMIT_TIER_LABELS[t]}」${LIMIT_FIELD_LABELS[f]}`)
+      if (!r.ok) {
+        error.value = r.error
+        return
+      }
+      limits[t][f] = r.value
+    }
+  }
+  savingSettings.value = true
   try {
     const saved = await updateAdminSettings({
       registration_open: draft.value.registration_open,
       email_verification_required: draft.value.email_verification_required,
       anonymous_features: [...draft.value.anonymous_features],
-      user_features: [...draft.value.user_features]
+      user_features: [...draft.value.user_features],
+      batch_read_limits: limits
     })
     settings.value = saved
     draft.value = {
@@ -83,6 +140,7 @@ async function saveSettings() {
       anonymous_features: [...saved.anonymous_features],
       user_features: [...saved.user_features]
     }
+    limitDraft.value = limitDraftFrom(saved)
     message.value = '设置已保存，立即对全站生效'
   } catch (e: any) {
     error.value = e?.response?.data?.detail || e?.message || '保存失败'
@@ -159,6 +217,60 @@ function permSummary(u: AdminUserInfo): string {
   return u.allowed_features.map((k) => featureLabels.value[k] || k).join('、')
 }
 
+// ==================== 用户 read 上限覆盖 ====================
+const limitUser = ref<AdminUserInfo | null>(null)
+const limitUserDraft = ref<Record<LimitField, string>>({ max_reads_per_group: '', max_total_reads: '' })
+const savingLimit = ref(false)
+
+const USER_LIMIT_COLUMNS: Record<LimitField, 'batch_max_reads_per_group' | 'batch_max_total_reads'> = {
+  max_reads_per_group: 'batch_max_reads_per_group',
+  max_total_reads: 'batch_max_total_reads'
+}
+
+function openLimitEditor(u: AdminUserInfo) {
+  limitUser.value = u
+  limitUserDraft.value = {
+    max_reads_per_group: limitToInput(u.batch_max_reads_per_group),
+    max_total_reads: limitToInput(u.batch_max_total_reads)
+  }
+}
+
+async function saveUserLimit() {
+  const u = limitUser.value
+  if (!u) return
+  error.value = ''
+  const patch: { batch_max_reads_per_group?: number | null; batch_max_total_reads?: number | null } = {}
+  for (const f of LIMIT_FIELDS) {
+    const r = parseLimitInput(limitUserDraft.value[f], limitHardMax.value[f], `个人「${LIMIT_FIELD_LABELS[f]}」`)
+    if (!r.ok) {
+      error.value = r.error
+      return
+    }
+    patch[USER_LIMIT_COLUMNS[f]] = r.value // null = 清除覆盖（跟随分组）
+  }
+  savingLimit.value = true
+  try {
+    const updated = await updateAdminUser(u.id, patch)
+    users.value = users.value.map((x) => (x.id === updated.id ? updated : x))
+    limitUser.value = null
+    message.value = '用户批量 read 上限已更新'
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || e?.message || '保存失败'
+  } finally {
+    savingLimit.value = false
+  }
+}
+
+function limitSummary(u: AdminUserInfo): string {
+  const g = u.batch_max_reads_per_group
+  const t = u.batch_max_total_reads
+  if (g == null && t == null) return '跟随分组'
+  const tier = userTier(u)
+  const gs = g ?? `${tierLimit(tier, 'max_reads_per_group')}（分组）`
+  const ts = t ?? `${tierLimit(tier, 'max_total_reads')}（分组）`
+  return `每组 ${gs} / 整批 ${ts}`
+}
+
 function fmtTime(iso: string | null): string {
   return (iso || '').replace('T', ' ').slice(0, 16)
 }
@@ -230,6 +342,41 @@ onMounted(load)
           </tbody>
         </table>
 
+        <h3>批量测序 read 上限</h3>
+        <p class="hint">
+          按分组限制单次批量测序参与比对的 read 数；留空 = 使用服务器默认（每组
+          {{ limitDefaults.max_reads_per_group }} / 整批 {{ limitDefaults.max_total_reads }} 条，环境变量配置），
+          最多可设每组 {{ limitHardMax.max_reads_per_group }} / 整批 {{ limitHardMax.max_total_reads }} 条（服务器安全上限）。
+          可在下方用户列表为单个账号单独设置。
+        </p>
+        <table class="feature-table limit-table">
+          <thead>
+            <tr>
+              <th>分组</th>
+              <th v-for="f in LIMIT_FIELDS" :key="f">{{ LIMIT_FIELD_LABELS[f] }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in LIMIT_TIERS" :key="t">
+              <td>{{ LIMIT_TIER_LABELS[t] }}</td>
+              <td v-for="f in LIMIT_FIELDS" :key="f">
+                <input
+                  v-model="limitDraft[t][f]"
+                  type="text"
+                  inputmode="numeric"
+                  class="limit-input"
+                  :data-testid="`limit-${t}-${f}`"
+                  :placeholder="`默认 ${limitDefaults[f]}`"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="hint">
+          注意：批量请求同时受单次上传总体积 {{ settings.batch_upload_max_mb ?? 500 }} MB
+          与单次最多 {{ settings.batch_max_files ?? 400 }} 个文件限制，调高 read 上限后这两项可能先触发。
+        </p>
+
         <button class="btn primary" :disabled="savingSettings" @click="saveSettings">
           {{ savingSettings ? '保存中…' : '保存设置' }}
         </button>
@@ -247,6 +394,7 @@ onMounted(load)
               <th>启用</th>
               <th>邮箱验证</th>
               <th>功能权限</th>
+              <th>批量 read 上限</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -262,6 +410,9 @@ onMounted(load)
               <td><input type="checkbox" :checked="u.email_verified" @change="setUserFlag(u, { email_verified: !u.email_verified })" /></td>
               <td>
                 <button class="btn small perm-btn" @click="openPermEditor(u)">{{ permSummary(u) }}</button>
+              </td>
+              <td>
+                <button class="btn small perm-btn limit-btn" @click="openLimitEditor(u)">{{ limitSummary(u) }}</button>
               </td>
               <td>
                 <button class="btn danger small" :disabled="u.id === currentUserId" @click="removeUser(u)">
@@ -310,6 +461,34 @@ onMounted(load)
           <button class="btn" @click="permUser = null">取消</button>
           <button class="btn primary" :disabled="savingPerm" @click="savePerm">
             {{ savingPerm ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 用户批量 read 上限弹窗 ==================== -->
+    <div v-if="limitUser" class="modal-mask" @click.self="limitUser = null">
+      <div class="modal">
+        <h3>批量测序 read 上限 — {{ limitUser.username }}</h3>
+        <p class="hint">
+          {{ limitUser.email }} · 所在分组：{{ LIMIT_TIER_LABELS[userTier(limitUser)] }}。
+          留空 = 跟随分组；单独设置可高于或低于分组值。
+        </p>
+        <label v-for="f in LIMIT_FIELDS" :key="f" class="limit-row">
+          <span>{{ LIMIT_FIELD_LABELS[f] }}</span>
+          <input
+            v-model="limitUserDraft[f]"
+            type="text"
+            inputmode="numeric"
+            class="limit-input"
+            :data-testid="`user-limit-${f}`"
+            :placeholder="`跟随分组（${tierLimit(userTier(limitUser), f)}）`"
+          />
+        </label>
+        <div class="modal-actions">
+          <button class="btn" @click="limitUser = null">取消</button>
+          <button class="btn primary save-limit" :disabled="savingLimit" @click="saveUserLimit">
+            {{ savingLimit ? '保存中…' : '保存' }}
           </button>
         </div>
       </div>
@@ -583,5 +762,22 @@ h1 {
 
 .modal-actions .btn.primary {
   margin-top: 0;
+}
+
+.limit-input {
+  width: 9rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.limit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
 }
 </style>
