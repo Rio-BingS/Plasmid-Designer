@@ -367,6 +367,15 @@ export interface SiteConfig {
   tier: 'anonymous' | 'user' | 'admin'
   features: { anonymous: string[]; user: string[] }
   effective_features: string[]
+  // 当前账号的批量测序上限（后端已按 个人覆盖 → 分组 → 服务器默认 解析；旧后端无此字段）
+  batch_read_limits?: BatchReadLimitsInfo | null
+}
+
+export interface BatchReadLimitsInfo {
+  max_reads_per_group: number
+  max_total_reads: number
+  max_files: number
+  max_upload_mb: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -388,6 +397,14 @@ export async function resendVerification(verifyToken: string): Promise<any> {
 
 // ==================== 管理员 ====================
 
+export type LimitTier = 'anonymous' | 'user' | 'admin'
+
+// 批量测序 read 上限的一组取值；null = 跟随上一级（分组 → 服务器默认）
+export interface BatchReadLimitPair {
+  max_reads_per_group: number | null
+  max_total_reads: number | null
+}
+
 export interface AdminSettings {
   registration_open: boolean
   email_verification_required: boolean
@@ -397,6 +414,15 @@ export interface AdminSettings {
   feature_labels: Record<string, string>
   mail_provider: string
   mail_from: string
+  batch_read_limits?: Record<LimitTier, BatchReadLimitPair>
+  batch_read_limit_defaults?: { max_reads_per_group: number; max_total_reads: number }
+  batch_read_limit_hard_max?: { max_reads_per_group: number; max_total_reads: number }
+  batch_max_files?: number
+  batch_upload_max_mb?: number
+}
+
+export type AdminSettingsPatch = Partial<Omit<AdminSettings, 'batch_read_limits'>> & {
+  batch_read_limits?: Partial<Record<LimitTier, Partial<BatchReadLimitPair>>>
 }
 
 export interface AdminUserInfo {
@@ -407,6 +433,8 @@ export interface AdminUserInfo {
   is_active: boolean
   email_verified: boolean
   allowed_features: string[] | null
+  batch_max_reads_per_group?: number | null
+  batch_max_total_reads?: number | null
   created_at: string | null
 }
 
@@ -415,7 +443,7 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   return response.data
 }
 
-export async function updateAdminSettings(patch: Partial<AdminSettings>): Promise<AdminSettings> {
+export async function updateAdminSettings(patch: AdminSettingsPatch): Promise<AdminSettings> {
   const response = await api.put('/admin/settings', patch)
   return response.data
 }
@@ -427,7 +455,15 @@ export async function listAdminUsers(): Promise<AdminUserInfo[]> {
 
 export async function updateAdminUser(
   userId: string,
-  patch: { is_admin?: boolean; is_active?: boolean; email_verified?: boolean; allowed_features?: string[] }
+  patch: {
+    is_admin?: boolean
+    is_active?: boolean
+    email_verified?: boolean
+    allowed_features?: string[]
+    // null = 清除个人覆盖（跟随所在分组）
+    batch_max_reads_per_group?: number | null
+    batch_max_total_reads?: number | null
+  }
 ): Promise<AdminUserInfo> {
   const response = await api.put(`/admin/users/${encodeURIComponent(userId)}`, patch)
   return response.data
