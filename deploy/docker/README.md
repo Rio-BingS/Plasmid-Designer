@@ -95,8 +95,9 @@ chmod +x ../scripts/deploy.sh
 ```bash
 cd /root/plasmid-designer-v2/deploy/docker
 
-# 从模板创建 .env
-cp .env.example .env
+# 从模板创建 .env（含全部密钥，只给属主读写）
+(umask 077 && cp .env.example .env)
+chmod 600 .env
 
 # 模板中三项密钥均为空，必须填入随机值（留空 compose 拒绝启动）
 sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(openssl rand -hex 32)/" .env
@@ -366,6 +367,8 @@ docker compose logs -f --since 5m
 密码，已有数据卷后修改 `DB_PASSWORD` 需同时在库内 `ALTER USER`。deploy.sh 检测到
 数据卷已存在而 `DB_PASSWORD` 为空或为旧版占位值时会拒绝自动生成并给出改口令步骤；
 部署结束前会等待 `/health` 报告 `"db":"ok"`，未通过则以非零状态退出。
+`.env` 含全部密钥，deploy.sh 每次运行都会把它设为 `600`；手动创建或从别处拷来的
+`.env` 请自行 `chmod 600 .env`，并由运行 `docker compose` 的同一用户持有。
 
 ### 8.2 防火墙
 
