@@ -8,6 +8,35 @@
 
 ## [Unreleased]
 
+### 升级注意
+
+- 启动时自动迁移数据库：`users` 表新增可空列 `batch_max_reads_per_group`、
+  `batch_max_total_reads`，`site_settings` 表新增可空列 `batch_read_limits`
+  （SQLite 与 PostgreSQL 均自动 `ALTER`，无需手动操作）。新列为 NULL 即沿用环境
+  变量默认，升级后上限与 v2.9.1 一致。
+- Docker 部署此前未把 `SEQUENCING_BATCH_MAX_*` 透传给后端容器，在 `.env` 里调整
+  不生效；现已透传。若曾在 `.env` 写过这些变量，升级后会开始生效。
+
+### 新增
+
+- 管理员可在 `/admin` 按分组（匿名访客 / 普通用户 / 管理员）设置批量测序的
+  「每组最多 read 数」「整批最多 read 数」，并为单个账号单独设置（留空即跟随
+  分组）；生效顺序为个人设置 → 分组设置 → 服务器默认（环境变量，仍为 24 / 240）。
+  对应 `GET/PUT /api/admin/settings` 的 `batch_read_limits`，
+  `PUT /api/admin/users/{id}` 的 `batch_max_reads_per_group`、
+  `batch_max_total_reads`（显式 `null` 清除覆盖）。
+- 新增服务器安全上限 `SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX`（默认 384）、
+  `SEQUENCING_BATCH_READS_HARD_MAX`（默认 5000）：管理员填写的值超出时返回 422，
+  生效值也按它截断。
+- `GET /api/auth/site-config` 新增可选字段 `batch_read_limits`（当前账号的生效
+  上限），批量测序页据此显示「本账号单批最多 N 条 read」。
+
+### 变更
+
+- 批量测序超出 read 上限时，413 提示写明生效的上限值及其来源（个人设置 / 分组
+  设置 / 服务器默认 / 安全上限）。单次上传总体积 500 MB 与单次最多 400 个文件的
+  限制不变，调高 read 上限后可能先触发。
+
 ## [2.9.1] - 2026-10-11
 
 ### 升级注意
