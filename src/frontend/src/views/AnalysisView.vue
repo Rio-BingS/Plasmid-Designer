@@ -34,10 +34,12 @@ const availableAnalysisEnzymes = ref<string[]>([])
 const availableAnalysisEnzymeMap = ref<Record<string, { recognition_sequence?: string }>>({})
 // 限制性位点：酶筛选（空 = 全部酶）
 const selectedRestrictionEnzymes = ref<string[]>([])
-// 酶切消化模拟
+// 酶切消化模拟（后端 DigestRequest 限 1-6 个酶）
+const DIGEST_MAX_ENZYMES = 6
 const digestEnzymes = ref<string[]>([])
 const digestResult = ref<any>(null)
 const digestLoading = ref(false)
+const digestTooMany = computed(() => digestEnzymes.value.length > DIGEST_MAX_ENZYMES)
 // ORF
 const orfMinLength = ref(100)
 
@@ -103,13 +105,26 @@ async function runORFPrediction() {
   }
 }
 
+// FastAPI 校验失败（422）的 detail 是对象数组，直接显示会变成 [object Object]
+function errorText(e: any): string {
+  const detail = e?.response?.data?.detail
+  if (Array.isArray(detail)) return detail.map((d: any) => d?.msg || String(d)).join('；')
+  return detail || e?.message || '请求失败'
+}
+
 async function runDigest() {
   if (!sequence.value.trim() || isAminoAcid.value || !digestEnzymes.value.length) return
+  if (digestTooMany.value) return
   try {
     digestLoading.value = true
-    digestResult.value = await simulateDigest(sequence.value, digestEnzymes.value)
+    // 先清掉上一次结果：失败时不应继续展示旧酶组合的片段
+    digestResult.value = null
+    // 粘贴的序列常带换行/空格（FASTA 分行），原样提交会让后端把空白计入
+    // 片段长度，且跨行的识别位点匹配不到——与页面显示的 bp 数口径一致
+    const cleanSeq = sequence.value.replace(/\s/g, '')
+    digestResult.value = await simulateDigest(cleanSeq, digestEnzymes.value)
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message
+    error.value = errorText(e)
   } finally {
     digestLoading.value = false
   }
@@ -285,9 +300,12 @@ async function handleExport() {
         </div>
         <button
           class="btn btn-secondary"
-          :disabled="digestLoading || !digestEnzymes.length || isAminoAcid"
+          :disabled="digestLoading || !digestEnzymes.length || digestTooMany || isAminoAcid"
           @click="runDigest"
         >{{ digestLoading ? '模拟中...' : '🧪 模拟完全消化' }}</button>
+        <p v-if="digestTooMany" class="hint-text warning-text">
+          最多选择 {{ DIGEST_MAX_ENZYMES }} 个酶，请移除多余的酶
+        </p>
 
         <div v-if="digestResult?.fragments?.length" style="margin-top: 0.75rem; overflow-x: auto;">
           <table class="data-table">
