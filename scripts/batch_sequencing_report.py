@@ -657,6 +657,12 @@ def main():
     if excel_path is None:
         raise SystemExit(f"数据文件夹下找不到 Excel 信息表（.xlsx）：{data_dir}")
     out_dir = Path(args.out_dir).resolve() if args.out_dir else data_dir / "测序分析"
+    # 输出目录是数据文件夹本身或其上级时，扫描会把整个数据文件夹当输出跳过
+    # （0 个文件、整批「未找到」），清单与总览还会写进数据目录
+    if out_dir == data_dir or out_dir in data_dir.parents:
+        raise SystemExit(f"输出目录不能是数据文件夹本身或其上级目录：{out_dir}")
+    if out_dir.exists() and not out_dir.is_dir():
+        raise SystemExit(f"输出目录已存在且不是文件夹：{out_dir}")
 
     try:
         wb, header_row, cols, rows = load_excel(excel_path)
