@@ -9,8 +9,12 @@ const style = computed(() => {
   const h = props.store.hover.value
   if (!h) return {}
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
   const left = h.x + 14 + 260 > vw ? Math.max(4, h.x - 274) : h.x + 14
-  return { left: `${left}px`, top: `${h.y + 14}px` }
+  // 估算高度（标题 + 每行 ~18 px，长备注按 2 行算），贴近底边时翻到指针上方
+  const estH = 24 + h.lines.reduce((n, l) => n + (l.length > 40 ? 2 : 1), 0) * 18
+  const top = h.y + 14 + estH > vh ? Math.max(4, h.y - 10 - estH) : h.y + 14
+  return { left: `${left}px`, top: `${top}px` }
 })
 </script>
 
