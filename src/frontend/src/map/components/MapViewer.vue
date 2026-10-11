@@ -351,7 +351,7 @@ defineExpose({ store, view, undo })
 
     <div class="mv-body">
       <div ref="mainBox" class="mv-main">
-        <CircularMap v-if="showCircular" ref="circularRef" :max-size="Math.min(circularMax, Math.max(300, mainW || circularMax))" />
+        <CircularMap v-if="showCircular" ref="circularRef" :max-size="Math.min(circularMax, Math.max(240, mainW || circularMax))" />
         <template v-if="showLinear">
           <LinearMap ref="linearRef" />
           <Minimap follow="linear" />
