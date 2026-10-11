@@ -133,15 +133,18 @@ def _heavy_semaphore() -> asyncio.Semaphore:
 
 
 @asynccontextmanager
-async def _heavy_slot():
-    """占用一个并发槽；排队超时返回 503。
+async def _heavy_slot(timeout: Optional[float] = None):
+    """占用一个并发槽；排队超时（缺省 HEAVY_QUEUE_TIMEOUT）返回 503。
+
+    分块上传的后台 finalize 不占着 HTTP 连接，可传入更长的排队时限。
 
     审查 02 M5：上传字节读入内存、Excel 解析、记录落库（json+zlib+DB）、
     峰图回灌解压、整理包打包与比对同属重型内存/CPU 阶段，都须在槽内完成，
     否则并发闸只限住了比对本身，少量并发请求仍可打满内存。"""
     sem = _heavy_semaphore()
     try:
-        await asyncio.wait_for(sem.acquire(), timeout=HEAVY_QUEUE_TIMEOUT)
+        await asyncio.wait_for(
+            sem.acquire(), timeout=HEAVY_QUEUE_TIMEOUT if timeout is None else timeout)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=503,
                             detail="测序分析任务繁忙，请稍后重试",
@@ -513,12 +516,15 @@ _reference_circular = reference_circular
 
 
 _group_batch_uploads = group_batch_uploads
+# 缺省 = 运行时读取 MAX_BATCH_FILES（可被测试/配置打桩）；None = 不限文件数
+_DEFAULT_MAX_FILES = object()
 
 
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
     access_token: Optional[str] = None, read_limits: Optional[Dict] = None,
+    max_files=_DEFAULT_MAX_FILES,
 ) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -531,9 +537,38 @@ def _run_batch(
     groups 与 raw_unmatched 保留原始文件条目（含字节），供整理包打包使用；
     records_by_id 是本次分析产物的记录快照（终审 C-07：打包不再回查全局
     dict，避免并发淘汰时 KeyError）。
+
+    max_files：单请求入口的文件数上限；分块上传会话传 None——会话的体积与
+    文件数已在上传阶段按会话配额限制，批次规模由 read 上限治理。
     """
-    if len(reads) + len(refs) > MAX_BATCH_FILES:
-        raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
+    groups, unmatched, clone_mode = _group_and_check(
+        reads, refs, rows, read_limits, max_files=max_files)
+
+    def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
+        aid, _tok, rec = _register_analysis(
+            label, ref_seq, features, res,
+            owner_id=owner_id, access_token=access_token)
+        return aid, rec
+
+    items, records_by_id = run_batch_groups(groups, min_q, _register,
+                                            max_ref_bp=MAX_REF_BP)
+    payload = batch_payload(items, unmatched, min_q, rows is not None,
+                            clone_mode, ignored)
+    return payload, groups, unmatched, records_by_id
+
+
+def _group_and_check(
+    reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
+    read_limits: Optional[Dict] = None, max_files=_DEFAULT_MAX_FILES,
+) -> Tuple[List[Dict], List[Dict], bool]:
+    """归组并执行比对前的全部上限检查（文件数/质粒数/分组数/read 数）。
+
+    只依赖文件名，不读字节：分块上传在创建会话时即可凭文件清单预检，
+    超限在上传任何数据之前就拒绝。返回 (groups, unmatched, clone_mode)。"""
+    if max_files is _DEFAULT_MAX_FILES:
+        max_files = MAX_BATCH_FILES
+    if max_files is not None and len(reads) + len(refs) > max_files:
+        raise HTTPException(status_code=400, detail=f"文件数超过上限（{max_files} 个）")
 
     clone_mode = rows is not None and rows_have_clones(rows)
     if clone_mode:
@@ -548,18 +583,7 @@ def _run_batch(
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
         groups = plasmid_groups(ordered, per_plasmid)
     _check_batch_read_caps(groups, read_limits)
-
-    def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
-        aid, _tok, rec = _register_analysis(
-            label, ref_seq, features, res,
-            owner_id=owner_id, access_token=access_token)
-        return aid, rec
-
-    items, records_by_id = run_batch_groups(groups, min_q, _register,
-                                            max_ref_bp=MAX_REF_BP)
-    payload = batch_payload(items, unmatched, min_q, rows is not None,
-                            clone_mode, ignored)
-    return payload, groups, unmatched, records_by_id
+    return groups, unmatched, clone_mode
 
 
 def _batch_read_limits_for(user) -> Dict:
@@ -647,15 +671,12 @@ async def analyze_sequencing_batch(
 
 async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFile]):
     """批量上传读入与分类（调用方须已占并发槽），返回 (reads, refs, ignored, excel_bytes)"""
-    reads: List[Dict] = []
-    refs: List[Dict] = []
-    ignored: List[str] = []
+    blobs: List[Tuple[str, bytes]] = []
     # 终审 C-02：批量接口此前无请求级总字节上限——400 文件 × 20MB = 8 GB
     # 会先全部读进内存。单文件上限挡不住「多文件叠加」，这里按累计值
     # 在读取过程中即时中断（未读的文件不再读）
     total_bytes = 0
     for f in files:
-        name = f.filename or "unnamed"
         blob = await _read_limited(f)
         total_bytes += len(blob)
         if total_bytes > MAX_BATCH_REQUEST_BYTES:
@@ -663,7 +684,32 @@ async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFil
                 status_code=413,
                 detail=f"本次上传总字节超过上限（>{MAX_BATCH_REQUEST_BYTES // (1024 * 1024)}MB），"
                        "请拆分为多个批次提交")
-        if name.startswith("~$") or not blob:
+        blobs.append((f.filename or "unnamed", blob))
+    reads, refs, ignored = _classify_batch_blobs(blobs)
+
+    excel_bytes = None
+    if excel is not None:
+        excel_bytes = await _read_limited(excel)
+        # 信息表同样计入本次请求总字节（此前只累计测序/图谱文件）
+        if excel_bytes and total_bytes + len(excel_bytes) > MAX_BATCH_REQUEST_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"本次上传总字节超过上限（>{MAX_BATCH_REQUEST_BYTES // (1024 * 1024)}MB），"
+                       "请拆分为多个批次提交")
+        _check_batch_excel(excel.filename, excel_bytes)
+    return reads, refs, ignored, excel_bytes
+
+
+def _classify_batch_blobs(blobs: List[Tuple[str, bytes]]):
+    """[(文件名, 字节)] → (reads, refs, ignored)：跳过 ~$ 临时文件与空文件，
+    按扩展名分为测序 read / 参考图谱 / 忽略。单请求入口与分块上传 finalize
+    共用，两条路径的归类完全一致（字节为 None 时视为非空，供文件清单预检）。"""
+    reads: List[Dict] = []
+    refs: List[Dict] = []
+    ignored: List[str] = []
+    for name, blob in blobs:
+        name = name or "unnamed"
+        if name.startswith("~$") or blob == b"":
             continue
         ext = os.path.splitext(name)[1].lower()
         entry = {
@@ -681,49 +727,48 @@ async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFil
         raise HTTPException(
             status_code=400,
             detail="未找到可用的测序文件（.ab1）或参考图谱（.dna/.gb/.fasta）")
+    return reads, refs, ignored
 
-    excel_bytes = None
-    if excel is not None:
-        excel_bytes = await _read_limited(excel)
-        if not excel_bytes:
-            raise HTTPException(status_code=400, detail="信息表文件为空")
-        # 信息表同样计入本次请求总字节（此前只累计测序/图谱文件）
-        total_bytes += len(excel_bytes)
-        if total_bytes > MAX_BATCH_REQUEST_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"本次上传总字节超过上限（>{MAX_BATCH_REQUEST_BYTES // (1024 * 1024)}MB），"
-                       "请拆分为多个批次提交")
-        if (excel.filename or "").startswith("~$"):
-            raise HTTPException(
-                status_code=400,
-                detail="所选信息表是 Excel 临时文件（~$ 开头），请选择正式的信息表 .xlsx")
-    return reads, refs, ignored, excel_bytes
+
+def _check_batch_excel(filename: Optional[str], excel_bytes: bytes) -> None:
+    if not excel_bytes:
+        raise HTTPException(status_code=400, detail="信息表文件为空")
+    if (filename or "").startswith("~$"):
+        raise HTTPException(
+            status_code=400,
+            detail="所选信息表是 Excel 临时文件（~$ 开头），请选择正式的信息表 .xlsx")
+
+
+def _load_batch_excel(excel_bytes: bytes):
+    """解析信息表；格式问题统一转 400 中文提示。返回 (wb, cols, rows)"""
+    try:
+        wb, _header, cols, rows = load_excel(excel_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (InvalidFileException, BadZipFile):
+        raise HTTPException(
+            status_code=400,
+            detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
+    return wb, cols, rows
 
 
 def _batch_pipeline(
     reads: List[Dict], refs: List[Dict], ignored: List[str], min_q: int,
     excel_name: Optional[str], excel_bytes: Optional[bytes],
     owner_id: Optional[str], batch_token: Optional[str],
-    read_limits: Optional[Dict] = None,
+    read_limits: Optional[Dict] = None, max_files=_DEFAULT_MAX_FILES,
 ) -> Dict:
     """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
     excel_pack = None
     excel_rows = None
     if excel_bytes is not None:
-        try:
-            wb, _header, cols, excel_rows = load_excel(excel_bytes)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except (InvalidFileException, BadZipFile):
-            raise HTTPException(
-                status_code=400,
-                detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
+        wb, cols, excel_rows = _load_batch_excel(excel_bytes)
         excel_pack = (excel_name, excel_bytes, wb, cols, excel_rows)
 
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
-        owner_id=owner_id, access_token=batch_token, read_limits=read_limits)
+        owner_id=owner_id, access_token=batch_token, read_limits=read_limits,
+        max_files=max_files)
     if batch_token:
         payload["access_token"] = batch_token
 
