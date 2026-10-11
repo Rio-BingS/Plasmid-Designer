@@ -23,7 +23,8 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
   app/gating.py / features.py / site_settings.py   功能矩阵门控与站点开关（管理员不受限）
   app/cache.py              缓存（内存/Redis 自动降级）；cache_routes 管理端点
   app/sequencing_store.py   测序分析记录落库（database 模式）
-  app/sequencing_report.py  批量整理包（报告/归档/回填信息表）构建
+  app/sequencing_batch.py   批量测序归组与逐组分析（网页端点与离线脚本共用）
+  app/sequencing_report.py  批量整理包（报告/归档/回填信息表）构建（同上共用）
   core/codon_optimizer.py   ★ 密码子优化 v2（5' ramp/发夹削减/隐蔽motif审查/滑窗精修/score）
   core/primer_designer.py   ★ PCR/Gibson/GoldenGate/双酶切引物 + 合成 oligo（错位交替/Tm均一）
   core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 表
