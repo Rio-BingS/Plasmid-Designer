@@ -70,6 +70,9 @@ from app.sequencing_report import (  # noqa: E402
     BatchArchive,
     _conclusion_bucket,
     backfill_excel,
+    csv_guard,
+    csv_guard_row,
+    csv_unguard,
 )
 # excel_conclusion / match_files 不在本脚本内直接使用，保留为模块属性以兼容
 # 既有 `import batch_sequencing_report` 的调用方
@@ -370,7 +373,8 @@ def load_previous_outputs(out_dir: Path) -> Dict[str, str]:
         rows = list(csv.DictReader(io.StringIO(man.read_text(encoding="utf-8-sig"))))
     except (OSError, ValueError, csv.Error):
         return journal
-    return {**{r["归档路径"]: r["MD5"] for r in rows
+    # 清单单元格写出时防公式注入可能带 ' 前缀，读回还原
+    return {**{csv_unguard(r["归档路径"]): r["MD5"] for r in rows
                if r.get("归档路径") and r.get("MD5")}, **journal}
 
 
@@ -409,7 +413,8 @@ def _fix_manifest_paths(text: str, mapping: Dict[str, str]) -> str:
     if "归档路径" not in fields:
         return text
     for r in rows:
-        r["归档路径"] = mapping.get(r["归档路径"], r["归档路径"])
+        arc = csv_unguard(r["归档路径"])
+        r["归档路径"] = csv_guard(mapping.get(arc, arc))
     out = io.StringIO()
     w = csv.DictWriter(out, fieldnames=fields)
     w.writeheader()
@@ -548,8 +553,9 @@ class Archiver:
             return
         out = io.StringIO()
         w = csv.DictWriter(out, fieldnames=self.manifest_fields)
-        w.writerows([{**r, "归档路径": self.mapping.get(r["归档路径"], r["归档路径"])}
-                     for r in rows])
+        w.writerows([csv_guard_row(
+            {**r, "归档路径": self.mapping.get(r["归档路径"], r["归档路径"])})
+            for r in rows])
         with open(self.out_dir / MANIFEST_CSV, "a", encoding="utf-8", newline="") as fh:
             fh.write(out.getvalue())
 
