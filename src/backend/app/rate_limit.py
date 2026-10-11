@@ -384,6 +384,9 @@ _ENDPOINT_RULES: List[Tuple[str, str, str]] = [
     ("POST", "/api/auth/register", "auth"),
     ("POST", "/api/auth/verify", "auth"),
     ("POST", "/api/auth/resend-code", "auth"),
+    # 登出不是爆破面：回落到 auth 档会让同一出口 IP 的他人把配额刷光，
+    # 受害者登出 429、Cookie 不删、令牌不吊销（审查 01 M-1）
+    ("POST", "/api/auth/logout", "default"),
     # 其余上传/导入类写操作
     ("POST", "/api/vectors/import", "upload"),
 ]

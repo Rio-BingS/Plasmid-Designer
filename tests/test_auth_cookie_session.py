@@ -160,6 +160,27 @@ def test_logout_without_session_is_idempotent(client):
     assert r.status_code == 200
 
 
+def test_logout_not_throttled_by_shared_ip_auth_quota(client):
+    """审查 01 M-1：logout 曾回落到 auth 档（同 IP 5 次/分钟、20 次/分钟），
+    同一出口 IP 的他人刷满配额后受害者登出 429，Cookie 不删、令牌不吊销"""
+    from app.rate_limit import classify_endpoint
+
+    assert classify_endpoint("POST", "/api/auth/logout") == "default"
+    victim = _new_user()
+    tok = _login(client, victim).json()["access_token"]
+    # 同 IP 其他人：匿名登出 + 失败登录，刷满 auth 与 auth_ip 两档
+    for _ in range(6):
+        TestClient(app).post("/api/auth/logout")
+    for i in range(25):
+        TestClient(app).post("/api/auth/login",
+                             json={"email": f"x{i}@example.com", "password": "nope"})
+    r = client.post("/api/auth/logout", headers={"X-Requested-With": "XMLHttpRequest"})
+    assert r.status_code == 200, r.text
+    assert "max-age=0" in _set_cookie_header(r).lower()
+    c2 = TestClient(app)
+    assert c2.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"}).status_code == 401
+
+
 # ---------------------------------------------------------------- CSRF
 
 CSRF = {"X-Requested-With": "XMLHttpRequest"}

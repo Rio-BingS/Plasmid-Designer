@@ -95,8 +95,8 @@ describe('auth store 会话', () => {
     expect(store.user).toEqual(alice)
   })
 
-  it('登出调用服务端吊销并清理本地状态（即使接口失败）', async () => {
-    vi.mocked(api.logout).mockRejectedValue(new Error('500'))
+  it('登出成功：服务端吊销后清理本地状态', async () => {
+    vi.mocked(api.logout).mockResolvedValue({ message: 'ok' })
     const store = useAuthStore()
     store.user = alice
     const before = currentAuthEpoch()
@@ -104,6 +104,16 @@ describe('auth store 会话', () => {
     expect(api.logout).toHaveBeenCalledTimes(1)
     expect(store.isAuthenticated).toBe(false)
     expect(currentAuthEpoch()).toBeGreaterThan(before)
+  })
+
+  it('登出接口失败（如 429）：保持登录态并抛错，不假装已登出', async () => {
+    vi.mocked(api.logout).mockRejectedValue({ response: { status: 429 } })
+    const store = useAuthStore()
+    store.user = alice
+    const before = currentAuthEpoch()
+    await expect(store.logout()).rejects.toBeTruthy()
+    expect(store.user).toEqual(alice)
+    expect(currentAuthEpoch()).toBe(before)
   })
 
   it('clearAuth 递增会话代际，使旧会话在途请求的 401 失效', () => {
