@@ -44,7 +44,9 @@ const wrap = ref<HTMLElement | null>(null)
 const svgEl = ref<SVGSVGElement | null>(null)
 const { width: wrapW } = useElementSize(wrap)
 
-const S = computed(() => Math.round(props.size ?? Math.min(props.maxSize, Math.max(300, wrapW.value || 560))))
+/** 下限 240：窄容器（手机上的结果页卡片里只有 ~260 px）按实际宽度排版，而不是先按 300 排再被 CSS 缩小、字变得更小 */
+const MIN_SIZE = 240
+const S = computed(() => Math.round(props.size ?? Math.min(props.maxSize, Math.max(MIN_SIZE, wrapW.value || 560))))
 const cx = computed(() => S.value / 2)
 const cy = computed(() => S.value / 2)
 /** 窄屏（手机）：小一号字、更窄的标签栏，把空间让给环 */
