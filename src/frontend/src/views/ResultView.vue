@@ -2,9 +2,10 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
-import { getDesign, downloadGenbank, downloadPrimers, getDesignMapData, formatApiError } from '@/api'
-import PlasmidMap from '@/components/PlasmidMap.vue'
-import SequenceView from '@/components/SequenceView.vue'
+import { getDesign, downloadGenbank, downloadPrimers, formatApiError } from '@/api'
+import type { MapDocument } from '@/map/types'
+import { getDesignMap } from '@/map/api'
+import MapViewer from '@/map/components/MapViewer.vue'
 
 const props = defineProps<{
   designId: string
@@ -12,8 +13,10 @@ const props = defineProps<{
 
 const router = useRouter()
 const result = ref<DesignResult | null>(null)
-const mapData = ref<any>(null)
+const mapDoc = ref<MapDocument | null>(null)
 const showMap = ref(false)
+const mapLoading = ref(false)
+const mapError = ref('')
 const loading = ref(true)
 const error = ref('')
 
@@ -132,12 +135,15 @@ async function copySequence() {
 }
 
 async function fetchMapData() {
+  mapLoading.value = true
+  mapError.value = ''
   try {
-    const data = await getDesignMapData(props.designId)
-    mapData.value = data
+    mapDoc.value = await getDesignMap(props.designId)
     showMap.value = true
   } catch (e: any) {
-    console.warn('Failed to load map data:', e)
+    mapError.value = `图谱加载失败：${apiError(e)}`
+  } finally {
+    mapLoading.value = false
   }
 }
 
@@ -238,9 +244,10 @@ onUnmounted(() => {
         
         <!-- 查看图谱按钮 -->
             <div v-if="!showMap" class="result-section map-toggle-section">
-              <button class="btn btn-secondary" @click="fetchMapData">
-                🗺️ 查看质粒图谱
+              <button class="btn btn-secondary" :disabled="mapLoading" @click="fetchMapData">
+                {{ mapLoading ? '加载中…' : '🗺️ 查看质粒图谱' }}
               </button>
+              <p v-if="mapError" class="map-error">{{ mapError }}</p>
             </div>
 
             <!-- 序列显示 -->
@@ -256,27 +263,9 @@ onUnmounted(() => {
         </div>
         
         <!-- 质粒图谱 -->
-      <div v-if="showMap && mapData" class="result-section">
+      <div v-if="showMap && mapDoc" class="result-section">
         <h2>质粒图谱</h2>
-        <div class="map-container">
-          <PlasmidMap
-            :name="mapData.name"
-            :length="mapData.length"
-            :sequence="mapData.sequence"
-            :features="mapData.features"
-            :enzyme-sites="mapData.enzyme_sites || []"
-            :width="620"
-            :height="620"
-          />
-        </div>
-        <div v-if="mapData.sequence" class="seq-view-container">
-          <SequenceView
-            :sequence="mapData.sequence"
-            :features="mapData.features"
-            :enzyme-sites="mapData.enzyme_sites || []"
-            :height="280"
-          />
-        </div>
+        <MapViewer :doc="mapDoc" />
       </div>
 
       <!-- Sanger 测序验证（独立模块） -->
@@ -636,12 +625,6 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
-.map-container {
-  display: flex;
-  justify-content: center;
-  padding: 1rem 0;
-}
-
 .protocol-content pre {
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -666,11 +649,9 @@ onUnmounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
-.seq-view-container {
-  margin-top: 1rem;
-  border: 1px solid var(--border-color, #eee);
-  border-radius: 10px;
-  padding: 0.5rem;
-  background: #fff;
+.map-error {
+  margin-top: 0.5rem;
+  color: var(--error-color);
+  font-size: 0.875rem;
 }
 </style>
