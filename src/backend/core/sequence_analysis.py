@@ -152,8 +152,12 @@ class RestrictionSiteAnalyzer:
                 )
                 sites.append(site)
             
-            # 反向链搜索
+            # 反向链搜索。回文识别序列（EcoRI 等，revcomp 与自身相同）的
+            # 反链匹配就是同一个物理位点：再报一次会让每个位点计两次，
+            # find_unique_sites 也就永远不会把回文酶判为唯一切点
             rev_seq = self._reverse_complement(recognition_seq)
+            if rev_seq == recognition_seq:
+                continue
             for match in re.finditer(rev_seq, sequence):
                 site = RestrictionSite(
                     enzyme=enzyme_name,
