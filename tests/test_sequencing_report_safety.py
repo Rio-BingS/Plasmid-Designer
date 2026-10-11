@@ -122,3 +122,142 @@ def test_archive_short_names_unchanged():
     assert "测序整理/TST/TST.fasta" in arcs
     assert "测序整理/TST/无法判定/T1.ab1" in arcs
     assert BatchArchive(["TST"]).folder_of(groups[0]) == "TST"
+
+
+# ---------------------------------------------------------------- L3 CSV / Markdown 注入
+
+import csv  # noqa: E402
+import importlib.util  # noqa: E402
+import io  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import openpyxl  # noqa: E402
+import pytest  # noqa: E402
+
+from app.sequencing_report import (  # noqa: E402
+    _group_report_md,
+    csv_guard,
+    csv_unguard,
+)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from abif_utils import make_ab1  # noqa: E402
+
+_REPO = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location(
+    "batch_sequencing_report_l3", _REPO / "scripts" / "batch_sequencing_report.py")
+batch = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(batch)
+
+
+@pytest.mark.parametrize("raw", [
+    "=HYPERLINK(1)|p.ab1", "+1", "-X/正确/a.ab1", "@SUM(A1)", "\tx", "\rx",
+    "'=x", "''+y", "'plain", "plain", "", "a=b",
+])
+def test_csv_guard_neutralizes_and_round_trips(raw):
+    g = csv_guard(raw)
+    assert csv_unguard(g) == raw
+    if raw[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        assert g == "'" + raw
+    if raw in ("plain", "", "a=b", "'plain"):
+        assert g == raw          # 安全内容不加前缀
+    assert g[:1] not in ("=", "+", "-", "@", "\t", "\r")
+    assert csv_guard(12.5) == 12.5
+
+
+def _csv_rows(text: str) -> list:
+    return list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))))
+
+
+def test_web_manifest_cells_neutralized_and_report_table_escaped():
+    evil = "=HYPERLINK(1)|p.ab1"
+    groups = [_group("-P", read_names=[evil, "ok.ab1"])]
+    items = [_item("-P")]
+    payload = {"items": items, "unmatched": [], "clone_mode": False}
+    entries = dict(batch_archive_entries(payload, groups, [], None, None, None, {}))
+    rows = _csv_rows(entries["测序整理/整理清单.csv"])
+    evil_row = next(r for r in rows if "HYPERLINK" in r["文件"])
+    assert evil_row["文件"] == "'" + evil
+    assert evil_row["质粒"] == "'-P"
+    assert not evil_row["归档路径"].startswith("'")   # 有根前缀，不需防护
+    ok_row = next(r for r in rows if r["文件"] == "ok.ab1")
+    assert ok_row["结论"] == "无法判定：测试"
+    for r in rows:
+        for v in r.values():
+            assert v[:1] not in ("=", "+", "-", "@", "\t", "\r"), r
+    report = next(v for k, v in entries.items() if k.endswith("测序分析报告.md"))
+    line = next(ln for ln in report.splitlines() if "HYPERLINK" in ln)
+    # 表格仍是 3 列：未转义的 | 只有列分隔符那 4 个
+    assert line.replace("\\|", "").count("|") == 4
+    assert "=HYPERLINK(1)\\|p.ab1" in line
+
+
+def test_report_table_newline_in_name_stays_one_row():
+    item = {"plasmid": "P", "conclusion": "无法判定：测试", "reference_name": None}
+    md = _group_report_md(item, None, [{"name": "bad\nname|x.ab1", "kind": "测序 read",
+                                        "how": "引物列"}])
+    rows = [ln for ln in md.splitlines() if ln.startswith("| bad")]
+    assert rows == ["| bad name\\|x.ab1 | 测序 read | 引物列 |"]
+
+
+def test_report_plain_names_unchanged():
+    item = {"plasmid": "P", "conclusion": "无法判定：测试", "reference_name": None}
+    md = _group_report_md(item, None, [{"name": "T1.ab1", "kind": "测序 read",
+                                        "how": "引物列"}])
+    assert "| T1.ab1 | 测序 read | 引物列 |" in md.splitlines()
+
+
+REF = ("ATGAAACGT" * 12 + "TAA")
+
+
+def _offline_inputs(data_dir: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["-EVIL", "@T1", None])
+    wb.save(data_dir / "测序.xlsx")
+    (data_dir / "-EVIL.fasta").write_text(f">E\n{REF}\n", encoding="utf-8")
+    (data_dir / "@T1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+
+
+def _run(monkeypatch, data_dir):
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(data_dir), "--no-write-back"])
+    batch.main()
+
+
+def test_offline_manifest_neutralized_and_rerun_still_tracks_paths(tmp_path, monkeypatch):
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _offline_inputs(data_dir)
+    _run(monkeypatch, data_dir)
+    out = data_dir / "测序分析"
+    rows = _csv_rows((out / "整理清单.csv").read_text(encoding="utf-8-sig"))
+    by_file = {csv_unguard(r["文件"]): r for r in rows}
+    assert set(by_file) == {"-EVIL.fasta", "@T1.ab1"}
+    read = by_file["@T1.ab1"]
+    assert read["文件"] == "'@T1.ab1" and read["质粒"] == "'-EVIL"
+    assert read["归档路径"].startswith("'-EVIL/")
+    arc = csv_unguard(read["归档路径"])
+    assert (out / arc).is_file()
+
+    # 用户改动输出目录里的副本 → 重跑另存 (2)，清单仍记实际路径（带防护前缀）
+    (out / arc).write_bytes(b"user edited")
+    _run(monkeypatch, data_dir)
+    rows = _csv_rows((out / "整理清单.csv").read_text(encoding="utf-8-sig"))
+    read = next(r for r in rows if csv_unguard(r["文件"]) == "@T1.ab1")
+    arc2 = csv_unguard(read["归档路径"])
+    assert read["归档路径"].startswith("'-EVIL/") and arc2.endswith("@T1 (2).ab1")
+    import hashlib
+    assert hashlib.md5((out / arc2).read_bytes()).hexdigest() == read["MD5"]
+
+
+def test_legacy_manifest_fallback_reads_guarded_paths(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    text = ("\ufeff质粒,克隆,文件,类型,结论,匹配方式,归档路径,大小KB,MD5\r\n"
+            "'-EVIL,,'@T1.ab1,测序 read,,引物列,'-EVIL/正确/@T1.ab1,0.1,abc\r\n"
+            "P,,a.ab1,测序 read,,引物列,P/正确/a.ab1,0.1,def\r\n")
+    (out / "整理清单.csv").write_text(text, encoding="utf-8", newline="")
+    assert batch.load_previous_outputs(out) == {
+        "-EVIL/正确/@T1.ab1": "abc", "P/正确/a.ab1": "def"}

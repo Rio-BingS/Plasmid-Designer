@@ -98,6 +98,48 @@ def _unique_components(names: List[str]) -> Dict[str, str]:
     return out
 
 
+def _md_cell(value) -> str:
+    """Markdown 表格单元格转义：| 会把行切成多列、换行会截断表格行
+    （文件名、特征名等来自用户数据）；不含这两类字符的内容原样不变"""
+    t = str(value)
+    t = t.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return t.replace("|", "\\|")
+
+
+def _md_row(*cells) -> str:
+    return "| " + " | ".join(_md_cell(c) for c in cells) + " |"
+
+
+# CSV 公式注入防护（OWASP）：以这些字符开头的单元格在 Excel/WPS 里会被当作
+# 公式或 DDE 执行，写出时前缀 ' 当作文本
+_CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_needs_guard(t: str) -> bool:
+    # 本身以 ' 开头、去掉后又需防护的（如原名就是 '=x）也加一层，保证能
+    # 被 csv_unguard 无歧义还原
+    return bool(t) and (t[0] in _CSV_FORMULA_START
+                        or (t[0] == "'" and _csv_needs_guard(t[1:])))
+
+
+def csv_guard(value):
+    """整理清单 CSV 单元格防公式注入；非字符串（数值）原样返回"""
+    if isinstance(value, str) and _csv_needs_guard(value):
+        return "'" + value
+    return value
+
+
+def csv_unguard(value: str) -> str:
+    """csv_guard 的逆运算（离线脚本重跑时读回上次清单的归档路径用）"""
+    if value.startswith("'") and _csv_needs_guard(value[1:]):
+        return value[1:]
+    return value
+
+
+def csv_guard_row(row: Dict) -> Dict:
+    return {k: csv_guard(v) for k, v in row.items()}
+
+
 def _md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
 
@@ -235,8 +277,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             for e in hp_entries:
                 rel_txt = ("可靠" if e.get("count_reliable", True)
                            else "**不可靠**（峰图与调用不一致，建议核对峰图）")
-                lines.append(f"| {_run_label(e)} | {e['start']}–{e['end']} "
-                             f"| {e['ref_repeat_count']} | {_peak_verdict_phrase(e)} | {rel_txt} |")
+                lines.append(_md_row(_run_label(e), f"{e['start']}–{e['end']}",
+                                     e['ref_repeat_count'], _peak_verdict_phrase(e),
+                                     rel_txt))
             lines.append("")
         for e in hp_entries:
             if e.get("count_reliable", True) or not e.get("read_counts"):
@@ -258,10 +301,10 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                 kind = "插入" if v["type"] == "insertion" else "缺失"
                 conf = {"high": "高", "medium": "中", "low": "低"}.get(
                     v.get("confidence"), v.get("confidence"))
-                lines.append(
-                    f"| {v['ref_pos']} | {kind} | {_fmt_change(v)} "
-                    f"| {_run_label(hp)} {hp['start']}-{hp['end']} "
-                    f"| {hp['ref_repeat_count']}→{hp['observed_repeat_count']} | {conf} |")
+                lines.append(_md_row(
+                    v['ref_pos'], kind, _fmt_change(v),
+                    f"{_run_label(hp)} {hp['start']}-{hp['end']}",
+                    f"{hp['ref_repeat_count']}→{hp['observed_repeat_count']}", conf))
             lines.append("")
     # 双峰（疑似混合）检测：次级峰 >30% 的位点计为双峰位点（已剔除 poly 滑移
     # 伪影与饱和峰拖影），read 级分级——widespread 提示混有第二种质粒
@@ -291,13 +334,13 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             pos_txt = _pos_ranges_str(p["positions"], max_ranges=10)
             if p.get("pullup_excluded"):
                 pos_txt += f"；另有 {p['pullup_excluded']} 处饱和峰拖影已剔除"
-            lines.append(f"| {r['filename']} | {label} | {p['count']} | {pct} | {frac_txt} | {pos_txt} |")
+            lines.append(_md_row(r['filename'], label, p['count'], pct, frac_txt, pos_txt))
         lines.append("")
     if copied:
         lines += ["## 文件整理（原始文件未改动，此处为副本）", "",
                   "| 文件 | 类型 | 匹配方式 |", "|---|---|---|"]
         for e in copied:
-            lines.append(f"| {e['name']} | {e['kind']} | {e['how']} |")
+            lines.append(_md_row(e['name'], e['kind'], e['how']))
         lines.append("")
     if record and record["reads"]:
         lines += ["## 测序 read 概况", "",
@@ -314,8 +357,8 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                 zones = f"{span(s, e)}（整段）"
             else:
                 zones = f"{span(s, s + END_MARGIN - 1)}、{span(e - END_MARGIN + 1, e)}"
-            lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
-                         f"| {alignment_span_text(a)} | {zones} |")
+            lines.append(_md_row(r['filename'], r['grade'], r['mean_q'],
+                                 r['trimmed_length'], alignment_span_text(a), zones))
         lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
                   "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
                   "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
@@ -328,9 +371,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             aa = v.get("aa_change") or ("同义" if v.get("synonymous")
                                         else "移码" if v.get("frameshift") else "—")
             conf = {"high": "高", "medium": "中", "low": "低"}.get(v.get("confidence"), v.get("confidence"))
-            lines.append(f"| {v['ref_pos']} | {v['type']} | {_fmt_change(v)} | {conf} "
-                         f"| {v.get('read_q', '')} | {v.get('support_reads', 1)} "
-                         f"| {_fmt_evidence(v)} | {feats} | {aa} |")
+            lines.append(_md_row(v['ref_pos'], v['type'], _fmt_change(v), conf,
+                                 v.get('read_q', ''), v.get('support_reads', 1),
+                                 _fmt_evidence(v), feats, aa))
         lines += ["", "置信度说明：**高**=峰级证据与 Q 值充分支持；**中**=证据一般，建议关注；"
                   "**低**=疑似测序噪声，未计入结论。", ""]
     if record and record["errors"]:
@@ -550,7 +593,7 @@ class BatchArchive:
         w = csv.DictWriter(out, fieldnames=self.fields)
         if header:
             w.writeheader()
-        w.writerows(rows)
+        w.writerows([csv_guard_row(r) for r in rows])
         return ("\ufeff" if header else "") + out.getvalue()
 
     def manifest_entry(self) -> Tuple[str, str]:
