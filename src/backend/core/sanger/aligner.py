@@ -4,8 +4,11 @@
 由比对坐标推导错配 / 插入 / 缺失列表。
 """
 
+import threading
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 from Bio.Align import PairwiseAligner
 
 from core.seq_utils import revcomp  # noqa: F401  # 共享实现；测试与 pipeline 亦从此处导入
@@ -27,6 +30,249 @@ def _get_aligner() -> PairwiseAligner:
     return _ALIGNER
 
 
+# ---------------------------------------------------------------------------
+# 种子-延伸（审计 #6）：大参考上先用 k-mer 投票定位对角线，再用同一个
+# PairwiseAligner（同一套打分）只比对对角线附近的窗口。整条参考的局部比对
+# 时间与回溯内存都是 O(参考 × read)，200 kb 参考单条 read 峰值 RSS 约 0.7 GB。
+#
+# 结果与整条比对逐字段一致（差分测试覆盖），依据是下面的计数下界：
+# 打分 match +2 / mismatch -4 / gap 首位 -6、后续 -2。得分 >= S、匹配 M 列的
+# 局部比对，其 mismatch 与 gap 事件总数 d <= (2M - S) / 4，匹配列被切成至多
+# d + 1 段，故精确 k-mer 命中数 >= M - (d + 1)(k - 1)；gap 总长 <= (2M - S) / 2，
+# 即全部命中落在宽 W = (2n - S) / 2 的对角线带内。对 M ∈ [S/2, n] 取最小得 H：
+# 任何得分 >= S 的比对（含同分）必在某条宽 W 的带内留下 >= H 个命中。
+# 因此把命中数 >= H 的带全部开窗比对过，窗口内的最高分即全局最高分；
+# 同分时 Biopython 按终点在参考上的先后取第一条，窗口互不重叠、按参考
+# 坐标先后取同分者即与整条比对同序。H < 1、候选带过多、命中过多、参考
+# 含与 read 共有的非 ACGT 字符或窗口贴边时，一律回退整条比对。
+# ---------------------------------------------------------------------------
+
+SEED_K = 12
+SEED_MIN_REF_BP = 20000      # 小参考整条比对本就便宜，直接走原路径
+SEED_MARGIN = 300            # 窗口在对角线带两侧的最小外扩
+SEED_MAX_WINDOWS = 3         # 每个方向最多比对的候选窗口（重复序列取前 2-3 条）
+SEED_MAX_HITS = 200000       # 低复杂度参考命中爆炸时回退
+_INDEX_CACHE_SIZE = 4
+
+_CODE = np.full(256, 255, dtype=np.uint8)
+for _i, _c in enumerate(b"ACGT"):
+    _CODE[_c] = _i
+
+
+def _kmer_codes(seq: str, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    """seq 全部 k-mer 的 2-bit 编码与起点；含非 ACGT 字符的 k-mer 剔除"""
+    n = len(seq) - k + 1
+    if n <= 0:
+        return np.zeros(0, dtype=np.uint32), np.zeros(0, dtype=np.int64)
+    b = _CODE[np.frombuffer(seq.encode("ascii", "replace"), dtype=np.uint8)]
+    bad = np.concatenate(([0], np.cumsum(b == 255)))
+    ok = (bad[k:] - bad[:-k]) == 0
+    v = np.where(b == 255, 0, b).astype(np.uint32)
+    codes = np.zeros(n, dtype=np.uint32)
+    for j in range(k):
+        codes = (codes << np.uint32(2)) | v[j:j + n]
+    pos = np.nonzero(ok)[0]
+    return codes[pos], pos
+
+
+class _KmerIndex:
+    """参考 k-mer 索引：按编码排序的 (code, pos) 数组，numpy 实现约 8 B/bp"""
+
+    __slots__ = ("codes", "pos", "chars")
+
+    def __init__(self, seq: str, k: int = SEED_K):
+        codes, pos = _kmer_codes(seq, k)
+        order = np.argsort(codes, kind="stable")
+        self.codes = codes[order]
+        self.pos = pos[order].astype(np.int64)
+        self.chars = frozenset(seq)
+
+
+_INDEX_CACHE: "OrderedDict[object, _KmerIndex]" = OrderedDict()
+_INDEX_LOCK = threading.Lock()
+
+
+def _index_for(key, target: str, seq: Optional[str] = None
+               ) -> Optional[Tuple[_KmerIndex, int]]:
+    """取（必要时构建）参考索引，返回 (索引, 有效长度)；小参考返回 None
+
+    同一参考在一批 read 间只建一次（LRU 缓存，键为参考序列本身）。"""
+    if len(target) < SEED_MIN_REF_BP:
+        return None
+    with _INDEX_LOCK:
+        idx = _INDEX_CACHE.get(key)
+        if idx is not None:
+            _INDEX_CACHE.move_to_end(key)
+            return idx, len(target)
+    idx = _KmerIndex(seq if seq is not None else target)
+    with _INDEX_LOCK:
+        _INDEX_CACHE[key] = idx
+        _INDEX_CACHE.move_to_end(key)
+        while len(_INDEX_CACHE) > _INDEX_CACHE_SIZE:
+            _INDEX_CACHE.popitem(last=False)
+    return idx, len(target)
+
+
+def _seed_hits(query: str, index: _KmerIndex, limit: int, k: int = SEED_K
+               ) -> Optional[np.ndarray]:
+    """query 的精确 k-mer 命中，返回按大小排序的对角线 (ref_pos - q_pos)"""
+    qc, qp = _kmer_codes(query, k)
+    if qc.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    lo = np.searchsorted(index.codes, qc, side="left")
+    hi = np.searchsorted(index.codes, qc, side="right")
+    cnt = hi - lo
+    total = int(cnt.sum())
+    if total > SEED_MAX_HITS:
+        return None
+    if total == 0:
+        return np.zeros(0, dtype=np.int64)
+    starts = np.repeat(lo - np.concatenate(([0], np.cumsum(cnt)[:-1])), cnt)
+    rpos = index.pos[starts + np.arange(total)]
+    qpos = np.repeat(qp, cnt)
+    keep = rpos + k <= limit
+    return np.sort(rpos[keep] - qpos[keep])
+
+
+def _min_seed_hits(n: int, score: float, k: int = SEED_K) -> int:
+    """得分 >= score 的比对在其对角线带内至少留下的 k-mer 命中数（见上文）"""
+    best = None
+    m0 = max(0, int(np.ceil(score / 2)))
+    for m in range(m0, n + 1):
+        d = int((2 * m - score) // 4)
+        h = m - (d + 1) * (k - 1)
+        if best is None or h < best:
+            best = h
+    return best if best is not None else 0
+
+
+def _dense_bands(diags: np.ndarray, width: int, need: int) -> List[Tuple[int, int]]:
+    """命中数 >= need 的宽 width 对角线带，合并后返回 [(最小对角线, 最大对角线)]"""
+    if diags.size == 0 or need > diags.size:
+        return []
+    ends = np.searchsorted(diags, diags + width, side="right")
+    counts = ends - np.arange(diags.size)
+    bands: List[Tuple[int, int]] = []
+    for i in np.nonzero(counts >= need)[0]:
+        lo, hi = int(diags[i]), int(diags[ends[i] - 1])
+        if bands and lo <= bands[-1][1]:
+            bands[-1] = (bands[-1][0], max(bands[-1][1], hi))
+        else:
+            bands.append((lo, hi))
+    return bands
+
+
+def _densest_band(diags: np.ndarray, width: int) -> Optional[Tuple[int, int]]:
+    if diags.size == 0:
+        return None
+    ends = np.searchsorted(diags, diags + width, side="right")
+    i = int(np.argmax(ends - np.arange(diags.size)))
+    return int(diags[i]), int(diags[ends[i] - 1])
+
+
+def _align_seeded(ref_up: str, queries, index_info) -> Optional[Tuple]:
+    """窗口化比对；无法保证与整条比对一致时返回 None（调用方回退）"""
+    index, limit = index_info
+    if limit != len(ref_up):
+        return None
+    aligner = _get_aligner()
+    n_max = max(len(q) for _, q in queries)
+    if n_max < SEED_K:
+        return None
+    # 参考与 read 共有的非 ACGT 字符（如 N 对 N）在打分里算匹配却不进索引，
+    # 下界不再成立
+    extra = index.chars - _ACGT
+    if extra and any(extra & set(q) for _, q in queries):
+        return None
+
+    hits = {}
+    for direction, query in queries:
+        h = _seed_hits(query, index, limit)
+        if h is None:
+            return None
+        hits[direction] = h
+
+    # windows[direction] = [(ws, we, score, coords)]，同方向窗口互不重叠
+    windows: Dict[str, List[Tuple[int, int, float, Optional[np.ndarray]]]] = {
+        d: [] for d, _ in queries}
+    qmap = dict(queries)
+
+    def run_window(direction: str, ws: int, we: int) -> bool:
+        lst = windows[direction]
+        # 与已比对窗口重叠则合并为一个更大的窗口重比（保持同分时的先后顺序）
+        for w in list(lst):
+            if ws <= w[1] and w[0] <= we:
+                ws, we = min(ws, w[0]), max(we, w[1])
+                lst.remove(w)
+        if len(lst) >= SEED_MAX_WINDOWS:
+            return False
+        if 2 * (we - ws) > len(ref_up):
+            return False
+        alns = aligner.align(ref_up[ws:we], qmap[direction])
+        if len(alns) == 0:
+            lst.append((ws, we, float("-inf"), None))
+        else:
+            a = alns[0]
+            coords = np.array(a.coordinates, dtype=np.int64)
+            # 防御：比对贴到非参考端点的窗口边界 → 可能被窗口截断
+            if (coords[0][0] == 0 and ws > 0) or (coords[0][-1] == we - ws and we < len(ref_up)):
+                return False
+            coords[0] += ws
+            lst.append((ws, we, float(a.score), coords))
+        lst.sort(key=lambda w: w[0])
+        return True
+
+    def window_for(band: Tuple[int, int], n: int, width: int) -> Tuple[int, int]:
+        margin = max(SEED_MARGIN, 2 * width) + 2 * SEED_K
+        return max(0, band[0] - margin), min(len(ref_up), band[1] + n + margin)
+
+    def covered(direction: str, ws: int, we: int) -> bool:
+        return any(w[0] <= ws and we <= w[1] for w in windows[direction])
+
+    # 第一轮：每个方向取命中最密的带开窗，得到当前最高分 S
+    for direction, query in queries:
+        band = _densest_band(hits[direction], 64)
+        if band is not None:
+            ws, we = window_for(band, len(query), 64)
+            if not run_window(direction, ws, we):
+                return None
+    for _ in range(2 * SEED_MAX_WINDOWS + 2):
+        scores = [w[2] for lst in windows.values() for w in lst]
+        if not scores or max(scores) <= 0:
+            return None
+        s_best = max(scores)
+        pending = []
+        for direction, query in queries:
+            n = len(query)
+            need = _min_seed_hits(n, s_best)
+            if need < 1:
+                return None  # 种子投票太弱，无法排除无命中的竞争比对
+            width = max(0, int((2 * n - s_best) // 2))
+            for band in _dense_bands(hits[direction], width, need):
+                ws, we = window_for(band, n, width)
+                if not covered(direction, ws, we):
+                    pending.append((direction, ws, we))
+        if not pending:
+            break
+        for direction, ws, we in pending:
+            if not run_window(direction, ws, we):
+                return None
+    else:
+        return None
+
+    best = None
+    for direction, query in queries:
+        cand = [w for w in windows[direction] if w[3] is not None]
+        if not cand:
+            continue
+        top = max(w[2] for w in cand)
+        # 同分取参考上最靠前的窗口（Biopython 按终点先后枚举局部比对）
+        w = next(w for w in cand if w[2] == top)
+        if best is None or top > best[0]:
+            best = (w[2], direction, query, w[3])
+    return best
+
+
 def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -> Dict:
     """将 read（自动判向）比对到参考序列
 
@@ -43,27 +289,40 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
     Q 顺序随碱基一起反转，与原始 read 质量一一对应）。
     """
     ref_up = reference.upper()
-    read_up = read.upper()
-    aligner = _get_aligner()
+    return _align_impl(read.upper(), ref_up, quality, _index_for(ref_up, ref_up))
 
-    best = None  # (score, direction, query, alignment)
-    for direction, query in (("+", read_up), ("-", revcomp(read_up))):
+
+def _align_full(ref_up: str, queries) -> Optional[Tuple]:
+    """原路径：两个方向各对整条参考做局部比对，'+' 优先、'-' 须严格更高分"""
+    aligner = _get_aligner()
+    best = None  # (score, direction, query, coords)
+    for direction, query in queries:
         alignments = aligner.align(ref_up, query)
         if len(alignments) == 0:
             continue
         aln = alignments[0]
         score = aln.score
         if best is None or score > best[0]:
-            best = (score, direction, query, aln)
+            best = (score, direction, query, aln.coordinates)
+    return best
+
+
+def _align_impl(read_up: str, ref_up: str, quality: Optional[List[int]],
+                index: Optional[Tuple["_KmerIndex", int]]) -> Dict:
+    queries = (("+", read_up), ("-", revcomp(read_up)))
+    best = None
+    if index is not None:
+        best = _align_seeded(ref_up, queries, index)
+    if best is None:
+        best = _align_full(ref_up, queries)
 
     if best is None:
         return {"direction": "+", "ref_start": 0, "ref_end": 0, "score": 0.0,
                 "identity": 0.0, "variants": [], "ambiguous": 0,
                 "aligned": {"ref_start": 0, "ref_aligned": "", "read_aligned": "", "q_aligned": []}}
 
-    score, direction, query, aln = best
+    score, direction, query, coords = best
     # coordinates: [[ref块起,ref块止,...],[read块起,read块止,...]]
-    coords = aln.coordinates
     variants: List[Dict] = []
     matches = 0
     compared = 0
@@ -221,7 +480,12 @@ def align_read_circular(read: str, reference: str,
     """
     L = len(reference)
     ext = reference + reference[:min(L, len(read))]
-    aln = align_read(read, ext, quality)
+    ext_up = ext.upper()
+    # 种子索引按「参考 + 参考」建一次（与 read 长度无关，批内复用），
+    # 查询时只取落在 ext 内的命中，等价于对 ext 本身建索引
+    ref_up = reference.upper()
+    aln = _align_impl(read.upper(), ext_up, quality,
+                      _index_for(("circular", ref_up), ext_up, ref_up + ref_up))
     aln["circular"] = True
     aln["ref_length"] = L
     if aln["ref_end"] <= 0 or L == 0:
