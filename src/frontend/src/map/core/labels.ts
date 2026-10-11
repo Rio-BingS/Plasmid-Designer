@@ -56,6 +56,8 @@ export function fitsInside(text: string, fontSize: number, available: number, pa
 export interface CircularLabelInput {
   id: string
   text: string
+  /** 粗体显示（单切点酶），按粗体量宽 */
+  bold?: boolean
   /** 锚点角度（弧度，0 在上，顺时针） */
   angle: number
   /** 锚点半径（引线起点） */
@@ -121,7 +123,7 @@ export function layoutCircularLabels(inputs: CircularLabelInput[], o: CircularLa
       const dy = y - o.cy
       const xOff = Math.max(minX, Math.sqrt(Math.max(0, o.labelRadius * o.labelRadius - dy * dy)))
       const x = o.cx + side * xOff
-      const w = textWidth(l.text, o.fontSize)
+      const w = textWidth(l.text, o.fontSize, l.bold)
       const box: Box = { x: side === 1 ? x : x - w, y: y - h / 2, w, h }
       const anchor = polar(o.cx, o.cy, l.radius, l.angle)
       const elbowR = l.radius + (o.labelRadius - l.radius) * 0.55
@@ -175,6 +177,8 @@ export function spacedPositions(ideal: number[], h: number, lo: number, hi: numb
 export interface LinearLabelInput {
   id: string
   text: string
+  /** 粗体显示（单切点酶），按粗体量宽 */
+  bold?: boolean
   /** 标签理想中心 x（像素） */
   x: number
   priority: number
