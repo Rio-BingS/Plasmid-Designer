@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 from abif_utils import make_ab1  # noqa: E402
+from core.genbank_format import format_locus_line  # noqa: E402
 from core.sanger.batch import load_excel, match_clone_files, norm_stem  # noqa: E402
 
 REF_MX = "ATGAAACGT" * 12 + "TAA"          # 123 bp
@@ -695,7 +696,8 @@ def _origin_block(seq: str) -> str:
 def _gb_mx() -> bytes:
     """整序列为 CDS 的 GenBank 图谱（错义突变才能判 不合格）"""
     return (
-        f"LOCUS       17648        {len(REF_MX)} bp    DNA     circular SYN 01-JAN-2026\n"
+        format_locus_line("17648", len(REF_MX), topology="circular",
+                          date="01-JAN-2026") + "\n"
         "DEFINITION  test construct.\n"
         "ACCESSION   17648\n"
         "FEATURES             Location/Qualifiers\n"

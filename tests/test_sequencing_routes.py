@@ -120,6 +120,11 @@ def test_full_sequencing_flow(client, completed_design):
     gb = client.get(f"/api/sequencing/analyses/{analysis_id}/consensus/export?format=genbank",
                     headers=tok).text
     assert gb.startswith("LOCUS")
+    import io
+    from Bio import SeqIO
+    rec = SeqIO.read(io.StringIO(gb), "genbank")  # 解析告警在套件中即为错误
+    assert rec.annotations["topology"] == "linear"
+    assert len(rec) == len(fasta.split("\n", 1)[1].replace("\n", ""))
 
     # 删除
     assert client.delete(f"/api/sequencing/analyses/{analysis_id}",
