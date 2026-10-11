@@ -20,6 +20,9 @@ services:
       # 无默认值：未设置时 compose 直接报错，不再回退到公开占位值
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
       - DEBUG=${DEBUG:-false}
+      # API 文档（/docs、/openapi.json）默认关闭：容器 nginx 无法按来源限制，
+      # 开启即对能访问前端端口的所有人公开，见 .env.example
+      - ENABLE_API_DOCS=${ENABLE_API_DOCS:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATA_DIR=/app/data
       - VECTORS_DIR=/app/data/vectors

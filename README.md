@@ -128,12 +128,13 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `SECRET_KEY` | 必填，`openssl rand -hex 32` 生成；占位/过短/低熵值拒绝启动 |
 | `CORS_ORIGINS` | 前端经 Nginx 同源反代 `/api` 时无需改动；前端另域部署时必须填**显式来源**（逗号分隔或 JSON 数组），通配 `*` 下后端关闭凭证模式，浏览器不会携带会话 Cookie。会话 Cookie 为 `SameSite=Lax`，只支持与 API **同站**（同一注册域名，如 `app.example.com` 与 `api.example.com`）的另域部署，跨站（不同注册域名）时浏览器不发送 Cookie，登录后仍表现为未登录 |
 | `AUTH_COOKIE_SECURE` | 会话 Cookie 的 Secure 标记：`auto`（默认，按请求协议 / 可信代理的 `X-Forwarded-Proto` 判定）、`true`（HTTPS 在更外层代理终止时必须设）、`false` |
+| `ENABLE_API_DOCS` | `/docs`、`/redoc`、`/openapi.json` 开关：本地开发默认开启；Docker compose 默认 `false`（容器 nginx 无法按来源限制）；裸机模板为 `true`，由 nginx 只对本机/内网开放 |
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
 
 ## API 概览
 
-启动后端后访问 Swagger 文档: http://localhost:8000/docs
+启动后端后访问 Swagger 文档: http://localhost:8000/docs（`ENABLE_API_DOCS=false` 时关闭）
 
 ### 设计任务
 

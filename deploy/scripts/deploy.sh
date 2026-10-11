@@ -217,7 +217,11 @@ echo ""
 echo "访问地址:"
 echo "  前端: http://localhost:${FRONTEND_PORT}（发布于 ${FRONTEND_BIND_ADDR}）"
 echo "  后端(仅本机): http://localhost:${BACKEND_PORT}"
-echo "  API文档: http://localhost:${FRONTEND_PORT}/docs"
+if grep -qE '^ENABLE_API_DOCS=true' .env 2>/dev/null; then
+    echo "  API文档: http://localhost:${FRONTEND_PORT}/docs（已开启，注意限制来源）"
+else
+    echo "  API文档: 已关闭（.env 设 ENABLE_API_DOCS=true 开启）"
+fi
 echo ""
 case "$FRONTEND_BIND_ADDR" in
     127.*|localhost|::1|"[::1]")
