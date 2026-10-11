@@ -213,6 +213,23 @@ describe('LinearMap 额外轨道', () => {
     expect(w.emitted('track-click')![1]).toEqual(['var', 'v0'])
   })
 
+  it('read 名避开变异圆点，放在条内最长的空当里', () => {
+    const d = puc()
+    // 圆点正好落在 read 中点（名字默认居中处）
+    const w = mount(LinearMap, {
+      props: {
+        doc: d, width: 1000, showEnzymes: false,
+        tracks: [{ id: 'reads', kind: 'arrows', items: [{ id: '0', start: 100, end: 900, strand: 1, label: 'F1.ab1', marks: [500] }] }],
+      },
+    })
+    const name = w.find('.lmap-track-name')
+    const dot = w.find('.lmap-dot')
+    const nx = Number(name.attributes('x'))
+    const dx = Number(dot.attributes('cx'))
+    const half = 30 // "F1.ab1" 11px 半宽上限
+    expect(Math.abs(nx - dx)).toBeGreaterThan(half + 4)
+  })
+
   it('缩放按钮改变视口，全长复位', async () => {
     const w = mount(LinearMap, { props: { doc: puc(), width: 1000 } })
     expect(w.find('.lmap-range').text()).toContain('1–2,686')

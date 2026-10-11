@@ -113,6 +113,18 @@ const enzRowY = (row: number) => layout.value.enzLabelTop + (enzLabels.value.row
 const enzStyleByKey = computed(() => new Map(cutsInView.value.map((c) => [c.key, c])))
 
 // ---------------- 额外轨道 ----------------
+/** [a, b] 内去掉各标记 ±r 后最长的空当 */
+function longestFreeGap(a: number, b: number, marks: number[], r: number): [number, number] {
+  let best: [number, number] = [a, a]
+  let cur = a
+  for (const m of [...marks].sort((x, y) => x - y)) {
+    if (m + r < a || m - r > b) continue
+    if (m - r - cur > best[1] - best[0]) best = [cur, m - r]
+    cur = Math.max(cur, m + r)
+  }
+  if (b - cur > best[1] - best[0]) best = [cur, b]
+  return best
+}
 interface TrackGeom {
   track: MapTrack; y: number; height: number; laneH: number
   items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[] }[]
@@ -131,8 +143,11 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const geomSegs = segs.map((s) => ({ x1: s.x1, x2: s.x2, head: s.i === headIdx }))
     const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
     const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
-    const inside = !!it.label && longest.x2 - longest.x1 - h * 0.8 >= lw
-    let labelX = (longest.x1 + longest.x2) / 2
+    const marks = (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5))
+    // 名字放在条内最长的、不压标记圆点的空当里（否则变异圆点会盖住 read 名）
+    const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), marks, 6)
+    const inside = !!it.label && gap[1] - gap[0] >= lw
+    let labelX = inside ? (gap[0] + gap[1]) / 2 : (longest.x1 + longest.x2) / 2
     let labelRight = true
     if (it.label && !inside) {
       // 名字放不下：依次尝试最长段右侧、左侧，再试其余段，放不下就贴边
@@ -151,7 +166,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     rows[lane].push(...iv)
     items.push({
       item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX, labelRight,
-      marks: (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5)),
+      marks,
     })
   }
   return { track: t, y: y0, height: Math.max(1, rows.length) * laneH, laneH, items }
