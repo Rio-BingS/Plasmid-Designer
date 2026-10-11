@@ -119,8 +119,8 @@ sudo npm run build
 ### 8. 配置环境变量
 
 ```bash
-# 从模板复制
-sudo cp /opt/plasmid-designer/deploy/bare/.env.example /opt/plasmid-designer/.env
+# 从模板复制（install -m 600：.env 含密钥，不经过 0644 的中间状态）
+sudo install -m 600 /opt/plasmid-designer/deploy/bare/.env.example /opt/plasmid-designer/.env
 
 # 模板中 SECRET_KEY 为空，必须写入随机值（留空/占位/过短/低熵后端拒绝启动）
 sudo sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(openssl rand -hex 32)/" /opt/plasmid-designer/.env

@@ -38,7 +38,8 @@ cd "$SCRIPT_DIR/../docker"
 # 创建环境文件
 if [ ! -f .env ]; then
     echo "创建 .env 文件..."
-    cp .env.example .env
+    # .env 存放全部密钥：以 0600 创建，避免写入随机值前后有本机其他用户可读的窗口
+    (umask 077 && cp .env.example .env)
     # 生成随机 SECRET_KEY
     if command -v openssl &> /dev/null; then
         SECRET=$(openssl rand -hex 32)
@@ -51,6 +52,12 @@ if [ ! -f .env ]; then
     else
         echo "警告: openssl 不可用，请手动修改 .env 中的 SECRET_KEY"
     fi
+fi
+
+# 每次运行都收紧 .env 权限（含密钥）：修正旧版脚本/手动 cp 留下的 0644；
+# 后续 sed -i 改写会保留文件权限
+if ! chmod 600 .env; then
+    echo "警告: 无法将 .env 权限设为 600，请由文件属主执行 chmod 600 $(pwd)/.env" >&2
 fi
 
 # 读取 .env 中某个键的值（不存在时为空）
