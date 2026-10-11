@@ -3,6 +3,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import BatchSequencingView from '@/views/BatchSequencingView.vue'
 import type { SequencingBatchResult } from '@/api'
+import { UploadCancelledError, type ChunkedProgress } from '@/utils/chunkedUpload'
+import { useAuthStore } from '@/stores/auth'
 
 const pushMock = vi.fn()
 vi.mock('vue-router', () => ({
@@ -10,13 +12,13 @@ vi.mock('vue-router', () => ({
 }))
 
 vi.mock('@/api', async (importOriginal) => ({
-  analyzeSequencingBatch: vi.fn(),
+  analyzeSequencingBatchChunked: vi.fn(),
   downloadBatchSequencingReport: vi.fn(),
   // 错误文案走真实实现：界面展示的就是后端 detail 原文
   formatApiError: ((await importOriginal()) as typeof import('@/api')).formatApiError
 }))
 
-import { analyzeSequencingBatch, downloadBatchSequencingReport } from '@/api'
+import { analyzeSequencingBatchChunked, downloadBatchSequencingReport } from '@/api'
 
 const mockResult: SequencingBatchResult = {
   batch_id: 'seqbatch_test1',
@@ -56,7 +58,7 @@ function mountView() {
 describe('BatchSequencingView', () => {
   beforeEach(() => {
     setActivePinia(createPinia()) // 页面读取 auth store 里的本账号 read 上限
-    vi.mocked(analyzeSequencingBatch).mockReset()
+    vi.mocked(analyzeSequencingBatchChunked).mockReset()
     vi.mocked(downloadBatchSequencingReport).mockReset()
     pushMock.mockReset()
   })
@@ -73,7 +75,7 @@ describe('BatchSequencingView', () => {
   })
 
   it('分析后渲染结论表：徽章/覆盖/待复核/一句话结论', async () => {
-    vi.mocked(analyzeSequencingBatch).mockResolvedValue(mockResult)
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue(mockResult)
     const w = mountView()
     const input = w.find('input[type="file"][multiple]')
     Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1'), makeFile('MX.fasta')] })
@@ -81,7 +83,7 @@ describe('BatchSequencingView', () => {
     await w.find('button.analyze-btn').trigger('click')
     await flushPromises()
 
-    expect(analyzeSequencingBatch).toHaveBeenCalledTimes(1)
+    expect(analyzeSequencingBatchChunked).toHaveBeenCalledTimes(1)
     const rows = w.findAll('tbody tr')
     expect(rows).toHaveLength(2)
     const badges = rows[0].findAll('.badge').map((b) => b.text())
@@ -95,7 +97,7 @@ describe('BatchSequencingView', () => {
   })
 
   it('查看详情深链到 /sequencing?history=<analysis_id>，无 id 的行无按钮', async () => {
-    vi.mocked(analyzeSequencingBatch).mockResolvedValue(mockResult)
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue(mockResult)
     const w = mountView()
     const input = w.find('input[type="file"][multiple]')
     Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
@@ -110,7 +112,7 @@ describe('BatchSequencingView', () => {
   })
 
   it('上传信息表后随请求一起提交', async () => {
-    vi.mocked(analyzeSequencingBatch).mockResolvedValue(mockResult)
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue(mockResult)
     const w = mountView()
     const filesInput = w.find('input[type="file"][multiple]')
     Object.defineProperty(filesInput.element, 'files', { value: [makeFile('T1.ab1')] })
@@ -121,13 +123,13 @@ describe('BatchSequencingView', () => {
     await w.find('button.analyze-btn').trigger('click')
     await flushPromises()
 
-    const form = vi.mocked(analyzeSequencingBatch).mock.calls[0]
+    const form = vi.mocked(analyzeSequencingBatchChunked).mock.calls[0]
     expect(form[0].map((f: File) => f.name)).toEqual(['T1.ab1'])
     expect(form[1]?.name).toBe('测序.xlsx')
   })
 
   it('report_ready 时显示整理包下载按钮并调下载接口，缺省不显示', async () => {
-    vi.mocked(analyzeSequencingBatch).mockResolvedValue(mockResult)
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue(mockResult)
     const w = mountView()
     const input = w.find('input[type="file"][multiple]')
     Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
@@ -138,7 +140,7 @@ describe('BatchSequencingView', () => {
     // 旧响应没有 report_ready → 不显示下载入口
     expect(w.find('button.report-btn').exists()).toBe(false)
 
-    vi.mocked(analyzeSequencingBatch).mockResolvedValue({ ...mockResult, report_ready: true })
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue({ ...mockResult, report_ready: true })
     const w2 = mountView()
     const input2 = w2.find('input[type="file"][multiple]')
     Object.defineProperty(input2.element, 'files', { value: [makeFile('T1.ab1')] })
@@ -182,30 +184,101 @@ describe('BatchSequencingView', () => {
     await w.find('button.analyze-btn').trigger('click')
     await flushPromises()
 
-    expect(analyzeSequencingBatch).not.toHaveBeenCalled()
+    expect(analyzeSequencingBatchChunked).not.toHaveBeenCalled()
     expect(w.find('.error-msg').text()).toContain('T1.ab1')
     expect(w.find('.error-msg').text()).toContain('无法读取')
   })
 
-  it('总体积超过 Cloudflare 100MB 上限时不发起请求', async () => {
+  it('超过 100MB 不再拦截：交给分块上传', async () => {
+    vi.mocked(analyzeSequencingBatchChunked).mockResolvedValue(mockResult)
     const w = mountView()
     const big = makeFile('big.ab1')
-    Object.defineProperty(big, 'size', { value: 96 * 1024 * 1024 })
+    Object.defineProperty(big, 'size', { value: 300 * 1024 * 1024 })
     const input = w.find('input[type="file"][multiple]')
     Object.defineProperty(input.element, 'files', { value: [big] })
     await input.trigger('change')
     await w.find('button.analyze-btn').trigger('click')
     await flushPromises()
 
-    expect(analyzeSequencingBatch).not.toHaveBeenCalled()
-    expect(w.find('.error-msg').text()).toContain('100 MB')
-    expect(w.find('.staged-line').text()).toContain('共 96.0 MB')
+    expect(analyzeSequencingBatchChunked).toHaveBeenCalledTimes(1)
+    expect(w.find('.error-msg').exists()).toBe(false)
+    expect(w.findAll('tbody tr')).toHaveLength(2)
+  })
+
+  it('超过本账号单批总体积上限时不发起请求', async () => {
+    const store = useAuthStore()
+    store.siteConfig = {
+      registration_open: true, email_verification_required: false, tier: 'user',
+      features: { anonymous: [], user: [] }, effective_features: [],
+      batch_read_limits: {
+        max_reads_per_group: 24, max_total_reads: 240, max_files: 400, max_upload_mb: 500,
+        chunk_max_files: 200, chunk_max_mb: 90, session_max_mb: 100
+      }
+    }
+    const w = mountView()
+    const big = makeFile('big.ab1')
+    Object.defineProperty(big, 'size', { value: 101 * 1024 * 1024 })
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [big] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    expect(analyzeSequencingBatchChunked).not.toHaveBeenCalled()
+    expect(w.find('.error-msg').text()).toContain('单批上限 100 MB')
+  })
+
+  it('上传中显示分块进度「上传中 3/7」，可取消并提示已删除暂存', async () => {
+    let captured: { signal?: AbortSignal; onProgress?: (p: ChunkedProgress) => void } = {}
+    vi.mocked(analyzeSequencingBatchChunked).mockImplementation((_f, _e, _q, opts) => {
+      captured = opts || {}
+      return new Promise((_resolve, reject) => {
+        opts?.signal?.addEventListener('abort', () => reject(new UploadCancelledError()))
+      })
+    })
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    captured.onProgress?.({ phase: 'uploading', done: 3, total: 7 })
+    await flushPromises()
+    const bar = w.find('[data-testid="upload-progress"]')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('上传中 3/7')
+    expect(w.find('button.analyze-btn').text()).toContain('上传中 3/7')
+    expect((w.find('.progress-bar').element as HTMLElement).style.width).toBe('43%')
+
+    await w.find('button.cancel-btn').trigger('click')
+    await flushPromises()
+    expect(captured.signal?.aborted).toBe(true)
+    expect(w.find('.error-msg').text()).toContain('已取消上传')
+    expect(w.find('[data-testid="upload-progress"]').exists()).toBe(false)
+  })
+
+  it('分析阶段显示分析中且不再提供取消', async () => {
+    let captured: { onProgress?: (p: ChunkedProgress) => void } = {}
+    vi.mocked(analyzeSequencingBatchChunked).mockImplementation((_f, _e, _q, opts) => {
+      captured = opts || {}
+      return new Promise(() => undefined)
+    })
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    captured.onProgress?.({ phase: 'analyzing', done: 2, total: 2 })
+    await flushPromises()
+    expect(w.find('[data-testid="upload-progress"]').text()).toContain('分析中')
+    expect(w.find('button.cancel-btn').exists()).toBe(false)
   })
 
   it('批量 read 数超限（413）时原样展示后端中文提示', async () => {
     // 审查 02 M6：后端在比对前按每组/整批 read 数上限拒绝，提示用户拆分批次
     const detail = '本批次共有 300 条测序 read 需要比对，超过单次上限（240 条）：请拆分为多个批次提交'
-    vi.mocked(analyzeSequencingBatch).mockRejectedValue({
+    vi.mocked(analyzeSequencingBatchChunked).mockRejectedValue({
       message: 'Request failed with status code 413',
       response: { status: 413, data: { detail } }
     })
@@ -216,7 +289,7 @@ describe('BatchSequencingView', () => {
     await w.find('button.analyze-btn').trigger('click')
     await flushPromises()
 
-    expect(analyzeSequencingBatch).toHaveBeenCalledTimes(1)
+    expect(analyzeSequencingBatchChunked).toHaveBeenCalledTimes(1)
     expect(w.find('.error-msg').text()).toBe(detail)
   })
 })
