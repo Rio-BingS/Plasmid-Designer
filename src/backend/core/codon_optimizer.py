@@ -328,6 +328,13 @@ class CodonOptimizer:
         长度为 window 的密码子窗口沿编码区滑动，每个窗口枚举同义变体
         组合（当前位置 + 每位置频率前 2 的备选），按「窗口 CAI + GC 窗口
         贴近度」取最优。不触碰 5' 翻译起始区（保持 translational ramp）。
+
+        motif 与同聚物只在「被改动的窗口 ± margin」内检查：窗口内的同义
+        替换只能改变这一段里的 motif / poly-X，别处的与候选无关。此前按
+        整条序列判定，收敛后仍残留一个 motif（_iterative_optimization 已
+        就此告警的合法情形）就会让每个候选都被否掉，整段精修变成空操作。
+        margin 取最长 avoid motif（optimize 已把反向互补一并加入）+3，
+        覆盖跨边界的 motif 与 poly-X(4) 判定。
         """
         from itertools import product as iproduct
 
@@ -336,6 +343,7 @@ class CodonOptimizer:
         if n <= window:
             return dna
         ramp_end = RAMP_CODONS
+        margin = max((len(m) for m in avoid_motifs), default=0) + 3
 
         for start in range(ramp_end, n - window + 1):
             pool = []
@@ -352,9 +360,12 @@ class CodonOptimizer:
                 candidate = dna[:start * 3] + ''.join(combo) + dna[(start + window) * 3:]
                 if candidate == dna:
                     continue
-                if any(m in candidate for m in avoid_motifs):
+                lo = max(0, start * 3 - margin)
+                hi = min(len(candidate), (start + window) * 3 + margin)
+                local = candidate[lo:hi]
+                if any(m in local for m in avoid_motifs):
                     continue
-                if self._has_poly_x(candidate, 4):
+                if self._has_poly_x(local, 4):
                     continue
                 s = self._window_score(candidate, start, window, gc_target)
                 if s > best_score + 1e-9:
