@@ -13,7 +13,7 @@ import { useMapStore } from '../store'
 import { barArrowPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
-import { cutStyle } from '../core/enzymes'
+import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { textWidth } from '../core/text'
@@ -96,9 +96,11 @@ function visSegs(r: Range): { x1: number; x2: number; s: Range; clippedL: boolea
 }
 
 // ---------------- 酶切 ----------------
-const cutsInView = computed(() => (props.showEnzymes ? store.cuts.value : [])
-  .filter((c) => c.cut >= vp.value.from && c.cut <= vp.value.to)
-  .map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: cutStyle(c) })))
+/** 视口内最多画这么多切点；超出时只保留少切点酶（放大后自然显示更多） */
+const MAX_VIEW_CUTS = 300
+const cutOverview = computed(() => overviewCuts(
+  (props.showEnzymes ? store.cuts.value : []).filter((c) => c.cut >= vp.value.from && c.cut <= vp.value.to), MAX_VIEW_CUTS))
+const cutsInView = computed(() => cutOverview.value.shown.map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: cutStyle(c) })))
 const enzLabels = computed(() => {
   if (!store.show.labels || !cutsInView.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
   return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
@@ -305,10 +307,13 @@ const hoverRects = computed(() => {
 })
 
 // 无法显示项上报
-watch([featLanes, featLabels, enzLabels], () => {
+watch([featLanes, featLabels, enzLabels, cutOverview], () => {
   const items = [...featLabels.value.hidden, ...enzLabels.value.hidden].map((k) => ({ id: k, name: resolveHit(store, k)?.title ?? k, reason: '标签空间不足' }))
   for (const id of featLanes.value.overflow) {
     items.push({ id: `f:${id}`, name: store.doc.value.features.find((f) => f.id === id)?.name ?? id, reason: '特征分道已满' })
+  }
+  for (const d of cutOverview.value.dropped) {
+    items.push({ id: `e:${d.name}`, name: `${d.name}（视口内 ${d.count} 处）`, reason: '切点过多，放大或在序列视图中查看' })
   }
   store.setUnshown('linear', items)
 }, { immediate: true })
