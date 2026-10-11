@@ -29,6 +29,13 @@
   60 秒自动转轮询，不会撞上 100 秒超时。磁盘最坏占用约为
   `SEQUENCING_BATCH_SESSIONS_TOTAL × SEQUENCING_BATCH_SESSION_MAX_MB`（默认 16 × 2 GB），
   空间紧张时调小这两项。
+- Docker 前端镜像新增入口脚本，须重新构建（`docker compose up -d --build frontend`）。
+  前端 nginx 改为只在 `FRONTEND_BIND` 为本机回环时采信 compose 网关转来的
+  `X-Real-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`。`FRONTEND_BIND=0.0.0.0`
+  又在前面放了宿主机 nginx 的部署，升级后真实客户端 IP 不再被采信（全部计入网关
+  一个限流桶）：请改回 `FRONTEND_BIND=127.0.0.1`。新变量 `HOST_PROXY_ADDRS`
+  （默认 `auto`，可设 `none` 或单个地址清单）；改过 `PLASMID_GATEWAY` 的部署不必
+  再手改 `nginx.conf`。
 
 - **批量测序新增计算预算与软时限**：比对前按 Σ(参考长度 × read 数) 估算，超过
   `SEQUENCING_BATCH_COMPUTE_BUDGET_MBP`（默认 50 Mbp·read）返回 413；整批运行
@@ -100,6 +107,9 @@
   视为用户手写内容原样保留，新结论写在最后一行。结论文本格式不变（未加新前缀，
   按「合格」等开头筛选的表格照常可用）；用户自己以上述开头写的行会被当作旧结论
   替换。
+- Docker：前端端口对外发布时，经 docker-proxy 转发（IPv6 入站、userland-proxy、
+  rootless 等）的直连来源显示为 compose 网关而被信任，客户端可伪造 `X-Real-IP`
+  换限流桶；客户端自带的 `X-Forwarded-For` 也不再经非可信来源转给后端。
 
 ## [2.9.1] - 2026-10-11
 
