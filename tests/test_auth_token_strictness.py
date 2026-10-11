@@ -7,7 +7,7 @@
 
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -53,13 +53,13 @@ def test_garbage_token_is_401():
 
 def test_expired_token_is_401():
     u = _user()
-    tok = jwt.encode({"sub": u.id, "exp": datetime.utcnow() - timedelta(minutes=1)},
+    tok = jwt.encode({"sub": u.id, "exp": datetime.now(timezone.utc) - timedelta(minutes=1)},
                      SECRET_KEY, algorithm=ALGORITHM)
     assert client.get(PUBLIC, headers=_h(tok)).status_code == 401
 
 
 def test_token_for_unknown_user_is_401():
-    tok = jwt.encode({"sub": "no-such-user", "exp": datetime.utcnow() + timedelta(hours=1)},
+    tok = jwt.encode({"sub": "no-such-user", "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
                      SECRET_KEY, algorithm=ALGORITHM)
     assert client.get(PUBLIC, headers=_h(tok)).status_code == 401
 

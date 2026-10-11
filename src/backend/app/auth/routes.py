@@ -11,7 +11,7 @@
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -27,6 +27,7 @@ from .jwt_auth import (
     set_auth_cookie, clear_auth_cookie,
 )
 from app.config import settings
+from app.timeutil import utcnow_naive
 from app.database import (
     get_db, get_users, create_user as db_create_user, get_user_by_email, get_user_by_id,
     get_site_settings_row, create_email_verification, get_latest_email_verification,
@@ -88,8 +89,8 @@ def _hash_code(code: str, user_id: str) -> str:
 async def _issue_verification_code(db: Session, user, is_resend: bool) -> bool:
     """生成并（尝试）发送验证码，返回是否发送成功。60 秒重发冷却。"""
     latest = get_latest_email_verification(db, user.id)
-    if latest is not None and (datetime.utcnow() - latest.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
-        wait = RESEND_COOLDOWN_SECONDS - (datetime.utcnow() - latest.created_at).total_seconds()
+    if latest is not None and (utcnow_naive() - latest.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
+        wait = RESEND_COOLDOWN_SECONDS - (utcnow_naive() - latest.created_at).total_seconds()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"验证码发送过于频繁，请 {int(wait) + 1} 秒后再试",
@@ -98,7 +99,7 @@ async def _issue_verification_code(db: Session, user, is_resend: bool) -> bool:
     create_email_verification(
         db, user_id=user.id, email=user.email,
         code_hash=_hash_code(code, user.id),
-        expires_at=datetime.utcnow() + timedelta(minutes=CODE_TTL_MINUTES),
+        expires_at=utcnow_naive() + timedelta(minutes=CODE_TTL_MINUTES),
     )
     sent = await send_email(
         user.email,
@@ -183,7 +184,7 @@ async def register(user_data: UserCreate, request: Request, response: Response,
     create_email_verification(
         db, user_id=db_user.id, email=db_user.email,
         code_hash=_hash_code(code, db_user.id),
-        expires_at=datetime.utcnow() + timedelta(minutes=CODE_TTL_MINUTES),
+        expires_at=utcnow_naive() + timedelta(minutes=CODE_TTL_MINUTES),
     )
     sent = await send_email(
         db_user.email, "Plasmid Designer 注册验证码",
@@ -284,7 +285,7 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, response: 
     row = get_latest_email_verification(db, user_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先获取验证码")
-    if row.expires_at < datetime.utcnow():
+    if row.expires_at < utcnow_naive():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="验证码已过期，请重新发送")
     if _hash_code(payload.code.strip(), user_id) != row.code_hash:

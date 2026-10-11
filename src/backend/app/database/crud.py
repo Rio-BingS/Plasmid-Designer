@@ -7,6 +7,8 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 
+from app.timeutil import utcnow_naive
+
 from .models import (
     UserDB, DesignDB, PrimerDB, DesignWarningDB, DesignErrorDB,
     BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB,
@@ -133,7 +135,7 @@ def bump_token_version(db: Session, user_id: str) -> None:
 
 def prune_revoked_tokens(db: Session, now: Optional[datetime] = None) -> int:
     """删除已过期的黑名单行（令牌过期后验签即拒，无需再记），返回删除行数"""
-    now = now or datetime.utcnow()
+    now = now or utcnow_naive()
     n = db.query(RevokedTokenDB).filter(RevokedTokenDB.expires_at < now).delete(
         synchronize_session=False)
     db.commit()
