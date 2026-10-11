@@ -45,6 +45,7 @@ function adminSettings(overrides: Partial<api.AdminSettings> = {}): api.AdminSet
     batch_read_limit_hard_max: { max_reads_per_group: 384, max_total_reads: 5000 },
     batch_max_files: 400,
     batch_upload_max_mb: 500,
+    batch_session_max_mb: 2048,
     ...overrides
   }
 }
@@ -101,6 +102,9 @@ describe('AdminView 批量 read 上限', () => {
     expect(adminTotal.placeholder).toBe('默认 240')
     expect(w.text()).toContain('500 MB')
     expect(w.text()).toContain('400 个文件')
+    // 批量页自动分块上传：管理员看到的是单批总体积上限
+    expect(w.text()).toContain('自动分批上传')
+    expect(w.text()).toContain('2048 MB')
   })
 
   it('保存时提交三个分组的两项上限，空白提交 null', async () => {
