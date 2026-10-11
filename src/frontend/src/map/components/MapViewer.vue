@@ -284,7 +284,18 @@ const unshownItems = computed(() => {
 const showUnshown = ref(false)
 /** 详情列表最多列这么多条（300 kb 随机序列可有上千项，全列会卡） */
 const UNSHOWN_LIST_MAX = 200
-const unshownList = computed(() => unshownItems.value.slice(0, UNSHOWN_LIST_MAX))
+const unshownList = computed(() => {
+  const items = unshownItems.value.slice(0, UNSHOWN_LIST_MAX)
+  // 同名特征（如 pET-28a 的两段 6xHis）补上坐标以便区分
+  const counts = new Map<string, number>()
+  for (const it of items) counts.set(it.name, (counts.get(it.name) ?? 0) + 1)
+  const featById = new Map(doc.value.features.map((f) => [f.id, f]))
+  return items.map((it) => {
+    if ((counts.get(it.name) ?? 0) < 2) return it
+    const f = featById.get(it.id.replace(/^f:/, ''))
+    return f ? { ...it, name: `${it.name}（${f.start.toLocaleString()}..${f.end.toLocaleString()}）` } : it
+  })
+})
 
 defineExpose({ store, view, undo })
 </script>
