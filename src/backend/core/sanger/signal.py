@@ -1,4 +1,4 @@
-"""poly 区信号处理（docs/poly-final-actionable-list.md A2 / B1 / B2 / B4 / B5）
+"""poly 区信号处理
 
 A2 基线校正：ab1 的 DATA 通道除真实信号外还叠加随位置缓慢漂移的加性本底
 （仪器基线、染料残留），峰面积裸加和会把本底计入峰强。逐通道滑动窗口取
@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core.sanger.abif_reader import peak_window
 
-# —— A2 基线校正参数（真实 ab1 标定，见 docs/poly-final-actionable-list.md A2）——
+# —— A2 基线校正参数（真实 ab1 标定）——
 # 窗口窄（≈10 碱基）才能跟上基线漂移（线性漂移下残余本底 ∝ 0.4×win×斜率）；
 # 窄窗在合并峰平台内部会把信号当本底——由平台护栏（跨通道共模）插值兜底
 BASELINE_WIN = 200    # 滑动窗口（采样点）

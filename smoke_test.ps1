@@ -1,4 +1,4 @@
-﻿# Plasmid Designer 冒烟测试脚本（对应 docs/FIXPLAN.md 底部验证清单）
+﻿# Plasmid Designer 冒烟测试脚本（对应 docs/KNOWN_ISSUES.md「2025 功能完整性核查」）
 # 用法：
 #   1) 先启动后端：cd src\backend ; uvicorn app.main:app
 #   2) 新开终端运行：powershell -ExecutionPolicy Bypass -File smoke_test.ps1
