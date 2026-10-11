@@ -74,14 +74,15 @@ def forwarded_proto(peer, header, scheme="http"):
 @pytest.mark.parametrize(
     "peer,header,expected",
     [
-        ("172.18.0.1", "https", "https"),       # 宿主机 nginx 经 docker 网桥
-        ("172.18.0.1", "HTTPS", "https"),
-        ("172.18.0.1", "https, http", "https"),  # 多级代理取最左
+        ("172.28.0.1", "https", "https"),       # 宿主机 nginx 经 docker 网桥
+        ("172.28.0.1", "HTTPS", "https"),
+        ("172.28.0.1", "https, http", "https"),  # 多级代理取最左
         ("127.0.0.1", "https", "https"),
-        ("172.18.0.1", "http", "http"),
-        ("172.18.0.1", "", "http"),               # 前置未发头 → 本连接协议
-        ("172.18.0.1", "httpsx", "http"),         # 非法值不透传
-        ("172.18.0.1", "ftp", "http"),
+        ("172.28.0.1", "http", "http"),
+        ("172.28.0.1", "", "http"),               # 前置未发头 → 本连接协议
+        ("172.28.0.1", "httpsx", "http"),         # 非法值不透传
+        ("172.28.0.1", "ftp", "http"),
+        ("172.18.0.1", "https", "http"),          # 同机其它 docker 网段 → 不采信
         ("203.0.113.9", "https", "http"),         # 公网直连伪造头 → 不采信
         ("10.0.0.5", "https", "http"),
     ],
