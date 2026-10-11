@@ -69,6 +69,11 @@ class DigestRequest(BaseModel):
     """酶切消化模拟请求"""
     sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     enzymes: List[str] = Field(..., min_length=1, max_length=6, description="用于模拟消化的酶（1-6 个）")
+    circular: bool = Field(
+        default=False,
+        description="是否按环状 DNA（质粒）消化：首尾片段相连、跨原点位点也会被识别；"
+                    "拓扑未知时保持默认的线性",
+    )
 
 
 class GCAnalysisRequest(BaseModel):
@@ -247,62 +252,92 @@ async def find_orfs(request: ORFRequest) -> Dict:
 @router.post("/digest")
 async def simulate_digest(request: DigestRequest) -> Dict:
     """
-    酶切消化模拟（线性 DNA 完全消化）
+    酶切消化模拟（完全消化，线性或环状）
 
-    按所选酶的切割位置切分序列，返回各片段的起止与大小，
-    用于预测电泳条带。
+    按所选酶在正向链上的切割位置切分序列，返回各片段的起止与大小，
+    用于预测电泳条带。切割位置与 Bio.Restriction 同一口径（正向链切点，
+    粘性末端的突出差异不计入片段大小）。
+
+    circular=False（默认，拓扑未知时也按线性）：N 个切点 → N+1 个片段；
+    切点落在序列之外（线性末端附近的 Type IIS 位点）不计。
+    circular=True：首尾相连，N 个切点 → N 个片段，跨原点的片段
+    start > end 并带 wraps_origin=True；只切一刀即线性化，得 1 个整长片段。
     """
-    seq = request.sequence.upper()
-    analyzer = RestrictionSiteAnalyzer()
+    from core.enzyme_sites import get_enzyme, scan_sites
 
-    cuts = []
-    enzymes_with_sites = []
+    seq = request.sequence.upper().replace("U", "T")
+    n = len(seq)
+    circular = request.circular
+
+    specs = []
     for enzyme in request.enzymes:
-        if not analyzer.is_known(enzyme):
+        spec = get_enzyme(enzyme)
+        if spec is None:
             raise HTTPException(status_code=400, detail=f"未知限制酶: {enzyme}")
-        sites = await run_in_threadpool(analyzer.find_sites, seq, [enzyme])
-        if sites:
-            enzymes_with_sites.append(enzyme)
-        # 同一识别位点的正反链记录（粘性末端两个切点）合并为一个物理切割点，
-        # 取正链切割位置——消化模拟按每识别位点一个边界计
-        seen_regions = set()
-        for s in sites:
-            region = (s.recognition_start, s.recognition_end)
-            if region in seen_regions:
-                continue
-            seen_regions.add(region)
-            same_region = [x for x in sites
-                           if (x.recognition_start, x.recognition_end) == region]
-            cut = next((x.cut_position for x in same_region if x.strand == "+"),
-                       same_region[0].cut_position)
-            cuts.append((cut, enzyme))
+        specs.append(spec)
+
+    def _collect():
+        found: Dict[int, List[str]] = {}  # 边界（切在第 b 位之后，1..n）→ 切割酶
+        with_sites: List[str] = []
+        for spec in specs:
+            hit = False
+            for _a, _strand, cut_fwd, _cut_rev in scan_sites(seq, spec, circular):
+                if circular:
+                    b = (cut_fwd - 1) % n + 1
+                elif 0 < cut_fwd < n:
+                    b = cut_fwd
+                else:
+                    continue  # 线性：切点在序列外或恰在末端，不产生新片段
+                hit = True
+                names = found.setdefault(b, [])
+                if spec["name"] not in names:  # 回文位点正反链同一切点
+                    names.append(spec["name"])
+            if hit and spec["name"] not in with_sites:
+                with_sites.append(spec["name"])
+        return found, with_sites
+
+    cuts, enzymes_with_sites = await run_in_threadpool(_collect)
 
     if not cuts:
         return {
             "total_fragments": 0,
             "fragments": [],
             "enzymes_with_sites": [],
+            "circular": circular,
             "message": "所选酶在序列中均无切割位点",
         }
 
-    cuts.sort(key=lambda x: x[0])
+    bounds = sorted(cuts)
     fragments = []
-    prev = 0
-    for pos, enzyme in cuts:
-        if pos <= prev:
-            continue  # 同一位置多种酶切割合并为同一边界
+    if circular:
+        # 每个片段从一个切点之后到下一个切点；最后一段绕过原点回到第一个切点
+        for i, b in enumerate(bounds):
+            nxt = bounds[(i + 1) % len(bounds)]
+            start = b % n + 1
+            size = (nxt - b) % n or n
+            frag = {
+                "start": start,
+                "end": nxt,
+                "size": size,
+                "cut_by": list(cuts[nxt]),
+            }
+            if start > nxt:
+                frag["wraps_origin"] = True
+            fragments.append(frag)
+    else:
+        prev = 0
+        for b in bounds:
+            fragments.append({
+                "start": prev + 1,
+                "end": b,
+                "size": b - prev,
+                "cut_by": list(cuts[b]),
+            })
+            prev = b
         fragments.append({
             "start": prev + 1,
-            "end": pos,
-            "size": pos - prev,
-            "cut_by": [e for p, e in cuts if p == pos],
-        })
-        prev = pos
-    if len(seq) - prev > 0:
-        fragments.append({
-            "start": prev + 1,
-            "end": len(seq),
-            "size": len(seq) - prev,
+            "end": n,
+            "size": n - prev,
             "cut_by": [],
         })
 
@@ -310,6 +345,7 @@ async def simulate_digest(request: DigestRequest) -> Dict:
         "total_fragments": len(fragments),
         "fragments": fragments,
         "enzymes_with_sites": enzymes_with_sites,
+        "circular": circular,
     }
 
 

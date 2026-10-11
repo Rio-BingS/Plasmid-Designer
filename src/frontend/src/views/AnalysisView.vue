@@ -40,6 +40,9 @@ const digestEnzymes = ref<string[]>([])
 const digestResult = ref<any>(null)
 const digestLoading = ref(false)
 const digestTooMany = computed(() => digestEnzymes.value.length > DIGEST_MAX_ENZYMES)
+// 环状（质粒）消化：首尾片段相连。页面拿不到序列拓扑，默认线性（与后端
+// 拓扑未知时的默认一致），质粒由用户勾选
+const digestCircular = ref(false)
 // ORF
 const orfMinLength = ref(100)
 
@@ -122,7 +125,7 @@ async function runDigest() {
     // 粘贴的序列常带换行/空格（FASTA 分行），原样提交会让后端把空白计入
     // 片段长度，且跨行的识别位点匹配不到——与页面显示的 bp 数口径一致
     const cleanSeq = sequence.value.replace(/\s/g, '')
-    digestResult.value = await simulateDigest(cleanSeq, digestEnzymes.value)
+    digestResult.value = await simulateDigest(cleanSeq, digestEnzymes.value, digestCircular.value)
   } catch (e: any) {
     error.value = errorText(e)
   } finally {
@@ -298,6 +301,10 @@ async function handleExport() {
             placeholder="输入以搜索消化用酶…"
           />
         </div>
+        <label class="digest-circular">
+          <input v-model="digestCircular" type="checkbox" class="digest-circular-input" />
+          环状 DNA（质粒）：首尾片段相连
+        </label>
         <button
           class="btn btn-secondary"
           :disabled="digestLoading || !digestEnzymes.length || digestTooMany || isAminoAcid"
@@ -315,14 +322,14 @@ async function handleExport() {
             <tbody>
               <tr v-for="(f, i) in digestResult.fragments" :key="i">
                 <td>#{{ i + 1 }}</td>
-                <td>{{ f.start }}</td>
+                <td>{{ f.start }}<span v-if="f.wraps_origin" class="hint-text">（跨原点）</span></td>
                 <td>{{ f.end }}</td>
                 <td><strong>{{ f.size }}</strong></td>
                 <td>{{ f.cut_by?.join(', ') || '—' }}</td>
               </tr>
             </tbody>
           </table>
-          <p class="hint-text">片段按线性完全消化近似（粘性末端差异未计入）；各片段大小可用于预测电泳条带</p>
+          <p class="hint-text">片段按{{ digestResult.circular ? '环状' : '线性' }}完全消化计算（粘性末端差异未计入）；各片段大小可用于预测电泳条带</p>
         </div>
         <p v-else-if="digestResult" class="empty-text">{{ digestResult.message || '未产生片段' }}</p>
       </div>
@@ -469,6 +476,7 @@ h2 { font-size: 1.25rem; margin-bottom: 1rem; }
 .mono { font-family: monospace; }
 .orf-protein { max-width: 260px; word-break: break-all; }
 .digest-filter { margin-bottom: 0.6rem; }
+.digest-circular { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; margin-bottom: 0.6rem; cursor: pointer; }
 .digest-label { display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem; }
 .digest-sim { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px dashed var(--border-color); }
 .digest-sim h3 { font-size: 1rem; margin-bottom: 0.6rem; }

@@ -279,11 +279,12 @@ export async function predictORFs(sequence: string, minLength: number = 100): Pr
   return response.data
 }
 
-// 酶切消化模拟（线性完全消化，返回片段大小）
-export async function simulateDigest(sequence: string, enzymes: string[]): Promise<any> {
+// 酶切消化模拟（完全消化，返回片段大小）；circular=true 按环状质粒首尾相连
+export async function simulateDigest(sequence: string, enzymes: string[], circular: boolean = false): Promise<any> {
   const response = await api.post('/analysis/digest', {
     sequence,
-    enzymes
+    enzymes,
+    circular
   })
   return response.data
 }
