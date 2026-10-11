@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录：src/backend 的父级，即 plasmid-designer-v2/
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # config.py -> app -> backend -> src -> project_root
@@ -102,8 +102,7 @@ class Settings(BaseSettings):
             return json.loads(v)
         return [item.strip() for item in v.split(",") if item.strip()]
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 # 公开仓库里出现过的占位值：任何人都可用它们自签令牌，永远拒绝
