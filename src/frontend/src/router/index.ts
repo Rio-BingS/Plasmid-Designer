@@ -9,6 +9,7 @@ import AnalysisView from '@/views/AnalysisView.vue'
 import SequencingView from '@/views/SequencingView.vue'
 import BatchSequencingView from '@/views/BatchSequencingView.vue'
 import CacheView from '@/views/CacheView.vue'
+import MapView from '@/views/MapView.vue'
 import AdminView from '@/views/AdminView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -29,6 +30,7 @@ const router = createRouter({
     { path: '/sequencing', name: 'sequencing', component: SequencingView,
       meta: { feature: 'sequencing', anyFeature: ['sequencing', 'sequencing_batch'] } },
     { path: '/sequencing/batch', name: 'sequencing-batch', component: BatchSequencingView, meta: { feature: 'sequencing_batch' } },
+    { path: '/map', name: 'map', component: MapView, meta: { feature: 'map' } },
     { path: '/cache', name: 'cache', component: CacheView },
     { path: '/admin', name: 'admin', component: AdminView, meta: { adminOnly: true } },
     { path: '/forbidden', name: 'forbidden', component: ForbiddenView }
