@@ -91,6 +91,11 @@ class InMemoryRateLimiter:
             self._prune_keys_locked(now)
             return True, 0
     
+    def reset(self, key: str) -> None:
+        """清空某个 key 的计数（如登录成功后清除该账号的失败记录）"""
+        with self._lock:
+            self._requests.pop(key, None)
+
     def get_remaining(self, key: str, max_requests: int, window_seconds: int) -> int:
         """获取剩余请求次数"""
         now = time.time()
@@ -148,6 +153,9 @@ RATE_LIMITS = {
     "upload": {"requests": 20, "window": 3600},  # 20 上传/小时
     "auth": {"requests": 5, "window": 60},       # 5 次/分钟（同 IP + 同目标邮箱）
     "auth_ip": {"requests": 20, "window": 60},   # 20 次/分钟（同 IP 全部认证写操作）
+    # 按账号（规范化邮箱）的登录失败闸，不含 IP 维度：换 IP 也绕不过
+    # 单账号的口令猜测（审查 02 H1）。登录成功清零；由 login 路由调用。
+    "login_account": {"requests": 10, "window": 900},  # 10 次失败/15 分钟
     # 重型只读：打包/导出下载与 NCBI 外呼代理（终审 C-04 后曾退化到 default 档）
     "export": {"requests": 10, "window": 60},
     "ncbi": {"requests": 10, "window": 60},
@@ -311,6 +319,53 @@ async def _auth_identity(request: Request) -> str:
     return normalize_email(data.get("email")) if isinstance(data, dict) else ""
 
 
+# ==================== 按账号的登录失败闸（审查 02 H1） ====================
+# 不论账号是否存在都同样计数、同样拦截，429 响应与邮箱是否注册无关，
+# 不会成为账号存在性探针。计数在校验口令之前原子占位（并发请求也
+# 无法越过上限），口令正确即清零，所以实际只累计失败次数。
+
+def _login_account_key(email) -> str:
+    return f"rate:login_fail:{normalize_email(email) or '-'}"
+
+
+def acquire_login_attempt(email) -> int:
+    """登录前调用：返回 0 表示放行（已占一次失败名额），否则为 Retry-After 秒数"""
+    cfg = RATE_LIMITS.get("login_account")
+    if not cfg:
+        return 0
+    ok, retry_after = limiter.is_allowed(
+        _login_account_key(email), cfg["requests"], cfg["window"])
+    return 0 if ok else retry_after
+
+
+def reset_login_failures(email) -> None:
+    """口令校验通过后调用：清除该账号的失败计数"""
+    limiter.reset(_login_account_key(email))
+
+
+def too_many_response(key: str, limit_config: Dict, retry_after: int) -> JSONResponse:
+    """统一的 429 响应（与中间件同形：detail + retry_after，带 Retry-After 头）"""
+    logger.warning(f"Rate limit exceeded: {key}")
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": f"Rate limit exceeded. Retry after {retry_after} seconds.",
+            "retry_after": retry_after
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(limit_config["requests"]),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(int(time.time()) + retry_after)
+        }
+    )
+
+
+def login_account_too_many(email, retry_after: int) -> JSONResponse:
+    cfg = RATE_LIMITS.get("login_account") or {"requests": 0}
+    return too_many_response(_login_account_key(email), cfg, retry_after)
+
+
 # ==================== 路由级限流分类（终审 C-04） ====================
 # 规则表：(HTTP 方法, 路径模板) → 限流档位。模板里 {param} 之后用前缀
 # 匹配（/api/design/ 覆盖 /api/design/{id}）。
@@ -458,20 +513,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     @staticmethod
     def _too_many(key: str, limit_config: Dict, retry_after: int) -> JSONResponse:
-        logger.warning(f"Rate limit exceeded: {key}")
-        return JSONResponse(
-            status_code=429,
-            content={
-                "detail": f"Rate limit exceeded. Retry after {retry_after} seconds.",
-                "retry_after": retry_after
-            },
-            headers={
-                "Retry-After": str(retry_after),
-                "X-RateLimit-Limit": str(limit_config["requests"]),
-                "X-RateLimit-Remaining": "0",
-                "X-RateLimit-Reset": str(int(time.time()) + retry_after)
-            }
-        )
+        return too_many_response(key, limit_config, retry_after)
 
     # 终审 C-04：此前按路径子串分类——轮询 GET /api/design/{id} 被 "/design"
     # 命中写档（实测提交后第 10 次轮询即 429），GET /api/auth/verify、/auth/me

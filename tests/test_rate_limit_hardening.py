@@ -170,3 +170,78 @@ def test_ipv6_rotation_within_64_hits_auth_ip_limit(monkeypatch):
                     headers={"X-Real-IP": f"2001:db8:5::{i + 1:x}"}).status_code
              for i in range(5)]
     assert codes[3:] == [429, 429], codes
+
+
+# ---------------- 按账号的登录失败闸（审查 02 H1） ----------------
+
+_GOOD_PASS = "Passw0rd!!"
+
+
+def _new_account():
+    import uuid
+    from app.auth.jwt_auth import hash_password
+    from app.database import SessionLocal, create_user
+    email = f"acct-{uuid.uuid4().hex[:8]}@example.com"
+    db = SessionLocal()
+    try:
+        create_user(db, email=email, username=email.split("@")[0],
+                    hashed_password=hash_password(_GOOD_PASS), email_verified=True)
+    finally:
+        db.close()
+    return email
+
+
+@pytest.fixture
+def account_limit(monkeypatch):
+    # 放宽含 IP 的两档，只让按账号的闸生效
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth", {"requests": 100, "window": 60})
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth_ip", {"requests": 100, "window": 60})
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "login_account", {"requests": 3, "window": 900})
+    return TestClient(app, client=("127.0.0.1", 50000))
+
+
+def _login_from(c, ip, email, password="wrong-pass-1"):
+    # 经可信回环代理用 X-Real-IP 模拟每次换一个客户端 IP
+    return c.post("/api/auth/login", json={"email": email, "password": password},
+                  headers={"X-Real-IP": ip})
+
+
+def test_login_account_limit_independent_of_ip(account_limit):
+    c, email = account_limit, _new_account()
+    codes = [_login_from(c, f"198.51.100.{i + 1}", email).status_code for i in range(3)]
+    assert codes == [401, 401, 401]
+    r = _login_from(c, "203.0.113.200", email)
+    assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) > 0
+    body = r.json()
+    assert set(body) == {"detail", "retry_after"} and body["retry_after"] > 0
+    # 锁定期内即使口令正确也拦截（否则 200/429 之差就是口令探针）
+    assert _login_from(c, "203.0.113.201", email, _GOOD_PASS).status_code == 429
+    # 其他账号不受影响；邮箱大小写/空白归一到同一账号
+    assert _login_from(c, "203.0.113.202", _new_account()).status_code == 401
+    assert _login_from(c, "203.0.113.203", f"  {email.upper()} ").status_code == 429
+
+
+def test_login_account_limit_does_not_leak_existence(account_limit):
+    c = account_limit
+    existing, missing = _new_account(), "nobody-here@example.com"
+    seq_a = [_login_from(c, f"198.51.100.{i + 1}", existing) for i in range(4)]
+    seq_b = [_login_from(c, f"198.51.100.{i + 1}", missing) for i in range(4)]
+    assert [r.status_code for r in seq_a] == [r.status_code for r in seq_b] == [401, 401, 401, 429]
+    assert seq_a[0].json() == seq_b[0].json()
+    assert set(seq_a[3].json()) == set(seq_b[3].json())
+    assert seq_a[3].headers["X-RateLimit-Limit"] == seq_b[3].headers["X-RateLimit-Limit"]
+
+
+def test_login_success_resets_account_failures(account_limit):
+    c, email = account_limit, _new_account()
+    assert [_login_from(c, "198.51.100.1", email).status_code for _ in range(2)] == [401, 401]
+    assert _login_from(c, "198.51.100.1", email, _GOOD_PASS).status_code == 200
+    # 成功后计数清零：又可失败 2 次，再成功一次仍放行
+    assert [_login_from(c, "198.51.100.2", email).status_code for _ in range(2)] == [401, 401]
+    assert _login_from(c, "198.51.100.3", email, _GOOD_PASS).status_code == 200
+
+
+def test_login_account_default_tier_configured():
+    cfg = rate_limit.RATE_LIMITS["login_account"]
+    assert 0 < cfg["requests"] <= 20 and cfg["window"] >= 300
