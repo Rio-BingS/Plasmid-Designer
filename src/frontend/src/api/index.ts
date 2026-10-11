@@ -21,6 +21,9 @@ const api = axios.create({
   headers: { 'X-Requested-With': 'XMLHttpRequest' }
 })
 
+/** 共享 axios 实例：供按功能拆分的接口模块（如 map/api.ts）复用拦截器与凭证 */
+export { api as http }
+
 // 请求拦截器：记下请求发出时的会话代际（见 api/session.ts）
 api.interceptors.request.use(
   (config) => {
