@@ -77,7 +77,7 @@ chmod +x ../scripts/deploy.sh
 ../scripts/deploy.sh
 ```
 
-脚本会自动: 创建 `.env` → 生成随机密钥 → 构建镜像 → 启动服务 → 健康检查
+脚本会自动: 创建 `.env` → 生成随机 SECRET_KEY / DB_PASSWORD / REDIS_PASSWORD → 构建镜像 → 启动服务 → 健康检查
 
 部署完成后访问:
 - **前端**: `http://你的服务器IP`（FRONTEND_PORT 改过则加端口）
@@ -98,9 +98,10 @@ cd /root/plasmid-designer-v2/deploy/docker
 # 从模板创建 .env
 cp .env.example .env
 
-# 生成安全的密钥并写入
-SECRET=$(openssl rand -hex 32)
-sed -i "s/change_this_in_production_use_strong_random_string/$SECRET/" .env
+# 模板中三项密钥均为空，必须填入随机值（留空 compose 拒绝启动）
+sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(openssl rand -hex 32)/" .env
+sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$(openssl rand -hex 16)/" .env
+sed -i "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=$(openssl rand -hex 16)/" .env
 
 # 查看配置
 cat .env
@@ -113,14 +114,18 @@ cat .env
 DB_USER=plasmid
 DB_PASSWORD=<随机生成>              # 必填，留空 compose 拒绝启动（deploy.sh 自动生成）
 REDIS_PASSWORD=<随机生成>           # 同上
-SECRET_KEY=<自动生成的64位hex>      # 不要用默认值（deploy.sh 自动生成）
+SECRET_KEY=<64 位 hex>              # 必填；占位/过短/低熵值后端拒绝启动（deploy.sh 自动生成）
 DEBUG=false
 LOG_LEVEL=INFO
 STORAGE_MODE=database
 FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
 BACKEND_PORT=8000                  # 后端仅绑定 127.0.0.1；宿主机 8000 被占用时改为 18000 等
-CORS_ORIGINS=*                     # 支持 "*"、逗号分隔或 JSON 数组；生产建议具体域名
+CORS_ORIGINS=http://localhost      # 同源反代无需改；前端另域部署时填显式来源，不要用 *
+AUTH_COOKIE_SECURE=auto            # HTTPS 在宿主机 nginx 终止时改为 true（见第八节）
+TRUSTED_PROXIES=127.0.0.1,::1,172.16.0.0/12   # 自定义 Docker 网段时同步修改
 ```
+
+完整变量说明（管理员引导、邮件渠道等）见 `.env.example` 内注释。
 
 ### 4.2 构建镜像
 
@@ -132,7 +137,9 @@ cd /root/plasmid-designer-v2/deploy/docker
 docker compose build
 
 # 海外服务器用默认官方源即可；国内机器构建缓慢时用 build-arg 切换国内镜像:
-#   docker compose build #     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple #     --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+#   docker compose build \
+#     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 ```
 
 ### 4.3 启动服务
@@ -190,8 +197,7 @@ ls /root/plasmid-designer-v2/src/backend/app/main.py
 ls /root/plasmid-designer-v2/src/frontend/package.json
 ls /root/plasmid-designer-v2/data/vectors/
 
-# 2. npm/pip 超时（国内机器）→ build-arg 切换国内镜像，无需改 Dockerfile:
-# docker compose build #   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple #   --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+# 2. npm/pip 超时（国内机器）→ build-arg 切换国内镜像（命令见 4.2），无需改 Dockerfile
 ```
 
 ### ❌ 问题 2: 容器启动后立即退出
@@ -341,16 +347,11 @@ docker compose logs -f --since 5m
 
 ## 八、生产环境安全加固
 
-### 8.1 修改默认密码
+### 8.1 密钥与密码
 
-```bash
-# 编辑 .env
-nano /root/plasmid-designer-v2/deploy/docker/.env
-
-# 必须修改:
-# DB_PASSWORD=你的强密码
-# SECRET_KEY=你的强密钥
-```
+`.env.example` 不再提供任何默认密码：`SECRET_KEY`、`DB_PASSWORD`、`REDIS_PASSWORD`
+必须是随机值（deploy.sh 首次运行自动生成）。注意 PostgreSQL 只在数据卷首次初始化时设置
+密码，已有数据卷后修改 `DB_PASSWORD` 需同时在库内 `ALTER USER`。
 
 ### 8.2 防火墙
 
@@ -362,22 +363,10 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-### 8.3 HTTPS (可选)
+### 8.3 HTTPS
 
-```bash
-# 使用 Let's Encrypt
-sudo apt install certbot
-sudo certbot certonly --standalone -d your-domain.com
-
-# 将证书放到 deploy/docker/ssl/ 目录
-mkdir -p /root/plasmid-designer-v2/deploy/docker/ssl
-cp /etc/letsencrypt/live/your-domain.com/fullchain.pem ssl/cert.pem
-cp /etc/letsencrypt/live/your-domain.com/privkey.pem ssl/key.pem
-
-# 取消 nginx.conf 中 HTTPS 部分的注释
-# 重启前端容器
-docker compose restart frontend
-```
+推荐在宿主机 nginx 终止 HTTPS，见下文「绑定域名 / HTTPS」。容器内 `nginx.conf` 末尾的
+443 server 块只是注释示例：compose 既未映射 443 端口也未挂载证书目录，直接取消注释不会生效。
 
 ---
 
@@ -395,21 +384,23 @@ server {
     server_name plasmid.example.com;
     ssl_certificate     /etc/ssl/xxx/origin.pem;   # 覆盖该子域的证书
     ssl_certificate_key /etc/ssl/xxx/origin.key;
-    client_max_body_size 10m;
+    # 与容器 nginx 的测序上传上限一致（批量交付文件夹常超百 MB），否则在这一层就被 413
+    client_max_body_size 520m;
 
     location / {
         proxy_pass http://127.0.0.1:8080;          # FRONTEND_PORT 对应端口
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;   # 前置 nginx 需自行完成真实 IP 解析
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 600s;                   # 批量测序分析耗时较长
     }
 }
 ```
 
 3. `nginx -t && nginx -s reload`
-4. `.env` 中把 `CORS_ORIGINS` 收紧为具体来源（如 `["https://plasmid.example.com"]`），
-   并设 `AUTH_COOKIE_SECURE=true`（HTTPS 在宿主机终止，容器内只见 http，auto 判断不出），
-   然后重启 backend
+4. `.env` 中设 `AUTH_COOKIE_SECURE=true`（HTTPS 在宿主机终止，容器内只见 http，auto 判断
+   不出），前端另域部署时再把 `CORS_ORIGINS` 设为显式来源（如 `https://plasmid.example.com`），
+   然后 `docker compose up -d backend` 使新环境变量生效（`restart` 不会重读 `.env`）
 
 > 登录态保存在 httpOnly 会话 Cookie（Path=/api，SameSite=Lax）中。前端与 API
 > 同源（经 nginx 反代 `/api`）时无需任何 CORS 配置；前端另域部署时 `CORS_ORIGINS`

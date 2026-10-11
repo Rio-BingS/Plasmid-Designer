@@ -31,7 +31,7 @@ sudo bash deploy/bare/install.sh --project-dir /home/user/plasmid
 ```
 
 安装脚本会自动完成：
-- 安装系统依赖（gcc、make 等）
+- 安装系统依赖（git、curl、gnupg 等；Python 依赖均为预编译 wheel，无需编译器）
 - 安装 Python 3.11（通过 deadsnakes PPA）
 - 安装 Node.js 22 LTS（通过 NodeSource）
 - 安装 Nginx
@@ -42,7 +42,8 @@ sudo bash deploy/bare/install.sh --project-dir /home/user/plasmid
 - 配置 systemd 服务和 Nginx 反向代理
 - 健康检查验证
 
-安装完成后访问 `http://<服务器IP>` 即可使用。
+安装完成后访问 `http://<服务器IP>` 即可使用。后端只监听 `127.0.0.1:8000`，对外统一经 Nginx；
+API 文档 `/docs` 仅对本机与内网地址开放。
 
 ## 手动安装
 
@@ -119,14 +120,14 @@ sudo npm run build
 
 ```bash
 # 从模板复制
-sudo cp deploy/bare/.env.example /opt/plasmid-designer/.env
+sudo cp /opt/plasmid-designer/deploy/bare/.env.example /opt/plasmid-designer/.env
 
-# 生成随机密钥并替换
-SECRET=$(openssl rand -hex 32)
-sudo sed -i "s/change_this_in_production/$SECRET/" /opt/plasmid-designer/.env
+# 模板中 SECRET_KEY 为空，必须写入随机值（留空/占位/过短/低熵后端拒绝启动）
+sudo sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(openssl rand -hex 32)/" /opt/plasmid-designer/.env
 ```
 
-编辑 `/opt/plasmid-designer/.env`，根据需要调整配置。
+编辑 `/opt/plasmid-designer/.env`，根据需要调整配置（管理员引导、邮件渠道、
+`AUTH_COOKIE_SECURE`、`TRUSTED_PROXIES` 等，说明见模板内注释）。
 
 ### 9. 配置 systemd 服务
 
@@ -149,6 +150,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 sudo chown -R plasmid:plasmid /opt/plasmid-designer
+# 751：其他用户只能遍历不能列目录——nginx（www-data）需要穿过目录读取前端 dist
+sudo chmod 751 /opt/plasmid-designer
 sudo chmod 600 /opt/plasmid-designer/.env
 ```
 
@@ -190,7 +193,9 @@ sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your-domain.com
 ```
 
-certbot 会自动修改 Nginx 配置，添加 SSL 证书和 HTTP→HTTPS 重定向。
+certbot 会自动修改 Nginx 配置，添加 SSL 证书和 HTTP→HTTPS 重定向。Nginx 会把
+`X-Forwarded-Proto` 传给后端，`AUTH_COOKIE_SECURE=auto`（默认）即可自动为会话 Cookie
+置 Secure，无需改动。
 
 证书自动续期已由 certbot timer 处理，可通过以下命令确认：
 
@@ -223,10 +228,12 @@ sudo systemctl restart plasmid-backend
 ## 卸载
 
 ```bash
-sudo bash deploy/bare/install.sh --uninstall
+sudo bash deploy/bare/install.sh --uninstall          # 需交互输入 yes 确认
+sudo bash deploy/bare/install.sh --uninstall --yes    # 跳过确认（自动化用）
 ```
 
 这会停止服务、删除 systemd 配置、Nginx 配置、数据库（PostgreSQL 模式）、项目目录和系统用户。
+非交互环境不带 `--yes` 时拒绝执行。
 
 ## PostgreSQL 配置详情
 
@@ -300,6 +307,7 @@ sudo /opt/plasmid-designer/venv/bin/pip install -i https://pypi.tuna.tsinghua.ed
 ```bash
 # 修复项目目录权限
 sudo chown -R plasmid:plasmid /opt/plasmid-designer
+sudo chmod 751 /opt/plasmid-designer
 sudo chmod 600 /opt/plasmid-designer/.env
 ```
 
