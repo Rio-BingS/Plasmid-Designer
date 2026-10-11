@@ -103,6 +103,24 @@ class TestPasswordHashing:
         assert verify_password(prefix + "EXTRA", hashed) is True
         assert verify_password("Q" * 72, hashed) is False
 
+    def test_legacy_passlib_hashes_still_verify(self):
+        """去掉 passlib 后，库里已存的 passlib 哈希仍能校验"""
+        # 由 passlib 1.7.4 CryptContext(schemes=["bcrypt"]) 生成
+        legacy = "$2b$12$U4oWf0Jlpx.Jxnf1aOk7NuAlkEuHKcWp5Me2PoqdCdBi7hMNlsP.O"
+        assert verify_password("LegacyPass123!", legacy) is True
+        assert verify_password("LegacyPass124!", legacy) is False
+        # 旧实现先截到 72 字节（多字节字符边界向前取整）再交给 passlib
+        legacy_long = "$2b$12$mOFVWgyFs65qVXOMvEGiFeSvE.JY.9uzdEzD4m1FxKO3Is6YFlWKO"
+        assert verify_password("a" + "密码" * 30, legacy_long) is True
+        # $2a$ 前缀（其他 bcrypt 实现常见）同样兼容
+        legacy_2a = "$2a$04$udVVjdNbDrbpgQNYgTuNZeXEZLyydrEAQqKNQX.LqOD3gKIHMtoeO"
+        assert verify_password("LegacyPass123!", legacy_2a) is True
+
+    def test_malformed_hash_returns_false(self):
+        """空/非法哈希按校验失败处理，不抛异常"""
+        assert verify_password("x", "") is False
+        assert verify_password("x", "not-a-bcrypt-hash") is False
+
 
 # ==================== JWT Token 测试 ====================
 
