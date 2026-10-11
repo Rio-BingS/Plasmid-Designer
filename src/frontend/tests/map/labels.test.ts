@@ -137,7 +137,8 @@ describe('线性外置标签：无碰撞（属性测试）', () => {
       const inputs = Array.from({ length: randInt(r, 0, 60) }, (_, i) => ({
         id: `x${i}`, text: NAMES[randInt(r, 0, NAMES.length - 1)], x: r() * width, priority: randInt(r, 0, 100),
       }))
-      const res = layoutLinearLabels(inputs, { width, fontSize: 11, maxRows, gap: 4 })
+      const maxShift = r() < 0.5 ? 0 : randInt(r, 10, 150)
+      const res = layoutLinearLabels(inputs, { width, fontSize: 11, maxRows, gap: 4, maxShift })
       expect(res.placed.length + res.hidden.length).toBe(inputs.length)
       expect(res.rows).toBeLessThanOrEqual(maxRows)
       for (const p of res.placed) {
@@ -149,7 +150,22 @@ describe('线性外置标签：无碰撞（属性测试）', () => {
         if (a.row !== b.row) continue
         expect(a.x + a.w <= b.x || b.x + b.w <= a.x).toBe(true)
       }
+      for (const p of res.placed) {
+        const inp = inputs.find((i) => i.id === p.id)!
+        const x0 = Math.min(Math.max(0, inp.x - p.w / 2), width - p.w)
+        expect(Math.abs(p.x - x0)).toBeLessThanOrEqual(maxShift + 1e-6)
+      }
     }
+  })
+
+  it('maxShift：密集位点横向错开，少占行、少隐藏', () => {
+    // 10 个酶挤在 30 px 内（MCS）
+    const inputs = Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, text: 'BamHI', x: 300 + i * 3, priority: 1 }))
+    const strict = layoutLinearLabels(inputs, { width: 800, fontSize: 11, maxRows: 3, gap: 6 })
+    const shifted = layoutLinearLabels(inputs, { width: 800, fontSize: 11, maxRows: 3, gap: 6, maxShift: 120 })
+    expect(strict.hidden.length).toBe(7)
+    expect(shifted.hidden.length).toBe(0)
+    expect(shifted.rows).toBeLessThanOrEqual(3)
   })
 })
 
