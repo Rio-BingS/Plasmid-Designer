@@ -7,6 +7,7 @@ import type { Range } from './types'
 import type { MapStore } from './store'
 import { normPos, rangeLength } from './core/coords'
 import { FEATURE_TYPE_LABELS } from './core/palette'
+import { blockedText } from './core/enzymes'
 
 export interface HitInfo {
   kind: 'feature' | 'enzyme' | 'orf' | 'primer' | 'search'
@@ -49,6 +50,9 @@ export function resolveHit(store: MapStore, key: string | null | undefined): Hit
     const range = { start: site.position, end: circ ? normPos(site.position + len - 1, L) : Math.min(L, site.position + len - 1) }
     const ends = e.ends === 'blunt' ? '平端' : `${e.ends} 突出${e.overhang ? ` ${e.overhang}` : ''}`
     const lines = [`${e.recognition} · ${ends}`, `切点 ${site.cut_top}/${site.cut_bottom} · 共切 ${e.cut_count} 次${e.cut_count === 1 ? '（单切点）' : ''}`]
+    // 位点级突出端（IIS 型酶每个位点的 4 nt 不同）
+    if (site.overhang && site.overhang !== e.overhang) lines.push(`本位点突出端 ${site.overhang}`)
+    if (site.blocked_by?.length) lines.push(`⚠ ${blockedText(site.blocked_by)}（dam+/dcm+ 菌株中不切）`)
     if (e.methylation?.length) lines.push(`甲基化敏感：${e.methylation.join(', ')}`)
     return {
       kind: 'enzyme', title: e.name, lines, range,
