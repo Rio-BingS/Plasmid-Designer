@@ -158,7 +158,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | POST | `/api/analysis/restriction-sites` | 限制性酶切位点 |
 | POST | `/api/analysis/orfs` | ORF 预测 |
 | POST | `/api/analysis/gc-analysis` | GC 含量分析 |
-| POST | `/api/analysis/digest` | 酶切消化模拟（单/双酶） |
+| POST | `/api/analysis/digest` | 酶切消化模拟（单/双酶；可选 `circular` 按环状质粒消化，默认线性） |
 | POST | `/api/analysis/compatibility` | 克隆兼容性检查 |
 | GET | `/api/analysis/enzymes` | 酶列表 |
 | GET | `/api/analysis/export/formats` | 导出格式列表 |
