@@ -85,7 +85,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 提交/推送仍必须走 git-commit-style skill 的完整流程：自审 diff（调试残留/敏感
   信息/超范围改动）、Conventional Commits、push 前 `git pull --rebase` 并展示
   `git log origin/main..HEAD`；`.env`、密钥、密码、token 绝不提交
-- 版本发布（升 APP_VERSION、打 tag、`push --follow-tags`）不属于上述授权，
+- 版本发布（升版本号 `core/_version.py` + package.json、打 tag、`push --follow-tags`）不属于上述授权，
   仍需用户明确发起（如「发版」「打个 tag」）
 
 ## 关键机制（改代码前必读）
