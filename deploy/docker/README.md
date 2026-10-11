@@ -436,6 +436,9 @@ server {
 ```
 
 3. `nginx -t && nginx -s reload`
+   （Cloudflare 免费版单请求体上限 100 MB、源站响应超时 100 秒：批量测序页已自动把
+   文件切成 ≤90 MB 的分块上传，分析超过 `SEQUENCING_BATCH_FINALIZE_WAIT`（默认 60 秒）
+   自动转为轮询，Cloudflare 侧无需改设置；分块暂存在具名卷 `batch-uploads`）
 4. 会话 Cookie 的 Secure 标记：容器 nginx 只信任来自 docker 网桥/本机的前置，透传其
    `X-Forwarded-Proto`（其余来源一律按本连接的 http 处理，防伪造），所以上面示例里的
    `proxy_set_header X-Forwarded-Proto $scheme;` 不能省，`AUTH_COOKIE_SECURE=auto`

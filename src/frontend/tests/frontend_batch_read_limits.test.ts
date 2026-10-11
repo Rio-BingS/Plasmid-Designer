@@ -45,6 +45,7 @@ function adminSettings(overrides: Partial<api.AdminSettings> = {}): api.AdminSet
     batch_read_limit_hard_max: { max_reads_per_group: 384, max_total_reads: 5000 },
     batch_max_files: 400,
     batch_upload_max_mb: 500,
+    batch_session_max_mb: 2048,
     ...overrides
   }
 }
@@ -101,6 +102,9 @@ describe('AdminView 批量 read 上限', () => {
     expect(adminTotal.placeholder).toBe('默认 240')
     expect(w.text()).toContain('500 MB')
     expect(w.text()).toContain('400 个文件')
+    // 批量页自动分块上传：管理员看到的是单批总体积上限
+    expect(w.text()).toContain('自动分批上传')
+    expect(w.text()).toContain('2048 MB')
   })
 
   it('保存时提交三个分组的两项上限，空白提交 null', async () => {
@@ -174,7 +178,10 @@ describe('BatchSequencingView 本账号 read 上限提示', () => {
     store.siteConfig = {
       registration_open: true, email_verification_required: false, tier: 'user',
       features: { anonymous: [], user: [] }, effective_features: [],
-      batch_read_limits: { max_reads_per_group: 48, max_total_reads: 900, max_files: 400, max_upload_mb: 500 }
+      batch_read_limits: {
+        max_reads_per_group: 48, max_total_reads: 900, max_files: 400, max_upload_mb: 500,
+        chunk_max_files: 200, chunk_max_mb: 90, session_max_mb: 2048
+      }
     }
     const w = mountBatch()
     await flushPromises()
@@ -182,6 +189,10 @@ describe('BatchSequencingView 本账号 read 上限提示', () => {
     expect(note.exists()).toBe(true)
     expect(note.text()).toContain('本账号单批最多 900 条 read')
     expect(note.text()).toContain('每组最多 48 条')
+    // 文件数与单请求体积不再限制批次：提示自动分批与整批体积上限
+    expect(note.text()).toContain('文件会自动分批上传')
+    expect(note.text()).toContain('2048 MB')
+    expect(note.text()).not.toContain('400 个文件')
   })
 
   it('旧后端未下发时不显示', () => {

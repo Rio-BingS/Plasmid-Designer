@@ -21,6 +21,14 @@
   末行打印失败个数。依赖「返回 0 即成功」的调用方请把 3 视为「部分失败、需人工
   查看批次总览.txt」。「无法判定」、缺图谱等数据结论不算失败，仍返回 0；致命错误
   （1）与参数用法错误（2）不变，`--dry-run` 恒为 0。
+- 批量测序改为分块上传：Docker 需重新构建后端镜像（预建暂存目录）并按新的
+  `docker-compose.yml` 启动，会新建具名卷 `batch-uploads`；裸机部署须同步
+  `deploy/bare/nginx.conf` 新增的 `/api/sequencing/batch-sessions` 块（100m、
+  读超时 120s），暂存目录默认 `$DATA_DIR/batch_uploads`，服务用户须可写。
+  前置在 Cloudflare 之后时无需改 Cloudflare 设置：单个请求 ≤90 MB，分析超过
+  60 秒自动转轮询，不会撞上 100 秒超时。磁盘最坏占用约为
+  `SEQUENCING_BATCH_SESSIONS_TOTAL × SEQUENCING_BATCH_SESSION_MAX_MB`（默认 16 × 2 GB），
+  空间紧张时调小这两项。
 
 ### 新增
 
@@ -35,12 +43,23 @@
   生效值也按它截断。
 - `GET /api/auth/site-config` 新增可选字段 `batch_read_limits`（当前账号的生效
   上限），批量测序页据此显示「本账号单批最多 N 条 read」。
+- 批量测序分块上传：新增 `/api/sequencing/batch-sessions` 系列接口（建会话、追加
+  分块、提交分析、查询、取消），批量测序页自动把文件切成 ≤90 MB / ≤200 个的分块
+  依次上传并显示「上传中 3/7」进度，失败分块自动重试，取消即删除服务器暂存；
+  服务器拼成一个批次分析一次，结果与单请求入口一致。超过 Cloudflare 免费版
+  100 MB 请求体上限的批次不再被页面拦截。新环境变量
+  `SEQUENCING_BATCH_SESSION_MAX_MB`（单批体积，默认 2048）、
+  `SEQUENCING_BATCH_SESSIONS_PER_OWNER` / `SEQUENCING_BATCH_SESSIONS_TOTAL`
+  （同时进行中的会话，默认 2 / 16）、`SEQUENCING_BATCH_FINALIZE_WAIT`（默认 60 秒）、
+  `SEQUENCING_BATCH_SESSION_DIR`（暂存目录）。site-config 的 `batch_read_limits`
+  附加 `chunk_max_files`、`chunk_max_mb`、`session_max_mb`。
 
 ### 变更
 
 - 批量测序超出 read 上限时，413 提示写明生效的上限值及其来源（个人设置 / 分组
-  设置 / 服务器默认 / 安全上限）。单次上传总体积 500 MB 与单次最多 400 个文件的
-  限制不变，调高 read 上限后可能先触发。
+  设置 / 服务器默认 / 安全上限）。read 上限成为批次的唯一规模上限：批量测序页
+  不再受单次 400 个文件与 500 MB 限制（这两项只约束保留的单请求接口
+  `POST /api/sequencing/analyze-batch`），单批体积改由 `SEQUENCING_BATCH_SESSION_MAX_MB` 约束。
 
 ### 修复
 

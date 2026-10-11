@@ -53,6 +53,8 @@ class AdminSettingsResponse(BaseModel):
     batch_read_limit_hard_max: Dict[str, int] = {}
     batch_max_files: int = 0
     batch_upload_max_mb: int = 0
+    # 分块上传的批次级体积上限（批量页实际生效；上面两项只约束单请求入口）
+    batch_session_max_mb: int = 0
 
 
 class AdminUserUpdate(BaseModel):
@@ -82,6 +84,7 @@ class AdminUserInfo(BaseModel):
 # ==================== 站点设置 ====================
 
 def _settings_response(s: dict) -> AdminSettingsResponse:
+    from app import sequencing_upload_sessions as sessions
     from app.routes import sequencing_routes as sr
 
     return AdminSettingsResponse(
@@ -99,6 +102,7 @@ def _settings_response(s: dict) -> AdminSettingsResponse:
         batch_read_limit_hard_max={f: brl.hard_max(f) for f in brl.FIELDS},
         batch_max_files=sr.MAX_BATCH_FILES,
         batch_upload_max_mb=sr.MAX_BATCH_REQUEST_BYTES // (1024 * 1024),
+        batch_session_max_mb=sessions.SESSION_MAX_BYTES // (1024 * 1024),
     )
 
 
