@@ -90,6 +90,13 @@ MAX_TRACE_STORED = 40                 # 峰图原始数据体积大，只保留�
 MAX_BATCH_FILES = 400                 # 批量单次最多 400 个文件
 MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
 MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分组
+# 审查 02 M6：批量此前只限文件数与分组数，一个分组可塞近 400 条 read
+# （200 kb 参考约 6 s/条），单请求可占住并发槽数十分钟。每组默认沿用
+# 单样品的 MAX_FILES，整批参与比对的 read 总数另设上限，均可经环境变量调整
+MAX_BATCH_READS_PER_GROUP = max(1, int(os.environ.get(
+    "SEQUENCING_BATCH_MAX_READS_PER_GROUP", str(MAX_FILES))))
+MAX_BATCH_TOTAL_READS = max(1, int(os.environ.get(
+    "SEQUENCING_BATCH_MAX_TOTAL_READS", "240")))
 ANALYSIS_TTL = 15 * 60                # 分析记录 15 分钟后自动删除
 BATCH_TTL = 15 * 60                   # 批量整理包同样 15 分钟后清理
 MAX_BATCH_CACHE_BYTES = 256 * 1024 * 1024   # 整理包缓存上限（超出则本次不提供下载）
@@ -539,6 +546,7 @@ def _run_batch(
         if len(ordered) > MAX_BATCH_PLASMIDS:
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
         groups = plasmid_groups(ordered, per_plasmid)
+    _check_batch_read_caps(groups)
 
     def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
         aid, _tok, rec = _register_analysis(
@@ -551,6 +559,28 @@ def _run_batch(
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
+
+
+def _check_batch_read_caps(groups: List[Dict]) -> None:
+    """按分组统计将参与比对的 read 数，超限在比对前拒绝（413）。
+
+    只计有参考图谱的分组（无图谱的分组不跑比对，不消耗计算）。"""
+    analyzable = [g for g in groups if g["reference"] and g["reads"]]
+    for g in analyzable:
+        n = len(g["reads"])
+        if n > MAX_BATCH_READS_PER_GROUP:
+            label = f"{g['clone']} {g['plasmid']}".strip() or g["plasmid"]
+            raise HTTPException(
+                status_code=413,
+                detail=f"分组「{label[:60]}」匹配到 {n} 条测序 read，超过每组上限"
+                       f"（{MAX_BATCH_READS_PER_GROUP} 条）：请检查信息表引物列或文件名归组，"
+                       "或将该质粒拆分后单独分析")
+    total = sum(len(g["reads"]) for g in analyzable)
+    if total > MAX_BATCH_TOTAL_READS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"本批次共有 {total} 条测序 read 需要比对，超过单次上限"
+                   f"（{MAX_BATCH_TOTAL_READS} 条）：请拆分为多个批次提交")
 
 
 @router.post(
