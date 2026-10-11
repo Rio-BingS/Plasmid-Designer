@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { currentAuthEpoch, notifySessionExpired } from './session'
 import type { DesignRequest, DesignResult, VectorInfo, CodonTable } from '@/types'
+import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
 const API_BASE = '/api'
 
@@ -374,8 +375,13 @@ export interface SiteConfig {
 export interface BatchReadLimitsInfo {
   max_reads_per_group: number
   max_total_reads: number
+  /** 单请求入口的文件数 / 总体积上限（批量页走分块上传，不受这两项约束） */
   max_files: number
   max_upload_mb: number
+  /** 分块上传：单个分块的文件数 / 体积上限与整批体积上限（旧后端无此字段） */
+  chunk_max_files?: number
+  chunk_max_mb?: number
+  session_max_mb?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -419,6 +425,7 @@ export interface AdminSettings {
   batch_read_limit_hard_max?: { max_reads_per_group: number; max_total_reads: number }
   batch_max_files?: number
   batch_upload_max_mb?: number
+  batch_session_max_mb?: number
 }
 
 export type AdminSettingsPatch = Partial<Omit<AdminSettings, 'batch_read_limits'>> & {
@@ -897,7 +904,10 @@ export async function analyzeSequencingBatch(
   if (excel) form.append('excel', excel, excel.name)
   form.append('min_q', String(minQ))
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
-  const data = response.data as SequencingBatchResult
+  return rememberBatchTokens(response.data as SequencingBatchResult)
+}
+
+function rememberBatchTokens(data: SequencingBatchResult): SequencingBatchResult {
   // 终审 B-02/B-03：匿名批量下发整批令牌——该批每条记录共用它（详情/下载）
   if (data?.access_token) {
     for (const it of data.items || []) {
@@ -907,6 +917,69 @@ export async function analyzeSequencingBatch(
     if (data.batch_id) rememberAnalysisToken(data.batch_id, data.access_token)
   }
   return data
+}
+
+function sessionHeaders(token?: string): Record<string, string> | undefined {
+  return token ? { 'X-Access-Token': token } : undefined
+}
+
+/** 分块上传会话的 axios 传输层（见 utils/chunkedUpload.ts） */
+export const batchSessionTransport: ChunkedTransport<SequencingBatchResult> = {
+  async create(manifest, excel) {
+    const form = new FormData()
+    form.append('manifest', JSON.stringify(manifest))
+    if (excel) form.append('excel', excel, excel.name)
+    const response = await api.post('/sequencing/batch-sessions', form, { timeout: 120000 })
+    return response.data
+  },
+  async upload(sessionId, files, index, token, signal) {
+    const form = new FormData()
+    files.forEach((f) => form.append('files', f, f.name))
+    form.append('chunk_index', String(index))
+    // 单块 ≤90 MB：慢速上行（~3 Mbps）也能在 5 分钟内传完
+    const response = await api.post(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}/files`, form, {
+      timeout: 300000,
+      headers: sessionHeaders(token),
+      signal
+    })
+    return response.data
+  },
+  async finalize(sessionId, minQ, token) {
+    const form = new FormData()
+    form.append('min_q', String(minQ))
+    // 服务器最多等 60 秒，仍未完成返回 202 转轮询（Cloudflare 源站超时 100 秒）
+    const response = await api.post(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}/finalize`, form, {
+      timeout: 95000,
+      headers: sessionHeaders(token),
+      validateStatus: (s) => s === 200 || s === 202
+    })
+    return { status: response.status, data: response.data }
+  },
+  async status(sessionId, token) {
+    const response = await api.get(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}`, {
+      timeout: 30000,
+      headers: sessionHeaders(token)
+    })
+    return response.data
+  },
+  async abort(sessionId, token) {
+    await api.delete(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}`, {
+      timeout: 30000,
+      headers: sessionHeaders(token)
+    })
+  }
+}
+
+/** 批量测序分析（分块上传）：文件自动按 ≤90 MB / ≤200 个切成多个请求依次上传，
+ *  服务器拼成一个批次分析一次；结果与 analyzeSequencingBatch 相同 */
+export async function analyzeSequencingBatchChunked(
+  files: File[],
+  excel: File | null,
+  minQ = 20,
+  opts: ChunkedOptions = {}
+): Promise<SequencingBatchResult> {
+  const data = await runChunkedBatch(files, excel, minQ, batchSessionTransport, opts)
+  return rememberBatchTokens(data)
 }
 
 /** 下载批量分析的整理包：按质粒/克隆归档的原始文件副本 + 各组分析报告 +
