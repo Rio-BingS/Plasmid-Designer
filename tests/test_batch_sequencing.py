@@ -1056,3 +1056,105 @@ def test_write_back_locked_excel_keeps_original_and_explains(tmp_path, monkeypat
     out = data_dir / "测序分析"
     assert (out / "TST" / "正确" / "T1.ab1").exists()
     assert (out / "测序_原始备份.xlsx").read_bytes() == original
+
+
+# ---------------------------------------------------------------- 退出码
+
+
+def _write_mixed_inputs(data_dir: Path, broken: bool):
+    """TST 正常可判定、NOREF 缺图谱（无法判定，属结果）；broken 时再加一个
+    参考序列过短、管线报「分析失败」的 BAD"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["TST", "T1", None])
+    ws.append(["NOREF", "N1", None])
+    if broken:
+        ws.append(["BAD", "B1", None])
+    wb.save(data_dir / "测序.xlsx")
+    (data_dir / "TST.fasta").write_text(f">TST\n{REF}\n", encoding="utf-8")
+    (data_dir / "T1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+    (data_dir / "N1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+    if broken:
+        (data_dir / "BAD.fasta").write_text(">BAD\nATGAAACGT\n", encoding="utf-8")
+        (data_dir / "B1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+
+
+@pytest.mark.parametrize("extra", [(), ("--no-write-back",)])
+def test_exit_code_zero_when_no_analysis_failed(tmp_path, monkeypatch, capsys, extra):
+    """全部分析完成时返回 0；「无法判定」（缺图谱等数据原因）是结果不是失败"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_mixed_inputs(data_dir, broken=False)
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(data_dir), *extra])
+    assert batch.main() == batch.EXIT_OK == 0
+    out = data_dir / "测序分析"
+    assert (out / "NOREF" / "无法判定" / "N1.ab1").exists()
+    assert "分析失败" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("extra", [(), ("--no-write-back",)])
+def test_exit_code_nonzero_when_analysis_failed(tmp_path, monkeypatch, capsys, extra):
+    """有质粒分析失败时整批照常写出与回填，但返回 EXIT_ANALYSIS_FAILED，
+    并以中文汇总行给出失败个数，调用方不再把部分失败当成全部成功"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_mixed_inputs(data_dir, broken=True)
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(data_dir), *extra])
+    code = batch.main()
+    assert code == batch.EXIT_ANALYSIS_FAILED == 3
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[-1].startswith("× ") and "1 个质粒分析失败" in lines[-1]
+    assert "BAD" in lines[-1] and "退出码 3" in lines[-1]
+    out = data_dir / "测序分析"
+    assert (out / "TST" / "正确" / "T1.ab1").exists()
+    assert (out / "BAD" / "无法判定" / "B1.ab1").exists()
+    cells = {r[0].value: r[2].value for r in
+             openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0].iter_rows(min_row=2)}
+    if extra:
+        assert cells["BAD"] is None
+    else:
+        assert cells["BAD"].startswith("分析失败：")
+
+
+def test_dry_run_exit_code_zero_even_with_failures(tmp_path, monkeypatch):
+    """--dry-run 只是预览，不做判定，退出码恒为 0（致命错误除外）"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_mixed_inputs(data_dir, broken=True)
+    _run(monkeypatch, data_dir)
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(data_dir), "--dry-run"])
+    assert batch.main() == 0
+
+
+@pytest.mark.parametrize("broken,expected", [(False, 0), (True, 3)])
+def test_process_exit_code(tmp_path, broken, expected):
+    """真实进程退出码：命令行入口把 main() 的返回值交给 sys.exit"""
+    import subprocess
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_mixed_inputs(data_dir, broken=broken)
+    proc = subprocess.run(
+        [sys.executable, str(_REPO / "scripts" / "batch_sequencing_report.py"),
+         "--data-dir", str(data_dir), "--no-write-back"],
+        capture_output=True, text=True, encoding="utf-8", timeout=100)
+    assert proc.returncode == expected, proc.stderr
+    assert ("分析失败" in proc.stdout.strip().splitlines()[-1]) == broken
+
+
+def test_fatal_and_usage_exit_codes_unchanged(tmp_path, monkeypatch):
+    """致命错误仍为 SystemExit(中文消息) → 1，参数错误仍为 argparse 的 2；
+    部分失败取 3，不与两者混淆"""
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(tmp_path / "nope")])
+    with pytest.raises(SystemExit) as exc:
+        batch.main()
+    assert isinstance(exc.value.code, str) and "数据文件夹不存在" in exc.value.code
+    monkeypatch.setattr(sys, "argv", ["batch_sequencing_report.py"])
+    with pytest.raises(SystemExit) as exc:
+        batch.main()
+    assert exc.value.code == 2
+    assert batch.EXIT_ANALYSIS_FAILED not in (1, 2)
