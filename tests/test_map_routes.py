@@ -159,3 +159,17 @@ def test_export_genbank_round_trip(client):
     assert f.qualifiers["ApEinfo_fwdcolor"] == ["#abcdef"]
     d["features"][0]["end"] = 999
     assert c.post("/api/map/export/genbank", json=d).status_code == 422
+
+
+def test_vector_map_returns_map_document(client):
+    c, _ = client
+    r = c.get("/api/vectors/pET-28a/map")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    _doc_ok(d)
+    assert d["meta"]["source_format"] == "vector" and d["topology"] == "circular"
+    assert d["features"] and all(f["source"] == "vector" for f in d["features"])
+    kan = next(f for f in d["features"] if f["name"] == "KanR")
+    assert (kan["type"], kan["start"], kan["end"], kan["strand"]) == ("marker", 3995, 4810, 1)
+    assert "enzyme_sites" not in d
+    assert c.get("/api/vectors/nope/map").status_code == 404

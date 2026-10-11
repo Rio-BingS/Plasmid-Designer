@@ -63,8 +63,9 @@ def test_full_sequencing_flow(client, completed_design):
 
     # 图谱数据带酶切位点
     m = client.get(f"/api/design/{design_id}/map").json()
-    assert m["length"] == len(ref)
-    assert isinstance(m["enzyme_sites"], list)
+    assert m["schema"] == "plasmid-map/1"
+    assert m["length"] == len(ref) and m["sequence"] == ref
+    assert isinstance(m["enzymes"], list)
 
     # 构造含 1 个替换的 ab1
     start = (completed_design.get("insert_start") or 1) - 1

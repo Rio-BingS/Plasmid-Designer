@@ -282,28 +282,6 @@ class BatchImportRequest(BaseModel):
     file_paths: List[str] = []
 
 
-# ==================== 质粒图谱 ====================
-
-class EnzymeSite(BaseModel):
-    """酶切位点（1-based）"""
-    name: str
-    position: int
-    strand: str = "+"
-    cut_fwd: int
-    cut_rev: int
-    overhang: Optional[str] = None
-    recognition: Optional[str] = None
-
-
-class PlasmidMapData(BaseModel):
-    """质粒图谱数据"""
-    name: str
-    length: int
-    sequence: Optional[str] = None
-    features: List[Dict] = []
-    enzyme_sites: List[EnzymeSite] = Field(default_factory=list)
-
-
 # ==================== 质粒图谱（契约 plasmid-map/1，docs/MAP.md） ====================
 # 路由直接返回 core.plasmid_map 组装的字典（可选字段缺省即省略，符合契约）；
 # 这些模型用于请求体校验（编辑后重算、导出）与 OpenAPI 文档。
