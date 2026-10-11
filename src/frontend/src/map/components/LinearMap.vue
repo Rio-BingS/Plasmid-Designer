@@ -101,11 +101,15 @@ const MAX_VIEW_CUTS = 300
 const cutOverview = computed(() => overviewCuts(
   (props.showEnzymes ? store.cuts.value : []).filter((c) => c.cut >= vp.value.from && c.cut <= vp.value.to), MAX_VIEW_CUTS))
 const cutsInView = computed(() => cutOverview.value.shown.map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: cutStyle(c) })))
+const ENZ_MAX_ROWS = 5
 const enzLabels = computed(() => {
   if (!store.show.labels || !cutsInView.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
-  return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
-    { width: W.value - 2, fontSize: FONT, maxRows: 4, gap: 6, left: 2 })
+  // 允许酶名横向错开（斜引线连回切点），MCS 一类密集位点不必全部堆成高塔或被隐藏
+  return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, bold: c.style.weight > 400, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
+    { width: W.value - 2, fontSize: FONT, maxRows: ENZ_MAX_ROWS, gap: 6, left: 2, maxShift: 90 })
 })
+/** 酶名行的 y：第 0 行（优先级最高）贴近主轴，往上依次排，引线最短 */
+const enzRowY = (row: number) => layout.value.enzLabelTop + (enzLabels.value.rows - 1 - row) * ENZ_ROW
 const enzStyleByKey = computed(() => new Map(cutsInView.value.map((c) => [c.key, c])))
 
 // ---------------- 额外轨道 ----------------
@@ -231,7 +235,7 @@ const featLabels = computed(() => {
   if (!store.show.labels) return { placed: [], hidden: [] as string[], rows: 0 }
   return layoutLinearLabels(featGeoms.value.filter((g) => !g.inside).map((g) => ({
     id: g.key, text: g.f.name, x: g.cx, priority: featurePriority(g.f.type, rangeLength(g.f, L.value, store.circular.value)),
-  })), { width: W.value - 2, fontSize: FONT, maxRows: 4, gap: 8, left: 2 })
+  })), { width: W.value - 2, fontSize: FONT, maxRows: 5, gap: 8, left: 2, maxShift: 60 })
 })
 const featByKey = computed(() => new Map(featGeoms.value.map((g) => [g.key, g])))
 
@@ -442,8 +446,9 @@ defineExpose({ svgEl, zoomBy, fitAll, setViewport })
 
       <!-- 酶切标签 + 引线 -->
       <g v-for="l in enzLabels.placed" :key="l.id" :data-hit="l.id" class="lmap-enz-label">
-        <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="layout.cutTop" :y2="layout.enzLabelTop + l.row * ENZ_ROW + ENZ_ROW - 2" stroke="#c5c9ce" stroke-width="0.7" />
-        <text :x="l.x" :y="layout.enzLabelTop + l.row * ENZ_ROW + 10" :font-size="FONT"
+        <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="layout.cutTop" :y2="enzRowY(l.row) + ENZ_ROW - 2" stroke="#c5c9ce" stroke-width="0.7" />
+        <text :x="l.x" :y="enzRowY(l.row) + 10" :font-size="FONT" class="lmap-enz-text"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke"
               :fill="enzStyleByKey.get(l.id)?.style.color" :font-weight="enzStyleByKey.get(l.id)?.style.weight">{{ l.text }}</text>
       </g>
 
@@ -502,7 +507,8 @@ defineExpose({ svgEl, zoomBy, fitAll, setViewport })
       <g v-for="l in featLabels.placed" :key="l.id" :data-hit="l.id" class="lmap-feat-out-g">
         <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="(featByKey.get(l.id)?.y ?? 0) + FEAT_H" :y2="below.labelTop + l.row * 14 + 1"
               stroke="#a5a9ae" stroke-width="0.8" class="lmap-leader" />
-        <text :x="l.x" :y="below.labelTop + l.row * 14 + 11" :font-size="FONT" fill="#333" class="lmap-feat-out">{{ l.text }}</text>
+        <text :x="l.x" :y="below.labelTop + l.row * 14 + 11" :font-size="FONT" fill="#333" class="lmap-feat-out"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">{{ l.text }}</text>
       </g>
 
       <!-- 额外轨道（下方） -->
