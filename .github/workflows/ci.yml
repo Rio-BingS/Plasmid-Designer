@@ -25,10 +25,12 @@ jobs:
           cache: pip
           cache-dependency-path: src/backend/requirements.txt
 
+      # 锁文件含全部传递依赖与 sha256（由 scripts/lock_requirements.sh 从
+      # requirements.in 生成），哈希不符或缺锁即失败
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r src/backend/requirements.txt
+          pip install --require-hashes -r src/backend/requirements.txt
 
       # 每次运行随机生成，不用代码里的开发默认值，也不落进仓库
       - name: Generate SECRET_KEY
@@ -40,12 +42,14 @@ jobs:
       - name: Run tests
         run: python -m pytest tests -q -p no:cacheprovider
 
-      # 阻断：后端依赖全部精确 pin，出现已知漏洞应立即升级
+      # 阻断：审计锁文件里的确切版本（含传递依赖），不重新解析；
+      # 出现已知漏洞应立即升级并重新生成锁文件
       - name: pip-audit
         run: |
           pip install pip-audit
-          pip-audit -r src/backend/requirements.txt
-          pip-audit -r deploy/docker/requirements.backend.txt
+          pip-audit --disable-pip --require-hashes \
+            -r src/backend/requirements.txt \
+            -r deploy/docker/requirements.backend.txt
 
   frontend:
     name: Frontend (vue-tsc + vitest + npm audit)

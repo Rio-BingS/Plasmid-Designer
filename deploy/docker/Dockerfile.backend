@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # System dependencies — curl: 健康检查 + tracy 下载。
-# 注意：依赖清单必须与 requirements.backend.txt 一致，不要在此手工罗列包名
+# 注意：Python 依赖只从锁文件 requirements.backend.txt 安装，不要在此手工罗列包名
 # （此前手工列表与清单脱节，缺 pyyaml 导致容器启动即崩）。
 # 全部依赖均有官方 wheel，无需 gcc 等编译工具链
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,13 +18,13 @@ RUN groupadd -r plasmid && useradd -r -g plasmid plasmid
 ARG PIP_INDEX_URL=https://pypi.org/simple/
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 
-# Install Python dependencies（唯一来源 = requirements.backend.txt）
+# Install Python dependencies（唯一来源 = 锁文件 requirements.backend.txt）
+# 锁文件含全部传递依赖（含 biopython 及其 numpy）与 sha256，--require-hashes
+# 下任何未锁定或哈希不符的包都会让构建失败；源清单 requirements.backend.in
+# 改动后用 scripts/lock_requirements.sh 重新生成
 COPY deploy/docker/requirements.backend.txt ./requirements.txt
-RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
-
-# biopython：Sanger 测序分析（ab1 解析 + 序列比对）。其余 numpy/pandas/scipy/
-# matplotlib/primer3-py/pydna 等后端代码均未 import，不再安装（拖慢构建且徒增失败面）
-RUN pip install --no-cache-dir --timeout=300 --retries=5 "biopython==1.88"
+RUN pip install --no-cache-dir --timeout=300 --retries=5 \
+    --require-hashes -r requirements.txt
 
 # Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
 # 下载预编译二进制并按固定 sha256 校验，不符或下载失败即中止构建——
