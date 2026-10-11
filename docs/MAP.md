@@ -26,7 +26,13 @@
   `strand=±1`。`recognition` 用 NEB 记法（`G^AATTC`、`GGTCTC(1/5)`）；Type IIS 的
   `overhang` 是 REBASE 的 `NNNN`（酶级模板）；每个粘端位点另有 `sites[].overhang`：
   两切点之间的**实际碱基**，按正向链 5'→3' 读（Type IIS、AvaI 等简并识别的
-  突出端因位点而异；平末端位点省略）。`methylation` 暂不提供。
+  突出端因位点而异；平末端位点省略）。
+- Dam / Dcm 甲基化：对 E. coli Dam（G**A**TC）或 Dcm（C**C**WGG）重叠敏感的酶带
+  `methylation: ["dam"|"dcm"]`；位点所在上下文会形成阻断性甲基化时给出
+  `sites[].blocked_by`（如 XbaI 的 `TCTAGAtc` / `gaTCTAGA`、StuI 的 `AGGCCTgg`）。
+  `cut_count` 仍统计全部位点。敏感性表人工整理自 NEB「Dam and Dcm Methylases of
+  E. coli」（数据源自 REBASE，见 `core/plasmid_map/methylation.py`），只收表中明确
+  列出的酶；需要多处重叠才阻断的 Acc65I / BsaHI / BslI 不标。
 - `orfs[]`：ATG 起始、遇终止结束、只报最上游 ATG（不报嵌套）；`aa_length` 不含终止
   密码子；坐标含终止密码子；环状分子上跨原点的 ORF 报一次。`frame` = 该 ORF 所在链
   （负链按反向互补序列计）起点坐标 mod 3。
