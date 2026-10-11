@@ -1,6 +1,6 @@
 # Plasmid Designer v2
 
-自动化质粒构建设计平台 — 源码与部署配置分离版（当前版本 v2.7.0）
+自动化质粒构建设计平台 — 源码与部署配置分离版（当前版本 v2.9.0）
 
 各版本的变化与升级注意事项见 [CHANGELOG.md](CHANGELOG.md)，升级前请先阅读。
 
@@ -126,7 +126,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | 变量 | 说明 |
 |------|------|
 | `SECRET_KEY` | 必填，`openssl rand -hex 32` 生成；占位/过短/低熵值拒绝启动 |
-| `CORS_ORIGINS` | 前端经 Nginx 同源反代 `/api` 时无需改动；前端另域部署时必须填**显式来源**（逗号分隔或 JSON 数组），通配 `*` 下后端关闭凭证模式，浏览器不会携带会话 Cookie |
+| `CORS_ORIGINS` | 前端经 Nginx 同源反代 `/api` 时无需改动；前端另域部署时必须填**显式来源**（逗号分隔或 JSON 数组），通配 `*` 下后端关闭凭证模式，浏览器不会携带会话 Cookie。会话 Cookie 为 `SameSite=Lax`，只支持与 API **同站**（同一注册域名，如 `app.example.com` 与 `api.example.com`）的另域部署，跨站（不同注册域名）时浏览器不发送 Cookie，登录后仍表现为未登录 |
 | `AUTH_COOKIE_SECURE` | 会话 Cookie 的 Secure 标记：`auto`（默认，按请求协议 / 可信代理的 `X-Forwarded-Proto` 判定）、`true`（HTTPS 在更外层代理终止时必须设）、`false` |
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
@@ -230,7 +230,8 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
 每个登录用户 `SEQUENCING_DB_MAX_RECORDS_PER_OWNER`、匿名记录合计 `SEQUENCING_DB_MAX_ANON_RECORDS`，
 默认各 2000 条，超出只淘汰该桶最旧记录；全库总上限 `SEQUENCING_DB_MAX_RECORDS` 默认 20000，
 超出时先删最旧匿名记录），进程内只保留 15 分钟读取缓存；memory 模式下 15 分钟后过期。
-匿名创建的记录由创建响应下发的 `access_token` 访问，登录用户的记录仅本人与管理员可见。
+匿名创建的记录凭创建响应下发的 `access_token` 访问，令牌只认 `X-Access-Token` 请求头（不接受
+`?token=` 查询参数）；无令牌的遗留匿名记录仅管理员可见；登录用户的记录仅本人与管理员可见。
 
 **批量分析**：归组与结论逻辑在 `core/sanger/batch.py`，逐组分析与整理包（报告/
 归档/回填）在 `app/sequencing_batch.py`、`app/sequencing_report.py`，网页与脚本
@@ -315,8 +316,9 @@ CSRF 检查。
 - **开放注册**：关闭后新用户无法注册，已有账号不受影响；
 - **注册邮箱验证**：开启后注册需输入邮箱收到的 6 位验证码（哈希存储、10 分钟有效、
   60 秒重发冷却），验证成功即登录；存量账号自动回填为已验证，不会被锁死；
-- **功能开放矩阵**：六个功能键（design 引物/序列设计、batch 批量设计、vectors 载体库、
-  sequencing 测序分析、analysis 序列工具、codon 密码子表）按「未登录访客 / 普通用户」
+- **功能开放矩阵**：七个功能键（design 引物/序列设计、batch 批量设计、vectors 载体库、
+  sequencing 测序分析、sequencing_batch 批量测序分析、analysis 序列工具、codon 密码子表）
+  按「未登录访客 / 普通用户」
   两组分别勾选——前端隐藏导航入口并拦截直链路由，后端在 API 层同步拒绝（`require_feature`
   路由依赖，见 `app/gating.py`）。默认全开放（保持既有行为），由管理员自行收紧。
 存储于 `site_settings` 单行表（`app/site_settings.py`，读侧 3 秒 TTL 缓存）；
@@ -366,8 +368,8 @@ npm run test:run
 npm run type-check
 ```
 
-基线（截至 v2.7.0）：后端 631 passed / 6 skipped（跳过项为本机真实 .ab1 回归集等
-skip-if-missing 用例），前端 vitest 181 passed。CI（`.github/workflows/ci.yml`）在 push main
+基线（截至 v2.9.0）：后端 898 passed / 6 skipped（跳过项为本机真实 .ab1 回归集等
+skip-if-missing 用例），前端 vitest 208 passed。CI（`.github/workflows/ci.yml`）在 push main
 与 PR 时跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 ## 模块接线状态
