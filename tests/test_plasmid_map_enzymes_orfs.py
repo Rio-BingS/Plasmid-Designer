@@ -39,6 +39,7 @@ def test_enzyme_record_shape_and_overhangs():
     assert (ecori["recognition"], ecori["ends"], ecori["overhang"]) == ("G^AATTC", "5'", "AATT")
     assert ecori["sites"] == [{"position": 5, "cut_top": 5, "cut_bottom": 9, "strand": 1,
                                "overhang": "AATT"}]
+    assert "methylation" not in ecori
     bsai = scan_enzyme(seq, "BsaI", circular=False)
     assert bsai["recognition"] == "GGTCTC(1/5)" and bsai["ends"] == "5'"
     fwd, rev = bsai["sites"]
@@ -104,6 +105,50 @@ def test_site_overhang_across_origin():
     s = e["sites"][0]
     assert s["overhang"] == "TGCA"
     assert (s["cut_top"], s["cut_bottom"]) == (len(seq), 4)
+
+
+def test_methylation_dam_dcm_blocking():
+    from core.plasmid_map.methylation import methylation_kinds
+
+    assert methylation_kinds("XbaI") == ["dam"] and methylation_kinds("StuI") == ["dcm"]
+    assert methylation_kinds("EcoRI") is None and methylation_kinds("BamHI") is None
+    # XbaI：后接 TC 或前接 GA（GATC 跨位点边界）被 Dam 阻断，否则不受影响
+    seq = "AAA" + "TCTAGATC" + "AAAA" + "GATCTAGA" + "AAAA" + "TCTAGAAA"
+    x = scan_enzyme(seq, "XbaI", circular=False)
+    assert x["methylation"] == ["dam"]
+    assert [s.get("blocked_by") for s in x["sites"]] == [["dam"], ["dam"], None]
+    # ClaI：ATCGATC / GATCGAT
+    c = scan_enzyme("AA" + "ATCGATC" + "AA" + "ATCGATA" + "AA", "ClaI", circular=False)
+    assert [s.get("blocked_by") for s in c["sites"]] == [["dam"], None]
+    # StuI：AGGCCTGG（CCTGG 为 Dcm 位点）；BamHI 含 GATC 但不敏感
+    st = scan_enzyme("AA" + "AGGCCTGG" + "AA" + "AGGCCTAA" + "AA", "StuI", circular=False)
+    assert st["methylation"] == ["dcm"]
+    assert [s.get("blocked_by") for s in st["sites"]] == [["dcm"], None]
+    bam = scan_enzyme("AAGGATCCAA", "BamHI", circular=False)
+    assert "methylation" not in bam and "blocked_by" not in bam["sites"][0]
+    # 非回文 BsaI：反向位点 GAGACC 后接 WGG（CCWGG 跨边界）
+    b = scan_enzyme("A" * 10 + "GAGACCAGG" + "A" * 10 + "GAGACCTAA" + "A" * 10,
+                    "BsaI", circular=False)
+    assert b["methylation"] == ["dcm"]
+    assert [s.get("blocked_by") for s in b["sites"]] == [["dcm"], None]
+    # 正向位点 GGTCTC 前接 CCW：CCWGGTCTC
+    b2 = scan_enzyme("A" * 10 + "CCTGGTCTC" + "A" * 20, "BsaI", circular=False)
+    assert b2["sites"][0]["blocked_by"] == ["dcm"]
+
+
+def test_methylation_context_across_origin():
+    # 环状：XbaI 在末尾，阻断所需的 TC 在开头
+    seq = "TC" + "G" * 30 + "TCTAGA"
+    circ = scan_enzyme(seq, "XbaI", circular=True)
+    assert circ["sites"][0]["blocked_by"] == ["dam"]
+    lin = scan_enzyme(seq + "A", "XbaI", circular=False)
+    assert "blocked_by" not in lin["sites"][0]
+
+
+def test_puc19_xbai_not_dam_blocked():
+    # pUC19 MCS 的 XbaI（TCTAGAGTC）不与 GATC 重叠，常规菌株质粒可切
+    x = scan_enzyme(_vector_seq("pUC19"), "XbaI", circular=True)
+    assert x["cut_count"] == 1 and "blocked_by" not in x["sites"][0]
 
 
 # ==================== ORF ====================
