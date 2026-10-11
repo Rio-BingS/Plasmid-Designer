@@ -6,8 +6,9 @@
 
 - POST /api/sequencing/analyze：单样品入口（1 个参考序列 + 它的 .ab1）
 - POST /api/sequencing/analyze-batch：批量入口（Excel 信息表/整个交付文件夹
-  里的多个质粒，逐质粒归组分析，返回每质粒一句话结论；逻辑与
-  scripts/batch_sequencing_report.py 共用 core/sanger/batch.py）。
+  里的多个质粒，逐质粒归组分析，返回每质粒一句话结论；归组、分析与
+  整理包逻辑与 scripts/batch_sequencing_report.py 共用 core/sanger/batch.py、
+  app/sequencing_batch.py、app/sequencing_report.py）。
   信息表带「克隆号」列时为克隆模式：一个质粒的多个克隆每行一个、独立分析
   （ab1 文件名 = 克隆号-引物，如 S99678-M13F-75.ab1），质粒名称支持两段式
   部分匹配（"17648 MBYSTC" 可只写 "17648" / "MBYSTC" / 全名）。
@@ -57,10 +58,14 @@ from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
 from app.gating import require_feature
 from app import sequencing_store
+from app.sequencing_batch import (
+    batch_payload, group_batch_uploads, plasmid_groups, reference_circular,
+    run_batch_groups,
+)
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.sanger.batch import (
-    REF_EXTS, READ_EXTS, excel_conclusion, load_excel, match_clone_files,
-    match_files, norm_stem, rows_have_clones,
+    REF_EXTS, READ_EXTS, load_excel, match_clone_files, norm_stem,
+    rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
 from core.sanger.reference_parser import parse_reference_topology
@@ -432,72 +437,27 @@ async def analyze_sequencing_upload(
                                    circular=_reference_circular(topology))
 
 
-def _reference_circular(topology: Optional[bool]) -> bool:
-    """参考拓扑 → 是否按环状比对：文件明确标 linear 才按线性；标 circular
-    或未标明（FASTA）按环状——测序验证的参考绝大多数是质粒，且环状比对
-    对不跨原点的 read 结果与线性完全一致，误判为环状的代价最低。"""
-    return topology is not False
+# 参考拓扑判定与批量归组/逐组分析与离线脚本共用 app.sequencing_batch
+_reference_circular = reference_circular
 
 
 # ---------------------------------------------------------------- 批量分析（独立入口）
 
 
-def _group_batch_uploads(
-    reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]]
-):
-    """把上传的 reads/refs 归组到各质粒
-
-    reads/refs 每项：{"name", "ext", "stem", "bytes"}。
-    带信息表（rows 非 None）时与离线脚本同一实现（core.sanger.match_files：
-    引物列→reads、质粒名称→图谱）；无信息表时按包含关系归组——每个图谱
-    自成一个质粒，测序文件名主干包含且仅包含一个图谱主干时归入该质粒。
-
-    返回 (ordered_names, per_plasmid, unmatched)：
-    per_plasmid: 质粒名 -> {"reference": {"file","how"}|None, "reads": [{"file","how"}]}
-    """
-    if rows is not None:
-        per_plasmid, unmatched = match_files(rows, reads + refs)
-        ordered = [r["name"] for r in rows]
-        ordered += [n for n in per_plasmid if n not in set(ordered)]
-        return ordered, per_plasmid, unmatched
-
-    per_plasmid: Dict[str, Dict] = {}
-    unmatched: List[Dict] = []
-    for r in refs:
-        raw_stem = r["name"].rsplit(".", 1)[0] if "." in r["name"] else r["name"]
-        if norm_stem(raw_stem) in {norm_stem(k) for k in per_plasmid}:
-            unmatched.append({"file": r, "reason": "已存在同名图谱，本文件未采用"})
-            continue
-        per_plasmid[raw_stem] = {
-            "reference": {"file": r, "how": "文件名即质粒名"},
-            "reads": [],
-        }
-    for f in reads:
-        cands = {k: norm_stem(k) for k in per_plasmid if norm_stem(k) and norm_stem(k) in f["stem"]}
-        if not cands:
-            unmatched.append({"file": f, "reason": "文件名不包含任何图谱名"})
-            continue
-        # 图谱名互为前缀时（MX 与 MX2）取最长包含（最具体者），仍有并列才放弃
-        best_len = max(len(v) for v in cands.values())
-        best = sorted(k for k, v in cands.items() if len(v) == best_len)
-        if len(best) > 1:
-            unmatched.append({"file": f,
-                              "reason": f"文件名同时包含多个图谱名（{'、'.join(best)[:80]}），无法唯一归组"})
-        else:
-            per_plasmid[best[0]]["reads"].append({"file": f, "how": "文件名包含图谱名"})
-    return list(per_plasmid.keys()), per_plasmid, unmatched
+_group_batch_uploads = group_batch_uploads
 
 
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
     access_token: Optional[str] = None,
-) -> Tuple[Dict, List[Dict], List[Dict]]:
+) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
     信息表带「克隆号」列时为克隆模式（core.sanger.match_clone_files）：一个
     质粒的每个克隆独立成组、独立分析；同一质粒的参考图谱解析一次供其全部
-    克隆复用。否则按质粒归组（旧行为）。
+    克隆复用。否则按质粒归组（旧行为）。归组与逐组分析的实现在
+    app.sequencing_batch（与离线脚本共用），这里只加请求级上限与记录登记。
 
     返回 (payload, groups, raw_unmatched, records_by_id)：payload 为对外 JSON；
     groups 与 raw_unmatched 保留原始文件条目（含字节），供整理包打包使用；
@@ -507,8 +467,6 @@ def _run_batch(
     if len(reads) + len(refs) > MAX_BATCH_FILES:
         raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
 
-    records_by_id: Dict[str, Dict] = {}
-    unmatched: List[Dict] = []
     clone_mode = rows is not None and rows_have_clones(rows)
     if clone_mode:
         groups, unmatched = match_clone_files(rows, reads + refs)
@@ -520,109 +478,19 @@ def _run_batch(
         ordered, per_plasmid, unmatched = _group_batch_uploads(reads, refs, rows)
         if len(ordered) > MAX_BATCH_PLASMIDS:
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
-        groups = [{"plasmid": p, "clone": "", "reference": per_plasmid[p]["reference"],
-                   "reads": per_plasmid[p]["reads"]} for p in ordered]
+        groups = plasmid_groups(ordered, per_plasmid)
 
-    items: List[Dict] = []
-    # 同一质粒多个克隆共用一张图谱：解析结果（或异常）按质粒缓存
-    ref_cache: Dict[str, object] = {}
-    for g in groups:
-        plasmid, clone = g["plasmid"], g["clone"]
-        ref_file = g["reference"]
-        n_reads = len(g["reads"])
-        label = f"{clone} {plasmid}".strip() or plasmid or "sample"
-        item = {
-            "plasmid": plasmid,
-            "clone": clone or None,
-            "status": "analyzed",
-            "conclusion": "",
-            "analysis_id": None,
-            "reference_name": ref_file["file"]["name"] if ref_file else None,
-            "reference_length": None,
-            "read_count": n_reads,
-            "variant_count": 0,
-            "pending_count": 0,
-            "coverage_percent": None,
-        }
-        if ref_file is None and n_reads == 0:
-            item["status"] = "not_found"
-            item["conclusion"] = (f"未找到克隆 {clone} 的图谱或测序文件" if clone
-                                  else "未在文件夹中找到该质粒的测序文件或图谱")
-            items.append(item)
-            continue
+    def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
+        aid, _tok, rec = _register_analysis(
+            label, ref_seq, features, res,
+            owner_id=owner_id, access_token=access_token)
+        return aid, rec
 
-        res = None
-        if ref_file and n_reads:
-            ref_entry = ref_cache.get(plasmid)
-            if ref_entry is None:
-                try:
-                    ref_seq, features, topology = parse_reference_topology(
-                        ref_file["file"]["name"], ref_file["file"]["bytes"])
-                    if len(ref_seq) < 50:
-                        raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
-                    # 终审 C-01：长度上限（批量一次可能解析多个大图谱，
-                    # 无上限时逐个跑局部比对会拖垮整批）
-                    if len(ref_seq) > MAX_REF_BP:
-                        raise ValueError(
-                            f"参考序列过长（{len(ref_seq)} bp > {MAX_REF_BP} bp）："
-                            "请截取待验证区段后重新分析")
-                    ref_entry = (ref_seq, features, _reference_circular(topology))
-                except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
-                    ref_entry = e
-                ref_cache[plasmid] = ref_entry
-            if isinstance(ref_entry, Exception):
-                item["status"] = "failed"
-                item["conclusion"] = f"分析失败：{ref_entry}"
-                items.append(item)
-                continue
-            ref_seq, features, circular = ref_entry
-            try:
-                ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
-                res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular)
-                aid, _tok, rec = _register_analysis(
-                    label, ref_seq, features, res,
-                    owner_id=owner_id, access_token=access_token)
-                item["analysis_id"] = aid
-                # 终审 C-07：打包用的记录快照随批次产出，避免事后回查全局
-                # dict（并发淘汰时会 KeyError）
-                records_by_id[aid] = rec
-                item["reference_length"] = len(ref_seq)
-                confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
-                item["variant_count"] = len(confirmed)
-                item["pending_count"] = len(res["variants"]) - len(confirmed)
-                item["coverage_percent"] = res["consensus"]["coverage_percent"]
-            except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
-                item["status"] = "failed"
-                item["conclusion"] = f"分析失败：{e}"
-                items.append(item)
-                continue
-
-        if ref_file and n_reads == 0:
-            item["status"] = "no_reads"
-            item["conclusion"] = (f"已找到参考图谱，但未匹配到克隆 {clone} 的测序文件（.ab1）"
-                                  if clone else
-                                  "已找到参考图谱，但未匹配到它的测序文件（.ab1）")
-        elif ref_file is None:
-            item["status"] = "no_reference"
-            item["conclusion"] = excel_conclusion(label, None, n_reads, False)
-        else:
-            item["conclusion"] = excel_conclusion(label, res, n_reads, True)
-        items.append(item)
-
-    return {
-        "batch_id": f"seqbatch_{uuid.uuid4().hex[:12]}",
-        "created_at": datetime.now().isoformat(),
-        "min_q": min_q,
-        "excel_mode": rows is not None,
-        "clone_mode": clone_mode,
-        "items": items,
-        "unmatched": [
-            {"filename": u["file"].get("name") or str(u["file"]["path"].name),
-             "reason": u["reason"]}
-            for u in unmatched
-        ],
-        "ignored_files": ignored,
-    }, groups, unmatched, records_by_id
+    items, records_by_id = run_batch_groups(groups, min_q, _register,
+                                            max_ref_bp=MAX_REF_BP)
+    payload = batch_payload(items, unmatched, min_q, rows is not None,
+                            clone_mode, ignored)
+    return payload, groups, unmatched, records_by_id
 
 
 @router.post(
