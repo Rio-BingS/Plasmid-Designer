@@ -192,14 +192,15 @@ class RestrictionSiteAnalyzer:
                 continue
             site_len = len(spec["site"])
             overhang = _OVERHANG_CODE[spec["overhang"]]
-            for a, strand, cut_fwd, cut_rev in scan_sites(
+            for a, strand, cut_fwd, _cut_rev in scan_sites(
                     sequence, spec, palindrome_both_strands=False):
-                # cut_position 沿用历史口径：酶自身结合链上的切点（正链位点
-                # 取正链切点，反链位点取反链切点），表示为「切点前一位」
+                # cut_position 一律取正向链切点的「切点前一位」（1-based），
+                # 与消化模拟及 Bio.Restriction.search 同一口径。此前反链位点
+                # 取反链切点，Type IIS 因突出端长度偏 4 bp（审查 04 M1）
                 sites.append(RestrictionSite(
                     enzyme=enzyme_name,
                     site=spec["site"],
-                    cut_position=cut_fwd if strand == '+' else cut_rev - 1,
+                    cut_position=cut_fwd,
                     recognition_start=a + 1,  # 1-indexed
                     recognition_end=a + site_len,
                     strand=strand,

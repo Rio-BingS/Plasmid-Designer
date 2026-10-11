@@ -294,11 +294,12 @@ class TestUnifiedEnzymeModel:
         assert [s.strand for s in sap] == ['-']
         assert analyzer.is_known("SapI") and not analyzer.is_known("Nope")
 
-    def test_type_iis_reverse_cut_position_unchanged(self):
-        # 反链 BsaI（GAGACC@21）：cut_position 沿用历史口径 a+len-cut_offset
+    def test_type_iis_reverse_cut_position_top_strand(self):
+        # 反链 BsaI（GAGACC@21）：取正向链切点 a+len-(len+5)，与
+        # Bio.Restriction 一致（旧口径 a+len-7 为反链切点，偏 4 bp）
         seq = "A" * 20 + "GAGACC" + "A" * 20
         s = RestrictionSiteAnalyzer().find_sites(seq, ["BsaI"])[0]
-        assert (s.strand, s.cut_position) == ('-', 20 + 6 - 7)
+        assert (s.strand, s.cut_position) == ('-', 20 + 6 - 11)
 
     def test_custom_enzyme_dict_still_supported(self):
         analyzer = RestrictionSiteAnalyzer({"MyEco": ("GAATTC", 1, '5')})
