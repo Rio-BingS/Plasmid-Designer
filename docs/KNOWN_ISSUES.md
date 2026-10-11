@@ -422,3 +422,13 @@
   （含持令牌者）；改造前无 token 的遗留记录保持公开。
 - 前端 A-20：read↔ref 映射用 `query_start/query_end`（比对块绝对坐标），
   不要回退到 `L-1-qi` 镜像式。
+
+---
+
+## 2025 功能完整性核查（原 docs/FIXPLAN.md，✅ 全部完成）
+
+analysis 四个 POST 端点改 JSON body；数据库持久化 id 错位与字段回填；
+SECRET_KEY 改读环境变量；启动无条件 init_db；批量下载/报告走统一恢复路径；
+载体库进程级缓存；移除 `/vectors/import/file` 端点并限制批量导入路径；
+接线请求追踪中间件；实现两个 501 导出桩；删除零引用的 `task_queue.py` 与
+celery/flower。冒烟脚本 `smoke_test.ps1`（20 项）即当时的验证清单。

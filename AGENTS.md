@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 |---|---|
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处） |
 | docs/CACHE.md | 缓存策略与现状 |
-| docs/FIXPLAN.md | 历史修复记录（2025 核查） |
+| docs/KNOWN_ISSUES.md | 未解决挂账 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
 | 部署 | 见 deploy/docker（docker-compose）与 deploy/bare（Ubuntu systemd）各自 README |
 
 ## 已知坑
