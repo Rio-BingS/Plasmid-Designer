@@ -7,8 +7,6 @@ U/T 的处理各不相同）。本模块是唯一权威实现，约定：
 - gc_fraction / gc_percent：G/C 大小写均计入（U 不计），空序列返回 0；
 - CODON_TABLE / CODON_TO_AA / translate：NCBI 标准遗传密码（table 1），
   未识别密码子译为 'X'。
-
-纯标准库、零依赖，可直接被 HF Spaces 裁剪部署复用。
 """
 
 from typing import Dict, List

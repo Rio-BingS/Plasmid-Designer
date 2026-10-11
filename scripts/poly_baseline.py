@@ -1,4 +1,4 @@
-"""poly 优化基线快照（docs/poly-final-actionable-list.md 第 1 步）
+"""poly 优化基线快照
 
 每个 --data-dir 视为一个质粒组：目录顶层恰好 1 个参考图谱（.dna/.gb/.fasta）
 + 若干 .ab1 测序 read（不递归子目录）。逐组调用 core.sanger.pipeline.analyze()，
