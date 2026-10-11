@@ -2,68 +2,74 @@
 
 > 任何 AI 工具（Claude Code / Codex / Cursor / ZCode 等）开始工作前先读完本文件。
 > 深入细节再按「文档索引」按需加载，不要一次读完所有文档。
+> 面向用户的功能说明、API 一览与环境变量见 [README.md](README.md)，本文件不重复。
 
 ## 一句话
 
 Plasmid Designer：自动化质粒构建设计平台。输入氨基酸/DNA 序列 + 选载体 + 选
 「插入片段来源（PCR/全基因合成）」+ 选「克隆方法（Gibson/GoldenGate/双酶切）」→
-密码子优化、引物或合成 oligo 设计、克隆方案、质粒图谱、序列分析、多格式导出。
+密码子优化、引物或合成 oligo 设计、克隆方案、质粒图谱、序列分析、多格式导出；
+另有 Sanger 测序全自动验证（单样品 / 批量交付文件夹，支持环状参考）。
 
 ## 技术栈与代码地图
 
 ```
 src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-reader，tracy 可选）
-  app/main.py               入口 ~120 行（仅组装：CORS/中间件/路由/启动）
-  app/routes/               design|batch|vector|codon|analysis 路由 + models.py（共享 Pydantic 契约）
+  app/main.py               入口（仅组装：CORS/中间件/路由/生命周期）
+  app/routes/               design|batch|vector|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
-  app/auth/                 JWT（passlib+bcrypt）；auth/middleware.py 写 request.state.user 供限流
+  app/auth/                 JWT 会话：httpOnly Cookie（pd_session）+ CsrfMiddleware（X-Requested-With）
+                            + 登出吊销（jti）；middleware.py 写 request.state.user 供限流
+  app/gating.py / features.py / site_settings.py   功能矩阵门控与站点开关（管理员不受限）
   app/cache.py              缓存（内存/Redis 自动降级）；cache_routes 管理端点
+  app/sequencing_store.py   测序分析记录落库（database 模式）
+  app/sequencing_report.py  批量整理包（报告/归档/回填信息表）构建
   core/codon_optimizer.py   ★ 密码子优化 v2（5' ramp/发夹削减/隐蔽motif审查/滑窗精修/score）
   core/primer_designer.py   ★ PCR/Gibson/GoldenGate/双酶切引物 + 合成 oligo（错位交替/Tm均一）
-  core/sequence_analysis.py 酶切位点/ORF/GC 分析器；RESTRICTION_ENZYMES 表
+  core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 表
   core/clone_strategy.py    克隆方案文本生成；core/export_formats.py 多格式导出
   core/vector_library.py    载体库（data/vectors/*.yaml）
-  core/enzyme_sites.py      ★ 内置 ~48 种常用限制酶表，扫描序列生成图谱酶切位点
-  core/sanger/              ★ Sanger 测序全自动管线：abif_reader（SeqIO abi 主路径 +
-                            内置解析器回退）/ aligner（PairwiseAligner 双向判向）/
-                            annotator（突变→特征/氨基酸/移码/酶切位点注释）/
+  core/enzyme_sites.py      ★ 内置 47 种常用限制酶表，扫描序列生成图谱酶切位点
+  core/sanger/              ★ Sanger 测序全自动管线：reference_parser（GenBank/FASTA/.dna +
+                            拓扑）/ abif_reader（SeqIO abi 主路径 + 内置解析器回退）/
+                            aligner（PairwiseAligner 双向判向；环状参考延长比对 + 坐标折回）/
+                            annotator / signal（poly 区峰图信号）/
                             pipeline（修剪→比对→共识投票→自动结论；可选 tracy 解卷积）/
                             batch（批量归组与一句话结论，网页批量端点与离线脚本共用）
-src/frontend/               Vue3+TS+Vite+Pinia（dev 端口 3000，代理 /api → 8000）
-  src/api/index.ts          全部后端调用（axios，40+ 函数）——改后端契约必同步这里
+src/frontend/               Vue3+TS+Vite 8+Pinia（dev 端口 3000，代理 /api → 8000；Node ≥22.12）
+  src/api/index.ts          全部后端调用（axios，withCredentials + X-Requested-With）——改后端契约必同步这里
+  src/api/session.ts        会话代际（迟到的 401 不踢掉新会话）
   src/views/AnalysisView.vue 序列分析页（位点/ORF/GC/消化模拟/兼容性/导出）
-  src/components/EnzymeAutocomplete.vue 可搜索酶选择器（单/多选，全站推广）
-  src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas：wrap特征/双向箭头/
-                                     弧外标签分轨避让/酶位点层/自适应刻度/缩放/exportPng）
-  src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译AA/酶标注/scrollTo联动）
-  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图
-                                     （参考坐标轴：参考行+read 行+四通道峰图条带）/共识差异高亮/导出；
-                                     展示卡拆到 components/sequencing/（PolyCard/ConclusionCards/
-                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap，
-                                     纯展示+defineModel 共享折叠态；scoped 样式随模板各自携带）；
-                                     峰图融合视图状态/交互/绘制在 composables/useSeqViz.ts
-  src/composables/useSeqViz.ts       ★ 峰图融合视图 composable（列宽/可见read/trace缓存状态、
-                                     勾选/缩放/点选交互、drawSeq canvas 绘制；组件侧解构绑定名不变）
-data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML)
+  src/components/EnzymeAutocomplete.vue 可搜索酶选择器（单/多选，全站统一）
+  src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas）
+  src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译/酶标注/scrollTo 联动）
+  src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图；
+                                     展示卡在 components/sequencing/（PolyCard/ConclusionCards/
+                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap）
+  src/composables/useSeqViz.ts       ★ 峰图融合视图（状态/交互/canvas 绘制）
+data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML，带 data_provenance)
 deploy/                     docker-compose / bare(Ubuntu systemd)
-tests/                      后端 pytest（416 用例，含 test_sanger_pipeline/test_enzyme_sites/
-                            test_sequencing_routes/test_batch_sequencing/test_seq_utils/
-                            test_real_data_regression 真实ab1回归(skip-if-missing)；
-                            tests/abif_utils.py 合成 ab1 生成器）+ 前端 vitest（135 用例）
+tests/                      后端 pytest（tests/abif_utils.py 合成 ab1 生成器；
+                            test_real_data_regression 真实 ab1 回归，skip-if-missing）
+src/frontend/tests/         前端 vitest
 ```
 
 ## 命令（Windows Git Bash，均已验证）
 
 ```bash
 # 后端（.venv 是仓库根的正式环境；改 core/app 代码必须重启，未开 --reload）
+# 需先在 src/backend/.env 或环境变量里设置 SECRET_KEY（openssl rand -hex 32），否则拒绝启动
 cd src/backend && ../../.venv/Scripts/python -m uvicorn app.main:app --port 8000
-# 后端测试（conftest.py 已注入路径，无需额外 PYTHONPATH）
+# 后端测试（conftest.py 已注入路径、隔离测试库与随机 SECRET_KEY）
 cd tests && ../.venv/Scripts/python -m pytest -q
 # 前端
-cd src/frontend && npm run dev        # 或 test:run / build（依赖已装）
+cd src/frontend && npm run dev        # 或 test:run / type-check / build
 # 冒烟（20 项，需后端先起）
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
+
+测试基线（截至 v2.7.0）：pytest 631 passed / 6 skipped，vitest 181，vue-tsc 0。
+CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 ## Git 工作流（长期指令，优先于默认保守边界）
 
@@ -78,9 +84,10 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 ## 关键机制（改代码前必读）
 
-- `STORAGE_MODE=memory`（默认，重启丢数据）/ `database`（SQLite 或 PG）；
+- `STORAGE_MODE=database`（默认；SQLite 或 PG）/ `memory`（重启丢数据）；
   设计结果三写：内存 designs_db → storage → 完成态进缓存
-- 密码子优化缓存键含 `algo="v2"` 与 exclude_enzymes——**升级算法必须递增版本**，否则命中旧结果
+- 密码子优化缓存键含 `algo="v2.1"` 与 exclude_enzymes——**改变优化结果口径必须递增版本**，
+  否则命中旧结果（纯 bug 修复且结果不变时不递增）
 - 合成 oligo 设计：错位交替（无完全互补对）、片数恒偶、DNAWorks 式 Tm 均一分片、
   交叉杂交 12mer 检查告警；长度范围 [oligo_length_min, max]（max 硬上限）
 - 插入片段来源与克隆方法正交（`insert_source` × `cloning_method`）；
@@ -88,594 +95,57 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 - 限制性克隆双酶切 `enzyme_5/enzyme_3`；Gibson `gibson_site` 定位重组点；
   合成可 `exclude_enzymes` 让优化序列避开酶位点
 - 酶选择器统一用 `EnzymeAutocomplete`（可按酶名/识别序列搜索；API 失败回退内置酶表）
+- 认证：浏览器只走 httpOnly 会话 Cookie，前端不持有令牌；Cookie 认证的写请求缺
+  `X-Requested-With` 一律 403（登录/注册/验证/重发豁免）；Bearer 头请求不查 CSRF。
+  前端另域部署时 `CORS_ORIGINS` 必须是显式来源（通配时后端关闭凭证）
+- 资源属主：design/batch/测序记录按 user_id 校验（无属主公开、创建者可见、管理员全见）；
+  匿名测序记录凭 `access_token` 访问（前端 sessionStorage 自动带头）；载体库是共享库，刻意无属主
+- 限流按（方法 + 路由模板）分类：只读请求一律 default 档，轮询不吃业务配额
+- 测序管线口径（`core/sanger/`）：
+  - 参考拓扑：文件明确标 linear 才线性比对，否则按环状——比对「参考 + 参考头部」后折回
+    1..L，跨原点 read 整条比对，原点两侧覆盖缺口合并后再过滤
+  - read 首尾 `END_MARGIN=20`bp 为不可信区，双峰检测与变体置信度共用这条边界
+  - 次要克隆占比 = r/(1+r)（r = 次峰/主峰面积比），勿写成 r/(1-r)
+  - 置信分层：只有中/高置信变异进 CDS 判定与共识；N/模糊调用恒 low；单 read 支持的
+    indel 若被其他 read 干净跨过则标 cross_read_conflict 并降为 low
+  - 同聚物（poly）按「先逐 read 判读，再综合投票」：run_verdict 五态
+    accepted / contradictory / undetermined / deficit_observed / caller_only
+  - 部分测序是常规策略：结论以引物覆盖区为准，未覆盖区「按设计序列对待」，不建议补测
+  - 前端 read↔ref 映射用 `query_start/query_end`（比对块绝对坐标），不要回退到镜像式
 
 ## 文档索引（按需加载）
 
 | 文档 | 内容 |
 |---|---|
-| docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处） |
+| README.md | 功能、API 一览、环境变量、测试命令 |
+| docs/KNOWN_ISSUES.md | 未解决挂账 + 防回潮约束 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
+| docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处；用户明确要求短期不做） |
 | docs/CACHE.md | 缓存策略与现状 |
-| docs/KNOWN_ISSUES.md | 未解决挂账 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
-| 部署 | 见 deploy/docker（docker-compose）与 deploy/bare（Ubuntu systemd）各自 README |
+| deploy/docker/README.md、deploy/bare/README.md | Docker Compose / Ubuntu systemd 部署 |
 
 ## 已知坑
 
 - Git Bash 下路径带空格必须引号；后端日志在 `src/backend/logs/`（gitignored）
 - uvicorn 未开 --reload；改后端代码后忘记重启是「改了没生效」的头号原因
-- package-lock.json 的镜像源已重写为 npmmirror（曾指向不可达的腾讯云内网源）
 - in-app 浏览器标签页与用户共享：验证 UI 时先 snapshot 确认状态，避免和用户操作互相干扰
-- 传给 `pytest` 的测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径无害
+- 部分测试文件里遗留 `/root/.openclaw/...` 的 sys.path 死路径，无害
   （conftest.py 会重新注入正确路径）
+- **测试里改 site_settings 必须用真实 `app.database.SessionLocal`**，结束时恢复默认并
+  `invalidate_cache()`，否则污染后续模块（设计端点 403）
+- **PowerShell 数组切片改文件会把整个文件清空**：结构化编辑一律用小步 edit 锚点
+- **从父组件拆子组件时，模板用到的 scoped CSS 必须随迁**：父级 `<style scoped>` 只作用到
+  子组件根节点；共享状态用 defineModel，不要在子组件里另起孤立 ref
+- composable 解构出的绑定若模板没用会报 TS6133；测试需经 wrapper.vm 调用的要保留并 void 引用
+- happy-dom：无 canvas 2d（`getContext` 不是函数，需 typeof 守卫）、`clientWidth` 恒 0、
+  无 `Blob.array()`、FileReader 事件在宏任务触发（试读用 `text()`）；ref 缓存取出的是
+  reactive 代理，断言用 `toEqual` 不用 `toBe`
+- 自造 ab1 峰形时峰心必须对齐 `make_ab1` 的 PLOC（`i*spb+1`），否则全线误报混合
+- git 全局代理 127.0.0.1:7890 而代理客户端没开时，push 常超时：提交留本地，等代理恢复再推
 
-## 当前状态（2026-09-20）
+## 当前状态
 
-- 清账（2026-10-09）**终审报告 P0 全量清账（独立第 11 轮审查 22 项 P0 全部落地）**：
-  P0-a 十项快修 + P0-b 十二项，逐项带回归，pytest 416→485 / vitest 138→140 /
-  vue-tsc 0，分六批提交（0603b77→bdaf64c）。要点：①匿名测序记录改 access_token
-  访问（创建响应下发、批量整批共用、前端 sessionStorage 自动带头、列表不再
-  外泄匿名 ID）、批量整理包绑 owner；②输入上限三件套（MAX_REF_BP=200k 三入口、
-  批量请求级总字节 + _BATCHES LRU、设计序列按类型收紧 aa5000/DNA20000 + 分析类
-  7 模型统一上限）；③限流改（方法+路由模板）分类——只读一律 default 档，轮询
-  不再吃业务配额（实测轮询 10 次即 429 强制登出的病根）；④_ANALYSES/_BATCHES
-  全路径 RLock + 打包改批次产物快照；⑤存储往返补 user_id/clone_protocol
-  （新列+轻量迁移）、construct_features 空值取 []、_load 裸 except 改 warning；
-  ⑥站点设置 features_initialized 标记列（空集不再被默认值覆盖）；⑦克隆方案带
-  真实切点坐标 + 破坏必需元件告警；⑧裸机三项（751 权限/127.0.0.1 监听 +
-  /docs 内网限制/卸载确认）。逐项明细与防回潮约束见 docs/KNOWN_ISSUES.md
-  「2026-10-09」章节——注意：测试里改 site_settings 必须用真实 SessionLocal
-  并在结束时恢复默认设置。
-- 清账（2026-10-08）**历次审核遗留清单批量清账（KNOWN_ISSUES 留痕 + 回归钉死 + 真实数据回归集）**：
-  ①docs/KNOWN_ISSUES.md 从 8/31 审计状态更新到 10/08——新增 10/7 修复批次
-  章节（6.1-6.8：BsaHI GRCGYC/批量上限读取前生效/克隆方案占位符+去磷/酶兼容
-  实际突出端+ORF 反链/ramp 打断卡死/Tm 如实+GoldenGate 报错/bcrypt 72 字节/
-  部署链清理，逐项带提交哈希）与 10/8 清账章节（7.1-7.4）；②BsaHI 回归锁
-  （GACGTC/GGCGCC 双实例双向命中 + 旧误码 GATG 绝不命中）+ stale docstring
-  GAYG→GRCGYC；③批量上限回归锁（_read_limited 打桩「碰到即失败」，超限
-  400 不读字节；monkeypatch.context() 限定——直接 setattr 会把合法请求也拦）；
-  ④peak_count_estimate 潜伏污染——合并 read 的 pc=0 不再进中位数（[30,0,0]
-  旧口径算出 0；改仅取 >0，全合并→None），旧断言 rescue 测试同步新语义；
-  ⑤anchor_grade 补「计数确证但定位存疑」——run 级 vote_anchor_grade（投票
-  read 锚分级最差者），accepted 且 ≥marginal 时结论加注记行（两分支均接入，
-  锚可靠零变化）；测试夹具：边缘 read 用 54bp（左右路标都落 20bp 边缘区，
-  <50bp 被最短读长门槛拒收）；⑥**真实 .ab1 回归集** tests/test_real_data_
-  regression.py（skip-if-missing：数据在 plasmid-designer V1.01/sequencing
-  results/ 本机目录不入库，缺席自动跳过）——5 项基线锁：归组形状（MX 3
-  read 全匹配）/基本形状（7039bp 14 特征 覆盖 27.3%）/混合检测基线（**该批
-  真实判定就是疑似混合**：3 read 各 19-27 双峰 widespread + 4 处跨引物同报
-  ——不是误报，勿按理想断言改）/置信分层与互检反证（5269 高置信同义、
-  6653+6666 单 read 缺失被反证压低且 CDS 未计入）/poly 判读有据；坑：
-  match_files 的 files 项 stem 须先 norm_stem（契约是归一化主干，传原始
-  文件名全落 unmatched）。后端 407→416（+411 全绿）/前端 135 不动。遗留
-  明确挂账：CI 未加（skip-if-missing 前置障碍已清）、顶层 docs/seqdemo_tmp
-  归档待用户定夺、poly 内部缺第几个 A 信息论不可解维持标注。
-
-- 测试（2026-10-08）**useSeqViz composable 独立单测（拆分收尾挂账项清账）**：
-  tests/frontend_useSeqViz.test.ts 21 例——最小宿主组件挂 composable（不经
-  SequencingPanel），覆盖峰图缓存在途去重（并发第二调用返回 null 是设计行为）/失败
-  缓存 null、toggleRead 选中回退与视窗外自动跳转（假 wrap 注入 seqBox 提供
-  clientWidth/scrollTo）、rowLayouts 视野过滤/排序/选中加高、jumpToRefPos 越界
-  忽略、jumpToVariant 自动显示目标 read、seqZoom 中心锚 1-28 钳制、Ctrl 滚轮
-  系数 1.2、seqFit Math.max(1,·)、点选简图命中 read 缩放/空白跳列/字母行切
-  read/越界守卫、resetSeqViz、deep watch 补拉、seqWrapH 布局公式逐项（空视图
-  102/双泳道+行 124…）。坑：①ref 缓存取出的是 reactive 代理，断言用 toEqual
-  不是 toBe；②内部函数（seqZoomAt/composeSeqInfo）经 onSeqWheel/onSeqClick
-  公开路径驱动；③缩放锚点读 seqScrollX ref 不读 wrap.scrollLeft，测试要同步
-  复位两者。前端 vitest 114→135（vue-tsc 0）。坑（环境）：**git 全局代理
-  127.0.0.1:7890 但代理客户端没开时，push 用 `-c http.proxy= -c https.proxy=`
-  绕过也常直连超时（GitHub 443 被断），提交留本地等代理恢复再推**。
-
-- 重构（2026-09-29）**SequencingPanel 拆分第二轮：匹配简图 + 峰图融合视图**：
-  ①匹配简图整块迁入 sequencing/MatchMap.vue（read 箭头分道/刻度轴/参考
-  特征/去重开关/图例；open-read/jump-variant 事件回传父组件走峰图联动，
-  dedupMapFeats 纯 UI 留子组件）；②峰图融合视图状态/交互/canvas 绘制
-  （drawSeq 全家）迁入 composables/useSeqViz.ts（接收 analysis/errorMsg
-  两个 ref），组件只留解构绑定+上传区+preset watch+导出——父组件
-  1660→487 行；③shortName 下沉 utils/seqPanelModel（+3 单测）——简图
-  标签/字母行芯片/工具栏复选框共用同一截断口径。坑：**PowerShell 数组
-  切片改文件会整文件清空（再次踩雷），结构化编辑一律用小步 edit 锚点**；
-  composable 解构的绑定模板没用会报 TS6133，测试要经 wrapper.vm 调用的
-  （rowLayouts）需保留并 void 引用。vue-tsc 0 / vitest 114 / build 过。
-
-- 重构（2026-09-29）**SequencingPanel 按 UI 区块拆分收尾 + 子组件样式修复**：
-  ①拆出 6 个展示子组件到 components/sequencing/——PolyCard（同聚物卡）、
-  ConclusionCards（结论总览+CDS 卡）、ReadTable（read 摘要表，@view 上报
-  峰图联动）、VariantTable（突变表，showLowConf defineModel 共享+confTitle
-  迁入）、AlleleCard（解卷积）、ConsensusCard（共识导出，coveredOnly
-  defineModel 共享，导出动作 @download 回传父组件调 API）；父组件
-  2147→1660 行。②修复上轮拆分遗留的两个回归——子组件原本无 <style>，
-  而 Vue scoped 样式不穿透子组件内部节点（结论卡/CDS 卡/覆盖条带的
-  内部样式实际丢失），样式已随模板迁入各子组件；ConclusionCards 的
-  showMixedDetail 由内部孤立 ref 改 defineModel 共享，恢复退出历史回看时
-  父组件 watch 的复位语义。③坑（必记）：**从父组件拆子组件时，模板用到
-  的 scoped CSS 必须随迁**，父级 <style scoped> 规则只作用到子组件根节点。
-  vue-tsc 0 / vitest 113 / build 过。
-
-- 调整（2026-09-29）**批量表格结论简洁化**：用户要求 Excel/结果表里的
-  结论也简洁——excel_conclusion 重写：合格/不合格/疑似混合前缀保留
-  （批量筛选分拣用），差异细节（确证替换位置、互检矛盾长解释、
-  "详见报告"）一律不进表；互检矛盾与一般低置信合并为"N 处低置信差异
-  疑似伪影"；poly 三态压缩（计数互证矛盾/计数不可判定/计数存疑）；
-  不合格主句只点名 CDS（带"（移码）"提示，不再摘录 verdict 细节）；
-  mixed_tails 两处压缩（互检降级、scattered 双峰）。main_sentence 函数
-  移除（唯一调用者消失，离线回填脚本同步去掉无用 import）。后端 357/
-  前端 101 全绿。
-
-- 调整（2026-09-29）**结论一句话总结 + 未覆盖 CDS 不进卡片**：用户反馈
-  结论详细段落信息密度高、未覆盖 CDS 条目是噪音——①pipeline 新增
-  _conclusion_summary：结论头部一句话总结（△疑似混合 > ✗确认差异/
-  蛋白不一致 > ✓一致+低置信伪影注记 > ✓完全一致），空两行后接原详细
-  段落（scattered 双峰只提示不升级，不算混合）；②前端 CDS 结论卡过滤
-  coverage_status=uncovered 条目（全未覆盖则整卡不显示）；③覆盖缺口
-  提示去掉"建议补充引物/补测"（与覆盖区优先口径一致，改为中性陈述
-  "未测区域按设计序列对待"）。后端 357/前端 101 全绿。
-
-- 调整（2026-09-29）**覆盖区优先口径（部分测序是常规策略）**：用户明确
-  "大部分时候只测质粒的一部分，分析以首尾引物覆盖区为准"——①未覆盖 CDS
-  判读改中性（"未测：不参与判读（覆盖区外按设计序列对待）"，不再建议补
-  引物）；②结论首行带实测区间（"覆盖 5.0%，实测区间 101-200"，逗号嵌入
-  避免双括号嵌套，_coverage_ranges_text）；③共识导出新增 covered_only
-  参数：FASTA 每段连续覆盖一条记录（ref_pos 入头可溯源），GenBank 全长
-  保留、未测位置 N 屏蔽（坐标/特征不位移）+ 实测段 misc_feature 注记，
-  无覆盖区间信息时回退全量；④前端导出默认勾选「仅导出实测覆盖区」。
-  后端 356/前端 101 全绿。
-
-- 优化（2026-09-29）**跨 read indel 反证（Step B 推广到非 poly 区）**：
-  用户实测难例——正向 read 在 3×A 短 run 边缘多报 1 个 A（伪影峰），反向
-  read 干净跨过同一位点，结论却断言"7241 处插入、蛋白与设计不一致"。
-  根因：变体聚合只计正向支持（support_reads），其他 read 的干净覆盖从未
-  参与判定；插入峰强比 0.3-0.6 的伪影峰落 medium 档即进 confirmed。修复：
-  ①_clean_cover_reads——indel 仅单 read 支持时，查其他 read 是否完整跨过
-  junction（插入=anchor|anchor+1 相邻，缺失=左翼 anchor-1 与右翼
-  anchor+vlen 相邻）且未报该 indel；junction 落 read 首尾 END_MARGIN 区
-  或 Q<20（CROSS_CHECK_MIN_Q）不构成反证；该 read 窗口内报了其他 indel
-  则既不算支持也不算干净。命中 → cross_read_conflict 标记 + 置信度强制
-  low（与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识）。②CDS 结论
-  待复核拆分：互检矛盾差异单独点名（"X 处的插入（rev 跨过同一位点未见差
-  异）——真实变异应被覆盖该位的每条 read 独立报出"）。③顶层摘要与批量
-  Excel 同口径三支文案。④单 read 独覆盖区域不回退（峰证据分级照旧），
-  双 read 独立报告仍互证确证。后端 353/前端 101 全绿。
-
-- 优化（2026-09-28）**优先级清单批量落地（联合覆盖/锚压缩/verdict 下沉）**：
-  ①联合覆盖判定（用户点名）——无完整覆盖 read 时，部分覆盖且段内自洽的
-  read 恰好拼接盖满 run（首段从 run 起点始、段间恰好衔接、并集盖满）→
-  joint accepted（observed=各段调用数之和，joint_coverage 标记）；完整
-  覆盖 read 与联合读数冲突 → contradictory（联合条目入 verdict_votes）。
-  注意：run 端点滑动是同聚物固有歧义，段边界滑移时联合保守不成立（回退
-  原有分支），测试构造需借助侧翼锚定。②锚压缩检测补全——_anchor_quality
-  增加路标峰与邻峰间距检查（< 0.6×全 read 中位峰距 → unreliable，同通道
-  压缩合并形态，混合峰检查覆盖不到）。③批量 Excel excel_conclusion 按
-  run_verdict 分态（矛盾/不可判定单独点名，旧记录回退一般措辞）；离线
-  脚本 batch_sequencing_report.py 继承（同一 excel_conclusion）+ 报告新增
-  「同聚物判读」章节（verdict 三态 + 投票依据）。④前端峰图条带合并压缩
-  区灰罩（poly_merged_zones 改结构化列表下发，虚线框 + "压缩不可判读"
-  标签）；同聚物卡片新增「判定依据」行（verdict_votes 投票明细/联合拼
-  接/矛盾计数）。⑤共识导出带 verdict：GenBank misc_feature 注记判读状
-  态、FASTA 头 poly_verified/poly_unverified 摘要。⑥数据库增长管理：
-  SEQUENCING_DB_MAX_RECORDS（默认 2000，0 不限）超出按创建时间淘汰最旧
-  （persist 后 prune，仅 database 模式）；历史列表 limit/offset 分页
-  （默认 200，上限 1000）。⑦旧挂账：质粒模式 match_files 图谱匹配对齐
-  克隆模式多级口径（全名精确 > 忽略分隔符 > 两段式任一段 > 双向包含
-  ≥4 字符，候选不唯一不猜，_match_ref_name）。后端 349/前端 101 全绿、
-  vue-tsc 0、build 过。
-- 调整（2026-09-28）**同聚物落点歧义算法级解决（先单条分析→再综合评判）**：
-  讨论定案（.workbuddy 2026-09-28）——计数歧义已由 B2 收口，残余落点歧义
-  按「先单条分析，再综合评判」两步落地：①Step A per-read：run 两侧最近
-  非 run 碱基做路标锚（_anchor_verdict_for_read），锚质量分级
-  （_anchor_quality：read 边缘/QV 修剪外→marginal，混合峰/poly 下游骤降
-  →unreliable，run 定位置信度=两侧路标最差者）；每 read 每 run 出五档
-  resolution（_read_run_verdict）：resolvable 峰数==调用数（投票权）/
-  deficit 可见缺失（B4 口径）/ merged 完全合并或宽度法救回（不可判定）/
-  noisy 峰数>调用（肩峰）/ no_evidence 采样不足（维持调用）。②Step B
-  综合：替换"任一 read 峰数≠调用数即整体不可信"的一票否决——真实难例
-  （正向可分辨互证一致+反向合并成山丘）不再被反向 read 否决；五档
-  run_verdict：accepted（可分辨 read 互证一致，observed_repeat_count
-  采信峰图）/ contradictory（互证矛盾）/ undetermined（无可分辨证据，
-  宽度法仅供参考）/ deficit_observed / caller_only。③抑制：合并压缩
-  run 窗（poly_merged_zones）内该 read 的逐位双峰不作证据（反向压缩山丘
-  不再切成伪差异串）；落在窗内的变异强制 low + merged_zone_artifact。
-  ④端点歧义行按 verdict 豁免：run 已 accepted 时比对端点滑动不影响判定
-  （无变体分支也接了该行）。⑤对齐窗口收紧：_aligned_run_window 的列窗
-  可能比连续 run 段宽（缺失放 run 前端时末端多包非 run 碱基），峰窗向内
-  收紧到连续 run 碱基（非 run 碱基自己的通道峰会经跨通道 max 混进计数）。
-  前端：逐引物判读行按 resolution 五档措辞 + 锚分级标注，结构状态点按
-  run_verdict 显示（旧记录无字段回退本地推断）；api 类型补
-  resolution/run_verdict/verdict_votes/anchor_grade。测试：+5 场景
-  （正可分辨+反合并→accepted、可分辨互证矛盾→contradictory、全合并→
-  undetermined、端点歧义按 verdict 豁免、合并区伪双峰抑制）；后端
-  341/前端 101 全绿、vue-tsc 0、build 过。
-- 修复（2026-09-28）**三大挂账项清账（落库/属主扩展/同聚物标注）**：①分析记录
-  落库——新表 sequencing_analyses（payload JSON + trace_data zlib+base64 压缩，
-  不含峰图双份驻留）+ app/sequencing_store.py（db_enabled/_ensure_table 幂等
-  建表/persist/load/delete/list，list 属主过滤只取元数据列）；内存 _ANALYSES
-  退化为 15 分钟 TTL 读取缓存，未命中回灌数据库，重启后端不再丢记录；4 个创建
-  端点落库、删除双清、trace/详情/列表全链路接库；测试 test_analysis_persists_
-  across_restart（清内存模拟重启→详情/峰图/列表/属主/删除全链路）。
-  ②design/batch 资源属主校验——DesignResult/BatchDesignStatus 加 user_id，
-  _ensure_design_access/_ensure_batch_access（无属主公开/创建者可见/管理员
-  全见/否则 403），创建端点 Depends(get_current_user) 绑定，批量任务内 design
-  继承 job.user_id，DBDesignStore/DBBatchStore 串列；测试 TestDesignBatchOwnership。
-  ③poly-A 落点歧义标注——read 比对端点落在 period=1 tier=poly 的 run 内时
-  homopolymer_edge_hits + 结论注意行（同聚物内比对落点存在歧义，覆盖边界与
-  互检定位可能数 bp 偏差，建议对照图谱）。验证：后端 336/前端 101 全绿、
-  build 过、vue-tsc 0；真机重启持久化烟雾过（kill→重启→详情/峰图/列表仍在）。
-  挂账清除：design/batch 资源属主改造✓、poly-A 比对歧义（已标注，算法级
-  解决未做）✓、分析记录落库✓。注意：database 模式下 15 分钟"过期"记录仍可
-  读（回灌），仅 memory 模式过期即 404（测试按 db_enabled 分支断言）。
-- 检查（2026-09-20）**全方位检查（第二轮，发现即修）**：①vue-tsc 全仓清零——
-  修复 8 个历史错误：AuthModal 未用导入、AnalysisView 未用导出+overhang 索引
-  any（提 OVERHANG_LABELS 常量）、VectorsView seqId 隐式 any×2 + importingId
-  Booleanish（!!）、DesignView 的 gibson_site/exclude_enzymes——核实后端
-  DesignOptions 一直有这两个字段，是前端 DesignRequest 类型漏了（已补）。
-  ②鉴权扫描补漏：/api/cache/stats 与 invalidate/design|vector、/api/rate-limit/
-  status|config 此前匿名可达（缓存统计泄露、任何人可失效缓存），收归
-  get_admin_user；/health 类端点保持公开；admin_routes 路由级门控 ✓；各功能
-  路由 include 门控 ✓；测试锁：test_account_system 加
-  test_cache_and_ratelimit_admin_endpoints_gated。③仓库卫生：无硬编码密钥，
-  仅 .env.example 模板在库。④后端 333/前端 101 全绿、build 过；本地重启后
-  烟雾：匿名 stats/rate-limit 401、管理员 200、演示分析详情渲染正常。
-  遗留（挂账）：design/batch/vectors 资源属主改造、poly-A 比对歧义、
-  分析记录落库。
-- 调整（2026-09-20）**行随视野过滤（SnapGene 真实行为）+ 全方位检查**：用户指出
-  逐 read 条带又变成"每引物一排且全部显示"——空行占位还把参考行顶出视野；
-  SnapGene 的真实行为是「视野里没有峰图的行自动隐藏」。落地：rowLayouts
-  （替代 stripLayouts）只渲染「勾选中、有对齐、与当前视野相交」的 read，按
-  参考起点排序，字母行+条带整组出现/消失；seqScrollX 改 ref（行数随横向
-  滚动增减 → seqWrapH 跟着重算），seqLayoutTick 在挂载/resize 时强制重算
-  （clientWidth 非 reactive）；happy-dom clientWidth=0 时视窗视为全参考
-  （行全出，测试可直接断言），rowLayouts(win) 支持传视野单测；分析完成与
-  历史回看自动滚到首条 read 起点（否则初始视口在参考开头会没行）；无覆盖
-  视野画"横向滚动或点击简图空白"提示。全方位检查结论：后端 332/前端 101
-  全绿、build 过、vue-tsc 本组件清零（其余 8 个历史错误在 AuthModal/
-  AnalysisView/DesignView/VectorsView，其中 DesignView 的 gibson_site/
-  exclude_enzymes 不在 DesignRequest 类型上疑似真问题待查）；导出 FASTA/
-  各页面/健康检查烟雾全过；测序分析记录属主校验已补（用户质疑"发现却不
-  修"）：_register_analysis 记 owner_id（匿名创建的记录无属主保持公开），
-  list 只返回本人记录（管理员全可见），get/trace/export/delete 非创建者
-  且非管理员返回 403；user 经 Depends(get_current_user) 串入 4 个创建端点
-  （上传/设计结果/载体/批量，批量经 _run_batch(owner_id=) 传入）。
-  design/batch/vectors 资源仍无属主概念（vectors 是管理员管理的共享库，
-  刻意设计）——全量属主改造继续挂账。
-- 调整（2026-09-20）**互检悬空位点外推定位 + 峰图逐 read 交接条带**：用户指出
-  ①「无其他引物覆盖待核」与事实不符（只有覆盖边缘的引物才真有无法互检的
-  位点）②每条引物应有自己单独的峰图。根因（①）：比对是 local 模式，read
-  端部（poly-A 同聚物区两端尤其常见）悬空在比对块外，这些位点的 read2ref
-  查不到参考坐标而直接归"待核"——修复：_corroborate_mixed 对未映射位点以
-  比对块两端（原始 read 坐标↔参考坐标）为锚点线性内插/外推定位（Sanger
-  read 与参考共线），再正常参与 clean/multi 判定；待核短语与汇总行补
-  "（参考位置 …）"供用户对照图谱核对。落地（②）：主区改 SnapGene 图三式
-  交接——每条 read 字母行下直接衔接其峰图条带（SEQ_STRIP_H=62，选中加高
-  14 并淡底强调，左缘 read 色竖条与简图箭头/字母行同色绑定），条带独立归
-  一幅值；点字母行或条带都选中该 read；峰图加载加在途去重（traceInFlight，
-  preset watch 与 deep watch 同帧重入会重复拉取）。合成回归测试：反向 read
-  + 100bp 悬空 junk，块内位点精确映射被邻居覆盖判 clean、悬空位点外推到
-  覆盖外判待核且带参考位置（后端 331、前端 100）。注：上一条的 bandReads
-  叠加方案已被本条逐 read 条带取代（buildTraceWins/drawSeqTrace 保留复用）。
-- 调整（2026-09-20）**峰图带多 read 叠加 + 简图逐 read 配色 + sequencing GET 限流降档**：
-  用户指出交叠区「乱了」且「只显示了一条引物的峰图」。落地：①峰图带从单条
-  traceReadIdx 改为 bandReads()——叠加所有勾选 read 的峰图，选中的最后画
-  （实线 1.8 宽、alpha 1），其余衬底（1 宽、alpha 0.3），选中不在视野时全体
-  0.75；联合幅值 maxV 同轴同标尺（峰高可直接对比），buildTraceWins 抽出复用；
-  勾选即由 watch 补拉各 read 峰图；图例「峰图 N 条叠加：X（实线）＋Y（衬底）」
-  用选中 read 的配色。②简图每条 read 固定 READ_COLORS 独立配色（箭头/字母行
-  芯片/工具栏复选框同色），视口蓝框改画在箭头下层不再切割箭头。③后端
-  rate_limit._get_endpoint_type 对 /sequencing 按 method 分流：GET/HEAD/OPTIONS
-  （分析详情/trace 等只读）走 default 档，POST analyze 才算 upload 20 次/小时
-  ——否则峰图叠加一次拉 5 条 trace 直接把 upload 配额烧光、429 拒签 28 分钟
-  （本地复现：勾 5 条 read 后 trace 全 429「峰图不可用」）。测试：前端 100
-  （新增叠加拉取/排序用例）、后端限流分类单测。
-- 调整（2026-09-20）**覆盖简图域收窄 + 箭头点击缩放可读性下限**：用户圈出
-  简图左侧大片空白（参考 5000bp 只有 2140-4282 有 read）——简图域从整条
-  参考改为 ovDomain（引物覆盖区段 ±2% 边距，无 read 区不占位，箭头放大
-  2 倍多）；点击 readB 校验 read 后主视图跳到其起点且峰图保持可读——
-  selectRead 的缩放加下限 6px/碱基（长 read 不再硬塞一屏把峰压成噪音），
-  塞不下时落在 read 起点并闪黄、向右浏览，塞得下才居中。点击反解与
-  蓝框投影同步按 ovDomain 映射（越界钳到简图边缘）。
-- 调整（2026-09-20）**双峰位点跨引物互检 + 结论措辞优化**：用户指出 20bp
-  首尾不可信区是拍脑袋的固定值，实际信号不稳区以引物首端为主，且"另一条
-  引物测过去基本就没问题"——结论应体现多引物对比。落地（pipeline.py）：
-  ①_read_ref_maps 基于 alignment_view 建每条 read 的 read↔ref 双向映射
-  （反向 read 的原始电泳坐标 = n-qi，与 aligner 镜像同式；插入列无 ref 不入表）；
-  ②_corroborate_mixed 把每处 mixed_detail 位点映射到参考坐标后分三类——
-  其他引物同报双峰（倾向真实混合）/ 其他引物覆盖且峰形单一、判读一致、
-  Q≥20（倾向该 read 自身噪声）/ 无其他引物覆盖（无法互检），结果挂在
-  result["mixed_corroboration"]（by_read + multi_sites + 汇总数）；
-  ③结论措辞按互检改写：唯一 widespread 且无同报、多数位点复核一致 →
-  主句降级为"更倾向该 read 自身信号问题（信号不稳区以引物首端为主）而非
-  真实混合"，不再建议重新挑克隆；逐 read ↳ 行追加"互检：X 同报/Y 峰形
-  一致/Z 无覆盖"；新增"双峰位点跨引物互检"汇总 ↳ 行（多条引物同报的
-  参考位置 = 真实混合最强信号，列出位置）；end_note 补"首端最明显、
-  互检覆盖即可采信"。④batch._mixed_tails 同口径：唯一 widespread 噪声型
-  不再升级"疑似混合"主句，降为尾部提示（批量归档不再误入 无法判定/）。
-  注意：mixed_corroboration 在 API _summary 里未透传（前端暂不需要），
-  批量口径用的是内部 result dict；单条 read 分析无从互检，全部互检措辞
-  有 len(read_results)>=2 守卫。
-- 重构（2026-09-20）**覆盖简图全景化 + 主区弃逐 read 块改紧凑行（A 轮四次）**：
-  用户否定首版简图（随窗口滚动的 12px 行，放大后只剩一条 bar「一点变化都没有」），
-  要求 图二全景常驻 + 视野内引物着重 + 选中着重/放大 + 图三式交接（不再往下排）。
-  落地：①简图改固定整参考宽度（ovX = bp/refLen*w，不随 seqScrollX 移动），
-  ovLayoutFor(laneCount) 统一简图/seqWrapH 两处布局数字；泳道=按 ref_start 贪心
-  装箱（ovLanes computed，无对齐 read laneOf=-1 不上图），箭头内居中印名字，
-  下沿加覆盖并集绿条+变异刻度（低置信黄）；主视图当前窗口投影为蓝框（fillRect
-  +strokeRect 覆盖简图整体高度），视野相交的引物 0.85/0.5 alpha、窗口外 0.42/0.24。
-  ②主区：各 read 从 158px 整块（头行+字母+120px 峰图）改为 16px 紧凑字母行
-  （左侧固定白底名字芯片，滚动也知道每行是谁；非选中 read 字母 #666 弱化），
-  峰图只画一条（traceReadIdx：selectedReadIdx 优先、回退最后勾选），带左上
-  「峰图：xxx」芯片标归属，直接交接在字母行下方——5 read 面板从 ~870px 降到
-  ~350px，参考行始终可见。③交互汇聚到 selectedReadIdx：点简图箭头=selectRead
-  （自动勾选+colW 缩放到恰好容纳该 read 覆盖区+scrollToRefPos 中点居中+flash），
-  点简图空白=仅跳转（命中判定：x→refPos 反映射后在该泳道找覆盖者，±1bp 容差
-  取最近）；点字母行=切峰图；toggleRead 勾选即选中、取消选中的 read 回退最后
-  一条仍显示的；jumpToVariant/openReadInSeqviz 同步选中目标 read。坑：全景
-  x→refPos 反解用 wrap.clientWidth（happy-dom 恒 0，测试里回落 1000 才可断言）。
-- 新增（2026-09-19）**覆盖简图定位带（标尺上方，A 轮三次）**：用户反馈
-  「引物多了都看不到参考序列了」，要一条 SnapGene 图二式的简图——每引物一行、
-  只画覆盖区段、标低置信与双峰范围、点击跳峰图。落地（融合 canvas 顶部，
-  刻度尺之上）：全部 read（不论是否勾选）按 reads 数组顺序各占一行 12px 细
-  方向箭头（覆盖区段，深=显示中/浅=未显示；ref_end<=0 的无对齐 read 跳过），
-  箭头内白字短文件名（放得下才画）；bar 上 clip 后画 ①两端 20bp 白色半透明
-  覆盖 = 末端不可信区（对齐后端 END_MARGIN 口径）②mixed_detail 逐位橙点
-  （read 坐标经 seqColsFor 按 origIdx===pos-1 映射参考 xu，密集时自然连成
-  「范围」）；轴上变异刻度块低置信改黄色（与红=中高置信区分）。点击简图带
-  （onSeqClick 按 y<ovH 分流）→ 反查 read 行号，未显示的 read 自动加入并
-  loadSeqTrace，refPos 按该 read 覆盖区钳制，scrollToRefPos + flash；无对齐
-  read 点击直接 return。布局整体下移 ovH=8+n*OV_ROW_H：刻度数字 y、网格线
-  起点、sel/flash 竖线起点全部改为相对 ovH/rulerH，seqWrapH 公式同步加简图
-  带高。验证：4 条合成 read（含 readF2 一处 A/G 0.55 双峰、反向 R2 与 R1/F2
-  交叠）本地栈目检——泳道/箭头方向/两端浅色/橙点(600)/黄刻度(250 低置信)
-  全部符合；简图点击 900 正确居中+flash+证据行；未勾选 read 点击自动勾选并
-  出峰图。注意：①点击测试需给 clientY（happy-dom 默认 0 落在简图带内）；
-  ②简图行号 = reads 数组下标（文件顺序，不按落点排序）。
-- 调整（2026-09-19）**融合面板 SnapGene 化重绘（A 轮二次）**：首版上线后用户
-  对照 SnapGene 截图反馈「还是很鸡肋」。重做绘制层：每 read 块改为 头行（
-  文件名/落点/Q，白底芯片防滚动遮挡）→ 碱基字母行（13px，错配加粗红字红底）
-  → 120px 大峰图带（曲线 1.4px、深色基线后画——低电平通道噪声段贴基线走，
-  先画基线会被蓝/红噪声线盖掉观感），带底加位号行，逐碱基淡网格线贯穿；
-  参考行字母同步放大。交互修正：①勾选 read 若不覆盖当前窗口自动跳到其落点
-  （SnapGene 习惯），窗口内不跳；不覆盖窗口的 read 头行置灰注「窗口外」，
-  修复首版「空白 read 行像坏了」的观感；②工具栏 ＋/− 缩放以视口中心为锚
-  （原 seqZoomAt 无锚点，跳转变异后再缩放视口会漂走）；③跳转改立即定位，
-  平滑滚动进行中缩放/连跳会取到中途 scrollLeft 造成漂移；④seqWrapH 补 18px
-  水平滚动条高度（wrap.clientHeight 不含滚动条，少算会把带底位号裁掉一行）。
-  验证方式：本地 uvicorn+vite 起服务，合成高斯峰形 ab1（注意 make_ab1 的
-  PLOC=i*spb+1，自造 trace 峰心必须对齐 PLOC，否则峰窗错位会全线误报混合）
-  经 API 建分析、in-app 浏览器目检 缩放锚定/差异列/双 read 堆叠/窗口外标注。
-- 调整（2026-09-19）**比对峰图融合视图（SnapGene 式，A 轮）**：用户反馈
-  「峰图比对其实没什么作用」——证据链拆在 比对校验（纯文本网格）/Chromatogram
-  （独立峰图）/简图 三个互不相连的面板。落地（SequencingPanel 单 canvas 融合
-  面板替换两旧面板）：横轴统一为参考坐标——参考碱基行（可见 read 对齐参考取
-  并集，覆盖区浅绿底 + 轴上变异红块）+ 每 read 行（碱基字母 Q 着色/差异红底/
-  双峰位点橙底条带贯穿峰图）+ 四通道峰图条带同轴对齐，插入列在左右两列间插缝
-  （SeqCol xu 插值）；反向 read 展示用参考方向 revcomp，峰图按原始电泳序列映射
-  （origIdx = L−1−qi，与后端镜像同式）。关键修复：峰图采样窗不再假设固定
-  10 采样点/碱基，改为 peak_indices[trim_start+origIdx] 取峰 apex、与相邻峰
-  apex 的中点围成本碱基采样窗（pipeline.py traces 载荷新增 trim_start），对
-  任意采样密度/修剪偏移都成立。交互：read 复选框多 read 堆叠、Ctrl+滚轮缩放
-  （带锚点）+ 滚轮横滚 + 适应全宽 + 跳转位置输入、点击任意列出证据摘要行
-  （各 read 碱基/Q/次级峰占比——mixed_detail 的 ratio 是次峰/主峰面积比，
-  次要克隆占比 = r/(1+r)，显示口径与结论聚合一致）、差异明细行/简图红块/
-  read 简图点击原位跳列 flash 1.6s；read 表「峰图/比对」两按钮合并为「查看」。
-  pipeline.py per-read 新增 mixed_detail（[{pos, ratio, secondary_base}]，
-  pullup 已剔除），sequencing_routes _summary 透传。注意：①happy-dom 无
-  canvas 2d 且 getContext 不是函数（不是返回 null），绘制需 typeof 守卫，
-  测试只能断言 DOM 交互与 api mock 调用；②watch([visibleReads, seqColW])
-  需 deep:true（push/splice 原位变更不触发）；③旧 .aln-*/.trace-box CSS 已删，
-  .trace-toolbar 被 consensus-box 共用须保留；④B 轮（匹配简图缩放 +
-  SequenceView 序列层联动）待做。
-- 调整（2026-09-19）**双峰位点逐 read 范围 + 图谱特征去重开关**：用户追问
-  ①「5–50 处双峰是不是在引物首尾」——答复：不在（末端过滤后剩下的全是
-  中段位点），但结论里确实没有给具体范围，无法自行核对；②图谱特征重复
-  显示，查明是参考 .dna 文件本身有多条同名注释（miscellaneous/5 UTR ×2），
-  前端逐条渲染不会自己造重复。落地：①pipeline.py 新增 _pos_ranges_str
-  （位点列表压缩成连续区段「81–140、201–260」，超 6 段截断注「等 N 段」），
-  双峰结论行（聚合与单 read、scattered 聚合）下逐 read 追加「↳ <文件名>：
-  双峰 N 处，位于 read …（read 坐标；首尾 20bp 不可信区未计入）」子行——
-  注意是 read 坐标不是参考坐标（核对首尾用途 + 避免 indel 漂移的近似映射）；
-  前端 conclusionParts 新增 mixed 折叠组（isMixedDetail = ↳ 开头且含「双峰」，
-  poly 判读/dropout 的 ↳ 行不含该词不受牵连），默认收起带展开钮，退历史
-  回看时随 showLowConf 一起复位；②SequencingPanel 匹配简图标题栏新增
-  「特征去重」开关（dedupMapFeats，默认关=按文件原样显示）：开启后同名且
-  位置重叠或相邻（f.start − hit.end ≤ DEDUP_GAP_BP=50，方向不敏感——首版
-  要求"同向且重叠"，用户实测不起作用：厂商重复注释常为邻接不相交或标在
-  两条链上）合并为一条（end 取并集），相距远的同名特征（如两端两个
-  3 UTR）不受影响——仅影响图谱显示，不改 features 数据与变异注释；开启后
-  标题旁显示「已合并 N 条重复注释」（N=0 即图里没有满足条件的同名邻近
-  注释，本身是诊断信息）；
-  ③整理包报告双峰章节「位点（前10个）」列改为「位点范围（read 坐标）」
-  （_pos_ranges_str，前 10 段）。
-- 调整（2026-09-19）**双峰结论聚合 + read 末端不可信区显式报告**：用户对照
-  17647 MUTPK 真实数据（5 条 read 全 widespread）反馈①read 箭头首尾的不可信
-  区结论里没提、②5 条「疑似混合样品」逐 read 长句内容多而表述不明。改造：
-  ①结论聚合（core/sanger/pipeline.py mixed_lines 重写）——多条 read 全
-  widespread 只出一条综合判读（「N 条 read 均疑似混合样品（每条双峰位点
-  min–max 处，估计次要克隆占比约 x–y%）——样品为两种质粒的混合…」，连续
-  双峰段只点名有该形态的 read；scattered 同样聚合），单 read 保持原逐条
-  文案；②口径收敛——结论行删去「次峰占比中位数」（两个百分比并列反而难
-  读），只留次要克隆占比（minor_fraction = r/(1+r)，报告双峰章节仍给原始
-  ratio）；③末端边界——双峰检测剔除 read 首尾 END_MARGIN(20)bp 的位点
-  （与变体置信度同一条边界，末端拖尾不再凭空触发「自位置 6 起连续双峰段」
-  这类误报，真实数据里该段正是末端噪声）；④末端不可信区显式呈现——结论
-  两分支各加一条 end_note（首尾约 20bp 信号爬升/下降区判读可信度低，具体
-  区间见报告 read 概况表），_group_report_md 的 read 概况表新增「末端不可信
-  区（参考坐标）」列（ref_start–ref_start+19、ref_end–19–ref_end；覆盖
-  ≤2×margin 时标「整段」）；⑤excel_conclusion/_mixed_tails（core/sanger/
-  batch.py）同步聚合口径（multi-read「N 条 read 均检出双峰（每条 min–max
-  处）」，新增 _count_range/_frac_range 小工具）。
-- 调整（2026-09-19）**poly 判读呈现整理（C2）**：用户确认「常规序列与 poly
-  序列的分析分开呈现更好」后收窄落地两件事。①结论文本去重（core/sanger/
-  pipeline.py 变异分支）：此前 poly 区 indel 变体在结论里出现两条 ↳ 行
-  （变体行「参考 X 测得 Y」+ 峰图判读行「缺失 N 个」），现合并为一条——
-  峰图计数与调用不一致的 poly 结构（emitted_runs 集合按 (base,unit,start)
-  匹配变体的 homopolymer 注释）只出一条「峰图判读」行（变体锚点 + 峰图
-  实测 + 逐 read 调用/峰数明细），计数可靠的变体仍走原「重复数变化」行；
-  无变体的峰图告警分支不变。②批量报告（app/sequencing_report.py
-  _group_report_md）新增「poly 同聚物 / 重复结构判读」章节（结构表 +
-  不可靠结构的逐 read 证据 + 重复区 indel 表「重复数（参考→测得）」），
-  变异明细表剔除重复区 indel（v.type in ins/del 且有 homopolymer 注释者
-  归 poly 章节，替换类即使落在重复结构仍算常规变异）；结构名与判读短语
-  直接 import pipeline 的 _run_label/_peak_verdict_phrase，与网页卡同口径。
-  注意：离线脚本 scripts/batch_sequencing_report.py 的报告未同步本章节。
-- 调整（2026-09-19）**双峰（疑似混合样品）检测分级 + N 调用低置信**：用户反馈
-  突变/双峰识别准确性不够。根因之一：混合培养物（两个单克隆混测）的逐位双峰
-  只存进结构化字段 mixed_positions，结论/一句话结论/整理包报告完全不可见，
-  混合样品被报成「合格：与设计一致」。改造（core/sanger/pipeline.py）：
-  ①_detect_mixed_detail 输出逐位细节（比例/次级通道/pullup 标记），
-  _detect_mixed_positions 保留为兼容入口；②饱和峰拖影（pull-up，主峰 ≥3×
-  全 read 峰高中位且次级占比 ≤0.5、与主峰同期）剔除不按混合计；③
-  _classify_mixed 做 read 级分级：count ≥5 或连续双峰段 ≥8 → widespread
-  （疑似混合样品）、2-4 → scattered（个别双峰提示）、0-1 → none（单点双峰
-  与噪声无法区分，交变体峰级证据口径）；次要克隆占比 = r/(1+r)（r=次峰/主峰
-  中位，勿再写成 r/(1-r)）；④结论两分支均插入 mixed_lines（widespread 用
-  「⚠ 疑似混合样品：…建议重新挑单克隆」，紧跟首行）；⑤N/模糊调用
-  （alt_base 含非 ACGT）恒 low 置信——basecaller 拿不准才给 N，Q 再高也不算
-  "与参考不同"的证据。excel_conclusion（core/sanger/batch.py）：widespread
-  且无确证 CDS 不一致时结论以「疑似混合：」开头（_conclusion_bucket 落
-  整理包 无法判定/ 文件夹，不再混进 正确/）；确证不合格时保持不合格前缀、
-  混合降为尾部提示；scattered 走尾部提示。_group_report_md（app/
-  sequencing_report.py）新增「双峰（疑似混合）检测」章节（每 read 判定/
-  位点数/次峰占比/次要克隆占比/位点示例）。tracy decompose 触发改按
-  widespread（sequencing_routes _run_full_analysis），scattered 噪声不再
-  白跑解卷积。注意：①mixed_profiles 只含 count>0 的 read；per-read 的
-  mixed_profile 总是存在；②双峰位点的主峰判据要求 called 碱基 = 主通道，
-  basecaller 恰好调了次要碱基的位点检不到（真实混合以多数位点为准）；
-  ③离线脚本 scripts/batch_sequencing_report.py 的报告未同步双峰章节。
-- 调整（2026-09-19）**整理包按质粒归档 + 正确/错误分置**：同一质粒在信息表里
-  写成 '17648'/'MBYSTC'/'17648 MBYSTC' 等多种写法时，原先按名称字符串逐组建
-  文件夹被拆散。新布局（app/sequencing_report.py build_batch_zip）：同一质粒
-  一个文件夹（表内别名写法合并——X 恰为唯一另一名称 Y 的空白分隔段则并入 Y，
-  候选不唯一或无全名行不猜，与 core.sanger.batch 表内别名共用 _squash 同一
-  口径，见 _plasmid_folders），参考图谱副本在质粒文件夹根（同质粒多组共享按
-  文件名+MD5 去重，只归档一份）；其下固定 正确/ 错误/ 两个子文件夹按各组
-  一句话结论分置文件与报告（合格→正确、不合格→错误，分析失败/缺图谱等归
-  无法判定/，见 _conclusion_bucket；空桶也保留 正确/错误 目录，无法判定/ 仅
-  在有内容时出现），同桶多组（多克隆/别名并档）的报告与 分析结果.json 带
-  组名后缀（测序分析报告-<克隆号或原名>.md）。整理清单.csv 新增「结论」列，
-  批次总览.txt 写明归档结构。注意：①质粒模式 match_files 没有克隆模式那套
-  名称驱动/表内别名图谱共享，只写单段的行可能仍因缺图谱落 无法判定/；②测试
-  造「不合格」夹具（_gb_mx 整序列 CDS 的 GenBank）时突变要放中段——read 起端
-  会被修剪，位置 2 的错义调不出变异（覆盖 98.2%）；③离线脚本
-  scripts/batch_sequencing_report.py 维持平铺结构未同步。
-- 新增（2026-09-19）**批量上传防呆（Excel 锁文件/占用文件/体积上限）**：网页端
-  「选择文件夹」会把 `~$` 开头的 Excel 锁文件（名称排序先于正主）当成信息表；
-  正被 Excel/WPS 占用时浏览器读不出该文件，XHR 在发送阶段整体失败，前端只显示
-  Network Error 且源站完全无请求日志（易误判为服务器问题）。修复：前端 addFiles
-  跳过 `~$`/desktop.ini 等临时垃圾文件并在芯片行下方提示；runBatch 上传前逐文件
-  试读 1 字节（`slice(0,1).text()`），占用文件点名报错且不发起请求；总体积超
-  95MB 拦截（Cloudflare 免费版 100MB 请求体硬上限留余量）并提示分批；芯片行显示
-  总体积。formatApiError 把裸 Network Error/Failed to fetch 翻译成可行动提示。
-  后端 analyze-batch 对 `~$` 信息表与损坏 xlsx（BadZipFile/InvalidFileException，
-  原先 500）返回明确 400。注意测试环境是 happy-dom：无 Blob.array()、FileReader
-  事件在宏任务触发（flushPromises 刷不到），试读用 text()，测试用覆盖 slice 模拟。
-- 新增（2026-09-19）**批量分析整理包 + 分析记录 15 分钟自动删除**：网页批量
-  分析（analyze-batch）完成后按上传原始字节现场打包「整理包」并缓存（离线脚本
-  产物的网页版：按质粒/克隆归档的文件副本、各组 测序分析报告.md、分析结果.json、
-  整理清单.csv、批次总览.txt、结论回填的信息表 + 原始备份；克隆模式按
-  （质粒, 克隆）回填，是离线脚本没有的扩展），15 分钟内经
-  GET /api/sequencing/batches/{batch_id}/report 重复下载（响应 report_ready
-  控制；体积超 MAX_BATCH_CACHE_BYTES=256MB 跳过打包）。构建逻辑在
-  app/sequencing_report.py（纯函数），缓存时效清理在 sequencing_routes
-  （_sweep_expired）。同时分析记录（_ANALYSES）加 15 分钟 TTL 自动删除
-  （ANALYSIS_TTL），MAX_STORED/MAX_TRACE_STORED 容量兜底保留。上传链路：
-  容器 nginx client_max_body_size 10m→512m、代理读写超时 120s→600s（批量
-  交付几十个 ab1 轻易超 10MB，超限断连在浏览器端表现为 Network Error）。
-- 新增（2026-09-19）**克隆模式图谱单段命名 + 表内别名共享**：质粒名三种写法
-  （'17648'/'MBYSTC'/'17648 MBYSTC'）与图谱文件名两两等价——图谱文件名也可只写
-  一段（'17648.fasta'），与图谱共享该段的行直接命中；只写另一段的行（'MBYSTC'）
-  与图谱无共同标识，新增表内别名兜底：信息表内恰有一个以它为组成段的质粒名
-  且该名已确定图谱时共享（宿主多于一个或表中无全名行——图谱 '17648' ↔ 表
-  'MBYSTC'——确实无法建立对应，维持缺图谱不猜）。
-- 新增（2026-09-19）**测序分析与批量测序分析权限彻底拆分**：功能矩阵新增
-  「批量测序分析」（sequencing_batch，注册表紧随 sequencing）。后端 main.py 对
-  sequencing_router 改挂 require_any_feature（分析记录查看/峰图/导出/删除为两者
-  共用，任一开放即可），端点级 require_feature 落到各入口——单样品三入口
-  （/sequencing/analyze、designs/{id}/…、vectors/{id}/…）属「测序分析」，
-  /sequencing/analyze-batch 属「批量测序分析」；gating.py 新增 require_any_feature。
-  存量兼容：site_settings 新增 feature_migrations 标记列（init_db 轻量 ALTER 迁移），
-  读路径按 features.SPLIT_INHERIT 做一次性继承迁移（含 sequencing 的清单——站点
-  两级矩阵 + 用户个人覆盖——自动补 sequencing_batch，保持拆分前行为；标记保证
-  只跑一次，之后管理员显式取消勾选不会被补回）。前端：/sequencing/batch 路由与
-  导航改绑新键；/sequencing 路由守卫 anyFeature 任一放行（批量结果深链 ?history=
-  的共用详情载体），仅有批量权限时页内隐藏上传分析区降级为只读回看；AdminView
-  矩阵由 feature_keys 动态渲染自动出现新键。测试 tests/test_feature_gating_sequencing.py
-  7 项（注册表顺序/一次性迁移幂等且不覆盖显式勾选/用户覆盖补齐/端点 403 拆分/
-  site-config 传导/矩阵键）+ 前端降级用例；pytest 299 通过，vitest 91 通过
-- 新增（2026-09-18）**批量测序克隆模式**（一个质粒多个克隆）：信息表带「克隆号」列时
-  每行一个克隆独立成组、独立分析（core/sanger/batch.py 新增 rows_have_clones +
-  match_clone_files；load_excel 识别克隆/样品列、数值单元格 123.0→'123'）。read 匹配：
-  「克隆号-引物」组合精确（含忽略分隔符变体 S99678_M13F-75）→ 引物条目精确（兼容旧表
-  完整文件名）→ 组合包含（复制版后缀）→ 克隆号前缀兜底（分隔符边界，信息表漏填引物）；
-  裸引物名出现在多行/未知克隆号的文件一律不猜判未匹配。图谱匹配支持两段式质粒名
-  部分匹配（"17648 MBYSTC" 可只写 "17648"/"MBYSTC"/全名；全名精确 > 忽略分隔符 >
-  段一致 > 双向包含[短侧≥4字符]；多文件竞争按强度取最精确，同强度仅主干一致视为
-  重复副本，弱匹配并列全判歧义不猜）。同一质粒参考图谱解析一次供全部克隆复用；
-  分析记录 sample_name="克隆号 质粒名"。响应新增 clone_mode + item.clone；分析记录
-  上限 50→200，峰图原始数据单独限量只留最近 40 次（更早记录结论可看、峰图 404 提示
-  已清理）；MAX_BATCH_FILES 200→400 + 克隆分组上限 120。前端 BatchSequencingView
-  克隆列/汇总/模式徽标；conftest 新增 autouse 清空限流计数（upload 档 20/小时会被
-  全套件历史请求占满导致 429 污染）；离线脚本遇克隆模式信息表明确报错指向网页端。
-  pytest 292 通过；真实交付数据（17648 MBYSTC.dna + 4 克隆×5 ab1）端到端验证：
-  各克隆独立结论（合格/移码不合格）、S99681 无文件正确报缺 reads
-- 新增（2026-09-07）**账号体系**：三层角色（管理员/普通用户/匿名访客，管理员不受任何
-  开关限制）+ 站点开关（site_settings 单行表 + app/site_settings.py 读侧 3s TTL 缓存）：
-  ①开放注册；②注册邮箱验证（6 位码哈希存储、10 分钟有效、60s 重发冷却，
-  EmailVerificationDB 表；users 表 init_db 轻量迁移补 email_verified 列并回填存量用户，
-  登录未验证账号返回 verify_token 引导补验证）；③功能开放矩阵（app/features.py 六个
-  功能键 design/batch/vectors/sequencing/analysis/codon × 匿名/用户两组，默认全开放保持
-  旧行为；前端 NavBar 过滤 + 路由守卫 + ForbiddenView，后端 require_feature 路由依赖
-  app/gating.py 兜底拦截）；管理员引导 ADMIN_EMAIL/ADMIN_PASSWORD（app/auth/bootstrap.py，
-  存在则提升、缺省不动作）；邮件渠道 app/mailer.py：console（默认，验证码进日志）/
-  smtp（QQ/163/Gmail 授权码）/resend（免费 3000/月）/brevo（免费 300/天）；
-  /api/admin/settings+/api/admin/users（app/admin_routes.py，仅管理员；自我保护：不能
-  禁用/删除自己、不能移除最后一位管理员）；前端 /admin 面板 AdminView（开关+功能矩阵+
-  用户管理）+ AuthModal 验证码步骤（注册关闭提示、重发倒计时）；测试
-  tests/test_account_system.py 18 项（独立内存库+get_db override+限流打桩）
-- 新增（2026-09-07）**批量测序独立网页入口**：归组/结论逻辑从批量脚本抽到
-  core/sanger/batch.py（load_excel 支持 bytes、match_files 文件项兼容 name/path、
-  excel_conclusion 两端同口径），脚本改为复用；后端新增 POST /api/sequencing/analyze-batch
-  （整个交付文件夹 + 可选信息表 → 按质粒归组逐个跑管线出一句话结论；无信息表时按
-  图谱名包含关系归组、取最长包含解决 MX/MX2 前缀歧义；成功者注册进标准分析记录）；
-  前端新增 /sequencing/batch 路由 + BatchSequencingView + 导航「批量测序」，
-  查看详情深链 /sequencing?history=<id>（SequencingView 新增该参数回看载入）；
-  单样品入口 /sequencing 保持不变
-- pytest **247 通过**（含 test_account_system 18 项、test_docker_requirements_sync 3 项、
-  test_sequencing_batch 7 项、
-  test_batch_sequencing 11 项、test_vector_data 数据守门 6 项、CDS 测序结论/峰级证据/
-  ORF 对齐/嵌套去重/置信度分层等）；前端 vitest **81 通过**；vite build 通过
-- 新增（2026-09-07）**批量测序整理分析脚本**（scripts/batch_sequencing_report.py）：离线批处理
-  "Excel 信息表 + 测序结果文件夹"——引物列填测序文件名（分号分隔）匹配 .ab1、质粒名称匹配
-  参考图谱（.dna/.gb/.fasta）；同一质粒文件【复制】到 <数据目录>/测序分析/<质粒名>/（原件
-  不动不覆盖、整理清单.csv 记录原始路径+MD5），逐质粒跑 core/sanger 全自动管线生成
-  测序分析报告.md + 分析结果.json，一句话结论回填 Excel"测序结果"列（原表先备份）；
-  requirements 补 openpyxl；测试用合成 ab1 + FASTA 端到端覆盖（tests/test_batch_sequencing.py）
-- 新增（2026-09-06 三次补充）**比对校验视图**（页内核对测序结果，不再需要导出到其他软件）：
-  aligner.align_read 输出逐列对齐 `aligned`（ref_aligned/read_aligned 等长带 gap、read 以
-  参考方向展示、q_aligned 逐列 Q 反向 read 随碱基反转）；_summary 每条 read 带 alignment_view；
-  consensus 新增 `diffs`（与参考差异位+cons_index）；前端「比对校验」区块（60 列分块、错配红底/
-  插缺/低 Q 橙字、read 切换 chip、点击差异行定位到对应列）+ 峰图高亮改用 read_pos 精确坐标
-  （原来 ref_pos-ref_start 在有 indel 时偏移）+ 峰图未加载时点差异行会自动加载 + 共识序列
-  黄色高亮差异位
-- 测序页导入重构（2026-09-06 二次补充）：**「选择参考序列」区块整体移除**（设计数据不持久、
-  载体对比场景少，参考序列改为随 .ab1 一起上传）——参考文件（.gb/.gbk/.fasta/.fa/.fna/.dna）
-  与 .ab1 放同一文件夹拖入/选择即可，面板自动按扩展名分类（忽略无关文件、提示多余参考）；
-  后端新增 POST /api/sequencing/analyze（multipart reference+reads，样品名取参考文件名主干，
-  core/sanger/reference_parser.py 用 Biopython/snapgene-reader 解析特征）；
-  requirements 补 snapgene-reader；/api/vectors/{id}/sequence?format=genbank 重写为
-  Biopython 可回解析的标准格式；深链 ?mode=design|vector&ref=ID 自动下载对应 GenBank
-  预填参考（fetchDesignGenbankFile/fetchVectorGenbankFile）；utils/recentDesigns.ts 已删除
-- 新增（2026-09-06）：PlasmidMap v2 重写（填充式特征弧+重叠分层+方向箭头、外侧标签多轨、
-  内侧单一酶切位点蓝色多轨、PNG 2x 导出、坐标环形取模）；SequenceView v2（酶名两档错层+
-  切点标记、识别序列底纹、翻译按链分置、特征条重叠分层）；**测序分析拆为独立模块**
-  （/sequencing 路由 + SequencingView：历史分析列表；VectorDetailView 与 ResultView 改为
-  深链跳转入口）；后端新增 GET /api/sequencing/analyses 列表接口与
-  EnzymeSite.recognition 字段；**载体库数据准确性**：data/vectors 9 载体全部替换为真实
-  序列+注释（SnapGene 官方库直链 + NCBI L09137/U78872），YAML 带 data_provenance 血统，
-  scripts/fetch_vector_sequences.py 为刷新管线（含自检），ElementType 补 CDS、加载器未知
-  类型降级 other
-- 2026-09-05：SnapGene 风格图谱初版 + Sanger 测序全自动分析（core/sanger/ +
-  sequencing_routes + SequencingPanel，依赖 biopython，可选 tracy 解卷积；分析记录为进程内存存储）
-- 旧状态：2026-09-04 pytest 126 / vitest 42；冒烟 20 通过；GitHub main 已同步
-- 当前版本 v2.6.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.7.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
-- 测试基线（2026-10-09 合并/同步后）：pytest 625 + 1 skip / vitest 174 / vue-tsc 0
-- 未竟事项：分析页「双酶消化模拟」UI 全流程曾因会话中断未走完最后一步
-  （后端 /analysis/digest 已有 4 个单测覆盖，EcoRI 单酶 UI 实测通过）
+- 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
+- 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
