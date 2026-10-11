@@ -161,6 +161,21 @@ describe('AnalysisView 双酶切模拟', () => {
     expect(digestSection(wrapper).text()).toContain('环状完全消化')
   })
 
+  it('勾选后再取消 → 按点击时的开关状态以 circular=false 提交', async () => {
+    vi.mocked(simulateDigest).mockResolvedValue(DOUBLE_DIGEST)
+    const wrapper = await mountWithRestriction()
+    const box = digestSection(wrapper).find('input.digest-circular-input')
+    await pickEnzyme(wrapper, 'Eco', 'EcoRI')
+    await box.setValue(true)
+    await digestButton(wrapper).trigger('click')
+    await flushPromises()
+    await box.setValue(false)
+    await digestButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(simulateDigest).mock.calls.map(c => c[2])).toEqual([true, false])
+  })
+
   it('所选酶在序列中无位点时显示后端提示', async () => {
     vi.mocked(simulateDigest).mockResolvedValue({
       total_fragments: 0, fragments: [], enzymes_with_sites: [],
