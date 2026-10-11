@@ -364,15 +364,21 @@ async def delete_batch_session(session_id: str, request: Request,
 
 
 def sweep_now() -> int:
+    removed = 0
     try:
-        return store.sweep(local_jobs=set(_JOBS))
+        removed += store.sweep(local_jobs=set(_JOBS))
     except Exception:  # noqa: BLE001 清理失败不影响服务
         logger.exception("批量上传会话清理失败")
-        return 0
+    try:
+        # 整理包同样落盘：无人访问时也要按 TTL 清理
+        removed += sr._sweep_reports()
+    except Exception:  # noqa: BLE001
+        logger.exception("批量整理包清理失败")
+    return removed
 
 
 async def sweeper_loop(interval: float = SWEEP_INTERVAL) -> None:
-    """启动时清理一次残留，之后周期清理过期会话（lifespan 中启动）"""
+    """启动时清理一次残留，之后周期清理过期会话与整理包（lifespan 中启动）"""
     while True:
         await run_in_threadpool(sweep_now)
         await asyncio.sleep(interval)
