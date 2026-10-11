@@ -248,6 +248,49 @@ class TestCodonOptimizationCache:
         assert list(warns2) == list(warns1)
 
 
+class TestResultCacheAlgoVersion:
+    """10-docs-compat M6：产出代码变了但缓存键版本未递增，Redis 会返回旧结果"""
+
+    def test_codon_opt_ignores_entry_under_old_algo(self):
+        from app.cache import CODON_OPT_ALGO
+        from app.design_service import process_sequence
+
+        assert CODON_OPT_ALGO != "v2.1"
+        cache.backend.clear_pattern("codon_opt:*")
+        # 模拟升级前（algo=v2.1，旧密码子表/旧优化器）写入 Redis 的条目
+        stale_key = cache._generate_key(
+            "codon_opt", algo="v2.1", sequence=_AA, species="ecoli",
+            gc_min=40, gc_max=60, exclude_enzymes=[],
+        )
+        cache.backend.set(stale_key, {
+            "dna_sequence": "STALE", "cai": 0.0, "gc_content": 0.0, "warnings": [],
+        })
+
+        dna, _cai, _gc, _w = process_sequence(
+            _AA, SequenceType.AMINO_ACID, True, "ecoli", 40, 60
+        )
+        assert dna != "STALE"
+
+        new_key = cache._generate_key(
+            "codon_opt", algo=CODON_OPT_ALGO, sequence=_AA, species="ecoli",
+            gc_min=40, gc_max=60, exclude_enzymes=[],
+        )
+        assert cache.backend.get(new_key)["dna_sequence"] == dna
+
+    def test_enzymes_ignores_entry_under_old_key(self):
+        from app.analysis_routes import list_enzymes
+
+        cache.backend.clear_pattern("analysis_enzymes:*")
+        # v2.8.0 前无版本的键里存着 26 种旧酶表
+        cache.backend.set(cache._generate_key("analysis_enzymes"),
+                          {"total": 26, "enzymes": {}})
+
+        data = asyncio.run(list_enzymes())
+        assert data["total"] == 47
+        # 键带版本段，但仍能按 analysis_enzymes:* 清除
+        assert cache.backend.clear_pattern("analysis_enzymes:*") >= 1
+
+
 class TestDesignResultCache:
     def test_completed_design_is_cached(self):
         design_id = "design_cache_test_1"
@@ -321,7 +364,9 @@ class TestStaticEnzymesCache:
         first = asyncio.run(list_enzymes())
         assert first["total"] > 0
 
-        key = cache._generate_key("analysis_enzymes")
+        from app.cache import ANALYSIS_ENZYMES_VERSION
+
+        key = cache._generate_key(f"analysis_enzymes:{ANALYSIS_ENZYMES_VERSION}")
         assert cache.backend.get(key) is not None
 
         # 第二次调用走缓存，结构一致

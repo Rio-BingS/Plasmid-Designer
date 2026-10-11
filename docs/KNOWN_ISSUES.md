@@ -149,7 +149,7 @@ Marmur-Doty）系统性高约 7°C，且相同长度与 GC 的不同序列不再
 
 - 限制酶：回文酶不再正反链重复计数，可判为唯一位点；三套酶表统一到
   Bio.Restriction（REBASE），默认扫描 51 种、下拉 47 种；HindIII/SacI
-  不再误报兼容。部署后如用 Redis，请清除 `analysis_enzymes:*` 缓存。
+  不再误报兼容。（2.9.0 之后的版本酶表缓存键带版本，升级无需手动清缓存。）
 - 酶切模拟新增可选 `circular`（默认 false），环状时首尾片段合并。
 - 合成 oligo 按重叠双链 Tm 均一化（1.2 kb 基因 spread ≤5 °C），代价是
   oligo 数量通常多 2–4 条。

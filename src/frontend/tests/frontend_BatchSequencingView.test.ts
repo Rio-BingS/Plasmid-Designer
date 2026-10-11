@@ -8,9 +8,11 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock })
 }))
 
-vi.mock('@/api', () => ({
+vi.mock('@/api', async (importOriginal) => ({
   analyzeSequencingBatch: vi.fn(),
-  downloadBatchSequencingReport: vi.fn()
+  downloadBatchSequencingReport: vi.fn(),
+  // 错误文案走真实实现：界面展示的就是后端 detail 原文
+  formatApiError: ((await importOriginal()) as typeof import('@/api')).formatApiError
 }))
 
 import { analyzeSequencingBatch, downloadBatchSequencingReport } from '@/api'
@@ -196,5 +198,23 @@ describe('BatchSequencingView', () => {
     expect(analyzeSequencingBatch).not.toHaveBeenCalled()
     expect(w.find('.error-msg').text()).toContain('100 MB')
     expect(w.find('.staged-line').text()).toContain('共 96.0 MB')
+  })
+
+  it('批量 read 数超限（413）时原样展示后端中文提示', async () => {
+    // 审查 02 M6：后端在比对前按每组/整批 read 数上限拒绝，提示用户拆分批次
+    const detail = '本批次共有 300 条测序 read 需要比对，超过单次上限（240 条）：请拆分为多个批次提交'
+    vi.mocked(analyzeSequencingBatch).mockRejectedValue({
+      message: 'Request failed with status code 413',
+      response: { status: 413, data: { detail } }
+    })
+    const w = mountView()
+    const input = w.find('input[type="file"][multiple]')
+    Object.defineProperty(input.element, 'files', { value: [makeFile('T1.ab1')] })
+    await input.trigger('change')
+    await w.find('button.analyze-btn').trigger('click')
+    await flushPromises()
+
+    expect(analyzeSequencingBatch).toHaveBeenCalledTimes(1)
+    expect(w.find('.error-msg').text()).toBe(detail)
   })
 })

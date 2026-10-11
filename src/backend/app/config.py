@@ -14,6 +14,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]  # config.py -> app -> backend
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from core._version import __version__ as _VERSION  # noqa: E402  版本号单一来源
+
 DATA_DIR_DEFAULT = str(PROJECT_ROOT / "data")
 # SQLite 默认库文件路径（跟随 DATA_DIR，未设 DATA_DIR 时位于项目 data/ 下）
 _DATABASE_URL_DEFAULT = "sqlite:///" + (Path(os.environ.get("DATA_DIR", DATA_DIR_DEFAULT)) / "plasmid_designer.db").as_posix()
@@ -24,9 +26,12 @@ class Settings(BaseSettings):
 
     # 应用信息
     APP_NAME: str = "Plasmid Designer"
-    APP_VERSION: str = "2.9.0"
+    APP_VERSION: str = _VERSION  # 发版改 core/_version.py
     # 生产环境保持 False；开发调试时通过 .env / 环境变量显式打开
     DEBUG: bool = False
+    # /docs、/redoc、/openapi.json 开关。本地开发默认开启；Docker compose 默认 false
+    # （容器 nginx 无法按来源限制，开启即对公网暴露全部接口结构，审查 10 L7）
+    ENABLE_API_DOCS: bool = True
 
     # 服务器配置
     HOST: str = "0.0.0.0"

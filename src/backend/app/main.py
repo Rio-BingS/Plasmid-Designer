@@ -73,11 +73,19 @@ async def lifespan(app: FastAPI):
 
 # ==================== 创建应用 ====================
 
+def api_docs_kwargs(enabled: bool) -> dict:
+    """ENABLE_API_DOCS=false 时三个文档端点一并关闭（返回 404）"""
+    if enabled:
+        return {}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
 app = FastAPI(
     title="Plasmid Designer API",
     description="自动化质粒构建设计平台 API",
     version=settings.APP_VERSION,
     lifespan=lifespan,
+    **api_docs_kwargs(settings.ENABLE_API_DOCS),
 )
 
 # ==================== 中间件 ====================

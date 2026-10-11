@@ -2,4 +2,6 @@
 Plasmid Designer - 核心设计引擎
 """
 
-__version__ = "2.0.0"
+from core._version import __version__
+
+__all__ = ["__version__"]
