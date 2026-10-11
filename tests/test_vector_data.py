@@ -89,3 +89,43 @@ def test_flagship_vector_cross_check(loaded):
         assert v is not None, f"缺少旗舰载体 {vid}"
         assert len(v.sequence) == length, \
             f"{vid}: 序列长度 {len(v.sequence)} != 权威记录 {length}（数据疑似被改动）"
+
+
+# SnapGene 来源的载体 YAML 曾把特征起点写成 0-based（整体左移 1 位）：
+# CDS 长度不是 3 的倍数、图谱翻译读码框错位。蛋白编码特征必须是完整 ORF
+_SNAPGENE_VECTORS = ("pcDNA3.1", "pET-21a", "pET-28a", "pFastBac1",
+                     "pGEX-4T-1", "pLVX", "pYES2")
+_STARTS = {"ATG", "GTG", "TTG"}
+
+
+def _feature_dna(seq, e):
+    from core.seq_utils import revcomp
+    sub = seq[e.start - 1:e.end]
+    return revcomp(sub) if e.strand == "-" else sub
+
+
+@pytest.mark.parametrize("vector_id", _SNAPGENE_VECTORS)
+def test_snapgene_vector_cds_are_complete_orfs(loaded, vector_id):
+    from core.seq_utils import translate
+    lib, _ = loaded
+    v = lib.get_vector(vector_id)
+    checked = 0
+    for e in v.elements:
+        if e.element_type.value not in ("CDS", "resistance") or "site" in e.name:
+            continue
+        dna = _feature_dna(v.sequence, e)
+        prot = translate(dna, stop_at_stop=False)
+        assert len(dna) % 3 == 0, f"{vector_id}: {e.name} 长度 {len(dna)} 不是 3 的倍数"
+        assert dna[:3] in _STARTS and prot.endswith("*") and "*" not in prot[:-1], \
+            f"{vector_id}: {e.name} 不是完整 ORF（起点坐标错位？）"
+        checked += 1
+    assert checked >= 1
+
+
+@pytest.mark.parametrize("vector_id", ("pcDNA3.1", "pET-28a", "pYES2"))
+def test_snapgene_vector_t7_promoter_exact(loaded, vector_id):
+    lib, _ = loaded
+    v = lib.get_vector(vector_id)
+    e = v.get_element("T7 promoter")
+    assert _feature_dna(v.sequence, e) == "TAATACGACTCACTATAGG"
+    assert e.end - e.start + 1 == 19

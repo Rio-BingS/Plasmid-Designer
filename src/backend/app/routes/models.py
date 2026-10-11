@@ -282,23 +282,105 @@ class BatchImportRequest(BaseModel):
     file_paths: List[str] = []
 
 
-# ==================== 质粒图谱 ====================
+# ==================== 质粒图谱（契约 plasmid-map/1，docs/MAP.md） ====================
+# 路由直接返回 core.plasmid_map 组装的字典（可选字段缺省即省略，符合契约）；
+# 这些模型用于请求体校验（编辑后重算、导出）与 OpenAPI 文档。
 
-class EnzymeSite(BaseModel):
-    """酶切位点（1-based）"""
-    name: str
+MAP_MAX_LENGTH = int(os.environ.get("MAP_MAX_LENGTH", "300000"))
+MAP_MAX_FEATURES = 5000
+MAP_MAX_ENZYMES = 1000
+
+MapFeatureType = Literal[
+    "cds", "promoter", "terminator", "rep_origin", "rbs", "marker", "tag",
+    "signal_peptide", "polyA_signal", "enhancer", "ltr", "primer_bind",
+    "protein_bind", "misc_rna", "misc_feature", "insert", "mcs",
+]
+MapTopology = Literal["circular", "linear"]
+
+
+class MapSegment(BaseModel):
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+
+
+class MapAutoInfo(BaseModel):
+    library: str = Field(..., max_length=80)
+    identity: float = Field(..., ge=0, le=1)
+    coverage: float = Field(..., ge=0, le=1)
+    fragment: bool
+
+
+class MapFeature(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    name: str = Field(..., max_length=200)
+    type: MapFeatureType
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal[1, -1, 0] = 0
+    segments: Optional[List[MapSegment]] = Field(default=None, max_length=200)
+    color: Optional[str] = Field(default=None, max_length=32)
+    source: Literal["file", "auto", "design", "vector"] = "file"
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    qualifiers: Optional[Dict[str, str]] = Field(default=None, max_length=100)
+    auto: Optional[MapAutoInfo] = None
+
+
+class MapEnzymeSite(BaseModel):
     position: int
-    strand: str = "+"
-    cut_fwd: int
-    cut_rev: int
-    overhang: Optional[str] = None
-    recognition: Optional[str] = None
+    cut_top: int
+    cut_bottom: int
+    strand: Literal[1, -1]
 
 
-class PlasmidMapData(BaseModel):
-    """质粒图谱数据"""
+class MapEnzyme(BaseModel):
     name: str
-    length: int
-    sequence: Optional[str] = None
-    features: List[Dict] = []
-    enzyme_sites: List[EnzymeSite] = Field(default_factory=list)
+    recognition: str
+    ends: Literal["5'", "3'", "blunt"]
+    overhang: Optional[str] = None
+    cut_count: int
+    sites: List[MapEnzymeSite] = Field(default_factory=list)
+    methylation: Optional[List[str]] = None
+
+
+class MapOrf(BaseModel):
+    start: int
+    end: int
+    strand: Literal[1, -1]
+    frame: Literal[0, 1, 2]
+    aa_length: int
+
+
+class MapPrimer(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    name: str = Field(..., max_length=200)
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal[1, -1] = 1
+    sequence: Optional[str] = Field(default=None, max_length=1000)
+
+
+class MapMeta(BaseModel):
+    source_format: Literal["genbank", "fasta", "snapgene", "raw", "design", "vector"]
+    enzyme_set: str = Field(default="common", max_length=40)
+    warnings: List[str] = Field(default_factory=list, max_length=200)
+
+
+class MapDocument(BaseModel):
+    schema_: Literal["plasmid-map/1"] = Field(default="plasmid-map/1", alias="schema")
+    name: str = Field(..., max_length=200)
+    topology: MapTopology
+    length: int = Field(..., ge=1)
+    sequence: str = Field(..., min_length=1, max_length=MAP_MAX_LENGTH)
+    features: List[MapFeature] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    enzymes: List[MapEnzyme] = Field(default_factory=list, max_length=MAP_MAX_ENZYMES)
+    orfs: List[MapOrf] = Field(default_factory=list, max_length=20000)
+    primers: List[MapPrimer] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    meta: Optional[MapMeta] = None
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _length_matches(self):
+        if self.length != len(self.sequence):
+            raise ValueError("length 与 sequence 长度不一致")
+        return self
