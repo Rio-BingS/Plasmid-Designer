@@ -837,3 +837,53 @@ def test_streamed_entries_match_one_shot_build(tmp_path):
         "17648 MBYSTC/无法判定/A2.ab1", "TST/TST.fasta", "TST/正确/T1.ab1",
         "TST/正确/T1 (2).ab1", "17648 MBYSTC/17648 MBYSTC.fasta",
         "17648 MBYSTC/正确/A1.ab1", "未匹配文件/孤儿.ab1"]
+
+
+def _manifest_md5_matches_files(out: Path) -> list:
+    """整理清单每一行：归档路径上实际文件的 MD5 与清单 MD5 列一致"""
+    import csv
+    import hashlib
+    import io
+    rows = list(csv.DictReader(io.StringIO(
+        (out / "整理清单.csv").read_text(encoding="utf-8-sig"))))
+    return [(r["归档路径"], r["MD5"] == hashlib.md5(
+        (out / r["归档路径"]).read_bytes()).hexdigest()) for r in rows]
+
+
+def test_rerun_renamed_copies_manifest_md5_points_at_written_file(tmp_path, monkeypatch):
+    """review 05 M1：同名异内容加 " (n)" 另存后，清单的归档路径 + MD5 必须指向
+    实际写出的那份副本（read 与参考图谱都覆盖），MD5 等于原件；再跑仍成立"""
+    import hashlib
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    (out / "TST" / "正确" / "T1.ab1").write_bytes(b"user replaced this read")
+    (out / "TST" / "TST.fasta").write_text(">edited\nACGT\n", encoding="utf-8")
+
+    for _ in range(2):
+        _run(monkeypatch, data_dir, "--no-write-back")
+        assert _manifest_paths(out) == {"TST/TST (2).fasta", "TST/正确/T1 (2).ab1"}
+        assert all(ok for _p, ok in _manifest_md5_matches_files(out)), \
+            _manifest_md5_matches_files(out)
+        rec = json.loads((out / batch.RECORD_NAME).read_text(encoding="utf-8"))["files"]
+        for rel, src in (("TST/正确/T1 (2).ab1", "T1.ab1"), ("TST/TST (2).fasta", "TST.fasta")):
+            assert rec[rel] == hashlib.md5((data_dir / src).read_bytes()).hexdigest()
+        assert "TST/正确/T1.ab1" not in rec and "TST/TST.fasta" not in rec
+
+
+def test_interrupted_rerun_partial_manifest_md5_points_at_written_file(tmp_path, monkeypatch):
+    """逐质粒追加的清单行同样记录 " (n)" 另存后的实际路径：中断时留下的
+    半份清单也能按归档路径 + MD5 追溯到正确的副本"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_two_plasmids(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    (out / "TST" / "正确" / "T1.ab1").write_bytes(b"user replaced this read")
+    _crash_on_second_analyze(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, data_dir, "--no-write-back")
+    assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
+    assert all(ok for _p, ok in _manifest_md5_matches_files(out))
