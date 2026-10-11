@@ -530,6 +530,8 @@ export interface CdsReport {
   start: number
   end: number
   strand: string
+  /** 多段 CDS（GenBank join，含跨原点）的各段参考坐标，编码方向顺序 */
+  segments?: [number, number][]
   covered_percent: number
   coverage_status: 'full' | 'partial' | 'uncovered'
   ref_protein_length: number | null

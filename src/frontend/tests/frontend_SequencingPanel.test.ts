@@ -714,6 +714,25 @@ describe('SequencingPanel', () => {
     expect(gaps).toContain('4951-5000、1-60（110bp）')
   })
 
+  it('多段 CDS（跨原点 join）坐标逐段列出', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      circular: true,
+      cds_reports: [{
+        name: 'ampR', start: 2701, end: 300, strand: '+',
+        segments: [[2701, 3000], [1, 300]] as [number, number][],
+        covered_percent: 100, coverage_status: 'full' as const,
+        ref_protein_length: 199, alt_protein_length: 199,
+        protein_identical: true, premature_stop_aa: null,
+        frameshift_count: 0, aa_changes: [], consequences: [],
+        verdict: 'CDS 已完整覆盖。ampR 蛋白与设计一致（199 aa）',
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.cds-coord').text()).toContain('2701-3000、1-300（正向）')
+  })
+
   it('shows peak evidence in confidence tooltip and pending CDS chip', async () => {
     const analysis = {
       ...mockAnalysis,

@@ -23,39 +23,86 @@ def translate(seq: str) -> str:
     return "".join(_STD_TABLE.get(seq[i:i + 3], "x") for i in range(0, len(seq) - len(seq) % 3, 3))
 
 
+def group_feature_segments(features: List[Dict]) -> List[List[Dict]]:
+    """把多段特征（reference_parser 对 join/order 逐段展开的记录）按
+    feature_id 归组，组内按 segment_index（编码方向顺序）排列；
+    无分组键的普通特征各自成组。组的顺序沿用首段在列表中的出现顺序。"""
+    groups: List[List[Dict]] = []
+    by_key: Dict[object, List[Dict]] = {}
+    for f in features:
+        fid = f.get("feature_id")
+        if fid is None or int(f.get("segment_count") or 1) <= 1:
+            groups.append([f])
+            continue
+        g = by_key.get(fid)
+        if g is None:
+            g = by_key[fid] = []
+            groups.append(g)
+        g.append(f)
+    for g in groups:
+        if len(g) > 1:
+            g.sort(key=lambda x: int(x.get("segment_index") or 0))
+    return groups
+
+
+def coding_sequence(ref: str, parts: List[Dict]) -> str:
+    """按编码方向拼接各段（负链段取反向互补），得到特征的编码序列"""
+    out = []
+    for p in parts:
+        s, e = int(p["start"]), int(p["end"])
+        seg = ref[s - 1:e]
+        out.append(_revcomp(seg) if p.get("strand", "+") == "-" else seg)
+    return "".join(out)
+
+
+def coding_offset(parts: List[Dict], ref_pos: int):
+    """参考坐标 → 编码序列内 0-based 偏移（不在任何段内返回 None）"""
+    offset = 0
+    for p in parts:
+        s, e = int(p["start"]), int(p["end"])
+        if s <= ref_pos <= e:
+            return offset + (e - ref_pos if p.get("strand", "+") == "-" else ref_pos - s)
+        offset += e - s + 1
+    return None
+
+
 def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dict:
     """为单个变体补充特征级注释（原地修改并返回）"""
     ref_pos = variant["ref_pos"]
     ref = reference.upper().replace("U", "T")
     L = len(ref)
 
-    # 所在特征（同时保留原始特征 dict，供 CDS 注释直接使用——
-    # 按名称二次反查在重名特征时会取错坐标）
+    # 所在特征（同时保留原始特征分段，供 CDS 注释直接使用——
+    # 按名称二次反查在重名特征时会取错坐标）。多段特征（join）按组
+    # 判定命中：只有变体落在某一段内才算命中，且同一特征只报一次
     hit_features = []
-    hit_feats: List[Dict] = []
-    for f in features:
-        s, e = int(f.get("start", 0)), int(f.get("end", 0))
-        if s <= ref_pos <= e:
+    hit_groups: List[List[Dict]] = []
+    for parts in group_feature_segments(features):
+        if any(int(p.get("start", 0)) <= ref_pos <= int(p.get("end", 0)) for p in parts):
+            f = parts[0]
             hit_features.append({"name": f.get("name", "?"), "type": f.get("type", "other")})
-            hit_feats.append(f)
+            hit_groups.append(parts)
     variant["features"] = hit_features
 
     # CDS 内的氨基酸变化与移码判定
     variant["codon_change"] = None
     variant["aa_change"] = None
     variant["frameshift"] = False
-    for feat in hit_feats:
+    for parts in hit_groups:
+        feat = parts[0]
         if feat.get("type") not in ("CDS", "gene"):
             continue
-        s, e = int(feat["start"]), int(feat["end"])
-        strand = feat.get("strand", "+")
-        if strand == "-":
-            # 负链 CDS：编码序列是特征区间的反向互补，密码子坐标按编码方向计算
-            coding = _revcomp(ref[s - 1:e])
-            cpos = e - ref_pos  # 0-based 在编码序列内偏移
-        else:
-            coding = ref[s - 1:e]
-            cpos = ref_pos - s
+        # 编码序列按段顺序拼接（跨原点的 join 先取 2701..3000 再接 1..300），
+        # 负链段取反向互补，密码子坐标按编码方向计算
+        coding = coding_sequence(ref, parts)
+        cpos = coding_offset(parts, ref_pos)
+        if cpos is None:
+            continue
+        strand = next(
+            (p.get("strand", "+") for p in parts
+             if int(p["start"]) <= ref_pos <= int(p["end"])),
+            feat.get("strand", "+"),
+        )
         if variant["type"] == "substitution":
             frame = (cpos // 3) * 3
             codon_ref = coding[frame: frame + 3]
