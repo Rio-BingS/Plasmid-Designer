@@ -1,7 +1,8 @@
 """批量测序整理分析脚本测试（scripts/batch_sequencing_report.py）
 
-覆盖：Excel 解析、文件名匹配（引物列/质粒名/未匹配）、整理复制（只复制不覆盖）、
-Excel 结论各分支、以及"信息表 + 图谱 + .ab1 → 质粒文件夹 + 报告 + 回填"端到端。
+覆盖：Excel 解析、文件名匹配（引物列/质粒名/未匹配）、整理落盘（同名异内容
+不覆盖）、Excel 结论各分支、"信息表 + 图谱 + .ab1 → 质粒文件夹 + 报告 + 回填"
+端到端，以及离线脚本与网页整理包同输入同产物（章节、按质粒/结论分置结构）。
 """
 
 import importlib.util
@@ -88,25 +89,23 @@ def test_match_ab1_with_extra_prefix_unique_entry(tmp_path):
     assert per["pET"]["reads"][0]["how"].startswith("文件名包含引物条目")
 
 
-# ---------------------------------------------------------------- 整理复制
+# ---------------------------------------------------------------- 整理落盘
 
 
-def test_organize_copies_without_overwriting(tmp_path):
-    src = tmp_path / "原始"
-    src.mkdir()
-    f = src / "MX.dna"
-    f.write_bytes(b"hello")
-    items = [{"file": {"path": f, "rel": Path("MX.dna"), "ext": ".dna", "stem": "mx"},
-              "how": "测试"}]
+def test_write_archive_never_overwrites_different_data_copy(tmp_path):
     out = tmp_path / "out"
-    manifest = []
-    batch.organize("MX", items, out, manifest)
+    entries = [("MX/正确/", None), ("MX/MX.dna", b"hello"),
+               ("MX/正确/测序分析报告.md", "v1")]
+    batch.write_archive(entries, out)
     assert (out / "MX" / "MX.dna").read_bytes() == b"hello"
-    assert f.read_bytes() == b"hello"  # 原件未动
-    assert manifest[0]["md5"] and manifest[0]["src"] == str(f)
-    batch.organize("MX", items, out, manifest)  # 重跑不得覆盖，加序号
-    assert (out / "MX" / "MX (2).dna").exists()
+    assert (out / "MX" / "正确").is_dir()
+    # 重跑：同内容跳过；生成物更新；同名异内容的数据副本加序号另存
+    batch.write_archive([("MX/MX.dna", b"hello"), ("MX/正确/测序分析报告.md", "v2")], out)
+    assert not (out / "MX" / "MX (2).dna").exists()
+    assert (out / "MX" / "正确" / "测序分析报告.md").read_text(encoding="utf-8") == "v2"
+    batch.write_archive([("MX/MX.dna", b"other")], out)
     assert (out / "MX" / "MX.dna").read_bytes() == b"hello"
+    assert (out / "MX" / "MX (2).dna").read_bytes() == b"other"
 
 
 # ---------------------------------------------------------------- 结论
@@ -190,12 +189,16 @@ def test_end_to_end(tmp_path, monkeypatch):
     batch.main()
 
     out = data_dir / "测序分析"
-    folder = out / "TST"
-    # 原件未动 + 副本齐全 + 报告/JSON/清单/备份齐全
+    folder = out / "TST" / "正确"
+    # 原件未动 + 副本齐全（图谱在质粒文件夹根，read 与报告按结论分置）
     assert (data_dir / "T1.ab1").exists()
-    for name in ("TST.fasta", "T1.ab1", "测序分析报告.md", "分析结果.json"):
+    assert (out / "TST" / "TST.fasta").exists()
+    assert (out / "TST" / "错误").is_dir()
+    for name in ("T1.ab1", "测序分析报告.md", "分析结果.json"):
         assert (folder / name).exists(), name
-    assert (out / "整理清单.csv").exists()
+    assert (out / "整理清单.csv").exists() and (out / "批次总览.txt").exists()
+    manifest = (out / "整理清单.csv").read_text(encoding="utf-8-sig")
+    assert "原始路径" in manifest and str(data_dir / "T1.ab1") in manifest
     assert (out / "测序_原始备份.xlsx").exists()
     # Excel 回填
     ws = openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0]
@@ -224,3 +227,83 @@ def test_end_to_end_missing_reference(tmp_path, monkeypatch):
 
     ws = openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0]
     assert "缺少同名参考图谱" in ws.cell(row=2, column=3).value
+    out = data_dir / "测序分析"
+    assert (out / "TST" / "无法判定" / "T1.ab1").exists()
+
+
+# ---------------------------------------------------------------- 与网页整理包同产物
+
+
+def _headings(md: str) -> list:
+    return [ln for ln in md.splitlines() if ln.startswith("#")]
+
+
+def test_offline_output_matches_web_package(tmp_path):
+    """同一输入：离线脚本核心函数的落盘结果与网页整理包 ZIP 的章节标题、
+    按质粒 / 正确·错误·无法判定 分置的目录结构完全一致（含双峰章节）"""
+    import io
+    import zipfile
+
+    from app.routes import sequencing_routes
+    from app.sequencing_report import ZIP_ROOT, build_batch_zip
+    from tests.test_sequencing_batch import REF_MX, REF_MX2, _gb_mx, _mixed_ab1_mx
+
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    (data_dir / "MX.gb").write_bytes(_gb_mx())
+    (data_dir / "T1.ab1").write_bytes(_mixed_ab1_mx("T1.ab1")[1])      # 双峰 → 无法判定
+    (data_dir / "PX.fasta").write_text(f">PX\n{REF_MX2}\n", encoding="utf-8")
+    (data_dir / "P1.ab1").write_bytes(make_ab1(REF_MX2, [40] * len(REF_MX2)))  # → 正确
+    (data_dir / "孤儿.ab1").write_bytes(make_ab1(REF_MX, [40] * len(REF_MX)))   # 未匹配
+    xlsx = data_dir / "测序.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["MX", "T1", None])
+    ws.append(["PX", "P1", None])
+    wb.save(xlsx)
+    _wb, _h, _cols, rows = batch.load_excel(xlsx)
+
+    # 离线：扫描 → 核心函数 → 落盘
+    out = tmp_path / "out"
+    files = batch.scan_files(data_dir, out)
+    batch.load_bytes(files)
+    payload, entries = batch.run_offline_batch(files, rows, 20)
+    batch.write_archive(entries, out)
+    off_files = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+    off_dirs = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_dir()}
+
+    # 网页：同样的文件条目走端点的 _run_batch + build_batch_zip
+    web_entries = [{"name": f["name"], "ext": f["ext"], "stem": f["stem"],
+                    "bytes": f["bytes"]} for f in files]
+    reads = [e for e in web_entries if e["ext"] in batch.READ_EXTS]
+    refs = [e for e in web_entries if e["ext"] not in batch.READ_EXTS]
+    w_payload, groups, unmatched, records = sequencing_routes._run_batch(
+        reads, refs, rows, [], 20)
+    zf = zipfile.ZipFile(io.BytesIO(build_batch_zip(
+        w_payload, groups, unmatched, None, None, None, records)))
+    prefix = f"{ZIP_ROOT}/"
+    web_names = [n[len(prefix):] for n in zf.namelist()]
+    web_files = {n for n in web_names if not n.endswith("/")}
+    web_dirs = {n.rstrip("/") for n in web_names if n.endswith("/")}
+    web_dirs |= {"/".join(n.split("/")[:i]) for n in web_files
+                 for i in range(1, n.count("/") + 1)}
+
+    assert off_files == web_files
+    assert off_dirs == web_dirs
+    assert {"MX/MX.gb", "MX/无法判定/T1.ab1", "MX/无法判定/测序分析报告.md",
+            "PX/PX.fasta", "PX/正确/P1.ab1", "PX/正确/测序分析报告.md",
+            "未匹配文件/孤儿.ab1", "整理清单.csv", "批次总览.txt"} <= off_files
+    assert {"MX/正确", "MX/错误", "PX/正确", "PX/错误"} <= off_dirs
+
+    # 结论一致；每份报告的章节标题一致，混合样品报告含双峰章节
+    assert [it["conclusion"] for it in payload["items"]] == \
+        [it["conclusion"] for it in w_payload["items"]]
+    reports = sorted(n for n in off_files if n.endswith(".md"))
+    assert len(reports) == 2
+    for name in reports:
+        off_md = (out / name).read_text(encoding="utf-8")
+        web_md = zf.read(prefix + name).decode("utf-8")
+        assert _headings(off_md) == _headings(web_md), name
+    mx_heads = _headings((out / "MX/无法判定/测序分析报告.md").read_text(encoding="utf-8"))
+    assert "## 双峰（疑似混合）检测" in mx_heads
