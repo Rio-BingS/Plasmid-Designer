@@ -428,6 +428,99 @@ class TestEmailVerification:
         r = c.post("/api/auth/resend-verification", json={"verify_token": data["verify_token"]})
         assert r.status_code == 429
 
+    # ---- 审查 01 M-2：连错作废后重发冷却失效、计数在进程内 ----
+
+    def _verification_on(self, client, db):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        return c
+
+    @staticmethod
+    def _age_codes(db, seconds=61):
+        """把已发出的验证码 created_at 往前拨，越过 60 秒重发冷却"""
+        from datetime import timedelta
+        from app.database import EmailVerificationDB
+        for row in db.query(EmailVerificationDB).all():
+            row.created_at = row.created_at - timedelta(seconds=seconds)
+        db.commit()
+
+    @staticmethod
+    def _wrong(code):
+        return "000000" if code != "000000" else "111111"
+
+    def test_resend_cooldown_survives_lockout(self, client, db, captured_mail):
+        c = self._verification_on(client, db)
+        vt = self._register(c, "lock@test.com").json()["verify_token"]
+        wrong = self._wrong(captured_mail[-1]["code"])
+        for _ in range(5):
+            r = c.post("/api/auth/verify-email", json={"verify_token": vt, "code": wrong})
+            assert r.status_code == 400
+        assert "错误次数过多" in r.json()["detail"]
+        # 作废后立即重发：仍在 60 秒冷却内，不得发出新码
+        r = c.post("/api/auth/resend-verification", json={"verify_token": vt})
+        assert r.status_code == 429, r.text
+        assert len(captured_mail) == 1
+
+    def test_attempts_counted_in_db(self, client, db, captured_mail):
+        """校验次数落库（多 worker / 重启共享），作废后的码不能再试"""
+        from app.database import EmailVerificationDB
+        c = self._verification_on(client, db)
+        vt = self._register(c, "cnt@test.com").json()["verify_token"]
+        code = captured_mail[-1]["code"]
+        for _ in range(3):
+            c.post("/api/auth/verify-email", json={"verify_token": vt, "code": self._wrong(code)})
+        db.expire_all()
+        assert db.query(EmailVerificationDB).one().attempts == 3
+        for _ in range(2):
+            c.post("/api/auth/verify-email", json={"verify_token": vt, "code": self._wrong(code)})
+        # 第 5 次后作废：正确码也不再接受
+        r = c.post("/api/auth/verify-email", json={"verify_token": vt, "code": code})
+        assert r.status_code == 400
+
+    def test_daily_attempt_cap_spans_resends(self, client, db, captured_mail):
+        c = self._verification_on(client, db)
+        vt = self._register(c, "day@test.com").json()["verify_token"]
+        for _ in range(4):  # 4 轮 × 5 次 = 每日 20 次上限
+            wrong = self._wrong(captured_mail[-1]["code"])
+            for _ in range(5):
+                c.post("/api/auth/verify-email", json={"verify_token": vt, "code": wrong})
+            self._age_codes(db)
+            assert c.post("/api/auth/resend-verification",
+                          json={"verify_token": vt}).status_code == 200
+        # 已用满当日次数：即使拿到新码（且是正确码）也拒绝
+        r = c.post("/api/auth/verify-email",
+                   json={"verify_token": vt, "code": captured_mail[-1]["code"]})
+        assert r.status_code == 429, r.text
+
+    def test_daily_code_send_cap(self, client, db, captured_mail):
+        from app.auth.routes import CODE_DAILY_MAX
+        c = self._verification_on(client, db)
+        vt = self._register(c, "bomb@test.com").json()["verify_token"]
+        for _ in range(CODE_DAILY_MAX - 1):
+            self._age_codes(db)
+            assert c.post("/api/auth/resend-verification",
+                          json={"verify_token": vt}).status_code == 200
+        self._age_codes(db)
+        r = c.post("/api/auth/resend-verification", json={"verify_token": vt})
+        assert r.status_code == 429 and "上限" in r.json()["detail"]
+        assert len(captured_mail) == CODE_DAILY_MAX
+
+    def test_email_verifications_migration_adds_attempts(self, tmp_path, monkeypatch):
+        from sqlalchemy import create_engine as _ce, inspect, text
+        from app.database import models
+        eng = _ce(f"sqlite:///{tmp_path / 'old.db'}")
+        with eng.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE email_verifications (id INTEGER PRIMARY KEY, "
+                "user_id VARCHAR(50) NOT NULL, email VARCHAR(255) NOT NULL, "
+                "code_hash VARCHAR(128) NOT NULL, purpose VARCHAR(30) NOT NULL, "
+                "expires_at DATETIME NOT NULL, consumed BOOLEAN, created_at DATETIME)"))
+        monkeypatch.setattr(models, "engine", eng)
+        models._migrate_email_verifications_table()
+        cols = {c["name"] for c in inspect(eng).get_columns("email_verifications")}
+        assert "attempts" in cols
+
     def test_verify_token_reuse_of_expired_or_bad(self, client, db, captured_mail):
         c, state = client
         state["s"]["email_verification_required"] = True
