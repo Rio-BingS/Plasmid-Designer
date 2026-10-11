@@ -282,6 +282,9 @@ const unshownItems = computed(() => {
   return [...seen.values()]
 })
 const showUnshown = ref(false)
+/** 详情列表最多列这么多条（300 kb 随机序列可有上千项，全列会卡） */
+const UNSHOWN_LIST_MAX = 200
+const unshownList = computed(() => unshownItems.value.slice(0, UNSHOWN_LIST_MAX))
 
 defineExpose({ store, view, undo })
 </script>
@@ -443,7 +446,8 @@ defineExpose({ store, view, undo })
       </span>
     </div>
     <ul v-if="showUnshown && unshownItems.length" class="mv-unshown-list">
-      <li v-for="it in unshownItems" :key="it.id"><b>{{ it.name }}</b> <span class="mv-muted">— {{ it.reason }}</span></li>
+      <li v-for="it in unshownList" :key="it.id"><b>{{ it.name }}</b> <span class="mv-muted">— {{ it.reason }}</span></li>
+      <li v-if="unshownItems.length > unshownList.length" class="mv-muted mv-unshown-more">…另有 {{ unshownItems.length - unshownList.length }} 项</li>
     </ul>
     <MapTooltip :store="store" />
   </div>
