@@ -250,7 +250,7 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
 （重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
 高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。
-图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置的 47 种常用酶扫描生成（含识别序列）。
+图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 的默认菜单 51 种常用酶扫描生成（含识别序列；酶参数取自 Biopython 自带的 REBASE 数据）。
 
 **载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
 每个文件含 `data_provenance` 血统块（来源/地址/抓取日期）。数据来源：

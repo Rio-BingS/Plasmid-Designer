@@ -2,8 +2,8 @@
 序列分析模块
 提供限制性位点分析、ORF预测、GC分析等功能
 """
-import re
-from typing import Dict, List, Optional, Tuple, Set
+from collections.abc import Mapping
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import defaultdict
 import logging
@@ -62,38 +62,62 @@ class SequenceAnalysisResult:
     warnings: List[str]
 
 
-# 常用限制性内切酶数据库
-RESTRICTION_ENZYMES = {
-    # Name: (recognition_seq, cut_offset, overhang_type)
-    # cut_offset: 从识别序列开始位置到切割位置的偏移
-    # overhang: '5' = 5' overhang, '3' = 3' overhang, 'b' = blunt
-    "EcoRI": ("GAATTC", 1, '5'),
-    "BamHI": ("GGATCC", 1, '5'),
-    "HindIII": ("AAGCTT", 1, '5'),
-    "XhoI": ("CTCGAG", 1, '5'),
-    "XbaI": ("TCTAGA", 1, '5'),
-    "SalI": ("GTCGAC", 1, '5'),
-    "PstI": ("CTGCAG", 5, '3'),
-    "KpnI": ("GGTACC", 5, '3'),
-    "SmaI": ("CCCGGG", 3, 'b'),  # blunt
-    "SbfI": ("CCTGCAGG", 6, '3'),
-    "NotI": ("GCGGCCGC", 2, '5'),
-    "NdeI": ("CATATG", 2, '5'),  # CAT|ATG → 5' 突出 TA（REBASE）
-    "NcoI": ("CCATGG", 1, '5'),
-    "SacI": ("GAGCTC", 5, '3'),
-    "BglII": ("AGATCT", 1, '5'),
-    "AvrII": ("CCTAGG", 1, '5'),
-    "SpeI": ("ACTAGT", 1, '5'),
-    "AgeI": ("ACCGGT", 1, '5'),
-    "MluI": ("ACGCGT", 1, '5'),
-    "BsaI": ("GGTCTC", 7, '5'),  # Type IIS
-    "BsmBI": ("CGTCTC", 7, '5'),  # Type IIS
-    "BbsI": ("GAAGAC", 8, '5'),  # Type IIS
-    "EcoRV": ("GATATC", 3, 'b'),  # blunt
-    "DraI": ("TTTAAA", 3, 'b'),   # blunt
-    "PvuII": ("CAGCTG", 3, 'b'),  # blunt
-    "StuI": ("AGGCCT", 3, 'b'),   # blunt
-}
+# 常用限制性内切酶表（兼容视图）
+#
+# Name -> (recognition_seq, cut_offset, overhang_type)，形状与历史手写表
+# 一致，供 design_service / primer_designer 等直接取识别序列拼引物或做
+# 避让 motif 的调用方使用。数据由 core.enzyme_sites（Bio.Restriction /
+# REBASE）派生，不再手写：cut_offset 为正向链切点相对识别序列起点的
+# 偏移，overhang '5' / '3' / 'b'(平端)。
+# 只收录识别序列为纯 ACGT 的默认菜单酶——调用方会把识别序列原样拼进
+# 引物或做子串匹配，含 IUPAC 模糊码的酶（AvaI/AflIII/BsaHI/XcmI）不能
+# 这样用；它们仍可在位点扫描（RestrictionSiteAnalyzer / find_enzyme_sites）
+# 中按名点用。
+_LEGACY_ORDER = (
+    "EcoRI", "BamHI", "HindIII", "XhoI", "XbaI", "SalI", "PstI", "KpnI",
+    "SmaI", "SbfI", "NotI", "NdeI", "NcoI", "SacI", "BglII", "AvrII",
+    "SpeI", "AgeI", "MluI", "BsaI", "BsmBI", "BbsI", "EcoRV", "DraI",
+    "PvuII", "StuI",
+)
+_OVERHANG_CODE = {"5prime": '5', "3prime": '3', None: 'b'}
+
+
+def _legacy_entry(spec: Dict) -> Tuple[str, int, str]:
+    return (spec["site"], spec["cut"][0], _OVERHANG_CODE[spec["overhang"]])
+
+
+class _LazyEnzymeDict(Mapping):
+    """RESTRICTION_ENZYMES：首次访问时才从 REBASE 构建（见 enzyme_sites）"""
+
+    _data: Optional[Dict[str, Tuple[str, int, str]]] = None
+
+    def _load(self) -> Dict[str, Tuple[str, int, str]]:
+        if self._data is None:
+            from core.enzyme_sites import DEFAULT_ENZYMES, get_enzyme
+            order = list(_LEGACY_ORDER) + [n for n in DEFAULT_ENZYMES
+                                           if n not in _LEGACY_ORDER]
+            data = {}
+            for name in order:
+                spec = get_enzyme(name)
+                if spec and all(b in "ACGT" for b in spec["site"]):
+                    data[name] = _legacy_entry(spec)
+            type(self)._data = data
+        return self._data
+
+    def __getitem__(self, key):
+        return self._load()[key]
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+    def __repr__(self) -> str:
+        return f"RESTRICTION_ENZYMES({len(self)} enzymes, REBASE-backed)"
+
+
+RESTRICTION_ENZYMES = _LazyEnzymeDict()
 
 # 起始密码子和终止密码子
 START_CODONS = ["ATG", "GTG", "TTG"]
@@ -105,97 +129,109 @@ CODON_TABLE = CODON_TO_AA
 
 
 class RestrictionSiteAnalyzer:
-    """限制性酶切位点分析器"""
-    
+    """限制性酶切位点分析器（扫描与酶参数统一走 core.enzyme_sites）"""
+
     def __init__(self, enzymes: Dict = None):
         """
         初始化
-        
+
         Args:
-            enzymes: 自定义酶字典，默认使用内置数据库
+            enzymes: 自定义酶字典 {name: (site, cut_offset, overhang)}，
+                默认使用内置表（REBASE 派生）；默认模式下也可按名点用
+                REBASE 中其他商业酶
         """
+        self._custom = bool(enzymes)
         self.enzymes = enzymes or RESTRICTION_ENZYMES
-    
+
+    def _spec(self, enzyme_name: str) -> Optional[Dict]:
+        """酶名 → enzyme_sites 统一参数 {name, site, cut, overhang}"""
+        if self._custom:
+            entry = self.enzymes.get(enzyme_name)
+            if not entry:
+                return None
+            site, cut_offset, overhang = entry
+            site = site.upper()
+            # 旧式三元组只给正链切点，按对称切割补出反链切点
+            return {
+                "name": enzyme_name,
+                "site": site,
+                "cut": (cut_offset, len(site) - cut_offset),
+                "overhang": {'5': "5prime", '3': "3prime"}.get(overhang),
+            }
+        from core.enzyme_sites import get_enzyme
+        return get_enzyme(enzyme_name)
+
+    def is_known(self, enzyme_name: str) -> bool:
+        return self._spec(enzyme_name) is not None
+
     def find_sites(self, sequence: str, enzymes: List[str] = None) -> List[RestrictionSite]:
         """
-        查找序列中的限制性位点
-        
+        查找序列中的限制性位点（线性扫描）
+
+        回文识别序列的正反链匹配是同一个物理位点，只按正链报一次；
+        非回文酶按实际结合方向报 '+' 或 '-'。
+
         Args:
             sequence: DNA 序列
             enzymes: 要检测的酶列表，默认检测所有
-        
+
         Returns:
             发现的限制性位点列表
         """
-        sequence = sequence.upper()
+        from core.enzyme_sites import scan_sites
+
+        sequence = sequence.upper().replace("U", "T")
         sites = []
-        
+
         enzymes_to_check = enzymes if enzymes else list(self.enzymes.keys())
-        
+
         for enzyme_name in enzymes_to_check:
-            if enzyme_name not in self.enzymes:
+            spec = self._spec(enzyme_name)
+            if spec is None:
                 logger.warning(f"未知酶: {enzyme_name}")
                 continue
-            
-            recognition_seq, cut_offset, overhang = self.enzymes[enzyme_name]
-            
-            # 正向链搜索
-            for match in re.finditer(recognition_seq, sequence):
-                site = RestrictionSite(
+            site_len = len(spec["site"])
+            overhang = _OVERHANG_CODE[spec["overhang"]]
+            for a, strand, cut_fwd, cut_rev in scan_sites(
+                    sequence, spec, palindrome_both_strands=False):
+                # cut_position 沿用历史口径：酶自身结合链上的切点（正链位点
+                # 取正链切点，反链位点取反链切点），表示为「切点前一位」
+                sites.append(RestrictionSite(
                     enzyme=enzyme_name,
-                    site=recognition_seq,
-                    cut_position=match.start() + cut_offset,
-                    recognition_start=match.start() + 1,  # 1-indexed
-                    recognition_end=match.end(),
-                    strand='+',
-                    overhang=overhang
-                )
-                sites.append(site)
-            
-            # 反向链搜索。回文识别序列（EcoRI 等，revcomp 与自身相同）的
-            # 反链匹配就是同一个物理位点：再报一次会让每个位点计两次，
-            # find_unique_sites 也就永远不会把回文酶判为唯一切点
-            rev_seq = self._reverse_complement(recognition_seq)
-            if rev_seq == recognition_seq:
-                continue
-            for match in re.finditer(rev_seq, sequence):
-                site = RestrictionSite(
-                    enzyme=enzyme_name,
-                    site=recognition_seq,
-                    cut_position=match.start() + len(recognition_seq) - cut_offset,
-                    recognition_start=match.start() + 1,
-                    recognition_end=match.end(),
-                    strand='-',
-                    overhang=overhang
-                )
-                sites.append(site)
-        
+                    site=spec["site"],
+                    cut_position=cut_fwd if strand == '+' else cut_rev - 1,
+                    recognition_start=a + 1,  # 1-indexed
+                    recognition_end=a + site_len,
+                    strand=strand,
+                    overhang=overhang,
+                ))
+
         # 按位置排序
         sites.sort(key=lambda x: x.recognition_start)
         return sites
-    
+
     def find_unique_sites(self, sequence: str) -> Dict[str, RestrictionSite]:
         """
         查找唯一酶切位点（仅出现一次）
-        
+
         Returns:
             酶名 -> 位点 的字典
         """
         all_sites = self.find_sites(sequence)
-        
+
         # 统计每个酶的位点数
         enzyme_counts = defaultdict(list)
         for site in all_sites:
             enzyme_counts[site.enzyme].append(site)
-        
+
         # 返回唯一的
         unique = {}
         for enzyme, sites in enzyme_counts.items():
             if len(sites) == 1:
                 unique[enzyme] = sites[0]
-        
+
         return unique
-    
+
     def _reverse_complement(self, sequence: str) -> str:
         """获取反向互补序列（收敛到 core.seq_utils.revcomp）"""
         return revcomp(sequence)
@@ -204,11 +240,13 @@ class RestrictionSiteAnalyzer:
         """
         检查两个酶是否产生兼容的末端
 
-        兼容的判定按**实际突出端序列**而非仅突出端类型：EcoRI（AATT）与
-        BamHI（GATC）虽同为 5' 突出，末端序列不同、不可互连；SpeI/XbaI
-        这类产生相同突出端（CTAG）的酶才判兼容。平末端一律互相兼容。
-        同一酶自身恒兼容；Type IIS 酶（BsaI 等）的突出端由侧翼序列决定、
-        无法从识别序列推导，仅同一酶名时判兼容。
+        兼容的判定按**实际突出端序列与方向**而非仅突出端类型：EcoRI
+        （AATT）与 BamHI（GATC）虽同为 5' 突出，末端序列不同、不可互连；
+        SpeI/XbaI 这类产生相同 5' 突出端（CTAG）的酶才判兼容；HindIII
+        （5' AGCT）与 SacI（3' AGCT）序列相同但方向相反，也不兼容。
+        平末端一律互相兼容。同一酶自身恒兼容；Type IIS 酶（BsaI 等）与
+        突出端含模糊碱基的酶，其突出端由具体序列决定、无法预先推导，
+        仅同一酶名时判兼容。
 
         Args:
             enzyme1, enzyme2: 酶名称
@@ -216,7 +254,8 @@ class RestrictionSiteAnalyzer:
         Returns:
             是否兼容（可连接）
         """
-        if enzyme1 not in self.enzymes or enzyme2 not in self.enzymes:
+        spec1, spec2 = self._spec(enzyme1), self._spec(enzyme2)
+        if spec1 is None or spec2 is None:
             return False
         if enzyme1 == enzyme2:
             return True
@@ -230,51 +269,35 @@ class RestrictionSiteAnalyzer:
         # 一平一粘不可连接
         if overhang1 is None or overhang2 is None:
             return False
-        # IIS 酶标记：突出端取决于侧翼序列，不同 IIS 酶之间不预设兼容
+        # IIS / 不可推导标记：不同酶之间不预设兼容
         if overhang1 == "IIS" or overhang2 == "IIS":
             return False
-        # 相同的突出端序列才可互连（5'/3' 突出端不会互连，序列方向已隐含）
-        return overhang1 == overhang2
+        # 5' 与 3' 突出端不会互连；同方向且序列相同才可互连
+        return spec1["overhang"] == spec2["overhang"] and overhang1 == overhang2
 
     def _overhang_sequence(self, enzyme_name: str) -> Optional[str]:
         """
-        推导酶切后留下的粘性末端序列（突出端 5'→3'）。
+        推导酶切后留下的粘性末端序列（正向链 5'→3' 读出）。
 
-        依据 RESTRICTION_ENZYMES 的 (识别序列, cut_offset, overhang_type)：
-        - '5' 突出：取识别序列切割点右侧 overhang_len = site_len - 2*cut_offset
-          个碱基（如 EcoRI GAATTC cut=1 → AATT）；
-        - '3' 突出：取切割点左侧段反向互补的前 overhang_len = 2*cut_offset -
-          site_len 个碱基（如 PstI CTGCAG cut=5 → TGCA）；
-        - 'b'（平端）→ None；
-        - IIS 酶（切点在识别序列之外）→ "IIS"（突出端随侧翼变化，不可推导）。
-
-        无法推导（识别序列含非 ACGT 或切割点越界）时返回 None 并记警告。
+        由 REBASE 切割几何直接取：正/反链切点 (c1, c2) 之间的识别序列片段
+        site[min:max]（EcoRI G^AATT_C → AATT；PstI C_TGCA^G → TGCA）。
+        - 平末端 → None；
+        - 切点落在识别序列之外（Type IIS）或片段含模糊碱基 → "IIS"
+          （突出端随具体序列变化，不可预先推导）；
+        - 未知酶 → None。
         """
-        if enzyme_name not in self.enzymes:
+        spec = self._spec(enzyme_name)
+        if spec is None:
             return None
-        recognition_seq, cut_offset, overhang = self.enzymes[enzyme_name]
-        if overhang == 'b':
+        c1, c2 = spec["cut"]
+        if c1 == c2:
             return None
-
-        site_len = len(recognition_seq)
-        if not (0 < cut_offset < site_len):
-            # 切割点在识别序列之外（Type IIS）：突出端由侧翼决定
+        lo, hi = sorted((c1, c2))
+        if lo < 0 or hi > len(spec["site"]):
             return "IIS"
-
-        if overhang == '5':
-            overhang_len = site_len - 2 * cut_offset
-            if overhang_len <= 0:
-                return None
-            sticky = recognition_seq[cut_offset:cut_offset + overhang_len]
-        else:  # '3'
-            overhang_len = 2 * cut_offset - site_len
-            if overhang_len <= 0:
-                return None
-            sticky = self._reverse_complement(recognition_seq[:cut_offset])[:overhang_len]
-
-        if not sticky or any(b not in "ACGT" for b in sticky):
-            logger.warning(f"酶 {enzyme_name} 突出端含非 ACGT 碱基，无法判定兼容性")
-            return None
+        sticky = spec["site"][lo:hi]
+        if any(b not in "ACGT" for b in sticky):
+            return "IIS"
         return sticky
 
 

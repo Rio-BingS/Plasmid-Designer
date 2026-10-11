@@ -109,11 +109,9 @@ def test_origin_wrapping_feature_is_checked():
     assert not any("ori" in w and "会被切断" in w for w in s2.warnings_zh)
 
 
-def test_enzyme_missing_from_enzyme_table_still_gets_coordinates():
-    """回归：只存在于 RESTRICTION_ENZYMES 的酶（PvuII 等）此前完全没有坐标"""
-    from core.enzyme_sites import ENZYME_TABLE
-
-    assert not any(e["name"] == "PvuII" for e in ENZYME_TABLE)
+def test_formerly_analysis_only_enzyme_gets_coordinates():
+    """回归：曾只存在于 RESTRICTION_ENZYMES 的酶（PvuII 等）此前完全没有坐标；
+    统一到 REBASE 后它们与其他酶走同一扫描器"""
     vector_seq = "A" * 30 + "CAGCTG" + "T" * 40 + "CTCGAG" + "C" * 30
     s = RestrictionCloningStrategy().generate(
         "ATGAAAGGTTAG", "ins", vector_seq, "testV", "PvuII", "XhoI")

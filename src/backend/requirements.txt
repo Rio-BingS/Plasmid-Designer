@@ -22,6 +22,8 @@ email-validator==2.3.0
 
 # Sanger 测序分析（比对核心 + ab1 解析主路径 Bio.SeqIO("abi")；
 # Biopython 导入失败时回退内置解析器）
+# 限制酶模型 core/enzyme_sites.py 的酶参数取自 Bio.Restriction（REBASE），
+# 图谱/位点/消化模拟必需，没有回退
 biopython==1.88
 # 测序分析参考序列支持 SnapGene .dna 文件（core/sanger/reference_parser.py）
 snapgene-reader==0.1.23
