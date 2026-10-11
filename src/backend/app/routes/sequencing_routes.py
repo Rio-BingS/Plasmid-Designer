@@ -964,19 +964,24 @@ async def get_read_trace(analysis_id: str, read_index: int, request: Request,
     return trace_data[read_index]
 
 
-@router.get("/sequencing/analyses/{analysis_id}/consensus/export")
-async def export_consensus(analysis_id: str, request: Request,
-                           format: str = "fasta",
-                           covered_only: bool = False,
-                           user: Optional[User] = Depends(get_current_user)):
-    """导出拼接结果（共识序列，FASTA / GenBank）
+def _mask_uncovered(seq: str, segs: List[Tuple[int, int]]) -> str:
+    """未测位置按 N 屏蔽（区间为 1 起始闭区间，坐标与特征不位移）。
 
-    covered_only=True 按「部分测序是常规策略」只导出 read 实测覆盖的区域：
-    - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
-    - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
-      misc_feature 注记。无覆盖区间信息时回退全量导出。
-    """
-    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
+    线性复杂度：此前逐碱基扫描全部区间是 O(len × 区间数)，200 kb 共识
+    配上碎片化覆盖时可达秒级"""
+    out = ["N"] * len(seq)
+    for s, e in segs:
+        lo, hi = max(s, 1) - 1, min(e, len(seq))
+        if lo < hi:
+            out[lo:hi] = seq[lo:hi]
+    return "".join(out)
+
+
+def _render_consensus_export(record: Dict, analysis_id: str, format: str,
+                             covered_only: bool) -> Tuple[str, str, str]:
+    """组装共识序列导出内容，返回 (content, ext, safe_name)。
+
+    纯 CPU 工作（N 屏蔽、逐行排版），由路由放进线程池执行"""
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
@@ -1009,10 +1014,7 @@ async def export_consensus(analysis_id: str, request: Request,
         definition = "Sanger consensus sequence"
         if segs:
             # 未测位置 N 屏蔽：坐标与特征不位移，下游软件可直接定位实测段
-            seq = "".join(
-                "N" if not any(s <= i + 1 <= e for s, e in segs) else b
-                for i, b in enumerate(seq)
-            )
+            seq = _mask_uncovered(seq, segs)
             feats = [
                 f"     misc_feature    {s}..{e}\n"
                 f"                     /note=\"实测覆盖区 {s}-{e}（未测位置已按 N 屏蔽）\""
@@ -1061,6 +1063,25 @@ async def export_consensus(analysis_id: str, request: Request,
             )
         ext = "fasta"
 
+    return content, ext, safe_name
+
+
+@router.get("/sequencing/analyses/{analysis_id}/consensus/export")
+async def export_consensus(analysis_id: str, request: Request,
+                           format: str = "fasta",
+                           covered_only: bool = False,
+                           user: Optional[User] = Depends(get_current_user)):
+    """导出拼接结果（共识序列，FASTA / GenBank）
+
+    covered_only=True 按「部分测序是常规策略」只导出 read 实测覆盖的区域：
+    - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
+    - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
+      misc_feature 注记。无覆盖区间信息时回退全量导出。
+    """
+    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
+    # 审查 02 M5：N 屏蔽与排版对 200 kb 序列是秒级 CPU，移出事件循环
+    content, ext, safe_name = await run_in_threadpool(
+        _render_consensus_export, record, analysis_id, format, covered_only)
     return PlainTextResponse(
         content=content,
         media_type="text/plain",
