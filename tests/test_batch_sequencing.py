@@ -307,3 +307,40 @@ def test_offline_output_matches_web_package(tmp_path):
         assert _headings(off_md) == _headings(web_md), name
     mx_heads = _headings((out / "MX/无法判定/测序分析报告.md").read_text(encoding="utf-8"))
     assert "## 双峰（疑似混合）检测" in mx_heads
+
+
+# ---------------------------------------------------------------- 重跑同一输出目录
+
+
+def _run(monkeypatch, data_dir, *extra):
+    monkeypatch.setattr(sys, "argv", [
+        "batch_sequencing_report.py", "--data-dir", str(data_dir), *extra])
+    batch.main()
+
+
+def _manifest_paths(out: Path) -> set:
+    import csv
+    import io
+    text = (out / "整理清单.csv").read_text(encoding="utf-8-sig")
+    return {r["归档路径"] for r in csv.DictReader(io.StringIO(text))}
+
+
+def test_rerun_same_name_conflict_manifest_records_written_path(tmp_path, monkeypatch, capsys):
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    ok = out / "TST" / "正确"
+    (ok / "T1.ab1").write_bytes(b"user replaced this read")   # 用户改动 → 不可覆盖
+
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert "副本另存为 T1 (2).ab1" in capsys.readouterr().out
+    assert (ok / "T1.ab1").read_bytes() == b"user replaced this read"
+    assert (ok / "T1 (2).ab1").read_bytes() == (data_dir / "T1.ab1").read_bytes()
+    assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
+
+    _run(monkeypatch, data_dir, "--no-write-back")     # 再跑：复用已有副本，不再加号
+    assert not (ok / "T1 (3).ab1").exists()
+    assert (ok / "T1 (2).ab1").exists()
+    assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
