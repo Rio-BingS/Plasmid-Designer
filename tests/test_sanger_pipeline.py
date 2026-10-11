@@ -1566,6 +1566,96 @@ def test_consensus_insertion_votes_accumulate_across_reads():
     assert c["sequence"][7:10] == "GGG"
 
 
+def _cons_read(ref, start, end, mean_q, col_q, subs=None, dels=None):
+    """构造带逐列对齐视图的 read 结果：subs {ref_pos: alt}，dels {ref_pos}，
+    col_q {ref_pos: Q}（其余列 Q 取 mean_q）"""
+    subs, dels = subs or {}, dels or set()
+    ref_al, read_al, q_al, variants = [], [], [], []
+    for p in range(start, end + 1):
+        rb = ref[p - 1]
+        ref_al.append(rb)
+        if p in dels:
+            read_al.append("-")
+            q_al.append(0)
+            variants.append({"ref_pos": p, "type": "deletion", "ref_base": rb,
+                             "alt_base": "-", "length": 1})
+            continue
+        qb = subs.get(p, rb)
+        read_al.append(qb)
+        q_al.append(col_q.get(p, int(mean_q)))
+        if qb != rb:
+            variants.append({"ref_pos": p, "type": "substitution", "ref_base": rb,
+                             "alt_base": qb, "length": 1, "quality": q_al[-1]})
+    return {"mean_q": mean_q, "alignment": {
+        "ref_start": start, "ref_end": end, "variants": variants,
+        "aligned": {"ref_start": start, "ref_aligned": "".join(ref_al),
+                    "read_aligned": "".join(read_al), "q_aligned": q_al}}}
+
+
+def test_consensus_column_quality_beats_mean_quality():
+    """审计 #9：两 read 在一位点分歧，按该列 Q 定胜负而非 read 平均 Q"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[49] != "A" else "C"
+    # 变体 read 该列 Q40、平均 Q 低；参考 read 该列 Q8（读长末段）、平均 Q 高
+    var_read = _cons_read(ref, 1, 100, 25, {50: 40}, subs={50: alt})
+    ref_read = _cons_read(ref, 1, 100, 45, {50: 8})
+    c = _build_consensus(ref, [ref_read, var_read])
+    assert c["sequence"][49] == alt
+    assert [d["ref_pos"] for d in c["diffs"]] == [50]
+    # 反过来：变体 read 该列低 Q，参考碱基胜出（旧版按平均 Q 也压不住）
+    var_read = _cons_read(ref, 1, 100, 45, {50: 8}, subs={50: alt})
+    ref_read = _cons_read(ref, 1, 100, 25, {50: 40})
+    c = _build_consensus(ref, [var_read, ref_read])
+    assert c["sequence"] == ref
+    assert c["diffs"] == []
+
+
+def test_consensus_low_q_majority_vs_single_high_q():
+    """两条该列 Q8 的 read 敌不过一条 Q40：对数似然比相加而非概率相加"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[29] != "A" else "C"
+    lows = [_cons_read(ref, 1, 100, 40, {30: 8}) for _ in range(2)]
+    high = _cons_read(ref, 1, 100, 30, {30: 40}, subs={30: alt})
+    c = _build_consensus(ref, lows + [high])
+    assert c["sequence"][29] == alt
+
+
+def test_consensus_single_read_wins_even_low_q():
+    """单 read 覆盖：该 read 的调用直接胜出，与其 Q 无关（显式规则）"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[59] != "A" else "C"
+    r = _cons_read(ref, 40, 80, 30, {60: 2}, subs={60: alt}, dels={70})
+    c = _build_consensus(ref, [r])
+    assert c["sequence"][59] == alt
+    assert any(d["ref_pos"] == 70 and d["cons_base"] == "-" for d in c["diffs"])
+    assert len(c["sequence"]) == len(ref) - 1
+
+
+def test_consensus_deletion_weighted_by_flanking_q():
+    """缺失列无 read Q：取左右相邻碱基 Q 的较小者，低 Q 区的缺失让位"""
+    from core.sanger.pipeline import _column_quality
+    ref = "ACGTTGCAAC" * 10
+    d = _cons_read(ref, 1, 100, 40, {54: 6, 56: 30}, dels={55})
+    bq, iq = _column_quality(d["alignment"], len(ref), False)
+    assert bq[54] == 6 and iq == {}
+    keep = _cons_read(ref, 1, 100, 20, {55: 35})
+    c = _build_consensus(ref, [d, keep])
+    assert c["sequence"] == ref
+
+
+def test_consensus_falls_back_to_mean_q_without_view():
+    """无逐列视图（旧记录/精简结果）时按 mean_q 加权"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[19] != "A" else "C"
+    hi = {"mean_q": 50, "alignment": {"ref_start": 1, "ref_end": 100, "variants": [
+        {"ref_pos": 20, "type": "substitution", "ref_base": ref[19], "alt_base": alt,
+         "length": 1}]}}
+    lo = {"mean_q": 15, "alignment": {"ref_start": 1, "ref_end": 100, "variants": []}}
+    assert _build_consensus(ref, [lo, hi])["sequence"][19] == alt
+    hi["mean_q"], lo["mean_q"] = 15, 50
+    assert _build_consensus(ref, [lo, hi])["sequence"][19] == ref[19]
+
+
 def test_consensus_insertion_after_reference_end():
     """参考末端之后的插入：不再因右侧无锚定位而静默丢失"""
     ref = "ACGTACGTAC" * 5
