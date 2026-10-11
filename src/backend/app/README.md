@@ -39,7 +39,9 @@ app/
 ## 安装
 
 ```bash
-pip install --require-hashes -r requirements.txt   # 运行测试另加 -r requirements-dev.txt
+# 开发 / 运行测试：运行时锁 + 开发锁一起按哈希安装
+pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+# 只部署运行（不跑测试）时去掉 -r requirements-dev.txt
 ```
 
 ## 运行

@@ -221,7 +221,8 @@ cd /opt/plasmid-designer
 sudo -u plasmid git pull
 
 # 更新 Python 依赖（如有变化）
-sudo -u plasmid /opt/plasmid-designer/venv/bin/pip install -r src/backend/requirements.txt
+sudo -u plasmid /opt/plasmid-designer/venv/bin/pip install --require-hashes \
+    -r src/backend/requirements.txt
 
 # 重新构建前端（如有变化）
 cd src/frontend
@@ -306,7 +307,8 @@ curl http://127.0.0.1:8000/health
 依赖全部有预编译 wheel，正常无需编译。若个别包安装失败，多为网络超时，可重试或配置 pip 镜像源：
 
 ```bash
-sudo /opt/plasmid-designer/venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+sudo /opt/plasmid-designer/venv/bin/pip install --require-hashes \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
     -r /opt/plasmid-designer/src/backend/requirements.txt
 ```
 
