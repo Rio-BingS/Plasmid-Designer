@@ -89,6 +89,12 @@ export interface CircularLabelOptions {
   halfHeight?: number
   /** 两列距竖直中线的最小水平间距 */
   minX?: number
+  /**
+   * 标签离理想位置的最大竖直位移。超过时在该拥挤簇里逐个去掉优先级最低的
+   * 标签（计入 hidden），避免标签被挤到远处、引线横穿整个图（SnapGene 式
+   * 宁缺毋滥）。缺省不限。
+   */
+  maxShift?: number
 }
 
 export interface CircularLabelLayout {
@@ -117,7 +123,7 @@ export function layoutCircularLabels(inputs: CircularLabelInput[], o: CircularLa
     const withIdeal = keep
       .map((l) => ({ l, ideal: o.cy - o.labelRadius * Math.cos(l.angle) }))
       .sort((a, b) => a.ideal - b.ideal || (a.l.id < b.l.id ? -1 : 1))
-    const ys = spacedPositions(withIdeal.map((w) => w.ideal), h, top, bottom)
+    const ys = pruneDisplaced(withIdeal, h, top, bottom, o.maxShift ?? Infinity, hidden)
     withIdeal.forEach(({ l }, i) => {
       const y = ys[i]
       const dy = y - o.cy
@@ -132,6 +138,40 @@ export function layoutCircularLabels(inputs: CircularLabelInput[], o: CircularLa
     })
   }
   return { placed, hidden }
+}
+
+/**
+ * 放置并剔除位移过大的标签：找位移最大且超限的标签，在它所在的"紧贴簇"
+ * （相邻间距恰为 h 的连续段）里去掉优先级最低的一个，重排，直到都不超限。
+ * 原地修改 items（去掉被剔除项），被剔除 id 追加到 hidden。
+ */
+function pruneDisplaced(
+  items: { l: CircularLabelInput; ideal: number }[], h: number, top: number, bottom: number,
+  maxShift: number, hidden: string[],
+): number[] {
+  for (;;) {
+    const ys = spacedPositions(items.map((w) => w.ideal), h, top, bottom)
+    if (!Number.isFinite(maxShift)) return ys
+    let worst = -1
+    let worstD = maxShift
+    ys.forEach((y, i) => {
+      const d = Math.abs(y - items[i].ideal)
+      if (d > worstD + 1e-6) { worst = i; worstD = d }
+    })
+    if (worst < 0) return ys
+    let a = worst
+    let b = worst
+    while (a > 0 && ys[a] - ys[a - 1] <= h + 1e-6) a--
+    while (b < ys.length - 1 && ys[b + 1] - ys[b] <= h + 1e-6) b++
+    let drop = a
+    for (let i = a + 1; i <= b; i++) {
+      const p = items[i].l
+      const q = items[drop].l
+      if (p.priority < q.priority || (p.priority === q.priority && Math.abs(ys[i] - items[i].ideal) > Math.abs(ys[drop] - items[drop].ideal))) drop = i
+    }
+    hidden.push(items[drop].l.id)
+    items.splice(drop, 1)
+  }
 }
 
 /** 标签归属：右半边 1、左半边 -1；正上方归右、正下方归左 */

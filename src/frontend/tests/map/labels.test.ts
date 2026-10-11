@@ -97,6 +97,37 @@ describe('环形外置标签：无碰撞（属性测试）', () => {
   })
 })
 
+describe('环形外置标签：位移上限', () => {
+  it('maxShift：超限时在拥挤簇里丢弃低优先级标签，保留的都在上限内且不重叠', () => {
+    const r = rng(31)
+    for (let round = 0; round < 60; round++) {
+      const inputs = randomInputs(r, randInt(r, 10, 120))
+      const o = { cx: 400, cy: 400, labelRadius: 230, fontSize: 11, lineHeight: 14, maxShift: 80 }
+      const layout = layoutCircularLabels(inputs, o)
+      expect(layout.placed.length + layout.hidden.length).toBe(inputs.length)
+      for (const p of layout.placed) {
+        const inp = inputs.find((i) => i.id === p.id)!
+        const ideal = 400 - 230 * Math.cos(inp.angle)
+        // 理想位置在可用区外的会被夹回边界，只对区内的检查位移
+        if (Math.abs(ideal - 400) < 230 + 28 - 7) expect(Math.abs(p.y - ideal)).toBeLessThanOrEqual(80 + 1e-6)
+      }
+      for (let i = 0; i < layout.placed.length; i++) for (let j = i + 1; j < layout.placed.length; j++) {
+        expect(boxesOverlap(layout.placed[i].box, layout.placed[j].box)).toBe(false)
+      }
+    }
+  })
+  it('扎堆时先丢优先级低的（酶），保留高优先级（特征）', () => {
+    const inputs: CircularLabelInput[] = [
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `e${i}`, text: 'EcoRI', angle: 1.2, radius: 100, priority: 1e7 })),
+      { id: 'f', text: 'AmpR', angle: 1.2, radius: 100, priority: 1e8 },
+    ]
+    const layout = layoutCircularLabels(inputs, { cx: 0, cy: 0, labelRadius: 200, fontSize: 11, lineHeight: 14, maxShift: 42 })
+    expect(layout.placed.map((p) => p.id)).toContain('f')
+    expect(layout.placed.length).toBeLessThanOrEqual(7)
+    expect(layout.hidden.length).toBe(31 - layout.placed.length)
+  })
+})
+
 describe('线性外置标签：无碰撞（属性测试）', () => {
   it('同行标签不相交、在宽度内、行数 ≤ maxRows', () => {
     const r = rng(99)
