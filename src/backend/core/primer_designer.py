@@ -7,16 +7,73 @@
 - Golden Gate 引物设计（带IIS酶位点）
 - 测序引物设计
 
-Tm 计算为经验公式粗估（Wallace/Marmur-Doty，无盐校正），并非
-Primer3 的最近邻算法；Tm 仅供筛选参考。
+Tm 统一走最近邻（SantaLucia）模型，见本模块的 calculate_tm——
+全库（引物设计、合成 oligo、sequence_validator.predict_tm）只此一份实现。
 """
 
 import math
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from Bio.SeqUtils import MeltingTemp as _mt
+
 from core.seq_utils import gc_percent, revcomp
+
+
+# ---------------------------------------------------------------------------
+# Tm 模型：最近邻（SantaLucia）+ Owczarzy 盐/Mg 校正
+#
+# 参数即典型 PCR 缓冲液条件，显式写明而不是用库默认值，
+# 以便结果可复现、也便于按实际体系调整：
+TM_NN_TABLE = _mt.DNA_NN4        # SantaLucia & Hicks 2004 统一最近邻参数
+TM_NA_MM = 50.0                  # Na+ 浓度 (mM)
+TM_MG_MM = 1.5                   # Mg2+ 浓度 (mM)
+TM_DNTPS_MM = 0.6                # dNTP 总浓度 (mM)，与 Mg2+ 螯合后参与校正
+TM_PRIMER_NM = 50.0              # 引物浓度 (nM)，PCR 常用 50-500 nM
+TM_TEMPLATE_NM = 0.0             # 模板链浓度 (nM)：引物大幅过量，按 0 处理
+TM_SALTCORR = 7                  # Owczarzy 2008 盐校正（含 Mg/dNTP 竞争）
+# 最近邻模型至少需要一个碱基对（2 nt）才有意义
+TM_MIN_LENGTH = 2
+# ---------------------------------------------------------------------------
+
+
+def calculate_tm(seq: str) -> float:
+    """最近邻法 Tm（°C），全库唯一的 Tm 实现。
+
+    用 Biopython ``MeltingTemp.Tm_NN``（SantaLucia 最近邻参数 DNA_NN4）
+    并带上述 PCR 缓冲液条件的盐/Mg/dNTP/浓度校正。相比旧的
+    Wallace / Marmur-Doty 经验式，18-25mer 上系统性高约 7°C，
+    且能区分相同长度与 GC 下的序列上下文差异。
+
+    有效碱基（ACGT）不足 2 个时无最近邻可言，返回 0.0；
+    N 等简并碱基按 Biopython 规则处理，不会抛异常。极短序列（约 8 nt
+    以下）最近邻给出负值，表示室温下不成稳定双链，统一下限钳到 0.0。
+    """
+    seq = (seq or "").upper()
+    if sum(seq.count(b) for b in "ACGT") < TM_MIN_LENGTH:
+        return 0.0
+    try:
+        return max(0.0, _tm_nn(seq))
+    except (ValueError, ZeroDivisionError, IndexError, KeyError):
+        # 简并碱基过多导致最近邻表查不到时，Tm 无法定义
+        return 0.0
+
+
+@lru_cache(maxsize=8192)
+def _tm_nn(seq: str) -> float:
+    # 同一候选序列会在质量筛选、评分、构造 Primer 时各算一次，缓存去重
+    return _mt.Tm_NN(
+        seq,
+        nn_table=TM_NN_TABLE,
+        Na=TM_NA_MM,
+        Mg=TM_MG_MM,
+        dNTPs=TM_DNTPS_MM,
+        dnac1=TM_PRIMER_NM,
+        dnac2=TM_TEMPLATE_NM,
+        saltcorr=TM_SALTCORR,
+    )
 
 
 class PrimerType(Enum):
@@ -656,25 +713,8 @@ class PrimerDesigner:
         return tm_score * 0.3 + gc_score * 0.3 + gc_3prime_score * 0.2 + self_comp_score * 0.2
     
     def _calculate_tm(self, seq: str) -> float:
-        """
-        计算 Tm 值（经验公式粗估，非最近邻法）。
-
-        < 14bp 用 Wallace 规则 Tm = 2*(A+T) + 4*(G+C)；
-        >= 14bp 用 Marmur-Doty 式 Tm = 64.9 + 41*(G+C-16.4)/N。
-        两者均无盐浓度/寡核苷酸浓度校正，18-25mer 与最近邻法相比
-        常见 1-3°C 偏差——Tm 仅供筛选参考，订单前建议用引物供应商
-        工具或 Primer3 复核。
-        """
-        seq = seq.upper()
-        a_count = seq.count('A')
-        t_count = seq.count('T')
-        g_count = seq.count('G')
-        c_count = seq.count('C')
-        
-        if len(seq) < 14:
-            return 2 * (a_count + t_count) + 4 * (g_count + c_count)
-        else:
-            return 64.9 + 41 * (g_count + c_count - 16.4) / len(seq)
+        """计算 Tm（最近邻法，见模块级 calculate_tm）。"""
+        return calculate_tm(seq)
     
     def _calculate_gc(self, seq: str) -> float:
         """计算GC含量（百分比，收敛到 core.seq_utils）"""

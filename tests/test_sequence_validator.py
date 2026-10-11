@@ -144,18 +144,25 @@ def test_analyze_composition():
 
 
 def test_predict_tm_short():
-    """测试短序列Tm预测"""
-    tm = predict_tm("ATGC")
-    
-    # 短序列使用Wallace rule
-    assert tm == 12  # 2*(2) + 4*(2) = 12
+    """过短序列无最近邻 Tm，返回 0"""
+    # 4nt 在最近邻模型下不成稳定双链（原始值为负），统一钳到 0
+    assert predict_tm("ATGC") == 0.0
 
 
 def test_predict_tm_long():
-    """测试长序列Tm预测"""
+    """长序列走最近邻法，落在合理区间"""
     tm = predict_tm("ATGC" * 10)
-    
-    assert tm > 0
+
+    assert 70 < tm < 90
+
+
+def test_predict_tm_is_nearest_neighbour():
+    """predict_tm 复用引物设计的最近邻实现，不再是经验公式"""
+    from core.primer_designer import calculate_tm
+
+    seq = "AGCGGATAACAATTTCACACAGG"  # M13 -40 正向引物
+    assert predict_tm(seq) == calculate_tm(seq)
+    assert 59 <= predict_tm(seq) <= 62
 
 
 def test_validation_result():

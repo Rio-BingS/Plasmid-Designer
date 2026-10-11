@@ -300,14 +300,11 @@ def analyze_sequence_composition(sequence: str) -> Dict:
 
 
 def predict_tm(sequence: str) -> float:
-    """预测熔解温度（简化版）"""
-    sequence = sequence.upper()
-    
-    if len(sequence) < 14:
-        # Wallace rule
-        return 2 * (sequence.count('A') + sequence.count('T')) + \
-               4 * (sequence.count('G') + sequence.count('C'))
-    else:
-        # 近似公式
-        gc = sequence.count('G') + sequence.count('C')
-        return 64.9 + 41 * (gc - 16.4) / len(sequence)
+    """预测熔解温度（°C）。
+
+    与引物设计共用同一个最近邻实现（core.primer_designer.calculate_tm），
+    不再另写一份经验公式，避免两处结果互相矛盾。
+    """
+    from core.primer_designer import calculate_tm
+
+    return calculate_tm(sequence)
