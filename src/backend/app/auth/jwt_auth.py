@@ -65,6 +65,9 @@ class User(UserBase):
     email_verified: bool = True
     # 个人功能权限覆盖（None = 跟随层级默认；键见 features.FEATURE_REGISTRY）
     allowed_features: Optional[list] = None
+    # 批量测序 read 上限个人覆盖（None = 跟随层级；见 app/batch_read_limits.py）
+    batch_max_reads_per_group: Optional[int] = None
+    batch_max_total_reads: Optional[int] = None
     created_at: Optional[datetime] = None
 
 
@@ -220,6 +223,8 @@ def db_user_to_user(db_user) -> User:
         # 旧库迁移前列可能不存在（迁移由 init_db 保证先于请求发生）
         email_verified=getattr(db_user, "email_verified", True),
         allowed_features=override,
+        batch_max_reads_per_group=getattr(db_user, "batch_max_reads_per_group", None),
+        batch_max_total_reads=getattr(db_user, "batch_max_total_reads", None),
         created_at=db_user.created_at
     )
 

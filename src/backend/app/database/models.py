@@ -56,6 +56,9 @@ class UserDB(Base):
     # 个人功能权限覆盖（JSON 数组字符串，键见 features.FEATURE_REGISTRY）；
     # NULL = 跟随「普通用户」层级默认，设值后精确覆盖该用户可用功能
     allowed_features = Column(Text, nullable=True)
+    # 批量测序 read 数上限个人覆盖（NULL = 跟随所在层级，见 app/batch_read_limits.py）
+    batch_max_reads_per_group = Column(Integer, nullable=True)
+    batch_max_total_reads = Column(Integer, nullable=True)
     # 令牌版本：签进 JWT 的 tv 声明，与此不符的令牌一律失效。禁用账号、
     # 改密码时递增，一次性作废该用户全部已签发令牌
     token_version = Column(Integer, nullable=False, default=0)
@@ -102,6 +105,9 @@ class SiteSettingsDB(Base):
     user_features = Column(Text, nullable=False, default="[]")
     features_initialized = Column(Boolean, nullable=False, default=False)
     feature_migrations = Column(String(200), nullable=False, default="")
+    # 批量测序 read 数上限的层级设置（JSON：{tier: {max_reads_per_group,
+    # max_total_reads}}）；NULL/缺项 = 用服务器默认（环境变量）
+    batch_read_limits = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
@@ -372,6 +378,11 @@ def _migrate_site_settings_table():
                     {"v": _json.dumps(list(default))})
             conn.execute(text("UPDATE site_settings SET features_initialized = TRUE"))
             print("✅ site_settings 表已迁移：新增 features_initialized 列（存量行置位）")
+        # 批量测序 read 上限层级设置：NULL 即沿用环境变量默认，无需回填
+        if "batch_read_limits" not in cols:
+            conn.execute(text(
+                "ALTER TABLE site_settings ADD COLUMN batch_read_limits TEXT NULL"))
+            print("✅ site_settings 表已迁移：新增 batch_read_limits 列")
 
 
 def _migrate_feature_lists(eng=None):
@@ -480,6 +491,8 @@ def _migrate_users_table():
       回填保证存量账号不被新开关锁死）
     - allowed_features：个人功能权限覆盖，NULL 即跟随层级默认，无需回填
     - token_version：令牌版本，存量用户从 0 起（旧令牌无 tv 声明按 0 处理，升级不掉线）
+    - batch_max_reads_per_group / batch_max_total_reads：批量测序 read 上限个人
+      覆盖，NULL 即跟随层级，无需回填
     """
     from sqlalchemy import inspect, text
 
@@ -501,6 +514,10 @@ def _migrate_users_table():
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
             print("✅ users 表已迁移：新增 token_version 列（令牌整体失效）")
+        for col in ("batch_max_reads_per_group", "batch_max_total_reads"):
+            if col not in cols:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} INTEGER NULL"))
+                print(f"✅ users 表已迁移：新增 {col} 列（批量测序 read 上限个人覆盖）")
 
 
 def drop_db():

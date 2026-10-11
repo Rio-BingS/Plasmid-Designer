@@ -57,6 +57,7 @@ from zipfile import BadZipFile
 
 from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
+from app import batch_read_limits, site_settings
 from app.gating import require_feature
 from app import sequencing_store
 from app.sequencing_batch import (
@@ -92,11 +93,11 @@ MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
 MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分组
 # 审查 02 M6：批量此前只限文件数与分组数，一个分组可塞近 400 条 read
 # （200 kb 参考约 6 s/条），单请求可占住并发槽数十分钟。每组默认沿用
-# 单样品的 MAX_FILES，整批参与比对的 read 总数另设上限，均可经环境变量调整
-MAX_BATCH_READS_PER_GROUP = max(1, int(os.environ.get(
-    "SEQUENCING_BATCH_MAX_READS_PER_GROUP", str(MAX_FILES))))
-MAX_BATCH_TOTAL_READS = max(1, int(os.environ.get(
-    "SEQUENCING_BATCH_MAX_TOTAL_READS", "240")))
+# 单样品的 MAX_FILES，整批参与比对的 read 总数另设上限，均可经环境变量调整。
+# 这两个是服务器默认：管理员可按分组（访问层级）或单个账号覆盖，
+# 生效值解析与安全上限见 app.batch_read_limits
+MAX_BATCH_READS_PER_GROUP = batch_read_limits.DEFAULT_READS_PER_GROUP
+MAX_BATCH_TOTAL_READS = batch_read_limits.DEFAULT_TOTAL_READS
 ANALYSIS_TTL = 15 * 60                # 分析记录 15 分钟后自动删除
 BATCH_TTL = 15 * 60                   # 批量整理包同样 15 分钟后清理
 MAX_BATCH_CACHE_BYTES = 256 * 1024 * 1024   # 整理包缓存上限（超出则本次不提供下载）
@@ -517,7 +518,7 @@ _group_batch_uploads = group_batch_uploads
 def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
-    access_token: Optional[str] = None,
+    access_token: Optional[str] = None, read_limits: Optional[Dict] = None,
 ) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -546,7 +547,7 @@ def _run_batch(
         if len(ordered) > MAX_BATCH_PLASMIDS:
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
         groups = plasmid_groups(ordered, per_plasmid)
-    _check_batch_read_caps(groups)
+    _check_batch_read_caps(groups, read_limits)
 
     def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
         aid, _tok, rec = _register_analysis(
@@ -561,26 +562,43 @@ def _run_batch(
     return payload, groups, unmatched, records_by_id
 
 
-def _check_batch_read_caps(groups: List[Dict]) -> None:
+def _batch_read_limits_for(user) -> Dict:
+    """当前请求者的批量 read 上限（个人覆盖 → 分组设置 → 服务器默认）"""
+    return batch_read_limits.effective_limits(
+        site_settings.get_settings(), user,
+        defaults=(MAX_BATCH_READS_PER_GROUP, MAX_BATCH_TOTAL_READS))
+
+
+def _check_batch_read_caps(groups: List[Dict], limits: Optional[Dict] = None) -> None:
     """按分组统计将参与比对的 read 数，超限在比对前拒绝（413）。
 
-    只计有参考图谱的分组（无图谱的分组不跑比对，不消耗计算）。"""
+    只计有参考图谱的分组（无图谱的分组不跑比对，不消耗计算）。limits 为
+    _batch_read_limits_for 的结果；缺省按服务器默认（离线/内部调用）。
+    提示里写明生效的上限值及其来源，便于用户判断是找管理员还是拆批。"""
+    if limits is None:
+        limits = batch_read_limits.effective_limits(
+            {}, None, defaults=(MAX_BATCH_READS_PER_GROUP, MAX_BATCH_TOTAL_READS))
+    per_group = limits[batch_read_limits.PER_GROUP]
+    total_cap = limits[batch_read_limits.TOTAL]
     analyzable = [g for g in groups if g["reference"] and g["reads"]]
     for g in analyzable:
         n = len(g["reads"])
-        if n > MAX_BATCH_READS_PER_GROUP:
+        if n > per_group["value"]:
             label = f"{g['clone']} {g['plasmid']}".strip() or g["plasmid"]
             raise HTTPException(
                 status_code=413,
                 detail=f"分组「{label[:60]}」匹配到 {n} 条测序 read，超过每组上限"
-                       f"（{MAX_BATCH_READS_PER_GROUP} 条）：请检查信息表引物列或文件名归组，"
-                       "或将该质粒拆分后单独分析")
+                       f"（{per_group['value']} 条）：该上限来自"
+                       f"{batch_read_limits.source_label(per_group)}；"
+                       "请检查信息表引物列或文件名归组，或将该质粒拆分后单独分析")
     total = sum(len(g["reads"]) for g in analyzable)
-    if total > MAX_BATCH_TOTAL_READS:
+    if total > total_cap["value"]:
         raise HTTPException(
             status_code=413,
             detail=f"本批次共有 {total} 条测序 read 需要比对，超过单次上限"
-                   f"（{MAX_BATCH_TOTAL_READS} 条）：请拆分为多个批次提交")
+                   f"（{total_cap['value']} 条）：该上限来自"
+                   f"{batch_read_limits.source_label(total_cap)}；"
+                   "请拆分为多个批次提交，或联系管理员调整上限")
 
 
 @router.post(
@@ -611,6 +629,8 @@ async def analyze_sequencing_batch(
     # （每个 20MB 上限 × 数百个文件 = GB 级 OOM 面）才被拒绝
     if len(files) > MAX_BATCH_FILES:
         raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
+    # read 数上限按请求者解析（站点设置读库在并发槽外完成）
+    read_limits = _batch_read_limits_for(user)
 
     # 审查 02 M5：上传读入（最多 500MB 进内存）、Excel 解析、逐组比对与
     # 整理包打包（最多 256MB zip，峰值约数据量 2-3 倍）全部在同一个并发槽内
@@ -622,7 +642,7 @@ async def analyze_sequencing_batch(
         return await run_in_threadpool(
             _batch_pipeline, reads, refs, ignored, min_q,
             (excel.filename or "信息表.xlsx") if excel is not None else None,
-            excel_bytes, user.id if user else None, batch_token)
+            excel_bytes, user.id if user else None, batch_token, read_limits)
 
 
 async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFile]):
@@ -685,6 +705,7 @@ def _batch_pipeline(
     reads: List[Dict], refs: List[Dict], ignored: List[str], min_q: int,
     excel_name: Optional[str], excel_bytes: Optional[bytes],
     owner_id: Optional[str], batch_token: Optional[str],
+    read_limits: Optional[Dict] = None,
 ) -> Dict:
     """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
     excel_pack = None
@@ -702,7 +723,7 @@ def _batch_pipeline(
 
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
-        owner_id=owner_id, access_token=batch_token)
+        owner_id=owner_id, access_token=batch_token, read_limits=read_limits)
     if batch_token:
         payload["access_token"] = batch_token
 
