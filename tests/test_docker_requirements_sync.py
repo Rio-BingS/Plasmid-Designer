@@ -161,3 +161,53 @@ def test_ci_pip_audit_pinned_with_hashes():
     )
     pins = _pins(AUDIT_IN)
     assert pins.get("pip-audit"), "requirements-audit.in 须精确 pin pip-audit"
+
+
+# 文档与脚本里所有「pip install -r 锁文件」命令都要带 --require-hashes
+# （审查 03/09：裸机 README 的更新步骤曾漏掉，按文档升级即无哈希校验）
+_SWEEP_SUFFIXES = {".md", ".sh", ".ps1", ".yml", ".yaml", ".txt", ".in", ".toml", ".cfg"}
+_SWEEP_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__",
+                    ".pytest_cache"}
+
+
+def _sweep_files():
+    for path in REPO.rglob("*"):
+        rel = path.relative_to(REPO)
+        if any(part in _SWEEP_SKIP_DIRS for part in rel.parts) or not path.is_file():
+            continue
+        if path.suffix in _SWEEP_SUFFIXES or path.name.startswith(("Dockerfile", "Makefile")):
+            yield path
+
+
+def _pip_install_commands(text: str):
+    """按续行符拼接后取出每条 pip install 命令（到行尾/引号/反引号为止）"""
+    joined = re.sub(r"\\\r?\n\s*", " ", text)
+    for m in re.finditer(r"pip\"?\s+install\b[^\n`]*", joined):
+        yield re.sub(r"\s#.*$", "", m.group(0))  # 行尾注释不算命令
+
+
+def test_documented_lock_installs_require_hashes():
+    offenders, dev_without_runtime = [], []
+    for path in _sweep_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for cmd in _pip_install_commands(text):
+            if not re.search(r"(^|\s)-r\s", cmd):
+                continue  # pip 自身升级、可选依赖示例等不装锁文件
+            if "--require-hashes" not in cmd:
+                offenders.append(f"{path.relative_to(REPO)}: {cmd.strip()}")
+            if "requirements-dev.txt" in cmd and not re.search(r"-r\s+\S*requirements\.txt", cmd):
+                dev_without_runtime.append(f"{path.relative_to(REPO)}: {cmd.strip()}")
+    assert not offenders, "无哈希的锁文件安装命令:\n" + "\n".join(offenders)
+    # 开发锁以运行时锁为约束，只装开发锁会缺运行时依赖
+    assert not dev_without_runtime, "\n".join(dev_without_runtime)
+
+
+def test_dev_install_docs_include_dev_lock():
+    """开发安装说明（README 本地开发、后端 README、Makefile）同时装开发锁"""
+    for rel in ("README.md", "src/backend/app/README.md", "deploy/scripts/Makefile"):
+        cmds = list(_pip_install_commands((REPO / rel).read_text(encoding="utf-8")))
+        assert any("--require-hashes" in c and "requirements-dev.txt" in c
+                   and re.search(r"-r\s+\S*requirements\.txt", c) for c in cmds), rel

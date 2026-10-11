@@ -42,10 +42,102 @@ from core.sanger.pipeline import (END_MARGIN, _peak_verdict_phrase,
 ZIP_ROOT = "测序整理"
 
 
+_COMPONENT_MAX = 80
+# 视为扩展名的后缀上限（含点）：超过的当成名字本身一起截断
+_EXT_MAX = 16
+
+
+def _fit_component(t: str, limit: int = _COMPONENT_MAX) -> str:
+    """把已安全化的名字压到 limit 字符内：截断主名、保留扩展名
+    （'…long.fasta' 截断后仍以 .fasta 结尾，下游软件可按扩展名打开）。
+    未超长的名字原样返回。"""
+    if len(t) <= limit:
+        return t
+    stem, dot, ext = t.rpartition(".")
+    if dot and stem and 0 < len(ext) + 1 <= _EXT_MAX and len(ext) + 1 < limit:
+        keep = stem[:limit - len(ext) - 1].rstrip(" .")
+        if keep:
+            return f"{keep}.{ext}"
+    return t[:limit].rstrip(" .")
+
+
 def _safe_component(name: str) -> str:
-    """zip 条目路径段安全化：去掉路径分隔符/Windows 非法字符，限长"""
+    """zip 条目路径段安全化：去掉路径分隔符/Windows 非法字符，限长 80 字符
+    （超长时截断主名、保留扩展名；未超长的名字与此前完全相同）"""
     t = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", str(name)).strip(" ._")
-    return t[:80] or "unnamed"
+    return _fit_component(t) or "unnamed"
+
+
+def _unique_components(names: List[str]) -> Dict[str, str]:
+    """一组互不相同的原始名 → 互不冲突的路径段 {原始名: 路径段}
+
+    不同的名字安全化/截断后可能撞成同一段（'a/b' 与 'a:b' 都成 'a_b'，前
+    80 字符相同的长名）；按忽略大小写比较（Windows/macOS 文件系统不区分），
+    撞名时安全化前后不变的那个保留原段，其余按原始名排序依次加 ~2、~3…
+    （仍不超过 80 字符）。结果只取决于这组名字本身，与出现顺序无关。"""
+    by_key: Dict[str, List[str]] = {}
+    for n in sorted(set(names)):
+        by_key.setdefault(_safe_component(n).casefold(), []).append(n)
+    taken = set(by_key)
+    out: Dict[str, str] = {}
+    for key, group in by_key.items():
+        # 安全化后不变的名字优先保留原段（不因别的名字出现而改名）
+        group.sort(key=lambda n: (_safe_component(n) != n, n))
+        out[group[0]] = _safe_component(group[0])
+        k = 2
+        for n in group[1:]:
+            base = _safe_component(n)
+            while True:
+                suffix = f"~{k}"
+                cand = _fit_component(base, _COMPONENT_MAX - len(suffix)) + suffix
+                k += 1
+                if cand.casefold() not in taken:
+                    break
+            taken.add(cand.casefold())
+            out[n] = cand
+    return out
+
+
+def _md_cell(value) -> str:
+    """Markdown 表格单元格转义：| 会把行切成多列、换行会截断表格行
+    （文件名、特征名等来自用户数据）；不含这两类字符的内容原样不变"""
+    t = str(value)
+    t = t.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return t.replace("|", "\\|")
+
+
+def _md_row(*cells) -> str:
+    return "| " + " | ".join(_md_cell(c) for c in cells) + " |"
+
+
+# CSV 公式注入防护（OWASP）：以这些字符开头的单元格在 Excel/WPS 里会被当作
+# 公式或 DDE 执行，写出时前缀 ' 当作文本
+_CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_needs_guard(t: str) -> bool:
+    # 本身以 ' 开头、去掉后又需防护的（如原名就是 '=x）也加一层，保证能
+    # 被 csv_unguard 无歧义还原
+    return bool(t) and (t[0] in _CSV_FORMULA_START
+                        or (t[0] == "'" and _csv_needs_guard(t[1:])))
+
+
+def csv_guard(value):
+    """整理清单 CSV 单元格防公式注入；非字符串（数值）原样返回"""
+    if isinstance(value, str) and _csv_needs_guard(value):
+        return "'" + value
+    return value
+
+
+def csv_unguard(value: str) -> str:
+    """csv_guard 的逆运算（离线脚本重跑时读回上次清单的归档路径用）"""
+    if value.startswith("'") and _csv_needs_guard(value[1:]):
+        return value[1:]
+    return value
+
+
+def csv_guard_row(row: Dict) -> Dict:
+    return {k: csv_guard(v) for k, v in row.items()}
 
 
 def _md5(data: bytes) -> str:
@@ -185,8 +277,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             for e in hp_entries:
                 rel_txt = ("可靠" if e.get("count_reliable", True)
                            else "**不可靠**（峰图与调用不一致，建议核对峰图）")
-                lines.append(f"| {_run_label(e)} | {e['start']}–{e['end']} "
-                             f"| {e['ref_repeat_count']} | {_peak_verdict_phrase(e)} | {rel_txt} |")
+                lines.append(_md_row(_run_label(e), f"{e['start']}–{e['end']}",
+                                     e['ref_repeat_count'], _peak_verdict_phrase(e),
+                                     rel_txt))
             lines.append("")
         for e in hp_entries:
             if e.get("count_reliable", True) or not e.get("read_counts"):
@@ -208,10 +301,10 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                 kind = "插入" if v["type"] == "insertion" else "缺失"
                 conf = {"high": "高", "medium": "中", "low": "低"}.get(
                     v.get("confidence"), v.get("confidence"))
-                lines.append(
-                    f"| {v['ref_pos']} | {kind} | {_fmt_change(v)} "
-                    f"| {_run_label(hp)} {hp['start']}-{hp['end']} "
-                    f"| {hp['ref_repeat_count']}→{hp['observed_repeat_count']} | {conf} |")
+                lines.append(_md_row(
+                    v['ref_pos'], kind, _fmt_change(v),
+                    f"{_run_label(hp)} {hp['start']}-{hp['end']}",
+                    f"{hp['ref_repeat_count']}→{hp['observed_repeat_count']}", conf))
             lines.append("")
     # 双峰（疑似混合）检测：次级峰 >30% 的位点计为双峰位点（已剔除 poly 滑移
     # 伪影与饱和峰拖影），read 级分级——widespread 提示混有第二种质粒
@@ -241,13 +334,13 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             pos_txt = _pos_ranges_str(p["positions"], max_ranges=10)
             if p.get("pullup_excluded"):
                 pos_txt += f"；另有 {p['pullup_excluded']} 处饱和峰拖影已剔除"
-            lines.append(f"| {r['filename']} | {label} | {p['count']} | {pct} | {frac_txt} | {pos_txt} |")
+            lines.append(_md_row(r['filename'], label, p['count'], pct, frac_txt, pos_txt))
         lines.append("")
     if copied:
         lines += ["## 文件整理（原始文件未改动，此处为副本）", "",
                   "| 文件 | 类型 | 匹配方式 |", "|---|---|---|"]
         for e in copied:
-            lines.append(f"| {e['name']} | {e['kind']} | {e['how']} |")
+            lines.append(_md_row(e['name'], e['kind'], e['how']))
         lines.append("")
     if record and record["reads"]:
         lines += ["## 测序 read 概况", "",
@@ -264,8 +357,8 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                 zones = f"{span(s, e)}（整段）"
             else:
                 zones = f"{span(s, s + END_MARGIN - 1)}、{span(e - END_MARGIN + 1, e)}"
-            lines.append(f"| {r['filename']} | {r['grade']} | {r['mean_q']} | {r['trimmed_length']} "
-                         f"| {alignment_span_text(a)} | {zones} |")
+            lines.append(_md_row(r['filename'], r['grade'], r['mean_q'],
+                                 r['trimmed_length'], alignment_span_text(a), zones))
         lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
                   "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
                   "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
@@ -278,9 +371,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             aa = v.get("aa_change") or ("同义" if v.get("synonymous")
                                         else "移码" if v.get("frameshift") else "—")
             conf = {"high": "高", "medium": "中", "low": "低"}.get(v.get("confidence"), v.get("confidence"))
-            lines.append(f"| {v['ref_pos']} | {v['type']} | {_fmt_change(v)} | {conf} "
-                         f"| {v.get('read_q', '')} | {v.get('support_reads', 1)} "
-                         f"| {_fmt_evidence(v)} | {feats} | {aa} |")
+            lines.append(_md_row(v['ref_pos'], v['type'], _fmt_change(v), conf,
+                                 v.get('read_q', ''), v.get('support_reads', 1),
+                                 _fmt_evidence(v), feats, aa))
         lines += ["", "置信度说明：**高**=峰级证据与 Q 值充分支持；**中**=证据一般，建议关注；"
                   "**低**=疑似测序噪声，未计入结论。", ""]
     if record and record["errors"]:
@@ -290,10 +383,36 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
     return "\n".join(lines)
 
 
+# 本工具写进「测序结果」列的一句话结论的固定开头（core.sanger.batch.excel_conclusion
+# 与 app.sequencing_batch 的全部结论措辞，含旧版本用过的「疑似混合样品：」）。
+# 重跑回填时以此识别上次写入的行并替换，其余行视为用户自己写的内容保留
+_TOOL_CONCLUSION_RE = re.compile(
+    r"^(?:(?:合格|不合格|疑似混合(?:样品)?|无法判定|分析失败)："
+    r"|分析失败$"
+    r"|已整理 \d+ 个测序文件，但缺少同名参考图谱"
+    r"|未找到克隆 .+ 的图谱或测序文件$"
+    r"|未在文件夹中找到该质粒的测序文件或图谱$"
+    r"|已找到参考图谱，但未匹配到)")
+
+
+def _is_tool_conclusion(line: str) -> bool:
+    return bool(_TOOL_CONCLUSION_RE.match(line.strip()))
+
+
+def merge_result_cell(old, concl: str) -> str:
+    """「测序结果」单元格的新内容：去掉此前由本工具写入的结论行（任何版本，
+    包括旧版重跑叠加出的多行），保留用户自己写的行，新结论放在最后一行"""
+    concl = " ".join(str(concl).splitlines()).strip()   # 结论恒为单行，便于下次识别
+    lines = str(old or "").splitlines()
+    user = "\n".join(ln for ln in lines if not _is_tool_conclusion(ln)).strip()
+    return f"{user}\n{concl}" if user else concl
+
+
 def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
                    items: List[Dict], clone_mode: bool) -> Optional[bytes]:
-    """把各组结论回填信息表「测序结果」列（网页端与离线脚本共用：已有内容
-    不覆盖，换行追加），返回回填后的 xlsx 字节；无可回填内容时返回 None。
+    """把各组结论回填信息表「测序结果」列（网页端与离线脚本共用：用户已写
+    的内容保留，结论换行写在最后；此前本工具写入的结论被替换而不是叠加，
+    见 merge_result_cell），返回回填后的 xlsx 字节；无可回填内容时返回 None。
 
     克隆模式按（质粒名, 克隆号）对应行——离线脚本不支持克隆模式，这是网页端
     的扩展；质粒模式按质粒名对应（多行同名质粒回填同一结论）。
@@ -317,8 +436,7 @@ def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
         if not concl:
             continue
         cell = ws.cell(row=row["row"], column=cols["result"])
-        old = str(cell.value or "").strip()
-        cell.value = concl if not old or old == concl else f"{old}\n{concl}"
+        cell.value = merge_result_cell(cell.value, concl)
         filled += 1
     if not filled:
         return None
@@ -373,6 +491,8 @@ class BatchArchive:
         self.source_paths = source_paths
         self.fields = MANIFEST_FIELDS + ([SOURCE_PATH_FIELD] if source_paths else [])
         self._folders = _plasmid_folders(plasmids)
+        # 不同质粒文件夹安全化后撞名时加 ~N 区分，不再合并进同一文件夹
+        self._folder_dirs = _unique_components(list(self._folders.values()))
         self._used_arcs: set = set()          # 全局防 zip 条目冲突
         self._used_in_dir: Dict[str, set] = {}   # 同一文件夹内防同名（跨文件夹允许重名）
         self._ref_archived: Dict[str, set] = {}  # 质粒文件夹 → 已归档图谱 (文件名, MD5)
@@ -405,7 +525,8 @@ class BatchArchive:
         """组所在的质粒文件夹；图谱与 read 皆空的组无可归档，返回 None"""
         if not (group["reference"] or group["reads"]):
             return None
-        return _safe_component(self._folders.get(group["plasmid"] or "") or "sample")
+        name = self._folders.get(group["plasmid"] or "") or "sample"
+        return self._folder_dirs.get(name) or _safe_component(name)
 
     def folder_dirs(self, folder: str) -> List[Tuple[str, None]]:
         """质粒文件夹固定给出的 正确/ 错误/ 子文件夹（空置也保留）"""
@@ -497,7 +618,7 @@ class BatchArchive:
         w = csv.DictWriter(out, fieldnames=self.fields)
         if header:
             w.writeheader()
-        w.writerows(rows)
+        w.writerows([csv_guard_row(r) for r in rows])
         return ("\ufeff" if header else "") + out.getvalue()
 
     def manifest_entry(self) -> Tuple[str, str]:

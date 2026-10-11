@@ -11,6 +11,7 @@
 "path"（原始文件路径，供整理清单追溯）。
 """
 
+import time
 import uuid
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
@@ -82,20 +83,72 @@ def plasmid_groups(ordered: List[str], per_plasmid: Dict[str, Dict]) -> List[Dic
              "reads": per_plasmid[p]["reads"]} for p in ordered]
 
 
+def _parse_group_reference(ref_file: Dict, max_ref_bp: Optional[int]):
+    """解析一个分组的参考图谱 → (ref_seq, features, circular)；失败返回异常对象"""
+    try:
+        ref_seq, features, topology = parse_reference_topology(
+            ref_file["file"]["name"], ref_file["file"]["bytes"])
+        if len(ref_seq) < 50:
+            raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
+        # 终审 C-01：长度上限（批量一次可能解析多个大图谱，
+        # 无上限时逐个跑局部比对会拖垮整批）
+        if max_ref_bp is not None and len(ref_seq) > max_ref_bp:
+            raise ValueError(
+                f"参考序列过长（{len(ref_seq)} bp > {max_ref_bp} bp）："
+                "请截取待验证区段后重新分析")
+        return (ref_seq, features, reference_circular(topology))
+    except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
+        return e
+
+
+def parse_group_references(groups: List[Dict],
+                           max_ref_bp: Optional[int] = None) -> Dict[str, object]:
+    """预先解析各分组将参与比对的参考图谱，返回 {质粒名: 解析结果或异常}。
+
+    只解析「有图谱且有 read」的分组（与 run_batch_groups 的惰性解析范围
+    一致）；结果原样传给 run_batch_groups(ref_cache=...)，不会重复解析。"""
+    cache: Dict[str, object] = {}
+    for g in groups:
+        if g["reference"] and g["reads"] and g["plasmid"] not in cache:
+            cache[g["plasmid"]] = _parse_group_reference(g["reference"], max_ref_bp)
+    return cache
+
+
+def estimate_batch_cost(groups: List[Dict], ref_cache: Dict[str, object]) -> int:
+    """批次计算量估算：Σ(参考长度 bp × 该组 read 数)，单位 bp·read。
+
+    局部比对的耗时与内存都随「参考长度 × read 数」线性增长（read 长度
+    约 1 kb 量级，视为常数）；解析失败或无图谱的分组不跑比对，不计入。"""
+    total = 0
+    for g in groups:
+        entry = ref_cache.get(g["plasmid"]) if g["reference"] and g["reads"] else None
+        if isinstance(entry, tuple):
+            total += len(entry[0]) * len(g["reads"])
+    return total
+
+
 def run_batch_groups(
     groups: List[Dict], min_q: int, register: Register,
     max_ref_bp: Optional[int] = None,
+    ref_cache: Optional[Dict[str, object]] = None,
+    soft_timeout: Optional[float] = None,
 ) -> Tuple[List[Dict], Dict[str, Dict]]:
     """逐组跑管线并给出一句话结论，返回 (items, records_by_id)
 
     每组恰好产出一个 item，顺序与 groups 一致（整理包打包依赖此对应）。
     成功分析的组经 register 登记并取回 (analysis_id, record)；record 即整理包
     报告与 分析结果.json 的数据来源。单组失败不阻断批次。
+
+    ref_cache：parse_group_references 的结果（已解析的图谱直接复用）。
+    soft_timeout：批次墙钟软时限（秒）。只在开始比对下一组之前检查——
+    工作线程无法被安全中断，正在比对的组总会跑完；超时后剩余分组不再
+    比对，结论记为「分析失败：…超过时限…」，已完成的分组照常返回。
     """
     records_by_id: Dict[str, Dict] = {}
     items: List[Dict] = []
     # 同一质粒多个克隆共用一张图谱：解析结果（或异常）按质粒缓存
-    ref_cache: Dict[str, object] = {}
+    ref_cache = {} if ref_cache is None else ref_cache
+    deadline = (time.monotonic() + soft_timeout) if soft_timeout else None
     for g in groups:
         plasmid, clone = g["plasmid"], g["clone"]
         ref_file = g["reference"]
@@ -123,22 +176,16 @@ def run_batch_groups(
 
         res = None
         if ref_file and n_reads:
+            if deadline is not None and time.monotonic() > deadline:
+                item["status"] = "failed"
+                item["conclusion"] = (
+                    f"分析失败：本批次运行超过 {int(soft_timeout)} 秒的时限，"
+                    "该组未比对；请拆分为更小的批次后重新分析")
+                items.append(item)
+                continue
             ref_entry = ref_cache.get(plasmid)
             if ref_entry is None:
-                try:
-                    ref_seq, features, topology = parse_reference_topology(
-                        ref_file["file"]["name"], ref_file["file"]["bytes"])
-                    if len(ref_seq) < 50:
-                        raise ValueError(f"参考序列过短（{len(ref_seq)} bp），无法比对")
-                    # 终审 C-01：长度上限（批量一次可能解析多个大图谱，
-                    # 无上限时逐个跑局部比对会拖垮整批）
-                    if max_ref_bp is not None and len(ref_seq) > max_ref_bp:
-                        raise ValueError(
-                            f"参考序列过长（{len(ref_seq)} bp > {max_ref_bp} bp）："
-                            "请截取待验证区段后重新分析")
-                    ref_entry = (ref_seq, features, reference_circular(topology))
-                except Exception as e:  # noqa: BLE001 失败也缓存，同质粒后续克隆不再重复解析
-                    ref_entry = e
+                ref_entry = _parse_group_reference(ref_file, max_ref_bp)
                 ref_cache[plasmid] = ref_entry
             if isinstance(ref_entry, Exception):
                 item["status"] = "failed"

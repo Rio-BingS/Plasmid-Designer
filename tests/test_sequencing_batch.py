@@ -559,57 +559,60 @@ def test_batch_request_total_bytes_capped(client, monkeypatch):
     assert "总字节超过上限" in r.json()["detail"]
 
 
-def test_batch_cache_evicts_oldest_over_global_cap(monkeypatch):
-    """终审 C-02 回归锁：_BATCHES 整理包缓存此前无全局条数/总量上限——
+def _bid(i):
+    return f"seqbatch_{i:012x}"
+
+
+def test_batch_cache_evicts_oldest_over_global_cap(monkeypatch, tmp_path):
+    """终审 C-02 回归锁：整理包存储此前无全局条数/总量上限——
     单个批次虽受 MAX_BATCH_CACHE_BYTES 约束，但 15 分钟 TTL 内不限批次
-    数量，反复提交即可打满内存。超限后必须淘汰最旧的一条。"""
+    数量，反复提交即可打满存储。超限后必须淘汰最旧的一条。"""
+    from app import batch_report_store as brs
     from app.routes import sequencing_routes as sr
 
+    monkeypatch.setenv("SEQUENCING_BATCH_REPORT_DIR", str(tmp_path))
     monkeypatch.setattr(sr, "MAX_BATCH_CACHE_ENTRIES", 3)
-    sr._BATCHES.clear()
     now = sr.time.time()
     for i in range(5):
-        sr._BATCHES[f"bid{i}"] = {
-            "created_ts": now - (5 - i),  # bid0 最旧
-            "zip": b"x" * 1024,
-            "zip_name": f"n{i}",
-            "owner_id": None,
-        }
-    sr._sweep_expired()
-    assert len(sr._BATCHES) <= 3
-    assert "bid0" not in sr._BATCHES   # 最旧的先被淘汰
-    assert "bid4" in sr._BATCHES       # 最新的保留
-    sr._BATCHES.clear()
+        assert brs.save(_bid(i), b"x" * 1024,
+                        {"created_ts": now - (5 - i), "zip_name": f"n{i}", "owner_id": None})
+    sr._sweep_reports()
+    kept = {m["batch_id"] for m in brs._list()}
+    assert len(kept) <= 3
+    assert _bid(0) not in kept   # 最旧的先被淘汰
+    assert _bid(4) in kept       # 最新的保留
+    assert not (tmp_path / f"{_bid(0)}.zip").exists()
 
 
-def test_batch_cache_capped_by_total_bytes(monkeypatch):
-    """整理包缓存按总字节封顶（此前上限是 256MB × 8 = 2GB）"""
+def test_batch_cache_capped_by_total_bytes(monkeypatch, tmp_path):
+    """整理包存储按总字节封顶（此前上限是 256MB × 8 = 2GB）"""
+    from app import batch_report_store as brs
     from app.routes import sequencing_routes as sr
 
+    monkeypatch.setenv("SEQUENCING_BATCH_REPORT_DIR", str(tmp_path))
     monkeypatch.setattr(sr, "MAX_BATCH_CACHE_TOTAL_BYTES", 2500)
-    sr._BATCHES.clear()
     now = sr.time.time()
     for i in range(4):
-        sr._BATCHES[f"bid{i}"] = {"created_ts": now - (4 - i), "zip": b"x" * 1000,
-                                  "zip_name": f"n{i}", "owner_id": None}
-    sr._sweep_expired()
-    assert sum(len(r["zip"]) for r in sr._BATCHES.values()) <= 2500
-    assert set(sr._BATCHES) == {"bid2", "bid3"}
-    sr._BATCHES.clear()
+        brs.save(_bid(i), b"x" * 1000,
+                 {"created_ts": now - (4 - i), "zip_name": f"n{i}", "owner_id": None})
+    sr._sweep_reports()
+    metas = brs._list()
+    assert sum(m["size"] for m in metas) <= 2500
+    assert {m["batch_id"] for m in metas} == {_bid(2), _bid(3)}
 
 
-def test_batch_cache_total_never_exceeded_after_insert(client, monkeypatch):
-    """插入新整理包后立即淘汰，缓存条数任何时刻不超上限"""
+def test_batch_cache_total_never_exceeded_after_insert(client, monkeypatch, tmp_path):
+    """写入新整理包后立即淘汰，存储条数在每次写入后不超上限"""
+    from app import batch_report_store as brs
     from app.routes import sequencing_routes as sr
 
+    monkeypatch.setenv("SEQUENCING_BATCH_REPORT_DIR", str(tmp_path))
     monkeypatch.setattr(sr, "MAX_BATCH_CACHE_ENTRIES", 1)
-    sr._BATCHES.clear()
     for _ in range(2):
         r = _post(client, [_fasta("MX.fasta", REF_MX), _ab1("T1.ab1", REF_MX)],
                   excel_part=_xlsx([("MX", ["T1"])]))
         assert r.status_code == 200, r.text
-        assert len(sr._BATCHES) <= 1
-    sr._BATCHES.clear()
+        assert len(brs._list()) <= 1
 
 
 def test_batch_report_owner_scoped(client):
@@ -829,10 +832,13 @@ def test_analyses_and_batch_expire_after_ttl(client):
 
     for rec in sr._ANALYSES.values():
         rec["_created_ts"] -= sr.ANALYSIS_TTL + 10
-    sr._BATCHES[data["batch_id"]]["created_ts"] -= sr.BATCH_TTL + 10
+    from app import batch_report_store as brs
+    meta = brs.load_meta(data["batch_id"])
+    brs.save(data["batch_id"], b"stale",
+             {**meta, "created_ts": meta["created_ts"] - sr.BATCH_TTL - 10})
 
     # 记录已落库（database 模式）：内存淘汰后详情/列表仍可回看；
-    # memory 模式无持久层 → 记录消失。批量整理包是内存产物，两种模式都过期
+    # memory 模式无持久层 → 记录消失。批量整理包按 TTL 过期，两种模式都一样
     from app import sequencing_store
     tok = _tok_header(resp)
     if sequencing_store.db_enabled():

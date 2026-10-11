@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-12
+
 ### 升级注意
 
 - 启动时自动迁移数据库：`users` 表新增可空列 `batch_max_reads_per_group`、
@@ -29,6 +31,19 @@
   60 秒自动转轮询，不会撞上 100 秒超时。磁盘最坏占用约为
   `SEQUENCING_BATCH_SESSIONS_TOTAL × SEQUENCING_BATCH_SESSION_MAX_MB`（默认 16 × 2 GB），
   空间紧张时调小这两项。
+- Docker 前端镜像新增入口脚本，须重新构建（`docker compose up -d --build frontend`）。
+  前端 nginx 改为只在 `FRONTEND_BIND` 为本机回环时采信 compose 网关转来的
+  `X-Real-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`。`FRONTEND_BIND=0.0.0.0`
+  又在前面放了宿主机 nginx 的部署，升级后真实客户端 IP 不再被采信（全部计入网关
+  一个限流桶）：请改回 `FRONTEND_BIND=127.0.0.1`。新变量 `HOST_PROXY_ADDRS`
+  （默认 `auto`，可设 `none` 或单个地址清单）；改过 `PLASMID_GATEWAY` 的部署不必
+  再手改 `nginx.conf`。
+
+- **批量测序新增计算预算与软时限**：比对前按 Σ(参考长度 × read 数) 估算，超过
+  `SEQUENCING_BATCH_COMPUTE_BUDGET_MBP`（默认 50 Mbp·read）返回 413；整批运行
+  超过 `SEQUENCING_BATCH_SOFT_TIMEOUT`（默认 1800 秒）后剩余分组记为「分析失败」。
+  默认 read 上限下不会触发；曾在 `/admin` 大幅调高 read 上限、且参考图谱很大的
+  站点可能开始收到 413，需要时在 `.env` 调大或设 0 关闭（Docker 已透传）。
 
 ### 新增
 
@@ -64,6 +79,45 @@
 ### 修复
 
 - 离线脚本分析失败时返回非零退出码（3），不再把部分失败报告为成功。
+- 登录、注册的 bcrypt 密码哈希/校验移到线程池执行，并发登录不再阻塞整个服务。
+- 共识序列导出（`covered_only` 的 N 屏蔽与排版）移到线程池，N 屏蔽改为线性
+  复杂度，碎片化覆盖的 200 kb 共识导出不再卡住事件循环；导出内容不变。
+- 批量测序信息表改为 openpyxl 只读流式解析，行列上限边读边查（不再信任文件
+  自带的 dimension 声明），大表解析的内存与耗时显著下降；只有结论回填时才另行
+  以可写模式加载。解析结果不变。
+- 批量整理包（ZIP）改为写入磁盘私有目录（缺省 `$DATA_DIR/batch_uploads/reports`，
+  可用 `SEQUENCING_BATCH_REPORT_DIR` 指定），不再驻留各 worker 内存：
+  `BACKEND_WORKERS>1` 时下载不再随机 404，下载改为流式发送。接口不变。
+- 分块上传的批次提交分析（finalize）不再把整批文件（最多 2 GB）一次读入内存：
+  逐组比对、逐个打包时按需从暂存目录读取，峰值内存约为最大分组的文件 + 整理包。
+- 整理包（网页 ZIP 与离线脚本输出共用）超过 80 字符的文件名/文件夹名截断时
+  保留扩展名（此前 `….fasta` 会被截成无扩展名、下游软件打不开）；不同质粒名
+  安全化或截断后撞成同一文件夹名时（如 `a/b` 与 `a:b`、前 80 字符相同的长名）
+  不再合并进同一文件夹，后者按原名排序加 `~2`、`~3` 区分。80 字符以内且不撞名
+  的名字与此前完全一致。
+- 整理清单.csv（网页 ZIP 与离线脚本共用）防 CSV 公式注入：以 `=`、`+`、`-`、
+  `@`、制表符或回车开头的单元格（如文件名 `=HYPERLINK(…)`、质粒名 `-X`）写出时
+  前缀 `'`，Excel/WPS 打开不再当作公式执行。**按 CSV 读取清单的下游脚本会看到
+  这类单元格多一个开头的 `'`**（Excel 中显示为前缀）：`'` 之后紧跟上述字符时
+  去掉这一个 `'` 即为原值，其余单元格不变。离线脚本重跑读回清单时自动还原。
+  报告 Markdown 表格里的 `|` 转义为 `\|`、换行替换为空格，不再把表格行打乱。
+- 信息表「测序结果」列回填（网页整理包与离线脚本共用）重跑时替换上次写入的
+  结论，不再一层层叠加。按结论固定开头识别本工具写过的行（`合格：`、`不合格：`、
+  `疑似混合：`/旧版 `疑似混合样品：`、`无法判定：`、`分析失败`、`已整理 N 个测序
+  文件，但缺少同名参考图谱…`、`未在文件夹中找到…`、`未找到克隆 … 的图谱或测序
+  文件`、`已找到参考图谱，但未匹配到…`），旧版本叠加出的多行也一并清理；其余行
+  视为用户手写内容原样保留，新结论写在最后一行。结论文本格式不变（未加新前缀，
+  按「合格」等开头筛选的表格照常可用）；用户自己以上述开头写的行会被当作旧结论
+  替换。
+- Docker：前端端口对外发布时，经 docker-proxy 转发（IPv6 入站、userland-proxy、
+  rootless 等）的直连来源显示为 compose 网关而被信任，客户端可伪造 `X-Real-IP`
+  换限流桶；客户端自带的 `X-Forwarded-For` 也不再经非可信来源转给后端。
+- 裸机部署文档的「更新部署」与「换 pip 镜像源」命令补上 `--require-hashes`，
+  按文档升级不再绕过锁文件哈希校验；后端 README 的开发安装同时装开发锁。
+- 密码子优化结果缓存键加入所用密码子表文件的内容摘要：修改
+  `data/codon_tables/*.yaml`（或改 `CODON_TABLES_DIR`）后，Redis 中按旧表算出的结果
+  不再命中，不必再手动递增 `CODON_OPT_ALGO`。升级后已有的密码子优化缓存全部失效
+  一次（首次请求重新计算）。
 
 ## [2.9.1] - 2026-10-11
 
@@ -413,7 +467,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...v2.10.0
 [2.9.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.0...v2.9.1
 [2.9.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.8.1...v2.9.0
 [2.8.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.8.0...v2.8.1

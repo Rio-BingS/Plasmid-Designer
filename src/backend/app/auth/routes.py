@@ -15,6 +15,7 @@ from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -175,7 +176,8 @@ async def register(user_data: UserCreate, request: Request, response: Response,
             detail="密码长度至少8位"
         )
 
-    hashed_pw = hash_password(user_data.password)
+    # bcrypt（12 轮）单次约数百毫秒，放线程池避免阻塞事件循环
+    hashed_pw = await run_in_threadpool(hash_password, user_data.password)
 
     def _duplicate_email_400(exc: Exception) -> HTTPException:
         # 并发注册同邮箱时 unique 约束兜底（先查后插存在竞态窗口）
@@ -246,7 +248,10 @@ async def login(credentials: UserLogin, request: Request, response: Response,
         )
 
     # 验证密码
-    if not verify_password(credentials.password, user.hashed_password):
+    # bcrypt 校验放线程池：同步调用会让并发登录卡住整个事件循环
+    if not await run_in_threadpool(
+        verify_password, credentials.password, user.hashed_password
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="邮箱或密码错误"

@@ -17,7 +17,10 @@
 - Tuller et al. 2013, Efficient translation initiation dictates codon usage at gene start
 """
 
+import hashlib
 import re
+import threading
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import Counter
@@ -62,6 +65,100 @@ HOST_CLASS = {
 # 标准遗传密码表收敛到 core.seq_utils
 # AMINO_ACID_TABLE（密码子 → 氨基酸）保留为兼容别名
 from core.seq_utils import CODON_TO_AA as AMINO_ACID_TABLE
+
+
+_SPECIES_ALIASES = {
+    "ecoli": ["ecoli", "e.coli", "e_coli", "escherichia", "k12", "ecoli_k12"],
+    "human": ["human", "homo", "sapiens", "h_sapiens"],
+    "yeast": ["yeast", "cerevisiae", "s_cerevisiae", "scerevisiae"],
+    "cho": ["cho", "cricetulus", "hamster"],
+}
+
+
+def _codon_tables_dir() -> Optional[Path]:
+    """密码子表目录：settings.CODON_TABLES_DIR 优先，其次项目内 data/codon_tables"""
+    candidates = []
+    try:
+        from app.config import settings
+        candidates.append(Path(settings.CODON_TABLES_DIR))
+    except Exception:
+        pass
+    here = Path(__file__).resolve()
+    candidates.append(here.parents[3] / "data" / "codon_tables")  # .../project/data
+    candidates.append(here.parents[2] / "data" / "codon_tables")
+    return next((p for p in candidates if p and p.is_dir()), None)
+
+
+def resolve_codon_table_file(species: str) -> Optional[Path]:
+    """按物种名解析将要加载的 YAML 表文件；无可用表返回 None"""
+    species_key = (species or "ecoli").lower().strip()
+    table_dir = _codon_tables_dir()
+    if not table_dir:
+        return None
+
+    # 文件名匹配
+    files = list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))
+    if not files:
+        return None
+
+    def score_file(path: Path) -> int:
+        stem = path.stem.lower()
+        # 精确别名
+        for key, names in _SPECIES_ALIASES.items():
+            if species_key == key or any(a in species_key for a in names):
+                if any(a in stem for a in names) or key in stem:
+                    return 100
+        if species_key in stem:
+            return 50
+        return 0
+
+    ranked = sorted(files, key=score_file, reverse=True)
+    if score_file(ranked[0]) == 0 and species_key not in ("ecoli", "e.coli"):
+        # 无匹配时不强制用错误物种表
+        return None
+
+    target = ranked[0]
+    if score_file(target) == 0:
+        # ecoli 默认：优先 Ecoli*
+        ecoli_files = [f for f in files if "ecoli" in f.stem.lower() or "coli" in f.stem.lower()]
+        target = ecoli_files[0] if ecoli_files else files[0]
+    return target
+
+
+# (路径, mtime_ns, 大小) -> 内容摘要。表文件不变时不重复读盘；改表后
+# mtime/大小变化即重算，缓存键随之变化（审查 10 M6）
+_TABLE_DIGESTS: Dict[Tuple[str, int, int], str] = {}
+_TABLE_DIGESTS_LOCK = threading.Lock()
+
+
+def codon_table_fingerprint(species: str) -> str:
+    """物种所用密码子表文件的内容摘要（结果缓存键的一部分）。
+
+    改动 data/codon_tables/*.yaml 后，旧表算出的缓存结果自动失效，
+    不再依赖手动递增 CODON_OPT_ALGO。无可用表时返回 "none"。
+    """
+    path = resolve_codon_table_file(species)
+    if path is None:
+        return "none"
+    try:
+        st = path.stat()
+    except OSError:
+        return "none"
+    key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
+    with _TABLE_DIGESTS_LOCK:
+        digest = _TABLE_DIGESTS.get(key)
+    if digest is not None:
+        return digest
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "none"
+    with _TABLE_DIGESTS_LOCK:
+        # 同一路径只留最新一条，长期运行反复改表也不会累积
+        for old in [k for k in _TABLE_DIGESTS if k[0] == key[0]]:
+            del _TABLE_DIGESTS[old]
+        _TABLE_DIGESTS[key] = digest
+    return digest
 
 
 class CodonOptimizer:
@@ -135,61 +232,12 @@ class CodonOptimizer:
         """从 data/codon_tables 加载 YAML 频率表，返回 (freq, 表名)。"""
         try:
             import yaml
-            from pathlib import Path
         except ImportError:
             return None, None
 
-        species_key = (species or "ecoli").lower().strip()
-        aliases = {
-            "ecoli": ["ecoli", "e.coli", "e_coli", "escherichia", "k12", "ecoli_k12"],
-            "human": ["human", "homo", "sapiens", "h_sapiens"],
-            "yeast": ["yeast", "cerevisiae", "s_cerevisiae", "scerevisiae"],
-            "cho": ["cho", "cricetulus", "hamster"],
-        }
-
-        # 解析表目录
-        candidates = []
-        try:
-            from app.config import settings
-            candidates.append(Path(settings.CODON_TABLES_DIR))
-        except Exception:
-            pass
-        # 相对项目路径回退
-        here = Path(__file__).resolve()
-        candidates.append(here.parents[3] / "data" / "codon_tables")  # .../project/data
-        candidates.append(here.parents[2] / "data" / "codon_tables")
-
-        table_dir = next((p for p in candidates if p and p.is_dir()), None)
-        if not table_dir:
+        target = resolve_codon_table_file(species)
+        if target is None:
             return None, None
-
-        # 文件名匹配
-        files = list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))
-        if not files:
-            return None, None
-
-        def score_file(path: Path) -> int:
-            stem = path.stem.lower()
-            text = stem
-            # 精确别名
-            for key, names in aliases.items():
-                if species_key == key or any(a in species_key for a in names):
-                    if any(a in stem for a in names) or key in stem:
-                        return 100
-            if species_key in stem:
-                return 50
-            return 0
-
-        ranked = sorted(files, key=score_file, reverse=True)
-        if score_file(ranked[0]) == 0 and species_key not in ("ecoli", "e.coli"):
-            # 无匹配时不强制用错误物种表
-            return None, None
-
-        target = ranked[0]
-        if score_file(target) == 0:
-            # ecoli 默认：优先 Ecoli*
-            ecoli_files = [f for f in files if "ecoli" in f.stem.lower() or "coli" in f.stem.lower()]
-            target = ecoli_files[0] if ecoli_files else files[0]
 
         try:
             data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
