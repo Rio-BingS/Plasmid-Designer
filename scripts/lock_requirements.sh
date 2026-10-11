@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 从人工维护的 *.in 源清单重新生成带哈希的 Python 锁文件：
-#   src/backend/requirements.in          -> src/backend/requirements.txt
+#   src/backend/requirements.in          -> src/backend/requirements.txt（运行时）
+#   src/backend/requirements-dev.in      -> src/backend/requirements-dev.txt（+测试）
 #   deploy/docker/requirements.backend.in -> deploy/docker/requirements.backend.txt
 #
 # 锁文件含全部传递依赖与各平台 wheel/sdist 的 sha256，按 --require-hashes 安装。
@@ -40,6 +41,8 @@ lock() {
 }
 
 lock src/backend/requirements.in src/backend/requirements.txt
+# 开发锁以运行时锁为约束（-c），必须在其后生成
+lock src/backend/requirements-dev.in src/backend/requirements-dev.txt
 lock deploy/docker/requirements.backend.in deploy/docker/requirements.backend.txt
 
 echo "锁文件已更新；请跑全量测试后与 .in 一起提交。"
