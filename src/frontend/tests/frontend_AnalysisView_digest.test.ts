@@ -107,7 +107,7 @@ describe('AnalysisView 双酶切模拟', () => {
     await flushPromises()
 
     expect(simulateDigest).toHaveBeenCalledTimes(1)
-    expect(simulateDigest).toHaveBeenCalledWith(SEQ, ['EcoRI', 'BamHI'])
+    expect(simulateDigest).toHaveBeenCalledWith(SEQ, ['EcoRI', 'BamHI'], false)
 
     const rows = digestSection(wrapper).findAll('tbody tr')
     expect(rows).toHaveLength(3)
@@ -131,7 +131,34 @@ describe('AnalysisView 双酶切模拟', () => {
     await digestButton(wrapper).trigger('click')
     await flushPromises()
 
-    expect(simulateDigest).toHaveBeenCalledWith(SEQ, ['EcoRI', 'BamHI'])
+    expect(simulateDigest).toHaveBeenCalledWith(SEQ, ['EcoRI', 'BamHI'], false)
+  })
+
+  it('勾选环状 → 以 circular=true 提交，跨原点片段带标注', async () => {
+    vi.mocked(simulateDigest).mockResolvedValue({
+      total_fragments: 2,
+      fragments: [
+        { start: 6, end: 31, size: 26, cut_by: ['BamHI'] },
+        { start: 32, end: 5, size: 20, cut_by: ['EcoRI'], wraps_origin: true },
+      ],
+      enzymes_with_sites: ['EcoRI', 'BamHI'],
+      circular: true,
+    })
+    const wrapper = await mountWithRestriction()
+    const box = digestSection(wrapper).find('input.digest-circular-input')
+    expect((box.element as HTMLInputElement).checked).toBe(false) // 默认线性
+    await box.setValue(true)
+    await pickEnzyme(wrapper, 'Eco', 'EcoRI')
+    await pickEnzyme(wrapper, 'Bam', 'BamHI')
+    await digestButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(simulateDigest).toHaveBeenCalledWith(SEQ, ['EcoRI', 'BamHI'], true)
+    const rows = digestSection(wrapper).findAll('tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[1].text()).toContain('跨原点')
+    expect(rows[0].text()).not.toContain('跨原点')
+    expect(digestSection(wrapper).text()).toContain('环状完全消化')
   })
 
   it('所选酶在序列中无位点时显示后端提示', async () => {
