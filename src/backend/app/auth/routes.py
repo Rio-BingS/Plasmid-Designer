@@ -27,6 +27,7 @@ from .jwt_auth import (
     set_auth_cookie, clear_auth_cookie,
 )
 from app.config import settings
+from app.rate_limit import acquire_login_attempt, login_account_too_many, reset_login_failures
 from app.timeutil import utcnow_naive
 from app.database import (
     get_db, get_users, create_user as db_create_user, get_user_by_email, get_user_by_id,
@@ -209,6 +210,11 @@ async def login(credentials: UserLogin, request: Request, response: Response,
     - 成功时令牌写入 httpOnly 会话 Cookie（浏览器）；响应体仍返回
       access_token，供 API / 脚本客户端以 Authorization: Bearer 使用
     """
+    # 按账号的失败闸（不含 IP）：先于查库与 bcrypt，账号存在与否一视同仁
+    retry_after = acquire_login_attempt(credentials.email)
+    if retry_after:
+        return login_account_too_many(credentials.email, retry_after)
+
     # 查找用户
     user = get_user_by_email(db, credentials.email)
     if not user:
@@ -223,6 +229,7 @@ async def login(credentials: UserLogin, request: Request, response: Response,
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="邮箱或密码错误"
         )
+    reset_login_failures(credentials.email)
 
     # 检查用户状态
     if not user.is_active:

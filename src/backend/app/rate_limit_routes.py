@@ -22,7 +22,7 @@ async def get_rate_limit_status(request: Request) -> Dict:
     status = {"client_ip": ip, "endpoints": {}}
     
     for endpoint, config in RATE_LIMITS.items():
-        if endpoint.startswith("user_"):
+        if endpoint.startswith("user_") or endpoint == "login_account":
             continue
         
         key = get_rate_limit_key(request, endpoint)
@@ -58,6 +58,7 @@ async def get_rate_limit_config() -> Dict:
             "upload": "文件上传限制",
             "auth": "认证请求限制（同 IP + 同目标邮箱）",
             "auth_ip": "认证请求限制（同 IP 总量）",
+            "login_account": "登录失败限制（同一账号邮箱，不含 IP）",
             "export": "打包/导出下载限制",
             "ncbi": "NCBI 检索代理限制"
         }
