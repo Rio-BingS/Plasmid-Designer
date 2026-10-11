@@ -82,7 +82,10 @@ class SiteConfigResponse(BaseModel):
     features: dict  # {"anonymous": [...], "user": [...]}
     effective_features: list  # 按当前请求者层级（管理员全量）
     # 当前请求者的批量测序上限（个人覆盖 → 分组 → 服务器默认已解析好）：
-    # {max_reads_per_group, max_total_reads, max_files, max_upload_mb}
+    # {max_reads_per_group, max_total_reads, max_files, max_upload_mb,
+    #  chunk_max_files, chunk_max_mb, session_max_mb}
+    # max_files/max_upload_mb 为单请求入口的限制；批量页走分块上传，批次级
+    # 体积上限是 session_max_mb，文件数与 95 MB 只约束单个分块
     batch_read_limits: Optional[dict] = None
 
 
@@ -379,6 +382,7 @@ async def site_config(current_user: Optional[User] = Depends(get_current_user_so
 def _batch_limits_for(site: dict, user) -> dict:
     """批量测序页展示用：与 analyze-batch 实际执行同一套解析"""
     from app import batch_read_limits as brl
+    from app import sequencing_upload_sessions as sessions
     from app.routes import sequencing_routes as sr
 
     eff = brl.effective_limits(
@@ -388,6 +392,9 @@ def _batch_limits_for(site: dict, user) -> dict:
         brl.TOTAL: eff[brl.TOTAL]["value"],
         "max_files": sr.MAX_BATCH_FILES,
         "max_upload_mb": sr.MAX_BATCH_REQUEST_BYTES // (1024 * 1024),
+        "chunk_max_files": sessions.CHUNK_MAX_FILES,
+        "chunk_max_mb": sessions.CHUNK_MAX_BYTES // (1024 * 1024),
+        "session_max_mb": sessions.SESSION_MAX_BYTES // (1024 * 1024),
     }
 
 

@@ -7,7 +7,8 @@
  */
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { analyzeSequencingBatch, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
+import { analyzeSequencingBatchChunked, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
+import { UploadCancelledError, type ChunkedProgress } from '@/utils/chunkedUpload'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -136,9 +137,26 @@ function normalizeMinQ() {
 
 const canAnalyze = computed(() => files.value.length > 0 && !analyzing.value)
 
-// Cloudflare 免费版有 100MB 请求体硬上限，超出时连接会被直接掐断（浏览器只看到
-// Network Error），留余量在上传前拦截
-const MAX_UPLOAD_BYTES = 95 * 1024 * 1024
+// Cloudflare 免费版有 100MB 请求体硬上限：文件按 ≤90 MB / ≤200 个自动切成
+// 多个请求依次上传，服务器拼成一个批次再分析（整批体积上限见 site-config）
+const progress = ref<ChunkedProgress | null>(null)
+let controller: AbortController | null = null
+
+const progressText = computed(() => {
+  const p = progress.value
+  if (!p) return ''
+  if (p.phase === 'analyzing') return '上传完成，分析中…（逐样品运行，请稍候）'
+  return `上传中 ${p.done}/${p.total}`
+})
+const progressPercent = computed(() => {
+  const p = progress.value
+  if (!p || !p.total) return 0
+  return Math.round((p.done / p.total) * 100)
+})
+
+function cancelUpload() {
+  controller?.abort()
+}
 
 const stagedSizeMB = computed(() => {
   const bytes = [...files.value, ...(excelFile.value ? [excelFile.value] : [])]
@@ -162,8 +180,9 @@ async function runBatch() {
   if (!files.value.length) return
   const staged = [...files.value, ...(excelFile.value ? [excelFile.value] : [])]
   const totalBytes = staged.reduce((s, f) => s + f.size, 0)
-  if (totalBytes > MAX_UPLOAD_BYTES) {
-    errorMsg.value = `所选文件总体积 ${stagedSizeMB.value} MB，超过免费版 Cloudflare 的 100 MB 请求体上限，请删掉部分文件分批上传`
+  const sessionMaxMB = readLimits.value?.session_max_mb
+  if (sessionMaxMB && totalBytes > sessionMaxMB * 1024 * 1024) {
+    errorMsg.value = `所选文件总体积 ${stagedSizeMB.value} MB，超过单批上限 ${sessionMaxMB} MB，请拆分为多个批次提交`
     return
   }
   analyzing.value = true
@@ -178,11 +197,18 @@ async function runBatch() {
       errorMsg.value = `这些文件无法读取（多半正被 Excel/WPS 打开占用）：${unreadable.join('、')}——请关闭占用程序后重试`
       return
     }
-    result.value = await analyzeSequencingBatch(files.value, excelFile.value, minQ.value)
+    controller = new AbortController()
+    progress.value = null
+    result.value = await analyzeSequencingBatchChunked(files.value, excelFile.value, minQ.value, {
+      signal: controller.signal,
+      onProgress: (p) => { progress.value = p }
+    })
   } catch (e: any) {
-    errorMsg.value = formatApiError(e, '批量分析失败')
+    errorMsg.value = e instanceof UploadCancelledError ? '已取消上传，服务器上的暂存文件已删除' : formatApiError(e, '批量分析失败')
   } finally {
     analyzing.value = false
+    progress.value = null
+    controller = null
   }
 }
 
@@ -280,7 +306,8 @@ async function downloadReport() {
 
         <p v-if="readLimits" class="excel-note limit-note" data-testid="read-limit-note">
           本账号单批最多 {{ readLimits.max_total_reads }} 条 read（每组最多 {{ readLimits.max_reads_per_group }} 条），
-          单次最多 {{ readLimits.max_files }} 个文件；超出请拆分批次或联系管理员调整
+          文件会自动分批上传<template v-if="readLimits.session_max_mb">（单批总体积上限 {{ readLimits.session_max_mb }} MB）</template>；
+          read 数超出请拆分批次或联系管理员调整
         </p>
         <div v-if="files.length || excelFile" class="staged">
           <p class="staged-line">
@@ -301,8 +328,13 @@ async function downloadReport() {
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
       </details>
       <button class="analyze-btn" :disabled="!canAnalyze" @click="runBatch">
-        {{ analyzing ? '批量分析中…（逐样品运行，请稍候）' : '开始批量分析' }}
+        {{ analyzing ? (progressText || '准备上传…') : '开始批量分析' }}
       </button>
+      <div v-if="analyzing && progress" class="upload-progress" data-testid="upload-progress">
+        <div class="progress-track"><div class="progress-bar" :style="{ width: progressPercent + '%' }" /></div>
+        <span class="progress-text">{{ progressText }}</span>
+        <button v-if="progress.phase === 'uploading'" class="clear-btn cancel-btn" @click="cancelUpload">取消上传</button>
+      </div>
     </div>
 
     <!-- ② 结果 -->
@@ -442,6 +474,13 @@ async function downloadReport() {
   background: #2E9E44; color: #fff; border-radius: 6px; cursor: pointer; font-size: 1rem;
 }
 .analyze-btn:disabled { background: #aaa; cursor: not-allowed; }
+.upload-progress {
+  display: flex; align-items: center; justify-content: center; gap: 0.6rem;
+  margin: 0.6rem auto 0; max-width: 32rem; font-size: 0.85rem;
+}
+.progress-track { flex: 1; height: 8px; background: #eee; border-radius: 999px; overflow: hidden; }
+.progress-bar { height: 100%; background: #2E9E44; transition: width 0.2s; }
+.progress-text { white-space: nowrap; color: var(--text-secondary, #666); }
 
 .summary-line { font-size: 0.95rem; margin: 0 0 0.75rem; }
 .count.ok { color: #2E9E44; font-weight: 600; }
