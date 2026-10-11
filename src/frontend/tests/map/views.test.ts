@@ -59,6 +59,38 @@ describe('CircularMap', () => {
   })
 })
 
+describe('CircularMap 版式', () => {
+  const vb = (w: any) => w.find('.cmap-svg').attributes('viewBox')!.split(' ').map(Number)
+
+  it('标签栏按最长标签留白（环够大），并裁掉上下空白', () => {
+    const w = mount(CircularMap, { props: { doc: puc(), size: 640 } })
+    const R0 = Number(w.find('.cmap-svg circle').attributes('r'))
+    // 固定按 26% 留白时 R0 = 320 - 166 - 26 ≈ 128
+    expect(R0).toBeGreaterThan(180)
+    const [, , vw, vh] = vb(w)
+    expect(vw).toBe(640)
+    expect(vh).toBeLessThan(640)
+    expect(Number(w.find('.cmap-svg').attributes('height'))).toBe(Math.round(vh))
+    // 标签都在可视区内
+    const [, y0] = vb(w)
+    for (const t of w.findAll('.cmap-label text')) {
+      const y = Number(t.attributes('y'))
+      expect(y).toBeGreaterThan(y0)
+      expect(y).toBeLessThan(y0 + vh)
+    }
+  })
+
+  it('手机宽度：小环不写刻度数字，中心名称放不下时不画', () => {
+    const w = mount(CircularMap, { props: { doc: pet(), size: 300 } })
+    const labels = w.findAll('.cmap-ticks text')
+    const R0 = Number(w.find('.cmap-svg circle').attributes('r'))
+    if (R0 < 90) expect(labels).toHaveLength(0)
+    expect(w.html()).not.toMatch(/NaN/)
+    // 字号变小
+    expect(w.find('.cmap-label text').attributes('font-size')).toBe('10')
+  })
+})
+
 describe('SequenceMap 虚拟滚动', () => {
   it('300 kb 只渲染可见行', () => {
     const L = 300000

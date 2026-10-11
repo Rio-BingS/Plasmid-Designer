@@ -47,13 +47,27 @@ const { width: wrapW } = useElementSize(wrap)
 const S = computed(() => Math.round(props.size ?? Math.min(props.maxSize, Math.max(300, wrapW.value || 560))))
 const cx = computed(() => S.value / 2)
 const cy = computed(() => S.value / 2)
-const FONT = 11
+/** 窄屏（手机）：小一号字、更窄的标签栏，把空间让给环 */
+const compact = computed(() => S.value < 440)
+const FONT = computed(() => (compact.value ? 10 : 11))
 /** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
 const MAX_OVERVIEW_CUTS = 360
 const overview = computed(() => overviewCuts(store.cuts.value, MAX_OVERVIEW_CUTS))
-const labelMargin = computed(() => Math.min(175, Math.max(72, S.value * 0.26)))
+/**
+ * 标签栏宽度按实际最长标签取（上限为边长的 26%/22%，更长的截断）：
+ * 固定按 26% 留白会让短标签的质粒环缩到很小（pET-28a 在 640 px 里半径仅 ~130）。
+ */
+const labelMargin = computed(() => {
+  const cap = S.value * (compact.value ? 0.22 : 0.26)
+  if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
+  let maxW = 0
+  for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value))
+  for (const p of store.primers.value) maxW = Math.max(maxW, textWidth(p.name, FONT.value))
+  for (const c of overview.value.shown) maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1))
+  return Math.min(cap, Math.max(compact.value ? 44 : 56, maxW + 16))
+})
 const labelR = computed(() => S.value / 2 - labelMargin.value)
-const R0 = computed(() => labelR.value - 26)
+const R0 = computed(() => labelR.value - (compact.value ? 20 : 26))
 const laneH = computed(() => Math.min(14, Math.max(9, S.value * 0.02)))
 const laneGap = 2
 const L = computed(() => store.L.value)
@@ -61,20 +75,28 @@ const L = computed(() => store.L.value)
 // ---------------- 缩放 / 旋转 ----------------
 const zoom = ref(1)
 const pan = ref({ x: 0, y: 0 })
+/** 竖直裁切后的可视区 [top, bottom]（去掉方形画布上下没有内容的空白），见 crop */
+const crop = ref<[number, number]>([0, 0])
+const cropTop = computed(() => (crop.value[1] > crop.value[0] ? crop.value[0] : 0))
+const cropH = computed(() => (crop.value[1] > crop.value[0] ? crop.value[1] - crop.value[0] : S.value))
+/** 视图中心（未平移时） */
+const vcx = computed(() => cx.value)
+const vcy = computed(() => cropTop.value + cropH.value / 2)
 const viewBox = computed(() => {
   const w = S.value / zoom.value
-  const x = cx.value + pan.value.x - w / 2
-  const y = cy.value + pan.value.y - w / 2
-  return `${r2(x)} ${r2(y)} ${r2(w)} ${r2(w)}`
+  const h = cropH.value / zoom.value
+  const x = vcx.value + pan.value.x - w / 2
+  const y = vcy.value + pan.value.y - h / 2
+  return `${r2(x)} ${r2(y)} ${r2(w)} ${r2(h)}`
 })
 function r2(n: number) { return Math.round(n * 100) / 100 }
 function setZoom(z: number, focus?: [number, number]) {
   const nz = Math.min(20, Math.max(1, z))
   if (focus) {
     // 保持指针下的点不动：c' = P - (P - c)·z/z'
-    const c = [cx.value + pan.value.x, cy.value + pan.value.y]
+    const c = [vcx.value + pan.value.x, vcy.value + pan.value.y]
     const k = zoom.value / nz
-    pan.value = { x: focus[0] - (focus[0] - c[0]) * k - cx.value, y: focus[1] - (focus[1] - c[1]) * k - cy.value }
+    pan.value = { x: focus[0] - (focus[0] - c[0]) * k - vcx.value, y: focus[1] - (focus[1] - c[1]) * k - vcy.value }
   }
   zoom.value = nz
   if (nz === 1) pan.value = { x: 0, y: 0 }
@@ -191,20 +213,23 @@ const cutGeoms = computed(() => overview.value.shown.map((c) => {
 const labelLayout = computed(() => {
   if (!store.show.labels) return { placed: [], hidden: [] as string[] }
   const maxW = labelMargin.value - 14
+  const font = FONT.value
   const inputs: CircularLabelInput[] = []
   for (const g of featGeoms.value) {
     if (g.internal) continue
     const f = store.doc.value.features.find((x) => x.id === g.id)!
-    inputs.push({ id: g.key, text: truncateText(g.name, maxW, FONT), angle: g.mid, radius: g.r2, priority: featurePriority(f.type, rangeLength(f, L.value)) })
+    inputs.push({ id: g.key, text: truncateText(g.name, maxW, font), angle: g.mid, radius: g.r2, priority: featurePriority(f.type, rangeLength(f, L.value)) })
   }
   for (const c of cutGeoms.value) {
-    inputs.push({ id: c.key, text: c.name, angle: c.a, radius: R0.value + 10, priority: enzymePriority(c.enzyme.cut_count) })
+    inputs.push({ id: c.key, text: c.name, bold: c.weight > 400, angle: c.a, radius: R0.value + 10, priority: enzymePriority(c.enzyme.cut_count) })
   }
   for (const p of primerGeoms.value) {
-    inputs.push({ id: p.key, text: truncateText(p.name, maxW, FONT), angle: p.mid, radius: p.r, priority: 5e7 })
+    inputs.push({ id: p.key, text: truncateText(p.name, maxW, font), angle: p.mid, radius: p.r, priority: 5e7 })
   }
   return layoutCircularLabels(inputs.filter((i) => i.text), {
-    cx: cx.value, cy: cy.value, labelRadius: labelR.value, fontSize: FONT, lineHeight: FONT + 3, halfHeight: S.value / 2 - 6,
+    cx: cx.value, cy: cy.value, labelRadius: labelR.value, fontSize: font, lineHeight: font + 3, halfHeight: S.value / 2 - 6,
+    // 标签离锚点太远时宁可隐藏（列入"无法显示"），也不画横穿全图的长引线
+    maxShift: Math.max(60, labelR.value * 0.55),
   })
 })
 const labelStyle = computed(() => {
@@ -234,15 +259,17 @@ onBeforeUnmount(() => store.setUnshown('circular', []))
 
 // ---------------- 刻度 ----------------
 const tickGeoms = computed(() => {
-  const target = Math.max(6, Math.round(S.value / 70))
+  const rNum = Math.min(orfInner.value, featInner.value) - 12
+  // 刻度数随数字所在圆周长走；圈太小时只画刻度不写数字（否则数字挤在中心、压住名称）
+  const showNum = rNum >= 42
+  const target = Math.max(4, Math.min(Math.round(S.value / 70), Math.round((TAU * Math.max(rNum, 20)) / 60)))
   const t = ticks(1, L.value, target)
-  const rNum = Math.max(20, Math.min(orfInner.value, featInner.value) - 12)
   return t.positions.filter((p) => p < L.value - t.step * 0.3).map((p) => {
     const a = ang(p)
     const [x1, y1] = polar(cx.value, cy.value, R0.value - 1, a)
     const [x2, y2] = polar(cx.value, cy.value, R0.value - 5, a)
     const [tx, ty] = polar(cx.value, cy.value, rNum, a)
-    return { p, x1, y1, x2, y2, tx, ty, label: formatBp(p) }
+    return { p, x1, y1, x2, y2, tx, ty, label: showNum ? formatBp(p) : '' }
   })
 })
 const originMark = computed(() => {
@@ -304,8 +331,9 @@ function svgPoint(e: { clientX: number; clientY: number }): [number, number] {
   const rect = svg?.getBoundingClientRect()
   if (!rect || !rect.width) return [cx.value, cy.value - R0.value]
   const w = S.value / zoom.value
-  return [cx.value + pan.value.x - w / 2 + ((e.clientX - rect.left) / rect.width) * w,
-    cy.value + pan.value.y - w / 2 + ((e.clientY - rect.top) / rect.height) * w]
+  const h = cropH.value / zoom.value
+  return [vcx.value + pan.value.x - w / 2 + ((e.clientX - rect.left) / rect.width) * w,
+    vcy.value + pan.value.y - h / 2 + ((e.clientY - rect.top) / rect.height) * h]
 }
 
 function onPointerDown(e: PointerEvent) {
@@ -379,7 +407,36 @@ function onLeave() {
 }
 
 const centerName = computed(() => truncateText(store.doc.value.name, Math.max(60, selInner.value * 1.6), 15))
-const nameFits = computed(() => textWidth(centerName.value, 15) < selInner.value * 2)
+const nameFits = computed(() => selInner.value >= 40 && textWidth(centerName.value, 15) < selInner.value * 2)
+const lengthFits = computed(() => selInner.value >= 26)
+
+// ---------------- 竖直裁切 ----------------
+/** 内容（环 + 外圈刻度/引物 + 标签框）的竖直范围 */
+const contentBounds = computed<[number, number]>(() => {
+  const ring = R0.value + 14 + (primerGeoms.value.length ? 12 : 0)
+  let top = cy.value - ring
+  let bottom = cy.value + ring
+  for (const l of labelLayout.value.placed) {
+    top = Math.min(top, l.box.y)
+    bottom = Math.max(bottom, l.box.y + l.box.h)
+  }
+  const pad = 8
+  return [Math.max(0, top - pad), Math.min(S.value, bottom + pad)]
+})
+// 旋转进行中只扩不缩（标签随角度变化，若跟着收缩，下面的内容会上下跳）
+let rotTimer: ReturnType<typeof setTimeout> | undefined
+const rotating = ref(false)
+watch(() => store.rotation.value, () => {
+  rotating.value = true
+  clearTimeout(rotTimer)
+  rotTimer = setTimeout(() => { rotating.value = false }, 400)
+})
+onBeforeUnmount(() => clearTimeout(rotTimer))
+watch([contentBounds, rotating], ([[t, b]]) => {
+  const [ot, ob] = crop.value
+  crop.value = rotating.value && ob > ot ? [Math.min(ot, t), Math.max(ob, b)] : [t, b]
+}, { immediate: true })
+const svgH = computed(() => Math.round(cropH.value))
 
 defineExpose({ svgEl, resetView, setZoom, zoom })
 </script>
@@ -388,7 +445,7 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
   <div ref="wrap" class="cmap">
     <svg
       ref="svgEl" class="cmap-svg" data-map-export="circular" xmlns="http://www.w3.org/2000/svg"
-      :viewBox="viewBox" :width="S" :height="S" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
+      :viewBox="viewBox" :width="S" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
       font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
       @pointerleave="onLeave" @wheel="onWheel"
@@ -404,7 +461,7 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <g class="cmap-ticks">
         <g v-for="t in tickGeoms" :key="t.p">
           <line :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#6b7280" stroke-width="1" />
-          <text :x="t.tx" :y="t.ty" font-size="9.5" fill="#6b7280" text-anchor="middle" dominant-baseline="central">{{ t.label }}</text>
+          <text v-if="t.label" :x="t.tx" :y="t.ty" font-size="9.5" fill="#6b7280" text-anchor="middle" dominant-baseline="central">{{ t.label }}</text>
         </g>
       </g>
 
@@ -444,7 +501,8 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
          :class="['cmap-label', { 'is-hover': hoverKey === l.id }]">
         <polyline :points="l.leader.map((p) => p.map(r2).join(',')).join(' ')" fill="none"
                   :stroke="hoverKey === l.id ? '#4f46e5' : '#a5a9ae'" stroke-width="0.8" />
-        <text :x="l.x" :y="l.y" :font-size="FONT" dominant-baseline="central"
+        <text :x="l.x" :y="l.y" :font-size="FONT" dominant-baseline="central" class="cmap-label-text"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke"
               :text-anchor="l.side === 1 ? 'start' : 'end'"
               :fill="labelStyle.get(l.id)?.color ?? '#1f2937'"
               :font-weight="labelStyle.get(l.id)?.weight ?? 400">{{ l.text }}</text>
@@ -452,7 +510,7 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 
       <!-- 中心名称与长度 -->
       <text v-if="nameFits" :x="cx" :y="cy - 6" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2937" class="cmap-name">{{ centerName }}</text>
-      <text :x="cx" :y="cy + (nameFits ? 14 : 4)" text-anchor="middle" font-size="12" fill="#6b7280" class="cmap-length">{{ L.toLocaleString('en-US') }} bp</text>
+      <text v-if="lengthFits" :x="cx" :y="cy + (nameFits ? 14 : 4)" text-anchor="middle" :font-size="compact ? 11 : 12" fill="#6b7280" class="cmap-length">{{ L.toLocaleString('en-US') }} bp</text>
     </svg>
 
     <div v-if="interactive" class="cmap-controls">
