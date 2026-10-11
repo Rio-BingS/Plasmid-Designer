@@ -56,6 +56,11 @@ COPY src/backend/ ./backend/
 COPY data/vectors/ ./data/vectors/
 COPY data/codon_tables/ ./data/codon_tables/
 
+# 批量测序分块上传暂存目录：compose 挂具名卷到这里。具名卷首次挂载时继承
+# 镜像内该目录的属主，非 root 的 plasmid 才可写（宿主机 bind mount 的 data/
+# 常属 root，容器内不可写）
+RUN mkdir -p /app/batch_uploads && chmod 700 /app/batch_uploads
+
 # Set permissions
 RUN chown -R plasmid:plasmid /app
 

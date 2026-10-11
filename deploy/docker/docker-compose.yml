@@ -12,6 +12,8 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       - ../../data:/app/data
+      # 批量测序分块上传暂存（会话过期/分析完成即清理；单批默认最多 2 GB）
+      - batch-uploads:/app/batch_uploads
     environment:
       - DATABASE_URL=postgresql://${DB_USER:-plasmid}:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/plasmid_designer
       # Redis 已启用 requirepass，连接串需携带密码（与 redis 服务保持同一默认值）
@@ -35,6 +37,12 @@ services:
       - SEQUENCING_BATCH_MAX_TOTAL_READS=${SEQUENCING_BATCH_MAX_TOTAL_READS:-240}
       - SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX=${SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX:-384}
       - SEQUENCING_BATCH_READS_HARD_MAX=${SEQUENCING_BATCH_READS_HARD_MAX:-5000}
+      # 批量测序分块上传（见 .env.example）：暂存目录固定为上面的具名卷
+      - SEQUENCING_BATCH_SESSION_DIR=/app/batch_uploads
+      - SEQUENCING_BATCH_SESSION_MAX_MB=${SEQUENCING_BATCH_SESSION_MAX_MB:-2048}
+      - SEQUENCING_BATCH_SESSIONS_PER_OWNER=${SEQUENCING_BATCH_SESSIONS_PER_OWNER:-2}
+      - SEQUENCING_BATCH_SESSIONS_TOTAL=${SEQUENCING_BATCH_SESSIONS_TOTAL:-16}
+      - SEQUENCING_BATCH_FINALIZE_WAIT=${SEQUENCING_BATCH_FINALIZE_WAIT:-60}
       # 可信反向代理：只信前端 nginx 容器的固定地址（FRONTEND_IPV4，见下方 networks），
       # 不再信整个 172.16.0.0/12——同网段其它容器/主机可伪造 X-Real-IP 换限流桶。
       # 改 PLASMID_SUBNET / FRONTEND_IPV4 时同步修改
@@ -147,6 +155,8 @@ services:
 
 volumes:
   postgres-data:
+    driver: local
+  batch-uploads:
     driver: local
   redis-data:
     driver: local
