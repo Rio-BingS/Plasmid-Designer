@@ -205,8 +205,10 @@ Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考�
 CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动对齐区间内最佳 ORF（起始密码子→终止密码子，长度优先）再翻译，被大 CDS 完全包含的小特征（如 6xHis 标签）不重复报告；结论按置信度分层——只将中/高置信变异（确证变异）重建进 CDS 判定，低置信变异（疑似测序噪声）不计入，单独在结论末尾给出待复核提示；翻译产物与参考做 BLOSUM62 全局比对，给出「完整覆盖 + 翻译产物一致 / 移码 / 无义提前终止 / 起始或终止密码子丢失 / 框内插入缺失 / 错义与同义」的整段判定，后果标注 Sequence Ontology 标准词表（stop_gained、frameshift_variant 等，与 VEP/snpEff/bcftools csq 对齐），结论文案为一句话因果链（变异位置 + 类型 + 后果 + 关键数字）；未覆盖区域按参考填充并明确标注未验证。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
-分析记录在 database 模式下落库（`sequencing_analyses` 表，重启不丢；`SEQUENCING_DB_MAX_RECORDS`
-默认 2000 条，超出淘汰最旧），进程内只保留 15 分钟读取缓存；memory 模式下 15 分钟后过期。
+分析记录在 database 模式下落库（`sequencing_analyses` 表，重启不丢；按属主分桶保留：
+每个登录用户 `SEQUENCING_DB_MAX_RECORDS_PER_OWNER`、匿名记录合计 `SEQUENCING_DB_MAX_ANON_RECORDS`，
+默认各 2000 条，超出只淘汰该桶最旧记录；全库总上限 `SEQUENCING_DB_MAX_RECORDS` 默认 20000，
+超出时先删最旧匿名记录），进程内只保留 15 分钟读取缓存；memory 模式下 15 分钟后过期。
 匿名创建的记录由创建响应下发的 `access_token` 访问，登录用户的记录仅本人与管理员可见。
 
 **批量分析**：归组与结论逻辑在 `core/sanger/batch.py`，逐组分析与整理包（报告/
