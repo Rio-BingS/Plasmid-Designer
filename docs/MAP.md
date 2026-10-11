@@ -24,8 +24,9 @@
   取模到 `1..length`（跨原点的位点与切点都会报出）；线性分子上切点落在分子外或
   恰在末端的位点不算切割。回文位点只报一次（`strand=1`），非回文按识别方向给
   `strand=±1`。`recognition` 用 NEB 记法（`G^AATTC`、`GGTCTC(1/5)`）；Type IIS 的
-  `overhang` 是 REBASE 的 `NNNN`。`methylation` 暂不提供（Bio.Restriction 不含
-  dam/dcm 敏感性数据）。
+  `overhang` 是 REBASE 的 `NNNN`（酶级模板）；每个粘端位点另有 `sites[].overhang`：
+  两切点之间的**实际碱基**，按正向链 5'→3' 读（Type IIS、AvaI 等简并识别的
+  突出端因位点而异；平末端位点省略）。`methylation` 暂不提供。
 - `orfs[]`：ATG 起始、遇终止结束、只报最上游 ATG（不报嵌套）；`aa_length` 不含终止
   密码子；坐标含终止密码子；环状分子上跨原点的 ORF 报一次。`frame` = 该 ORF 所在链
   （负链按反向互补序列计）起点坐标 mod 3。

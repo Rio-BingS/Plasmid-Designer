@@ -8,6 +8,9 @@ IUPAC 正则、环状跨原点扫描）。这里只做：
 - 切点口径：cut_top / cut_bottom = 该链在「第几位碱基之后」被切（正向链
   坐标，0..length）；环状分子取模到 1..length，线性分子上切点落在分子外
   （Type IIS 靠近末端）或恰在末端的位点不算切割，直接丢弃
+- 每个粘端位点给出实际突出端 sites[].overhang（两切点之间的碱基，按正向链
+  5'→3' 读）：Type IIS（REBASE 记作 NNNN）与简并识别序列（AvaI 等）的突出端
+  因位点而异，酶级 overhang 只是模板
 """
 
 from functools import lru_cache
@@ -117,7 +120,8 @@ def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
                                                   palindrome_both_strands=False):
         # enzyme_sites 的 cut_rev 是反向链「切点前一位」（沿反向链阅读，
         # 落在切点右侧），换成正向坐标下「切点左侧碱基」即减一
-        top, bottom = cut_fwd, cut_rev - 1
+        raw_top, raw_bottom = cut_fwd, cut_rev - 1
+        top, bottom = raw_top, raw_bottom
         if circular:
             top = ((top - 1) % length) + 1
             bottom = ((bottom - 1) % length) + 1
@@ -127,14 +131,18 @@ def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
         if key in seen:
             continue
         seen.add(key)
-        sites.append({
+        sign = 1 if strand == "+" else -1
+        site = {
             "position": a + 1,
             "cut_top": top,
             "cut_bottom": bottom,
-            "strand": 1 if strand == "+" else -1,
-        })
+            "strand": sign,
+        }
+        if raw_top != raw_bottom:
+            site["overhang"] = _site_overhang(seq, raw_top, raw_bottom, circular)
+        sites.append(site)
     sites.sort(key=lambda s: (s["position"], s["strand"]))
-    return {
+    out = {
         "name": name,
         "recognition": info["recognition"],
         "ends": info["ends"],
@@ -142,6 +150,17 @@ def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
         "cut_count": len(sites),
         "sites": sites,
     }
+    return out
+
+
+def _site_overhang(seq: str, raw_top: int, raw_bottom: int, circular: bool) -> str:
+    """两切点之间的碱基（正向链 5'→3'）；raw_* 为未取模的「切点前一位」坐标。
+    线性分子上调用方已保证两切点都在分子内部"""
+    lo, hi = sorted((raw_top, raw_bottom))
+    if circular:
+        n = len(seq)
+        return "".join(seq[i % n] for i in range(lo, hi))
+    return seq[lo:hi]
 
 
 def resolve_enzymes(enzyme_set: str = "common",
