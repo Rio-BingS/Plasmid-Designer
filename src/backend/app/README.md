@@ -39,7 +39,7 @@ app/
 ## 安装
 
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt   # 运行测试另加 -r requirements-dev.txt
 ```
 
 ## 运行

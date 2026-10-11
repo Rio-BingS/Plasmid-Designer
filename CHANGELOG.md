@@ -16,6 +16,11 @@
   `pip install --require-hashes`；手动安装或自定义镜像源的部署请同样从锁文件安装，
   镜像源必须提供与 PyPI 相同的文件。biopython 并入 Docker 锁文件，不再单独安装。
   更新方法见 README「Python 依赖锁定」。
+- **测试依赖移出运行时清单**：pytest、httpx2 及其传递依赖移到
+  `src/backend/requirements-dev.in` / `requirements-dev.txt`，裸机部署与 Docker
+  镜像不再安装；本地开发跑测试需
+  `pip install --require-hashes -r requirements.txt -r requirements-dev.txt`。
+  已有裸机 venv 中的旧包不会自动卸载，可手动 `pip uninstall pytest httpx2`。
 - **Docker 部署默认关闭 API 文档**：compose 新增 `ENABLE_API_DOCS`（默认 `false`），
   `/docs`、`/redoc`、`/openapi.json` 返回 404，不再经前端端口对公网公开。需要时在
   `.env` 设 `ENABLE_API_DOCS=true`，并在宿主机 nginx 限制来源。本地开发与裸机部署
