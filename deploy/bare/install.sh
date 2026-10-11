@@ -453,16 +453,21 @@ echo "  ✓ Nginx 已配置"
 echo ""
 echo "等待后端服务启动..."
 
+# /health 含数据库连通性（"db":"ok"），库不通时返回 503；未通过则安装失败，
+# 不再只打印警告后照样报告「部署完成」
 for i in $(seq 1 20); do
-    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
-        echo "  ✓ 后端服务健康"
+    if curl -fsS --max-time 10 http://localhost:8000/health 2>/dev/null | grep -qE '"db" *: *"ok"'; then
+        echo "  ✓ 后端服务与数据库连接正常"
         break
     fi
-    if [ $i -eq 20 ]; then
-        echo "  ⚠ 健康检查超时，请查看日志: journalctl -u plasmid-backend"
-    else
-        sleep 3
+    if [ "$i" -eq 20 ]; then
+        echo "  ✗ 后端健康检查未通过（/health 未报告 db=ok）" >&2
+        echo "    当前响应: $(curl -sS --max-time 10 http://localhost:8000/health 2>&1 || true)" >&2
+        echo "    查看日志: journalctl -u plasmid-backend" >&2
+        echo "    数据库认证失败时，核对 $INSTALL_DIR/.env 的 DATABASE_URL 与库内口令" >&2
+        exit 1
     fi
+    sleep 3
 done
 
 # ==================== 完成 ====================
