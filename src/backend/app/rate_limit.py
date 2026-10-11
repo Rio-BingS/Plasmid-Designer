@@ -209,6 +209,9 @@ RATE_LIMITS = {
     "design": {"requests": 10, "window": 60},    # 10 设计任务/分钟
     "batch": {"requests": 3, "window": 60},      # 3 批量任务/分钟
     "upload": {"requests": 20, "window": 3600},  # 20 上传/小时
+    # 批量测序分块上传的单个分块：一个批次只在建会话时计入 upload 档，
+    # 分块另计（一批可拆成数十个分块，计入 upload 档会被 20 次/小时卡死）
+    "upload_chunk": {"requests": 300, "window": 3600},
     "auth": {"requests": 5, "window": 60},       # 5 次/分钟（同 IP + 同目标邮箱）
     "auth_ip": {"requests": 20, "window": 60},   # 20 次/分钟（同 IP 全部认证写操作）
     # 按账号（规范化邮箱）的登录失败闸，不含 IP 维度：换 IP 也绕不过
@@ -427,6 +430,16 @@ def login_account_too_many(email, retry_after: int) -> JSONResponse:
 # ==================== 路由级限流分类（终审 C-04） ====================
 # 规则表：(HTTP 方法, 路径模板) → 限流档位。模板里 {param} 之后用前缀
 # 匹配（/api/design/ 覆盖 /api/design/{id}）。
+# 整段模板精确匹配的写操作规则（{param} 匹配单个路径段），先于下方前缀规则：
+# 分块上传会话的子路径共享前缀，前缀匹配分不开
+_WRITE_EXACT_RULES: List[Tuple[str, str, str]] = [
+    ("POST", "/api/sequencing/batch-sessions", "upload"),
+    ("POST", "/api/sequencing/batch-sessions/{id}/files", "upload_chunk"),
+    ("POST", "/api/sequencing/batch-sessions/{id}/finalize", "batch"),
+    ("DELETE", "/api/sequencing/batch-sessions/{id}", "default"),
+]
+
+
 _ENDPOINT_RULES: List[Tuple[str, str, str]] = [
     # 测序上传（含批量）
     ("POST", "/api/sequencing/analyze-batch", "upload"),
@@ -470,6 +483,7 @@ def _template_regex(template: str) -> "re.Pattern":
 
 
 _READ_RULES_RE = [(_template_regex(t), b) for t, b in _READ_RULES]
+_WRITE_EXACT_RULES_RE = [(m, _template_regex(t), b) for m, t, b in _WRITE_EXACT_RULES]
 
 
 def classify_endpoint(method: str, path: str) -> str:
@@ -482,6 +496,9 @@ def classify_endpoint(method: str, path: str) -> str:
     把用户强制登出）。
     """
     method = (method or "GET").upper()
+    for rule_method, rx, bucket in _WRITE_EXACT_RULES_RE:
+        if rule_method == method and rx.match(path):
+            return bucket
     for rule_method, template, bucket in _ENDPOINT_RULES:
         if rule_method != method:
             continue
