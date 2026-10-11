@@ -497,10 +497,50 @@ def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
     return tails, widespread
 
 
+# 给出 合格 所需的最少实测碱基数：没有任何 CDS 被完整覆盖、且共识实测
+# 不足此数时，测到的片段太短，连是不是目标质粒都无法确认（错质粒的
+# read 往往只有十几 bp 偶然比对上）——只给 无法判定，不给 合格
+MIN_VERDICT_COVERED_BP = 100
+
+
+def _covered_bp(res) -> Optional[int]:
+    """共识实测碱基数（缺 covered_ranges 时返回 None：口径未知不拦截）"""
+    rng = ((res or {}).get("consensus") or {}).get("covered_ranges")
+    if rng is None:
+        return None
+    return sum(int(e) - int(s) + 1 for s, e in rng)
+
+
+def _undetermined_reason(res) -> Optional[str]:
+    """合格前的覆盖闸门：部分比对或实测过少时返回 无法判定 的原因，否则 None
+
+    与网页 _conclusion_summary 的 △ 同口径：有 read 大段未比对上参考
+    （partial_alignment：错质粒、污染、载体外序列或参考有误）时，未比对
+    部分根本没有验证，不能给 合格。部分测序本身是常规策略，覆盖率低
+    不拦截；只有既无完整覆盖的 CDS、实测又不足 MIN_VERDICT_COVERED_BP
+    时才视为覆盖不足。"""
+    partial = [r for r in res.get("reads") or [] if r.get("partial_alignment")]
+    if partial:
+        if len(partial) == 1:
+            info = partial[0]["partial_alignment"]
+            who = (f"{partial[0].get('filename', 'read')} 仅 "
+                   f"{info.get('aligned_read_len', 0)}/"
+                   f"{info.get('trimmed_length', 0)}bp 比对上参考")
+        else:
+            who = f"{len(partial)} 条 read 大段未比对上参考"
+        return f"部分比对（{who}），未比对部分未验证，可能是错质粒、污染或参考有误"
+    full_cds = any(c.get("coverage_status") == "full"
+                   for c in res.get("cds_reports") or [])
+    bp = _covered_bp(res)
+    if not full_cds and bp is not None and bp < MIN_VERDICT_COVERED_BP:
+        return f"测序覆盖不足（仅 {bp}bp 实测），无法确认是否为目标质粒"
+    return None
+
+
 def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。
 
-    表格单元格以简洁为先：合格/不合格/疑似混合 前缀供批量筛选分拣，
+    表格单元格以简洁为先：合格/不合格/疑似混合/无法判定 前缀供批量筛选分拣，
     差异细节与伪影鉴别解释一律不进表（互检矛盾与一般低置信合并为
     "疑似伪影"，逐条证据在网页报告里）"""
     if not has_ref:
@@ -516,6 +556,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     bad = [c for c in res["cds_reports"]
            if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
     mixed_tails, widespread = _mixed_tails(res)
+    undetermined = _undetermined_reason(res)
 
     # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了，混合降为
     # 提示）；否则疑似混合样品升级为结论主句——混合培养物无法自动判定
@@ -537,6 +578,10 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         if confirmed:
             out += f"；按主峰判读蛋白与设计一致，另有 {len(confirmed)} 处确证差异"
         return out
+    elif undetermined:
+        out = "无法判定：" + undetermined
+        if confirmed:
+            out += f"；已比对区域另有 {len(confirmed)} 处确证差异"
     elif confirmed:
         feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
         out = f"合格：编码区蛋白一致；编码区外 {len(confirmed)} 处确证差异（{feats}）"
