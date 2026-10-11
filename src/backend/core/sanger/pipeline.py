@@ -1499,7 +1499,8 @@ def _find_orf(ref: str, start: int, end: int, strand: str) -> Optional[Dict]:
 
 
 def _build_cds_reports(
-    ref: str, features: List[Dict], variants: List[Dict], consensus: Dict
+    ref: str, features: List[Dict], variants: List[Dict], consensus: Dict,
+    _ref_pos_of=None,
 ) -> List[Dict]:
     """CDS 级别测序结论：覆盖完整性 + 共识重建 CDS 的翻译产物与参考逐位比对
 
@@ -1510,8 +1511,16 @@ def _build_cds_reports(
     - 嵌套去重：被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论；
     - 蛋白：从共识差异重建 CDS 序列（按链方向翻译），与参考翻译逐位比对，
       给出一致/不一致、移码数、无义提前终止位置与氨基酸替换清单。
+    - 多段 CDS（GenBank join，含跨原点）：各段按编码方向拼成虚拟参考后
+      走同一套判读，见 _joined_cds_report。
+
+    _ref_pos_of：内部参数，把本次调用的坐标映射回原参考坐标（仅用于
+    结论文案里的位置；多段 CDS 递归时传入）。
     """
     from Bio.Seq import Seq
+    from core.sanger.annotator import group_feature_segments
+
+    _rp = _ref_pos_of or (lambda pos: pos)
 
     ALT_START_CODONS = set(_ALT_STARTS)
 
@@ -1619,6 +1628,7 @@ def _build_cds_reports(
     reports: List[Dict] = []
     # 嵌套去重：被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论
     cds_feats = [f for f in (features or []) if f.get("type") == "CDS"]
+    cds_groups = group_feature_segments(cds_feats)
     nested_ids = {
         id(f)
         for f in cds_feats
@@ -1627,7 +1637,12 @@ def _build_cds_reports(
         and int(g["start"]) <= int(f["start"]) and int(f["end"]) <= int(g["end"])
         and (int(g["end"]) - int(g["start"])) > (int(f["end"]) - int(f["start"]))
     }
-    for f in cds_feats:
+    for group in cds_groups:
+        if len(group) > 1:
+            # 多段 CDS 的各段不参与嵌套去重（段本身不是独立编码区）
+            reports.extend(_joined_cds_report(ref, group, variants, consensus))
+            continue
+        f = group[0]
         if id(f) in nested_ids:
             continue
         feat_start, feat_end = int(f["start"]), int(f["end"])
@@ -1642,7 +1657,8 @@ def _build_cds_reports(
             shift = f"起点相差 {abs(start - feat_start)} bp" if start != feat_start \
                 else f"终点相差 {abs(end - feat_end)} bp"
             frame_note = (
-                f"（特征标注 {feat_start}-{feat_end} 与实际编码区 {start}-{end} {shift}，已按编码区翻译）"
+                f"（特征标注 {_rp(feat_start)}-{_rp(feat_end)} 与实际编码区 "
+                f"{_rp(start)}-{_rp(end)} {shift}，已按编码区翻译）"
             )
         elif (end - start + 1) % 3:
             frame_note = f"（注意：该特征长度 {end - start + 1} bp 不是 3 的倍数，翻译按参考阅读框截断）"
@@ -1775,7 +1791,7 @@ def _build_cds_reports(
             if fs0 is not None:
                 kind = "插入" if fs0.get("type") == "insertion" else "缺失"
                 vlen = int(fs0.get("length") or 1)
-                main = f"{fs0['ref_pos']} 处的{kind}{'' if vlen == 1 else f' {vlen}bp'}使阅读框自第 {first_diff + 1} 位起移码"
+                main = f"{_rp(fs0['ref_pos'])} 处的{kind}{'' if vlen == 1 else f' {vlen}bp'}使阅读框自第 {first_diff + 1} 位起移码"
                 if stop_idx >= 0:
                     main += f"，翻译在第 {stop_idx + 1} 位提前终止（产物 {len(alt_prot)} aa，设计为 {len(ref_prot)} aa）"
                 else:
@@ -1808,7 +1824,7 @@ def _build_cds_reports(
                 ]
                 if confirmed_subs:
                     preview = "、".join(
-                        f"{v['ref_pos']} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
+                        f"{_rp(v['ref_pos'])} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
                         for v in confirmed_subs[:4]
                     ) + ("等" if len(confirmed_subs) > 4 else "")
                     main += f"；另有 {len(confirmed_subs)} 处确证的碱基替换（{preview}）"
@@ -1836,7 +1852,7 @@ def _build_cds_reports(
                     kind = "插入" if v.get("type") == "insertion" else "缺失"
                     rd = (v.get("cross_read_conflict") or {}).get("reads") or []
                     reads = "、".join(rd[:2]) + ("等" if len(rd) > 2 else "")
-                    parts.append(f"{v['ref_pos']} 处的{kind}（{reads} 跨过同一位点未见差异）")
+                    parts.append(f"{_rp(v['ref_pos'])} 处的{kind}（{reads} 跨过同一位点未见差异）")
                 head = (f"等 {len(conflicted)} 处" if len(conflicted) > 2
                         else f"{len(conflicted)} 处")
                 main += (
@@ -1863,6 +1879,89 @@ def _build_cds_reports(
             "pending_low_confidence": len(pending),
             "verdict": verdict,
         })
+    return reports
+
+
+def _joined_cds_report(
+    ref: str, parts: List[Dict], variants: List[Dict], consensus: Dict
+) -> List[Dict]:
+    """多段 CDS（GenBank join，含环状质粒跨原点的 join(2701..3000,1..300)）
+
+    各段按编码方向拼接成虚拟参考（正链即段顺序；负链段逆序拼正链序列，
+    其反向互补即编码序列），把变体与覆盖区间映射到虚拟坐标后复用单段
+    判读；报告的 start/end 映射回原参考坐标（跨原点时 start > end），
+    并附 segments 列出编码区实际落在参考上的各段（编码方向顺序）。
+    段间链方向不一致（反式剪接）时无法拼接，不出报告。
+    """
+    strands = {p.get("strand") or "+" for p in parts}
+    if len(strands) != 1:
+        return []
+    strand = strands.pop()
+    L = len(ref)
+    fwd = list(reversed(parts)) if strand == "-" else list(parts)
+    vmap: List[int] = []  # 虚拟坐标（0-based 下标）→ 原参考 1-based 坐标
+    part_vranges: List[Tuple[int, int]] = []  # 各段（fwd 顺序）的虚拟 1-based 区间
+    for p in fwd:
+        s, e = int(p["start"]), int(p["end"])
+        if s < 1 or e > L or s > e:
+            return []
+        part_vranges.append((len(vmap) + 1, len(vmap) + e - s + 1))
+        vmap.extend(range(s, e + 1))
+    inv: Dict[int, List[int]] = {}
+    for k, pos in enumerate(vmap, 1):
+        inv.setdefault(pos, []).append(k)
+    vref = "".join(ref[pos - 1] for pos in vmap)
+
+    vvars: List[Dict] = []
+    for v in variants:
+        t, a = v.get("type"), int(v["ref_pos"])
+        if t == "substitution":
+            vvars.extend({**v, "ref_pos": k} for k in inv.get(a, []))
+        elif t == "insertion":
+            # 插入位于 a 与 a+1 之间：两者在虚拟序列中也相邻才算落在 CDS 内
+            nxt = a % L + 1 if L else a + 1
+            vvars.extend({**v, "ref_pos": k} for k in inv.get(a, [])
+                         if k < len(vmap) and vmap[k] == nxt)
+        elif t == "deletion":
+            n = int(v.get("length") or 1)
+            ks = sorted(k for i in range(n) for k in inv.get((a - 1 + i) % L + 1, []))
+            run_start = prev = None
+            for k in ks + [None]:
+                if k is not None and prev is not None and k == prev + 1:
+                    prev = k
+                    continue
+                if run_start is not None:
+                    vvars.append({**v, "ref_pos": run_start, "length": prev - run_start + 1})
+                run_start = prev = k
+
+    covered = bytearray(L + 2)
+    for s, e in consensus.get("covered_ranges", []):
+        for pos in range(max(1, int(s)), min(L, int(e)) + 1):
+            covered[pos] = 1
+    vcov: List[Tuple[int, int]] = []
+    for k, pos in enumerate(vmap, 1):
+        if covered[pos]:
+            if vcov and vcov[-1][1] == k - 1:
+                vcov[-1] = (vcov[-1][0], k)
+            else:
+                vcov.append((k, k))
+
+    head = parts[0]
+    vfeat = {"name": head.get("name") or "CDS", "type": "CDS",
+             "start": 1, "end": len(vref), "strand": strand}
+    reports = _build_cds_reports(vref, [vfeat], vvars, {"covered_ranges": vcov},
+                                 _ref_pos_of=lambda k: vmap[k - 1])
+    for r in reports:
+        vs, ve = int(r["start"]), int(r["end"])
+        segs = []
+        for ps, pe in part_vranges:
+            lo, hi = max(ps, vs), min(pe, ve)
+            if lo <= hi:
+                segs.append([vmap[lo - 1], vmap[hi - 1]])
+        if strand == "-":
+            segs.reverse()
+        r["start"], r["end"] = vmap[vs - 1], vmap[ve - 1]
+        r["segments"] = segs
     return reports
 
 

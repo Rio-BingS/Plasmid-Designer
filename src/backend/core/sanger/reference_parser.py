@@ -3,6 +3,8 @@
 参考序列随 .ab1 一起上传（用户把图谱文件与测序文件放同一文件夹导入）。
 支持三种格式，统一返回 (序列, 特征列表)：
 - GenBank (.gb/.gbk/.genbank)：Biopython 解析，特征含名称/类型/坐标/方向
+  复合位置（join/order，含环状跨原点）逐段各出一条记录，附 feature_id /
+  segment_index / segment_count 分组键（单段特征不带这些键）
 - FASTA (.fasta/.fa/.fna)：仅序列，无特征
 - SnapGene (.dna)：snapgene-reader 解析（包缺失时报可读错误）
 
@@ -69,18 +71,23 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
     seq = str(record.seq).upper()
     circular = _topology_flag((record.annotations or {}).get("topology"))
     features: List[Dict] = []
-    for f in record.features:
+    for feature_id, f in enumerate(record.features):
         if f.type == "source":
             continue
         try:
-            # 复合位置（join/complement 多段）取整体跨度，足够用于差异注释
-            start = int(f.location.start) + 1
-            end = int(f.location.end)
-        except (TypeError, ValueError):
+            # 复合位置（join/order，含跨原点的环状特征）逐段展开：取整体跨度
+            # 会把 join(2701..3000,1..300) 变成覆盖全质粒的 1..3000。
+            # Biopython 的 parts 已按生物学方向排列（负链为反向顺序）
+            parts = [(int(p.start) + 1, int(p.end), p.strand) for p in f.location.parts]
+        except (TypeError, ValueError, AttributeError):
             continue
-        if start > end or end < 1 or start > len(seq):
+        segments = []
+        for start, end, part_strand in parts:
+            if start > end or end < 1 or start > len(seq):
+                continue
+            segments.append((max(1, start), min(len(seq), end), part_strand))
+        if not segments:
             continue
-        start, end = max(1, start), min(len(seq), end)
         quals = f.qualifiers or {}
         name = ""
         for key in ("label", "gene", "product", "name", "apifinfo"):
@@ -94,14 +101,26 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
             if v:
                 note = str(v[0])
                 break
-        features.append({
-            "name": _clean(name or f.type)[:40],
-            "type": _clean(f.type)[:24],
-            "start": start,
-            "end": end,
-            "strand": "-" if f.location.strand == -1 else "+",
-            "description": _clean(note or name or f.type)[:120],
-        })
+        whole_strand = f.location.strand
+        for idx, (start, end, part_strand) in enumerate(segments):
+            strand = whole_strand if whole_strand in (1, -1) else part_strand
+            rec = {
+                "name": _clean(name or f.type)[:40],
+                "type": _clean(f.type)[:24],
+                "start": start,
+                "end": end,
+                "strand": "-" if strand == -1 else "+",
+                "description": _clean(note or name or f.type)[:120],
+            }
+            if len(segments) > 1:
+                # 多段特征的分组键：同一 feature_id 的各段共享名称/类型/方向，
+                # segment_index 为编码方向上的顺序（CDS 拼接与 UI 图例去重用）
+                rec.update({
+                    "feature_id": feature_id,
+                    "segment_index": idx,
+                    "segment_count": len(segments),
+                })
+            features.append(rec)
     features.sort(key=lambda x: (x["start"], x["end"]))
     return seq, features, circular
 
