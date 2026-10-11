@@ -127,7 +127,8 @@ def test_batch_read_excel_and_pack_inside_gate(probe):
 
     wrap, seen = probe
     wrap(sr, "_read_limited")
-    wrap(sr, "load_excel")
+    wrap(sr, "parse_excel")
+    wrap(sr, "open_excel_for_write")
     wrap(sr, "build_batch_zip")
     ref = "ATGAAACGT" * 12 + "TAA"
     files = [
@@ -142,14 +143,15 @@ def test_batch_read_excel_and_pack_inside_gate(probe):
     assert body["report_ready"] is True and body["access_token"]
     assert body["items"][0]["status"] == "analyzed"
     names = {n for n, _, _ in seen}
-    assert names == {"_read_limited", "load_excel", "build_batch_zip"}
+    assert names == {"_read_limited", "parse_excel", "open_excel_for_write",
+                     "build_batch_zip"}
     assert all(in_gate for _, in_gate, _ in seen), seen
     assert not any(on_loop for n, _, on_loop in seen if n != "_read_limited"), seen
 
 
 def test_batch_bad_excel_still_400_inside_gate(probe):
     wrap, seen = probe
-    wrap(sr, "load_excel")
+    wrap(sr, "parse_excel")
     files = [
         ("files", ("MX.fasta", b">MX\n" + b"ACGT" * 30 + b"\n", "application/octet-stream")),
         ("excel", ("测序.xlsx", b"not a zip", "application/octet-stream")),

@@ -118,7 +118,7 @@ def _precheck(manifest: List[Dict], excel_bytes: Optional[bytes], read_limits: D
     reads, refs, _ignored = sr._classify_batch_blobs(blobs)
     rows = None
     if excel_bytes is not None:
-        _wb, _cols, rows = sr._load_batch_excel(excel_bytes)
+        _cols, rows = sr._load_batch_excel(excel_bytes)
     sr._group_and_check(reads, refs, rows, read_limits, max_files=None)
 
 
