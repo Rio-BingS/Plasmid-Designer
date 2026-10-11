@@ -162,7 +162,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/api/vectors` | 列出载体（支持类型/宿主过滤） |
+| GET | `/api/vectors` | 列出载体（支持类型/宿主过滤；每项附 `map_preview` 缩略图谱） |
 | GET | `/api/vectors/{id}` | 获取载体详情 |
 | GET | `/api/vectors/{id}/map` | 载体图谱（MapDocument） |
 | GET | `/api/vectors/{id}/sequence` | 获取载体序列 (FASTA/GenBank) |
@@ -341,7 +341,7 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 组合环形 / 线性 / 序列 / 分屏视图，共享选区与悬停；特征自动分道，标签内置或外置引线
 且保证不重叠（放不下的计数并列出）；酶切按酶组、切点数、名称过滤；Ctrl+F 错配搜索；
 选区长度/GC%/Tm；导出 SVG、PNG 2x、GenBank。纯算法在 `src/map/core/`（带单测）。
-图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 的默认菜单 51 种常用酶扫描生成（含识别序列；酶参数取自 Biopython 自带的 REBASE 数据）。
+MapDocument 的 `enzymes[]` 按酶分组列出位点（双链切点 `cut_top`/`cut_bottom`、每个位点的实际突出端、Dam/Dcm 甲基化阻断提示），默认用 `common` 集合（`core/enzyme_sites.py` 默认菜单 51 种常用酶，酶参数取自 Biopython 自带的 REBASE 数据），也可选 `unique6` / `commercial` / `golden_gate`；字段口径见 [docs/MAP.md](docs/MAP.md)。
 
 **载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
 每个文件含 `data_provenance` 血统块（来源/地址/抓取日期）。数据来源：
