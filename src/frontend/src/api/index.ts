@@ -145,17 +145,7 @@ export async function getCodonTables(): Promise<CodonTable[]> {
   return response.data
 }
 
-// 载体图谱
-export async function getVectorMapData(vectorId: string): Promise<any> {
-  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}/map`)
-  return response.data
-}
-
-// 设计图谱
-export async function getDesignMapData(designId: string): Promise<any> {
-  const response = await api.get(`/design/${encodeURIComponent(designId)}/map`)
-  return response.data
-}
+// 载体/设计图谱（MapDocument）见 map/api.ts 的 getVectorMap / getDesignMap
 
 // NCBI 搜索
 export async function searchNcbi(query: string, limit: number = 10): Promise<any> {
