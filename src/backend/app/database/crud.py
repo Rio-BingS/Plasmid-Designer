@@ -187,12 +187,55 @@ def create_email_verification(
 
 
 def get_latest_email_verification(db: Session, user_id: str, purpose: str = "register") -> Optional[EmailVerificationDB]:
-    """最近一条未消费的验证码（校验时使用；重发冷却按 created_at）"""
+    """最近一条未消费的验证码（校验时使用）"""
     return db.query(EmailVerificationDB).filter(
         EmailVerificationDB.user_id == user_id,
         EmailVerificationDB.purpose == purpose,
         EmailVerificationDB.consumed == False,  # noqa: E712
     ).order_by(EmailVerificationDB.id.desc()).first()
+
+
+def get_last_sent_email_verification(db: Session, user_id: str, purpose: str = "register") -> Optional[EmailVerificationDB]:
+    """最近发出的一条验证码，不论是否已消费/作废（重发冷却依据）"""
+    return db.query(EmailVerificationDB).filter(
+        EmailVerificationDB.user_id == user_id,
+        EmailVerificationDB.purpose == purpose,
+    ).order_by(EmailVerificationDB.id.desc()).first()
+
+
+def email_verification_stats_since(db: Session, user_id: str, since: datetime,
+                                   purpose: str = "register") -> tuple:
+    """since 之后该用户发出的验证码条数与校验尝试总数（含已作废的）"""
+    from sqlalchemy import func
+
+    count, attempts = db.query(
+        func.count(EmailVerificationDB.id),
+        func.coalesce(func.sum(EmailVerificationDB.attempts), 0),
+    ).filter(
+        EmailVerificationDB.user_id == user_id,
+        EmailVerificationDB.purpose == purpose,
+        EmailVerificationDB.created_at >= since,
+    ).one()
+    return int(count or 0), int(attempts or 0)
+
+
+def reserve_email_verification_attempt(db: Session, row: EmailVerificationDB, max_attempts: int) -> bool:
+    """原子占用一次校验机会：未消费且尝试次数未满才 +1，返回是否占用成功。
+
+    先占用再比对验证码：并发请求不能在计数更新前挤进超额猜测。"""
+    from sqlalchemy import func
+
+    n = db.query(EmailVerificationDB).filter(
+        EmailVerificationDB.id == row.id,
+        EmailVerificationDB.consumed == False,  # noqa: E712
+        func.coalesce(EmailVerificationDB.attempts, 0) < max_attempts,
+    ).update(
+        {EmailVerificationDB.attempts: func.coalesce(EmailVerificationDB.attempts, 0) + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    db.refresh(row)
+    return n == 1
 
 
 def consume_email_verification(db: Session, row: EmailVerificationDB) -> None:
