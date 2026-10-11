@@ -336,6 +336,34 @@ def test_align_read_substitution_and_indel(reference):
     assert len(ins) == 1 and ins[0]["length"] == 3
 
 
+def test_align_read_ambiguous_calls_not_compared(reference):
+    """审计 #7：read 中的 N/IUPAC 调用不比较——零变体、identity 只按确定列计"""
+    seg = list(reference[500:1100])
+    for i in range(40, 600, 56):          # 10 个 N，均在对齐内部
+        seg[i] = "N"
+    r = align_read("".join(seg), reference)
+    assert r["ref_start"] == 501 and r["ref_end"] == 1100
+    assert r["variants"] == []
+    assert r["identity"] == 1.0
+    assert r["ambiguous"] == 10
+    # 逐列视图仍原样展示 N（人工核对需要看到 basecaller 的原始调用）
+    assert r["aligned"]["read_aligned"].count("N") == 10
+
+
+def test_align_read_ambiguous_reverse_and_iupac(reference):
+    """反向 read 与 IUPAC 码同样不比较；真实错配照常检出"""
+    seg = list(reference[700:1300])
+    seg[100] = "R"
+    seg[200] = "Y"
+    seg[300] = "A" if seg[300] != "A" else "G"   # 真实替换
+    r = align_read(revcomp("".join(seg)), reference)
+    assert r["direction"] == "-"
+    assert r["ambiguous"] == 2
+    subs = [v for v in r["variants"] if v["type"] == "substitution"]
+    assert len(subs) == 1 and subs[0]["ref_pos"] == 1001
+    assert r["identity"] == round(597 / 598, 4)
+
+
 def test_trim_by_quality():
     bases = "ACGT" * 20
     quality = [5] * 10 + [40] * 60 + [3] * 10
