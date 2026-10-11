@@ -717,6 +717,7 @@ class TestSecretKeyEnforcement:
         "a" * 32,
         "0123456789abcdef" * 2,
         "abababababababababababababababab",
+        "abcdabcdaabbccddabcdddccbbaabcda",  # 非周期但只有 4 种字符
     ])
     def test_validate_rejects_weak_keys(self, key):
         from app.config import validate_secret_key
@@ -726,6 +727,8 @@ class TestSecretKeyEnforcement:
     @pytest.mark.parametrize("key", [
         "9f2c7e41b0d85a36c1e4f7a92b6d0c58e3a17f4b9d2c60e8",
         "s" * 16 + "0123456789abcdef0123456789abcdef",
+        # 真实的 token_hex(16) 输出：频率熵 94.9 bit，曾被旧阈值 96 误拒
+        "6e0c80a8a0c50c04e0a0407cf06805c6",
     ])
     def test_validate_accepts_random_keys(self, key):
         from app.config import validate_secret_key

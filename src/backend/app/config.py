@@ -114,8 +114,12 @@ SECRET_KEY_PLACEHOLDERS = frozenset({
     "your_jwt_secret_key",
 })
 SECRET_KEY_MIN_LENGTH = 32
-_SECRET_KEY_MIN_DISTINCT = 8
-_SECRET_KEY_MIN_BITS = 96.0
+# 两条阈值只拦人为弱密钥（单一/少数字符、低频率熵），不能误杀真随机密钥。
+# 32 位 hex（token_hex(16)，真实 128 bit）按字符频率估出的熵有长尾：
+# 旧阈值 96 bit / 8 种字符时约万分之一被误判。现阈值下按多项分布精确
+# 计算误判率约 7e-15，'a'*32、周期串等弱密钥仍全部拒绝。
+_SECRET_KEY_MIN_DISTINCT = 5
+_SECRET_KEY_MIN_BITS = 64.0
 
 
 def _shannon_bits(value: str) -> float:
