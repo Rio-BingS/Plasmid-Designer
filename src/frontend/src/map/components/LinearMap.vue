@@ -1,0 +1,517 @@
+<script setup lang="ts">
+/**
+ * 线性图谱（SVG，可缩放/平移）：酶切标签与刻度、主轴（刻度、深度放大时显示碱基）、
+ * 引物/特征/ORF 分道、特征标签（内置或外置引线）、搜索命中、选区，
+ * 以及调用方传入的额外轨道（tracks，如测序 read/覆盖/变异）。
+ * 交互：拖拽 = 选区；Ctrl+滚轮 = 以指针为中心缩放；Shift+滚轮/横向滚动 = 平移；
+ * Shift+拖拽 = 平移。
+ */
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useElementSize } from '@vueuse/core'
+import type { MapDocument, Range } from '../types'
+import { useMapStore } from '../store'
+import { barArrowPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
+import { stackLanes } from '../core/lanes'
+import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
+import { enzymeStyle } from '../core/enzymes'
+import { darken, featureColor, textOn } from '../core/palette'
+import { formatBp, ticks } from '../core/ticks'
+import { textWidth } from '../core/text'
+import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
+import type { MapTrack, TrackItem } from '../tracks'
+import MapTooltip from './MapTooltip.vue'
+
+const props = withDefaults(defineProps<{
+  doc?: MapDocument
+  width?: number
+  tracks?: MapTrack[]
+  interactive?: boolean
+  /** 隐藏酶切（如测序简图） */
+  showEnzymes?: boolean
+}>(), { tracks: () => [], interactive: true, showEnzymes: true })
+
+const emit = defineEmits<{ (e: 'track-click', trackId: string, itemId: string): void }>()
+
+const { store, own } = useMapStore(() => props.doc)
+const wrap = ref<HTMLElement | null>(null)
+const svgEl = ref<SVGSVGElement | null>(null)
+const { width: wrapW } = useElementSize(wrap)
+const W = computed(() => Math.round(props.width ?? Math.max(280, wrapW.value || 900)))
+const PAD = 10
+const FONT = 11
+const L = computed(() => store.L.value)
+
+// ---------------- 视口 ----------------
+const vp = computed(() => store.viewport.value)
+const span = computed(() => Math.max(1e-6, vp.value.to - vp.value.from))
+const scale = computed(() => (W.value - 2 * PAD) / span.value)
+const X = (b: number) => PAD + (b - vp.value.from) * scale.value
+const toB = (x: number) => vp.value.from + (x - PAD) / scale.value
+
+function setViewport(from: number, to: number) {
+  const minSpan = Math.min(L.value, Math.max(10, (W.value - 2 * PAD) / 14))
+  let s = Math.min(L.value, Math.max(minSpan, to - from))
+  let f = Math.max(0, Math.min(L.value - s, from))
+  if (!Number.isFinite(f)) { f = 0; s = L.value }
+  store.viewport.value = { from: f, to: f + s }
+}
+function zoomBy(k: number, centerB = (vp.value.from + vp.value.to) / 2) {
+  const ns = span.value / k
+  const t = (centerB - vp.value.from) / span.value
+  setViewport(centerB - t * ns, centerB - t * ns + ns)
+}
+function fitAll() { setViewport(0, L.value) }
+const zoomed = computed(() => span.value < L.value - 0.5)
+
+watch(() => store.navigate.value.n, () => {
+  const nav = store.navigate.value
+  const r = nav.range ?? { start: nav.pos, end: nav.pos }
+  const segs = splitRange(r, L.value)
+  const from = segs[0].start - 1
+  const to = segs[segs.length - 1].end
+  if (segs.length > 1) return fitAll()
+  if (from >= vp.value.from && to <= vp.value.to) return
+  const len = to - from
+  if (len < span.value * 0.9) {
+    const c = (from + to) / 2
+    setViewport(c - span.value / 2, c + span.value / 2)
+  } else {
+    setViewport(from - len * 0.05, to + len * 0.05)
+  }
+})
+
+/** 区间在视口内的可见像素段（跨原点拆段） */
+function visSegs(r: Range): { x1: number; x2: number; s: Range; clippedL: boolean; clippedR: boolean }[] {
+  const out: { x1: number; x2: number; s: Range; clippedL: boolean; clippedR: boolean }[] = []
+  const segs = store.circular.value ? splitRange(r, L.value) : [{ start: Math.min(r.start, r.end), end: Math.max(r.start, r.end) }]
+  for (const s of segs) {
+    const a = s.start - 1
+    const b = s.end
+    if (b <= vp.value.from || a >= vp.value.to) continue
+    const x1 = X(Math.max(a, vp.value.from))
+    const x2 = X(Math.min(b, vp.value.to))
+    out.push({ x1, x2: Math.max(x2, x1 + 1.5), s, clippedL: a < vp.value.from, clippedR: b > vp.value.to })
+  }
+  return out
+}
+
+// ---------------- 酶切 ----------------
+const cutsInView = computed(() => (props.showEnzymes ? store.cuts.value : [])
+  .filter((c) => c.cut >= vp.value.from && c.cut <= vp.value.to)
+  .map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: enzymeStyle(c.enzyme) })))
+const enzLabels = computed(() => {
+  if (!store.show.labels || !cutsInView.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
+  return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
+    { width: W.value, fontSize: FONT, maxRows: 4, gap: 6 })
+})
+const enzStyleByKey = computed(() => new Map(cutsInView.value.map((c) => [c.key, c])))
+
+// ---------------- 额外轨道 ----------------
+interface TrackGeom {
+  track: MapTrack; y: number; height: number; laneH: number
+  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; marks: number[] }[]
+}
+function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
+  const h = t.height ?? 18
+  const laneH = h + 6
+  const rows: [number, number][][] = []
+  const items: TrackGeom['items'] = []
+  const sorted = [...t.items].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
+  for (const it of sorted) {
+    const ranges = it.segments?.length ? it.segments : [{ start: it.start, end: it.end }]
+    const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ x1: v.x1, x2: v.x2, i })))
+    if (!segs.length) continue
+    const headIdx = it.strand === -1 ? 0 : ranges.length - 1
+    const geomSegs = segs.map((s) => ({ x1: s.x1, x2: s.x2, head: s.i === headIdx }))
+    const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
+    const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
+    const inside = !!it.label && longest.x2 - longest.x1 - h * 0.8 >= lw
+    const minX = Math.min(...geomSegs.map((s) => s.x1))
+    const maxX = Math.max(...geomSegs.map((s) => s.x2))
+    let labelX = (longest.x1 + longest.x2) / 2
+    let ext: [number, number] = [minX, maxX]
+    if (it.label && !inside) {
+      // 名字放不下：画在箭头右侧（靠右边缘时放左侧）
+      if (maxX + lw <= W.value) { labelX = maxX + 4; ext = [minX, maxX + lw] } else { labelX = minX - 4; ext = [minX - lw, maxX] }
+    }
+    const iv: [number, number][] = geomSegs.map((s) => [s.x1, s.x2])
+    if (it.label && !inside) iv.push(ext)
+    let lane = rows.findIndex((r) => !r.some(([a, b]) => iv.some(([c, d]) => c < b + 3 && a < d + 3)))
+    if (lane === -1) { rows.push([]); lane = rows.length - 1 }
+    rows[lane].push(...iv)
+    items.push({
+      item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX,
+      marks: (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5)),
+    })
+  }
+  return { track: t, y: y0, height: Math.max(1, rows.length) * laneH, laneH, items }
+}
+
+// ---------------- 纵向布局 ----------------
+const ENZ_ROW = 13
+const layout = computed(() => {
+  let y = 6
+  const enzLabelTop = y
+  y += enzLabels.value.rows * ENZ_ROW + (enzLabels.value.rows ? 4 : 0)
+  const above: TrackGeom[] = []
+  for (const t of props.tracks.filter((t) => t.kind === 'arrows' && t.position !== 'below')) {
+    const g = layoutArrowTrack(t, y)
+    above.push(g)
+    y += g.height
+  }
+  const hasMarks = props.tracks.some((t) => t.kind === 'marks')
+  const marksY = y
+  if (hasMarks) y += 14
+  const cutTop = y
+  y += props.showEnzymes && store.enzymes.value.length ? 10 : 2
+  const axisY = y + 4
+  y = axisY + 8
+  const tickY = y + 10
+  y += 14
+  const showBases = scale.value >= 7 && !!store.doc.value.sequence
+  const basesY = y + 10
+  if (showBases) y += 16
+  return { enzLabelTop, above, hasMarks, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
+})
+
+const featLanes = computed(() => stackLanes(
+  store.features.value.map((f) => ({ id: f.id, start: f.start, end: f.end })), L.value,
+  { circular: store.circular.value, gap: 4 / scale.value, maxLanes: 10 },
+))
+const FEAT_H = 14
+const FEAT_LANE = 18
+const primerLanes = computed(() => stackLanes(store.primers.value.map((p) => ({ id: p.id, start: p.start, end: p.end })), L.value,
+  { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 3 }))
+const orfLanes = computed(() => stackLanes(store.orfs.value.map((o, i) => ({ id: String(i), start: o.start, end: o.end })), L.value,
+  { circular: store.circular.value, maxLanes: 4 }))
+
+const lower = computed(() => {
+  let y = layout.value.afterAxis
+  const primerTop = y
+  y += primerLanes.value.laneCount * 9 + (primerLanes.value.laneCount ? 4 : 0)
+  const featTop = y
+  y += featLanes.value.laneCount * FEAT_LANE
+  const orfTop = y
+  y += orfLanes.value.laneCount * 7 + (orfLanes.value.laneCount ? 4 : 0)
+  return { primerTop, featTop, orfTop, afterOrf: y }
+})
+
+const featGeoms = computed(() => store.features.value.flatMap((f) => {
+  const lane = featLanes.value.lanes.get(f.id)
+  if (lane === undefined) return []
+  const ranges = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
+  const headIdx = f.strand === -1 ? 0 : ranges.length - 1
+  const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ ...v, i })))
+  if (!segs.length) return []
+  const y = lower.value.featTop + lane * FEAT_LANE
+  const color = featureColor(f)
+  const paths = segs.map((s) => {
+    const headVisible = s.i === headIdx && (f.strand === 1 ? !s.clippedR : !s.clippedL)
+    return barArrowPath(s.x1, s.x2, y, FEAT_H, f.strand, headVisible)
+  })
+  const longest = segs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), segs[0])
+  const inside = store.show.labels && fitsInside(f.name, 10, longest.x2 - longest.x1 - FEAT_H * 0.8)
+  const minX = Math.min(...segs.map((s) => s.x1))
+  const maxX = Math.max(...segs.map((s) => s.x2))
+  const connector = segs.length > 1 ? { x1: minX, x2: maxX, y: y + FEAT_H / 2 } : null
+  return [{
+    f, key: `f:${f.id}`, y, color, stroke: darken(color), paths, connector, inside,
+    textX: (longest.x1 + longest.x2) / 2 + (f.strand === 1 ? -FEAT_H * 0.25 : f.strand === -1 ? FEAT_H * 0.25 : 0),
+    textColor: textOn(color), cx: (minX + maxX) / 2,
+  }]
+}))
+
+const featLabels = computed(() => {
+  if (!store.show.labels) return { placed: [], hidden: [] as string[], rows: 0 }
+  return layoutLinearLabels(featGeoms.value.filter((g) => !g.inside).map((g) => ({
+    id: g.key, text: g.f.name, x: g.cx, priority: featurePriority(g.f.type, rangeLength(g.f, L.value, store.circular.value)),
+  })), { width: W.value, fontSize: FONT, maxRows: 4, gap: 8 })
+})
+const featByKey = computed(() => new Map(featGeoms.value.map((g) => [g.key, g])))
+
+const below = computed(() => {
+  let y = lower.value.afterOrf
+  const labelTop = y + 6
+  y += featLabels.value.rows * 14 + (featLabels.value.rows ? 8 : 0)
+  const tracks: TrackGeom[] = []
+  for (const t of props.tracks.filter((t) => t.kind === 'arrows' && t.position === 'below')) {
+    const g = layoutArrowTrack(t, y)
+    tracks.push(g)
+    y += g.height
+  }
+  return { labelTop, tracks, height: y + 4 }
+})
+const H = computed(() => below.value.height)
+
+const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
+  const lane = primerLanes.value.lanes.get(p.id)
+  if (lane === undefined) return []
+  return visSegs(p).map((s, i) => ({
+    key: `p:${p.id}`, k: `${p.id}-${i}`, d: barArrowPath(s.x1, s.x2, lower.value.primerTop + lane * 9, 6, p.strand),
+  }))
+}))
+const orfGeoms = computed(() => store.orfs.value.flatMap((o, i) => {
+  const lane = orfLanes.value.lanes.get(String(i))
+  if (lane === undefined) return []
+  return visSegs(o).map((s, j) => ({
+    key: `o:${i}`, k: `${i}-${j}`, color: ['#7a8599', '#8d7aa6', '#6f9a8a'][o.frame],
+    d: barArrowPath(s.x1, s.x2, lower.value.orfTop + lane * 7, 4, o.strand),
+  }))
+}))
+
+// 主轴上的色段（axis 轨道）与小刻块（marks 轨道）
+const axisBlocks = computed(() => props.tracks.filter((t) => t.kind === 'axis').flatMap((t) =>
+  t.items.flatMap((it) => visSegs(it).map((s, i) => ({ k: `${t.id}-${it.id}-${i}`, x: s.x1, w: Math.max(1.5, s.x2 - s.x1), color: it.color ?? '#58b368', cls: it.className })))))
+const markGeoms = computed(() => props.tracks.filter((t) => t.kind === 'marks').flatMap((t) =>
+  t.items.filter((it) => it.start - 1 <= vp.value.to && it.end >= vp.value.from).map((it) => ({
+    key: `t:${t.id}:${it.id}`, x: X(it.start - 0.5), color: it.color ?? '#c0392b', cls: it.className,
+  }))))
+
+const tickGeoms = computed(() => {
+  const target = Math.max(3, Math.round(W.value / 110))
+  const t = ticks(Math.ceil(vp.value.from) + 1, Math.floor(vp.value.to), target)
+  return t.positions.map((p) => ({ p, x: X(p - 0.5), label: formatBp(p) }))
+})
+const bases = computed(() => {
+  if (!layout.value.showBases) return []
+  const seq = store.doc.value.sequence
+  const out: { p: number; x: number; b: string }[] = []
+  for (let p = Math.floor(vp.value.from) + 1; p <= Math.ceil(vp.value.to) && p <= L.value; p++) out.push({ p, x: X(p - 0.5), b: seq[p - 1] })
+  return out
+})
+
+const selRects = computed(() => {
+  const s = store.selection.value
+  if (!s) return []
+  return visSegs(s).map((v, i) => ({ k: i, x: v.x1, w: Math.max(1.5, v.x2 - v.x1) }))
+})
+const caretX = computed(() => {
+  const c = store.caret.value
+  if (store.selection.value || c === null || c < vp.value.from || c > vp.value.to) return null
+  return X(c)
+})
+const searchRects = computed(() => store.search.hits.slice(0, 1000).flatMap((h, i) => visSegs(h).map((v, j) => ({
+  key: `s:${i}`, k: `${i}-${j}`, x: v.x1, w: Math.max(2, v.x2 - v.x1), current: i === store.search.index,
+}))))
+const hoverKey = computed(() => store.hover.value?.id ?? null)
+const hoverRects = computed(() => {
+  const h = store.hover.value
+  if (!h?.range || h.id.startsWith('t:')) return []
+  return visSegs(h.range).map((v, i) => ({ k: i, x: v.x1, w: Math.max(1.5, v.x2 - v.x1) }))
+})
+
+// 无法显示项上报
+watch([featLanes, featLabels, enzLabels], () => {
+  const items = [...featLabels.value.hidden, ...enzLabels.value.hidden].map((k) => ({ id: k, name: resolveHit(store, k)?.title ?? k, reason: '标签空间不足' }))
+  for (const id of featLanes.value.overflow) {
+    items.push({ id: `f:${id}`, name: store.doc.value.features.find((f) => f.id === id)?.name ?? id, reason: '特征分道已满' })
+  }
+  store.setUnshown('linear', items)
+}, { immediate: true })
+onBeforeUnmount(() => store.setUnshown('linear', []))
+
+// ---------------- 交互 ----------------
+let mode: 'none' | 'select' | 'pan' = 'none'
+let anchor = 0
+let moved = false
+let downKey: string | null = null
+let panStart = { x: 0, from: 0, to: 0 }
+
+function localX(e: { clientX: number }): number {
+  const rect = svgEl.value?.getBoundingClientRect()
+  if (!rect || !rect.width) return PAD
+  return ((e.clientX - rect.left) / rect.width) * W.value
+}
+
+function trackItem(key: string): { track: MapTrack; item: TrackItem } | null {
+  const [, tid, ...rest] = key.split(':')
+  const iid = rest.join(':')
+  const track = props.tracks.find((t) => t.id === tid)
+  const item = track?.items.find((i) => i.id === iid)
+  return track && item ? { track, item } : null
+}
+
+function onPointerDown(e: PointerEvent) {
+  if (!props.interactive || e.button > 0) return
+  moved = false
+  downKey = hitKeyOf(e.target)
+  if (e.shiftKey) {
+    mode = 'pan'
+    panStart = { x: e.clientX, from: vp.value.from, to: vp.value.to }
+  } else {
+    mode = 'select'
+    anchor = toB(localX(e))
+  }
+  ;(e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId)
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (mode === 'none') {
+    const key = hitKeyOf(e.target)
+    if (key?.startsWith('t:')) {
+      const ti = trackItem(key)
+      store.hover.value = ti?.item.tooltip
+        ? { kind: 'track', id: key, title: ti.item.tooltip.title, lines: ti.item.tooltip.lines, range: null, x: e.clientX, y: e.clientY }
+        : null
+    } else {
+      setHoverFromEvent(store, e)
+    }
+    return
+  }
+  if (mode === 'pan') {
+    const rect = svgEl.value?.getBoundingClientRect()
+    const k = (panStart.to - panStart.from) / Math.max(1, (rect?.width || W.value) - 2 * PAD)
+    const d = (e.clientX - panStart.x) * k
+    setViewport(panStart.from - d, panStart.to - d)
+    moved = true
+    return
+  }
+  const b = toB(localX(e))
+  if (Math.abs(b - anchor) * scale.value >= 3) {
+    moved = true
+    store.select(rangeFromBoundaries(anchor, b, L.value, false))
+  }
+}
+
+function onPointerUp(e: PointerEvent) {
+  if (mode === 'select' && !moved) {
+    const key = downKey ?? hitKeyOf(e.target)
+    if (key?.startsWith('t:')) {
+      const ti = trackItem(key)
+      if (ti) emit('track-click', ti.track.id, ti.item.id)
+    } else {
+      const info = resolveHit(store, key)
+      if (info) info.select()
+      else store.setCaret(Math.max(0, Math.min(L.value, Math.round(anchor))))
+    }
+  }
+  mode = 'none'
+}
+
+function onWheel(e: WheelEvent) {
+  if (!props.interactive) return
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault()
+    zoomBy(Math.exp(-e.deltaY * 0.002), toB(localX(e)))
+  } else if (zoomed.value && (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY))) {
+    e.preventDefault()
+    const d = ((e.shiftKey ? e.deltaY : e.deltaX) / scale.value)
+    setViewport(vp.value.from + d, vp.value.to + d)
+  }
+}
+
+function onLeave() { if (mode === 'none') store.hover.value = null }
+
+defineExpose({ svgEl, zoomBy, fitAll, setViewport })
+</script>
+
+<template>
+  <div ref="wrap" class="lmap">
+    <div v-if="interactive" class="lmap-controls">
+      <button type="button" title="缩小" @click="zoomBy(1 / 1.6)">−</button>
+      <button type="button" title="放大（Ctrl+滚轮）" @click="zoomBy(1.6)">+</button>
+      <button type="button" title="显示全长" :disabled="!zoomed" @click="fitAll">全长</button>
+      <span class="lmap-range">{{ Math.round(vp.from + 1).toLocaleString() }}–{{ Math.round(vp.to).toLocaleString() }} / {{ L.toLocaleString() }} bp</span>
+    </div>
+    <svg
+      ref="svgEl" class="lmap-svg" data-map-export="linear" xmlns="http://www.w3.org/2000/svg"
+      :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H" role="img" :aria-label="`${store.doc.value.name} 线性图谱`"
+      font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif"
+      @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+      @pointerleave="onLeave" @wheel="onWheel"
+    >
+      <rect v-for="r in hoverRects" :key="'h' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#f59e0b" fill-opacity="0.1" />
+      <rect v-for="r in selRects" :key="'sel' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#4f46e5" fill-opacity="0.13" class="lmap-selection" />
+
+      <!-- 刻度网格 -->
+      <line v-for="t in tickGeoms" :key="'g' + t.p" :x1="t.x" :x2="t.x" y1="0" :y2="H" stroke="#eceef0" stroke-dasharray="3 4" />
+
+      <!-- 酶切标签 + 引线 -->
+      <g v-for="l in enzLabels.placed" :key="l.id" :data-hit="l.id" class="lmap-enz-label">
+        <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="layout.cutTop" :y2="layout.enzLabelTop + l.row * ENZ_ROW + ENZ_ROW - 2" stroke="#c5c9ce" stroke-width="0.7" />
+        <text :x="l.x" :y="layout.enzLabelTop + l.row * ENZ_ROW + 10" :font-size="FONT"
+              :fill="enzStyleByKey.get(l.id)?.style.color" :font-weight="enzStyleByKey.get(l.id)?.style.weight">{{ l.text }}</text>
+      </g>
+
+      <!-- 额外轨道（主轴上方） -->
+      <template v-for="g in layout.above" :key="g.track.id">
+        <g v-for="it in g.items" :key="it.key" :data-hit="it.key" :class="['lmap-track-item', it.item.className && `${it.item.className}-row`]">
+          <path v-for="(s, k) in it.segs" :key="k" :d="barArrowPath(s.x1, s.x2, g.y + it.lane * g.laneH, g.laneH - 6, it.item.strand ?? 0, s.head)"
+                :fill="it.item.color ?? '#b03a2e'" :stroke="it.item.stroke ?? darken(it.item.color ?? '#b03a2e')" stroke-width="0.8"
+                :class="it.item.className" />
+          <text v-if="it.item.label" :x="it.labelX" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
+                :text-anchor="it.labelInside ? 'middle' : (it.labelX > it.segs[0].x1 ? 'start' : 'end')" :font-size="FONT"
+                :fill="it.labelInside ? '#ffffff' : '#374151'" :font-weight="it.labelInside ? 700 : 400"
+                :class="it.labelInside ? 'lmap-track-name' : 'lmap-track-label'" pointer-events="none">{{ it.item.label }}</text>
+          <circle v-for="(mx, k) in it.marks" :key="'m' + k" :cx="mx" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
+                  fill="#ffffff" stroke="#c0392b" stroke-width="1.5" class="lmap-dot" pointer-events="none" />
+        </g>
+      </template>
+
+      <!-- 主轴上方小刻块（如变异） -->
+      <rect v-for="m in markGeoms" :key="m.key" :data-hit="m.key" :x="m.x - 3.5" :y="layout.marksY + 2" width="7" height="10" rx="1"
+            :fill="m.color" :class="['lmap-mark', m.cls]" />
+
+      <!-- 酶切刻度 -->
+      <line v-for="c in cutsInView" :key="c.key" :data-hit="c.key" :x1="c.x" :x2="c.x" :y1="layout.cutTop" :y2="layout.axisY"
+            :stroke="c.style.color" :stroke-width="c.style.unique ? 1.6 : 1" class="lmap-cut" />
+
+      <!-- 主轴 -->
+      <rect :x="X(Math.max(0, vp.from))" :y="layout.axisY - 4" :width="Math.max(0, X(Math.min(L, vp.to)) - X(Math.max(0, vp.from)))" height="8" rx="3" fill="#d5d9de" class="lmap-axis-bg" />
+      <rect v-for="b in axisBlocks" :key="b.k" :x="b.x" :y="layout.axisY - 4" :width="b.w" height="8" :fill="b.color" :class="b.cls" />
+      <line :x1="X(Math.max(0, vp.from))" :x2="X(Math.min(L, vp.to))" :y1="layout.axisY" :y2="layout.axisY" stroke="#3a3f45" stroke-width="1.4" />
+      <rect v-for="r in searchRects" :key="r.k" :data-hit="r.key" :x="r.x" :y="layout.axisY - 6" :width="r.w" height="12"
+            :fill="r.current ? '#f97316' : '#facc15'" fill-opacity="0.85" class="lmap-search" />
+      <g v-for="t in tickGeoms" :key="'t' + t.p">
+        <line :x1="t.x" :x2="t.x" :y1="layout.axisY" :y2="layout.axisY + 6" stroke="#3a3f45" />
+        <text :x="t.x" :y="layout.tickY + 2" font-size="10.5" fill="#555" class="lmap-tick-num"
+              :text-anchor="t.x > W - 30 ? 'end' : t.x < 30 ? 'start' : 'middle'">{{ t.label }}</text>
+      </g>
+      <text v-for="b in bases" :key="'b' + b.p" :x="b.x" :y="layout.basesY + 2" font-size="11" text-anchor="middle"
+            font-family="Consolas, Menlo, monospace" fill="#1f2937" class="lmap-base">{{ b.b }}</text>
+      <line v-if="caretX !== null" :x1="caretX" :x2="caretX" y1="0" :y2="H" stroke="#4f46e5" stroke-width="1.5" class="lmap-caret" />
+
+      <!-- 引物 / 特征 / ORF -->
+      <path v-for="p in primerGeoms" :key="p.k" :data-hit="p.key" :d="p.d" fill="#5aa0e0" stroke="#2f6aa8" stroke-width="0.6" class="lmap-primer" />
+      <g v-for="g in featGeoms" :key="g.key" :data-hit="g.key"
+         :class="['lmap-feat', { 'is-hover': hoverKey === g.key, 'is-selected': store.selectedFeatureId.value === g.f.id }]">
+        <line v-if="g.connector" :x1="g.connector.x1" :x2="g.connector.x2" :y1="g.connector.y" :y2="g.connector.y" :stroke="g.stroke" stroke-dasharray="2 2" />
+        <path v-for="(d, i) in g.paths" :key="i" :d="d" :fill="g.color" :stroke="g.stroke"
+              :stroke-width="hoverKey === g.key || store.selectedFeatureId.value === g.f.id ? 2 : 0.8" />
+        <text v-if="g.inside" :x="g.textX" :y="g.y + FEAT_H / 2" dominant-baseline="central" text-anchor="middle"
+              font-size="10" :fill="g.textColor" class="lmap-feat-label" pointer-events="none">{{ g.f.name }}</text>
+      </g>
+      <path v-for="o in orfGeoms" :key="o.k" :data-hit="o.key" :d="o.d" :fill="o.color" class="lmap-orf" />
+
+      <!-- 特征外置标签 -->
+      <g v-for="l in featLabels.placed" :key="l.id" :data-hit="l.id" class="lmap-feat-out-g">
+        <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="(featByKey.get(l.id)?.y ?? 0) + FEAT_H" :y2="below.labelTop + l.row * 14 + 1"
+              stroke="#a5a9ae" stroke-width="0.8" class="lmap-leader" />
+        <text :x="l.x" :y="below.labelTop + l.row * 14 + 11" :font-size="FONT" fill="#333" class="lmap-feat-out">{{ l.text }}</text>
+      </g>
+
+      <!-- 额外轨道（下方） -->
+      <template v-for="g in below.tracks" :key="g.track.id">
+        <g v-for="it in g.items" :key="it.key" :data-hit="it.key" class="lmap-track-item">
+          <path v-for="(s, k) in it.segs" :key="k" :d="barArrowPath(s.x1, s.x2, g.y + it.lane * g.laneH, g.laneH - 6, it.item.strand ?? 0, s.head)"
+                :fill="it.item.color ?? '#6b7280'" :class="it.item.className" />
+        </g>
+      </template>
+    </svg>
+    <MapTooltip v-if="own" :store="store" />
+  </div>
+</template>
+
+<style scoped>
+.lmap { position: relative; width: 100%; }
+.lmap-svg { display: block; width: 100%; height: auto; touch-action: pan-y; user-select: none; cursor: crosshair; }
+.lmap-feat, .lmap-cut, .lmap-orf, .lmap-primer, .lmap-enz-label, .lmap-feat-out-g, .lmap-track-item, .lmap-mark, .lmap-search { cursor: pointer; }
+.lmap-feat:hover path, .lmap-track-item:hover path { filter: brightness(1.08); }
+.lmap-controls { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.lmap-controls button {
+  min-width: 28px; padding: 2px 8px; border: 1px solid var(--border-color); border-radius: 4px;
+  background: var(--bg-primary); color: var(--text-primary);
+}
+.lmap-controls button:disabled { opacity: 0.5; cursor: default; }
+.lmap-range { margin-left: auto; font-variant-numeric: tabular-nums; }
+</style>
