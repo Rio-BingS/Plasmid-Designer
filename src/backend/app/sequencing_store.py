@@ -131,8 +131,11 @@ def _prune(db) -> None:
     logger.info("测序分析记录超出保留上限 %s，淘汰最旧 %s 条", MAX_DB_RECORDS, len(ids))
 
 
-def load_record(analysis_id: str) -> Optional[Dict]:
-    """按 id 从数据库取完整记录（含峰图）；无持久化或不存在返回 None"""
+def load_record_meta(analysis_id: str) -> Optional[Dict]:
+    """按 id 取记录本体（payload，含属主与令牌摘要），不读峰图大列。
+
+    鉴权只需要 owner_id / access_token_hash：先用这一步判定权限，通过后
+    再 load_trace，无权请求不会触发峰图解压（审查 02 M3）。"""
     if not db_enabled():
         return None
     from app.database import SessionLocal
@@ -141,17 +144,45 @@ def load_record(analysis_id: str) -> Optional[Dict]:
     _ensure_table()
     db = SessionLocal()
     try:
-        row = db.get(SequencingAnalysisDB, analysis_id)
+        row = (db.query(SequencingAnalysisDB.payload)
+               .filter(SequencingAnalysisDB.id == analysis_id).first())
         if row is None:
             return None
-        record = json.loads(row.payload)
+        record = json.loads(row[0])
         _hash_plaintext_token(record)  # 未迁移的旧行：读出即转摘要
-        record["_trace_data"] = _decode_trace(row.trace_data)
         return record
     except Exception:
         return None
     finally:
         db.close()
+
+
+def load_trace(analysis_id: str) -> Dict:
+    """按 id 取解压后的峰图（read 序号 → 四通道数据）；无则空 dict"""
+    if not db_enabled():
+        return {}
+    from app.database import SessionLocal
+    from app.database.models import SequencingAnalysisDB
+
+    _ensure_table()
+    db = SessionLocal()
+    try:
+        row = (db.query(SequencingAnalysisDB.trace_data)
+               .filter(SequencingAnalysisDB.id == analysis_id).first())
+        return _decode_trace(row[0]) if row is not None else {}
+    except Exception:
+        return {}
+    finally:
+        db.close()
+
+
+def load_record(analysis_id: str) -> Optional[Dict]:
+    """按 id 从数据库取完整记录（含峰图）；无持久化或不存在返回 None"""
+    record = load_record_meta(analysis_id)
+    if record is None:
+        return None
+    record["_trace_data"] = load_trace(analysis_id)
+    return record
 
 
 def migrate_plaintext_tokens() -> int:
