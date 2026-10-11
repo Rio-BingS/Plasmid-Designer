@@ -111,6 +111,44 @@ describe('匿名分析记录访问令牌（终审 B-02）', () => {
   })
 })
 
+describe('批量测序分块上传', () => {
+  it('建会话→分块→finalize：FormData 发出，匿名令牌走 X-Access-Token，结果令牌入表', async () => {
+    sent = []
+    responses = [
+      { session_id: 'abc', access_token: 'stok', limits: { chunk_max_files: 1, chunk_max_mb: 90 } },
+      {},
+      {},
+      { batch_id: 'seqbatch_x', items: [{ analysis_id: 'seq_9' }], access_token: 'btok' }
+    ]
+    const excel = new File(['x'], '表.xlsx')
+    const res = await api.analyzeSequencingBatchChunked(
+      [new File(['a'], 'A.fasta'), new File(['b'], 'A-1.ab1')], excel, 30)
+    expect(res.batch_id).toBe('seqbatch_x')
+    expect(sent.map((c) => [c.method, c.url])).toEqual([
+      ['post', '/sequencing/batch-sessions'],
+      ['post', '/sequencing/batch-sessions/abc/files'],
+      ['post', '/sequencing/batch-sessions/abc/files'],
+      ['post', '/sequencing/batch-sessions/abc/finalize']
+    ])
+    const create = sent[0].data as FormData
+    expect(JSON.parse(create.get('manifest') as string)).toEqual([
+      { name: 'A.fasta', size: 1 }, { name: 'A-1.ab1', size: 1 }])
+    expect((create.get('excel') as File).name).toBe('表.xlsx')
+    expect(sent[0].headers?.['X-Access-Token']).toBeUndefined()
+    const chunk = sent[2].data as FormData
+    expect(chunk.get('chunk_index')).toBe('1')
+    expect((chunk.getAll('files') as File[]).map((f) => f.name)).toEqual(['A-1.ab1'])
+    expect(sent[2].headers?.['X-Access-Token']).toBe('stok')
+    expect((sent[3].data as FormData).get('min_q')).toBe('30')
+    // finalize 接受 202（转轮询）
+    expect(sent[3].validateStatus(202)).toBe(true)
+    expect(sent[3].validateStatus(413)).toBe(false)
+    // 批次令牌与单请求入口一样记入令牌表
+    await api.getSequencingAnalysis('seq_9')
+    expect(sent[sent.length - 1].headers?.['X-Access-Token']).toBe('btok')
+  })
+})
+
 describe('formatApiError', () => {
   it('422 校验错误带上字段名，不再是两遍一样的 Field required', () => {
     const e = {
