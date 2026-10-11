@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { currentAuthEpoch } from './session'
+import { currentAuthEpoch, notifySessionExpired } from './session'
 import type { DesignRequest, DesignResult, VectorInfo, CodonTable } from '@/types'
 
 const API_BASE = '/api'
@@ -39,14 +39,9 @@ api.interceptors.response.use(
       // 不能把期间重新登录建立的新会话一并清掉
       const sentEpoch = error.config?.authEpoch
       if (sentEpoch === currentAuthEpoch()) {
-        // 同步清理 Pinia 状态，避免界面仍显示已登录（动态导入避免与 auth store 循环依赖）
-        try {
-          const { useAuthStore } = await import('@/stores/auth')
-          // 动态导入期间若会话已切换（重新登录），不再清理新会话
-          if (sentEpoch === currentAuthEpoch()) useAuthStore().clearAuth()
-        } catch {
-          // Pinia 未初始化（如单测环境）时无状态可清
-        }
+        // 同步清理 Pinia 状态，避免界面仍显示已登录（经 session 模块回调，
+        // 避免与 auth store 循环依赖）
+        notifySessionExpired()
       }
     }
     return Promise.reject(error)
