@@ -63,6 +63,7 @@ from app.sequencing_batch import (
     run_batch_groups,
 )
 from app.sequencing_report import backfill_excel, build_batch_zip
+from core.genbank_format import format_locus_line
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, load_excel, match_clone_files, norm_stem,
     rows_have_clones,
@@ -844,7 +845,8 @@ async def export_consensus(analysis_id: str, request: Request,
             ] + feats
             definition = "Sanger consensus (unverified positions N-masked)"
         lines = [
-            f"LOCUS       {safe_name[:16]:<16} {len(seq)} bp DNA",
+            # 共识序列由线性 read 拼接而来，按 linear 标注
+            format_locus_line(safe_name, len(seq), topology="linear"),
             f"DEFINITION  {definition}",
             f"ACCESSION   {analysis_id}",
             "FEATURES             Location/Qualifiers",
