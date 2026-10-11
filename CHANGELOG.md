@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-10-11
+
 ### 升级注意
 
 - Python 依赖改为带哈希的锁文件：源清单改名为 `src/backend/requirements.in`、
@@ -25,8 +27,22 @@
   `/docs`、`/redoc`、`/openapi.json` 返回 404，不再经前端端口对公网公开。需要时在
   `.env` 设 `ENABLE_API_DOCS=true`，并在宿主机 nginx 限制来源。本地开发与裸机部署
   默认仍开启（裸机 nginx 已只对本机/内网开放）。
+- **批量测序新增 read 数上限**：每组最多 `SEQUENCING_BATCH_MAX_READS_PER_GROUP`
+  （默认 24）条、整批最多 `SEQUENCING_BATCH_MAX_TOTAL_READS`（默认 240）条，超出
+  返回 413 并提示拆批。单批确需更多 read 时在 `.env` 调大。
+- 高负载时上传在读取文件前就排队等待并发槽；参考序列解析、从数据库重新加载旧
+  记录同样可能返回 503「繁忙」。
 
 ### 修复
+
+- 测序重负载阶段（ab1 读入解析、分析、落库、批量 Excel 解析、报告打包、旧记录
+  解压回灌）纳入并发闸并移出事件循环，单个大请求不再卡住整个服务。
+- 离线脚本换输出目录重跑时跳过此前的输出目录，不再把旧副本当作新 read 重复分析；
+  输出目录为数据目录本身/其上级或为普通文件时直接报错；信息表损坏时给中文提示；
+  Excel 回填改为临时文件原子替换，失败不损坏原表；克隆模式提示改指真实页面
+  `/sequencing/batch`。
+- `core.__version__` 与 `APP_VERSION` 改为同一来源。
+- CI 中 pip-audit 改为按哈希锁安装。
 
 - 密码子优化缓存键 `algo` 由 v2.1 递增为 v2.2，`/analysis/enzymes` 缓存键增加
   版本段：v2.5.0–v2.8.0 重建密码子表、改动优化器和酶表后键未变，启用 Redis 时
@@ -340,7 +356,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...HEAD
+[2.9.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.0...v2.9.1
 [2.9.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.8.1...v2.9.0
 [2.8.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.7.1...v2.8.0
