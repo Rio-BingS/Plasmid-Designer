@@ -45,6 +45,20 @@ describe('MapViewer：无法显示项', () => {
     expect(w.find('.mv-unshown').text()).toMatch(/\d+ 项无法显示/)
     await w.find('.mv-unshown button').trigger('click')
     expect(w.findAll('.mv-unshown-list li').length).toBeGreaterThan(0)
+    // 同名酶的多个位点注明位置，不再列出一串同名项
+    const names = w.findAll('.mv-unshown-list li b').map((b) => b.text())
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it('详情列表最多 200 条，其余汇总一行', async () => {
+    const d = pet()
+    for (let i = 0; i < 400; i++) d.features.push({ id: `y${i}`, name: `f${i}`, type: 'misc_feature', start: 100 + (i % 50), end: 101 + (i % 50), strand: 1, source: 'file' })
+    const w = mount(MapViewer, { props: { doc: d, initialView: 'circular', allowAnalyze: false } })
+    await flushPromises()
+    await w.find('.mv-unshown button').trigger('click')
+    const items = w.findAll('.mv-unshown-list li')
+    expect(items.length).toBe(201)
+    expect(w.find('.mv-unshown-more').text()).toMatch(/另有 \d+ 项/)
   })
 })
 

@@ -215,7 +215,12 @@ const labelStyle = computed(() => {
 
 // 无法显示项上报（标签放不下 + 超出分道上限）
 watch([labelLayout, featLanes], () => {
-  const items = labelLayout.value.hidden.map((k) => ({ id: k, name: resolveHit(store, k)?.title ?? k, reason: '标签空间不足' }))
+  const cutAt = new Map(cutGeoms.value.map((c) => [c.key, c.cut]))
+  const items = labelLayout.value.hidden.map((k) => {
+    const title = resolveHit(store, k)?.title ?? k
+    const at = cutAt.get(k)
+    return { id: k, name: at === undefined ? title : `${title} @${at.toLocaleString('en-US')}`, reason: '标签空间不足' }
+  })
   for (const id of featLanes.value.overflow) {
     const f = store.doc.value.features.find((x) => x.id === id)
     items.push({ id: `f:${id}`, name: f?.name ?? id, reason: '特征分道已满' })
