@@ -11,6 +11,7 @@ sys.path.insert(0, '.')
 sys.path.insert(0, '../src/backend')
 
 import pytest
+from collections import defaultdict
 
 from core.sequence_analysis import (
     RESTRICTION_ENZYMES,
@@ -24,32 +25,90 @@ from core.sequence_analysis import (
 
 class TestRestrictionSiteFinder:
     def test_find_ecori_forward(self):
-        # EcoRI 为回文位点，正反链各报一次（共 2 条），坐标一致
+        # EcoRI 为回文位点：正反链是同一个物理位点，只报一次
         analyzer = RestrictionSiteAnalyzer()
         sites = analyzer.find_sites("AAAAGAATTCAAAA", enzymes=["EcoRI"])
-        assert len(sites) == 2
-        assert {s.strand for s in sites} == {'+', '-'}
-        fwd = [s for s in sites if s.strand == '+'][0]
+        assert len(sites) == 1
+        fwd = sites[0]
+        assert fwd.strand == '+'
         assert fwd.recognition_start == 5
         assert fwd.recognition_end == 10
+        assert fwd.cut_position == 5  # G^AATTC
         assert fwd.overhang == '5'
 
     def test_find_sites_reverse_strand(self):
-        # HindIII 反向位点：AAGCTT 的 revcomp = AAGCTT（回文），用非回文的
-        # XbaI（TCTAGA）验证反向链搜索：其 revcomp = TCTAGA 也是回文……
-        # 改用 SalI（GTCGAC，revcomp = GTCGAC 同为回文）——标准 6 碱基
-        # 酶大多回文，直接构造：把 XhoI 位点以反链形式放入（CTCGAG 回文），
-        # 回文位点正反链各报一次，总数应为 2
+        # 非回文的 BsaI（GGTCTC）以反链形式（GAGACC）放入：只报一条 '-' 记录
+        analyzer = RestrictionSiteAnalyzer()
+        sites = analyzer.find_sites("AAAAAAAAAAAAGAGACCAAA", enzymes=["BsaI"])
+        assert len(sites) == 1
+        assert sites[0].strand == '-'
+        assert sites[0].recognition_start == 13
+
+    def test_palindrome_counted_once(self):
+        # 回文 XhoI 位点只报一次（此前正反链各报一次，计数翻倍）
         analyzer = RestrictionSiteAnalyzer()
         sites = analyzer.find_sites("AAACTCGAGAAA", enzymes=["XhoI"])
-        assert len(sites) == 2  # 正反链各一
-        assert {s.strand for s in sites} == {'+', '-'}
+        assert len(sites) == 1
 
     def test_unknown_enzyme_skipped(self):
         analyzer = RestrictionSiteAnalyzer()
-        # EcoRI 回文位点正反链各报一次；未知酶被跳过且不报错
+        # 未知酶被跳过且不报错
         sites = analyzer.find_sites("GAATTC", enzymes=["NotExist", "EcoRI"])
-        assert len(sites) == 2
+        assert len(sites) == 1
+
+    def test_unique_sites_include_palindromic(self):
+        """审计 #3：单个 EcoRI（回文）位点与单个 BsaI（非回文）位点都应判唯一"""
+        seq = "TTTGAATTCTTT" + "A" * 50 + "GGTCTCAA"
+        analyzer = RestrictionSiteAnalyzer()
+        eco = analyzer.find_sites(seq, ["EcoRI"])
+        bsa = analyzer.find_sites(seq, ["BsaI"])
+        assert len(eco) == 1 and len(bsa) == 1
+        unique = analyzer.find_unique_sites(seq)
+        assert "EcoRI" in unique and "BsaI" in unique
+        assert unique["EcoRI"].recognition_start == 4
+
+    def test_two_palindromic_sites_not_unique(self):
+        seq = "TTGAATTCTT" + "A" * 30 + "TTGAATTCTT"
+        unique = RestrictionSiteAnalyzer().find_unique_sites(seq)
+        assert "EcoRI" not in unique
+
+    def test_counts_match_biopython(self):
+        """全表位点数对照 Bio.Restriction（REBASE）：20 条随机 5 kb 序列"""
+        import random
+        from Bio.Seq import Seq
+        from Bio import Restriction as R
+
+        rng = random.Random(20261011)
+        analyzer = RestrictionSiteAnalyzer()
+        # 两端加 A 垫片，避免 Type IIS 切点落在序列外被 Biopython 丢弃
+        pad = "A" * 20
+        for _ in range(20):
+            core = "".join(rng.choice("ACGT") for _ in range(5000))
+            seq = pad + core + pad
+            ours = defaultdict(int)
+            for s in analyzer.find_sites(seq):
+                ours[s.enzyme] += 1
+            for name in RESTRICTION_ENZYMES:
+                expected = len(getattr(R, name).search(Seq(seq)))
+                assert ours[name] == expected, name
+
+
+def test_restriction_sites_endpoint_unique_palindromes():
+    """POST /analysis/restriction-sites：total 不再翻倍，回文酶进入 unique_sites"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.analysis_routes import router
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    seq = "TTTGAATTCTTT" + "A" * 50 + "GGTCTCAA"
+    resp = client.post("/api/analysis/restriction-sites",
+                       json={"sequence": seq, "enzymes": ["EcoRI", "BsaI"]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert {"EcoRI", "BsaI"} <= set(data["unique_sites"])
 
 
 # ==================== 末端兼容性（核心回归对象） ====================
