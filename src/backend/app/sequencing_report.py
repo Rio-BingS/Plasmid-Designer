@@ -42,10 +42,60 @@ from core.sanger.pipeline import (END_MARGIN, _peak_verdict_phrase,
 ZIP_ROOT = "测序整理"
 
 
+_COMPONENT_MAX = 80
+# 视为扩展名的后缀上限（含点）：超过的当成名字本身一起截断
+_EXT_MAX = 16
+
+
+def _fit_component(t: str, limit: int = _COMPONENT_MAX) -> str:
+    """把已安全化的名字压到 limit 字符内：截断主名、保留扩展名
+    （'…long.fasta' 截断后仍以 .fasta 结尾，下游软件可按扩展名打开）。
+    未超长的名字原样返回。"""
+    if len(t) <= limit:
+        return t
+    stem, dot, ext = t.rpartition(".")
+    if dot and stem and 0 < len(ext) + 1 <= _EXT_MAX and len(ext) + 1 < limit:
+        keep = stem[:limit - len(ext) - 1].rstrip(" .")
+        if keep:
+            return f"{keep}.{ext}"
+    return t[:limit].rstrip(" .")
+
+
 def _safe_component(name: str) -> str:
-    """zip 条目路径段安全化：去掉路径分隔符/Windows 非法字符，限长"""
+    """zip 条目路径段安全化：去掉路径分隔符/Windows 非法字符，限长 80 字符
+    （超长时截断主名、保留扩展名；未超长的名字与此前完全相同）"""
     t = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", str(name)).strip(" ._")
-    return t[:80] or "unnamed"
+    return _fit_component(t) or "unnamed"
+
+
+def _unique_components(names: List[str]) -> Dict[str, str]:
+    """一组互不相同的原始名 → 互不冲突的路径段 {原始名: 路径段}
+
+    不同的名字安全化/截断后可能撞成同一段（'a/b' 与 'a:b' 都成 'a_b'，前
+    80 字符相同的长名）；按忽略大小写比较（Windows/macOS 文件系统不区分），
+    撞名时安全化前后不变的那个保留原段，其余按原始名排序依次加 ~2、~3…
+    （仍不超过 80 字符）。结果只取决于这组名字本身，与出现顺序无关。"""
+    by_key: Dict[str, List[str]] = {}
+    for n in sorted(set(names)):
+        by_key.setdefault(_safe_component(n).casefold(), []).append(n)
+    taken = set(by_key)
+    out: Dict[str, str] = {}
+    for key, group in by_key.items():
+        # 安全化后不变的名字优先保留原段（不因别的名字出现而改名）
+        group.sort(key=lambda n: (_safe_component(n) != n, n))
+        out[group[0]] = _safe_component(group[0])
+        k = 2
+        for n in group[1:]:
+            base = _safe_component(n)
+            while True:
+                suffix = f"~{k}"
+                cand = _fit_component(base, _COMPONENT_MAX - len(suffix)) + suffix
+                k += 1
+                if cand.casefold() not in taken:
+                    break
+            taken.add(cand.casefold())
+            out[n] = cand
+    return out
 
 
 def _md5(data: bytes) -> str:
@@ -373,6 +423,8 @@ class BatchArchive:
         self.source_paths = source_paths
         self.fields = MANIFEST_FIELDS + ([SOURCE_PATH_FIELD] if source_paths else [])
         self._folders = _plasmid_folders(plasmids)
+        # 不同质粒文件夹安全化后撞名时加 ~N 区分，不再合并进同一文件夹
+        self._folder_dirs = _unique_components(list(self._folders.values()))
         self._used_arcs: set = set()          # 全局防 zip 条目冲突
         self._used_in_dir: Dict[str, set] = {}   # 同一文件夹内防同名（跨文件夹允许重名）
         self._ref_archived: Dict[str, set] = {}  # 质粒文件夹 → 已归档图谱 (文件名, MD5)
@@ -405,7 +457,8 @@ class BatchArchive:
         """组所在的质粒文件夹；图谱与 read 皆空的组无可归档，返回 None"""
         if not (group["reference"] or group["reads"]):
             return None
-        return _safe_component(self._folders.get(group["plasmid"] or "") or "sample")
+        name = self._folders.get(group["plasmid"] or "") or "sample"
+        return self._folder_dirs.get(name) or _safe_component(name)
 
     def folder_dirs(self, folder: str) -> List[Tuple[str, None]]:
         """质粒文件夹固定给出的 正确/ 错误/ 子文件夹（空置也保留）"""
