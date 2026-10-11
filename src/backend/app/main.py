@@ -13,14 +13,21 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:  # pragma: no cover
             pass
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
 from app.config import settings
 from app.storage import STORAGE_MODE
+
+_logger = logging.getLogger(__name__)
 
 # ==================== 生命周期 ====================
 
@@ -93,10 +100,40 @@ async def root():
     }
 
 
+# /health 查库超时（秒）：库不可达时尽快返回 503，不拖住部署脚本/compose 健康检查
+HEALTH_DB_TIMEOUT = 3.0
+
+
+def _db_ping() -> None:
+    """对当前引擎执行一次 SELECT 1（SQLite/PostgreSQL 通用）"""
+    from sqlalchemy import text
+    from app import database
+
+    with database.engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/health")
 async def health_check():
-    """健康检查"""
-    return {"status": "healthy", "timestamp": datetime.now(), "storage_mode": STORAGE_MODE}
+    """健康检查：含数据库连通性，库不可用时返回 503。
+
+    init_db 失败只告警不阻断启动，若 /health 不查库，口令与数据卷不一致等
+    故障会被部署脚本/compose 误判为部署成功（审查 03 H1）"""
+    try:
+        await asyncio.wait_for(run_in_threadpool(_db_ping), timeout=HEALTH_DB_TIMEOUT)
+        db_status = "ok"
+    except Exception as e:  # 含超时；细节只进日志，不回给调用方
+        _logger.warning("健康检查：数据库不可用: %s", type(e).__name__)
+        db_status = "error"
+    body = {
+        "status": "healthy" if db_status == "ok" else "unhealthy",
+        "timestamp": datetime.now(),
+        "storage_mode": STORAGE_MODE,
+        "db": db_status,
+    }
+    if db_status != "ok":
+        return JSONResponse(status_code=503, content=jsonable_encoder(body))
+    return body
 
 
 # ==================== 挂载路由 ====================
