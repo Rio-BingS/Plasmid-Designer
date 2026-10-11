@@ -261,3 +261,78 @@ def test_legacy_manifest_fallback_reads_guarded_paths(tmp_path):
     (out / "整理清单.csv").write_text(text, encoding="utf-8", newline="")
     assert batch.load_previous_outputs(out) == {
         "-EVIL/正确/@T1.ab1": "abc", "P/正确/a.ab1": "def"}
+
+
+# ---------------------------------------------------------------- L4 Excel 回填重跑
+
+from app.sequencing_report import merge_result_cell  # noqa: E402
+
+TOOL_LINES = [
+    "合格：与设计一致",
+    "合格：编码区蛋白一致；编码区外 1 处确证差异（ori）",
+    "不合格：GFP 蛋白与设计不一致（移码）；测序覆盖 87%",
+    "疑似混合：T1.ab1 检出 5 处双峰，无法自动判定，建议重新挑单克隆复测",
+    "疑似混合样品：T1.ab1 检出 5 处双峰",              # 旧版本措辞
+    "无法判定：部分比对（T1.ab1），未比对部分未验证",
+    "分析失败",
+    "分析失败：参考序列过短",
+    "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对",
+    "未在文件夹中找到该质粒的测序文件或图谱",
+    "未找到克隆 C1 的图谱或测序文件",
+    "已找到参考图谱，但未匹配到它的测序文件（.ab1）",
+    "已找到参考图谱，但未匹配到克隆 C1 的测序文件（.ab1）",
+]
+
+
+@pytest.mark.parametrize("prev", TOOL_LINES)
+def test_merge_replaces_previous_tool_conclusion(prev):
+    assert merge_result_cell(prev, "合格：与设计一致") == "合格：与设计一致"
+
+
+def test_merge_replaces_stacked_legacy_lines_keeps_user_text():
+    old = ("客户要求加急\n"
+           "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对\n"
+           "合格：与设计一致；测序覆盖 87%")
+    new = merge_result_cell(old, "不合格：GFP 蛋白与设计不一致")
+    assert new == "客户要求加急\n不合格：GFP 蛋白与设计不一致"
+    # 再跑一次结果稳定（幂等）
+    assert merge_result_cell(new, "不合格：GFP 蛋白与设计不一致") == new
+
+
+def test_merge_user_text_only_and_empty():
+    assert merge_result_cell(None, "合格：与设计一致") == "合格：与设计一致"
+    assert merge_result_cell("  ", "合格：与设计一致") == "合格：与设计一致"
+    assert merge_result_cell("  待复测  ", "合格：与设计一致") == "待复测\n合格：与设计一致"
+    # 用户手写的「合格」（无冒号）、提及结论的句子不当作工具输出
+    assert merge_result_cell("合格", "无法判定：x") == "合格\n无法判定：x"
+    assert merge_result_cell("老板说合格：先发货", "无法判定：x") == "老板说合格：先发货\n无法判定：x"
+
+
+def test_merge_flattens_multiline_conclusion():
+    out = merge_result_cell("", "分析失败：line1\nline2")
+    assert out == "分析失败：line1 line2"
+    assert merge_result_cell(out, "合格：与设计一致") == "合格：与设计一致"
+
+
+def test_offline_rerun_replaces_backfilled_result(tmp_path, monkeypatch):
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["TST", "T1", "加急"])
+    wb.save(data_dir / "测序.xlsx")
+    (data_dir / "T1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+
+    def run():
+        monkeypatch.setattr(sys, "argv", [
+            "batch_sequencing_report.py", "--data-dir", str(data_dir)])
+        batch.main()
+        return openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0].cell(
+            row=2, column=3).value
+
+    first = run()          # 缺图谱 → 无法自动比对
+    assert first.startswith("加急\n已整理 1 个测序文件，但缺少同名参考图谱")
+    (data_dir / "TST.fasta").write_text(f">TST\n{REF}\n", encoding="utf-8")
+    assert run() == "加急\n合格：与设计一致"
+    assert run() == "加急\n合格：与设计一致"     # 不再层层叠加

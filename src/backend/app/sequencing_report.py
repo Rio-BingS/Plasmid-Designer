@@ -383,10 +383,36 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
     return "\n".join(lines)
 
 
+# 本工具写进「测序结果」列的一句话结论的固定开头（core.sanger.batch.excel_conclusion
+# 与 app.sequencing_batch 的全部结论措辞，含旧版本用过的「疑似混合样品：」）。
+# 重跑回填时以此识别上次写入的行并替换，其余行视为用户自己写的内容保留
+_TOOL_CONCLUSION_RE = re.compile(
+    r"^(?:(?:合格|不合格|疑似混合(?:样品)?|无法判定|分析失败)："
+    r"|分析失败$"
+    r"|已整理 \d+ 个测序文件，但缺少同名参考图谱"
+    r"|未找到克隆 .+ 的图谱或测序文件$"
+    r"|未在文件夹中找到该质粒的测序文件或图谱$"
+    r"|已找到参考图谱，但未匹配到)")
+
+
+def _is_tool_conclusion(line: str) -> bool:
+    return bool(_TOOL_CONCLUSION_RE.match(line.strip()))
+
+
+def merge_result_cell(old, concl: str) -> str:
+    """「测序结果」单元格的新内容：去掉此前由本工具写入的结论行（任何版本，
+    包括旧版重跑叠加出的多行），保留用户自己写的行，新结论放在最后一行"""
+    concl = " ".join(str(concl).splitlines()).strip()   # 结论恒为单行，便于下次识别
+    lines = str(old or "").splitlines()
+    user = "\n".join(ln for ln in lines if not _is_tool_conclusion(ln)).strip()
+    return f"{user}\n{concl}" if user else concl
+
+
 def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
                    items: List[Dict], clone_mode: bool) -> Optional[bytes]:
-    """把各组结论回填信息表「测序结果」列（网页端与离线脚本共用：已有内容
-    不覆盖，换行追加），返回回填后的 xlsx 字节；无可回填内容时返回 None。
+    """把各组结论回填信息表「测序结果」列（网页端与离线脚本共用：用户已写
+    的内容保留，结论换行写在最后；此前本工具写入的结论被替换而不是叠加，
+    见 merge_result_cell），返回回填后的 xlsx 字节；无可回填内容时返回 None。
 
     克隆模式按（质粒名, 克隆号）对应行——离线脚本不支持克隆模式，这是网页端
     的扩展；质粒模式按质粒名对应（多行同名质粒回填同一结论）。
@@ -410,8 +436,7 @@ def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
         if not concl:
             continue
         cell = ws.cell(row=row["row"], column=cols["result"])
-        old = str(cell.value or "").strip()
-        cell.value = concl if not old or old == concl else f"{old}\n{concl}"
+        cell.value = merge_result_cell(cell.value, concl)
         filled += 1
     if not filled:
         return None
