@@ -116,11 +116,11 @@ class TestBatchJobDB:
     
     def test_batch_job_timestamps(self):
         """测试批量任务时间戳"""
-        from datetime import datetime
+        from app.timeutil import utcnow_naive
         batch = BatchJobDB(
             id="batch_test123",
             total=5,
-            created_at=datetime.utcnow()
+            created_at=utcnow_naive()
         )
         
         assert batch.created_at is not None

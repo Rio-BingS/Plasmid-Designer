@@ -7,7 +7,7 @@
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pydantic import BaseModel, EmailStr
 from fastapi import Depends, HTTPException, Request, Response, status
@@ -123,7 +123,8 @@ def create_access_token(user: User, token_version: int = 0) -> str:
     jti：每枚令牌唯一，服务端登出按它吊销单个会话；
     tv：签发时的用户令牌版本，禁用/改密递增后旧令牌整体失效
     """
-    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": user.id,
         "email": user.email,
@@ -131,9 +132,14 @@ def create_access_token(user: User, token_version: int = 0) -> str:
         "jti": uuid.uuid4().hex,
         "tv": int(token_version or 0),
         "exp": expire,
-        "iat": datetime.utcnow()
+        "iat": now
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _exp_to_naive_utc(exp: float) -> datetime:
+    """JWT exp 秒数 → 朴素 UTC 时间（写入吊销表 DateTime 列，与库内值可比）"""
+    return datetime.fromtimestamp(exp, timezone.utc).replace(tzinfo=None)
 
 
 def decode_token(token: str) -> Optional[TokenData]:
@@ -149,7 +155,7 @@ def decode_token(token: str) -> Optional[TokenData]:
             email=payload.get("email"),
             jti=payload.get("jti") or None,
             token_version=int(payload.get("tv") or 0),
-            expires_at=datetime.utcfromtimestamp(exp) if isinstance(exp, (int, float)) else None,
+            expires_at=_exp_to_naive_utc(exp) if isinstance(exp, (int, float)) else None,
         )
     except (jwt.ExpiredSignatureError, TypeError, ValueError):
         return None
@@ -164,8 +170,9 @@ VERIFY_TOKEN_EXPIRE_MINUTES = 30
 
 def create_verify_token(user_id: str) -> str:
     """邮箱验证流程令牌：30 分钟有效，仅用于 verify-email / resend 接口"""
-    expire = datetime.utcnow() + timedelta(minutes=VERIFY_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": user_id, "purpose": "verify_email", "exp": expire, "iat": datetime.utcnow()}
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=VERIFY_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": user_id, "purpose": "verify_email", "exp": expire, "iat": now}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 

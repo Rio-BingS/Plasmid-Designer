@@ -6,10 +6,10 @@
 from sqlalchemy import create_engine, Column, String, DateTime, Float, Boolean, Integer, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.timeutil import utcnow_naive
 
 # 数据库连接串 — 单一来源 settings.DATABASE_URL（读 .env / 环境变量）。
 # 此前此处用 os.getenv 直读进程环境变量、不读 .env，导致 .env 里的 DATABASE_URL
@@ -59,7 +59,7 @@ class UserDB(Base):
     # 令牌版本：签进 JWT 的 tv 声明，与此不符的令牌一律失效。禁用账号、
     # 改密码时递增，一次性作废该用户全部已签发令牌
     token_version = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     # 关联
     designs = relationship("DesignDB", back_populates="user")
@@ -78,7 +78,7 @@ class RevokedTokenDB(Base):
     jti = Column(String(64), primary_key=True)
     user_id = Column(String(50), nullable=True)
     expires_at = Column(DateTime, nullable=False, index=True)
-    revoked_at = Column(DateTime, default=datetime.utcnow)
+    revoked_at = Column(DateTime, default=utcnow_naive)
 
 
 # ==================== 站点设置模型 ====================
@@ -102,7 +102,7 @@ class SiteSettingsDB(Base):
     user_features = Column(Text, nullable=False, default="[]")
     features_initialized = Column(Boolean, nullable=False, default=False)
     feature_migrations = Column(String(200), nullable=False, default="")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 # ==================== 邮箱验证码模型 ====================
@@ -118,7 +118,7 @@ class EmailVerificationDB(Base):
     purpose = Column(String(30), nullable=False, default="register")
     expires_at = Column(DateTime, nullable=False)
     consumed = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 # ==================== 设计任务模型 ====================
@@ -163,7 +163,7 @@ class DesignDB(Base):
     validation_passed = Column(Boolean, default=False)
     
     # 时间
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     completed_at = Column(DateTime, nullable=True)
     
     # 关联
@@ -229,7 +229,7 @@ class BatchJobDB(Base):
     status = Column(String(20), default="pending")
     errors = Column(Text, default="[]")  # JSON 数组字符串
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     completed_at = Column(DateTime, nullable=True)
     
     # 关联
@@ -263,7 +263,7 @@ class VectorDB(Base):
     description = Column(Text, nullable=True)
     vector_type = Column(String(50), default="expression")
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     
     # 关联
     features = relationship("VectorFeatureDB", back_populates="vector", cascade="all, delete-orphan")
@@ -321,7 +321,7 @@ class SequencingAnalysisDB(Base):
     payload = Column(Text, nullable=False)
     trace_data = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 def init_db():

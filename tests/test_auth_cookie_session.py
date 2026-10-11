@@ -7,7 +7,7 @@ API / 脚本客户端继续有效（且优先于 Cookie）。Cookie 会话的写
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -20,6 +20,7 @@ from app.database import (
     prune_revoked_tokens, revoke_token, update_user,
 )
 from app.main import app
+from app.timeutil import utcnow_naive
 
 PASSWORD = "Passw0rd!!"
 PUBLIC = "/api/codon-tables"
@@ -256,7 +257,7 @@ def test_logout_of_legacy_token_without_jti_bumps_version(client):
     email = _new_user()
     uid = _user_id(email)
     legacy = jwt.encode({"sub": uid, "email": email,
-                         "exp": datetime.utcnow() + timedelta(hours=1)},
+                         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
                         SECRET_KEY, algorithm=ALGORITHM)
     # 升级前签发的令牌（无 jti / tv）照常可用，升级不掉线
     assert client.get("/api/auth/me", headers=_bearer(legacy)).status_code == 200
@@ -314,14 +315,14 @@ def test_revoked_list_pruned_by_expiry():
     try:
         old = f"old-{uuid.uuid4().hex}"
         live = f"live-{uuid.uuid4().hex}"
-        db.add(RevokedTokenDB(jti=old, expires_at=datetime.utcnow() - timedelta(minutes=1)))
+        db.add(RevokedTokenDB(jti=old, expires_at=utcnow_naive() - timedelta(minutes=1)))
         db.commit()
         # 写入新黑名单行时顺带清理过期行
-        revoke_token(db, live, datetime.utcnow() + timedelta(hours=1))
+        revoke_token(db, live, utcnow_naive() + timedelta(hours=1))
         assert db.get(RevokedTokenDB, old) is None
         assert db.get(RevokedTokenDB, live) is not None
         # 到期后同样被清理
-        assert prune_revoked_tokens(db, now=datetime.utcnow() + timedelta(hours=2)) >= 1
+        assert prune_revoked_tokens(db, now=utcnow_naive() + timedelta(hours=2)) >= 1
         assert db.get(RevokedTokenDB, live) is None
     finally:
         db.close()

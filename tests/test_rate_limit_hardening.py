@@ -5,7 +5,7 @@
 - 打包/导出下载与 NCBI 代理回到更严格的独立档位
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -57,7 +57,7 @@ def test_invalid_trusted_proxy_entries_ignored(monkeypatch):
 # ---------------- 认证档 key ----------------
 
 def test_auth_key_ignores_token_sub():
-    forged = jwt.encode({"sub": "anything-1", "exp": datetime.utcnow() + timedelta(hours=1)},
+    forged = jwt.encode({"sub": "anything-1", "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
                         SECRET_KEY, algorithm=ALGORITHM)
     from app.auth.middleware import AuthStateMiddleware
     r = _req("8.8.8.8", {"Authorization": f"Bearer {forged}"})
@@ -78,7 +78,7 @@ def test_login_limit_per_ip_and_email_not_bypassed_by_tokens(monkeypatch):
     c = TestClient(app)
     codes = []
     for i in range(5):
-        tok = jwt.encode({"sub": f"rotating-{i}", "exp": datetime.utcnow() + timedelta(hours=1)},
+        tok = jwt.encode({"sub": f"rotating-{i}", "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
                          SECRET_KEY, algorithm=ALGORITHM)
         codes.append(_login(c, "  Victim@Example.com ", tok).status_code)
     assert codes[:3] != [429] * 3 and codes[3:] == [429, 429], codes
