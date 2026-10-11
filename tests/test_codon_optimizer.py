@@ -2,11 +2,15 @@
 密码子优化模块测试
 """
 
-import pytest
+import random
 import sys
+
+import pytest
 sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
 
-from core.codon_optimizer import CodonOptimizer, CodonOptimizationResult
+from core.codon_optimizer import (
+    CODON_TABLE, CodonOptimizer, CodonOptimizationResult, translate_dna)
+from core.seq_utils import revcomp as _rc
 
 
 def test_basic_optimization():
@@ -336,3 +340,99 @@ def test_ramp_does_not_prefer_rare_codons_for_two_codon_families():
     )
     post_codon = dna[RAMP_CODONS * 3:RAMP_CODONS * 3 + 3]
     assert post_codon == "AAA"  # ramp 后回到最高频
+
+
+# ==================== 滑窗精修的局部扫描（#12） ====================
+
+_AAS = "ACDEFGHIKLMNPQRSTVWY"
+
+
+def _whole_sequence_refinement(self, dna_seq, aa_seq, avoid_motifs, gc_target, window=4):
+    """改动前的实现：每个候选都按整条序列判 motif / poly-X（等价性对照）"""
+    from itertools import product as iproduct
+
+    from core.codon_optimizer import CODON_TABLE as _TBL, RAMP_CODONS as _RAMP
+
+    dna = dna_seq
+    n = len(aa_seq)
+    if n <= window:
+        return dna
+    for start in range(_RAMP, n - window + 1):
+        pool = []
+        for i in range(start, start + window):
+            cur = dna[i * 3:(i + 1) * 3]
+            ranked = sorted(_TBL[aa_seq[i]], key=lambda c: -self.codon_freq.get(c, 0))
+            pool.append([cur] + [c for c in ranked if c != cur][:2])
+        best_dna = dna
+        best = self._window_score(dna, start, window, gc_target)
+        for combo in iproduct(*pool):
+            cand = dna[:start * 3] + ''.join(combo) + dna[(start + window) * 3:]
+            if cand == dna:
+                continue
+            if any(m in cand for m in avoid_motifs):
+                continue
+            if self._has_poly_x(cand, 4):
+                continue
+            s = self._window_score(cand, start, window, gc_target)
+            if s > best + 1e-9:
+                best_dna, best = cand, s
+        dna = best_dna
+    return dna
+
+
+def test_refinement_local_scan_matches_whole_scan_without_residual():
+    """等价性：收敛后不含残留 motif / poly-X 时，局部扫描与整条扫描逐字节相同
+
+    局部扫描只在「被改窗口 ± (最长 motif + 3)」内判定；窗口外的 motif
+    与候选无关，所以无残留时两者的接受集合应完全一致。
+    """
+    optimizer = CodonOptimizer(species="ecoli")
+    avoid = ["GAATTC", "GGATCC", "CTCGAG"]
+    expanded = list(dict.fromkeys(
+        [m for a in avoid for m in (a, _rc(a))] + optimizer._censor_motifs()))
+    gc_target = (0.40, 0.60)
+    rng = random.Random(2026)
+    compared = 0
+    for _ in range(50):
+        aa = "M" + "".join(rng.choice(_AAS) for _ in range(rng.randint(60, 160)))
+        dna = optimizer._initial_optimization(aa, use_ramp=True)
+        dna, _ = optimizer._iterative_optimization(
+            dna, aa, expanded, gc_target, "balanced")
+        if optimizer._find_motifs(dna, expanded) or optimizer._has_poly_x(dna, 4):
+            continue  # 有残留：两者本就应当不同（见 freeze 用例）
+        compared += 1
+        assert optimizer._sliding_window_refinement(dna, aa, expanded, gc_target) == \
+            _whole_sequence_refinement(optimizer, dna, aa, expanded, gc_target)
+    assert compared >= 20, f"可比样本过少（{compared}）"
+
+
+def test_refinement_runs_despite_unavoidable_motif():
+    """回归锁：残留一个无法避开的 motif（ATG 是 Met 的唯一密码子）时，
+    整条扫描会否决每一个候选、精修沦为空操作；局部扫描必须照常精修"""
+    optimizer = CodonOptimizer(species="ecoli")
+    rng = random.Random(7)
+    aa = "M" + "".join(rng.choice(_AAS) for _ in range(299))
+    # 从最稀有密码子起步，留足精修空间
+    start_dna = "".join(
+        min(CODON_TABLE[a], key=lambda c: optimizer.codon_freq.get(c, 0)) for a in aa)
+    avoid = ["ATG", "CAT"]
+    gc_target = (0.40, 0.60)
+    assert optimizer._find_motifs(start_dna, avoid)  # 残留确实存在
+
+    frozen = _whole_sequence_refinement(optimizer, start_dna, aa, avoid, gc_target)
+    assert frozen == start_dna  # 旧行为：一个字节都没动
+
+    refined = optimizer._sliding_window_refinement(start_dna, aa, avoid, gc_target)
+    assert refined != start_dna
+    assert translate_dna(refined) == aa  # 只做同义替换
+
+    def _score(dna: str) -> float:
+        return optimizer._optimization_score(
+            dna, optimizer._calculate_cai(dna, aa),
+            optimizer._calculate_gc_content(dna), gc_target,
+            optimizer._find_motifs(dna, avoid))
+
+    assert _score(refined) > _score(start_dna)
+    assert optimizer._calculate_cai(refined, aa) > optimizer._calculate_cai(start_dna, aa)
+    # 可避开的 motif 不被重新引入（CAT 的出现数不增加）
+    assert refined.count("CAT") <= start_dna.count("CAT")
