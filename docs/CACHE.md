@@ -2,10 +2,13 @@
 
 > **当前状态（已接线）**：以下业务流程已接入缓存读写——
 > - 设计结果（完成态）：后台任务完成后写入；`GET /api/design/{id}` 读缓存，未命中读存储并回填（TTL 24h）
-> - 密码子优化：`app/design_service.py` 按 (算法版本 `algo="v2.1"`, 序列, 物种, GC 区间, 排除酶) 键缓存（TTL 24h）；
->   改变优化结果口径时必须递增 `algo`，否则命中旧结果
+> - 密码子优化：`app/design_service.py` 按 (算法版本 `algo`=`CODON_OPT_ALGO`, 序列, 物种, GC 区间,
+>   排除酶) 键缓存（TTL 24h）；改变优化结果口径（含密码子表数据）时必须递增
+>   `app/cache.py` 中的 `CODON_OPT_ALGO`，否则命中旧结果
 > - 载体列表与详情：`GET /api/vectors*` 读缓存；删除/更新/上传/导入写操作统一失效（TTL 7 天）
-> - 密码子表列表、限制性酶表：静态数据（TTL 7 天）
+> - 密码子表列表、限制性酶表：静态数据（TTL 7 天）；酶表键形如
+>   `analysis_enzymes:<ANALYSIS_ENZYMES_VERSION>:<hash>`，酶表口径变化时递增该版本
+>   （`@cached(..., version=...)`）
 >
 > **明确不缓存**：批量任务进度（状态频繁变化，缓存会读到过期进度）、
 > analysis 的 POST 端点（输入序列键空间不可控，内存后端无淘汰机制会持续增长）。
