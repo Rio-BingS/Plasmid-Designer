@@ -12,9 +12,6 @@
 
 1. **poly 内部「缺第几个 A」信息论不可解**：同聚物内的缺失落点无法由峰图唯一
    确定，维持「计数确证但定位存疑」注记即正确答案，非 bug。
-2. **两处框架弃用告警**：`app/config.py` 仍用 Pydantic v1 式 `class Config`
-   （PydanticDeprecatedSince20），`app/database/models.py` 仍用
-   `declarative_base()`（SQLAlchemy MovedIn20Warning）；功能正常，升级大版本前需迁移。
 
 ---
 
