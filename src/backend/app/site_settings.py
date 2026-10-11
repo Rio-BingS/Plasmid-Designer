@@ -145,6 +145,16 @@ def update_settings(patch: dict) -> dict:
             row.anonymous_features = json.dumps(valid_features(patch["anonymous_features"]))
         if "user_features" in patch:
             row.user_features = json.dumps(valid_features(patch["user_features"]))
+        if "batch_read_limits" in patch:
+            # 按层级/字段合并：只改提交了的项，None 表示清除（回到服务器默认）；
+            # 取值校验在管理路由完成，这里再清洗一次防止脏数据落库
+            merged = parse_batch_read_limits(row.batch_read_limits)
+            for tier, vals in (patch["batch_read_limits"] or {}).items():
+                if tier in merged and isinstance(vals, dict):
+                    for field, v in vals.items():
+                        if field in merged[tier]:
+                            merged[tier][field] = v
+            row.batch_read_limits = json.dumps(normalize_tier_limits(merged))
         # 终审 D-02：管理员保存过功能清单即视为已初始化（显式空集保持为空）
         if "anonymous_features" in patch or "user_features" in patch:
             row.features_initialized = True
