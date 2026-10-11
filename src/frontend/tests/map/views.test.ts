@@ -91,6 +91,20 @@ describe('CircularMap 版式', () => {
   })
 })
 
+describe('LinearMap 酶名排布', () => {
+  it('单切点酶名排在贴近主轴的一行，文字带白边', () => {
+    const w = mount(LinearMap, { props: { doc: pet(), width: 900 } })
+    const texts = w.findAll('.lmap-enz-label text')
+    expect(texts.length).toBeGreaterThan(5)
+    const ys = texts.map((t) => Number(t.attributes('y')))
+    const nearest = Math.max(...ys)
+    const boldNearest = texts.filter((t, i) => ys[i] === nearest && t.attributes('font-weight') === '700')
+    expect(boldNearest.length).toBeGreaterThan(0)
+    for (const t of texts) expect(t.attributes('paint-order')).toBe('stroke')
+    for (const t of w.findAll('.lmap-feat-out')) expect(t.attributes('paint-order')).toBe('stroke')
+  })
+})
+
 describe('SequenceMap 虚拟滚动', () => {
   it('300 kb 只渲染可见行', () => {
     const L = 300000
