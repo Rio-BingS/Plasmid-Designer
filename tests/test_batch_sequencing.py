@@ -976,3 +976,26 @@ def test_clone_mode_error_points_to_real_frontend_route(tmp_path, monkeypatch):
     m = re.search(r"path:\s*'([^']+)',\s*name:\s*'sequencing-batch'", router)
     assert m, "前端路由表里找不到 sequencing-batch"
     assert route == m.group(1) == "/sequencing/batch"
+
+
+# ---------------------------------------------------------------- 参数与错误处理
+
+
+@pytest.mark.parametrize("where", ["same", "parent", "file"])
+def test_invalid_out_dir_rejected_before_writing(tmp_path, monkeypatch, where):
+    """review 05 L1：--out-dir 等于数据文件夹（或其上级）时此前扫描到 0 个文件、
+    把清单/总览写进数据目录并回填「未找到」；是普通文件时抛 traceback。
+    现在一律在写任何东西之前中文报错退出，信息表不动"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    target = {"same": data_dir, "parent": tmp_path,
+              "file": tmp_path / "afile"}[where]
+    if where == "file":
+        target.write_text("x", encoding="utf-8")
+    before = {p: p.read_bytes() for p in data_dir.rglob("*") if p.is_file()}
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir, "--out-dir", str(target))
+    assert isinstance(exc.value.code, str) and "输出目录" in exc.value.code
+    assert {p: p.read_bytes() for p in data_dir.rglob("*") if p.is_file()} == before
+    assert not (tmp_path / batch.MANIFEST_CSV).exists()
