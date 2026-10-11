@@ -329,7 +329,7 @@ npm run test:run
 | enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer / vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
 | output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但分析页导出与 Sanger 报告生成依赖其数据结构，删除前须确认 |
 | task_queue.py + celery/flower | ❌ 已移除 | 全库零引用，实际使用 FastAPI BackgroundTasks |
-| BioPython / primer3-py / pydna / pandas 等 | ❌ 已移除声明 | core 算法为纯 Python 标准库自研实现；requirements 已同步瘦身并补上实际缺失的 bcrypt、psycopg2-binary |
+| primer3-py / pydna / pandas / scipy 等 | ❌ 未纳入 | 全库无代码引用，requirements 不声明；实际依赖见下方「技术栈」 |
 
 ## 技术栈
 
@@ -337,7 +337,7 @@ npm run test:run
 |----|------|
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router |
 | 后端 | FastAPI + Pydantic + SQLAlchemy + Redis |
-| 生物信息 | 纯 Python 标准库自研实现（无第三方生信依赖） |
+| 生物信息 | Biopython（Sanger ab1 解析 + 序列比对）、snapgene-reader（SnapGene .dna 参考）、openpyxl（批量测序信息表）；[tracy](https://github.com/gear-genomics/tracy) 为可选外部二进制（解卷积 / 重新 basecall，缺失自动降级） |
 | 认证 | JWT (PyJWT) + bcrypt (passlib) |
 | 部署 | Docker Compose / bare systemd |
 
