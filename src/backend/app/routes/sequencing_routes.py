@@ -60,6 +60,7 @@ from app.design_service import get_vector_library
 from app import batch_read_limits, site_settings
 from app.gating import require_feature
 from app import batch_report_store, sequencing_store
+from app.sequencing_upload_sessions import DiskBlob, LazyFileEntry
 from app.sequencing_batch import (
     batch_payload, estimate_batch_cost, group_batch_uploads, parse_group_references,
     plasmid_groups, reference_circular, run_batch_groups,
@@ -734,19 +735,25 @@ async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFil
 def _classify_batch_blobs(blobs: List[Tuple[str, bytes]]):
     """[(文件名, 字节)] → (reads, refs, ignored)：跳过 ~$ 临时文件与空文件，
     按扩展名分为测序 read / 参考图谱 / 忽略。单请求入口与分块上传 finalize
-    共用，两条路径的归类完全一致（字节为 None 时视为非空，供文件清单预检）。"""
+    共用，两条路径的归类完全一致（字节为 None 时视为非空，供文件清单预检）。
+
+    分块 finalize 传入 DiskBlob：条目包装为 LazyFileEntry，内容按需从磁盘
+    读取，整批不必同时驻留内存。"""
     reads: List[Dict] = []
     refs: List[Dict] = []
     ignored: List[str] = []
     for name, blob in blobs:
         name = name or "unnamed"
-        if name.startswith("~$") or blob == b"":
+        on_disk = isinstance(blob, DiskBlob)
+        if name.startswith("~$") or (blob.size == 0 if on_disk else blob == b""):
             continue
         ext = os.path.splitext(name)[1].lower()
         entry = {
             "name": name, "ext": ext, "bytes": blob,
             "stem": norm_stem(os.path.splitext(os.path.basename(name))[0]),
         }
+        if on_disk:
+            entry = LazyFileEntry(entry, blob)
         if ext in READ_EXTS:
             reads.append(entry)
         elif ext in REF_EXTS:
@@ -785,6 +792,13 @@ def _load_batch_excel(excel_bytes: bytes):
     return cols, rows
 
 
+def _entry_size(entry: Dict) -> int:
+    """文件条目的字节数（磁盘条目取记录的大小，不为计数把文件读进内存）"""
+    if isinstance(entry, LazyFileEntry):
+        return entry.blob.size
+    return len(entry["bytes"])
+
+
 def _batch_pipeline(
     reads: List[Dict], refs: List[Dict], ignored: List[str], min_q: int,
     excel_name: Optional[str], excel_bytes: Optional[bytes],
@@ -807,10 +821,10 @@ def _batch_pipeline(
 
     # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
     # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）
-    total_bytes = sum(len(e["file"]["bytes"])
+    total_bytes = sum(_entry_size(e["file"])
                       for g in groups
                       for e in ([g["reference"]] if g["reference"] else []) + g["reads"])
-    total_bytes += sum(len(u["file"]["bytes"]) for u in raw_unmatched)
+    total_bytes += sum(_entry_size(u["file"]) for u in raw_unmatched)
     report_ready = total_bytes <= min(MAX_BATCH_CACHE_BYTES, MAX_BATCH_CACHE_TOTAL_BYTES)
     payload["report_ready"] = report_ready
     if report_ready:

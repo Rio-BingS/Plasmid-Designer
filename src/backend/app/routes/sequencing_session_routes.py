@@ -216,7 +216,10 @@ def _set_running(sid: str) -> None:
 
 def _finalize_sync(sid: str, min_q: int, owner_id: Optional[str],
                    read_limits: Dict) -> Dict:
-    """同步：读回暂存文件 → 与单请求入口相同的归类与批量管线"""
+    """同步：暂存文件 → 与单请求入口相同的归类与批量管线。
+
+    测序/图谱文件不整批读入内存：条目内容按需从磁盘读取（逐组比对、
+    逐个写入整理包），峰值内存约为单个分组的文件 + 整理包本身"""
     meta = store.load_meta(sid)
     blobs, excel = store.read_all(meta)
     reads, refs, ignored = sr._classify_batch_blobs(blobs)
