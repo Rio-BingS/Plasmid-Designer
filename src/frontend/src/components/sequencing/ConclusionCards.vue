@@ -12,7 +12,7 @@
  * 回看时父组件 preset watch 会把两者一起复位（行为与拆分前一致）。
  */
 import { computed } from 'vue'
-import type { SequencingAnalysis } from '@/api'
+import type { CdsReport, SequencingAnalysis } from '@/api'
 
 const props = defineProps<{
   analysis: SequencingAnalysis
@@ -28,6 +28,10 @@ const coverageSegments = computed(() => {
   const L = a.reference_length
   return a.coverage_ranges.map(([s, e]) => ({ left: ((s - 1) / L) * 100, width: ((e - s + 1) / L) * 100 }))
 })
+
+/** CDS 坐标：多段（join/跨原点）逐段列出，单段写起止 */
+const cdsSpan = (c: CdsReport) =>
+  c.segments?.length ? c.segments.map(([s, e]) => `${s}-${e}`).join('、') : `${c.start}-${c.end}`
 
 /** 覆盖缺口摘要（取最长 3 段展示） */
 const gapSummary = computed(() => {
@@ -137,7 +141,7 @@ function soLevel(t: string): string {
       <div class="cds-main">
         <p class="cds-name">
           {{ c.name }}
-          <span class="cds-coord">{{ c.start }}-{{ c.end }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
+          <span class="cds-coord">{{ cdsSpan(c) }}（{{ c.strand === '-' ? '反向' : '正向' }}）</span>
           <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
           <span v-for="t in c.consequences ?? []" :key="t" class="cds-so" :class="soLevel(t)">{{ SO_LABELS[t] ?? t }}</span>
           <span v-if="c.pending_low_confidence" class="cds-so mid"
