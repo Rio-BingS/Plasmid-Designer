@@ -205,6 +205,10 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | POST | `/api/sequencing/analyze` | 上传参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）+ .ab1（可多个）全自动测序验证（单样品入口） |
 | POST | `/api/sequencing/analyze-batch` | 批量入口：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表，按质粒归组逐个分析，返回每质粒一句话结论 |
 | GET | `/api/sequencing/batches/{batch_id}/report` | 下载批量分析整理包（ZIP，生成后 15 分钟内可重复下载） |
+| POST | `/api/sequencing/batch-sessions` | 批量分块上传：建会话（可带信息表 `excel` 与文件清单 `manifest`，带清单时立即预检 read 上限）；匿名会话返回 `access_token` |
+| POST | `/api/sequencing/batch-sessions/{id}/files` | 追加一个分块（≤90 MB、≤200 个文件；`chunk_index` 幂等） |
+| POST | `/api/sequencing/batch-sessions/{id}/finalize` | 提交分析：限时内完成返回与 `analyze-batch` 相同的响应体，否则 202 转轮询 |
+| GET / DELETE | `/api/sequencing/batch-sessions/{id}` | 查询会话状态（完成时带 `result`）/ 取消并删除暂存 |
 | POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个），参考序列取设计构建体（有构建体序列时按环状比对） |
 | POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体（按环状比对） |
 | GET | `/api/sequencing/analyses` | 历史分析列表（摘要，时间倒序） |
@@ -250,7 +254,24 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
   默认最多 24 条、整批最多 240 条（`SEQUENCING_BATCH_MAX_READS_PER_GROUP`、
   `SEQUENCING_BATCH_MAX_TOTAL_READS`），管理员可在 `/admin` 按分组或单个账号调整
   （见下文账号体系）；超限在比对前返回 413，提示写明生效的上限及其来源。页面显示
-  本账号的上限；同时仍受单次上传总体积 500 MB、单次最多 400 个文件限制。
+  本账号的上限，**read 上限是批次的唯一规模上限**。
+- **分块上传**：站点放在 Cloudflare 免费版之后时单个请求体上限 100 MB，网页入口
+  因此把文件自动切成 ≤90 MB / ≤200 个的分块，依次上传到同一个上传会话（页面显示
+  「上传中 3/7」进度，分块失败自动重试两次，取消或出错即删除服务器暂存），全部
+  送达后提交一次分析，结论、整理包与单请求入口完全一致。建会话时随附文件清单，
+  服务器按文件名预演归组并检查 read 上限，超限在上传任何数据之前就返回 413。
+  提交分析（finalize）在请求内最多等 `SEQUENCING_BATCH_FINALIZE_WAIT`（默认 60 秒）
+  ——Cloudflare 对源站响应有 100 秒超时——仍未完成则返回 202，由前端轮询结果。
+  批次级保护：单批总体积 `SEQUENCING_BATCH_SESSION_MAX_MB`（默认 2048 MB，取代
+  单请求接口的 500 MB）、会话 2 小时有效、每个账号（匿名按来源 IP）同时最多
+  `SEQUENCING_BATCH_SESSIONS_PER_OWNER`（默认 2）个、全站
+  `SEQUENCING_BATCH_SESSIONS_TOTAL`（默认 16）个进行中的会话。暂存目录
+  `SEQUENCING_BATCH_SESSION_DIR`（缺省 `$DATA_DIR/batch_uploads`；Docker 为具名卷
+  `batch-uploads`，挂在 `/app/batch_uploads`），目录 0700、文件 0600、按序号落盘，
+  分析结束立即删除原件，过期会话在启动时与每 10 分钟清理。会话只属于创建者（登录
+  账号，或匿名时建会话下发的 `access_token`），他人一律 404。finalize 时会把整批
+  文件读入内存，内存规划按单批体积上限估算。旧的 `POST /api/sequencing/analyze-batch`
+  单请求接口保留（脚本/小批量），仍受单次 500 MB、400 个文件限制。
 - **离线脚本**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
   结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
   测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
@@ -344,8 +365,9 @@ CSRF 检查。
   默认 24 / 240）；用户列表可为单个账号单独设置（留空即跟随所在分组，可高于或低于
   分组值）。生效顺序：个人设置 → 分组设置 → 服务器默认。所有值不得超过服务器安全
   上限（`SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX` / `SEQUENCING_BATCH_READS_HARD_MAX`，
-  默认 384 / 5000），超出时接口返回 422，生效值也按它截断。批量请求另有单次上传
-  总体积 500 MB、单次最多 400 个文件的固定限制，调高 read 上限后可能先触发。
+  默认 384 / 5000），超出时接口返回 422，生效值也按它截断。批量测序页自动分块
+  上传，文件数不再限制批次，单批总体积上限 `SEQUENCING_BATCH_SESSION_MAX_MB`
+  （默认 2048 MB）；500 MB / 400 个文件只约束旧的单请求接口。
   解析逻辑在 `app/batch_read_limits.py`。
 存储于 `site_settings` 单行表（`app/site_settings.py`，读侧 3 秒 TTL 缓存）；
 功能键注册表在 `app/features.py`。自我保护：不能禁用/删除自己，不能移除最后一位管理员。
