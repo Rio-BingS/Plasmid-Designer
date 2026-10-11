@@ -367,7 +367,8 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
         DATABASE_URL="sqlite:////$INSTALL_DIR/plasmid_designer.db"
     fi
 
-    cat > "$INSTALL_DIR/.env" << ENVEOF
+    # 以 0600 创建（root 默认 umask 022 会先建成 0644，到下方 chmod 前密钥可被读）
+    (umask 077 && cat > "$INSTALL_DIR/.env") << ENVEOF
 # Plasmid Designer 环境配置 — 由 install.sh 自动生成
 
 # 存储模式
