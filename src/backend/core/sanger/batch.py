@@ -15,9 +15,10 @@
 - 按引物列/质粒名称/克隆号把扫描到的文件归组；
 - 从单样品分析结果生成一句话结论。
 
-文件整理（复制归档、MD5 清单）、报告输出与 Excel 回填属于各入口自身
-的流程：离线批处理见 scripts/batch_sequencing_report.py，网页批量分析见
-POST /api/sequencing/analyze-batch。
+逐组分析、整理包（归档、报告、MD5 清单）与 Excel 回填在 app 层
+（app/sequencing_batch.py、app/sequencing_report.py），同样由离线批处理
+scripts/batch_sequencing_report.py 与网页批量分析
+POST /api/sequencing/analyze-batch 共用。
 """
 
 import io
