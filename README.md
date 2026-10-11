@@ -364,7 +364,7 @@ skip-if-missing 用例），前端 vitest 181 passed。CI（`.github/workflows/c
 | 前端 | Vue 3 + TypeScript + Vite 8 + Pinia + Vue Router；测试 Vitest 5 |
 | 后端 | FastAPI + Pydantic + SQLAlchemy + Redis |
 | 生物信息 | Biopython（Sanger ab1 解析 + 序列比对）、snapgene-reader（SnapGene .dna 参考）、openpyxl（批量测序信息表）；[tracy](https://github.com/gear-genomics/tracy) 为可选外部二进制（解卷积 / 重新 basecall，缺失自动降级） |
-| 认证 | JWT（PyJWT）存于 httpOnly 会话 Cookie + CSRF 头 + 服务端吊销；密码 bcrypt（passlib） |
+| 认证 | JWT（PyJWT）存于 httpOnly 会话 Cookie + CSRF 头 + 服务端吊销；密码 bcrypt |
 | 部署 | Docker Compose / bare systemd |
 
 ## License
