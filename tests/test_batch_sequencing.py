@@ -1021,3 +1021,38 @@ def test_unreadable_excel_gives_message_not_traceback(tmp_path, monkeypatch, kin
     assert isinstance(exc.value.code, str)
     assert "无法读取信息表" in exc.value.code and "测序.xlsx" in exc.value.code
     assert not (data_dir / "测序分析").exists()
+
+
+def test_write_back_locked_excel_keeps_original_and_explains(tmp_path, monkeypatch):
+    """review 05 L1：回填直接 write_bytes 覆盖原表（非原子），表被 Excel 占用
+    （Windows PermissionError）时只有 traceback。现在先写临时文件再替换；
+    替换失败时原表原样、不留临时文件，提示关闭后重跑，归档与备份已写出"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    xlsx = data_dir / "测序.xlsx"
+    original = xlsx.read_bytes()
+
+    real_wb, real_replace = Path.write_bytes, os.replace
+
+    def locked_write(self, data):
+        if self == xlsx:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_wb(self, data)
+
+    def locked_replace(src, dst, *a, **kw):
+        if Path(dst) == xlsx:
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(Path, "write_bytes", locked_write)
+    monkeypatch.setattr(os, "replace", locked_replace)
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    assert isinstance(exc.value.code, str) and "回填" in exc.value.code
+    assert "正被" in exc.value.code
+    assert xlsx.read_bytes() == original
+    assert sorted(p.name for p in data_dir.iterdir()) == [
+        "T1.ab1", "TST.fasta", "测序.xlsx", "测序分析"]
+    out = data_dir / "测序分析"
+    assert (out / "TST" / "正确" / "T1.ab1").exists()
+    assert (out / "测序_原始备份.xlsx").read_bytes() == original

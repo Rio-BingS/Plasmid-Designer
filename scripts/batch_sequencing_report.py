@@ -37,6 +37,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import sys
 import zipfile
@@ -630,6 +631,26 @@ def run_to_dir(files: List[Dict], rows: List[Dict], out_dir: Path, min_q: int = 
     return run.payload, arch.finish()
 
 
+# ---------------------------------------------------------------- Excel 回填
+
+
+def _replace_excel(excel_path: Path, data: bytes, out_dir: Path, backup: Path) -> None:
+    """回填版信息表先写同目录临时文件再整体替换：写到一半失败不会留下
+    半个表；表正被 Excel 打开（Windows 上替换报 PermissionError）等失败时
+    原表不动、删掉临时文件，提示关闭后重跑（归档与备份此时已写出）"""
+    tmp = excel_path.with_name(f".{excel_path.name}.回填中")
+    try:
+        tmp.write_bytes(data)
+        shutil.copymode(excel_path, tmp)     # 保留原表权限
+        os.replace(tmp, excel_path)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        raise SystemExit(
+            f"结论回填 {excel_path.name} 失败（信息表可能正被 Excel 打开或只读：{e}）；"
+            f"原表未改动。整理结果已写出：{out_dir}（原表备份：{backup.name}），"
+            "关闭信息表后重跑即可回填")
+
+
 # ---------------------------------------------------------------- 主流程
 
 
@@ -731,7 +752,7 @@ def main():
     shutil.copy2(excel_path, backup)
     filled = backfill_excel(wb, cols, rows, payload["items"], clone_mode=False)
     if filled is not None:
-        excel_path.write_bytes(filled)
+        _replace_excel(excel_path, filled, out_dir, backup)
     print(f"√ 结论已回填 {excel_path.name}（原表备份：{backup.name}）")
     print(f"√ 输出目录：{out_dir}")
 
