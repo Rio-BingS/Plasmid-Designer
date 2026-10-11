@@ -10,6 +10,22 @@ import { bumpAuthEpoch, currentAuthEpoch, onSessionExpired } from '@/api/session
 // 现在令牌只在后端下发的 httpOnly Cookie 里，启动时清掉遗留数据
 const LEGACY_STORAGE_KEYS = ['token', 'user']
 
+// 窗口聚焦/切回标签页的监听全局只装一次，回调指向最近一次 initSession
+// 的 store（与 session.ts 的失效回调同一「后注册者为准」约定）
+let focusRevalidate: (() => void) | null = null
+let focusListenersInstalled = false
+
+function installFocusListeners() {
+  if (focusListenersInstalled || typeof window === 'undefined') return
+  focusListenersInstalled = true
+  const onActive = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    focusRevalidate?.()
+  }
+  window.addEventListener('focus', onActive)
+  document.addEventListener('visibilitychange', onActive)
+}
+
 export const useAuthStore = defineStore('auth', () => {
   // 登录态唯一来源：后端 /auth/verify（凭 httpOnly 会话 Cookie）或登录响应
   const user = ref<any>(null)
@@ -18,6 +34,8 @@ export const useAuthStore = defineStore('auth', () => {
   // 启动时的会话核实（/auth/verify）尚未有结果：此时既不能断定已登录也不能
   // 断定未登录，导航栏据此显示占位，避免刷新时先闪「登录」再变成用户菜单
   const checking = ref(true)
+  // 页面打开期间会话失效（过期 / 他处登出 / 改密）：导航栏据此提示重新登录
+  const sessionExpired = ref(false)
 
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.is_admin === true)
@@ -51,6 +69,7 @@ export const useAuthStore = defineStore('auth', () => {
   function setSession(sessionUser: any) {
     bumpAuthEpoch()
     user.value = sessionUser
+    sessionExpired.value = false
     checking.value = false // 登录响应即权威结果，无需再等启动核实
     refreshSiteConfig() // 登录后层级变化，刷新有效功能
   }
@@ -94,7 +113,10 @@ export const useAuthStore = defineStore('auth', () => {
         user.value = result.user
         return true
       }
-      clearAuth()
+      // 原本已登录、复查却无效：会话中途失效（可选认证接口不会 401，
+      // 只能靠复查发现），按过期处理并提示重新登录
+      if (isAuthenticated.value) expireSession()
+      else clearAuth()
       return false
     } catch {
       // 网络错误/后端不可达：无法判断，保持现状（Cookie 可能仍有效）
@@ -122,6 +144,22 @@ export const useAuthStore = defineStore('auth', () => {
       // 隐身模式等 localStorage 不可用时忽略
     }
     ensureSession().finally(refreshSiteConfig)
+    focusRevalidate = () => { revalidateSession() }
+    installFocusListeners()
+  }
+
+  // 回到页面时（切回标签页/窗口聚焦）复查会话：令牌 24h 过期或在别处登出后，
+  // 走可选认证的接口会静默按匿名执行而不 401，单靠拦截器发现不了
+  const REVALIDATE_MIN_INTERVAL_MS = 60_000
+  let lastRevalidate = 0
+
+  /** 已登录时节流复查一次会话；未登录或间隔太短时不发请求 */
+  function revalidateSession(): Promise<boolean> {
+    if (!isAuthenticated.value) return Promise.resolve(false)
+    const now = Date.now()
+    if (now - lastRevalidate < REVALIDATE_MIN_INTERVAL_MS) return Promise.resolve(true)
+    lastRevalidate = now
+    return checkAuth()
   }
 
   function clearAuth() {
@@ -129,13 +167,27 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
+  /** 会话被动失效：清理登录态、按匿名刷新功能集，并提示重新登录 */
+  function expireSession() {
+    const wasAuthenticated = isAuthenticated.value
+    clearAuth()
+    if (!wasAuthenticated) return
+    sessionExpired.value = true
+    refreshSiteConfig()
+  }
+
+  function dismissSessionExpired() {
+    sessionExpired.value = false
+  }
+
   // 接口返回 401（当前会话已失效）时由 api 拦截器经 session 模块回调清理
-  onSessionExpired(clearAuth)
+  onSessionExpired(expireSession)
 
   return {
     user,
     siteConfig,
     checking,
+    sessionExpired,
     isAuthenticated,
     isAdmin,
     username,
@@ -151,6 +203,8 @@ export const useAuthStore = defineStore('auth', () => {
     checkAuth,
     ensureSession,
     initSession,
+    revalidateSession,
+    dismissSessionExpired,
     clearAuth
   }
 })

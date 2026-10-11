@@ -184,6 +184,25 @@ describe('NavBar', () => {
     expect(wrapper.find('.logout-error').text()).toContain('未完成')
   })
 
+  it('会话中途失效：提示登录已过期，可直接重新登录', async () => {
+    const { notifySessionExpired } = await import('@/api/session')
+    const wrapper = mount(NavBar, {
+      global: { plugins: [router], stubs: { AuthModal: true } }
+    })
+    await router.isReady()
+    await flushPromises()
+    expect(wrapper.find('.user-btn').exists()).toBe(true)
+
+    notifySessionExpired()
+    await flushPromises()
+    expect(wrapper.find('.login-btn').exists()).toBe(true)
+    expect(wrapper.find('.session-expired').text()).toContain('登录已过期')
+
+    await wrapper.find('.session-expired-login').trigger('click')
+    expect(wrapper.find('.session-expired').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'AuthModal' }).exists()).toBe(true)
+  })
+
   it('renders brand logo and text', async () => {
     const wrapper = mount(NavBar, {
       global: {
