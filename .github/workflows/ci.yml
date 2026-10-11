@@ -75,7 +75,6 @@ jobs:
       - name: npm audit (production deps)
         run: npm audit --omit=dev --audit-level=high
 
-      # 不阻断：开发工具链（vite/vitest）剩余告警需跨大版本升级，先只展示
-      - name: npm audit (all deps, informational)
+      # 阻断：开发工具链（vite/vitest 等）同样不允许 high 及以上漏洞
+      - name: npm audit (all deps)
         run: npm audit --audit-level=high
-        continue-on-error: true
