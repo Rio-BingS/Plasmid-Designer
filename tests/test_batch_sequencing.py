@@ -2,7 +2,8 @@
 
 覆盖：Excel 解析、文件名匹配（引物列/质粒名/未匹配）、整理落盘（同名异内容
 不覆盖）、Excel 结论各分支、"信息表 + 图谱 + .ab1 → 质粒文件夹 + 报告 + 回填"
-端到端，以及离线脚本与网页整理包同输入同产物（章节、按质粒/结论分置结构）。
+端到端，离线脚本与网页整理包同输入同产物（章节、按质粒/结论分置结构），
+以及重跑同一输出目录时的旧副本清理、清单记录实际路径与 --dry-run 预览。
 """
 
 import importlib.util
@@ -325,6 +326,66 @@ def _manifest_paths(out: Path) -> set:
     return {r["归档路径"] for r in csv.DictReader(io.StringIO(text))}
 
 
+def test_rerun_removes_stale_copy_after_verdict_change(tmp_path, monkeypatch):
+    """判定从 正确 变为 无法判定：上次留在 正确/ 的 read、报告与 JSON 被清理，
+    用户放进去的文件与改过的生成物保留，正确/ 错误/ 不删，原件不动"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    ok = out / "TST" / "正确"
+    assert (ok / "T1.ab1").exists() and (out / batch.RECORD_NAME).exists()
+
+    (ok / "笔记.txt").write_text("用户自己的备注", encoding="utf-8")
+    (out / "TST" / "随手记.md").write_text("记录之外", encoding="utf-8")
+    (ok / "分析结果.json").write_text("{\"edited\": true}", encoding="utf-8")
+
+    (data_dir / "TST.fasta").unlink()       # 缺图谱 → 无法判定
+    _run(monkeypatch, data_dir, "--no-write-back")
+
+    assert (out / "TST" / "无法判定" / "T1.ab1").exists()
+    assert not (ok / "T1.ab1").exists()
+    assert not (ok / "测序分析报告.md").exists()
+    assert not (out / "TST" / "TST.fasta").exists()     # 上次的图谱副本也已过期
+    assert (ok / "笔记.txt").read_text(encoding="utf-8") == "用户自己的备注"
+    assert (out / "TST" / "随手记.md").exists()
+    assert (ok / "分析结果.json").read_text(encoding="utf-8") == "{\"edited\": true}"
+    assert (out / "TST" / "错误").is_dir()
+    assert (data_dir / "T1.ab1").exists()
+    assert _manifest_paths(out) == {"TST/无法判定/T1.ab1"}
+
+
+def test_rerun_prunes_empty_dirs_but_keeps_correct_and_wrong(tmp_path, monkeypatch):
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    (data_dir / "TST.fasta").unlink()
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert (out / "TST" / "无法判定" / "T1.ab1").exists()
+
+    (data_dir / "TST.fasta").write_text(f">TST\n{REF}\n", encoding="utf-8")
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert (out / "TST" / "正确" / "T1.ab1").exists()
+    assert not (out / "TST" / "无法判定").exists()      # 清空后删除
+    assert (out / "TST" / "错误").is_dir()              # 空也保留
+
+
+def test_rerun_legacy_manifest_only_cleans_matching_data_copies(tmp_path, monkeypatch):
+    """旧版本跑出的目录没有整理记录：退回 整理清单.csv 识别数据副本"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    (out / batch.RECORD_NAME).unlink()
+    (data_dir / "TST.fasta").unlink()
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert not (out / "TST" / "正确" / "T1.ab1").exists()
+    assert (out / "TST" / "无法判定" / "T1.ab1").exists()
+
+
 def test_rerun_same_name_conflict_manifest_records_written_path(tmp_path, monkeypatch, capsys):
     data_dir = tmp_path / "results"
     data_dir.mkdir()
@@ -344,3 +405,26 @@ def test_rerun_same_name_conflict_manifest_records_written_path(tmp_path, monkey
     assert not (ok / "T1 (3).ab1").exists()
     assert (ok / "T1 (2).ab1").exists()
     assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
+
+
+def test_rerun_dry_run_reports_without_removing(tmp_path, monkeypatch, capsys):
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    out = data_dir / "测序分析"
+    _run(monkeypatch, data_dir, "--no-write-back")
+    before = {p.relative_to(out).as_posix(): p.read_bytes()
+              for p in out.rglob("*") if p.is_file()}
+    xlsx_before = (data_dir / "测序.xlsx").read_bytes()
+    capsys.readouterr()
+
+    (data_dir / "TST.fasta").unlink()
+    _run(monkeypatch, data_dir, "--dry-run")
+    text = capsys.readouterr().out
+    assert "[预览] 将清理上次生成的旧副本：TST/正确/T1.ab1" in text
+    assert "TST/正确/测序分析报告.md" in text
+    after = {p.relative_to(out).as_posix(): p.read_bytes()
+             for p in out.rglob("*") if p.is_file()}
+    assert after == before
+    assert not (out / "TST" / "无法判定").exists()
+    assert (data_dir / "测序.xlsx").read_bytes() == xlsx_before
