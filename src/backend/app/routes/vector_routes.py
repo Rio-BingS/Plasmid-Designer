@@ -19,6 +19,7 @@ from app.cache import cache
 from app.config import settings
 from app.design_service import get_vector_library, invalidate_vector_library_cache
 from app.auth.jwt_auth import get_admin_user
+from core.genbank_format import format_locus_line
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
@@ -204,11 +205,9 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
 
     if format.lower() == "genbank":
         # 生成 Biopython 可解析的标准 GenBank（测序页深链会把该文件作为参考序列传回）
-        from datetime import datetime
-        date_str = datetime.now().strftime("%d-%b-%Y").upper()
         seq_upper = vector.sequence.upper()
         lines = [
-            f"LOCUS       {vector.name[:16].replace(' ', '_'):<16} {len(seq_upper)} bp    DNA     circular SYN {date_str}",
+            format_locus_line(vector.name, len(seq_upper), topology="circular"),
             f"DEFINITION  {vector.name}.",
             f"ACCESSION   {vector.id}",
             "SOURCE      .",

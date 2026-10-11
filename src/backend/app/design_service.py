@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app.cache import cache
 from app.config import settings
+from core.genbank_format import format_locus_line
 from app.routes.models import (
     CloningMethod,
     DesignRequest,
@@ -635,9 +636,8 @@ def generate_genbank_from_result(result: DesignResult) -> str:
     lines = []
     locus_name = result.design_id[:16].replace("-", "_")
     length = len(construct) or result.final_length or 0
-    date_str = datetime.now().strftime("%d-%b-%Y").upper()
 
-    lines.append(f"LOCUS       {locus_name:<16} {length} bp    DNA     circular SYN {date_str}")
+    lines.append(format_locus_line(locus_name, length, topology="circular"))
     lines.append(f"DEFINITION  {result.vector_name} with designed insert")
     lines.append(f"ACCESSION   {result.design_id}")
     lines.append(f"VERSION     {result.design_id}.1")
