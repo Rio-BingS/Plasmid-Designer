@@ -36,6 +36,16 @@ TM_TEMPLATE_NM = 0.0             # 模板链浓度 (nM)：引物大幅过量，�
 TM_SALTCORR = 7                  # Owczarzy 2008 盐校正（含 Mg/dNTP 竞争）
 # 最近邻模型至少需要一个碱基对（2 nt）才有意义
 TM_MIN_LENGTH = 2
+
+# 全基因合成：相邻 oligo 重叠区（退火成双链的那段）的可变长度范围。
+# 组装 PCR 的退火由「重叠双链」的 Tm 决定，所以重叠长度是优化变量，
+# 不是固定常数；18-25nt 是组装 PCR 的常规区间（DNAWorks 同量级）
+OVERLAP_LENGTH_MIN = 18
+OVERLAP_LENGTH_MAX = 25
+# 重叠双链 Tm 极差达标线（°C）：组装 PCR 的常规设计目标是 ±2°C 上下
+OVERLAP_TM_SPREAD_TARGET = 5.0
+# 达不到时最多把片数往上加几轮（每轮 +2，保持偶数片）
+OLIGO_TILE_ESCALATIONS = 4
 # ---------------------------------------------------------------------------
 
 
@@ -750,6 +760,28 @@ class PrimerDesigner:
         
         return max_comp
 
+    @staticmethod
+    def _equal_step_tiles(seq_len: int, n_tiles: int, overlap: int) -> List[List[int]]:
+        """等步长初始分片（均一化前的起点）"""
+        step = max(1, math.ceil((seq_len - overlap) / n_tiles))
+        tiles: List[List[int]] = []
+        pos = 0
+        while pos < seq_len:
+            end = min(pos + step + overlap, seq_len)
+            tiles.append([pos, end])
+            if end >= seq_len:
+                break
+            pos += step
+        return tiles
+
+    def _overlap_tm_spread(self, tiles: List[List[int]], sequence: str) -> float:
+        """相邻 oligo 重叠双链的 Tm 极差（组装 PCR 退火同步性指标）"""
+        tms = [
+            self._calculate_tm(sequence[tiles[i + 1][0]:tiles[i][1]])
+            for i in range(len(tiles) - 1)
+        ]
+        return max(tms) - min(tms) if tms else 0.0
+
     def design_synthesis_oligos(
         self,
         sequence: str,
@@ -767,13 +799,18 @@ class PrimerDesigner:
         - 任何两条寡核苷酸都不是完全互补（避免整对优先退火成
           独立双链、破坏错位组装路径）；
         - 相邻寡核苷酸经 overlap 区退火后聚合酶延伸拼出全长；
-        - 片数强制为偶数；单条长度不超过 oligo_length_max。
+        - 片数强制为偶数；单条长度不超过 oligo_length_max；
+        - 边界与重叠长度按「重叠双链 Tm」均一化（见
+          _tm_homogenize_boundaries），退火同步性由这个量决定。
 
         Args:
             sequence: 目标基因序列
             oligo_length_min: 单条寡核苷酸最短长度（尽力目标）
             oligo_length_max: 单条寡核苷酸最长长度（硬上限）
-            overlap_length: 相邻寡核苷酸重叠区长度
+            overlap_length: 相邻寡核苷酸重叠区的标称长度（起始值）。落在
+                [OVERLAP_LENGTH_MIN, OVERLAP_LENGTH_MAX] 内时，重叠长度会
+                在该区间内按重叠双链 Tm 均一化自动调整；显式给出区间外的
+                值（如 10 或 40）则固定为该长度不做调整
             primer_name: 寡核苷酸名称前缀
 
         Returns:
@@ -788,28 +825,40 @@ class PrimerDesigner:
             raise ValueError("序列为空")
 
         # 片数取不小于理论最小值的偶数（满足偶数条要求）
-        n_tiles = max(2, math.ceil((seq_len - overlap_length) / max_span))
-        if n_tiles % 2 == 1:
-            n_tiles += 1
-        step = max(1, math.ceil((seq_len - overlap_length) / n_tiles))
+        n_min = max(2, math.ceil((seq_len - overlap_length) / max_span))
+        if n_min % 2 == 1:
+            n_min += 1
 
-        # 初始等步分片
-        tiles = []
-        pos = 0
-        while pos < seq_len:
-            end = min(pos + step + overlap_length, seq_len)
-            tiles.append([pos, end])
-            if end >= seq_len:
+        # DNAWorks 式 Tm 均一化：在长度范围内微调内部边界与重叠长度，
+        # 使各重叠双链的 Tm 尽量一致（退火同步性更好，合成成功率更高）
+        if OVERLAP_LENGTH_MIN <= overlap_length <= OVERLAP_LENGTH_MAX:
+            ov_lo, ov_hi = OVERLAP_LENGTH_MIN, OVERLAP_LENGTH_MAX
+        else:
+            # 调用方显式要求区间外的重叠长度时按其固定值处理
+            ov_lo = ov_hi = overlap_length
+
+        # 最少片数时每片都顶着长度上限，边界几乎无处可动——重叠 Tm 常
+        # 压不下来。按 +2 递增片数（保持偶数）换取调整余量，一旦达标就停，
+        # 既不无谓增加 oligo 条数，也不把 Tm 极差留在不可接受的水平
+        best_tiles, best_spread = None, float("inf")
+        for n_tiles in range(n_min, n_min + 2 * OLIGO_TILE_ESCALATIONS + 1, 2):
+            tiles = self._equal_step_tiles(seq_len, n_tiles, overlap_length)
+            tiles = self._tm_homogenize_boundaries(
+                tiles, sequence, oligo_length_min, oligo_length_max,
+                overlap_min=ov_lo, overlap_max=ov_hi,
+            )
+            spread = self._overlap_tm_spread(tiles, sequence)
+            if spread < best_spread:
+                best_tiles, best_spread = tiles, spread
+            if spread <= OVERLAP_TM_SPREAD_TARGET:
                 break
-            pos += step
-
-        # DNAWorks 式 Tm 均一化：在长度范围内微调内部边界，
-        # 使相邻片对的 Tm 差尽量小（退火同步性更好，合成成功率更高）
-        tiles = self._tm_homogenize_boundaries(tiles, sequence, oligo_length_min, oligo_length_max)
+        tiles = best_tiles
 
         oligos = []
         oligo_num = 1
-        for pos, end in tiles:
+        for idx, (pos, end) in enumerate(tiles):
+            left_ov = tiles[idx - 1][1] - pos if idx > 0 else 0
+            right_ov = end - tiles[idx + 1][0] if idx + 1 < len(tiles) else 0
             sense = sequence[pos:end]
 
             is_sense = oligo_num % 2 == 1
@@ -825,7 +874,8 @@ class PrimerDesigner:
                 target_start=pos,
                 target_end=end,
                 notes=f"{'Sense' if is_sense else 'Antisense'} strand oligo, "
-                     f"region {pos + 1}-{end}, overlap: {overlap_length}bp",
+                     f"region {pos + 1}-{end}, "
+                     f"overlap: 5'{left_ov}bp/3'{right_ov}bp",
             ))
             oligo_num += 1
 
@@ -838,64 +888,100 @@ class PrimerDesigner:
         length_min: int,
         length_max: int,
         rounds: int = 3,
+        overlap_min: int = OVERLAP_LENGTH_MIN,
+        overlap_max: int = OVERLAP_LENGTH_MAX,
     ) -> List[List[int]]:
-        """DNAWorks 式边界微调：移动内部边界使相邻片对的 Tm 差最小。
+        """DNAWorks 式边界均一化：让各「重叠双链」的最近邻 Tm 尽量一致。
 
-        每轮对每个内部边界尝试 ±1..±8 的移动（保持片长在
-        [length_min, length_max] 且相邻片仍有 overlap），取使
-        「相邻片 Tm 差绝对值之和」最小的组合。
+        决定组装 PCR 退火的是相邻 oligo 之间那段重叠双链的 Tm，不是整条
+        oligo 的 Tm——旧版优化的是后者，重叠长度被钉死，真正要紧的量
+        根本动不了（实测 1.2kb 基因的重叠 Tm 极差中位数 22°C）。
+
+        这里每个内部边界有两个自由变量：边界位置（±8nt）与重叠长度
+        （[overlap_min, overlap_max]）。以「各重叠 Tm 与目标值的偏差之和」
+        为目标做坐标下降，目标值在若干候选上各跑一遍取极差最小的解。
+        片长始终保持在 [length_min, length_max] 内（初始分片就越界的片
+        只要求不变得更差），首片起点与末片终点不动，重叠区互不重叠。
         """
-        tm_cache: Dict[int, float] = {}
+        tiles = [list(t) for t in tiles]
+        n = len(tiles)
+        if n < 2 or overlap_max < overlap_min:
+            return tiles
 
-        def tile_tm(start: int, end: int) -> float:
+        tm_cache: Dict[Tuple[int, int], float] = {}
+
+        def ov_tm(start: int, end: int) -> float:
             key = (start, end)
             if key not in tm_cache:
                 tm_cache[key] = self._calculate_tm(sequence[start:end])
             return tm_cache[key]
 
-        def total_deviation(ts) -> float:
-            return sum(
-                abs(tile_tm(ts[i][0], ts[i][1]) - tile_tm(ts[i + 1][0], ts[i + 1][1]))
-                for i in range(len(ts) - 1)
-            )
+        def tile_len_ok(length: int, original: int) -> bool:
+            if length > length_max:
+                return False
+            if length < length_min:
+                # 初始就短于下限（末片常见）时只要求不再更短
+                return length >= min(length_min, original)
+            return True
 
-        tiles = [list(t) for t in tiles]
-        if len(tiles) < 3:
+        orig_len = [t[1] - t[0] for t in tiles]
+        shift_range = 8
+
+        def candidates(j: int, ts: List[List[int]]) -> List[Tuple[int, int, float]]:
+            """junction j（tiles[j] 与 tiles[j+1] 之间）的可行 (s, e, Tm)"""
+            e0 = ts[j][1]
+            out = []
+            for e in range(e0 - shift_range, e0 + shift_range + 1):
+                if e > ts[j + 1][1] or e <= ts[j][0]:
+                    continue
+                if not tile_len_ok(e - ts[j][0], orig_len[j]):
+                    continue
+                for ov in range(overlap_min, overlap_max + 1):
+                    s_pos = e - ov
+                    if s_pos <= ts[j][0] or s_pos >= ts[j + 1][1]:
+                        continue
+                    if not tile_len_ok(ts[j + 1][1] - s_pos, orig_len[j + 1]):
+                        continue
+                    # 重叠区之间不得互相重叠（否则一片会被两侧邻居盖满）
+                    if j > 0 and s_pos < ts[j - 1][1]:
+                        continue
+                    if j + 2 < n and e > ts[j + 2][0]:
+                        continue
+                    out.append((s_pos, e, ov_tm(s_pos, e)))
+            return out
+
+        def spread(ts: List[List[int]]) -> float:
+            tms = [ov_tm(ts[i + 1][0], ts[i][1]) for i in range(len(ts) - 1)]
+            return max(tms) - min(tms) if tms else 0.0
+
+        # 目标 Tm 候选：各 junction 可达 Tm 的分位点
+        reachable = [[c[2] for c in candidates(j, tiles)] for j in range(n - 1)]
+        pool = sorted(t for lst in reachable for t in lst)
+        if not pool:
             return tiles
+        targets = sorted({pool[int(q * (len(pool) - 1))]
+                          for q in (0.2, 0.35, 0.5, 0.65, 0.8)})
 
-        for _ in range(rounds):
-            moved = False
-            for b in range(1, len(tiles) - 1):
-                current = total_deviation(tiles)
-                best_shift, best_dev = 0, current
-                # 边界 b 同时是 tiles[b-1] 的 end 与 tiles[b] 的 start
-                for shift in range(-8, 9):
-                    if shift == 0:
+        best_tiles, best_spread = tiles, spread(tiles)
+        for target in targets:
+            trial = [list(t) for t in tiles]
+            for _ in range(rounds):
+                moved = False
+                for j in range(n - 1):
+                    cand = candidates(j, trial)
+                    if not cand:
                         continue
-                    trial = [list(t) for t in tiles]
-                    trial[b - 1][1] += shift
-                    trial[b][0] += shift
-                    ok = all(
-                        (t[1] - t[0]) >= length_min and (t[1] - t[0]) <= length_max
-                        for t in trial
-                    )
-                    # 相邻片仍需保持正向重叠
-                    ok = ok and all(
-                        trial[i + 1][0] < trial[i + 1][1] and trial[i][1] > trial[i + 1][0]
-                        for i in range(len(trial) - 1)
-                    )
-                    if not ok:
-                        continue
-                    dev = total_deviation(trial)
-                    if dev < best_dev - 1e-9:
-                        best_shift, best_dev = shift, dev
-                if best_shift != 0:
-                    tiles[b - 1][1] += best_shift
-                    tiles[b][0] += best_shift
-                    moved = True
-            if not moved:
-                break
-        return tiles
+                    s_pos, e, _tm = min(cand, key=lambda c: (abs(c[2] - target), abs(c[1] - trial[j][1])))
+                    if (s_pos, e) != (trial[j + 1][0], trial[j][1]):
+                        trial[j][1] = e
+                        trial[j + 1][0] = s_pos
+                        moved = True
+                if not moved:
+                    break
+            sp = spread(trial)
+            if sp < best_spread - 1e-9:
+                best_tiles, best_spread = trial, sp
+        return best_tiles
 
     def cross_hybridization_count(
         self,

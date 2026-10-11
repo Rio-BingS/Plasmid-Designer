@@ -311,30 +311,96 @@ def test_synthesis_oligos_shifted_alternating():
             assert oligos[i].sequence != rc(oligos[j].sequence), \
                 f"{oligos[i].name} 与 {oligos[j].name} 不应完全互补"
 
-    # 相邻寡核苷酸经 overlap 区域互补退火
+    # 相邻寡核苷酸经 overlap 区域互补退火；overlap 长度按 Tm 均一化
+    # 在 18-25nt 内自适应，所以按目标坐标取实际重叠长度
     for a, b in zip(oligos, oligos[1:]):
+        ov = a.target_end - b.target_start
+        assert 18 <= ov <= 25, f"{a.name}/{b.name} 重叠 {ov}nt 超出 18-25nt"
         if "Sense" in a.notes:
-            assert rc(a.sequence[-overlap:]) == b.sequence[-overlap:]
+            assert rc(a.sequence[-ov:]) == b.sequence[-ov:]
         else:
-            assert rc(a.sequence[:overlap]) == b.sequence[:overlap]
+            assert rc(a.sequence[:ov]) == b.sequence[:ov]
 
     # 覆盖完整序列
     assert oligos[0].target_start == 0
     assert oligos[-1].target_end == len(seq)
 
 
+def _overlap_tms(designer, seq, oligos):
+    """相邻 oligo 的重叠双链 Tm（组装 PCR 真正退火的那一段）"""
+    from core.primer_designer import calculate_tm
+    return [
+        calculate_tm(seq[b.target_start:a.target_end])
+        for a, b in zip(oligos, oligos[1:])
+    ]
+
+
 def test_synthesis_oligos_tm_homogenized():
-    """DNAWorks 式 Tm 均一化：各 oligo 的 Tm 极差应很小"""
+    """DNAWorks 式均一化：均一的是重叠双链的 Tm，不是整条 oligo 的 Tm"""
     designer = PrimerDesigner()
     seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
            "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)
     oligos = designer.design_synthesis_oligos(
         seq, oligo_length_min=40, oligo_length_max=80, overlap_length=20, primer_name="t",
     )
-    tms = [o.tm for o in oligos]
-    assert max(tms) - min(tms) <= 8,         f"Tm 极差应均一，实际 {max(tms) - min(tms):.1f}°C"
-    # 交叉杂交计数接口可用（该序列实测 3 处，信息性指标）
+    tms = _overlap_tms(designer, seq, oligos)
+    spread = max(tms) - min(tms)
+    assert spread <= 5, f"重叠双链 Tm 极差应 ≤5°C，实际 {spread:.1f}°C"
+    # 交叉杂交计数接口可用（信息性指标）
     assert designer.cross_hybridization_count(oligos) >= 0
+
+
+@pytest.mark.parametrize("gc_bias", [None, 0.3, 0.7])
+def test_synthesis_oligos_overlap_tm_spread_property(gc_bias):
+    """性质测试：随机与 GC 偏斜的 1.2kb 基因，重叠 Tm 极差 ≤5°C
+
+    旧实现均一化的是整条 oligo 的 Tm、重叠长度钉死 20nt，同样的
+    1.2kb 基因重叠 Tm 极差中位数约 22°C。
+    """
+    designer = PrimerDesigner()
+    rnd = random.Random(20261011 + int((gc_bias or 0.5) * 100))
+
+    def gene(n=1200):
+        if gc_bias is None:
+            return "".join(rnd.choice("ATGC") for _ in range(n))
+        return "".join(
+            rnd.choice("GC") if rnd.random() < gc_bias else rnd.choice("AT")
+            for _ in range(n)
+        )
+
+    for _ in range(6):
+        seq = gene()
+        oligos = designer.design_synthesis_oligos(
+            seq, oligo_length_min=40, oligo_length_max=80,
+            overlap_length=20, primer_name="t",
+        )
+        # 不变量：偶数条、完整覆盖、无完全互补对
+        assert len(oligos) % 2 == 0
+        assert oligos[0].target_start == 0 and oligos[-1].target_end == len(seq)
+        rc_tbl = str.maketrans("ATGC", "TACG")
+        seqs = [o.sequence for o in oligos]
+        for i in range(len(seqs)):
+            for j in range(i + 1, len(seqs)):
+                assert seqs[i] != seqs[j].translate(rc_tbl)[::-1]
+        # 重叠长度在可变区间内，Tm 极差达标
+        for a, b in zip(oligos, oligos[1:]):
+            assert 18 <= a.target_end - b.target_start <= 25
+        tms = _overlap_tms(designer, seq, oligos)
+        spread = max(tms) - min(tms)
+        assert spread <= 5.0, f"重叠 Tm 极差 {spread:.1f}°C 超过 5°C"
+
+
+def test_synthesis_oligos_fixed_overlap_outside_range():
+    """调用方显式要求 18-25nt 区间外的重叠长度时，按固定长度处理"""
+    designer = PrimerDesigner()
+    rnd = random.Random(5)
+    seq = "".join(rnd.choice("ATGC") for _ in range(600))
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80,
+        overlap_length=30, primer_name="t",
+    )
+    for a, b in zip(oligos, oligos[1:]):
+        assert a.target_end - b.target_start == 30
 
 
 def test_synthesis_oligos_short_sequence_staggered_pair():
