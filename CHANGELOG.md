@@ -76,6 +76,9 @@
 - 批量测序信息表改为 openpyxl 只读流式解析，行列上限边读边查（不再信任文件
   自带的 dimension 声明），大表解析的内存与耗时显著下降；只有结论回填时才另行
   以可写模式加载。解析结果不变。
+- 批量整理包（ZIP）改为写入磁盘私有目录（缺省 `$DATA_DIR/batch_uploads/reports`，
+  可用 `SEQUENCING_BATCH_REPORT_DIR` 指定），不再驻留各 worker 内存：
+  `BACKEND_WORKERS>1` 时下载不再随机 404，下载改为流式发送。接口不变。
 
 ## [2.9.1] - 2026-10-11
 
