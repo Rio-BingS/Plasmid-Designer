@@ -173,3 +173,33 @@ def test_vector_map_returns_map_document(client):
     assert (kan["type"], kan["start"], kan["end"], kan["strand"]) == ("marker", 3995, 4810, 1)
     assert "enzyme_sites" not in d
     assert c.get("/api/vectors/nope/map").status_code == 404
+
+
+def test_vector_list_items_carry_map_preview(client):
+    c, _ = client
+    from app.cache import cache
+    cache.backend.clear_pattern("vector_list:*")
+    r = c.get("/api/vectors")
+    assert r.status_code == 200, r.text
+    items = {v["id"]: v for v in r.json()}
+    from core.plasmid_map.types import FEATURE_TYPE_SET as MAP_FEATURE_TYPES
+    for v in items.values():
+        p = v["map_preview"]
+        assert p and p["topology"] == "circular" and p["length"] >= 1000
+        assert "sequence" not in p
+        for f in p["features"]:
+            assert set(f) == {"name", "type", "start", "end", "strand"}
+            assert f["type"] in MAP_FEATURE_TYPES and f["strand"] in (1, -1, 0)
+            assert 1 <= f["start"] <= p["length"] and 1 <= f["end"] <= p["length"]
+    puc = items["pUC19"]["map_preview"]
+    assert puc["length"] == 2686
+    by = {f["name"]: f for f in puc["features"]}
+    assert (by["AmpR (bla)"]["type"], by["AmpR (bla)"]["start"], by["AmpR (bla)"]["strand"]) == \
+        ("marker", 1626, -1)
+    assert by["MCS"]["type"] == "mcs" and by["lac operator"]["type"] == "protein_bind"
+    # 与 /api/vectors/{id}/map 同一套归一
+    full = c.get("/api/vectors/pUC19/map").json()
+    assert [(f["name"], f["type"], f["start"], f["end"], f["strand"]) for f in full["features"]] == \
+        [(f["name"], f["type"], f["start"], f["end"], f["strand"]) for f in puc["features"]]
+    # 第二次走缓存，形状不变
+    assert c.get("/api/vectors").json() == r.json()

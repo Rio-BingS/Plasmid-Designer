@@ -68,8 +68,7 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
     )
 
 
-def vector_map_document(vector, enzyme_set: str = "common", orf_min_aa: int = 100) -> Dict:
-    seq = clean_sequence(vector.sequence)
+def _vector_features(vector) -> List[Dict]:
     feats = [_feature({
         "name": e.name, "type": e.element_type.value, "start": e.start, "end": e.end,
         "strand": e.strand, "description": e.description,
@@ -78,6 +77,27 @@ def vector_map_document(vector, enzyme_set: str = "common", orf_min_aa: int = 10
         feats.append(_feature({"name": vector.mcs.name or "MCS", "type": "multiple_cloning_site",
                                "start": vector.mcs.start, "end": vector.mcs.end,
                                "strand": "+", "description": "Multiple Cloning Site"}, "vector"))
+    return feats
+
+
+def vector_map_preview(vector) -> Optional[Dict]:
+    """载体列表缩略图用的轻量图谱（GET /api/vectors 的 map_preview）：
+    与 /api/vectors/{id}/map 同一套类型归一，但不带序列、酶切与 ORF。
+    无序列的载体返回 None；越界特征丢弃（环状允许 start > end 跨原点）。"""
+    length = len(vector.sequence or "")
+    if length <= 0:
+        return None
+    feats = []
+    for f in _vector_features(vector):
+        if not (1 <= f["start"] <= length and 1 <= f["end"] <= length):
+            continue
+        feats.append({k: f[k] for k in ("name", "type", "start", "end", "strand")})
+    return {"length": length, "topology": "circular", "features": feats}
+
+
+def vector_map_document(vector, enzyme_set: str = "common", orf_min_aa: int = 100) -> Dict:
+    seq = clean_sequence(vector.sequence)
+    feats = _vector_features(vector)
     return build_document(
         name=vector.name, sequence=seq, topology="circular", source_format="vector",
         features=feats, warnings=[], annotate=None if not feats else False,

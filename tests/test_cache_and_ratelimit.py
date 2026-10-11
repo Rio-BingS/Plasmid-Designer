@@ -319,7 +319,8 @@ class TestDesignResultCache:
 class TestVectorCache:
     def test_vector_list_roundtrip_and_invalidation(self):
         cache.backend.clear_pattern("vector_list:*")
-        filters = {"vector_type": None, "host": None}
+        from app.routes.vector_routes import VECTOR_LIST_SHAPE
+        filters = {"vector_type": None, "host": None, "shape": VECTOR_LIST_SHAPE}
 
         first = asyncio.run(list_vectors())
         assert len(first) == 9
