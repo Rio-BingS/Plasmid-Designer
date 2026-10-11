@@ -21,7 +21,7 @@ import { stackLanes } from '../core/lanes'
 import {
   enzymePriority, featurePriority, fitsInside, layoutCircularLabels, type CircularLabelInput,
 } from '../core/labels'
-import { enzymeStyle } from '../core/enzymes'
+import { cutStyle } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { textWidth, truncateText } from '../core/text'
@@ -177,11 +177,11 @@ const primerGeoms = computed(() => {
 
 // ---------------- 酶切 ----------------
 const cutGeoms = computed(() => store.cuts.value.map((c) => {
-  const st = enzymeStyle(c.enzyme)
+  const st = cutStyle(c)
   const a = ang(c.cut)
   const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
   const [x2, y2] = polar(cx.value, cy.value, R0.value + 10, a)
-  return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2, color: st.color, weight: st.weight }
+  return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2, color: st.color, weight: st.weight, dash: st.dash }
 }))
 
 // ---------------- 外置标签 ----------------
@@ -421,7 +421,8 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 
       <!-- 酶切刻度 -->
       <line v-for="c in cutGeoms" :key="c.key" :data-hit="c.key" :x1="c.x1" :y1="c.y1" :x2="c.x2" :y2="c.y2"
-            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.6 : 1" class="cmap-cut" />
+            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.6 : 1" :stroke-dasharray="c.dash"
+            :class="['cmap-cut', { 'is-blocked': c.blocked.length }]" />
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"

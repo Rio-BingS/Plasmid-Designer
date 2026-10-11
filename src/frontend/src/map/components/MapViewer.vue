@@ -10,7 +10,7 @@ import type { EnzymeSet, MapDocument } from '../types'
 import { createMapStore, provideMapStore, type ViewMode } from '../store'
 import { analyzeMap, exportGenbank, getEnzymeSets } from '../api'
 import { rangeLength } from '../core/coords'
-import { enzymeStyle, GOLDEN_GATE_ENZYMES } from '../core/enzymes'
+import { blockedSiteCount, enzymeStyle, GOLDEN_GATE_ENZYMES } from '../core/enzymes'
 import { FEATURE_TYPE_LABELS, featureColor } from '../core/palette'
 import { formatLength } from '../core/ticks'
 import { resolveHit } from '../hits'
@@ -172,13 +172,16 @@ async function exportGb() {
   }
 }
 
+// ---------------- 甲基化阻断 ----------------
+const hasBlocked = computed(() => doc.value.enzymes.some((e) => blockedSiteCount(e) > 0))
+
 // ---------------- 侧栏 ----------------
 const sideTab = ref<'features' | 'enzymes'>('features')
 const featureRows = computed(() => [...doc.value.features]
   .sort((a, b) => a.start - b.start || b.end - a.end)
   .map((f) => ({ f, color: featureColor(f), len: rangeLength(f, doc.value.length, isCircular.value), hidden: store.hiddenFeatures.value.includes(f.id) })))
 const enzymeRows = computed(() => store.enzymeList.value.map((e) => ({
-  e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name),
+  e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name), blocked: blockedSiteCount(e),
   sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 ? ' …' : ''),
 })))
 function selectEnzyme(name: string) { resolveHit(store, `e:${name}#0`)?.select() }
@@ -226,6 +229,9 @@ defineExpose({ store, view })
         </select>
         <label class="mv-chip" title="只显示 Golden Gate 常用 IIS 型酶（BsaI/BsmBI/BbsI/SapI/Esp3I/PaqCI）">
           <input v-model="goldenGateOnly" type="checkbox" /> Golden Gate
+        </label>
+        <label v-if="hasBlocked" class="mv-chip mv-blocked-toggle" title="被 dam/dcm 甲基化阻断的位点以灰色虚线显示">
+          <input v-model="store.show.blocked" type="checkbox" /> 显示甲基化阻断位点
         </label>
         <span v-if="analyzing" class="mv-muted">计算中…</span>
       </div>
@@ -291,12 +297,12 @@ defineExpose({ store, view })
             <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶</li>
             <li v-for="r in enzymeRows" :key="r.e.name" :class="['mv-row', { hidden: r.hidden }]" @click="selectEnzyme(r.e.name)">
               <span class="mv-name" :style="{ color: r.style.color, fontWeight: r.style.weight }">{{ r.e.name }}</span>
-              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}</span>
+              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b></span>
               <button type="button" class="mv-eye" :title="r.hidden ? '显示' : '隐藏'" :aria-label="r.hidden ? `显示 ${r.e.name}` : `隐藏 ${r.e.name}`"
                       @click.stop="store.toggleEnzymeHidden(r.e.name)">{{ r.hidden ? '○' : '●' }}</button>
             </li>
           </ul>
-          <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出</p>
+          <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出<template v-if="hasBlocked"> · <span style="color:#9ca3af">灰虚线</span> = 甲基化阻断</template></p>
         </div>
       </aside>
     </div>
@@ -354,6 +360,7 @@ defineExpose({ store, view })
 .mv-eye { grid-row: 1 / span 2; grid-column: -2; border: none; background: none; color: var(--text-secondary); font-size: 12px; }
 .mv-auto { margin-left: 4px; font-size: 10px; color: var(--secondary-color); }
 .mv-empty { padding: 10px; }
+.mv-blocked-badge { color: #6b7280; font-weight: 500; }
 .mv-legend { padding: 6px 8px; border-top: 1px solid var(--border-color); }
 .mv-status { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; margin-top: 0.5rem; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .mv-selection-text { color: var(--primary-color); }
