@@ -83,8 +83,10 @@ chmod +x ../scripts/deploy.sh
 - **前端**: 默认只发布在本机 `http://127.0.0.1:${FRONTEND_PORT:-80}`，供宿主机 nginx 反代
   （见第九节）；不用反代、要直接以 `http://你的服务器IP` 访问时，在 `.env` 设
   `FRONTEND_BIND=0.0.0.0` 后重跑脚本（Docker 发布的端口绕过 ufw，见 8.2）
-- **API 文档**: `http://你的服务器IP/docs`（由前端 nginx 代理）
-- **后端直连**: 仅本机 `http://localhost:${BACKEND_PORT:-8000}/docs`（绑定回环，不对公网暴露）
+- **API 文档**: 默认关闭（`ENABLE_API_DOCS=false`，`/docs`、`/openapi.json` 返回 404）。
+  在 `.env` 设 `ENABLE_API_DOCS=true` 后重跑脚本开启；容器 nginx 无法按来源限制，
+  开启后请在宿主机 nginx 对 `/docs`、`/openapi.json` 加 allow/deny，或只经本机
+  `http://localhost:${BACKEND_PORT:-8000}/docs`（后端绑定回环）查看
 
 ---
 
@@ -186,7 +188,7 @@ docker compose exec db psql -U plasmid -d plasmid_designer -c "\dt"
 
 # 浏览器打开
 # http://你的服务器IP → 看到设计界面
-# http://你的服务器IP/docs → API 文档（前端 nginx 代理）
+# API 文档默认关闭；开启方法见上文「部署完成后访问」
 ```
 
 ---

@@ -23,14 +23,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: src/backend/requirements.txt
+          cache-dependency-path: |
+            src/backend/requirements.txt
+            src/backend/requirements-dev.txt
 
       # 锁文件含全部传递依赖与 sha256（由 scripts/lock_requirements.sh 从
-      # requirements.in 生成），哈希不符或缺锁即失败
+      # *.in 生成），哈希不符或缺锁即失败；运行时锁 + 仅测试用的开发锁
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --require-hashes -r src/backend/requirements.txt
+          pip install --require-hashes \
+            -r src/backend/requirements.txt \
+            -r src/backend/requirements-dev.txt
 
       # 每次运行随机生成，不用代码里的开发默认值，也不落进仓库
       - name: Generate SECRET_KEY
@@ -44,11 +48,16 @@ jobs:
 
       # 阻断：审计锁文件里的确切版本（含传递依赖），不重新解析；
       # 出现已知漏洞应立即升级并重新生成锁文件
+      # pip-audit 本身按哈希锁安装在独立 venv（.github/ci/requirements-audit.*），
+      # 不随 PyPI 最新版漂移，也不改动上面的测试环境
       - name: pip-audit
         run: |
-          pip install pip-audit
-          pip-audit --disable-pip --require-hashes \
+          python -m venv "$RUNNER_TEMP/audit"
+          "$RUNNER_TEMP/audit/bin/pip" install --require-hashes \
+            -r .github/ci/requirements-audit.txt
+          "$RUNNER_TEMP/audit/bin/pip-audit" --disable-pip --require-hashes \
             -r src/backend/requirements.txt \
+            -r src/backend/requirements-dev.txt \
             -r deploy/docker/requirements.backend.txt
 
   frontend:

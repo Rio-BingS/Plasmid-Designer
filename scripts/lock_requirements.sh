@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 从人工维护的 *.in 源清单重新生成带哈希的 Python 锁文件：
-#   src/backend/requirements.in          -> src/backend/requirements.txt
+#   src/backend/requirements.in          -> src/backend/requirements.txt（运行时）
+#   src/backend/requirements-dev.in      -> src/backend/requirements-dev.txt（+测试）
 #   deploy/docker/requirements.backend.in -> deploy/docker/requirements.backend.txt
+#   .github/ci/requirements-audit.in     -> .github/ci/requirements-audit.txt（CI 用 pip-audit）
 #
 # 锁文件含全部传递依赖与各平台 wheel/sdist 的 sha256，按 --require-hashes 安装。
 # 用 uv 的 universal 解析：一份锁同时适用于 Python 3.11（Docker、裸机）与
@@ -40,6 +42,9 @@ lock() {
 }
 
 lock src/backend/requirements.in src/backend/requirements.txt
+# 开发锁以运行时锁为约束（-c），必须在其后生成
+lock src/backend/requirements-dev.in src/backend/requirements-dev.txt
 lock deploy/docker/requirements.backend.in deploy/docker/requirements.backend.txt
+lock .github/ci/requirements-audit.in .github/ci/requirements-audit.txt
 
 echo "锁文件已更新；请跑全量测试后与 .in 一起提交。"

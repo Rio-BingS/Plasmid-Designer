@@ -23,7 +23,7 @@ from core.export_formats import (
     create_export_data_from_vector
 )
 from app.auth.jwt_auth import User, get_current_user
-from app.cache import cached
+from app.cache import ANALYSIS_ENZYMES_VERSION, cached
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -624,7 +624,7 @@ async def check_cloning_compatibility(request: CompatibilityRequest) -> Dict:
 
 
 @router.get("/enzymes")
-@cached("analysis_enzymes", ttl=604800)  # 酶表为静态数据，缓存 7 天
+@cached("analysis_enzymes", ttl=604800, version=ANALYSIS_ENZYMES_VERSION)  # 静态数据，缓存 7 天
 async def list_enzymes() -> Dict:
     """获取支持的酶列表"""
     from core.enzyme_sites import get_enzyme

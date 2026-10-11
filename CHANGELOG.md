@@ -16,6 +16,22 @@
   `pip install --require-hashes`；手动安装或自定义镜像源的部署请同样从锁文件安装，
   镜像源必须提供与 PyPI 相同的文件。biopython 并入 Docker 锁文件，不再单独安装。
   更新方法见 README「Python 依赖锁定」。
+- **测试依赖移出运行时清单**：pytest、httpx2 及其传递依赖移到
+  `src/backend/requirements-dev.in` / `requirements-dev.txt`，裸机部署与 Docker
+  镜像不再安装；本地开发跑测试需
+  `pip install --require-hashes -r requirements.txt -r requirements-dev.txt`。
+  已有裸机 venv 中的旧包不会自动卸载，可手动 `pip uninstall pytest httpx2`。
+- **Docker 部署默认关闭 API 文档**：compose 新增 `ENABLE_API_DOCS`（默认 `false`），
+  `/docs`、`/redoc`、`/openapi.json` 返回 404，不再经前端端口对公网公开。需要时在
+  `.env` 设 `ENABLE_API_DOCS=true`，并在宿主机 nginx 限制来源。本地开发与裸机部署
+  默认仍开启（裸机 nginx 已只对本机/内网开放）。
+
+### 修复
+
+- 密码子优化缓存键 `algo` 由 v2.1 递增为 v2.2，`/analysis/enzymes` 缓存键增加
+  版本段：v2.5.0–v2.8.0 重建密码子表、改动优化器和酶表后键未变，启用 Redis 时
+  会在 TTL 内（24 小时 / 7 天）返回旧结果。升级后旧条目自然过期，无需再手动
+  `POST /api/cache/clear`。
 
 ## [2.9.0] - 2026-10-11
 
@@ -116,9 +132,8 @@
 
 - **限制酶表统一到 Bio.Restriction（REBASE）**：默认菜单合并为 51 种，
   `/analysis/enzymes` 由 26 种扩为 47 种；回文酶位点不再正反链重复计数（可判为
-  唯一位点）；HindIII 与 SacI 不再误报可互连。使用 Redis 时，部署后请清除
-  `analysis_enzymes:*` 缓存（管理员 `POST /api/cache/clear?pattern=analysis_enzymes:*`），
-  否则 7 天内仍返回旧酶表。
+  唯一位点）；HindIII 与 SacI 不再误报可互连。（旧酶表缓存问题见 [Unreleased]，
+  升级到其后版本无需手动清除。）
 - **引物 Tm 改用最近邻法**（Biopython Tm_NN + 盐校正）：同一引物的 Tm 数值比旧版
   经验式通常高约 7 °C，58–62 °C 筛选窗口不变，设计结果会随之变化。
 - **合成 oligo 按重叠双链 Tm 均一化**：重叠长度在 18–25 nt 间可调，1.2 kb 基因的
@@ -260,8 +275,7 @@
 - 非 DEBUG 下弱 `SECRET_KEY`（占位值或长度 < 32）拒绝启动；`ADMIN_EMAIL` 引导
   不再把已存在的同邮箱普通账号提升为管理员，需人工处理。
 - 密码子表按 Kazusa 原始值重建、优化迭代循环真正生效，同一输入的优化结果会变化。
-  密码子优化缓存键（`algo`）未随之递增，启用 Redis 时升级后建议由管理员
-  `POST /api/cache/clear?pattern=codon_opt:*` 清除，或等待 24 小时缓存过期。
+  （缓存键版本已在 [Unreleased] 递增，升级到其后版本无需手动清缓存。）
 
 ### 新增
 

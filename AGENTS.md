@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
-（直接依赖、精确 pin、两份同名包同版本），然后 `bash scripts/lock_requirements.sh`
+（直接依赖、精确 pin、两份同名包同版本；仅测试用的包放 `requirements-dev.in`），然后 `bash scripts/lock_requirements.sh`
 重新生成同名 `.txt` 锁文件（含传递依赖与 sha256，**勿手改**）并一起提交；安装一律
 `pip install --require-hashes -r <锁文件>`。锁与源不同步时 test_docker_requirements_sync 变红。
 
@@ -85,15 +85,16 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 提交/推送仍必须走 git-commit-style skill 的完整流程：自审 diff（调试残留/敏感
   信息/超范围改动）、Conventional Commits、push 前 `git pull --rebase` 并展示
   `git log origin/main..HEAD`；`.env`、密钥、密码、token 绝不提交
-- 版本发布（升 APP_VERSION、打 tag、`push --follow-tags`）不属于上述授权，
+- 版本发布（升版本号 `core/_version.py` + package.json、打 tag、`push --follow-tags`）不属于上述授权，
   仍需用户明确发起（如「发版」「打个 tag」）
 
 ## 关键机制（改代码前必读）
 
 - `STORAGE_MODE=database`（默认；SQLite 或 PG）/ `memory`（重启丢数据）；
   设计结果三写：内存 designs_db → storage → 完成态进缓存
-- 密码子优化缓存键含 `algo="v2.1"` 与 exclude_enzymes——**改变优化结果口径必须递增版本**，
-  否则命中旧结果（纯 bug 修复且结果不变时不递增）
+- 密码子优化缓存键含 `algo`（`app/cache.py` 的 `CODON_OPT_ALGO`）与 exclude_enzymes，
+  `/analysis/enzymes` 键含 `ANALYSIS_ENZYMES_VERSION`——**改变结果口径（含密码子表/
+  酶表数据）必须递增版本**，否则命中旧结果（纯 bug 修复且结果不变时不递增）
 - 合成 oligo 设计：错位交替（无完全互补对）、片数恒偶、DNAWorks 式 Tm 均一分片、
   交叉杂交 12mer 检查告警；长度范围 [oligo_length_min, max]（max 硬上限）
 - 插入片段来源与克隆方法正交（`insert_source` × `cloning_method`）；

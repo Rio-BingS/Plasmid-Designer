@@ -8,7 +8,9 @@
   1. 读取 Excel 信息表（表头含"质粒名称/测序引物/测序结果"，引物列填测序文件名，
      多个用分号分隔，与平台网页端"参考文件与测序文件同目录导入"的约定一致）；
   2. 递归扫描数据文件夹中的 .ab1（测序 read）与 .dna/.gb/.fasta（参考图谱），
-     按文件名主干与 Excel 引物列 / 质粒名称匹配；
+     按文件名主干与 Excel 引物列 / 质粒名称匹配；跳过本次输出目录和此前
+     运行留下的输出目录（带 .整理记录.json / 进行中记录 / 本工具表头的
+     整理清单.csv），其中的副本不会被当成新 read 重复分析；
   3. 逐质粒运行 Sanger 全自动分析管线（峰级证据、置信度分层、CDS 结论、
      poly 判读、双峰疑似混合检测）；
   4. 在输出目录写出与网页端「整理包」完全相同的结构：每个质粒一个文件夹
@@ -35,8 +37,10 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import sys
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -74,16 +78,58 @@ from core.sanger.batch import (  # noqa: E402,F401
 # ---------------------------------------------------------------- 文件扫描
 
 
-def scan_files(data_dir: Path, out_dir: Path):
-    """递归扫描 read 与图谱（跳过输出目录与 Excel 临时文件）
+MANIFEST_CSV = "整理清单.csv"
+# 本工具每次写出的全部文件（相对输出目录的路径 → MD5），供重跑时识别并
+# 清理上一次生成、本次已不再产出的旧副本（如判定变化后留在旧结论文件夹的）
+RECORD_NAME = ".整理记录.json"
+# 运行中逐个质粒追加的整理记录（每行一个 {"path","md5"}）；正常结束时并入
+# RECORD_NAME 并删除。中途崩溃时它记下已写出的文件，下次重跑据此一并核对清理
+JOURNAL_NAME = ".整理记录.进行中.jsonl"
 
+
+def _is_output_tree(d: Path) -> bool:
+    if any((d / m).is_file() for m in (RECORD_NAME, JOURNAL_NAME)):
+        return True
+    man = d / MANIFEST_CSV
+    if not man.is_file():
+        return False
+    try:
+        with open(man, encoding="utf-8-sig", newline="") as fh:
+            head = next(csv.reader(fh), [])
+    except (OSError, UnicodeError, csv.Error):
+        return False
+    # 现行表头含「归档路径」；早期平铺版为 plasmid,name,kind,how,src,dst,...
+    return "归档路径" in head or {"src", "dst"} <= set(head)
+
+
+def previous_output_dirs(data_dir: Path) -> List[Path]:
+    """数据文件夹下此前运行留下的输出目录（换 --out-dir 重跑或改名挪动后）
+
+    其中是上次整理出的 read / 图谱副本，再当输入会重复参与分析。数据文件夹
+    本身不算（即使带整理记录），以免整体跳过。"""
+    found: Set[Path] = set()
+    for name in (RECORD_NAME, JOURNAL_NAME, MANIFEST_CSV):
+        for m in data_dir.rglob(name):
+            d = m.parent
+            if d != data_dir and m.is_file() and _is_output_tree(d):
+                found.add(d)
+    # 只保留最外层
+    return sorted(d for d in found if not any(o in d.parents for o in found))
+
+
+def scan_files(data_dir: Path, out_dir: Path,
+               exclude: Optional[Iterable[Path]] = None):
+    """递归扫描 read 与图谱（跳过输出目录、此前的输出目录与 Excel 临时文件）
+
+    exclude 为要跳过的目录，缺省为 previous_output_dirs(data_dir)。
     条目与网页端上传条目同形（name/ext/stem），另带 path/rel 供追溯；
     字节由 load_bytes 在真正分析前读入（--dry-run 不读）。"""
+    skip = [out_dir, *(previous_output_dirs(data_dir) if exclude is None else exclude)]
     files = []
     for p in sorted(data_dir.rglob("*")):
         if not p.is_file() or p.name.startswith("~$"):
             continue
-        if out_dir == p or out_dir in p.parents:
+        if any(d == p or d in p.parents for d in skip):
             continue
         ext = p.suffix.lower()
         if ext in READ_EXTS or ext in REF_EXTS:
@@ -226,13 +272,6 @@ def run_offline_batch(files: List[Dict], rows: List[Dict], min_q: int = 20):
 
 
 _GENERATED = {".md", ".json", ".csv", ".txt"}
-MANIFEST_CSV = "整理清单.csv"
-# 本工具每次写出的全部文件（相对输出目录的路径 → MD5），供重跑时识别并
-# 清理上一次生成、本次已不再产出的旧副本（如判定变化后留在旧结论文件夹的）
-RECORD_NAME = ".整理记录.json"
-# 运行中逐个质粒追加的整理记录（每行一个 {"path","md5"}）；正常结束时并入
-# RECORD_NAME 并删除。中途崩溃时它记下已写出的文件，下次重跑据此一并核对清理
-JOURNAL_NAME = ".整理记录.进行中.jsonl"
 _KEEP_DIRS = {"正确", "错误"}
 
 
@@ -592,6 +631,26 @@ def run_to_dir(files: List[Dict], rows: List[Dict], out_dir: Path, min_q: int = 
     return run.payload, arch.finish()
 
 
+# ---------------------------------------------------------------- Excel 回填
+
+
+def _replace_excel(excel_path: Path, data: bytes, out_dir: Path, backup: Path) -> None:
+    """回填版信息表先写同目录临时文件再整体替换：写到一半失败不会留下
+    半个表；表正被 Excel 打开（Windows 上替换报 PermissionError）等失败时
+    原表不动、删掉临时文件，提示关闭后重跑（归档与备份此时已写出）"""
+    tmp = excel_path.with_name(f".{excel_path.name}.回填中")
+    try:
+        tmp.write_bytes(data)
+        shutil.copymode(excel_path, tmp)     # 保留原表权限
+        os.replace(tmp, excel_path)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        raise SystemExit(
+            f"结论回填 {excel_path.name} 失败（信息表可能正被 Excel 打开或只读：{e}）；"
+            f"原表未改动。整理结果已写出：{out_dir}（原表备份：{backup.name}），"
+            "关闭信息表后重跑即可回填")
+
+
 # ---------------------------------------------------------------- 主流程
 
 
@@ -620,19 +679,32 @@ def main():
     if excel_path is None:
         raise SystemExit(f"数据文件夹下找不到 Excel 信息表（.xlsx）：{data_dir}")
     out_dir = Path(args.out_dir).resolve() if args.out_dir else data_dir / "测序分析"
+    # 输出目录是数据文件夹本身或其上级时，扫描会把整个数据文件夹当输出跳过
+    # （0 个文件、整批「未找到」），清单与总览还会写进数据目录
+    if out_dir == data_dir or out_dir in data_dir.parents:
+        raise SystemExit(f"输出目录不能是数据文件夹本身或其上级目录：{out_dir}")
+    if out_dir.exists() and not out_dir.is_dir():
+        raise SystemExit(f"输出目录已存在且不是文件夹：{out_dir}")
 
     try:
         wb, header_row, cols, rows = load_excel(excel_path)
     except ValueError as e:
         raise SystemExit(f"{e}：{excel_path}")
+    except (zipfile.BadZipFile, KeyError, OSError) as e:
+        # 损坏、并非 Excel 工作簿或无法打开的文件（不是表头/上限问题）
+        raise SystemExit(f"无法读取信息表（文件损坏或不是 .xlsx 工作簿：{e}）：{excel_path}")
     print(f"信息表：{excel_path.name}（{len(rows)} 个质粒）")
     if rows_have_clones(rows):
         raise SystemExit(
             "信息表带「克隆号」列（克隆模式，每个克隆独立分析）："
-            "请使用网页端批量测序分析（/batch-sequencing）；"
+            "请使用网页端批量测序分析（/sequencing/batch）；"
             "本脚本目前仅支持无克隆号列的质粒模式信息表"
         )
-    files = scan_files(data_dir, out_dir)
+    old_outs = [d for d in previous_output_dirs(data_dir)
+                if d != out_dir and out_dir not in d.parents]
+    for d in old_outs:
+        print(f"跳过此前的输出目录（其中是上次整理的副本）：{d.relative_to(data_dir)}")
+    files = scan_files(data_dir, out_dir, exclude=old_outs)
     n_ab1 = sum(1 for f in files if f["ext"] in READ_EXTS)
     print(f"扫描到 {len(files)} 个文件（{n_ab1} 个 .ab1，{len(files) - n_ab1} 个图谱）")
 
@@ -680,7 +752,7 @@ def main():
     shutil.copy2(excel_path, backup)
     filled = backfill_excel(wb, cols, rows, payload["items"], clone_mode=False)
     if filled is not None:
-        excel_path.write_bytes(filled)
+        _replace_excel(excel_path, filled, out_dir, backup)
     print(f"√ 结论已回填 {excel_path.name}（原表备份：{backup.name}）")
     print(f"√ 输出目录：{out_dir}")
 
