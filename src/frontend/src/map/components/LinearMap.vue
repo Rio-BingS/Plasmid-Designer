@@ -13,7 +13,7 @@ import { useMapStore } from '../store'
 import { barArrowPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
-import { enzymeStyle } from '../core/enzymes'
+import { cutStyle } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { textWidth } from '../core/text'
@@ -98,7 +98,7 @@ function visSegs(r: Range): { x1: number; x2: number; s: Range; clippedL: boolea
 // ---------------- 酶切 ----------------
 const cutsInView = computed(() => (props.showEnzymes ? store.cuts.value : [])
   .filter((c) => c.cut >= vp.value.from && c.cut <= vp.value.to)
-  .map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: enzymeStyle(c.enzyme) })))
+  .map((c) => ({ ...c, key: `e:${c.id}`, x: X(c.cut), style: cutStyle(c) })))
 const enzLabels = computed(() => {
   if (!store.show.labels || !cutsInView.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
   return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
@@ -458,7 +458,8 @@ defineExpose({ svgEl, zoomBy, fitAll, setViewport })
 
       <!-- 酶切刻度 -->
       <line v-for="c in cutsInView" :key="c.key" :data-hit="c.key" :x1="c.x" :x2="c.x" :y1="layout.cutTop" :y2="layout.axisY"
-            :stroke="c.style.color" :stroke-width="c.style.unique ? 1.6 : 1" class="lmap-cut" />
+            :stroke="c.style.color" :stroke-width="c.style.unique ? 1.6 : 1" :stroke-dasharray="c.style.dash"
+            :class="['lmap-cut', { 'is-blocked': c.style.blocked }]" />
 
       <!-- 主轴 -->
       <rect :x="X(Math.max(0, vp.from))" :y="layout.axisY - 4" :width="Math.max(0, X(Math.min(L, vp.to)) - X(Math.max(0, vp.from)))" height="8" rx="3" fill="#d5d9de" class="lmap-axis-bg" />

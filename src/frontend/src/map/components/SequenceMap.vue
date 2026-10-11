@@ -12,7 +12,7 @@ import { useMapStore } from '../store'
 import { rangeFromBoundaries, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, fitsInside, layoutLinearLabels } from '../core/labels'
-import { enzymeStyle } from '../core/enzymes'
+import { cutStyle } from '../core/enzymes'
 import { complement, translateFeature } from '../core/seq'
 import { darken, featureColor, textOn } from '../core/palette'
 import { basesPerRow, rowOf, visibleRows } from '../core/virtual'
@@ -167,11 +167,11 @@ const rows = computed(() => {
     // 酶切：切点边界 b 属于第 floor(b / perRow) 行（行首边界归本行，行尾边界归下一行，序列末端除外）
     const cuts = cutsAll.filter((c) => c.cut >= rs - 1 && (c.cut < re || re === L.value))
       .map((c) => {
-        const st = enzymeStyle(c.enzyme)
+        const st = cutStyle(c)
         const xt = colX(c.cut - (rs - 1))
         const bIn = c.cutBottom >= rs - 1 && c.cutBottom <= re
         const xb = bIn ? colX(c.cutBottom - (rs - 1)) : xt
-        return { key: `e:${c.id}`, name: c.name, xt, xb, color: st.color, weight: st.weight, cutCount: c.enzyme.cut_count }
+        return { key: `e:${c.id}`, name: c.name, xt, xb, color: st.color, weight: st.weight, dash: st.dash, blocked: st.blocked, cutCount: c.enzyme.cut_count }
       })
     const enzLabels = g.enz
       ? layoutLinearLabels(cuts.map((c) => ({ id: c.key, text: c.name, x: c.xt, priority: enzymePriority(c.cutCount) })),
@@ -263,7 +263,8 @@ defineExpose({ scroller, perRow, rowH: computed(() => geo.value.rowH) })
             <text :x="l.x" :y="geo.enzTop + l.row * 12 + 10" font-size="10"
                   :fill="r.cuts.find((c) => c.key === l.id)?.color" :font-weight="r.cuts.find((c) => c.key === l.id)?.weight">{{ l.text }}</text>
           </g>
-          <g v-for="c in r.cuts" :key="c.key" :data-hit="c.key" :stroke="c.color" stroke-width="1.2" class="smap-cut">
+          <g v-for="c in r.cuts" :key="c.key" :data-hit="c.key" :stroke="c.color" stroke-width="1.2" :stroke-dasharray="c.dash"
+             :class="['smap-cut', { 'is-blocked': c.blocked }]">
             <line :x1="c.xt" :x2="c.xt" :y1="geo.seqY" :y2="geo.seqY + 15" />
             <template v-if="store.show.complement">
               <line :x1="c.xt" :x2="c.xb" :y1="geo.seqY + 15" :y2="geo.seqY + 15" />
