@@ -274,8 +274,9 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
   `SEQUENCING_BATCH_SESSION_DIR`（缺省 `$DATA_DIR/batch_uploads`；Docker 为具名卷
   `batch-uploads`，挂在 `/app/batch_uploads`），目录 0700、文件 0600、按序号落盘，
   分析结束立即删除原件，过期会话在启动时与每 10 分钟清理。会话只属于创建者（登录
-  账号，或匿名时建会话下发的 `access_token`），他人一律 404。finalize 时会把整批
-  文件读入内存，内存规划按单批体积上限估算。批量整理包（ZIP，15 分钟有效）写入
+  账号，或匿名时建会话下发的 `access_token`），他人一律 404。finalize 不把整批
+  文件读入内存：逐组比对时只读入当前分组的文件，打包整理包时逐个读入；峰值内存
+  约为最大分组的文件 + 整理包本身（整理包超过 256 MB 时不打包）。批量整理包（ZIP，15 分钟有效）写入
   `SEQUENCING_BATCH_REPORT_DIR`（缺省为暂存目录下的 `reports/`，目录 0700、文件
   0600），不再驻留进程内存，`BACKEND_WORKERS>1` 时任一 worker 都能提供下载；
   条数与总字节上限（8 个 / `SEQUENCING_BATCH_CACHE_TOTAL_BYTES`，默认 512 MB）

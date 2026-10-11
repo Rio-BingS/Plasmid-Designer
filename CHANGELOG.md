@@ -79,6 +79,8 @@
 - 批量整理包（ZIP）改为写入磁盘私有目录（缺省 `$DATA_DIR/batch_uploads/reports`，
   可用 `SEQUENCING_BATCH_REPORT_DIR` 指定），不再驻留各 worker 内存：
   `BACKEND_WORKERS>1` 时下载不再随机 404，下载改为流式发送。接口不变。
+- 分块上传的批次提交分析（finalize）不再把整批文件（最多 2 GB）一次读入内存：
+  逐组比对、逐个打包时按需从暂存目录读取，峰值内存约为最大分组的文件 + 整理包。
 
 ## [2.9.1] - 2026-10-11
 
