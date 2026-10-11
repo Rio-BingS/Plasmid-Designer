@@ -270,10 +270,16 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, response: 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户不存在或已被禁用")
 
     if user.email_verified:
-        user_response = db_user_to_user(user)
-        token = create_access_token(user_response, user.token_version)
-        set_auth_cookie(response, request, token)
-        return Token(access_token=token, expires_in=24 * 3600, user=user_response)
+        # verify_token 单次有效：账号一旦验证，签发给它的验证令牌全部作废。
+        # 这里绝不能再签发登录令牌/下发 Cookie，否则泄露的旧 verify_token
+        # （30 分钟内）不需验证码就能换到会话
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "ALREADY_VERIFIED",
+                "message": "该账号已完成验证，请直接登录",
+            },
+        )
 
     row = get_latest_email_verification(db, user_id)
     if row is None:
