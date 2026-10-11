@@ -361,7 +361,8 @@ skip-if-missing 用例），前端 vitest 181 passed。CI（`.github/workflows/c
 | 请求追踪/慢请求日志中间件 | ✅ 已接线 | main.py 调用 setup_middleware |
 | 缓存子系统（app/cache.py + cache_routes） | ✅ 已接线 | 设计结果（24h）/ 密码子优化（24h）/ 载体列表与详情（7天）/ 密码子表与酶表（7天）已接入读写，写操作统一失效；批量进度与 analysis POST 不缓存（状态频繁变化 / 键空间不可控），详见 docs/CACHE.md |
 | 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer 头或会话 Cookie 写入 request.state.user，匿名请求仍按 IP 限流 |
-| enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer / vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
+| vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
+| enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer | ❌ 已移除 | 全库零引用的平行实现（含重复 Tm 公式），能力以 primer_designer / codon_optimizer 为准 |
 | output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但分析页导出与 Sanger 报告生成依赖其数据结构，删除前须确认 |
 | task_queue.py + celery/flower | ❌ 已移除 | 全库零引用，实际使用 FastAPI BackgroundTasks |
 | primer3-py / pydna / pandas / scipy 等 | ❌ 未纳入 | 全库无代码引用，requirements 不声明；实际依赖见下方「技术栈」 |
