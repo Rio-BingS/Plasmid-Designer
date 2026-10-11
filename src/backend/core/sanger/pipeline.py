@@ -11,9 +11,12 @@ pull-up）→ read 级分级（widespread 疑似混合 / scattered 个别双峰�
 可选：检测到 tracy 可执行文件时，对疑似混合样品执行 tracy decompose 解卷积。
 """
 
+import bisect
+import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +37,9 @@ from core.sanger.signal import (
 )
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
+# tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
+# （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
+TRACY_JSON_MIN_VERSION = (0, 3, 10)
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
 MIXED_WIDESPREAD_MIN = 5   # 双峰位点 ≥ 此数 → read 级判「疑似混合样品」
 MIXED_SCATTERED_MIN = 2    # 2-4 个 → 「个别双峰位点」提示（不升级结论）
@@ -461,7 +467,85 @@ def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
             if not e["pullup"]]
 
 
-def _classify_mixed(entries: List[Dict], read_len: int) -> Dict:
+def _tracy_mixed_corroboration(entries: List[Dict], peaks: List[int],
+                               tracy_calls: Dict) -> Dict:
+    """tracy 次级 basecall 对院内逐位双峰的独立印证（审计 #8）
+
+    tracy 与 ABI caller 的碱基序列不一一对应，按峰在 trace 上的采样坐标
+    对位：取与院内峰最近的 tracy 调用，距离不超过半个峰间距才算同一位点。
+    每个院内双峰位点（pull-up 已剔除的不计）标记：
+    - agree：tracy 在该处也报次级峰，且院内主/次两个碱基都在 tracy 的
+      primary + secondary（IUPAC 展开）内；
+    - disagree：tracy 在该处单峰，或其次级碱基与院内不同；
+    - unmatched：附近没有 tracy 调用（对位失败，不计入一致率）。
+    tracy_only 为院内可判读区间内 tracy 报次级峰而院内未报的位点数。
+    只作证据记录，不改院内分级。"""
+    primary = tracy_calls.get("primary") or ""
+    secondary = tracy_calls.get("secondary") or ""
+    tpos = tracy_calls.get("positions") or []
+    nt = min(len(primary), len(secondary), len(tpos))
+    out = {"agree": 0, "disagree": 0, "unmatched": 0, "tracy_only": 0,
+           "agreement": None, "version": tracy_calls.get("version")}
+    valid = [p for p in peaks if p is not None and p >= 0]
+    if nt == 0 or len(valid) < 2:
+        out["unmatched"] = sum(1 for e in entries if not e.get("pullup"))
+        return out
+    gaps = sorted(b - a for a, b in zip(valid, valid[1:]) if b > a)
+    tol = max(1.0, 0.5 * gaps[len(gaps) // 2]) if gaps else 1.0
+    def nearest(pk: int) -> Optional[int]:
+        j = bisect.bisect_left(tpos, pk, 0, nt)
+        best = None
+        for c in (j - 1, j):
+            if 0 <= c < nt and (best is None or abs(tpos[c] - pk) < abs(tpos[best] - pk)):
+                best = c
+        return best if best is not None and abs(tpos[best] - pk) <= tol else None
+
+    def alleles(c: int) -> set:
+        return {primary[c]} | set(_IUPAC_EXPAND.get(secondary[c], ""))
+
+    matched: set = set()
+    for e in entries:
+        if e.get("pullup"):
+            continue
+        i = e["pos"] - 1
+        pk = peaks[i] if 0 <= i < len(peaks) else None
+        c = nearest(pk) if pk is not None else None
+        if c is None:
+            e["tracy"] = "unmatched"
+            out["unmatched"] += 1
+            continue
+        matched.add(c)
+        het = secondary[c] != primary[c] and secondary[c] != "N"
+        mine = {b for b in (e.get("called_base"), e.get("secondary_base")) if b}
+        if het and mine and mine <= alleles(c):
+            e["tracy"] = "agree"
+            out["agree"] += 1
+        else:
+            e["tracy"] = "disagree"
+            out["disagree"] += 1
+    # 院内可判读区间（去首尾 END_MARGIN）内 tracy 独报的双峰
+    n = len(peaks)
+    lo_i, hi_i = END_MARGIN, n - END_MARGIN - 1
+    if 0 <= lo_i <= hi_i < n and peaks[lo_i] is not None and peaks[hi_i] is not None:
+        lo, hi = peaks[lo_i], peaks[hi_i]
+        out["tracy_only"] = sum(
+            1 for c in range(nt)
+            if c not in matched and lo <= tpos[c] <= hi
+            and secondary[c] != primary[c] and secondary[c] != "N")
+    judged = out["agree"] + out["disagree"]
+    if judged:
+        out["agreement"] = round(out["agree"] / judged, 3)
+    return out
+
+
+_IUPAC_EXPAND = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "AG", "Y": "CT",
+                 "S": "CG", "W": "AT", "K": "GT", "M": "AC", "B": "CGT",
+                 "D": "AGT", "H": "ACT", "V": "ACG"}
+
+
+def _classify_mixed(entries: List[Dict], read_len: int,
+                    tracy_calls: Optional[Dict] = None,
+                    peaks: Optional[List[int]] = None) -> Dict:
     """把逐位双峰聚合成 read 级混合分级（双峰准确性的关键一层）
 
     - widespread（疑似混合样品）：位点数 ≥ MIXED_WIDESPREAD_MIN，或存在
@@ -471,6 +555,9 @@ def _classify_mixed(entries: List[Dict], read_len: int) -> Dict:
       仅差 1-2 个碱基的真实混合也会落在这里，按提示级处理、不升级结论；
     - none：无或仅 1 个位点（单点双峰与个别碱基噪声无法区分，交由该位点
       变体的峰级证据与置信度口径）。
+
+    tracy_calls/peaks 给出时附加 tracy_corroboration（见
+    _tracy_mixed_corroboration），不参与分级。
 
     minor_fraction：双峰占比中位数 r → 次要克隆占比 r/(1+r)
     （两克隆混合模型下 次峰/主峰 = f/(1-f)，f 为次要克隆的摩尔占比）。
@@ -486,6 +573,10 @@ def _classify_mixed(entries: List[Dict], read_len: int) -> Dict:
         "span": None,
         "longest_stretch": 0,
         "class": "none",
+        # tracy 次级 basecall 的独立印证；tracy 未运行为 None。分级仍按院内口径
+        "tracy_corroboration": (
+            _tracy_mixed_corroboration(entries, peaks or [], tracy_calls)
+            if tracy_calls is not None else None),
     }
     if not kept:
         return profile
@@ -1307,12 +1398,67 @@ def _variant_key(v: Dict) -> Tuple[int, str, str, int]:
             int(v.get("length") or 1))
 
 
-def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
+_TRACY_VERSION_CACHE: Dict[str, Optional[Tuple[int, ...]]] = {}
+
+
+def _tracy_version(tracy: str) -> Optional[Tuple[int, ...]]:
+    """`tracy --version` → (major, minor, patch)；无法判定返回 None（按进程缓存）"""
+    if tracy in _TRACY_VERSION_CACHE:
+        return _TRACY_VERSION_CACHE[tracy]
+    ver = None
+    try:
+        proc = subprocess.run([tracy, "--version"], capture_output=True,
+                              text=True, timeout=10)
+        m = re.search(r"version:?\s*v?(\d+)\.(\d+)\.(\d+)",
+                      (proc.stdout or "") + (proc.stderr or ""), re.I)
+        if m:
+            ver = tuple(int(x) for x in m.groups())
+    except (OSError, subprocess.SubprocessError):
+        ver = None
+    _TRACY_VERSION_CACHE[tracy] = ver
+    return ver
+
+
+def _parse_tracy_json(text: str) -> Optional[Tuple[str, List[int], Dict]]:
+    """解析 tracy basecall -f json；结构不符（版本漂移）返回 None
+
+    字段（tracy v0.3.10+，src/json.h）：primarySeq / secondarySeq 等长，
+    secondary 与 primary 相同为单峰，否则为其余过阈值碱基的 IUPAC 码；
+    basecallQual 为逐碱基 Q，basecallPos 为峰在 trace 上的 1-based 采样坐标。"""
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    prim, sec = d.get("primarySeq"), d.get("secondarySeq")
+    qual, pos = d.get("basecallQual"), d.get("basecallPos")
+    if not (isinstance(prim, str) and isinstance(sec, str)
+            and isinstance(qual, list) and isinstance(pos, list)):
+        return None
+    n = len(prim)
+    if n == 0 or len(sec) != n or len(qual) < n or len(pos) < n:
+        return None
+    try:
+        q = [int(x) for x in qual[:n]]
+        tp = [int(x) - 1 for x in pos[:n]]   # → 0-based，与 PLOC 峰坐标同系
+    except (TypeError, ValueError):
+        return None
+    if any(x < 0 for x in q):
+        return None
+    prim, sec = prim.upper(), sec.upper()
+    return prim, q, {"primary": prim, "secondary": sec, "positions": tp}
+
+
+def _try_tracy_basecall(ab1_bytes: bytes):
     """tracy basecall 重新 basecall（现代 caller，对峰压缩区/indel 更强）
 
     tracy 是正式发表的 Sanger 分析工具（BMC Bioinformatics 2020），其 basecall
     与 ABI 内嵌 caller 相互独立——一致即为交叉印证，给出"独立第二意见"。
-    返回 (bases, quality)；tracy 不可用或失败返回 None。
+    以 -f json 运行，返回 (bases, quality, calls)：bases/quality 为 primary
+    序列（与旧版 -f fastq 输出逐字相同），calls 带 secondary 次级调用与峰的
+    trace 坐标，供混合峰印证。版本低于 TRACY_JSON_MIN_VERSION 或 JSON 结构
+    不符时退回 -f fastq，返回 (bases, quality)。tracy 不可用或失败返回 None。
     """
     tracy = shutil.which(TRACY_BIN) or (TRACY_BIN if os.path.isfile(TRACY_BIN) else None)
     if not tracy:
@@ -1320,27 +1466,47 @@ def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
     try:
         with tempfile.TemporaryDirectory() as td:
             src = os.path.join(td, "read.ab1")
-            out = os.path.join(td, "bc.fastq")
             with open(src, "wb") as fh:
                 fh.write(ab1_bytes)
-            proc = subprocess.run(
-                [tracy, "basecall", "-f", "fastq", "-o", out, src],
-                capture_output=True, text=True, timeout=60,
-            )
-            if proc.returncode != 0 or not os.path.isfile(out):
-                return None
-            with open(out) as fh:
-                lines = [ln.strip() for ln in fh if ln.strip()]
-            # FASTQ 4 行：@primary / seq / + / qual（tracy 输出 primary 序列）
-            if len(lines) < 4:
-                return None
-            bases = lines[1].upper()
-            qual = [ord(c) - 33 for c in lines[3]]
-            if not bases or len(qual) < len(bases) or not all(q >= 0 for q in qual[: len(bases)]):
-                return None
-            return bases, qual[: len(bases)]
+            ver = _tracy_version(tracy)
+            if ver is None or ver >= TRACY_JSON_MIN_VERSION:
+                out = os.path.join(td, "bc.json")
+                proc = subprocess.run(
+                    [tracy, "basecall", "-f", "json", "-o", out, src],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if proc.returncode == 0 and os.path.isfile(out):
+                    with open(out) as fh:
+                        parsed = _parse_tracy_json(fh.read())
+                    if parsed is not None:
+                        bases, qual, calls = parsed
+                        calls["version"] = ".".join(map(str, ver)) if ver else None
+                        return bases, qual, calls
+                    logger.info("tracy JSON 结构无法识别（版本 %s），退回 FASTQ", ver)
+            return _tracy_basecall_fastq(tracy, src, td)
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _tracy_basecall_fastq(tracy: str, src: str, td: str) -> Optional[Tuple[str, List[int]]]:
+    """primary-only 路径（旧版行为）：返回 (bases, quality)，失败 None"""
+    out = os.path.join(td, "bc.fastq")
+    proc = subprocess.run(
+        [tracy, "basecall", "-f", "fastq", "-o", out, src],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0 or not os.path.isfile(out):
+        return None
+    with open(out) as fh:
+        lines = [ln.strip() for ln in fh if ln.strip()]
+    # FASTQ 4 行：@primary / seq / + / qual（tracy 输出 primary 序列）
+    if len(lines) < 4:
+        return None
+    bases = lines[1].upper()
+    qual = [ord(c) - 33 for c in lines[3]]
+    if not bases or len(qual) < len(bases) or not all(q >= 0 for q in qual[: len(bases)]):
+        return None
+    return bases, qual[: len(bases)]
 
 
 def _phred_weight(q: float) -> float:
@@ -2147,8 +2313,11 @@ def analyze(
         cross = _try_tracy_basecall(blob)
         used_tracy = cross is not None
         cross_variants: List[Dict] = []
+        tracy_calls: Optional[Dict] = None
         if used_tracy:
-            cb, cq = cross
+            cb, cq = cross[0], cross[1]
+            # 第三项为 JSON 路径的次级调用（FASTQ 退化路径无此项）
+            tracy_calls = cross[2] if len(cross) > 2 else None
             cs, ce = _trim_by_quality(cb, cq, min_q)
             # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
             # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
@@ -2187,6 +2356,7 @@ def analyze(
             "raw_bases": bases,
             "trim_start": s,
             "cross_variants": cross_variants if used_tracy else None,
+            "tracy_calls": tracy_calls,
             "partial_alignment": partial,
         })
 
@@ -2313,7 +2483,18 @@ def analyze(
         ]
         # read 级混合分级：把逐位双峰聚合成 可行动 的判定（widespread=疑似
         # 混合样品 / scattered=个别双峰），pull-up 拖影已在 detail 内标记剔除
-        r["mixed_profile"] = _classify_mixed(mixed_detail, len(r["trimmed_bases"]))
+        # tracy 次级 basecall 作独立印证（审计 #8）：只附加 tracy_corroboration
+        # 与逐位 tracy 标记，分级仍按院内口径
+        for e in mixed_detail:
+            i = e["pos"] - 1
+            e["called_base"] = r["trimmed_bases"][i] if i < n_trim else None
+        r["mixed_profile"] = _classify_mixed(
+            mixed_detail, len(r["trimmed_bases"]),
+            tracy_calls=r.get("tracy_calls"), peaks=r["trimmed_peaks"])
+        if r.get("tracy_calls") is not None:
+            tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
+            for d in r["mixed_detail"]:
+                d["tracy"] = tags.get(d["pos"])
 
     # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
     # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
@@ -3050,7 +3231,7 @@ def analyze(
     return {
         "reads": [
             {k: v for k, v in r.items()
-             if k not in ("trace", "peak_indices", "cross_variants", "_sigmaps",
+             if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps",
                           "raw_bases", "trim_start")}
             for r in read_results
         ],
