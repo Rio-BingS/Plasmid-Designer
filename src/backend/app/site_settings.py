@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Optional
 
+from app.batch_read_limits import empty_tier_limits, normalize_tier_limits
 from app.database import get_site_settings_row, save_site_settings_row
 from app.features import (
     DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, valid_features
@@ -38,11 +39,27 @@ def _fallback_defaults() -> dict:
         "email_verification_required": True,
         "anonymous_features": list(DEFAULT_ANONYMOUS_FEATURES),
         "user_features": list(DEFAULT_USER_FEATURES),
+        # 层级 read 上限全部未设置 = 服务器默认（环境变量），与升级前一致
+        "batch_read_limits": empty_tier_limits(),
     }
 
 
 def _copy(data: dict) -> dict:
-    return {k: (list(v) if isinstance(v, list) else v) for k, v in data.items()}
+    def _one(v):
+        if isinstance(v, list):
+            return list(v)
+        if isinstance(v, dict):
+            return {k2: _one(v2) for k2, v2 in v.items()}
+        return v
+    return {k: _one(v) for k, v in data.items()}
+
+
+def parse_batch_read_limits(raw: Optional[str]) -> dict:
+    """site_settings.batch_read_limits 列（JSON 文本）→ 清洗后的层级上限"""
+    try:
+        return normalize_tier_limits(json.loads(raw) if raw else None)
+    except (TypeError, ValueError):
+        return empty_tier_limits()
 
 
 def _row_to_dict(row) -> dict:
@@ -51,6 +68,7 @@ def _row_to_dict(row) -> dict:
         "email_verification_required": bool(row.email_verification_required),
         "anonymous_features": valid_features(json.loads(row.anonymous_features or "[]")),
         "user_features": valid_features(json.loads(row.user_features or "[]")),
+        "batch_read_limits": parse_batch_read_limits(getattr(row, "batch_read_limits", None)),
     }
 
 
@@ -127,6 +145,16 @@ def update_settings(patch: dict) -> dict:
             row.anonymous_features = json.dumps(valid_features(patch["anonymous_features"]))
         if "user_features" in patch:
             row.user_features = json.dumps(valid_features(patch["user_features"]))
+        if "batch_read_limits" in patch:
+            # 按层级/字段合并：只改提交了的项，None 表示清除（回到服务器默认）；
+            # 取值校验在管理路由完成，这里再清洗一次防止脏数据落库
+            merged = parse_batch_read_limits(row.batch_read_limits)
+            for tier, vals in (patch["batch_read_limits"] or {}).items():
+                if tier in merged and isinstance(vals, dict):
+                    for field, v in vals.items():
+                        if field in merged[tier]:
+                            merged[tier][field] = v
+            row.batch_read_limits = json.dumps(normalize_tier_limits(merged))
         # 终审 D-02：管理员保存过功能清单即视为已初始化（显式空集保持为空）
         if "anonymous_features" in patch or "user_features" in patch:
             row.features_initialized = True
