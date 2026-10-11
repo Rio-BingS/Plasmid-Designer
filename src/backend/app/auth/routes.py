@@ -33,15 +33,21 @@ from app.database import (
     get_db, get_users, create_user as db_create_user, get_user_by_email, get_user_by_id,
     get_site_settings_row, create_email_verification, get_latest_email_verification,
     consume_email_verification, update_user, revoke_token, bump_token_version,
+    get_last_sent_email_verification, email_verification_stats_since,
+    reserve_email_verification_attempt,
 )
 from app.features import features_for_tier, features_for_user, tier_for
 from app.mailer import send_email, verification_email_html
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-# 验证码防爆破：每个验证码最多允许的失败尝试次数（进程内计数）
-_VERIFY_MAX_ATTEMPTS = 5
-_verify_attempts: "dict[int, int]" = {}
+# 验证码防爆破（计数落库在 email_verifications.attempts，多 worker 共享、
+# 重启不归零）。单码次数之外再按用户设 24 小时总量：此前连错作废后
+# 重发冷却失效，每轮「5 次猜测 + 1 次重发」可持续爆破（审查 01 M-2）
+_VERIFY_MAX_ATTEMPTS = 5          # 每个验证码最多校验次数
+CODE_DAILY_MAX = 10               # 每用户 24 小时内最多发出的验证码数（含注册首发）
+VERIFY_DAILY_MAX_ATTEMPTS = 20    # 每用户 24 小时内最多校验次数（跨验证码累计）
+DAILY_WINDOW = timedelta(hours=24)
 
 CODE_TTL_MINUTES = 10
 RESEND_COOLDOWN_SECONDS = 60
@@ -88,13 +94,23 @@ def _hash_code(code: str, user_id: str) -> str:
 
 
 async def _issue_verification_code(db: Session, user, is_resend: bool) -> bool:
-    """生成并（尝试）发送验证码，返回是否发送成功。60 秒重发冷却。"""
-    latest = get_latest_email_verification(db, user.id)
-    if latest is not None and (utcnow_naive() - latest.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
-        wait = RESEND_COOLDOWN_SECONDS - (utcnow_naive() - latest.created_at).total_seconds()
+    """生成并（尝试）发送验证码，返回是否发送成功。
+
+    60 秒重发冷却按最近发出的一条计算，不论它是否已因连错被作废；
+    另有每用户 24 小时发送总量上限（防爆破续命与邮件轰炸）。"""
+    now = utcnow_naive()
+    latest = get_last_sent_email_verification(db, user.id)
+    if latest is not None and (now - latest.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
+        wait = RESEND_COOLDOWN_SECONDS - (now - latest.created_at).total_seconds()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"验证码发送过于频繁，请 {int(wait) + 1} 秒后再试",
+        )
+    sent_today, _ = email_verification_stats_since(db, user.id, now - DAILY_WINDOW)
+    if sent_today >= CODE_DAILY_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="今日验证码发送次数已达上限，请 24 小时后再试",
         )
     code = _generate_code()
     create_email_verification(
@@ -289,25 +305,30 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, response: 
             },
         )
 
+    # 每用户 24 小时校验总量（含已作废验证码上的尝试）：重发换码也不续命
+    _, attempts_today = email_verification_stats_since(db, user_id, utcnow_naive() - DAILY_WINDOW)
+    if attempts_today >= VERIFY_DAILY_MAX_ATTEMPTS:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="验证码错误次数过多，请 24 小时后再试")
+
     row = get_latest_email_verification(db, user_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先获取验证码")
     if row.expires_at < utcnow_naive():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="验证码已过期，请重新发送")
+    # 防爆破：先原子占用一次校验机会再比对，并发请求也不能超额猜测
+    if not reserve_email_verification_attempt(db, row, _VERIFY_MAX_ATTEMPTS):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="错误次数过多，验证码已作废，请重新发送")
     if _hash_code(payload.code.strip(), user_id) != row.code_hash:
-        # 防爆破：6 位数字码 10 分钟有效，无失败次数限制时可被暴力遍历
-        attempts = _verify_attempts.get(row.id, 0) + 1
-        _verify_attempts[row.id] = attempts
-        if attempts >= _VERIFY_MAX_ATTEMPTS:
+        if row.attempts >= _VERIFY_MAX_ATTEMPTS:
             consume_email_verification(db, row)
-            _verify_attempts.pop(row.id, None)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="错误次数过多，验证码已作废，请重新发送")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误")
 
-    _verify_attempts.pop(row.id, None)
     consume_email_verification(db, row)
     update_user(db, user_id, email_verified=True)
     db_user = get_user_by_id(db, user_id)

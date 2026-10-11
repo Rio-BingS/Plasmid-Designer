@@ -18,6 +18,8 @@ from .crud import (
     get_site_settings_row, save_site_settings_row,
     # 邮箱验证码
     create_email_verification, get_latest_email_verification, consume_email_verification,
+    get_last_sent_email_verification, email_verification_stats_since,
+    reserve_email_verification_attempt,
     # 设计
     create_design, get_design, get_designs_by_user, update_design,
     add_primer, add_warning, add_error,
@@ -39,6 +41,8 @@ __all__ = [
     "bump_token_version", "prune_revoked_tokens", "revoke_token", "is_token_revoked",
     "get_site_settings_row", "save_site_settings_row",
     "create_email_verification", "get_latest_email_verification", "consume_email_verification",
+    "get_last_sent_email_verification", "email_verification_stats_since",
+    "reserve_email_verification_attempt",
     "create_design", "get_design", "get_designs_by_user", "update_design",
     "add_primer", "add_warning", "add_error",
     "create_batch_job", "get_batch_job", "update_batch_job", "add_batch_design",

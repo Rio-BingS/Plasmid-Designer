@@ -118,6 +118,9 @@ class EmailVerificationDB(Base):
     purpose = Column(String(30), nullable=False, default="register")
     expires_at = Column(DateTime, nullable=False)
     consumed = Column(Boolean, default=False)
+    # 校验尝试次数（落库：多 worker / 重启不丢计数；作废或重发后仍按
+    # created_at 计入每日错误总量，见 auth/routes.py）
+    attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=utcnow_naive)
 
 
@@ -329,6 +332,7 @@ def init_db():
     _migrate_users_table()
     _migrate_designs_table()
     _migrate_site_settings_table()
+    _migrate_email_verifications_table()
     Base.metadata.create_all(bind=engine)
     _migrate_feature_lists()
     print("✅ 数据库表已创建")
@@ -428,6 +432,22 @@ def _migrate_feature_lists(eng=None):
                 conn.execute(text("UPDATE users SET allowed_features = :v WHERE id = :i"),
                              {"v": patched, "i": uid})
         print(f"✅ 功能清单迁移完成：补齐拆分键 {pending}")
+
+
+def _migrate_email_verifications_table():
+    """email_verifications 表轻量迁移：补齐落库的校验尝试次数列"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "email_verifications" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("email_verifications")}
+    if "attempts" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE email_verifications ADD COLUMN attempts INTEGER "
+                "NOT NULL DEFAULT 0"))
+        print("✅ email_verifications 表已迁移：新增 attempts 列")
 
 
 def _migrate_designs_table():
