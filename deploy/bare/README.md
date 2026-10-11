@@ -159,7 +159,7 @@ sudo chmod 600 /opt/plasmid-designer/.env
 
 ```bash
 curl http://localhost:8000/health
-# 应返回: {"status":"healthy",...}
+# 应返回: {"status":"healthy",...,"db":"ok"}（数据库不可达时 HTTP 503）
 ```
 
 ## 服务管理
