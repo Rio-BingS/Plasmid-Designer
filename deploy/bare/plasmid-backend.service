@@ -43,6 +43,9 @@ StandardError=journal
 # 安全限制
 NoNewPrivileges=true
 PrivateTmp=true
+# 后端新建的文件（SQLite 库及其 -journal/-wal、导出文件）只给服务用户；
+# 安装目录对 other 有 x 权限，默认 022 会让库文件按路径可读
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

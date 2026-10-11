@@ -153,7 +153,15 @@ sudo chown -R plasmid:plasmid /opt/plasmid-designer
 # 751：其他用户只能遍历不能列目录——nginx（www-data）需要穿过目录读取前端 dist
 sudo chmod 751 /opt/plasmid-designer
 sudo chmod 600 /opt/plasmid-designer/.env
+# SQLite 库目录只给服务用户（.env 模板的 DATABASE_URL 指向 db/ 下）。751 让任何
+# 本机用户都能按路径访问安装目录内文件，库文件不能放在 db/ 之外或设成 0644
+sudo install -d -m 700 -o plasmid -g plasmid /opt/plasmid-designer/db
 ```
+
+service 文件设了 `UMask=0077`，后端新建的库文件、`-journal`/`-wal` 默认即 0600。
+从旧版升级、库仍在 `/opt/plasmid-designer/plasmid_designer.db` 的机器，重跑
+`install.sh` 会把该文件（及其 `-journal`/`-wal`/`-shm`）改为 0600；也可停服务后把它
+移到 `db/` 并同步修改 `.env` 的 `DATABASE_URL`。
 
 ### 12. 验证
 
@@ -309,6 +317,7 @@ sudo /opt/plasmid-designer/venv/bin/pip install -i https://pypi.tuna.tsinghua.ed
 sudo chown -R plasmid:plasmid /opt/plasmid-designer
 sudo chmod 751 /opt/plasmid-designer
 sudo chmod 600 /opt/plasmid-designer/.env
+sudo chmod 700 /opt/plasmid-designer/db
 ```
 
 ### 端口冲突

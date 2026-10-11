@@ -23,6 +23,52 @@ PG_USER="plasmid"
 PG_DB="plasmid_designer"
 PG_PASSWORD=""
 
+# SQLite 库放在服务用户独占的子目录：安装目录为让 nginx 穿过而给了
+# other 的 x 权限（751），库文件若留在可遍历路径上且为 0644，本机任意
+# 用户都能按固定路径读出用户表
+SQLITE_DIR_NAME="db"
+
+# 从 .env 的 DATABASE_URL 解析 SQLite 库文件路径；PostgreSQL 等为空。
+# 未配置 DATABASE_URL 时后端默认用 $DATA_DIR/plasmid_designer.db
+sqlite_db_path() {
+    local install_dir="$1" url path
+    # 只去掉首尾空白/CR 与包裹引号，路径中间的空格保留
+    url=$(grep -E '^DATABASE_URL=' "$install_dir/.env" 2>/dev/null | tail -n 1 \
+        | cut -d= -f2- | sed -E "s/^[[:space:]\"']+//; s/[[:space:]\"']+\$//" || true)
+    if [ -z "$url" ]; then
+        echo "$install_dir/data/plasmid_designer.db"
+        return 0
+    fi
+    case "$url" in
+        sqlite:///*) path="${url#sqlite:///}" ;;
+        *) return 0 ;;
+    esac
+    path="${path%%\?*}"
+    case "$path" in
+        ""|:memory:) return 0 ;;
+        /*) ;;
+        *) path="$install_dir/src/backend/$path" ;;  # 相对 WorkingDirectory
+    esac
+    echo "$path"
+}
+
+# 库目录 0700、库文件及其日志/WAL 0600，属主为服务用户；每次安装都执行，
+# 修正旧版留下的 0644 库文件（新文件由 service 的 UMask=0077 保证）
+secure_sqlite_files() {
+    local install_dir="$1" db f
+    mkdir -p "$install_dir/$SQLITE_DIR_NAME"
+    chown plasmid:plasmid "$install_dir/$SQLITE_DIR_NAME"
+    chmod 700 "$install_dir/$SQLITE_DIR_NAME"
+    db=$(sqlite_db_path "$install_dir")
+    [ -n "$db" ] || return 0
+    for f in "$db" "$db-journal" "$db-wal" "$db-shm"; do
+        if [ -e "$f" ]; then
+            chown plasmid:plasmid "$f"
+            chmod 600 "$f"
+        fi
+    done
+}
+
 # ==================== 参数解析 ====================
 
 while [[ $# -gt 0 ]]; do
@@ -364,7 +410,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     if [[ "$DB_MODE" == "postgresql" ]]; then
         DATABASE_URL="postgresql://$PG_USER:$PG_PASSWORD@localhost/$PG_DB"
     else
-        DATABASE_URL="sqlite:////$INSTALL_DIR/plasmid_designer.db"
+        DATABASE_URL="sqlite:///$INSTALL_DIR/$SQLITE_DIR_NAME/plasmid_designer.db"
     fi
 
     # 以 0600 创建（root 默认 umask 022 会先建成 0644，到下方 chmod 前密钥可被读）
@@ -402,6 +448,8 @@ chown -R plasmid:plasmid "$INSTALL_DIR"
 # 控制），但列不出目录内容，不泄露目录清单
 chmod 751 "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
+# 751 只为 nginx 能穿过到前端 dist；SQLite 库收进 0700 子目录并设 0600
+secure_sqlite_files "$INSTALL_DIR"
 
 # 创建数据目录（载体库/密码子表随项目文件一同复制）
 mkdir -p "$INSTALL_DIR/data/vectors" "$INSTALL_DIR/data/codon_tables"
