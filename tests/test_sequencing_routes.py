@@ -336,10 +336,11 @@ def test_export_consensus_carries_poly_verdict(client):
 
 
 def test_db_retention_prunes_oldest(client, monkeypatch):
-    """保留上限：SEQUENCING_DB_MAX_RECORDS 超出后按创建时间淘汰最旧记录"""
+    """保留上限：匿名桶（SEQUENCING_DB_MAX_ANON_RECORDS）超出后按创建时间
+    淘汰最旧记录（按属主分桶，见 test_sequencing_retention）"""
     from app import sequencing_store as store
     import app.routes.sequencing_routes as seq_routes
-    monkeypatch.setattr(store, "MAX_DB_RECORDS", 2)
+    monkeypatch.setattr(store, "MAX_DB_ANON_RECORDS", 2)
 
     def _mk(name):
         ref = ">ref\n" + "AAG" * 40

@@ -20,9 +20,20 @@ from app.storage import STORAGE_MODE
 logger = logging.getLogger(__name__)
 
 # 数据库记录保留上限（增长管理）：payload 含比对/变体明细，trace_data 含
-# 压缩峰图，长年累月会无限膨胀——超出上限时按创建时间淘汰最旧记录。
+# 压缩峰图，长年累月会无限膨胀。按属主分桶淘汰（审查 02 M4：此前全表
+# 2000 条按时间淘汰，一个匿名 IP 一小时的批量即可挤掉全站登录用户的记录）：
+# - 每个登录用户各自最多 MAX_DB_RECORDS_PER_OWNER 条，超出删其本人最旧记录
+# - 匿名记录（owner_id 为空）共用一个桶，最多 MAX_DB_ANON_RECORDS 条
+# - 全库再设 MAX_DB_RECORDS 总上限兜底磁盘：超出时先删最旧的匿名记录，
+#   仍超出再从记录最多的用户那里删其最旧记录
 # 0 表示不限制。批量克隆模式一次可产生上百条，默认值给足余量。
-MAX_DB_RECORDS = int(os.environ.get("SEQUENCING_DB_MAX_RECORDS", "2000") or "2000")
+def _env_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)) or default)
+
+
+MAX_DB_RECORDS = _env_int("SEQUENCING_DB_MAX_RECORDS", 20000)
+MAX_DB_RECORDS_PER_OWNER = _env_int("SEQUENCING_DB_MAX_RECORDS_PER_OWNER", 2000)
+MAX_DB_ANON_RECORDS = _env_int("SEQUENCING_DB_MAX_ANON_RECORDS", 2000)
 
 
 def hash_access_token(token: str) -> str:
@@ -104,7 +115,7 @@ def persist_record(record: Dict) -> None:
     try:
         db.merge(row)
         db.commit()
-        _prune(db)
+        _prune(db, record.get("owner_id"))
     except Exception as e:
         db.rollback()
         # 持久化失败不阻断分析主流程：记录仍在内存缓存中可用，但必须留痕
@@ -113,22 +124,60 @@ def persist_record(record: Dict) -> None:
         db.close()
 
 
-def _prune(db) -> None:
-    """保留上限外的最旧记录淘汰（与 persist 同事务外调用，失败仅留痕）"""
-    if MAX_DB_RECORDS <= 0:
-        return
-    from app.database.models import SequencingAnalysisDB
-    total = db.query(SequencingAnalysisDB.id).count()
-    if total <= MAX_DB_RECORDS:
-        return
-    stale = (db.query(SequencingAnalysisDB.id)
-             .order_by(SequencingAnalysisDB.created_at.asc())
-             .limit(total - MAX_DB_RECORDS).all())
-    ids = [x[0] for x in stale]
-    db.query(SequencingAnalysisDB).filter(
-        SequencingAnalysisDB.id.in_(ids)).delete(synchronize_session=False)
-    db.commit()
-    logger.info("测序分析记录超出保留上限 %s，淘汰最旧 %s 条", MAX_DB_RECORDS, len(ids))
+def _owner_filter(model, owner_id):
+    return model.owner_id.is_(None) if owner_id is None else model.owner_id == owner_id
+
+
+def _delete_oldest(db, owner_id, n: int) -> int:
+    """删除某属主桶（None 为匿名桶）最旧的 n 条，返回实际删除数"""
+    if n <= 0:
+        return 0
+    from app.database.models import SequencingAnalysisDB as M
+    ids = [x[0] for x in (db.query(M.id).filter(_owner_filter(M, owner_id))
+                          .order_by(M.created_at.asc()).limit(n).all())]
+    if ids:
+        db.query(M).filter(M.id.in_(ids)).delete(synchronize_session=False)
+    return len(ids)
+
+
+def _prune(db, owner_id=None) -> None:
+    """保留上限外的最旧记录淘汰（persist 提交后调用，失败仅留痕）。
+
+    先按写入者所在的桶（登录用户本人 / 匿名桶）裁到桶上限，再检查全库
+    总上限；一个属主写得再多也只会淘汰自己桶里的记录。"""
+    from sqlalchemy import func
+    from app.database.models import SequencingAnalysisDB as M
+
+    removed = 0
+    cap = MAX_DB_ANON_RECORDS if owner_id is None else MAX_DB_RECORDS_PER_OWNER
+    if cap > 0:
+        count = db.query(M.id).filter(_owner_filter(M, owner_id)).count()
+        removed += _delete_oldest(db, owner_id, count - cap)
+
+    if MAX_DB_RECORDS > 0:
+        excess = db.query(M.id).count() - MAX_DB_RECORDS
+        if excess > 0:
+            n = _delete_oldest(db, None, excess)
+            removed += n
+            excess -= n
+        while excess > 0:
+            # 记录最多的用户先让出：删到与第二多者持平或补足超额
+            top = (db.query(M.owner_id, func.count(M.id).label("n"))
+                   .filter(M.owner_id.isnot(None)).group_by(M.owner_id)
+                   .order_by(func.count(M.id).desc()).limit(2).all())
+            if not top:
+                break
+            gap = top[0][1] - (top[1][1] if len(top) > 1 else 0)
+            n = _delete_oldest(db, top[0][0], min(excess, max(1, gap)))
+            if n == 0:
+                break
+            removed += n
+            excess -= n
+
+    if removed:
+        db.commit()
+        logger.info("测序分析记录超出保留上限，淘汰最旧 %s 条（属主桶 %s）",
+                    removed, "匿名" if owner_id is None else owner_id)
 
 
 def load_record_meta(analysis_id: str) -> Optional[Dict]:
