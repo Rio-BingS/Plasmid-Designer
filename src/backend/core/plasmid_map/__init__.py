@@ -5,6 +5,7 @@
 - types     FeatureType 归一、颜色
 - enzymes   酶集合与契约 MapEnzyme（复用 core.enzyme_sites 的 REBASE 酶模型）
 - orfs      双链、环状感知 ORF
+- annotate  常见元件库自动注释（k-mer 种子 + 局部比对 + 肽段翻译检索）
 """
 
 from core.plasmid_map.parsers import MapParseError, parse_file, parse_text  # noqa: F401

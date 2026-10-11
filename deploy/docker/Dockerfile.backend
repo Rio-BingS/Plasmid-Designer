@@ -55,6 +55,7 @@ COPY src/backend/ ./backend/
 # bcrypt 哈希）曾随镜像层分发
 COPY data/vectors/ ./data/vectors/
 COPY data/codon_tables/ ./data/codon_tables/
+COPY data/features/ ./data/features/
 
 # 批量测序分块上传暂存目录：compose 挂具名卷到这里。具名卷首次挂载时继承
 # 镜像内该目录的属主，非 root 的 plasmid 才可写（宿主机 bind mount 的 data/

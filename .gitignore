@@ -30,3 +30,6 @@ logs/
 
 # 批量测序分块上传暂存（运行期生成）
 data/batch_uploads/
+
+# 图谱元件库重建脚本的 GenBank 下载缓存（scripts/build_feature_library.py）
+.feature-library-cache/
