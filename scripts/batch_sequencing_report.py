@@ -27,6 +27,15 @@
      （.整理记录.进行中.jsonl）供下次重跑一并核对清理；
   5. 结论回填 Excel 的"测序结果"列（原表先备份到输出目录）。
 
+退出码：
+  0  全部完成，没有质粒分析失败（「无法判定」「未找到」「缺图谱」等是数据
+     本身给出的结论，不算失败）；--dry-run 只预览，恒为 0
+  1  致命错误，未完成整批（参数取值不合法、信息表读不了、回填失败等中文
+     提示，或未捕获的异常）
+  2  命令行参数用法错误（argparse）
+  3  整批已跑完并写出、回填，但有质粒分析失败（管线报「分析失败：…」，
+     如图谱无法解析、参考序列过短、比对异常）；末行打印失败个数
+
 归组、分析、报告与归档条目全部复用网页端实现（app/sequencing_batch.py、
 app/sequencing_report.py），本脚本只负责本地扫描、落盘与 Excel 回填，
 两端输出不会再各自漂移。
@@ -73,6 +82,35 @@ from core.sanger.batch import (  # noqa: E402,F401
     norm_stem as _norm,
     rows_have_clones,
 )
+
+
+# ---------------------------------------------------------------- 退出码
+
+
+EXIT_OK = 0
+# 1 = 致命错误（SystemExit(中文消息) / 未捕获异常），2 = argparse 用法错误，
+# 均为既有行为；部分失败另取 3，调用方可与前两者区分
+EXIT_ANALYSIS_FAILED = 3
+
+
+def failed_items(items: Iterable[Dict]) -> List[Dict]:
+    """真正分析失败的组（管线异常、图谱无法解析等，status == "failed"）
+
+    not_found / no_reads / no_reference 与「无法判定」结论是数据给出的结果，
+    不计入。每次运行都会重新分析全部质粒（含上次中断前已完成的），因此本次
+    items 即覆盖整批。"""
+    return [it for it in items if it.get("status") == "failed"]
+
+
+def _exit_summary(payload: Dict) -> int:
+    failed = failed_items(payload["items"])
+    if not failed:
+        return EXIT_OK
+    names = "、".join(it.get("plasmid") or "?" for it in failed[:10])
+    more = " 等" if len(failed) > 10 else ""
+    print(f"× 共 {len(payload['items'])} 个质粒，其中 {len(failed)} 个质粒分析失败"
+          f"（{names}{more}），详见批次总览.txt；退出码 {EXIT_ANALYSIS_FAILED}")
+    return EXIT_ANALYSIS_FAILED
 
 
 # ---------------------------------------------------------------- 文件扫描
@@ -654,7 +692,8 @@ def _replace_excel(excel_path: Path, data: bytes, out_dir: Path, backup: Path) -
 # ---------------------------------------------------------------- 主流程
 
 
-def main():
+def main() -> int:
+    """命令行入口，返回进程退出码（见模块说明；致命错误仍以 SystemExit 退出）"""
     ap = argparse.ArgumentParser(description="批量测序结果自动整理与分析")
     ap.add_argument("--data-dir", required=True, help="测序结果文件夹（含 .ab1/.dna 与信息表）")
     ap.add_argument("--excel", help="信息表路径（默认取文件夹下第一个 .xlsx）")
@@ -726,7 +765,7 @@ def main():
                                         protected=inputs, dry_run=True)
             if not plan.remove:
                 print("[预览] 输出目录没有需要清理的旧副本")
-        return
+        return EXIT_OK
 
     def _progress(it: Dict) -> None:
         n_var = it["variant_count"] + it["pending_count"]
@@ -743,7 +782,7 @@ def main():
     # Excel 备份 + 回填
     if args.no_write_back:
         print("已跳过 Excel 回填（--no-write-back）")
-        return
+        return _exit_summary(payload)
     backup = out_dir / f"{excel_path.stem}_原始备份{excel_path.suffix}"
     n = 2
     while backup.exists():
@@ -755,7 +794,8 @@ def main():
         _replace_excel(excel_path, filled, out_dir, backup)
     print(f"√ 结论已回填 {excel_path.name}（原表备份：{backup.name}）")
     print(f"√ 输出目录：{out_dir}")
+    return _exit_summary(payload)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
