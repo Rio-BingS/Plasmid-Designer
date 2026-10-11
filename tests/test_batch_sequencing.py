@@ -2,8 +2,9 @@
 
 覆盖：Excel 解析、文件名匹配（引物列/质粒名/未匹配）、整理落盘（同名异内容
 不覆盖）、Excel 结论各分支、"信息表 + 图谱 + .ab1 → 质粒文件夹 + 报告 + 回填"
-端到端，离线脚本与网页整理包同输入同产物（章节、按质粒/结论分置结构），
-以及重跑同一输出目录时的旧副本清理、清单记录实际路径与 --dry-run 预览。
+端到端，离线命令行与网页端点整理包逐项对比（文件集合、报告全文、JSON、
+清单、总览、回填 Excel，允许差异显式列出），重跑同一输出目录时的旧副本
+清理、清单记录实际路径与 --dry-run 预览，以及逐质粒落盘与中断保留。
 """
 
 import importlib.util
@@ -322,80 +323,238 @@ def test_end_to_end_missing_reference(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- 与网页整理包同产物
 
 
-def _headings(md: str) -> list:
-    return [ln for ln in md.splitlines() if ln.startswith("#")]
+# 两端独立构造的同一批输入（不共用扫描结果或分析记录）：
+#   MX   GenBank 图谱（整序列一个 CDS）+ 第 31 位 A>G 错义 read → 不合格 → 错误/
+#   MIX  同一 GenBank 图谱 + 双峰混合 read                       → 无法判定/
+#   PX   FASTA 图谱 + 两条一致 read                              → 合格 → 正确/
+#   NOREF  只有 read，缺图谱                                     → 无法判定/
+#   孤儿.ab1  不在任何引物列                                      → 未匹配文件/
+_CMP_ROWS = [("MX", "M1"), ("MIX", "X1"), ("PX", "P1;P2"), ("NOREF", "Q1")]
 
 
-def test_offline_output_matches_web_package(tmp_path):
-    """同一输入：离线脚本核心函数的落盘结果与网页整理包 ZIP 的章节标题、
-    按质粒 / 正确·错误·无法判定 分置的目录结构完全一致（含双峰章节）"""
-    import io
-    import zipfile
-
-    from app.routes import sequencing_routes
-    from app.sequencing_report import ZIP_ROOT, build_batch_zip
+def _cmp_inputs():
     from tests.test_sequencing_batch import REF_MX, REF_MX2, _gb_mx, _mixed_ab1_mx
+    mut = REF_MX[:30] + "G" + REF_MX[31:]
+    return {
+        "MX.gb": _gb_mx(),
+        "M1.ab1": make_ab1(mut, [40] * len(mut)),
+        "MIX.gb": _gb_mx(),
+        "X1.ab1": _mixed_ab1_mx("X1.ab1")[1],
+        "PX.fasta": f">PX\n{REF_MX2}\n".encode(),
+        "P1.ab1": make_ab1(REF_MX2, [40] * len(REF_MX2)),
+        "P2.ab1": make_ab1(REF_MX2[6:], [40] * (len(REF_MX2) - 6)),
+        "Q1.ab1": make_ab1(REF_MX, [40] * len(REF_MX)),
+        "孤儿.ab1": make_ab1(REF_MX2, [40] * len(REF_MX2)),
+    }
 
-    data_dir = tmp_path / "results"
-    data_dir.mkdir()
-    (data_dir / "MX.gb").write_bytes(_gb_mx())
-    (data_dir / "T1.ab1").write_bytes(_mixed_ab1_mx("T1.ab1")[1])      # 双峰 → 无法判定
-    (data_dir / "PX.fasta").write_text(f">PX\n{REF_MX2}\n", encoding="utf-8")
-    (data_dir / "P1.ab1").write_bytes(make_ab1(REF_MX2, [40] * len(REF_MX2)))  # → 正确
-    (data_dir / "孤儿.ab1").write_bytes(make_ab1(REF_MX, [40] * len(REF_MX)))   # 未匹配
-    xlsx = data_dir / "测序.xlsx"
+
+def _cmp_xlsx() -> bytes:
+    import io
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(["质粒名称", "测序引物", "测序结果"])
-    ws.append(["MX", "T1", None])
-    ws.append(["PX", "P1", None])
-    wb.save(xlsx)
-    _wb, _h, _cols, rows = batch.load_excel(xlsx)
+    for name, primers in _CMP_ROWS:
+        ws.append([name, primers, None])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
-    # 离线：扫描 → 核心函数 → 落盘
-    out = tmp_path / "out"
-    files = batch.scan_files(data_dir, out)
-    batch.load_bytes(files)
-    payload, entries = batch.run_offline_batch(files, rows, 20)
-    batch.write_archive(entries, out)
-    off_files = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
-    off_dirs = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_dir()}
 
-    # 网页：同样的文件条目走端点的 _run_batch + build_batch_zip
-    batch.load_bytes(files)     # 离线逐质粒落盘后会释放字节
-    web_entries = [{"name": f["name"], "ext": f["ext"], "stem": f["stem"],
-                    "bytes": f["bytes"]} for f in files]
-    reads = [e for e in web_entries if e["ext"] in batch.READ_EXTS]
-    refs = [e for e in web_entries if e["ext"] not in batch.READ_EXTS]
-    w_payload, groups, unmatched, records = sequencing_routes._run_batch(
-        reads, refs, rows, [], 20)
-    zf = zipfile.ZipFile(io.BytesIO(build_batch_zip(
-        w_payload, groups, unmatched, None, None, None, records)))
+@pytest.fixture
+def web_client(monkeypatch):
+    """网页端点：站点功能门控打桩为全开放（同 test_sequencing_batch）"""
+    from fastapi.testclient import TestClient
+
+    from app import site_settings
+    from app.features import ALL_FEATURES
+    from app.main import app
+    state = {"registration_open": True, "email_verification_required": False,
+             "anonymous_features": list(ALL_FEATURES), "user_features": list(ALL_FEATURES)}
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: json.loads(json.dumps(state)))
+    return TestClient(app)
+
+
+def _web_package(client, inputs: dict, xlsx: bytes) -> dict:
+    """POST /analyze-batch → GET 整理包，返回 {ZIP 内相对路径: 字节}（目录以 / 结尾）"""
+    import io
+    import zipfile
+
+    from app.sequencing_report import ZIP_ROOT
+    files = [("files", (n, b, "application/octet-stream")) for n, b in inputs.items()]
+    files.append(("excel", ("测序.xlsx", xlsx, "application/octet-stream")))
+    resp = client.post("/api/sequencing/analyze-batch", files=files, data={"min_q": "20"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["report_ready"] is True
+    got = client.get(f"/api/sequencing/batches/{data['batch_id']}/report",
+                     headers={"X-Access-Token": data["access_token"]})
+    assert got.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(got.content))
     prefix = f"{ZIP_ROOT}/"
-    web_names = [n[len(prefix):] for n in zf.namelist()]
-    web_files = {n for n in web_names if not n.endswith("/")}
-    web_dirs = {n.rstrip("/") for n in web_names if n.endswith("/")}
-    web_dirs |= {"/".join(n.split("/")[:i]) for n in web_files
-                 for i in range(1, n.count("/") + 1)}
+    assert all(n.startswith(prefix) for n in zf.namelist())
+    return {n[len(prefix):]: zf.read(n) for n in zf.namelist()}
 
-    assert off_files == web_files
-    assert off_dirs == web_dirs
-    assert {"MX/MX.gb", "MX/无法判定/T1.ab1", "MX/无法判定/测序分析报告.md",
-            "PX/PX.fasta", "PX/正确/P1.ab1", "PX/正确/测序分析报告.md",
-            "未匹配文件/孤儿.ab1", "整理清单.csv", "批次总览.txt"} <= off_files
-    assert {"MX/正确", "MX/错误", "PX/正确", "PX/错误"} <= off_dirs
 
-    # 结论一致；每份报告的章节标题一致，混合样品报告含双峰章节
-    assert [it["conclusion"] for it in payload["items"]] == \
-        [it["conclusion"] for it in w_payload["items"]]
-    reports = sorted(n for n in off_files if n.endswith(".md"))
-    assert len(reports) == 2
-    for name in reports:
-        off_md = (out / name).read_text(encoding="utf-8")
-        web_md = zf.read(prefix + name).decode("utf-8")
-        assert _headings(off_md) == _headings(web_md), name
-    mx_heads = _headings((out / "MX/无法判定/测序分析报告.md").read_text(encoding="utf-8"))
-    assert "## 双峰（疑似混合）检测" in mx_heads
+def _csv_rows(blob: bytes) -> list:
+    import csv
+    import io
+    return list(csv.DictReader(io.StringIO(blob.decode("utf-8-sig"))))
+
+
+def _cells(blob: bytes) -> list:
+    import io
+    ws = openpyxl.load_workbook(io.BytesIO(blob)).worksheets[0]
+    return [[c.value for c in r] for r in ws.iter_rows()]
+
+
+def _strip_volatile(md: str) -> str:
+    import re
+    return re.sub(r"^- 生成时间：.*$", "- 生成时间：<T>", md, flags=re.M)
+
+
+_EXPECTED_CONCLUSIONS = {
+    "MX": "不合格：MX 蛋白与设计不一致",
+    "PX": "合格：与设计一致",
+    "NOREF": "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对",
+}
+
+_EXPECTED_FILES = {
+    "MX/MX.gb", "MX/错误/M1.ab1", "MX/错误/测序分析报告.md", "MX/错误/分析结果.json",
+    "MIX/MIX.gb", "MIX/无法判定/X1.ab1", "MIX/无法判定/测序分析报告.md",
+    "MIX/无法判定/分析结果.json",
+    "PX/PX.fasta", "PX/正确/P1.ab1", "PX/正确/P2.ab1", "PX/正确/测序分析报告.md",
+    "PX/正确/分析结果.json",
+    "NOREF/无法判定/Q1.ab1", "NOREF/无法判定/测序分析报告.md",
+    "未匹配文件/孤儿.ab1", "整理清单.csv", "批次总览.txt",
+}
+
+# 两端允许的差异（review 05 I1/I2），其余逐字节/逐字段一致：
+#   - 网页 ZIP 套一层 测序整理/；信息表在 ZIP 内给回填版 + 原始备份_<名>，离线
+#     原地回填、备份为 <stem>_原始备份.xlsx 放输出目录；离线多 .整理记录.json
+#   - 整理清单离线多一列「原始路径」；网页的归档路径带 测序整理/ 前缀
+#   - 报告抬头「分析引擎」一行的运行位置措辞（网页批量分析 / 本地批处理）
+#   - 分析结果.json：analysis_id、created_at 各端自生成；网页多 owner_id、
+#     access_token_hash（服务器分析记录字段）
+_WEB_ONLY_JSON_KEYS = {"owner_id", "access_token_hash"}
+
+
+def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_client):
+    """review 05 M2：离线命令行落盘结果与网页端点整理包逐项对比，并对关键
+    内容给出显式期望值（此前两端调同一函数自比，JSON/正文/Excel 都没比）"""
+    import hashlib
+    inputs = _cmp_inputs()
+    xlsx = _cmp_xlsx()
+
+    # 网页：真实端点（上传 → 分析 → 下载整理包）
+    web = _web_package(web_client, inputs, xlsx)
+
+    # 离线：同一批文件写到文件夹，跑命令行
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    for name, blob in inputs.items():
+        (data_dir / name).write_bytes(blob)
+    (data_dir / "测序.xlsx").write_bytes(xlsx)
+    _run(monkeypatch, data_dir)
+    out = data_dir / "测序分析"
+    off = {p.relative_to(out).as_posix(): p.read_bytes()
+           for p in out.rglob("*") if p.is_file()}
+
+    # 1) 文件集合：两端相同且等于期望；信息表与整理记录按允许差异
+    assert set(off) - _EXPECTED_FILES == {"测序_原始备份.xlsx", batch.RECORD_NAME}
+    web_files = {n for n in web if not n.endswith("/")}
+    assert web_files - _EXPECTED_FILES == {"测序.xlsx", "原始备份_测序.xlsx"}
+    assert _EXPECTED_FILES <= set(off) and _EXPECTED_FILES <= web_files
+    for d in ("MX/正确/", "MX/错误/", "PX/正确/", "PX/错误/", "NOREF/正确/"):
+        assert d in web and (out / d).is_dir(), d
+
+    # 2) 数据副本与原件逐字节一致
+    for arc in _EXPECTED_FILES:
+        name = arc.rsplit("/", 1)[-1]
+        if name in inputs:
+            assert off[arc] == inputs[name] == web[arc], arc
+
+    # 3) 报告全文：只允许生成时间与「分析引擎」一行的运行位置措辞不同
+    for arc in sorted(a for a in _EXPECTED_FILES if a.endswith(".md")):
+        o = _strip_volatile(off[arc].decode("utf-8"))
+        w = _strip_volatile(web[arc].decode("utf-8"))
+        if "- 分析引擎：" in w:
+            assert "本地批处理" in o and "网页批量分析" in w, arc
+            w = w.replace("网页批量分析", "本地批处理").replace("服务器未安装", "本机未安装")
+        assert o == w, arc
+    mx_md = off["MX/错误/测序分析报告.md"].decode("utf-8")
+    assert "> **不合格：MX 蛋白与设计不一致**" in mx_md
+    assert "- 参考图谱：MX.gb（111 bp，1 个特征）" in mx_md
+    assert ("各编码区（CDS）结论：\n\n- ✅ **MX**（100.0% 覆盖）：CDS 已完整覆盖。"
+            "MX 蛋白与设计不一致：1 处氨基酸替换（K11E）\n") in mx_md
+    assert "| 31 | substitution | A>G | 高 | 40 | 1 | 峰强比 100% | MX | MX:K11E |" in mx_md
+    assert "| M1.ab1 | 测序 read | Excel 引物列精确匹配 |" in mx_md
+    mix_md = off["MIX/无法判定/测序分析报告.md"].decode("utf-8")
+    assert "## 双峰（疑似混合）检测" in mix_md and "**疑似混合样品**" in mix_md
+    noref_md = off["NOREF/无法判定/测序分析报告.md"].decode("utf-8")
+    assert "- 未运行序列分析" in noref_md and "- 参考图谱：缺失" in noref_md
+
+    # 4) 分析结果.json：键与值一致（允许差异见上），关键值显式断言
+    for arc in sorted(a for a in _EXPECTED_FILES if a.endswith(".json")):
+        o = json.loads(off[arc])
+        w = json.loads(web[arc])
+        assert set(w) - set(o) == _WEB_ONLY_JSON_KEYS, arc
+        assert set(o) <= set(w), arc
+        assert o["analysis_id"].startswith("local_") and w["analysis_id"] != o["analysis_id"]
+        for k in set(o) - {"analysis_id", "created_at"}:
+            assert o[k] == w[k], (arc, k)
+        assert "traces" not in o and "reference" not in o and "_trace_data" not in w
+    mx = json.loads(off["MX/错误/分析结果.json"])
+    assert mx["sample_name"] == "MX"
+    assert [(v["ref_pos"], v["ref_base"], v["alt_base"], v["confidence"])
+            for v in mx["variants"]] == [(31, "A", "G", "high")]
+    assert [(c["name"], c["coverage_status"], c["protein_identical"])
+            for c in mx["cds_reports"]] == [("MX", "full", False)]
+    px = json.loads(off["PX/正确/分析结果.json"])
+    assert px["variants"] == [] and [r["filename"] for r in px["reads"]] == ["P1.ab1", "P2.ab1"]
+    assert json.loads(off["MIX/无法判定/分析结果.json"])["mixed_detected"] == {
+        "X1.ab1": [31, 46, 61, 76, 91]}
+
+    # 5) 整理清单：除离线独有的「原始路径」列外逐行一致，并与期望值吻合
+    o_rows, w_rows = _csv_rows(off["整理清单.csv"]), _csv_rows(web["整理清单.csv"])
+    assert [r.pop("原始路径") for r in o_rows] == [
+        str(data_dir / r["文件"]) for r in o_rows]
+    assert all(r["归档路径"].startswith("测序整理/") for r in w_rows)
+    assert o_rows == [{**r, "归档路径": r["归档路径"][len("测序整理/"):]} for r in w_rows]
+    md5 = {n: hashlib.md5(b).hexdigest() for n, b in inputs.items()}
+    assert [(r["质粒"], r["文件"], r["类型"], r["归档路径"], r["MD5"]) for r in o_rows] == [
+        ("MX", "MX.gb", "参考图谱", "MX/MX.gb", md5["MX.gb"]),
+        ("MX", "M1.ab1", "测序 read", "MX/错误/M1.ab1", md5["M1.ab1"]),
+        ("MIX", "MIX.gb", "参考图谱", "MIX/MIX.gb", md5["MIX.gb"]),
+        ("MIX", "X1.ab1", "测序 read", "MIX/无法判定/X1.ab1", md5["X1.ab1"]),
+        ("PX", "PX.fasta", "参考图谱", "PX/PX.fasta", md5["PX.fasta"]),
+        ("PX", "P1.ab1", "测序 read", "PX/正确/P1.ab1", md5["P1.ab1"]),
+        ("PX", "P2.ab1", "测序 read", "PX/正确/P2.ab1", md5["P2.ab1"]),
+        ("NOREF", "Q1.ab1", "测序 read", "NOREF/无法判定/Q1.ab1", md5["Q1.ab1"]),
+        ("", "孤儿.ab1", "未匹配", "未匹配文件/孤儿.ab1", md5["孤儿.ab1"]),
+    ]
+    by_file = {r["文件"]: r["结论"] for r in o_rows}
+    assert by_file["M1.ab1"] == _EXPECTED_CONCLUSIONS["MX"]
+    assert by_file["P1.ab1"] == by_file["P2.ab1"] == _EXPECTED_CONCLUSIONS["PX"]
+    assert by_file["Q1.ab1"] == _EXPECTED_CONCLUSIONS["NOREF"]
+    assert by_file["X1.ab1"].startswith("疑似混合：X1.ab1 检出")
+
+    # 6) 批次总览：除生成时间外逐字一致
+    o_txt = off["批次总览.txt"].decode("utf-8").splitlines()
+    w_txt = web["批次总览.txt"].decode("utf-8").splitlines()
+    assert o_txt[1].startswith("生成时间：") and w_txt[1].startswith("生成时间：")
+    assert o_txt[:1] + o_txt[2:] == w_txt[:1] + w_txt[2:]
+    assert f"  [analyzed] PX — reads=2，覆盖 100.0%，确证差异 0 — {_EXPECTED_CONCLUSIONS['PX']}" in o_txt
+    assert "  孤儿.ab1 — 未出现在任何质粒的引物列中" in o_txt
+
+    # 7) 信息表：离线原地回填结果 == 网页 ZIP 回填版；备份均为原表
+    off_cells = _cells((data_dir / "测序.xlsx").read_bytes())
+    assert off_cells == _cells(web["测序.xlsx"])
+    assert {r[0]: r[2] for r in off_cells[1:]} == {
+        "MX": _EXPECTED_CONCLUSIONS["MX"], "MIX": by_file["X1.ab1"],
+        "PX": _EXPECTED_CONCLUSIONS["PX"], "NOREF": _EXPECTED_CONCLUSIONS["NOREF"]}
+    assert _cells(off["测序_原始备份.xlsx"]) == _cells(web["原始备份_测序.xlsx"]) \
+        == _cells(xlsx)
 
 
 # ---------------------------------------------------------------- 重跑同一输出目录
