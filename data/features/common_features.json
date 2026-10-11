@@ -50,6 +50,13 @@
    "notes": "LacZ alpha fragment (pUC19); blue/white screening",
    "sources": [
     {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "146..469(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
      "kind": "ncbi_genbank",
      "accession": "L09137.2",
      "location": "146..469(-)",
@@ -163,6 +170,13 @@
      "vector": "pcDNA3.1",
      "location": "4432..5292(-)",
      "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    },
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "1626..2486(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
     }
    ]
   },
@@ -598,6 +612,13 @@
      "vector": "pcDNA3.1",
      "location": "5293..5397(-)",
      "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    },
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "2487..2591(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
     }
    ]
   },
@@ -646,6 +667,13 @@
    "sequence": "TTTACACTTTATGCTTCCGGCTCGTATGTTG",
    "notes": "E. coli lac promoter",
    "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "513..543(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
     {
      "kind": "ncbi_genbank",
      "accession": "OM304286.1",
@@ -845,6 +873,13 @@
    "notes": "catabolite activator protein binding site",
    "sources": [
     {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "558..579(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
      "kind": "ncbi_genbank",
      "accession": "OM304286.1",
      "location": "1091..1112(+)",
@@ -880,6 +915,13 @@
    "sequence": "TTGTGAGCGGATAACAA",
    "notes": "lac repressor binding site (17 bp)",
    "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "489..505(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
     {
      "kind": "ncbi_genbank",
      "accession": "OM304286.1",
@@ -944,6 +986,42 @@
    ]
   },
   {
+   "id": "ori-2",
+   "name": "ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 589,
+   "sequence": "TTGAGATCCTTTTTTTCTGCGCGTAATCTGCTGCTTGCAAACAAAAAAACCACCGCTACCAGCGGTGGTTTGTTTGCCGGATCAAGAGCTACCAACTCTTTTTCCGAAGGTAACTGGCTTCAGCAGAGCGCAGATACCAAATACTGTTCTTCTAGTGTAGCCGTAGTTAGGCCACCACTTCAAGAACTCTGTAGCACCGCCTACATACCTCGCTCTGCTAATCCTGTTACCAGTGGCTGCTGCCAGTGGCGATAAGTCGTGTCTTACCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGGCTGAACGGGGGGTTCGTGCACACAGCCCAGCTTGGAGCGAACGACCTACACCGAACTGAGATACCTACAGCGTGAGCTATGAGAAAGCGCCACGCTTCCCGAAGGGAGAAAGGCGGACAGGTATCCGGTAAGCGGCAGGGTCGGAACAGGAGAGCGCACGAGGGAGCTTCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCTCTGACTTGAGCGTCGATTTTTGTGATGCTCGTCAGGGGGGCGGAGCCTATGGAAA",
+   "notes": "high-copy-number ColE1/pMB1/pBR322/pUC origin of replication (589 bp, pUC19)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "867..1455(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    }
+   ]
+  },
+  {
+   "id": "p15a-ori",
+   "name": "p15A ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 546,
+   "sequence": "TTGAGATCGTTTTGGTCTGCGCGTAATCTCTTGCTCTGAAAACGAAAAAACCGCCTTGCAGGGCGGTTTTTCGAAGGTTCTCTGAGCTACCAACTCTTTGAACCGAGGTAACTGGCTTGGAGGAGCGCAGTCACCAAAACTTGTCCTTTCAGTTTAGCCTTAACCGGCGCATGACTTCAAGACTAACTCCTCTAAATCAATTACCAGTGGCTGCTGCCAGTGGTGCTTTTGCATGTCTTTCCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGACTGAACGGGGGGTTCGTGCATACAGTCCAGCTTGGAGCGAACTGCCTACCCGGAACTGAGTGTCAGGCGTGGAATGAGACAAACGCGGCCATAACAGCGGAATGACACCGGTAAACCGAAAGGCAGGAACAGGAGAGCGCACGAGGGAGCCGCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCACTGATTTGAGCGTCAGATTTCGTGATGCTTGTCAGGGGGGCGGAGCCTATGGAAA",
+   "notes": "medium-copy-number p15A origin of replication (pACYC184)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "X06403.1",
+     "location": "848..1393(-)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/X06403.1",
+     "definition": "Cloning vector pACYC184"
+    }
+   ]
+  },
+  {
    "id": "sv40-ori",
    "name": "SV40 ori",
    "type": "rep_origin",
@@ -979,6 +1057,25 @@
     }
    ],
    "peptide": "HHHHHH"
+  },
+  {
+   "id": "acv5",
+   "name": "AcV5",
+   "type": "tag",
+   "match": "peptide",
+   "length": 27,
+   "sequence": "AGTTGGAAGGATGCCTCTGGATGGTCT",
+   "notes": "AcV5 epitope tag",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "MP192394.1",
+     "location": "1..27(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/MP192394.1",
+     "definition": "Sequence 64 from Patent EP3516068"
+    }
+   ],
+   "peptide": "SWKDASGWS"
   },
   {
    "id": "flag",

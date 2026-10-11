@@ -50,7 +50,7 @@
 
 ## 自动注释
 
-元件库 `data/features/common_features.json`（63 条，来源与扩展方法见
+元件库 `data/features/common_features.json`（66 条，来源与扩展方法见
 [data/features/README.md](../data/features/README.md)）。比对流程：
 
 1. ≥40 bp 的元件：库序列 14-mer 精确种子（库内出现 >6 次的低复杂度 k-mer 不用）

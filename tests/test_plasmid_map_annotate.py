@@ -150,3 +150,48 @@ def test_annotation_is_fast_on_10kb_and_bounded_on_random():
     assert time.perf_counter() - t < 1.0
     junk = "".join(rnd.choice("ACGT") for _ in range(20000))
     assert annotate(junk, circular=True) == []
+
+
+# ==================== 第二批元件（p15A ori / AcV5 / pUC19 ori） ====================
+
+def _entry(name):
+    return next(e for e in load_library().entries if e.name == name)
+
+
+def test_library_phase2_entries_have_verifiable_sources():
+    data = json.loads(library_path().read_text(encoding="utf-8"))
+    by = {f["id"]: f for f in data["features"]}
+    p15a = by["p15a-ori"]
+    assert p15a["type"] == "rep_origin" and p15a["length"] == 546
+    assert p15a["sources"][0]["accession"].startswith("X06403.")
+    acv5 = by["acv5"]
+    assert acv5["match"] == "peptide" and acv5["peptide"] == "SWKDASGWS"
+    assert acv5["sources"][0]["accession"].startswith("MP192394.")
+    # pUC19 的 AmpR / lacZα 与已有条目同序列：只追加来源，不新增条目
+    assert any(s.get("vector") == "pUC19" for s in by["ampr"]["sources"])
+    assert any(s.get("vector") == "pUC19" for s in by["laczalpha"]["sources"])
+
+
+def test_p15a_ori_and_acv5_detected():
+    rnd = random.Random(7)
+    a = "".join(rnd.choice("ACGT") for _ in range(400))
+    b = "".join(rnd.choice("ACGT") for _ in range(400))
+    p15a = _entry("p15A ori").sequence
+    acv5 = _entry("AcV5").sequence  # 27 bp，编码 SWKDASGWS
+    seq = a + revcomp(p15a) + b + "ATG" + acv5 + "TAA" + a
+    feats = annotate(seq, circular=False)
+    got = {f["name"]: f for f in feats}
+    p = got["p15A ori"]
+    assert (p["start"], p["end"], p["strand"]) == (401, 946, -1)
+    assert p["auto"]["identity"] == 1.0 and not p["auto"]["fragment"]
+    t = got["AcV5"]
+    s0 = 400 + 546 + 400 + 3 + 1
+    assert (t["start"], t["end"], t["strand"], t["type"]) == (s0, s0 + 26, 1, "tag")
+
+
+def test_puc19_ori_is_exact_full_length():
+    ori = [f for f in annotate(_vector_seq("pUC19"), circular=True) if f["name"] == "ori"]
+    assert len(ori) == 1
+    o = ori[0]
+    assert (o["start"], o["end"], o["strand"]) == (867, 1455, -1)
+    assert o["auto"]["identity"] == 1.0 and o["auto"]["coverage"] == 1.0

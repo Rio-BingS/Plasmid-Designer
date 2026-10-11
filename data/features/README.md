@@ -33,22 +33,25 @@
 库文件内容的 sha256 前 12 位即**库版本**，进入图谱结果缓存键：重建库后旧缓存
 自动失效，无需手动递增版本。
 
-## 当前内容（63 条）
+## 当前内容（66 条）
 
 - 载体库截取 DNA（40）：CMV enhancer/promoter、T7 promoter/terminator、bGH / SV40 poly(A)
   （两个变体）、f1 ori、SV40 promoter/ori、ori（pUC/ColE1）、AmpR 及其启动子、
   NeoR/KanR、KanR、lacI、lacI/lacIq 启动子、rop、lac operator（25 bp）、tac promoter、
   GST、Tn7L/Tn7R、GmR、Pc promoter、polyhedrin promoter、5'/3' LTR、HIV-1 Psi、RRE、
-  cPPT/CTS、EMCV IRES、PuroR、WPRE、GAL1 promoter、CYC1 terminator、URA3 及启动子、2μ ori
-- NCBI GenBank（DNA 14 + 肽段 6）：EGFP（U55762）、mCherry（AY678264）、BSD（D83710）、HygR（K01193）、
+  cPPT/CTS、EMCV IRES、PuroR、WPRE、GAL1 promoter、CYC1 terminator、URA3 及启动子、2μ ori；
+  另有 pUC19 的标准 589 bp ori（pcDNA3.1 的 ori 少 3 bp，两条并存，重叠时取更好的命中），
+  pUC19 的 AmpR / lacZα / lac 元件与已有条目同序列，只追加为来源
+- NCBI GenBank（DNA 15 + 肽段 7）：EGFP（U55762）、mCherry（AY678264）、BSD（D83710）、HygR（K01193）、
   ZeoR（X52869）、CmR（V00622）、TcR（J01749）、lacZα（L09137）、lac promoter /
   CAP binding site / lac operator 17 bp（OM304286）、attB1/attB2（PV983739）、
   MBP（MZ215989）、PreScission site（U78872）、TEV site（MK533800）、FLAG（PQ065984）、
-  HA（OR519721）、Myc（MZ215986）、V5（OQ547858）
+  HA（OR519721）、Myc（MZ215986）、V5（OQ547858）、p15A ori（X06403 pACYC184 848..1393(-)，
+  546 bp 边界与 LC760188.1 / OP654170.1 / PZ357611.1 的注释一致，X06402 pACYC177 中亦完全一致）、
+  AcV5 tag（MP192394.1，专利 EP3516068 序列 64，/note="AcV5-TAG"；JC052329.1 同肽段）
 - 载体库肽段（3）：6xHis、T7 tag、thrombin site（pET-28a）
 
-未收录（找不到可核验的公开记录）：AcV5 tag、RBS（7 bp 太短，随机序列中误报过多）、
-p15A ori（公开记录只有比常用注释大得多的区段）。
+未收录：RBS（7 bp 太短，随机序列中误报过多）。
 
 ## 扩展
 
