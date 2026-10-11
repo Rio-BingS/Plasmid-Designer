@@ -64,7 +64,7 @@ plasmid-designer-v2/
 ```bash
 # 1. 后端
 cd src/backend
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt   # 锁文件，见下方「Python 依赖锁定」
 # SECRET_KEY 必填：未设置、占位、过短或低熵一律拒绝启动（本地开发同样适用）
 echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
 uvicorn app.main:app --reload
@@ -77,6 +77,25 @@ npm run dev
 
 前端开发服务器启动后访问 http://localhost:3000，Vite 会自动代理 `/api` 请求到后端 8000 端口
 （同源，无需配置 CORS；`AUTH_COOKIE_SECURE` 默认 `auto`，http 下会话 Cookie 不置 Secure，可正常登录）。
+
+### Python 依赖锁定
+
+后端依赖分两层：人工维护的源清单只写直接依赖并精确 pin，锁文件由脚本生成，含全部
+传递依赖（starlette、anyio、numpy 等）与各平台 wheel 的 sha256，安装一律带
+`--require-hashes`，哈希不符或缺项即失败。CI、Docker 镜像与裸机 `install.sh`
+都从锁文件安装，CI 的 pip-audit 也审计锁文件里的确切版本。
+
+| 源清单（手改） | 锁文件（生成，勿手改） | 用途 |
+|---|---|---|
+| `src/backend/requirements.in` | `src/backend/requirements.txt` | 本地开发、CI、裸机部署 |
+| `deploy/docker/requirements.backend.in` | `deploy/docker/requirements.backend.txt` | Docker 后端镜像（含 biopython） |
+
+增删或升级依赖：改 `.in`（两份清单的同名包版本保持一致）→ 在仓库根运行
+`bash scripts/lock_requirements.sh`（需要 `uv`，没有时脚本在临时 venv 里装一份）→
+跑全量测试 → 把 `.in` 与锁文件一起提交。只升级某个传递依赖用
+`UV_ARGS="--upgrade-package <包名>" bash scripts/lock_requirements.sh`。锁文件按
+Python 3.11 起的通用解析生成，Linux 上 3.11 与 3.12 安装同一组版本；
+`tests/test_docker_requirements_sync.py` 会检查锁文件与源清单是否同步。
 
 ### 存储模式
 

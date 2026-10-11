@@ -465,7 +465,8 @@ deploy/docker/
 ├── Dockerfile.backend       # 后端镜像 (Python 3.11)
 ├── Dockerfile.frontend      # 前端镜像 (Node 构建 + Nginx 运行)
 ├── nginx.conf               # Nginx 反向代理
-├── requirements.backend.txt # Python 依赖（镜像唯一依赖来源，勿在 Dockerfile 手工罗列）
+├── requirements.backend.in  # Python 依赖源清单（手改；勿在 Dockerfile 手工罗列）
+├── requirements.backend.txt # 锁文件（含传递依赖与哈希，scripts/lock_requirements.sh 生成）
 ├── .env.example             # 环境变量模板
 └── README.md                # 本文档
 ```
