@@ -11,6 +11,7 @@ from Bio.Align import PairwiseAligner
 from core.seq_utils import revcomp  # noqa: F401  # 共享实现；测试与 pipeline 亦从此处导入
 
 _ALIGNER = None
+_ACGT = frozenset("ACGT")
 
 
 def _get_aligner() -> PairwiseAligner:
@@ -32,6 +33,9 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
     返回 {direction: '+'/'-', ref_start, ref_end, score, identity, variants, aligned}
     variants: [{ref_pos(1-based), read_pos, type: substitution|insertion|deletion,
                 ref_base, alt_base, length}]
+    ambiguous: 对齐列中 read 为非 ACGT 调用（N/IUPAC）的列数——这些列不计入
+    identity 的分子分母，也不产出 substitution（basecaller 没给出确定碱基，
+    不构成「与参考不同」的证据）。
     坐标为正向参考链 1-based；insertion 的 ref_pos 为插入点左侧参考位置。
     aligned 为逐列对齐视图（供前端人工核对）：ref_aligned/read_aligned 等长字符串，
     '-' 表示该列在对方序列中缺失（插入/缺失）；read 一律以参考方向展示（反向
@@ -54,7 +58,7 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
 
     if best is None:
         return {"direction": "+", "ref_start": 0, "ref_end": 0, "score": 0.0,
-                "identity": 0.0, "variants": [],
+                "identity": 0.0, "variants": [], "ambiguous": 0,
                 "aligned": {"ref_start": 0, "ref_aligned": "", "read_aligned": "", "q_aligned": []}}
 
     score, direction, query, aln = best
@@ -63,6 +67,7 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
     variants: List[Dict] = []
     matches = 0
     compared = 0
+    ambiguous = 0
 
     ref_chars: List[str] = []
     read_chars: List[str] = []
@@ -101,10 +106,15 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
                 read_qi.extend([-1] * len(ref_block))
             continue
         for i, (rb, qb) in enumerate(zip(ref_block, read_block)):
-            compared += 1
             ref_chars.append(rb)
             read_chars.append(qb)
             read_qi.append(qs + i)
+            if qb not in _ACGT:
+                # N/IUPAC 调用：不比较、不出变体（wildcard 只影响打分，
+                # 必须在此处排除，否则每个 N 都成一条假 substitution）
+                ambiguous += 1
+                continue
+            compared += 1
             if rb == qb:
                 matches += 1
             else:
@@ -159,6 +169,7 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
         "score": float(score),
         "identity": round(identity, 4),
         "variants": variants,
+        "ambiguous": ambiguous,
         "aligned_read_len": int(coords[1][-1]) - int(coords[1][0]),
         "aligned": {
             "ref_start": ref_start,
