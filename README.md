@@ -90,6 +90,7 @@ npm run dev
 | `src/backend/requirements.in` | `src/backend/requirements.txt` | 运行时：裸机部署、本地开发、CI |
 | `src/backend/requirements-dev.in` | `src/backend/requirements-dev.txt` | 仅测试用的包（pytest、httpx2），本地开发与 CI 额外安装，不进生产 |
 | `deploy/docker/requirements.backend.in` | `deploy/docker/requirements.backend.txt` | Docker 后端镜像（含 biopython） |
+| `.github/ci/requirements-audit.in` | `.github/ci/requirements-audit.txt` | CI 的 pip-audit（独立 venv 按哈希安装） |
 
 增删或升级依赖：改 `.in`（两份清单的同名包版本保持一致）→ 在仓库根运行
 `bash scripts/lock_requirements.sh`（需要 `uv`，没有时脚本在临时 venv 里装一份）→
