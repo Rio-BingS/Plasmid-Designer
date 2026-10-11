@@ -230,33 +230,52 @@ export interface LinearLabelLayout { placed: PlacedLinearLabel[]; hidden: string
 
 export function layoutLinearLabels(
   inputs: LinearLabelInput[],
-  o: { width: number; fontSize: number; maxRows: number; gap?: number; left?: number },
+  o: {
+    width: number; fontSize: number; maxRows: number; gap?: number; left?: number
+    /**
+     * 允许标签离锚点水平错开的最大像素（引线斜向连回锚点）。0 = 只能居中于锚点
+     * （再夹到边界内）。密集位点（MCS）错开后能少占行、少隐藏。
+     */
+    maxShift?: number
+    /** 换到更高一行的代价（折算成像素位移），越大越倾向于横向错开 */
+    rowCost?: number
+  },
 ): LinearLabelLayout {
   const gap = o.gap ?? 6
   const left = o.left ?? 0
+  const maxShift = o.maxShift ?? 0
+  const rowCost = o.rowCost ?? 30
   const rows: [number, number][][] = []
   const placed: PlacedLinearLabel[] = []
   const hidden: string[] = []
   const order = [...inputs].sort((a, b) => b.priority - a.priority || a.x - b.x || (a.id < b.id ? -1 : 1))
+  const free = (r: [number, number][], x: number, w: number) => !r.some(([a, b]) => x - gap / 2 < b && a < x + w + gap / 2)
   for (const l of order) {
-    const w = textWidth(l.text, o.fontSize)
+    const w = textWidth(l.text, o.fontSize, l.bold)
     if (w > o.width - left) {
       hidden.push(l.id)
       continue
     }
-    const x = Math.min(Math.max(left, l.x - w / 2), o.width - w)
-    const iv: [number, number] = [x - gap / 2, x + w + gap / 2]
-    let row = rows.findIndex((r) => !r.some(([a, b]) => iv[0] < b && a < iv[1]))
-    if (row === -1) {
-      if (rows.length >= o.maxRows) {
-        hidden.push(l.id)
-        continue
+    const x0 = Math.min(Math.max(left, l.x - w / 2), o.width - w)
+    let best: { row: number; x: number; cost: number } | null = null
+    const tryRows = Math.min(rows.length + 1, o.maxRows)
+    for (let row = 0; row < tryRows; row++) {
+      const r = rows[row] ?? []
+      const cands = [x0]
+      if (maxShift > 0) for (const [a, b] of r) cands.push(b + gap / 2, a - w - gap / 2)
+      for (const x of cands) {
+        if (x < left - 1e-9 || x + w > o.width + 1e-9 || Math.abs(x - x0) > maxShift + 1e-9 || !free(r, x, w)) continue
+        const cost = Math.abs(x - x0) + row * rowCost
+        if (!best || cost < best.cost) best = { row, x, cost }
       }
-      rows.push([])
-      row = rows.length - 1
     }
-    rows[row].push(iv)
-    placed.push({ id: l.id, text: l.text, row, x, w, cx: l.x })
+    if (!best) {
+      hidden.push(l.id)
+      continue
+    }
+    if (best.row === rows.length) rows.push([])
+    rows[best.row].push([best.x - gap / 2, best.x + w + gap / 2])
+    placed.push({ id: l.id, text: l.text, row: best.row, x: best.x, w, cx: l.x })
   }
   return { placed, hidden, rows: rows.length }
 }
