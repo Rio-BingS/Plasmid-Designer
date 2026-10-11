@@ -252,15 +252,13 @@ async def simulate_digest(request: DigestRequest) -> Dict:
     按所选酶的切割位置切分序列，返回各片段的起止与大小，
     用于预测电泳条带。
     """
-    from core.sequence_analysis import RESTRICTION_ENZYMES, RestrictionSiteAnalyzer
-
     seq = request.sequence.upper()
     analyzer = RestrictionSiteAnalyzer()
 
     cuts = []
     enzymes_with_sites = []
     for enzyme in request.enzymes:
-        if enzyme not in RESTRICTION_ENZYMES:
+        if not analyzer.is_known(enzyme):
             raise HTTPException(status_code=400, detail=f"未知限制酶: {enzyme}")
         sites = await run_in_threadpool(analyzer.find_sites, seq, [enzyme])
         if sites:
@@ -580,15 +578,18 @@ async def check_cloning_compatibility(request: CompatibilityRequest) -> Dict:
 @cached("analysis_enzymes", ttl=604800)  # 酶表为静态数据，缓存 7 天
 async def list_enzymes() -> Dict:
     """获取支持的酶列表"""
+    from core.enzyme_sites import get_enzyme
     from core.sequence_analysis import RESTRICTION_ENZYMES
-    
+
+    overhang_names = {'5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端'}
     enzymes_info = {}
     for name, (seq, cut, overhang) in RESTRICTION_ENZYMES.items():
-        overhang_names = {'5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端'}
+        c1, c2 = get_enzyme(name)["cut"]
         enzymes_info[name] = {
             "recognition_sequence": seq,
             "cut_type": overhang_names.get(overhang, '未知'),
-            "is_type_iis": name in ['BsaI', 'BsmBI', 'BbsI']
+            # Type IIS：切点落在识别序列之外（BsaI/BsmBI/BbsI）
+            "is_type_iis": not (0 <= min(c1, c2) and max(c1, c2) <= len(seq)),
         }
     
     return {
