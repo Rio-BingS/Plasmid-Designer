@@ -275,6 +275,13 @@
 
 密码子 / 引物 / 酶切判定修正批次。
 
+> **已知问题：标签 `v2.4.1`（`e744841`）的前端无法构建，请勿按该标签部署，
+> 请直接使用 v2.5.0 或更新版本。** 发版时 `src/frontend/package.json` 被写入
+> UTF-8 BOM（`EF BB BF`），vite 的 JSON 解析报错，`npm run build` 与 vitest
+> 全部失败；修复提交为 `7d4351d`（已包含在 v2.5.0 中）。已公开的标签不再移动。
+> 必须停留在 2.4.1 时，可在检出后执行
+> `sed -i '1s/^\xEF\xBB\xBF//' src/frontend/package.json` 去掉 BOM 再构建。
+
 ### 升级注意
 
 - 移除 HuggingFace Spaces 部署方式（`hf-docker`、`hf-gradio`、`deploy_hf.sh`
