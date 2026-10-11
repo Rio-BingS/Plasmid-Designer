@@ -41,7 +41,8 @@ const navItems = [
   { to: '/vectors', label: '载体库', feature: 'vectors' },
   { to: '/sequencing', label: '测序分析', feature: 'sequencing' },
   { to: '/sequencing/batch', label: '批量测序', feature: 'sequencing_batch' },
-  { to: '/analysis', label: '序列工具', feature: 'analysis' }
+  { to: '/analysis', label: '序列工具', feature: 'analysis' },
+  { to: '/map', label: '图谱', feature: 'map' }
 ]
 
 const visibleNavItems = computed(() =>
