@@ -402,6 +402,8 @@ function onPointerUp(e: PointerEvent) {
       if (info) info.select()
       else store.setCaret(Math.max(0, Math.min(L.value, Math.round(anchor))))
     }
+  } else if (mode === 'select' && store.selection.value) {
+    store.navigateTo(store.selection.value)
   }
   mode = 'none'
 }
