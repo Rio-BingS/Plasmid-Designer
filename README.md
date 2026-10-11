@@ -337,9 +337,10 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 （`/sequencing` 路由，`SequencingView.vue`）：把参考序列文件与 .ab1 放在同一文件夹一起
 拖入/选择（自动按类型分类）→ 一键分析 → 历史分析查看/删除；设计结果页与载体详情页通过
 深链跳转（`?mode=vector|design&ref=<id>`），进入时自动下载对应 GenBank 预填参考序列。
-质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
-（重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
-高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。
+质粒图谱（前端 `src/map/`，消费 `plasmid-map/1` 契约的 MapDocument）由 `MapViewer`
+组合环形 / 线性 / 序列 / 分屏视图，共享选区与悬停；特征自动分道，标签内置或外置引线
+且保证不重叠（放不下的计数并列出）；酶切按酶组、切点数、名称过滤；Ctrl+F 错配搜索；
+选区长度/GC%/Tm；导出 SVG、PNG 2x、GenBank。纯算法在 `src/map/core/`（带单测）。
 图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 的默认菜单 51 种常用酶扫描生成（含识别序列；酶参数取自 Biopython 自带的 REBASE 数据）。
 
 **载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
