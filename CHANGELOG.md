@@ -110,6 +110,8 @@
 - Docker：前端端口对外发布时，经 docker-proxy 转发（IPv6 入站、userland-proxy、
   rootless 等）的直连来源显示为 compose 网关而被信任，客户端可伪造 `X-Real-IP`
   换限流桶；客户端自带的 `X-Forwarded-For` 也不再经非可信来源转给后端。
+- 裸机部署文档的「更新部署」与「换 pip 镜像源」命令补上 `--require-hashes`，
+  按文档升级不再绕过锁文件哈希校验；后端 README 的开发安装同时装开发锁。
 
 ## [2.9.1] - 2026-10-11
 
