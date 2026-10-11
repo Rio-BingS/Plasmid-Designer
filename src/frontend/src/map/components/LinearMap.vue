@@ -308,7 +308,12 @@ const hoverRects = computed(() => {
 
 // 无法显示项上报
 watch([featLanes, featLabels, enzLabels, cutOverview], () => {
-  const items = [...featLabels.value.hidden, ...enzLabels.value.hidden].map((k) => ({ id: k, name: resolveHit(store, k)?.title ?? k, reason: '标签空间不足' }))
+  const cutAt = new Map(cutsInView.value.map((c) => [c.key, c.cut]))
+  const items = [...featLabels.value.hidden, ...enzLabels.value.hidden].map((k) => {
+    const title = resolveHit(store, k)?.title ?? k
+    const at = cutAt.get(k)
+    return { id: k, name: at === undefined ? title : `${title} @${at.toLocaleString('en-US')}`, reason: '标签空间不足' }
+  })
   for (const id of featLanes.value.overflow) {
     items.push({ id: `f:${id}`, name: store.doc.value.features.find((f) => f.id === id)?.name ?? id, reason: '特征分道已满' })
   }
