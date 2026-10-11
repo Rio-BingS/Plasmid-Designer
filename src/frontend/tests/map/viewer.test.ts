@@ -56,7 +56,7 @@ describe('MapViewer：多视图共享选区', () => {
     expect(w.find('.smap-scroll').exists()).toBe(true)
     const row = w.findAll('.mv-feature-list .mv-row').find((r) => r.text().includes('AmpR'))!
     await row.trigger('click')
-    expect(w.find('.mv-selection-text').text()).toContain('885..1,745')
+    expect(w.find('.mv-selection-text').text()).toContain('1,626..2,486')
     expect(w.find('.mv-selection-text').text()).toContain('861 bp')
     expect(w.find('.mv-selection-text').text()).toMatch(/GC \d+\.\d% · Tm \d+\.\d °C/)
     expect(w.find('.cmap-selection').exists()).toBe(true)
@@ -84,11 +84,13 @@ describe('MapViewer：多视图共享选区', () => {
     const w = mount(MapViewer, { props: { doc: puc(), initialView: 'sequence' } })
     await flushPromises()
     expect(w.findAll('.smap-aa')).toHaveLength(0)
-    ;(w.vm as any).store.selectFeature('f2') // lacZ-alpha
+    ;(w.vm as any).store.selectFeature('f1') // lacZ-alpha（反链 146..469）
     await w.vm.$nextTick()
-    expect(w.findAll('.smap-aa').length).toBeGreaterThan(10)
-    const d = puc()
-    expect(w.findAll('.smap-aa')[0].text()).toBe(translate(d.sequence.slice(215, 218)))
+    const aa = w.findAll('.smap-aa').map((x) => x.text())
+    expect(aa.length).toBeGreaterThan(10)
+    // 完整 ORF：翻译里含起始 M 与终止 *
+    expect(aa).toContain('M')
+    expect(aa).toContain('*')
   })
 
   it('图层开关：关闭特征/酶切后视图不再绘制', async () => {

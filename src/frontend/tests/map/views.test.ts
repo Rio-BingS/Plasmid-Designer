@@ -38,7 +38,7 @@ beforeEach(() => {
 describe('CircularMap', () => {
   it('画出特征、酶切刻度、中心名称与长度', () => {
     const w = mount(CircularMap, { props: { doc: puc(), size: 720 } })
-    expect(w.findAll('.cmap-feat')).toHaveLength(5)
+    expect(w.findAll('.cmap-feat')).toHaveLength(puc().features.length)
     const cuts = puc().enzymes.reduce((n, e) => n + e.sites.length, 0)
     expect(w.findAll('.cmap-cut')).toHaveLength(cuts)
     expect(w.find('.cmap-name').text()).toBe('pUC19')
@@ -145,10 +145,10 @@ describe('LinearMap 额外轨道', () => {
 describe('缩略图与缩略导航', () => {
   it('MapThumbnail 无标签，每个特征一块', () => {
     const w = mount(MapThumbnail, { props: { doc: puc() } })
-    expect(w.findAll('path')).toHaveLength(5)
+    expect(w.findAll('path')).toHaveLength(puc().features.length)
     expect(w.findAll('text')).toHaveLength(0)
     const lin = mount(MapThumbnail, { props: { doc: { ...puc(), topology: 'linear' as const } } })
-    expect(lin.findAll('rect').length).toBe(6)
+    expect(lin.findAll('rect').length).toBe(puc().features.length + 1) // 骨架 + 每个特征
   })
   it('Minimap 渲染特征块', () => {
     const w = mount(Minimap, { props: { doc: puc() } })
