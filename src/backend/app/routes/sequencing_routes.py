@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
 from zipfile import BadZipFile
@@ -59,7 +59,7 @@ from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
 from app import batch_read_limits, site_settings
 from app.gating import require_feature
-from app import sequencing_store
+from app import batch_report_store, sequencing_store
 from app.sequencing_batch import (
     batch_payload, estimate_batch_cost, group_batch_uploads, parse_group_references,
     plasmid_groups, reference_circular, run_batch_groups,
@@ -77,9 +77,9 @@ router = APIRouter(prefix="/api", tags=["sequencing"])
 
 # 进程级内存存储：analysis_id → 完整结果（含 trace 峰图）
 _ANALYSES: Dict[str, Dict] = {}
-# 进程级内存存储：batch_id → {"created_ts", "zip"}（批量整理包，15 分钟有效）
-_BATCHES: Dict[str, Dict] = {}
-# 终审 C-07：两个全局 dict 由事件循环线程与线程池（_batch_pipeline/
+# 批量整理包不在进程内存里：写入磁盘私有目录（app.batch_report_store），
+# BACKEND_WORKERS>1 时任一 worker 都能提供下载
+# 终审 C-07：全局 dict 由事件循环线程与线程池（_batch_pipeline/
 # _sweep_expired 都在线程池里）并发增删遍历。dict 自身的单次操作是原子的，
 # 但「遍历 + 删除」的组合会抛 dictionary changed size during iteration。
 # 用一把可重入锁包住所有读写路径（同一线程内 sweep→register 可重入）。
@@ -107,8 +107,8 @@ MAX_REF_BP = 200_000
 # 终审 C-02：批量请求级总字节上限（单文件上限挡不住多文件叠加：
 # 400 × 20MB = 8GB 会先读进内存才被拒绝）
 MAX_BATCH_REQUEST_BYTES = 500 * 1024 * 1024
-# _BATCHES 整理包缓存的全局上限（此前无条数/总量上限：单批 256MB ×
-# 15 分钟内不限批次 → 内存可被反复打满）
+# 整理包存储（磁盘，全部 worker 共享）的全局上限（此前无条数/总量上限：
+# 单批 256MB × 15 分钟内不限批次 → 存储可被反复打满）
 MAX_BATCH_CACHE_ENTRIES = 8
 # 整理包缓存的总字节上限（此前按「单包上限 × 条数」= 2 GB 计算，形同虚设）
 MAX_BATCH_CACHE_TOTAL_BYTES = int(os.environ.get(
@@ -179,27 +179,25 @@ async def _run_heavy(fn, *args, **kwargs):
 
 
 def _sweep_expired() -> None:
-    """清理过期的分析记录与批量整理包（每次访问入口处惰性触发）
+    """清理过期的分析记录（每次访问入口处惰性触发）
 
     终审 C-07：加锁——遍历中删除在并发下会抛 dictionary changed size
-    during iteration（_batch_pipeline 在线程池同样会触碰这两个 dict）。"""
+    during iteration（_batch_pipeline 在线程池同样会触碰 _ANALYSES）。"""
     now = time.time()
     with _STORE_LOCK:
         for aid in [aid for aid, r in _ANALYSES.items()
                     if now - r.get("_created_ts", 0) > ANALYSIS_TTL]:
             del _ANALYSES[aid]
-        for bid in [bid for bid, r in _BATCHES.items()
-                    if now - r["created_ts"] > BATCH_TTL]:
-            del _BATCHES[bid]
-        # 终审 C-02：整理包缓存再加一层「条数 + 总字节」硬上限（LRU）。
-        # 15 分钟 TTL 内不限批次时，单批最大 256MB × 任意次数即可打满内存
-        total_zip = sum(len(r.get("zip") or b"") for r in _BATCHES.values())
-        by_age = sorted(_BATCHES.items(), key=lambda kv: kv[1]["created_ts"])
-        while by_age and (len(_BATCHES) > MAX_BATCH_CACHE_ENTRIES
-                          or total_zip > MAX_BATCH_CACHE_TOTAL_BYTES):
-            bid, rec = by_age.pop(0)
-            total_zip -= len(rec.get("zip") or b"")
-            del _BATCHES[bid]
+
+
+def _sweep_reports() -> int:
+    """清理磁盘上的过期整理包（同步磁盘 I/O，调用方须在线程池中执行）。
+
+    终审 C-02：除 TTL 外再加「条数 + 总字节」硬上限，从最旧开始淘汰——
+    15 分钟内不限批次时，单批最大 256MB × 任意次数即可打满存储。
+    整理包目录为全部 worker 共享，上限对整个服务生效。"""
+    return batch_report_store.sweep(BATCH_TTL, MAX_BATCH_CACHE_ENTRIES,
+                                    MAX_BATCH_CACHE_TOTAL_BYTES)
 
 
 def _can_access(record: Dict, user: Optional[User],
@@ -827,19 +825,20 @@ def _batch_pipeline(
         # 并发淘汰时 KeyError
         zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
                                     excel_original, excel_filled, records_by_id)
-        with _STORE_LOCK:
-            _BATCHES[payload["batch_id"]] = {
-                "created_ts": time.time(),
-                "zip": zip_bytes,
-                "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
-                # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
-                # 匿名批次绑定整批访问令牌
-                "owner_id": owner_id,
-                "access_token_hash": (sequencing_store.hash_access_token(batch_token)
-                                      if batch_token else None),
-            }
-            # 插入后再淘汰：条数与总字节上限任何时刻都不被突破
-            _sweep_expired()
+        saved = batch_report_store.save(payload["batch_id"], zip_bytes, {
+            "created_ts": time.time(),
+            "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
+            # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
+            # 匿名批次绑定整批访问令牌
+            "owner_id": owner_id,
+            "access_token_hash": (sequencing_store.hash_access_token(batch_token)
+                                  if batch_token else None),
+        })
+        del zip_bytes
+        # 写入失败（目录不可写/磁盘满）时不提供下载入口，分析结果照常返回
+        payload["report_ready"] = saved
+        # 写入后再淘汰：条数与总字节上限在每次写入后立即恢复
+        _sweep_reports()
     return payload
 
 
@@ -853,12 +852,12 @@ async def download_batch_report(batch_id: str, request: Request,
     与各组分析报告 + 整理清单 + 结论回填的信息表）；生成 15 分钟后随缓存自动
     清理，可重复下载。终审 B-03：非创建者（且非管理员）一律 404——包内含
     全部原始数据，不暴露存在性。"""
-    _sweep_expired()
-    with _STORE_LOCK:  # 终审 C-07
-        rec = _BATCHES.get(batch_id)
-    if rec is None:
-        raise HTTPException(status_code=404,
-                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    gone = HTTPException(status_code=404,
+                         detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    await run_in_threadpool(_sweep_reports)
+    rec = await run_in_threadpool(batch_report_store.load_meta, batch_id)
+    if rec is None or time.time() - float(rec.get("created_ts", 0)) > BATCH_TTL:
+        raise gone
     owner = rec.get("owner_id")
     is_admin = bool(user and user.is_admin)
     if owner:
@@ -868,16 +867,31 @@ async def download_batch_report(batch_id: str, request: Request,
         allowed = is_admin or _token_hash_matches(_request_access_token(request),
                                                   rec.get("access_token_hash"))
     if not allowed:
-        raise HTTPException(status_code=404,
-                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+        raise gone
+    # 先打开再流式发送：发送途中即使被清理删除，已打开的句柄仍可读完；
+    # 不再把整个 zip 读进内存
+    fh = await run_in_threadpool(batch_report_store.open_zip, batch_id)
+    if fh is None:
+        raise gone
+    size = os.fstat(fh.fileno()).st_size
+
+    def _chunks():
+        with fh:
+            while True:
+                buf = fh.read(1024 * 1024)
+                if not buf:
+                    break
+                yield buf
+
     # HTTP 头仅限 latin-1：中文文件名走 RFC 5987 filename*，ASCII 名兜底
     ascii_name = f"seqbatch_{batch_id[-6:]}.zip"
-    utf8_name = quote(f"{rec['zip_name']}.zip")
-    return Response(
-        content=rec["zip"],
+    utf8_name = quote(f"{rec.get('zip_name') or 'seqbatch'}.zip")
+    return StreamingResponse(
+        _chunks(),
         media_type="application/zip",
         headers={"Content-Disposition":
-                 f"attachment; filename={ascii_name}; filename*=UTF-8''{utf8_name}"},
+                 f"attachment; filename={ascii_name}; filename*=UTF-8''{utf8_name}",
+                 "Content-Length": str(size)},
     )
 
 
