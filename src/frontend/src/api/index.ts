@@ -618,7 +618,15 @@ export interface SequencingAnalysis {
     diffs?: ConsensusDiff[]
   }
   coverage_ranges: [number, number][]
-  coverage_gaps?: { start: number; end: number; length: number }[]
+  /** 覆盖缺口；环状参考跨原点的缺口 start > end（折回坐标），带
+   *  wraps_origin 与 ref_segments [[x, L], [1, y]]，length 为合并后总长 */
+  coverage_gaps?: {
+    start: number
+    end: number
+    length: number
+    wraps_origin?: boolean
+    ref_segments?: [number, number][] | null
+  }[]
   /** 参考是否按环状比对（旧记录无此字段） */
   circular?: boolean
   cds_reports?: CdsReport[]

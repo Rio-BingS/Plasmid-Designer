@@ -698,6 +698,22 @@ describe('SequencingPanel', () => {
     expect(gaps).toContain('600-4900（4301bp）')
   })
 
+  it('环状参考跨原点的覆盖缺口按两段写位置', async () => {
+    const analysis = {
+      ...mockAnalysis,
+      circular: true,
+      coverage_gaps: [{
+        start: 4951, end: 60, length: 110,
+        wraps_origin: true, ref_segments: [[4951, 5000], [1, 60]] as [number, number][]
+      }],
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
+    await wrapper.vm.$nextTick()
+    const gaps = wrapper.find('.coverage-gaps').text()
+    expect(gaps).toContain('覆盖缺口 1 段')
+    expect(gaps).toContain('4951-5000、1-60（110bp）')
+  })
+
   it('shows peak evidence in confidence tooltip and pending CDS chip', async () => {
     const analysis = {
       ...mockAnalysis,
