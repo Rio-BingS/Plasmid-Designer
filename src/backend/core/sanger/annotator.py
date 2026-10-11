@@ -75,10 +75,21 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
     # 所在特征（同时保留原始特征分段，供 CDS 注释直接使用——
     # 按名称二次反查在重名特征时会取错坐标）。多段特征（join）按组
     # 判定命中：只有变体落在某一段内才算命中，且同一特征只报一次
+    # 环状参考上跨原点的缺失（ref_pos+len-1 > L）拆成 [ref_pos, L] 与
+    # [1, ref_pos+len-1-L] 两段，每段按起点判定命中（与线性缺失只看
+    # ref_pos 的口径一致）；线性参考上缺失不会越过 L，仍只有一段
+    var_segs = [(ref_pos, int(variant.get("length") or 1))]
+    if variant["type"] == "deletion" and L and ref_pos + var_segs[0][1] - 1 > L:
+        n = var_segs[0][1]
+        var_segs = [(ref_pos, L - ref_pos + 1), (1, n - (L - ref_pos + 1))]
+
+    def _in_parts(parts: List[Dict], pos: int) -> bool:
+        return any(int(p.get("start", 0)) <= pos <= int(p.get("end", 0)) for p in parts)
+
     hit_features = []
     hit_groups: List[List[Dict]] = []
     for parts in group_feature_segments(features):
-        if any(int(p.get("start", 0)) <= ref_pos <= int(p.get("end", 0)) for p in parts):
+        if any(_in_parts(parts, s) for s, _n in var_segs):
             f = parts[0]
             hit_features.append({"name": f.get("name", "?"), "type": f.get("type", "other")})
             hit_groups.append(parts)
@@ -95,12 +106,14 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
         # 编码序列按段顺序拼接（跨原点的 join 先取 2701..3000 再接 1..300），
         # 负链段取反向互补，密码子坐标按编码方向计算
         coding = coding_sequence(ref, parts)
-        cpos = coding_offset(parts, ref_pos)
+        hit_segs = [(s, n) for s, n in var_segs if _in_parts(parts, s)]
+        hit_pos = hit_segs[0][0]
+        cpos = coding_offset(parts, hit_pos)
         if cpos is None:
             continue
         strand = next(
             (p.get("strand", "+") for p in parts
-             if int(p["start"]) <= ref_pos <= int(p["end"])),
+             if int(p["start"]) <= hit_pos <= int(p["end"])),
             feat.get("strand", "+"),
         )
         if variant["type"] == "substitution":
@@ -121,7 +134,8 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
             elif aa_ref != "x":
                 variant["synonymous"] = True  # 同义：DNA 变、蛋白不变，不算氨基酸改变
         elif variant["type"] in ("insertion", "deletion"):
-            variant["frameshift"] = variant["length"] % 3 != 0
+            # 跨原点缺失只有一段落在该特征时按该段长度判移码
+            variant["frameshift"] = sum(n for _s, n in hit_segs) % 3 != 0
 
     # 酶切位点变化：在变体附近 ±14bp 窗口比较参考与突变序列。
     # 插入/缺失会使下游位点整体平移 delta，直接按 (名称, 位置) 对比会把"平移"

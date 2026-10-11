@@ -1789,13 +1789,22 @@ def _build_cds_reports(
         length = end - start + 1
         return round(cov / length * 100, 1) if length else 0.0
 
+    L_ref = len(ref)
+
+    def _del_positions(v: Dict) -> List[int]:
+        """缺失覆盖的参考坐标。环状参考上跨原点的缺失（ref_pos+len-1 > L）
+        折回 1..L（与 _joined_cds_report 的折回口径一致）；线性参考上缺失
+        不会越过 L，结果与原线性区间相同"""
+        a, n = int(v["ref_pos"]), int(v.get("length") or 1)
+        return [(p - 1) % L_ref + 1 for p in range(a, a + n)] if L_ref else []
+
     def _rebuild_from_variants(start: int, end: int, vs: List[Dict]) -> str:
         """按变体列表重建区间核酸（anchor 语义：插入位于 ref_pos 与 ref_pos+1 之间）"""
         subs = {v["ref_pos"]: v["alt_base"] for v in vs if v["type"] == "substitution"}
         dels: set = set()
         for v in vs:
             if v["type"] == "deletion":
-                dels.update(range(v["ref_pos"], v["ref_pos"] + int(v.get("length") or 1)))
+                dels.update(_del_positions(v))
         ins_at: Dict[int, List[str]] = {}
         for v in vs:
             if v["type"] == "insertion" and start <= v["ref_pos"] < end:
@@ -1941,11 +1950,10 @@ def _build_cds_reports(
         # 插入发生在 ref_pos 与 ref_pos+1 之间，插入点严格落在 CDS 内部
         #（anchor ∈ [start, end-1]）才影响该 CDS，紧贴边界的插入不改变 CDS 自身序列
         def _affects(v: Dict) -> bool:
-            vlen = int(v.get("length") or 1)
             if v.get("type") == "insertion":
                 return start <= v["ref_pos"] < end
             if v.get("type") == "deletion":
-                return not (v["ref_pos"] + vlen - 1 < start or v["ref_pos"] > end)
+                return any(start <= p <= end for p in _del_positions(v))
             return start <= v["ref_pos"] <= end
 
         in_cds = [v for v in variants if _affects(v)]
@@ -1965,9 +1973,7 @@ def _build_cds_reports(
             vlen = int(v.get("length") or 1)
             if v["type"] == "insertion":
                 return vlen  # anchor 落在 CDS 内部（_affects 已保证）
-            lo = max(v["ref_pos"], start)
-            hi = min(v["ref_pos"] + vlen - 1, end)
-            return max(0, hi - lo + 1)
+            return sum(1 for p in _del_positions(v) if start <= p <= end)
         frameshifts = [v for v in indels if _indel_len_in_cds(v) % 3 != 0]
         inframe_ins = sum(1 for v in indels if v["type"] == "insertion" and int(v.get("length") or 1) % 3 == 0)
         inframe_del = sum(1 for v in indels if v["type"] == "deletion" and int(v.get("length") or 1) % 3 == 0)
