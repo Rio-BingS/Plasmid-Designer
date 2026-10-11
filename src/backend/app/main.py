@@ -14,6 +14,7 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -68,7 +69,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 管理员引导失败: {e}")
 
+    # 批量测序分块上传会话：启动时清理上次残留的暂存目录，之后周期清理过期会话
+    from app.routes.sequencing_session_routes import sweeper_loop
+    sweeper = asyncio.create_task(sweeper_loop())
+
     yield
+
+    sweeper.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sweeper
 
 
 # ==================== 创建应用 ====================
@@ -157,6 +166,7 @@ from app.cache_routes import router as cache_router
 from app.rate_limit_routes import router as rate_limit_router
 from app.analysis_routes import router as analysis_router
 from app.routes.sequencing_routes import router as sequencing_router
+from app.routes.sequencing_session_routes import router as sequencing_session_router
 from app.admin_routes import router as admin_router
 from app.gating import require_feature, require_any_feature
 
@@ -176,6 +186,8 @@ app.include_router(
     sequencing_router,
     dependencies=[Depends(require_any_feature("sequencing", "sequencing_batch"))],
 )
+# 批量测序分块上传会话（各端点自带 sequencing_batch 门控）
+app.include_router(sequencing_session_router)
 app.include_router(admin_router)
 
 # 速率限制中间件
