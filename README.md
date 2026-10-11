@@ -248,7 +248,9 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
   进入逐碱基核对。不上传信息表时按「测序文件名包含图谱文件名」归组（图谱名互为前缀
   时取最长包含，仍无法唯一归组的列入未匹配清单）。单次请求每组参与比对的 read
   默认最多 24 条、整批最多 240 条（`SEQUENCING_BATCH_MAX_READS_PER_GROUP`、
-  `SEQUENCING_BATCH_MAX_TOTAL_READS`），超限在比对前返回 413 并提示拆分批次。
+  `SEQUENCING_BATCH_MAX_TOTAL_READS`），管理员可在 `/admin` 按分组或单个账号调整
+  （见下文账号体系）；超限在比对前返回 413，提示写明生效的上限及其来源。页面显示
+  本账号的上限；同时仍受单次上传总体积 500 MB、单次最多 400 个文件限制。
 - **离线脚本**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
   结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
   测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
@@ -307,9 +309,9 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 | GET | `/api/auth/me` | 获取当前用户 |
 | GET | `/api/auth/verify` | 检查当前会话是否有效 |
 | GET | `/api/auth/users` | 用户列表（仅管理员） |
-| GET/PUT | `/api/admin/settings` | 站点设置（仅管理员）：注册开关、邮箱验证开关、功能开放矩阵 |
+| GET/PUT | `/api/admin/settings` | 站点设置（仅管理员）：注册开关、邮箱验证开关、功能开放矩阵、各分组批量 read 上限 |
 | GET | `/api/admin/users` | 用户列表（仅管理员） |
-| PUT/DELETE | `/api/admin/users/{id}` | 角色/启用/验证标记、删除（仅管理员） |
+| PUT/DELETE | `/api/admin/users/{id}` | 角色/启用/验证标记、个人功能权限与批量 read 上限覆盖、删除（仅管理员） |
 
 **登录会话**：登录 / 注册 / 邮箱验证成功后，后端把 JWT 写入 httpOnly 会话 Cookie
 （`pd_session`，`Path=/api`、`SameSite=Lax`，Secure 由 `AUTH_COOKIE_SECURE` 决定），前端脚本
@@ -329,6 +331,15 @@ CSRF 检查。
   按「未登录访客 / 普通用户」
   两组分别勾选——前端隐藏导航入口并拦截直链路由，后端在 API 层同步拒绝（`require_feature`
   路由依赖，见 `app/gating.py`）。默认全开放（保持既有行为），由管理员自行收紧。
+- **批量测序 read 上限**：「匿名访客 / 普通用户 / 管理员」三个分组各设「每组最多
+  read 数」「整批最多 read 数」，留空即用服务器默认（环境变量
+  `SEQUENCING_BATCH_MAX_READS_PER_GROUP` / `SEQUENCING_BATCH_MAX_TOTAL_READS`，
+  默认 24 / 240）；用户列表可为单个账号单独设置（留空即跟随所在分组，可高于或低于
+  分组值）。生效顺序：个人设置 → 分组设置 → 服务器默认。所有值不得超过服务器安全
+  上限（`SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX` / `SEQUENCING_BATCH_READS_HARD_MAX`，
+  默认 384 / 5000），超出时接口返回 422，生效值也按它截断。批量请求另有单次上传
+  总体积 500 MB、单次最多 400 个文件的固定限制，调高 read 上限后可能先触发。
+  解析逻辑在 `app/batch_read_limits.py`。
 存储于 `site_settings` 单行表（`app/site_settings.py`，读侧 3 秒 TTL 缓存）；
 功能键注册表在 `app/features.py`。自我保护：不能禁用/删除自己，不能移除最后一位管理员。
 
