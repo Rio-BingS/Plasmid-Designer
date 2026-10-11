@@ -1,0 +1,4 @@
+# CI 审计工具源清单（人工维护，精确 pin）。CI 在独立 venv 中按同目录锁文件
+# requirements-audit.txt（scripts/lock_requirements.sh 生成，含哈希）安装，
+# 不与被测环境混装；pip-audit 以 --disable-pip -r 只读锁文件，不需要项目依赖。
+pip-audit==2.10.1

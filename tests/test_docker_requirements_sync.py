@@ -23,6 +23,8 @@ SRC_IN = REPO / "src" / "backend" / "requirements.in"
 SRC_LOCK = REPO / "src" / "backend" / "requirements.txt"
 DEV_IN = REPO / "src" / "backend" / "requirements-dev.in"
 DEV_LOCK = REPO / "src" / "backend" / "requirements-dev.txt"
+AUDIT_IN = REPO / ".github" / "ci" / "requirements-audit.in"
+AUDIT_LOCK = REPO / ".github" / "ci" / "requirements-audit.txt"
 
 # 只在测试中使用的包：不得进入运行时清单与锁（审查 09 L-4）
 TEST_ONLY = ("pytest", "httpx2", "httpx", "pluggy", "iniconfig")
@@ -91,7 +93,8 @@ def test_key_runtime_packages_present_in_docker_list():
 
 def test_lock_files_match_sources_and_carry_hashes():
     """锁文件必须由当前源清单生成：每个直接依赖都在锁里且版本相同，每项都带哈希"""
-    for src, lock in ((SRC_IN, SRC_LOCK), (DOCKER_IN, DOCKER_LOCK), (DEV_IN, DEV_LOCK)):
+    for src, lock in ((SRC_IN, SRC_LOCK), (DOCKER_IN, DOCKER_LOCK), (DEV_IN, DEV_LOCK),
+                      (AUDIT_IN, AUDIT_LOCK)):
         entries = _lock_entries(lock)
         locked = {}
         for name, ver, n_hash in entries:
@@ -147,3 +150,14 @@ def test_dev_lock_consistent_with_runtime_lock():
         dev.setdefault(n, set()).add(v)
     drift = {n: (v, sorted(dev.get(n, []))) for n, v in runtime.items() if v not in dev.get(n, set())}
     assert not drift, f"开发锁与运行时锁版本不一致（runtime, dev）：{drift}"
+
+
+def test_ci_pip_audit_pinned_with_hashes():
+    """CI 的 pip-audit 按带哈希的锁安装，不再 `pip install pip-audit` 取最新版（审查 09 L-1）"""
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert not re.search(r"pip install\s+pip-audit\b", ci), "pip-audit 未锁版本"
+    assert re.search(
+        r"pip\"? install --require-hashes \\\n\s*-r \.github/ci/requirements-audit\.txt", ci
+    )
+    pins = _pins(AUDIT_IN)
+    assert pins.get("pip-audit"), "requirements-audit.in 须精确 pin pip-audit"
