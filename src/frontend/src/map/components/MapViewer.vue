@@ -22,6 +22,7 @@ import LinearMap from './LinearMap.vue'
 import SequenceMap from './SequenceMap.vue'
 import Minimap from './Minimap.vue'
 import MapTooltip from './MapTooltip.vue'
+import DigestPanel from './DigestPanel.vue'
 
 const props = withDefaults(defineProps<{
   doc: MapDocument
@@ -176,7 +177,7 @@ async function exportGb() {
 const hasBlocked = computed(() => doc.value.enzymes.some((e) => blockedSiteCount(e) > 0))
 
 // ---------------- 侧栏 ----------------
-const sideTab = ref<'features' | 'enzymes'>('features')
+const sideTab = ref<'features' | 'enzymes' | 'digest'>('features')
 const featureRows = computed(() => [...doc.value.features]
   .sort((a, b) => a.start - b.start || b.end - a.end)
   .map((f) => ({ f, color: featureColor(f), len: rangeLength(f, doc.value.length, isCircular.value), hidden: store.hiddenFeatures.value.includes(f.id) })))
@@ -278,6 +279,8 @@ defineExpose({ store, view })
                   @click="sideTab = 'features'">特征 ({{ doc.features.length }})</button>
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'enzymes' }]" :aria-selected="sideTab === 'enzymes'"
                   @click="sideTab = 'enzymes'">酶切 ({{ store.enzymeList.value.length }})</button>
+          <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'digest' }]" :aria-selected="sideTab === 'digest'"
+                  @click="sideTab = 'digest'">消化</button>
         </div>
         <ul v-if="sideTab === 'features'" class="mv-list mv-feature-list">
           <li v-if="!featureRows.length" class="mv-muted mv-empty">没有特征注释</li>
@@ -291,7 +294,7 @@ defineExpose({ store, view })
                     @click.stop="store.toggleFeatureHidden(r.f.id)">{{ r.hidden ? '○' : '●' }}</button>
           </li>
         </ul>
-        <div v-else class="mv-enzyme-panel">
+        <div v-else-if="sideTab === 'enzymes'" class="mv-enzyme-panel">
           <input v-model="store.enzymeFilter.query" class="mv-input mv-enz-query" type="search" placeholder="按酶名或识别序列筛选" aria-label="筛选酶" />
           <ul class="mv-list mv-enzyme-list">
             <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶</li>
@@ -304,6 +307,7 @@ defineExpose({ store, view })
           </ul>
           <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出<template v-if="hasBlocked"> · <span style="color:#9ca3af">灰虚线</span> = 甲基化阻断</template></p>
         </div>
+        <DigestPanel v-if="sideTab === 'digest'" :store="store" />
       </aside>
     </div>
 
