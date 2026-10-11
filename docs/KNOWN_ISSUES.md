@@ -15,13 +15,6 @@
 2. **离线脚本报告未与网页端完全同步**：`scripts/batch_sequencing_report.py`
    已有同聚物判读章节，但没有网页整理包的「双峰（疑似混合）检测」章节，
    归档结构也仍是平铺（网页端为按质粒 + 正确/错误/无法判定分置）。
-3. **分析页「双酶消化模拟」UI 全流程未做完整人工验证**：后端
-   `/api/analysis/digest` 有单测覆盖，EcoRI 单酶 UI 实测通过。
-4. **代码注释引用了不存在的文档**：`src/backend/requirements.txt`、
-   `core/sanger/signal.py`、`scripts/poly_baseline.py`、`scripts/poly_signal_probe.py`
-   引用 `docs/poly-final-actionable-list.md`（研究草稿，未入库）；
-   `smoke_test.ps1` 头注释引用已删除的 `docs/FIXPLAN.md`（内容已并入下文
-   「2025 功能完整性核查」）。
 
 ---
 
