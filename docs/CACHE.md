@@ -2,9 +2,15 @@
 
 > **当前状态（已接线）**：以下业务流程已接入缓存读写——
 > - 设计结果（完成态）：后台任务完成后写入；`GET /api/design/{id}` 读缓存，未命中读存储并回填（TTL 24h）
-> - 密码子优化：`app/design_service.py` 按 (算法版本 `algo`=`CODON_OPT_ALGO`, 序列, 物种, GC 区间,
->   排除酶) 键缓存（TTL 24h）；改变优化结果口径（含密码子表数据）时必须递增
->   `app/cache.py` 中的 `CODON_OPT_ALGO`，否则命中旧结果
+> - 密码子优化：`app/design_service.py` 按 (算法版本 `algo`=`CODON_OPT_ALGO`, 密码子表摘要,
+>   序列, 物种, GC 区间, 排除酶) 键缓存（TTL 24h）。
+>   - 密码子表摘要：该物种实际加载的 `CODON_TABLES_DIR` 下 YAML 文件内容的 sha256 前 16 位
+>     （`core.codon_optimizer.codon_table_fingerprint`），进程内按 (路径, mtime, 大小) 缓存，
+>     表文件不变时不重复读盘。改表（含换 `CODON_TABLES_DIR`）后摘要随之变化，旧结果
+>     自动不再命中，**无需**递增 `CODON_OPT_ALGO`；旧条目在 Redis 里按 TTL 自然过期。
+>     多 worker / 多实例各自读本机文件，各实例的表须一致，否则同一请求会算出不同结果。
+>   - 改优化器代码而改变输出口径时，仍必须递增 `app/cache.py` 中的 `CODON_OPT_ALGO`，
+>     否则命中旧结果
 > - 载体列表与详情：`GET /api/vectors*` 读缓存；删除/更新/上传/导入写操作统一失效（TTL 7 天）
 > - 密码子表列表、限制性酶表：静态数据（TTL 7 天）；酶表键形如
 >   `analysis_enzymes:<ANALYSIS_ENZYMES_VERSION>:<hash>`，酶表口径变化时递增该版本

@@ -92,9 +92,10 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 - `STORAGE_MODE=database`（默认；SQLite 或 PG）/ `memory`（重启丢数据）；
   设计结果三写：内存 designs_db → storage → 完成态进缓存
-- 密码子优化缓存键含 `algo`（`app/cache.py` 的 `CODON_OPT_ALGO`）与 exclude_enzymes，
-  `/analysis/enzymes` 键含 `ANALYSIS_ENZYMES_VERSION`——**改变结果口径（含密码子表/
-  酶表数据）必须递增版本**，否则命中旧结果（纯 bug 修复且结果不变时不递增）
+- 密码子优化缓存键含 `algo`（`app/cache.py` 的 `CODON_OPT_ALGO`）、所用密码子表文件的
+  内容摘要与 exclude_enzymes，`/analysis/enzymes` 键含 `ANALYSIS_ENZYMES_VERSION`——
+  **改变结果口径的代码（含酶表数据）必须递增版本**，否则命中旧结果（纯 bug 修复且结果
+  不变时不递增）；只改 `data/codon_tables/*.yaml` 时摘要自动变化，无需递增
 - 合成 oligo 设计：错位交替（无完全互补对）、片数恒偶、DNAWorks 式 Tm 均一分片、
   交叉杂交 12mer 检查告警；长度范围 [oligo_length_min, max]（max 硬上限）
 - 插入片段来源与克隆方法正交（`insert_source` × `cloning_method`）；
