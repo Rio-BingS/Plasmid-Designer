@@ -264,15 +264,23 @@ echo "BACKEND_PORT=18000" >> .env   # 后端仅绑 127.0.0.1，不影响前端�
 ### ❌ 问题 6: 数据库连接失败
 
 ```bash
-# 检查数据库状态
+# 检查数据库状态与后端报错（/health 返回 503、"db":"error" 即后端连不上库）
 docker compose exec db pg_isready -U plasmid
+docker compose logs backend | grep -i "password authentication failed"
 
 # 重启数据库
 docker compose restart db
+```
 
-# 如果数据损坏，重建（⚠️ 会丢失数据）
-docker compose down -v
-docker compose up -d
+最常见的原因是 `.env` 中 `DB_PASSWORD` 与数据卷初始化时的口令不一致：PostgreSQL
+只在数据卷首次创建时读取 `POSTGRES_PASSWORD`，之后改 `.env` 不会改库内口令。
+**不要用 `docker compose down -v` 解决连接问题，它会删除全部数据库数据。**
+在库内把口令同步为 `.env` 中的值即可（容器内本地连接无需口令）：
+
+```bash
+docker compose exec db psql -U plasmid -d plasmid_designer \
+  -c "ALTER USER plasmid PASSWORD '<.env 中的 DB_PASSWORD>'"
+docker compose restart backend
 ```
 
 ### ❌ 问题 7: 内存不足
@@ -352,7 +360,9 @@ docker compose logs -f --since 5m
 
 `.env.example` 不再提供任何默认密码：`SECRET_KEY`、`DB_PASSWORD`、`REDIS_PASSWORD`
 必须是随机值（deploy.sh 首次运行自动生成）。注意 PostgreSQL 只在数据卷首次初始化时设置
-密码，已有数据卷后修改 `DB_PASSWORD` 需同时在库内 `ALTER USER`。
+密码，已有数据卷后修改 `DB_PASSWORD` 需同时在库内 `ALTER USER`。deploy.sh 检测到
+数据卷已存在而 `DB_PASSWORD` 为空或为旧版占位值时会拒绝自动生成并给出改口令步骤；
+部署结束前会等待 `/health` 报告 `"db":"ok"`，未通过则以非零状态退出。
 
 ### 8.2 防火墙
 

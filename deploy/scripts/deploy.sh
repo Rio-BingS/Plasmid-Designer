@@ -53,11 +53,57 @@ if [ ! -f .env ]; then
     fi
 fi
 
+# 读取 .env 中某个键的值（不存在时为空）
+env_value() {
+    grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true
+}
+
+# compose 项目名决定数据卷名（<项目名>_postgres-data）：
+# 环境变量 > .env 中的 COMPOSE_PROJECT_NAME > compose 文件所在目录名
+compose_project_name() {
+    local name="${COMPOSE_PROJECT_NAME:-$(env_value COMPOSE_PROJECT_NAME)}"
+    name="${name:-$(basename "$PWD")}"
+    echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+}
+
+DB_VOLUME="$(compose_project_name)_postgres-data"
+
+# PostgreSQL 只在数据卷首次初始化时读取 POSTGRES_PASSWORD；卷已存在时
+# 换口令只会让 backend 的 DATABASE_URL 与库内口令不一致、连不上库
+refuse_db_password_change() {
+    local db_user
+    db_user="$(env_value DB_USER)"
+    db_user="${db_user:-plasmid}"
+    cat >&2 <<MSG
+
+错误: 数据卷 ${DB_VOLUME} 已存在，但 .env 中 DB_PASSWORD 为空或仍是旧版公开占位值。
+PostgreSQL 只在数据卷首次初始化时设置口令，自动生成新口令会导致后端连不上库，
+已拒绝替换（数据卷未改动）。处理后重新运行本脚本：
+
+  在库内把口令改为新的随机值并写回 .env（在 $(pwd) 下执行）：
+    NEW_DB_PASSWORD=\$(openssl rand -hex 16)
+    DB_PASSWORD=placeholder ${COMPOSE_CMD} up -d db
+    ${COMPOSE_CMD} exec db psql -U ${db_user} -d plasmid_designer \\
+      -c "ALTER USER ${db_user} PASSWORD '\$NEW_DB_PASSWORD'"
+    sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=\$NEW_DB_PASSWORD/" .env
+
+  若数据卷初始化时用的是别的口令（非空、非占位值），也可直接把 .env 中
+  DB_PASSWORD 设为那个值。旧版默认口令就是占位值 plasmid_secure_2026，
+  它已公开，脚本不会沿用，请按上面的步骤改口令。
+
+不要用 docker compose down -v 解决连接问题：它会删除全部数据库数据。
+MSG
+    exit 1
+}
+
 # 生成随机 DB/Redis 密码：.env 中为空或仍是旧版公开占位值时替换
-# （旧版占位值仅在尚未初始化数据卷时替换才安全，已有数据卷请手动 ALTER USER）
+# （DB 口令仅在 postgres 数据卷不存在时才生成，见 refuse_db_password_change）
 set_random_secret() {
-    local key="$1" placeholder="$2" value
+    local key="$1" placeholder="$2" guard="${3:-}" value
     if grep -qE "^${key}=(${placeholder})?$" .env; then
+        if [ -n "$guard" ] && "$guard"; then
+            refuse_db_password_change
+        fi
         if ! command -v openssl &> /dev/null; then
             echo "错误: openssl 不可用，请手动在 .env 中设置 ${key}" >&2
             exit 1
@@ -74,8 +120,25 @@ set_random_secret() {
         exit 1
     fi
 }
-set_random_secret DB_PASSWORD plasmid_secure_2026
+
+# 查不到卷之外的错误（daemon 不可达、无权限）一律中止：误判为「无卷」会先把
+# 新口令写进 .env，下次运行时已无从察觉口令与数据卷不一致
+db_volume_exists() {
+    local err
+    if err=$(docker volume inspect "$DB_VOLUME" 2>&1 > /dev/null); then
+        return 0
+    fi
+    if echo "$err" | grep -qi "no such volume"; then
+        return 1
+    fi
+    echo "错误: 无法确认数据卷 ${DB_VOLUME} 是否存在，未改动 DB_PASSWORD: ${err}" >&2
+    exit 1
+}
+
+# Redis 先生成：其 requirepass 每次启动都随命令行生效，可安全替换；
+# 也保证 DB 被拒绝时用户按提示执行 compose 命令不会因 REDIS_PASSWORD 为空报错
 set_random_secret REDIS_PASSWORD plasmid_redis_2026
+set_random_secret DB_PASSWORD plasmid_secure_2026 db_volume_exists
 
 # 读取端口配置（.env 中可改）
 BACKEND_PORT=$(grep -E "^BACKEND_PORT=" .env | cut -d= -f2 | tr -d '[:space:]')
@@ -100,7 +163,11 @@ $COMPOSE_CMD build
 # 启动服务
 echo ""
 echo "启动服务..."
-$COMPOSE_CMD up -d
+if ! $COMPOSE_CMD up -d; then
+    echo "错误: 服务启动失败（backend 健康检查含数据库连通性，口令不一致时会失败）" >&2
+    echo "请查看日志: $COMPOSE_CMD logs backend db" >&2
+    exit 1
+fi
 
 # 等待服务启动
 echo ""
@@ -111,20 +178,27 @@ sleep 10
 echo "服务状态:"
 $COMPOSE_CMD ps
 
-# 健康检查
+# 健康检查：/health 含数据库连通性（"db":"ok"），库不通时返回 503
 echo ""
-echo "后端健康检查..."
-for i in $(seq 1 30); do
-    if curl -sf "http://localhost:${BACKEND_PORT}/health" > /dev/null 2>&1; then
-        echo "后端服务正常"
+echo "后端健康检查（含数据库连通性）..."
+HEALTH_RETRIES=${HEALTH_RETRIES:-40}
+HEALTH_URL="http://localhost:${BACKEND_PORT}/health"
+for i in $(seq 1 "$HEALTH_RETRIES"); do
+    if curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null | grep -qE '"db" *: *"ok"'; then
+        echo "后端服务与数据库连接正常"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "警告: 后端健康检查超时，请查看日志: $COMPOSE_CMD logs backend"
-    else
-        echo "  等待后端启动... ($i/30)"
-        sleep 3
+    if [ "$i" -eq "$HEALTH_RETRIES" ]; then
+        echo "" >&2
+        echo "错误: 后端健康检查未通过（约 $((HEALTH_RETRIES * 3)) 秒内 /health 未报告 db=ok）" >&2
+        echo "  当前响应: $(curl -sS --max-time 10 "$HEALTH_URL" 2>&1 || true)" >&2
+        echo "  查看日志: $COMPOSE_CMD logs backend db" >&2
+        echo "  若为数据库认证失败：.env 中 DB_PASSWORD 须与数据卷 ${DB_VOLUME} 初始化时的口令一致，" >&2
+        echo "  或在 db 容器内 ALTER USER 改口令后同步 .env（勿用 down -v，会删除数据）" >&2
+        exit 1
     fi
+    echo "  等待后端启动... ($i/$HEALTH_RETRIES)"
+    sleep 3
 done
 
 echo ""
