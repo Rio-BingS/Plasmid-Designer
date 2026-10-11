@@ -2,7 +2,8 @@
 
 > **当前状态（已接线）**：以下业务流程已接入缓存读写——
 > - 设计结果（完成态）：后台任务完成后写入；`GET /api/design/{id}` 读缓存，未命中读存储并回填（TTL 24h）
-> - 密码子优化：`process_sequence` 按 (序列, 物种, GC 区间) 键缓存（TTL 24h）
+> - 密码子优化：`app/design_service.py` 按 (算法版本 `algo="v2.1"`, 序列, 物种, GC 区间, 排除酶) 键缓存（TTL 24h）；
+>   改变优化结果口径时必须递增 `algo`，否则命中旧结果
 > - 载体列表与详情：`GET /api/vectors*` 读缓存；删除/更新/上传/导入写操作统一失效（TTL 7 天）
 > - 密码子表列表、限制性酶表：静态数据（TTL 7 天）
 >
@@ -27,9 +28,7 @@ sudo systemctl enable redis
 
 ### 2. 安装 Python 依赖
 
-```bash
-pip install redis>=5.0.0
-```
+`redis` 客户端已在 `src/backend/requirements.txt` 中精确 pin，按项目依赖安装即可，无需单独安装。
 
 ### 3. 配置环境变量
 
@@ -56,11 +55,14 @@ export REDIS_URL=redis://localhost:6379/0
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/cache/stats` | GET | 获取缓存统计 |
-| `/api/cache/clear` | POST | 清除缓存 |
-| `/api/cache/invalidate/design/{id}` | POST | 使设计缓存失效 |
-| `/api/cache/invalidate/vector/{id}` | POST | 使载体缓存失效 |
+| `/api/cache/stats` | GET | 获取缓存统计（仅管理员） |
+| `/api/cache/clear` | POST | 清除缓存（仅管理员） |
+| `/api/cache/invalidate/design/{id}` | POST | 使设计缓存失效（仅管理员） |
+| `/api/cache/invalidate/vector/{id}` | POST | 使载体缓存失效（仅管理员） |
 | `/api/cache/health` | GET | 缓存健康检查 |
+
+内存后端写入时顺带清理过期项，并有 `MAX_ENTRIES=5000` 条目上限；Redis 初始连接失败时
+回退内存，并每 60 秒（`CacheManager.REDIS_RETRY_SECONDS`）重试升级回 Redis。
 
 ### 代码示例
 
@@ -87,29 +89,12 @@ cache.clear_all()
 |------|-----|------|
 | 设计结果 | 24小时 | 完成的设计任务 |
 | 密码子优化 | 24小时 | 优化结果 |
-| 载体信息 | 7天 | 载体库数据 |
-| 密码子表 | 7天 | 密码子频率表 |
+| 载体信息 | 7天 | 载体列表与详情 |
+| 密码子表 / 酶表 | 7天 | 静态数据 |
 
 ## Docker Compose 配置
 
-```yaml
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    # 生产环境务必加 requirepass 并同步 REDIS_URL（redis://:<密码>@redis:6379/0）
-    command: redis-server --appendonly yes
-  
-  backend:
-    environment:
-      - REDIS_ENABLED=true
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-
-volumes:
-  redis_data:
-```
+`deploy/docker/docker-compose.yml` 已包含 Redis 7 服务：端口只绑 `127.0.0.1`，启用
+`requirepass`（密码取 `.env` 的 `REDIS_PASSWORD`，必填），backend 的 `REDIS_URL` 由 compose
+用同一变量拼接（`redis://:<密码>@redis:6379/0`），无需手工配置。裸机部署默认
+`REDIS_ENABLED=false`，使用内存缓存。
