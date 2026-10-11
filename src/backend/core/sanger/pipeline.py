@@ -12,6 +12,7 @@ pull-up）→ read 级分级（widespread 疑似混合 / scattered 个别双峰�
 """
 
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -1342,18 +1343,86 @@ def _try_tracy_basecall(ab1_bytes: bytes) -> Optional[Tuple[str, List[int]]]:
         return None
 
 
+def _phred_weight(q: float) -> float:
+    """Phred Q → 投票权重：log10(3p/e)，e = 10^(-Q/10)、p = 1 - e
+
+    即「该列为 read 所报碱基」相对「为另外三种之一」的对数似然比，独立
+    read 的票直接相加就是各候选碱基的后验比较（phred/phrap 的口径）；
+    Q 截在 [2, 60]，保证权重为正、极端 Q 不至于一票压死其余全部 read。"""
+    q = min(60.0, max(2.0, float(q)))
+    e = 10.0 ** (-q / 10.0)
+    return math.log10(3.0 * (1.0 - e) / e)
+
+
+def _column_quality(aln: Dict, L: int, circular: bool
+                    ) -> Tuple[Dict[int, int], Dict[int, int]]:
+    """由逐列对齐视图得到 read 在每个参考位点（0-based 投票下标）的 Q
+
+    返回 (base_q, ins_q)：base_q 为参考列上的 read Q（read 缺失列取左右
+    相邻 read 碱基 Q 的较小者）；ins_q 为插入碱基 Q 的均值，键为插入点
+    右侧参考位点。视图缺失或与比对长度不符时返回空表（调用方用 mean_q）。"""
+    av = aln.get("aligned") or {}
+    ref_al = av.get("ref_aligned") or ""
+    read_al = av.get("read_aligned") or ""
+    qs = av.get("q_aligned") or []
+    if not ref_al or len(qs) != len(ref_al) or len(read_al) != len(ref_al):
+        return {}, {}
+    n = len(ref_al)
+    # read 缺失列没有自己的 Q：取左右最近 read 碱基 Q 的较小者
+    left = [0] * n
+    last = None
+    for i in range(n):
+        if read_al[i] != "-":
+            last = qs[i]
+        left[i] = last
+    right = [0] * n
+    last = None
+    for i in range(n - 1, -1, -1):
+        if read_al[i] != "-":
+            last = qs[i]
+        right[i] = last
+
+    def idx(p: int) -> int:
+        return (fold_pos(p, L) - 1) if circular else p - 1
+
+    base_q: Dict[int, int] = {}
+    ins_q: Dict[int, int] = {}
+    pos = int(av.get("ref_start") or aln.get("ref_start") or 1)
+    ins_buf: List[int] = []
+    for i in range(n):
+        if ref_al[i] == "-":
+            ins_buf.append(qs[i])
+            continue
+        if ins_buf:
+            ins_q[idx(pos)] = int(round(sum(ins_buf) / len(ins_buf)))
+            ins_buf = []
+        if read_al[i] == "-":
+            flank = [x for x in (left[i], right[i]) if x is not None]
+            base_q[idx(pos)] = min(flank) if flank else 0
+        else:
+            base_q[idx(pos)] = qs[i]
+        pos += 1
+    if ins_buf:
+        ins_q[idx(pos)] = int(round(sum(ins_buf) / len(ins_buf)))
+    return base_q, ins_q
+
+
 def _build_consensus(reference: str, read_results: List[Dict],
                      skip_keys: Optional[set] = None,
                      circular: bool = False) -> Dict:
     """按参考坐标逐位质量加权投票生成共识序列
 
-    每个 read 以其平均质量为权重为覆盖区间内的参考碱基投票；
-    变体（替换/缺失/插入）以 权重+5 的票修正对应位点——单 read 覆盖区
-    即以该 read 为准（模拟人工核对），多 read 覆盖时孤立低质量差异被压制。
+    每个 read 在其覆盖的每个参考位点投一票，票投给它在该位点的观测：
+    参考碱基，或该处变体（替换碱基 / 缺失 '-' / 插入 '+ALT'，插入记在插入点
+    右侧位点）。票的权重取该列自身的 Q（aligned.q_aligned，经 _phred_weight
+    由错误概率换算成对数似然比）——Sanger read 沿读长单调退化，后段低 Q
+    误判不应与前段高 Q 正确调用同权；无逐列 Q 时退回 read 的 mean_q。
+    单 read 覆盖的位点显式以该 read 为准（模拟人工核对）；多 read 覆盖时
+    按列 Q 加权多数，孤立低质量差异被压制。
 
     skip_keys：{(ref_pos, type, alt_base)} 低置信变体集合。这些调用不写入
-    共识——共识序列代表当前证据下的最佳猜测构建体，疑似测序噪声只在变体
-    清单中列出供人工核对，不应固化进共识。
+    共识——该 read 在此处按参考碱基投票：共识序列代表当前证据下的最佳猜测
+    构建体，疑似测序噪声只在变体清单中列出供人工核对，不应固化进共识。
 
     circular=True：环状参考，跨原点 read 的展开坐标、跨原点的缺失与
     原点处（L 与 1 之间）的插入都按环折回，不再有「参考末端之后」的插入。
@@ -1363,38 +1432,46 @@ def _build_consensus(reference: str, read_results: List[Dict],
     def _idx(p: int) -> int:  # 1-based 参考坐标 → 0-based 投票下标（环状折回）
         return (fold_pos(p, L) - 1) if circular else p - 1
 
-    votes: List[Dict[str, int]] = [{} for _ in range(L)]
-    end_insert_votes: Dict[str, int] = {}  # 参考末端之后的插入（无右侧锚定位）
+    votes: List[Dict[str, float]] = [{} for _ in range(L)]
+    voters: List[List[str]] = [[] for _ in range(L)]   # 每位点各 read 的观测
+    end_insert_votes: Dict[str, float] = {}  # 参考末端之后的插入（无右侧锚定位）
 
     for r in read_results:
-        weight = max(10, int(r["mean_q"]))
+        mean_q = float(r.get("mean_q") or 0)
         aln = r["alignment"]
-        for pos in range(aln["ref_start"], aln["ref_end"] + 1):
-            if circular:
-                pos = fold_pos(pos, L)
-            if 1 <= pos <= L:
-                base = reference[pos - 1].upper()
-                votes[pos - 1][base] = votes[pos - 1].get(base, 0) + weight
+        base_q, ins_q = _column_quality(aln, L, circular)
+        observed: Dict[int, str] = {}      # 投票下标 → 该 read 的非参考观测
+        obs_q: Dict[int, float] = {}       # 插入票的 Q（插入碱基自身的 Q）
         for v in aln["variants"]:
             if skip_keys and _variant_key(v) in skip_keys:
                 continue
             if v["type"] == "substitution":
                 idx = _idx(v["ref_pos"])
                 if 0 <= idx < L:
-                    alt = v["alt_base"].upper()
-                    votes[idx][alt] = votes[idx].get(alt, 0) + weight + 5
+                    observed[idx] = v["alt_base"].upper()
             elif v["type"] == "deletion":
                 for k in range(v["length"]):
                     idx = _idx(v["ref_pos"] + k)
                     if 0 <= idx < L:
-                        votes[idx]["-"] = votes[idx].get("-", 0) + weight + 5
+                        observed[idx] = "-"
             elif v["type"] == "insertion":
                 idx = _idx(v["ref_pos"] + 1)  # 插入点右侧参考位置
                 key = f"+{v['alt_base'].upper()}"
+                q = ins_q.get(idx, v.get("quality", mean_q))
                 if 0 <= idx < L:
-                    votes[idx][key] = votes[idx].get(key, 0) + weight + 5
+                    observed[idx] = key
+                    obs_q[idx] = q
                 elif idx == L:
-                    end_insert_votes[key] = end_insert_votes.get(key, 0) + weight + 5
+                    end_insert_votes[key] = end_insert_votes.get(key, 0.0) + _phred_weight(q)
+        for pos in range(aln["ref_start"], aln["ref_end"] + 1):
+            if circular:
+                pos = fold_pos(pos, L)
+            if 1 <= pos <= L:
+                i = pos - 1
+                key = observed.get(i, reference[i].upper())
+                q = obs_q.get(i, base_q.get(i, mean_q))
+                votes[i][key] = votes[i].get(key, 0.0) + _phred_weight(q)
+                voters[i].append(key)
 
     consensus_chars: List[str] = []
     diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
@@ -1406,7 +1483,10 @@ def _build_consensus(reference: str, read_results: List[Dict],
             covered.append(False)
             continue
         covered.append(True)
-        best_key = max(cell.items(), key=lambda kv: kv[1])[0]
+        if len(voters[pos - 1]) == 1:
+            best_key = voters[pos - 1][0]   # 单 read 覆盖：以该 read 为准
+        else:
+            best_key = max(cell.items(), key=lambda kv: kv[1])[0]
         if best_key.startswith("+"):
             alt = best_key[1:]
             cons_index = len(consensus_chars)
