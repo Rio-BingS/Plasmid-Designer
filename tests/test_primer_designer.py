@@ -2,6 +2,8 @@
 引物设计模块测试
 """
 
+import random
+
 import pytest
 import sys
 sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
@@ -32,9 +34,27 @@ def test_primer_tm_range():
     
     pair = designer.design_pcr_primers(template)
     
-    # 检查Tm在目标范围内（允许小偏差）
-    assert 40 <= pair.forward.tm <= 80  # Simplified Tm may have wider range
-    assert 40 <= pair.reverse.tm <= 80  # Simplified Tm may have wider range
+    # 该回文重复模板自互补过强，走放宽回退路径，Tm 只做宽松检查
+    assert 40 <= pair.forward.tm <= 80
+    assert 40 <= pair.reverse.tm <= 80
+
+
+def test_primer_tm_window_enforced_with_nn():
+    """通过质量筛选的引物，其最近邻 Tm 必须落在默认 58-62°C 窗口内"""
+    designer = PrimerDesigner()
+    assert (designer.tm_min, designer.tm_max) == (58.0, 62.0)
+    random.seed(7)
+    checked = 0
+    for _ in range(40):
+        tpl = "".join(random.choice("ATGC") for _ in range(1500))
+        pair = designer.design_pcr_primers(tpl, 0, 1000)
+        for p in (pair.forward, pair.reverse):
+            if "Warning" in (p.notes or ""):
+                continue
+            checked += 1
+            assert 58.0 <= p.tm <= 62.0
+            assert p.tm == pytest.approx(designer._calculate_tm(p.sequence))
+    assert checked >= 30
 
 
 def test_primer_gc_content():
@@ -132,18 +152,64 @@ def test_primer_quality_check():
 
 
 def test_tm_calculation():
-    """测试Tm计算"""
+    """测试Tm计算（最近邻法）"""
     designer = PrimerDesigner()
-    
+
     # 短序列（<14bp）
     short_seq = "ATGCGATCGAT"
     tm_short = designer._calculate_tm(short_seq)
     assert tm_short > 0
-    
+
     # 长序列（>=14bp）
     long_seq = "ATGCGATCGATCGATCGATC"
     tm_long = designer._calculate_tm(long_seq)
     assert tm_long > 0
+
+    # 同长同 GC 但上下文不同，最近邻必须给出不同的 Tm
+    # （旧经验公式只看长度和 GC，这两条会完全相同）
+    a = designer._calculate_tm("ATATATATATGCGCGCGCGC")
+    b = designer._calculate_tm("ATGCATGCATGCATGCATGC")
+    assert abs(a - b) > 1.0
+
+
+def test_tm_matches_biopython_nn_reference():
+    """Tm 必须等于指定缓冲条件下的 Bio.SeqUtils Tm_NN，而不是经验公式"""
+    from Bio.SeqUtils import MeltingTemp as mt
+    from core.primer_designer import (
+        calculate_tm, TM_NN_TABLE, TM_NA_MM, TM_MG_MM, TM_DNTPS_MM,
+        TM_PRIMER_NM, TM_TEMPLATE_NM, TM_SALTCORR,
+    )
+
+    random.seed(20261011)
+    worst = 0.0
+    for _ in range(200):
+        n = random.randint(18, 25)
+        seq = "".join(random.choice("ATGC") for _ in range(n))
+        ref = mt.Tm_NN(
+            seq, nn_table=TM_NN_TABLE, Na=TM_NA_MM, Mg=TM_MG_MM,
+            dNTPs=TM_DNTPS_MM, dnac1=TM_PRIMER_NM, dnac2=TM_TEMPLATE_NM,
+            saltcorr=TM_SALTCORR,
+        )
+        worst = max(worst, abs(calculate_tm(seq) - ref))
+    assert worst < 0.5, f"与最近邻参考最大偏差 {worst:.3f}°C"
+
+
+def test_tm_single_source_of_truth():
+    """sequence_validator.predict_tm 与引物设计用同一实现"""
+    from core.primer_designer import calculate_tm
+    from core.sequence_validator import predict_tm
+
+    designer = PrimerDesigner()
+    for seq in ("ATGCGATCGATCGATCGATC", "GCTAGCTAGGCTAGCTAGCC", "TGTAAAACGACGGCCAGT"):
+        assert predict_tm(seq) == calculate_tm(seq) == designer._calculate_tm(seq)
+
+
+def test_tm_degenerate_and_too_short_are_zero():
+    """无法定义最近邻 Tm 时返回 0.0，不抛异常"""
+    from core.primer_designer import calculate_tm
+
+    for seq in ("", "A", "N" * 20, "----"):
+        assert calculate_tm(seq) == 0.0
 
 
 def test_gc_calculation():
