@@ -27,10 +27,10 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
   app/sequencing_report.py  批量整理包（报告/归档/回填信息表）构建（同上共用）
   core/codon_optimizer.py   ★ 密码子优化 v2（5' ramp/发夹削减/隐蔽motif审查/滑窗精修/score）
   core/primer_designer.py   ★ PCR/Gibson/GoldenGate/双酶切引物 + 合成 oligo（错位交替/Tm均一）
-  core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 表
+  core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 兼容视图
   core/clone_strategy.py    克隆方案文本生成；core/export_formats.py 多格式导出
   core/vector_library.py    载体库（data/vectors/*.yaml）
-  core/enzyme_sites.py      ★ 内置 47 种常用限制酶表，扫描序列生成图谱酶切位点
+  core/enzyme_sites.py      ★ 唯一限制酶模型（Bio.Restriction/REBASE，默认菜单 51 种），扫描生成图谱酶切位点
   core/sanger/              ★ Sanger 测序全自动管线：reference_parser（GenBank/FASTA/.dna +
                             拓扑）/ abif_reader（SeqIO abi 主路径 + 内置解析器回退）/
                             aligner（PairwiseAligner 双向判向；环状参考延长比对 + 坐标折回）/

@@ -274,5 +274,66 @@ class TestEnzymeTable:
             assert oh in ('5', '3', 'b'), f"{name} overhang 类型非法: {oh}"
 
 
+# ==================== 统一酶模型（审计 #4） ====================
+
+class TestUnifiedEnzymeModel:
+    def test_menu_expanded_with_acgt_only_enzymes(self):
+        # 统一后兼容视图收录默认菜单里全部纯 ACGT 识别序列的酶（47 种）
+        assert len(RESTRICTION_ENZYMES) == 47
+        for name in ("ClaI", "NheI", "PacI", "AvrII", "PvuII"):
+            assert name in RESTRICTION_ENZYMES
+        # 含 IUPAC 的酶不进兼容视图（调用方会把识别序列原样拼进引物）
+        for name in ("AvaI", "AflIII", "BsaHI", "XcmI"):
+            assert name not in RESTRICTION_ENZYMES
+
+    def test_analyzer_accepts_iupac_and_extra_enzymes_by_name(self):
+        analyzer = RestrictionSiteAnalyzer()
+        sites = analyzer.find_sites("AAACTCGGGAAA", ["AvaI"])  # CYCGRG
+        assert [(s.recognition_start, s.strand) for s in sites] == [(4, '+')]
+        sap = analyzer.find_sites("AAAGAAGAGCAAA", ["SapI"])  # GCTCTTC 反链
+        assert [s.strand for s in sap] == ['-']
+        assert analyzer.is_known("SapI") and not analyzer.is_known("Nope")
+
+    def test_type_iis_reverse_cut_position_unchanged(self):
+        # 反链 BsaI（GAGACC@21）：cut_position 沿用历史口径 a+len-cut_offset
+        seq = "A" * 20 + "GAGACC" + "A" * 20
+        s = RestrictionSiteAnalyzer().find_sites(seq, ["BsaI"])[0]
+        assert (s.strand, s.cut_position) == ('-', 20 + 6 - 7)
+
+    def test_custom_enzyme_dict_still_supported(self):
+        analyzer = RestrictionSiteAnalyzer({"MyEco": ("GAATTC", 1, '5')})
+        sites = analyzer.find_sites("AAGAATTCAA")
+        assert [(s.enzyme, s.cut_position) for s in sites] == [("MyEco", 3)]
+        assert analyzer._overhang_sequence("MyEco") == "AATT"
+
+    def test_hindiii_saci_same_sequence_opposite_direction(self):
+        # HindIII 5' AGCT 与 SacI 3' AGCT：序列同但方向反，不可互连
+        # （统一前只比较序列，误判兼容）
+        assert RestrictionSiteAnalyzer().check_compatibility("HindIII", "SacI") is False
+
+    def test_overhangs_match_rebase(self):
+        from Bio import Restriction as R
+        analyzer = RestrictionSiteAnalyzer()
+        for name in RESTRICTION_ENZYMES:
+            ours = analyzer._overhang_sequence(name)
+            enz = getattr(R, name)
+            if enz.is_blunt():
+                assert ours is None, name
+            elif ours != "IIS":
+                assert ours == str(enz.ovhgseq), name
+
+
+def test_enzymes_endpoint_lists_menu_and_type_iis():
+    import asyncio
+    from app.analysis_routes import list_enzymes
+    from app.cache import cache
+    cache.backend.clear_pattern("analysis_enzymes:*")
+    data = asyncio.run(list_enzymes())
+    assert data["total"] == 47
+    iis = {k for k, v in data["enzymes"].items() if v["is_type_iis"]}
+    assert iis == {"BsaI", "BsmBI", "BbsI"}
+    assert data["enzymes"]["PstI"]["cut_type"] == "3' 粘性末端"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
