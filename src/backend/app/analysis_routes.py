@@ -4,9 +4,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from typing import List, Dict, Optional
-from pydantic import BaseModel, Field, model_validator
+from typing import Annotated, List, Dict, Optional
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 import io
+import re
 
 from core.sequence_analysis import (
     SequenceAnalyzer,
@@ -40,10 +41,22 @@ MIN_WINDOW_SIZE = 10
 MIN_STEP_WINDOW_RATIO = 10
 MAX_GC_REGIONS = 20_000
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _strip_whitespace(v):
+    """粘贴的序列常带换行/空格/制表符（FASTA 分行），原样分析会让位点
+    跨行漏检、ORF 坐标与长度偏移、GC 被稀释。在校验长度之前统一去掉"""
+    return _WS_RE.sub("", v) if isinstance(v, str) else v
+
+
+# 全部分析/导出请求的序列字段共用：先去空白，再做 max_length 等校验
+SeqStr = Annotated[str, BeforeValidator(_strip_whitespace)]
+
 
 class SequenceAnalysisRequest(BaseModel):
     """序列分析请求"""
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     sequence_type: str = Field(default="dna", description="序列类型（dna/amino_acid，当前分析均按 DNA 处理）")
     check_restriction: bool = Field(default=True, description="是否检测限制性位点")
     check_orf: bool = Field(default=True, description="是否预测 ORF")
@@ -54,20 +67,20 @@ class SequenceAnalysisRequest(BaseModel):
 
 class RestrictionSitesRequest(BaseModel):
     """限制性酶切位点请求（body 传递，避免长序列进入 URL）"""
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     enzymes: Optional[List[str]] = Field(default=None, max_length=100,
                                          description="要检测的酶列表，默认全部常用酶")
 
 
 class ORFRequest(BaseModel):
     """ORF 预测请求"""
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     min_length: int = Field(default=150, ge=30, description="最小 ORF 长度（碱基数）")
 
 
 class DigestRequest(BaseModel):
     """酶切消化模拟请求"""
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     enzymes: List[str] = Field(..., min_length=1, max_length=6, description="用于模拟消化的酶（1-6 个）")
     circular: bool = Field(
         default=False,
@@ -78,7 +91,7 @@ class DigestRequest(BaseModel):
 
 class GCAnalysisRequest(BaseModel):
     """GC 含量分析请求"""
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     window_size: int = Field(default=100, ge=MIN_WINDOW_SIZE, le=MAX_ANALYSIS_SEQ_BP,
                              description="滑动窗口大小")
     step_size: int = Field(default=50, ge=1, description="步长（≥ 窗口/10）")
@@ -98,15 +111,15 @@ class GCAnalysisRequest(BaseModel):
 
 class CompatibilityRequest(BaseModel):
     """克隆兼容性检查请求"""
-    insert_sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="插入片段序列")
-    vector_sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="载体序列")
+    insert_sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="插入片段序列")
+    vector_sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="载体序列")
     enzymes: List[str] = Field(..., max_length=50, description="计划使用的酶列表")
 
 
 class ExportRequest(BaseModel):
     """导出请求"""
     name: str = Field(..., max_length=100, description="序列名称")
-    sequence: str = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
+    sequence: SeqStr = Field(..., max_length=MAX_ANALYSIS_SEQ_BP, description="DNA 序列")
     features: List[Dict] = Field(default=[], max_length=2000, description="序列特征")
     description: str = Field(default="", max_length=2000, description="描述")
     is_circular: bool = Field(default=True, description="是否环状")
