@@ -21,6 +21,18 @@ watch(() => authStore.user, (newUser) => {
   user.value = newUser
 })
 
+// 会话中途失效：收起用户菜单；停留在仅管理员可见的页面时回首页
+watch(() => authStore.sessionExpired, (expired) => {
+  if (!expired) return
+  showUserMenu.value = false
+  if (router.currentRoute.value.meta?.adminOnly) router.push('/')
+})
+
+function reloginAfterExpiry() {
+  authStore.dismissSessionExpired()
+  showAuthModal.value = true
+}
+
 // 功能导航项：按站点配置过滤（siteConfig 未加载完成时 featureAllowed 放行全部）
 const navItems = [
   { to: '/', label: '首页', feature: null },
@@ -124,6 +136,12 @@ function goToBatch() {
       </button>
     </div>
     
+    <div v-if="authStore.sessionExpired && !user" class="session-expired" role="alert">
+      <span>登录已过期，请重新登录</span>
+      <button class="session-expired-login" @click="reloginAfterExpiry">重新登录</button>
+      <button class="session-expired-close" aria-label="关闭提示" @click="authStore.dismissSessionExpired()">×</button>
+    </div>
+
     <AuthModal 
       v-if="showAuthModal" 
       @close="showAuthModal = false"
@@ -284,6 +302,34 @@ function goToBatch() {
 
 .dropdown-item:hover {
   background: #F3F4F6;
+}
+
+.session-expired {
+  position: absolute;
+  top: 100%;
+  right: 2rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #fff4e5;
+  border: 1px solid #f0c36d;
+  border-radius: 6px;
+  color: #8a5300;
+  font-size: 0.9rem;
+}
+
+.session-expired button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+.session-expired-login {
+  font-weight: 600;
+  text-decoration: underline;
 }
 
 .logout-error {

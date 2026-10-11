@@ -132,6 +132,68 @@ describe('auth store 会话', () => {
   })
 })
 
+describe('会话中途失效（过期 / 他处登出）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('已登录时接口 401：清理登录态、标记过期并按匿名刷新功能集', async () => {
+    const store = useAuthStore()
+    store.user = alice
+    vi.mocked(api.getSiteConfig).mockClear()
+    notifySessionExpired()
+    expect(store.isAuthenticated).toBe(false)
+    expect(store.sessionExpired).toBe(true)
+    expect(api.getSiteConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('未登录时的 401 不提示过期', () => {
+    const store = useAuthStore()
+    notifySessionExpired()
+    expect(store.sessionExpired).toBe(false)
+  })
+
+  it('重新登录后清除过期提示', async () => {
+    vi.mocked(api.login).mockResolvedValue({ user: alice })
+    const store = useAuthStore()
+    store.user = alice
+    notifySessionExpired()
+    await store.login('a@test.com', 'pw')
+    expect(store.sessionExpired).toBe(false)
+    expect(store.isAuthenticated).toBe(true)
+  })
+
+  it('复查会话发现已失效（可选认证接口不会 401）：按过期处理', async () => {
+    vi.mocked(api.verifyToken).mockResolvedValue({ valid: false, user: null })
+    const store = useAuthStore()
+    store.user = alice
+    expect(await store.revalidateSession()).toBe(false)
+    expect(store.isAuthenticated).toBe(false)
+    expect(store.sessionExpired).toBe(true)
+  })
+
+  it('切回页面时节流复查会话', async () => {
+    vi.mocked(api.verifyToken).mockResolvedValue({ valid: true, user: alice })
+    const store = useAuthStore()
+    store.initSession()
+    await flushPromises()
+    expect(api.verifyToken).toHaveBeenCalledTimes(1)
+    vi.mocked(api.verifyToken).mockResolvedValue({ valid: false, user: null })
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(api.verifyToken).toHaveBeenCalledTimes(2)
+    expect(store.sessionExpired).toBe(true)
+  })
+
+  it('未登录时切回页面不发复查请求', async () => {
+    const store = useAuthStore()
+    expect(await store.revalidateSession()).toBe(false)
+    expect(api.verifyToken).not.toHaveBeenCalled()
+  })
+})
+
 describe('启动会话核实中的 checking 状态', () => {
   beforeEach(() => {
     vi.clearAllMocks()
