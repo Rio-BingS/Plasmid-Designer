@@ -48,6 +48,37 @@ describe('MapViewer：无法显示项', () => {
   })
 })
 
+describe('MapViewer：切点极多时', () => {
+  function manyCuts(): MapDocument {
+    const d = puc()
+    // 两个各切 600 次的 4 碱基酶 + 一个单切点酶
+    const sites = (n: number, off: number) => Array.from({ length: n }, (_, i) => ({ position: off + i * 4, cut_top: off + i * 4, cut_bottom: off + i * 4, strand: 1 as const }))
+    d.enzymes = [
+      { name: 'Multi1', recognition: 'GA^TC', ends: "5'", overhang: 'AT', cut_count: 600, sites: sites(600, 3) },
+      { name: 'Multi2', recognition: 'C^TAG', ends: "5'", overhang: 'TA', cut_count: 600, sites: sites(600, 5) },
+      { name: 'Solo', recognition: 'G^AATTC', ends: "5'", overhang: 'AATT', cut_count: 1, sites: sites(1, 400) },
+    ]
+    return d
+  }
+
+  it('概览图只画少切点酶，略去的酶整体列入"无法显示"', async () => {
+    const w = mount(MapViewer, { props: { doc: manyCuts(), initialView: 'circular', allowAnalyze: false } })
+    await flushPromises()
+    // 1200 个切点超出概览上限：两个多切点酶整体略去，单切点酶保留
+    expect(w.findAll('.cmap-cut')).toHaveLength(1)
+    await w.find('.mv-unshown button').trigger('click')
+    const text = w.find('.mv-unshown-list').text()
+    expect(text).toContain('Multi1（600 处）')
+    expect(text).toContain('切点过多')
+  })
+
+  it('线性图视口内切点过多同样只画少切点酶', async () => {
+    const w = mount(MapViewer, { props: { doc: manyCuts(), initialView: 'linear', allowAnalyze: false } })
+    await flushPromises()
+    expect(w.findAll('.lmap-cut')).toHaveLength(1)
+  })
+})
+
 describe('MapViewer：多视图共享选区', () => {
   it('侧栏点击特征 → 状态栏统计 + 各视图同步选区；切线性视图仍保持', async () => {
     const w = mount(MapViewer, { props: { doc: puc() } })

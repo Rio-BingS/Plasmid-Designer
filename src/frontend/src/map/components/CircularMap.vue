@@ -21,7 +21,7 @@ import { stackLanes } from '../core/lanes'
 import {
   enzymePriority, featurePriority, fitsInside, layoutCircularLabels, type CircularLabelInput,
 } from '../core/labels'
-import { cutStyle } from '../core/enzymes'
+import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { textWidth, truncateText } from '../core/text'
@@ -48,6 +48,9 @@ const S = computed(() => Math.round(props.size ?? Math.min(props.maxSize, Math.m
 const cx = computed(() => S.value / 2)
 const cy = computed(() => S.value / 2)
 const FONT = 11
+/** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
+const MAX_OVERVIEW_CUTS = 360
+const overview = computed(() => overviewCuts(store.cuts.value, MAX_OVERVIEW_CUTS))
 const labelMargin = computed(() => Math.min(175, Math.max(72, S.value * 0.26)))
 const labelR = computed(() => S.value / 2 - labelMargin.value)
 const R0 = computed(() => labelR.value - 26)
@@ -176,7 +179,7 @@ const primerGeoms = computed(() => {
 })
 
 // ---------------- 酶切 ----------------
-const cutGeoms = computed(() => store.cuts.value.map((c) => {
+const cutGeoms = computed(() => overview.value.shown.map((c) => {
   const st = cutStyle(c)
   const a = ang(c.cut)
   const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
@@ -216,6 +219,9 @@ watch([labelLayout, featLanes], () => {
   for (const id of featLanes.value.overflow) {
     const f = store.doc.value.features.find((x) => x.id === id)
     items.push({ id: `f:${id}`, name: f?.name ?? id, reason: '特征分道已满' })
+  }
+  for (const d of overview.value.dropped) {
+    items.push({ id: `e:${d.name}`, name: `${d.name}（${d.count} 处）`, reason: '切点过多，概览图略去（序列视图可见）' })
   }
   store.setUnshown('circular', items)
 }, { immediate: true })
