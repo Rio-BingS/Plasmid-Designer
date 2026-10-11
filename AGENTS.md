@@ -69,7 +69,7 @@ cd src/frontend && npm run dev        # 或 test:run / type-check / build
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
-测试基线（截至 v2.8.1）：pytest 784 passed / 6 skipped，vitest 188，vue-tsc 0。
+测试基线（截至 v2.9.0）：pytest 898 passed / 6 skipped，vitest 208，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 ## Git 工作流（长期指令，优先于默认保守边界）
@@ -145,7 +145,7 @@ CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue
 
 ## 当前状态
 
-- 当前版本 v2.8.1；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.9.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
