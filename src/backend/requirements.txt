@@ -33,6 +33,5 @@ pytest==9.1.1
 # starlette 1.x 的 TestClient 改用 httpx2，装旧 httpx 会报 StarletteDeprecationWarning
 httpx2==2.13.1
 
-# 说明：Sanger 测序分析（core/sanger/）依赖 biopython（比对 + ab1 解析）。
-# "核心算法纯标准库实现"已不再是项目约束（2026-09-12 解除，见
-# docs/poly-final-actionable-list.md 约束 1）；新增依赖照常在本文声明。
+# 说明：Sanger 测序分析（core/sanger/）依赖 biopython（比对 + ab1 解析）；
+# 新增依赖照常在本文声明。
