@@ -102,14 +102,14 @@ const cutsInView = computed(() => (props.showEnzymes ? store.cuts.value : [])
 const enzLabels = computed(() => {
   if (!store.show.labels || !cutsInView.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
   return layoutLinearLabels(cutsInView.value.map((c) => ({ id: c.key, text: c.name, x: c.x, priority: enzymePriority(c.enzyme.cut_count) })),
-    { width: W.value, fontSize: FONT, maxRows: 4, gap: 6 })
+    { width: W.value - 2, fontSize: FONT, maxRows: 4, gap: 6, left: 2 })
 })
 const enzStyleByKey = computed(() => new Map(cutsInView.value.map((c) => [c.key, c])))
 
 // ---------------- 额外轨道 ----------------
 interface TrackGeom {
   track: MapTrack; y: number; height: number; laneH: number
-  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; marks: number[] }[]
+  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[] }[]
 }
 function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
   const h = t.height ?? 18
@@ -126,21 +126,25 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
     const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
     const inside = !!it.label && longest.x2 - longest.x1 - h * 0.8 >= lw
-    const minX = Math.min(...geomSegs.map((s) => s.x1))
-    const maxX = Math.max(...geomSegs.map((s) => s.x2))
     let labelX = (longest.x1 + longest.x2) / 2
-    let ext: [number, number] = [minX, maxX]
+    let labelRight = true
     if (it.label && !inside) {
-      // 名字放不下：画在箭头右侧（靠右边缘时放左侧）
-      if (maxX + lw <= W.value) { labelX = maxX + 4; ext = [minX, maxX + lw] } else { labelX = minX - 4; ext = [minX - lw, maxX] }
+      // 名字放不下：依次尝试最长段右侧、左侧，再试其余段，放不下就贴边
+      const order = [longest, ...geomSegs.filter((s) => s !== longest)]
+      const spot = order.flatMap((s) => [
+        s.x2 + 4 + lw <= W.value ? { x: s.x2 + 4, right: true } : null,
+        s.x1 - 4 - lw >= 0 ? { x: s.x1 - 4, right: false } : null,
+      ]).find((c) => c !== null) ?? { x: Math.max(2, Math.min(W.value - lw, longest.x1)), right: true }
+      labelX = spot.x
+      labelRight = spot.right
     }
     const iv: [number, number][] = geomSegs.map((s) => [s.x1, s.x2])
-    if (it.label && !inside) iv.push(ext)
+    if (it.label && !inside) iv.push([labelRight ? labelX : labelX - lw, labelRight ? labelX + lw : labelX])
     let lane = rows.findIndex((r) => !r.some(([a, b]) => iv.some(([c, d]) => c < b + 3 && a < d + 3)))
     if (lane === -1) { rows.push([]); lane = rows.length - 1 }
     rows[lane].push(...iv)
     items.push({
-      item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX,
+      item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX, labelRight,
       marks: (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5)),
     })
   }
@@ -225,7 +229,7 @@ const featLabels = computed(() => {
   if (!store.show.labels) return { placed: [], hidden: [] as string[], rows: 0 }
   return layoutLinearLabels(featGeoms.value.filter((g) => !g.inside).map((g) => ({
     id: g.key, text: g.f.name, x: g.cx, priority: featurePriority(g.f.type, rangeLength(g.f, L.value, store.circular.value)),
-  })), { width: W.value, fontSize: FONT, maxRows: 4, gap: 8 })
+  })), { width: W.value - 2, fontSize: FONT, maxRows: 4, gap: 8, left: 2 })
 })
 const featByKey = computed(() => new Map(featGeoms.value.map((g) => [g.key, g])))
 
@@ -440,7 +444,7 @@ defineExpose({ svgEl, zoomBy, fitAll, setViewport })
                 :fill="it.item.color ?? '#b03a2e'" :stroke="it.item.stroke ?? darken(it.item.color ?? '#b03a2e')" stroke-width="0.8"
                 :class="it.item.className" />
           <text v-if="it.item.label" :x="it.labelX" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
-                :text-anchor="it.labelInside ? 'middle' : (it.labelX > it.segs[0].x1 ? 'start' : 'end')" :font-size="FONT"
+                :text-anchor="it.labelInside ? 'middle' : (it.labelRight ? 'start' : 'end')" :font-size="FONT"
                 :fill="it.labelInside ? '#ffffff' : '#374151'" :font-weight="it.labelInside ? 700 : 400"
                 :class="it.labelInside ? 'lmap-track-name' : 'lmap-track-label'" pointer-events="none">{{ it.item.label }}</text>
           <circle v-for="(mx, k) in it.marks" :key="'m' + k" :cx="mx" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
