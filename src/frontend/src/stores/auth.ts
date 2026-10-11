@@ -71,13 +71,14 @@ export const useAuthStore = defineStore('auth', () => {
     return result
   }
 
+  /**
+   * 登出：服务端吊销令牌并删除 httpOnly Cookie（前端自己删不掉）。
+   * 接口失败（429/5xx/断网）时 Cookie 仍在、会话仍有效：此时不清本地
+   * 状态、把错误抛给调用方提示重试——否则界面显示已登出，刷新或下一位
+   * 使用者打开页面会话就恢复了（审查 01 M-1）
+   */
   async function logout() {
-    try {
-      // 服务端吊销令牌并删除 httpOnly Cookie（前端自己删不掉）
-      await apiLogout()
-    } catch {
-      // 即使后端登出失败，也要清理本地状态
-    }
+    await apiLogout()
     clearAuth()
     refreshSiteConfig()
   }

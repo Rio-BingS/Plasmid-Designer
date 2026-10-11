@@ -166,6 +166,24 @@ describe('NavBar', () => {
     expect(localStorage.getItem('token')).toBeNull()
   })
 
+  it('登出失败时保持登录态并提示重试', async () => {
+    vi.mocked(api.logout).mockRejectedValueOnce({ response: { status: 429 } })
+    const wrapper = mount(NavBar, {
+      global: { plugins: [router], stubs: { AuthModal: true } }
+    })
+    await router.isReady()
+    await flushPromises()
+
+    await wrapper.find('.user-btn').trigger('click')
+    await wrapper.find('.logout-btn').trigger('click')
+    await flushPromises()
+
+    expect(api.logout).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.login-btn').exists()).toBe(false)
+    expect(wrapper.find('.user-btn').exists()).toBe(true)
+    expect(wrapper.find('.logout-error').text()).toContain('未完成')
+  })
+
   it('renders brand logo and text', async () => {
     const wrapper = mount(NavBar, {
       global: {

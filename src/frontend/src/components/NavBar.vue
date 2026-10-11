@@ -49,8 +49,17 @@ function handleAuthenticated(userData: any) {
   showAuthModal.value = false
 }
 
+// 登出失败时会话仍有效（Cookie 只能由服务端删除），保持登录态并提示重试
+const logoutError = ref('')
+
 async function handleLogout() {
-  await authStore.logout()
+  logoutError.value = ''
+  try {
+    await authStore.logout()
+  } catch {
+    logoutError.value = '退出登录未完成，请稍后重试'
+    return
+  }
   user.value = null
   showUserMenu.value = false
   router.push('/')
@@ -106,6 +115,7 @@ function goToBatch() {
           <button class="dropdown-item logout-btn" @click="handleLogout">
             🚪 退出登录
           </button>
+          <div v-if="logoutError" class="logout-error" role="alert">{{ logoutError }}</div>
         </div>
       </div>
       
@@ -274,6 +284,12 @@ function goToBatch() {
 
 .dropdown-item:hover {
   background: #F3F4F6;
+}
+
+.logout-error {
+  padding: 0.5rem 1rem;
+  color: #c0392b;
+  font-size: 0.85rem;
 }
 
 .logout-btn {
