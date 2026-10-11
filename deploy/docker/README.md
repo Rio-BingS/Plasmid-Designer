@@ -167,7 +167,8 @@ plasmid-redis      Up (healthy)    127.0.0.1:6379->6379/tcp（仅本机可达）
 ```bash
 # 测试后端（仅本机回环可达）
 curl http://localhost:8000/health
-# 返回: {"status":"healthy","timestamp":"...","storage_mode":"database"}
+# 返回: {"status":"healthy","timestamp":"...","storage_mode":"database","db":"ok"}
+# 数据库不可达时返回 HTTP 503 与 "db":"error"
 
 # 测试前端
 curl -I http://localhost
