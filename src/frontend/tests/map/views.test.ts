@@ -89,6 +89,28 @@ describe('CircularMap 版式', () => {
     // 字号变小
     expect(w.find('.cmap-label text').attributes('font-size')).toBe('10')
   })
+
+  it('拖选结束后发出导航请求（序列视图滚到选区）', async () => {
+    const w = mount(MapViewer, { props: { doc: puc(), initialView: 'split', allowAnalyze: false } })
+    await flushPromises()
+    const store = (w.vm as any).store
+    const svg = w.find('.cmap-svg')
+    ;(svg.element as SVGSVGElement).getBoundingClientRect = () => ({ left: 0, top: 0, width: 640, height: 640, right: 640, bottom: 640, x: 0, y: 0, toJSON() {} })
+    const [x0, y0, vw, vh] = vb(w)
+    const R0 = Number(w.find('.cmap-svg circle').attributes('r'))
+    const c = Number(w.find('.cmap-svg circle').attributes('cx'))
+    const pt = (a: number) => ({ clientX: ((c + R0 * Math.sin(a) - x0) / vw) * 640, clientY: ((c - R0 * Math.cos(a) - y0) / vh) * 640 })
+    const n0 = store.navigate.value.n
+    await svg.trigger('pointerdown', { button: 0, pointerId: 1, ...pt(3.4) })
+    await svg.trigger('pointermove', { pointerId: 1, ...pt(3.6) })
+    // 拖动过程中不导航
+    expect(store.navigate.value.n).toBe(n0)
+    await svg.trigger('pointermove', { pointerId: 1, ...pt(3.8) })
+    await svg.trigger('pointerup', { pointerId: 1, ...pt(3.8) })
+    expect(store.selection.value).not.toBeNull()
+    expect(store.navigate.value.n).toBe(n0 + 1)
+    expect(store.navigate.value.range).toEqual(store.selection.value)
+  })
 })
 
 describe('LinearMap 酶名排布', () => {
