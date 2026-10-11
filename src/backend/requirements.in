@@ -33,10 +33,7 @@ snapgene-reader==0.1.23
 # 批量测序整理分析脚本（scripts/batch_sequencing_report.py）读写 Excel 信息表
 openpyxl==3.1.5
 
-# Testing
-pytest==9.1.1
-# starlette 1.x 的 TestClient 改用 httpx2，装旧 httpx 会报 StarletteDeprecationWarning
-httpx2==2.13.1
+# 测试依赖（pytest、httpx2）在 requirements-dev.in，不进生产环境。
 
 # 说明：Sanger 测序分析（core/sanger/）依赖 biopython（比对 + ab1 解析）；
 # 新增依赖照常在本文声明。

@@ -64,7 +64,7 @@ plasmid-designer-v2/
 ```bash
 # 1. 后端
 cd src/backend
-pip install --require-hashes -r requirements.txt   # 锁文件，见下方「Python 依赖锁定」
+pip install --require-hashes -r requirements.txt -r requirements-dev.txt  # 锁文件，见「Python 依赖锁定」
 # SECRET_KEY 必填：未设置、占位、过短或低熵一律拒绝启动（本地开发同样适用）
 echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
 uvicorn app.main:app --reload
@@ -87,12 +87,14 @@ npm run dev
 
 | 源清单（手改） | 锁文件（生成，勿手改） | 用途 |
 |---|---|---|
-| `src/backend/requirements.in` | `src/backend/requirements.txt` | 本地开发、CI、裸机部署 |
+| `src/backend/requirements.in` | `src/backend/requirements.txt` | 运行时：裸机部署、本地开发、CI |
+| `src/backend/requirements-dev.in` | `src/backend/requirements-dev.txt` | 仅测试用的包（pytest、httpx2），本地开发与 CI 额外安装，不进生产 |
 | `deploy/docker/requirements.backend.in` | `deploy/docker/requirements.backend.txt` | Docker 后端镜像（含 biopython） |
 
 增删或升级依赖：改 `.in`（两份清单的同名包版本保持一致）→ 在仓库根运行
 `bash scripts/lock_requirements.sh`（需要 `uv`，没有时脚本在临时 venv 里装一份）→
-跑全量测试 → 把 `.in` 与锁文件一起提交。只升级某个传递依赖用
+跑全量测试 → 把 `.in` 与锁文件一起提交。开发锁以运行时锁为约束（`-c`），两份锁里
+共有的包版本与哈希一致，可一次 `-r requirements.txt -r requirements-dev.txt` 安装。只升级某个传递依赖用
 `UV_ARGS="--upgrade-package <包名>" bash scripts/lock_requirements.sh`。锁文件按
 Python 3.11 起的通用解析生成，Linux 上 3.11 与 3.12 安装同一组版本；
 `tests/test_docker_requirements_sync.py` 会检查锁文件与源清单是否同步。
