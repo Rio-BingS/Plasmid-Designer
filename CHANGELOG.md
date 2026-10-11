@@ -8,6 +8,36 @@
 
 ## [Unreleased]
 
+### 升级注意
+
+- **图谱接口破坏性变更**：`GET /api/design/{id}/map` 与 `GET /api/vectors/{id}/map`
+  改为返回 MapDocument（契约 `plasmid-map/1`，见 `docs/MAP.md`），不再返回旧的
+  `{name, length, sequence, features, enzyme_sites}`，无兼容层。主要差异：特征
+  `strand` 由 `"+"/"-"` 改为 `1/-1/0`，`type` 归一为契约 FeatureType（`resistance` →
+  `marker`、`origin` → `rep_origin`、`multiple_cloning_site` → `mcs`…），`description`
+  改名 `notes`；酶切位点改为按酶分组的 `enzymes[].sites[]`（回文位点只报一次，
+  双链切点 `cut_top/cut_bottom`）；新增 `topology`、`orfs`、`primers`、`meta`。
+  直接调用这两个端点的脚本须按新形状改写。
+- 新增功能开关 `map`（质粒图谱）。新库默认对访客与普通用户开放；已有站点升级后
+  按「能用序列工具（`analysis`）即可用图谱」一次性继承，管理员可在功能矩阵单独收紧。
+- Docker 部署须重新构建后端镜像（镜像新增 `data/features/` 元件库）；裸机部署随项目
+  文件复制，无需额外操作。
+
+### 新增
+
+- 质粒图谱后端 `/api/map/*`：解析 GenBank / FASTA / SnapGene `.dna` / 粘贴文本
+  （`join()` 与跨原点特征、ApE / SnapGene 颜色）、编辑后重算、酶集合
+  （common / unique6 / commercial / golden_gate）、GenBank 导出。环状感知的双链切点、
+  ORF 查找。上限 `MAP_MAX_LENGTH`（默认 300000 bp）、`MAP_MAX_UPLOAD_MB`（默认 5）。
+- 图谱自动注释：63 条常见元件库（载体库与 NCBI GenBank 中可核验的序列，逐条记录
+  来源，`scripts/build_feature_library.py` 重建），k-mer 种子 + 局部比对，报告
+  identity / coverage，覆盖不足标 fragment；肽标签按翻译检索。
+
+### 修复
+
+- 7 个 SnapGene 来源载体（pcDNA3.1、pET-21a、pET-28a、pFastBac1、pGEX-4T-1、pLVX、
+  pYES2）的特征起点整体左移一位，CDS 长度不是 3 的倍数、翻译读码框错位；已更正。
+
 ## [2.10.0] - 2026-10-12
 
 ### 升级注意

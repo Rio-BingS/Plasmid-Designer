@@ -689,31 +689,3 @@ def generate_genbank_from_result(result: DesignResult) -> str:
         lines.append(f"{i + 1:>9} {groups}")
     lines.append("//")
     return "\n".join(lines)
-
-
-def map_data_from_result(result: DesignResult) -> Dict:
-    construct = result.construct_sequence or result.optimized_sequence or ""
-    features = list(result.construct_features or [])
-    if not features:
-        features = [
-            {
-                "name": "Insert",
-                "type": "CDS",
-                "start": 1,
-                "end": len(result.optimized_sequence or ""),
-                "strand": "+",
-                "description": "Optimized insert",
-            }
-        ]
-    from core.enzyme_sites import find_enzyme_sites
-    return {
-        "name": result.vector_name or "Construct",
-        "length": len(construct) or result.final_length or 0,
-        "sequence": construct,
-        "features": features,
-        # 有载体构建体时为环状质粒，需扫描跨原点位点；仅优化序列时为线性
-        "enzyme_sites": (
-            find_enzyme_sites(construct, circular=bool(result.construct_sequence))
-            if construct else []
-        ),
-    }

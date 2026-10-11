@@ -30,6 +30,7 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
   core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 兼容视图
   core/clone_strategy.py    克隆方案文本生成；core/export_formats.py 多格式导出
   core/vector_library.py    载体库（data/vectors/*.yaml）
+  core/plasmid_map/         ★ 图谱契约 plasmid-map/1（解析/酶切/ORF/元件库自动注释/GenBank 导出，docs/MAP.md）
   core/enzyme_sites.py      ★ 唯一限制酶模型（Bio.Restriction/REBASE，默认菜单 51 种），扫描生成图谱酶切位点
   core/sanger/              ★ Sanger 测序全自动管线：reference_parser（GenBank/FASTA/.dna +
                             拓扑）/ abif_reader（SeqIO abi 主路径 + 内置解析器回退）/
