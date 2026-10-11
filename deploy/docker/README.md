@@ -80,7 +80,9 @@ chmod +x ../scripts/deploy.sh
 脚本会自动: 创建 `.env` → 生成随机 SECRET_KEY / DB_PASSWORD / REDIS_PASSWORD → 构建镜像 → 启动服务 → 健康检查
 
 部署完成后访问:
-- **前端**: `http://你的服务器IP`（FRONTEND_PORT 改过则加端口）
+- **前端**: 默认只发布在本机 `http://127.0.0.1:${FRONTEND_PORT:-80}`，供宿主机 nginx 反代
+  （见第九节）；不用反代、要直接以 `http://你的服务器IP` 访问时，在 `.env` 设
+  `FRONTEND_BIND=0.0.0.0` 后重跑脚本（Docker 发布的端口绕过 ufw，见 8.2）
 - **API 文档**: `http://你的服务器IP/docs`（由前端 nginx 代理）
 - **后端直连**: 仅本机 `http://localhost:${BACKEND_PORT:-8000}/docs`（绑定回环，不对公网暴露）
 
@@ -120,6 +122,7 @@ DEBUG=false
 LOG_LEVEL=INFO
 STORAGE_MODE=database
 FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
+FRONTEND_BIND=127.0.0.1            # 前端发布地址；不经宿主机反代直接对外时改为 0.0.0.0
 BACKEND_PORT=8000                  # 后端仅绑定 127.0.0.1；宿主机 8000 被占用时改为 18000 等
 CORS_ORIGINS=http://localhost      # 同源反代无需改；前端另域部署时填显式来源，不要用 *
 AUTH_COOKIE_SECURE=auto            # 只走 HTTPS 时建议改为 true（见第九节）
@@ -259,7 +262,8 @@ sudo kill <占用进程PID>
 # 编辑 .env 文件
 echo "FRONTEND_PORT=8080" >> .env
 docker compose up -d
-# 然后访问 http://你的服务器IP:8080
+# 然后由宿主机 nginx 反代到 127.0.0.1:8080；FRONTEND_BIND=0.0.0.0 时才可直接访问
+# http://你的服务器IP:8080
 #
 # 宿主机 8000 被其他应用占用时（后端启动报 address already in use）:
 echo "BACKEND_PORT=18000" >> .env   # 后端仅绑 127.0.0.1，不影响前端经内部网络访问
@@ -380,6 +384,12 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
+> ufw 管不住 Docker 发布的端口：Docker 在自己的 iptables 链里做 DNAT，发布在
+> `0.0.0.0` 的端口即使 ufw 未放行也能从公网访问。因此前端端口默认用
+> `FRONTEND_BIND=127.0.0.1` 只绑本机，由宿主机 nginx 对外；只有不使用前置、确实
+> 要公网直连容器时才设 `FRONTEND_BIND=0.0.0.0`，此时访问控制只能靠云厂商安全组
+> 或 `DOCKER-USER` 链规则。
+
 ### 8.3 HTTPS
 
 推荐在宿主机 nginx 终止 HTTPS，见下文「绑定域名 / HTTPS」。容器内 `nginx.conf` 末尾的
@@ -413,7 +423,7 @@ server {
     client_max_body_size 520m;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;          # FRONTEND_PORT 对应端口
+        proxy_pass http://127.0.0.1:8080;          # FRONTEND_PORT 对应端口（FRONTEND_BIND 保持 127.0.0.1）
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;   # 前置 nginx 需自行完成真实 IP 解析
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
