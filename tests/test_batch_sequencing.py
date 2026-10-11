@@ -999,3 +999,25 @@ def test_invalid_out_dir_rejected_before_writing(tmp_path, monkeypatch, where):
     assert isinstance(exc.value.code, str) and "输出目录" in exc.value.code
     assert {p: p.read_bytes() for p in data_dir.rglob("*") if p.is_file()} == before
     assert not (tmp_path / batch.MANIFEST_CSV).exists()
+
+
+@pytest.mark.parametrize("kind", ["junk", "not_workbook"])
+def test_unreadable_excel_gives_message_not_traceback(tmp_path, monkeypatch, kind):
+    """review 05 L1：损坏或并非工作簿的 .xlsx 此前直接抛 BadZipFile/KeyError"""
+    import io
+    import zipfile
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    if kind == "junk":
+        blob = b"PK\x03\x04junk"
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("a.txt", "x")
+        blob = buf.getvalue()
+    (data_dir / "测序.xlsx").write_bytes(blob)
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    assert isinstance(exc.value.code, str)
+    assert "无法读取信息表" in exc.value.code and "测序.xlsx" in exc.value.code
+    assert not (data_dir / "测序分析").exists()

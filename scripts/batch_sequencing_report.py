@@ -39,6 +39,7 @@ import io
 import json
 import shutil
 import sys
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -668,6 +669,9 @@ def main():
         wb, header_row, cols, rows = load_excel(excel_path)
     except ValueError as e:
         raise SystemExit(f"{e}：{excel_path}")
+    except (zipfile.BadZipFile, KeyError, OSError) as e:
+        # 损坏、并非 Excel 工作簿或无法打开的文件（不是表头/上限问题）
+        raise SystemExit(f"无法读取信息表（文件损坏或不是 .xlsx 工作簿：{e}）：{excel_path}")
     print(f"信息表：{excel_path.name}（{len(rows)} 个质粒）")
     if rows_have_clones(rows):
         raise SystemExit(
