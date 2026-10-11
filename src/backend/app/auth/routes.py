@@ -81,6 +81,9 @@ class SiteConfigResponse(BaseModel):
     tier: str  # anonymous / user / admin
     features: dict  # {"anonymous": [...], "user": [...]}
     effective_features: list  # 按当前请求者层级（管理员全量）
+    # 当前请求者的批量测序上限（个人覆盖 → 分组 → 服务器默认已解析好）：
+    # {max_reads_per_group, max_total_reads, max_files, max_upload_mb}
+    batch_read_limits: Optional[dict] = None
 
 
 # ==================== 内部工具 ====================
@@ -369,7 +372,23 @@ async def site_config(current_user: Optional[User] = Depends(get_current_user_so
             "user": site["user_features"],
         },
         effective_features=features_for_user(site, current_user),
+        batch_read_limits=_batch_limits_for(site, current_user),
     )
+
+
+def _batch_limits_for(site: dict, user) -> dict:
+    """批量测序页展示用：与 analyze-batch 实际执行同一套解析"""
+    from app import batch_read_limits as brl
+    from app.routes import sequencing_routes as sr
+
+    eff = brl.effective_limits(
+        site, user, defaults=(sr.MAX_BATCH_READS_PER_GROUP, sr.MAX_BATCH_TOTAL_READS))
+    return {
+        brl.PER_GROUP: eff[brl.PER_GROUP]["value"],
+        brl.TOTAL: eff[brl.TOTAL]["value"],
+        "max_files": sr.MAX_BATCH_FILES,
+        "max_upload_mb": sr.MAX_BATCH_REQUEST_BYTES // (1024 * 1024),
+    }
 
 
 def _row_to_settings(row) -> dict:
@@ -382,6 +401,7 @@ def _row_to_settings(row) -> dict:
     """
     import json as _json
     from app.features import DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, valid_features
+    from app.site_settings import parse_batch_read_limits
 
     anon = valid_features(_json.loads(row.anonymous_features or "[]"))
     user_f = valid_features(_json.loads(row.user_features or "[]"))
@@ -393,6 +413,7 @@ def _row_to_settings(row) -> dict:
         "email_verification_required": bool(row.email_verification_required),
         "anonymous_features": anon,
         "user_features": user_f,
+        "batch_read_limits": parse_batch_read_limits(getattr(row, "batch_read_limits", None)),
     }
 
 
