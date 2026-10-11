@@ -21,6 +21,9 @@ const api = axios.create({
   headers: { 'X-Requested-With': 'XMLHttpRequest' }
 })
 
+/** 共享 axios 实例：供按功能拆分的接口模块（如 map/api.ts）复用拦截器与凭证 */
+export { api as http }
+
 // 请求拦截器：记下请求发出时的会话代际（见 api/session.ts）
 api.interceptors.request.use(
   (config) => {
@@ -142,17 +145,7 @@ export async function getCodonTables(): Promise<CodonTable[]> {
   return response.data
 }
 
-// 载体图谱
-export async function getVectorMapData(vectorId: string): Promise<any> {
-  const response = await api.get(`/vectors/${encodeURIComponent(vectorId)}/map`)
-  return response.data
-}
-
-// 设计图谱
-export async function getDesignMapData(designId: string): Promise<any> {
-  const response = await api.get(`/design/${encodeURIComponent(designId)}/map`)
-  return response.data
-}
+// 载体/设计图谱（MapDocument）见 map/api.ts 的 getVectorMap / getDesignMap
 
 // NCBI 搜索
 export async function searchNcbi(query: string, limit: number = 10): Promise<any> {

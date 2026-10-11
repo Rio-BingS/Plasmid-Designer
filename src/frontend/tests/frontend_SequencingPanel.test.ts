@@ -300,16 +300,18 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     // 默认按文件原样显示（含重复注释）：7 条全画
-    expect(wrapper.findAll('.map-feat').length).toBe(7)
+    expect(wrapper.findAll('.lmap-feat').length).toBe(7)
 
     // 开启去重：同名且位置重叠/相邻的合并为一条（异链也算），
     // 相距远的同名特征（两个 3 UTR）不受影响
     await wrapper.find('.map-dedup-toggle input').setValue(true)
     await wrapper.vm.$nextTick()
-    expect(wrapper.findAll('.map-feat').length).toBe(5)
-    const titles = wrapper.findAll('.map-feat').map((g) => g.find('title').text())
-    expect(titles.some((t) => t.includes('miscellaneous') && t.includes('300-420'))).toBe(true)
-    expect(titles.some((t) => t.includes('5 UTR') && t.includes('700-780'))).toBe(true)
+    expect(wrapper.findAll('.lmap-feat').length).toBe(5)
+    const doc = (wrapper.findComponent({ name: 'MatchMap' }).vm as any).doc
+    const spans = doc.features.map((f: any) => `${f.name}:${f.start}-${f.end}`)
+    expect(spans).toContain('miscellaneous:300-420')
+    expect(spans).toContain('5 UTR:700-780')
+    expect(spans.filter((t: string) => t.startsWith('3 UTR'))).toHaveLength(2)
     expect(wrapper.text()).toContain('已合并 2 条重复注释')
   })
 
@@ -605,24 +607,26 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.map-box').exists()).toBe(true)
-    // read 箭头一正一反；长 read 名字画进箭头内，短 read 退回左侧栏
-    expect(wrapper.findAll('.map-arrow-fwd').length).toBe(1)
-    expect(wrapper.findAll('.map-arrow-rev').length).toBe(1)
-    expect(wrapper.findAll('.map-read-name').length).toBe(1)
-    expect(wrapper.findAll('.map-label').filter(t => t.text().includes('r2.ab1')).length).toBe(1)
+    // read 箭头一正一反；长 read 名字画进箭头内，短 read 画在箭头旁
+    expect(wrapper.findAll('path.map-arrow-fwd').length).toBe(1)
+    expect(wrapper.findAll('path.map-arrow-rev').length).toBe(1)
+    expect(wrapper.findAll('.lmap-track-name').length).toBe(1)
+    expect(wrapper.findAll('.lmap-track-label').filter(t => t.text().includes('r2.ab1')).length).toBe(1)
     // 每条 read 的对齐视图各有 1 处错配 → 各 1 个差异点
-    expect(wrapper.findAll('.map-dot').length).toBe(2)
+    expect(wrapper.findAll('.lmap-dot').length).toBe(2)
     // 轴上方的合并变异红块
     expect(wrapper.findAll('.map-var-tick').length).toBe(1)
     // 参考特征箭头：名字放得下的画在箭头内，放不下的引线外置
-    expect(wrapper.findAll('.map-feat path').length).toBe(3)
-    expect(wrapper.findAll('.map-feat-label').length).toBe(2)
-    expect(wrapper.findAll('.map-feat-out').length).toBe(1)
+    expect(wrapper.findAll('.lmap-feat path').length).toBe(3)
+    expect(wrapper.findAll('.lmap-feat-label').length).toBe(2)
+    expect(wrapper.findAll('.lmap-feat-out').length).toBe(1)
     // 自适应刻度数字
-    expect(wrapper.findAll('.map-tick-num').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.lmap-tick-num').length).toBeGreaterThan(0)
 
     // 点击 read 箭头 → 融合视图显示该 read（复选框勾选 + 峰图请求）
-    await wrapper.find('.map-arrow-rev').trigger('click')
+    const rev = wrapper.find('path.map-arrow-rev')
+    await rev.trigger('pointerdown', { button: 0, pointerId: 1 })
+    await rev.trigger('pointerup', { button: 0, pointerId: 1 })
     await wrapper.vm.$nextTick()
     expect((wrapper.vm as any).visibleReads).toContain(1)
   })

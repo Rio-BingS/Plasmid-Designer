@@ -23,7 +23,6 @@ vi.mock('axios', () => ({
 import {
   getDesign,
   getVector,
-  getVectorMapData,
   previewNcbi,
   deleteVector,
   updateVector,
@@ -49,14 +48,12 @@ describe('API 路径参数编码', () => {
   it('设计/载体/批量接口编码 ID', async () => {
     await getDesign(EVIL)
     await getVector(EVIL)
-    await getVectorMapData(EVIL)
     await previewNcbi(EVIL)
     await getBatchProgress(EVIL)
     const urls = mocks.get.mock.calls.map((c) => c[0])
     expect(urls).toEqual([
       `/design/${ENC}`,
       `/vectors/${ENC}`,
-      `/vectors/${ENC}/map`,
       `/vectors/preview/ncbi/${ENC}`,
       `/design/batch/${ENC}`
     ])
