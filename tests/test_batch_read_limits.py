@@ -234,3 +234,34 @@ def test_migration_adds_nullable_columns_idempotently(legacy_engine):
     assert raw is None
     assert site_settings.parse_batch_read_limits(raw) == brl.empty_tier_limits()
     assert json.loads(anon) == ["design"]               # 既有设置不受影响
+
+
+# ==================== site-config 下发本账号生效上限 ====================
+
+def _set_db_limits(limits):
+    site_settings.update_settings({"batch_read_limits": limits})
+
+
+@pytest.fixture
+def db_limits():
+    yield _set_db_limits
+    _set_db_limits(brl.empty_tier_limits())
+
+
+def test_site_config_reports_effective_limits_per_caller(db_limits):
+    limits = brl.empty_tier_limits()
+    limits["anonymous"][brl.TOTAL] = 60
+    limits["user"] = {brl.PER_GROUP: 48, brl.TOTAL: 900}
+    db_limits(limits)
+    c = TestClient(app)
+    anon = c.get("/api/auth/site-config").json()["batch_read_limits"]
+    assert anon == {brl.PER_GROUP: sr.MAX_BATCH_READS_PER_GROUP, brl.TOTAL: 60,
+                    "max_files": sr.MAX_BATCH_FILES, "max_upload_mb": 500}
+    _uid, token = _db_user()
+    h = {"Authorization": f"Bearer {token}"}
+    mine = c.get("/api/auth/site-config", headers=h).json()["batch_read_limits"]
+    assert mine[brl.PER_GROUP] == 48 and mine[brl.TOTAL] == 900
+    _uid2, token2 = _db_user(total=1500)
+    own = c.get("/api/auth/site-config",
+                headers={"Authorization": f"Bearer {token2}"}).json()["batch_read_limits"]
+    assert own[brl.TOTAL] == 1500 and own[brl.PER_GROUP] == 48
