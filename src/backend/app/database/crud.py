@@ -57,12 +57,14 @@ def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[UserDB]:
 
 
 def update_user(db: Session, user_id: str, **fields) -> Optional[UserDB]:
-    """更新用户指定字段（仅允许角色/状态/验证标记/个人功能权限/密码哈希）。
+    """更新用户指定字段（仅允许角色/状态/验证标记/个人功能权限/批量 read
+    上限覆盖/密码哈希）。
 
     禁用账号或更换密码时递增 token_version，该用户已签发的令牌全部失效
     （重新启用后旧令牌也不会复活）
     """
-    allowed = {"is_admin", "is_active", "email_verified", "allowed_features", "hashed_password"}
+    allowed = {"is_admin", "is_active", "email_verified", "allowed_features", "hashed_password",
+               "batch_max_reads_per_group", "batch_max_total_reads"}
     user = get_user_by_id(db, user_id)
     if user is None:
         return None
