@@ -13,7 +13,7 @@ from fastapi.security import APIKeyHeader
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import logging
-from collections import defaultdict
+from collections import OrderedDict
 from threading import Lock
 
 from app.config import settings
@@ -31,82 +31,140 @@ class RateLimitExceeded(HTTPException):
         )
 
 
-class InMemoryRateLimiter:
-    """内存速率限制器"""
+class _KeyTable:
+    """限流计数表：普通 key 与受保护 key 分两张 OrderedDict 存放。
 
-    # key 总量上限：防止伪造 IP 无限制造新 key 撑爆内存（KNOWN_ISSUES 1.2/2.2）
-    MAX_TRACKED_KEYS = 10_000
+    两张表都按「最近一次活跃」排序（命中即 move_to_end），表头永远是
+    最久未活跃的 key，所以淘汰只需从表头 popitem，均摊 O(1)，不再全表
+    排序（审查 02 M1：超限后每请求 ~5 ms，单进程上限 ~192 req/s）。
+
+    受保护 key（如按账号的登录失败计数 rate:login_fail:*）单独成表：
+    攻击者批量制造普通 key 只会挤掉普通表里的旧 key，无法借此冲掉
+    某个账号尚未过期的失败计数、重置口令猜测配额。
+    """
+
+    __slots__ = ("general", "protected")
 
     def __init__(self):
-        self._requests: Dict[str, list] = defaultdict(list)
+        # key -> [window_seconds, timestamps]
+        self.general: "OrderedDict[str, list]" = OrderedDict()
+        self.protected: "OrderedDict[str, list]" = OrderedDict()
+
+    def table_for(self, key: str) -> "OrderedDict[str, list]":
+        return self.protected if key.startswith(PROTECTED_KEY_PREFIXES) else self.general
+
+    def get(self, key: str):
+        return self.table_for(key).get(key)
+
+    def pop(self, key: str, default=None):
+        return self.table_for(key).pop(key, default)
+
+    def clear(self) -> None:
+        self.general.clear()
+        self.protected.clear()
+
+    def __contains__(self, key) -> bool:
+        return key in self.general or key in self.protected
+
+    def __len__(self) -> int:
+        return len(self.general) + len(self.protected)
+
+
+# 受保护 key 前缀：普通 key 再多也不会把它们挤出去（见 _KeyTable）
+PROTECTED_KEY_PREFIXES: Tuple[str, ...] = ("rate:login_fail:",)
+
+
+class InMemoryRateLimiter:
+    """内存速率限制器（滑动窗口；key 淘汰均摊 O(1)）"""
+
+    # 普通 key 总量上限：防止伪造 IP / 邮箱无限制造新 key 撑爆内存
+    # （KNOWN_ISSUES 1.2/2.2）。淘汰已是 O(1)，上限可以放宽，减少洪泛时
+    # 合法用户的计数桶被挤掉（审查 02 M1）。
+    MAX_TRACKED_KEYS = 50_000
+    # 受保护 key：只淘汰窗口已过期的；超过硬上限（内存兜底）才按最久
+    # 未活跃强制淘汰并告警。
+    MAX_PROTECTED_KEYS = 50_000
+    MAX_PROTECTED_KEYS_HARD = 200_000
+
+    def __init__(self):
+        self._requests = _KeyTable()
         self._lock = Lock()
 
-    def _prune_keys_locked(self, now: float) -> None:
-        """key 数量超限时回收内存：先删整段无活跃记录的 key，
-        仍超限则淘汰「最近一次活跃时间」最旧的 key。必须在持有 self._lock 时调用。"""
-        if len(self._requests) <= self.MAX_TRACKED_KEYS:
-            return
-        # 超过最长窗口（upload 的 3600s）无活跃记录的 key 已完全过期，可整体删除
-        for key in [k for k, ts in self._requests.items() if not ts or ts[-1] <= now - 3600]:
-            del self._requests[key]
-        if len(self._requests) > self.MAX_TRACKED_KEYS:
-            overflow = len(self._requests) - self.MAX_TRACKED_KEYS
-            ordered = sorted(
-                self._requests.items(),
-                key=lambda item: item[1][-1] if item[1] else 0.0,
-            )
-            for key, _ in ordered[:overflow]:
-                del self._requests[key]
-    
+    @staticmethod
+    def _expired(entry: list, now: float) -> bool:
+        window, ts = entry
+        return not ts or ts[-1] <= now - window
+
+    def _evict_locked(self, now: float) -> None:
+        """从表头（最久未活跃）淘汰超额 key。必须在持有 self._lock 时调用。"""
+        general = self._requests.general
+        while len(general) > self.MAX_TRACKED_KEYS:
+            general.popitem(last=False)
+
+        protected = self._requests.protected
+        while len(protected) > self.MAX_PROTECTED_KEYS:
+            head = next(iter(protected.values()))
+            if self._expired(head, now):
+                protected.popitem(last=False)
+            elif len(protected) > self.MAX_PROTECTED_KEYS_HARD:
+                key, _ = protected.popitem(last=False)
+                logger.warning("受保护限流 key 超过硬上限，强制淘汰: %s", key)
+            else:
+                break
+
     def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
         """
         检查是否允许请求
-        
+
         Args:
             key: 限制键（如 IP 地址或用户 ID）
             max_requests: 时间窗口内最大请求数
             window_seconds: 时间窗口（秒）
-        
+
         Returns:
             (是否允许, 剩余秒数)
         """
         now = time.time()
         window_start = now - window_seconds
-        
+
         with self._lock:
-            # 清理过期记录
-            self._requests[key] = [
-                ts for ts in self._requests[key] 
-                if ts > window_start
-            ]
-            
+            table = self._requests.table_for(key)
+            entry = table.get(key)
+            if entry is None:
+                entry = [window_seconds, []]
+                table[key] = entry
+            else:
+                table.move_to_end(key)
+                entry[0] = max(entry[0], window_seconds)
+            # 清理过期记录（单 key 至多 max_requests 条）
+            ts = [t for t in entry[1] if t > window_start]
+            entry[1] = ts
+
             # 检查是否超过限制
-            if len(self._requests[key]) >= max_requests:
-                oldest = min(self._requests[key])
-                retry_after = int(oldest + window_seconds - now) + 1
+            if len(ts) >= max_requests:
+                retry_after = int(min(ts) + window_seconds - now) + 1
                 return False, retry_after
-            
+
             # 记录请求
-            self._requests[key].append(now)
-            self._prune_keys_locked(now)
+            ts.append(now)
+            self._evict_locked(now)
             return True, 0
-    
+
     def reset(self, key: str) -> None:
         """清空某个 key 的计数（如登录成功后清除该账号的失败记录）"""
         with self._lock:
             self._requests.pop(key, None)
 
     def get_remaining(self, key: str, max_requests: int, window_seconds: int) -> int:
-        """获取剩余请求次数"""
-        now = time.time()
-        window_start = now - window_seconds
-        
+        """获取剩余请求次数（只读：不为未知 key 建表项）"""
+        window_start = time.time() - window_seconds
+
         with self._lock:
-            self._requests[key] = [
-                ts for ts in self._requests[key] 
-                if ts > window_start
-            ]
-            return max(0, max_requests - len(self._requests[key]))
+            entry = self._requests.get(key)
+            if entry is None:
+                return max_requests
+            used = sum(1 for t in entry[1] if t > window_start)
+            return max(0, max_requests - used)
 
 
 class RedisRateLimiter:
