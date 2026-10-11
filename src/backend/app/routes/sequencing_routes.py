@@ -67,8 +67,8 @@ from app.sequencing_batch import (
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import format_locus_line
 from core.sanger.batch import (
-    REF_EXTS, READ_EXTS, load_excel, match_clone_files, norm_stem,
-    rows_have_clones,
+    REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
+    parse_excel, rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
 from core.sanger.reference_parser import parse_reference_topology
@@ -773,16 +773,18 @@ def _check_batch_excel(filename: Optional[str], excel_bytes: bytes) -> None:
 
 
 def _load_batch_excel(excel_bytes: bytes):
-    """解析信息表；格式问题统一转 400 中文提示。返回 (wb, cols, rows)"""
+    """流式解析信息表；格式问题统一转 400 中文提示。返回 (cols, rows)。
+
+    只读流式解析不构建整表对象；回填结论时再单独以可写模式打开"""
     try:
-        wb, _header, cols, rows = load_excel(excel_bytes)
+        _header, cols, rows = parse_excel(excel_bytes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (InvalidFileException, BadZipFile):
         raise HTTPException(
             status_code=400,
             detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
-    return wb, cols, rows
+    return cols, rows
 
 
 def _batch_pipeline(
@@ -795,8 +797,8 @@ def _batch_pipeline(
     excel_pack = None
     excel_rows = None
     if excel_bytes is not None:
-        wb, cols, excel_rows = _load_batch_excel(excel_bytes)
-        excel_pack = (excel_name, excel_bytes, wb, cols, excel_rows)
+        cols, excel_rows = _load_batch_excel(excel_bytes)
+        excel_pack = (excel_name, excel_bytes, cols, excel_rows)
 
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
@@ -816,9 +818,10 @@ def _batch_pipeline(
     if report_ready:
         excel_original = excel_filled = None
         if excel_pack:
-            excel_name, excel_original, wb, cols, rows = excel_pack
-            excel_filled = backfill_excel(wb, cols, rows, payload["items"],
-                                          payload["clone_mode"])
+            excel_name, excel_original, cols, rows = excel_pack
+            # 回填需要可写的完整工作簿：只在真正打包时加载，用完即弃
+            excel_filled = backfill_excel(open_excel_for_write(excel_original), cols,
+                                          rows, payload["items"], payload["clone_mode"])
         # 终审 C-07：打包所需的记录来自本次 _run_batch 的直接产物
         # （records_by_id），不再事后回查全局 dict——回查会在记录被
         # 并发淘汰时 KeyError
