@@ -216,18 +216,44 @@ def _variant_confidence(v: Dict, mixed_positions: set,
 
 
 def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
-                   min_len: int = 100, cap: int = 10) -> List[Dict]:
-    """覆盖缺口（未覆盖区间）按长度降序，供补测建议"""
-    gaps: List[Dict] = []
+                   min_len: int = 100, cap: int = 10,
+                   circular: bool = False) -> List[Dict]:
+    """覆盖缺口（未覆盖区间）按长度降序，供补测建议
+
+    circular=True：环状参考的尾部缺口 [x, L] 与头部缺口 [1, y] 在原点处
+    相连，先合并成一段跨原点缺口再按 min_len 过滤——分开过滤会把两侧
+    各不足 min_len、合起来已够长的缺口整段漏掉。跨原点缺口与跨原点 read
+    同口径：start/end 为折回坐标（start > end），wraps_origin=True，
+    ref_segments 给出 [[x, L], [1, y]] 两段；length 为合并后总长。
+    线性参考（及未跨原点的缺口）不带新字段，结果与此前完全一致。"""
+    raw: List[Dict] = []
     prev = 0
     for s, e in covered_ranges:
-        if s - prev - 1 >= min_len:
-            gaps.append({"start": prev + 1, "end": s - 1, "length": s - prev - 1})
+        if s - prev - 1 > 0:
+            raw.append({"start": prev + 1, "end": s - 1, "length": s - prev - 1})
         prev = max(prev, e)
-    if length - prev >= min_len:
-        gaps.append({"start": prev + 1, "end": length, "length": length - prev})
+    if length - prev > 0:
+        raw.append({"start": prev + 1, "end": length, "length": length - prev})
+    if (circular and len(raw) >= 2 and raw[0]["start"] == 1
+            and raw[-1]["end"] == length):
+        head, tail = raw[0], raw.pop()
+        raw[0] = {
+            "start": tail["start"], "end": head["end"],
+            "length": tail["length"] + head["length"],
+            "wraps_origin": True,
+            "ref_segments": [[tail["start"], length], [1, head["end"]]],
+        }
+    gaps = [g for g in raw if g["length"] >= min_len]
     gaps.sort(key=lambda g: -g["length"])
     return gaps[:cap]
+
+
+def _gap_span_text(gap: Dict, sep: str = "-") -> str:
+    """缺口位置文本：线性「s-e」；跨原点「x-L、1-y」（与 read 区段同口径）"""
+    segs = gap.get("ref_segments")
+    if segs:
+        return "、".join(f"{a}{sep}{b}" for a, b in segs)
+    return f"{gap['start']}{sep}{gap['end']}"
 
 
 def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
@@ -2226,7 +2252,7 @@ def analyze(
         [sp for r in read_results for sp in aln_segments(r["alignment"])],
         len(ref),
     )
-    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref))
+    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref), circular=circular)
 
     # poly 重复结构清单：仅列出落在测序覆盖范围内的结构，回填测得重复数。
     # 除调用碱基外，对每条覆盖该结构的 read 做峰图独立计数并交叉验证：
@@ -2816,7 +2842,7 @@ def analyze(
                 g = coverage_gaps[0]
                 gap_hint = (
                     f"；共 {len(coverage_gaps)} 段未覆盖缺口"
-                    f"（最大 {g['start']}-{g['end']}，{g['length']}bp）"
+                    f"（最大 {_gap_span_text(g)}，{g['length']}bp）"
                 )
             lines.append(
                 f"注意：本次实测覆盖 {consensus['coverage_percent']:.1f}%，"

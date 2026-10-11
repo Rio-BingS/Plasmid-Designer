@@ -32,7 +32,10 @@ const coverageSegments = computed(() => {
 /** 覆盖缺口摘要（取最长 3 段展示） */
 const gapSummary = computed(() => {
   const gs = props.analysis.coverage_gaps ?? []
-  const parts = gs.slice(0, 3).map((g) => `${g.start}-${g.end}（${g.length}bp）`)
+  // 跨原点缺口按两段写位置（与 read 落点同口径「x-L、1-y」）
+  const span = (g: (typeof gs)[number]) =>
+    g.ref_segments?.length ? g.ref_segments.map(([s, e]) => `${s}-${e}`).join('、') : `${g.start}-${g.end}`
+  const parts = gs.slice(0, 3).map((g) => `${span(g)}（${g.length}bp）`)
   return parts.join('、') + (gs.length > 3 ? ' 等' : '')
 })
 
