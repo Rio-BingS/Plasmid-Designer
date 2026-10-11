@@ -123,3 +123,28 @@ export function blockedSiteCount(e: MapEnzyme): number {
 export function blockedText(kinds: string[]): string {
   return `被 ${kinds.join('/')} 甲基化阻断`
 }
+
+/**
+ * 概览图（环形/线性）上的切点上限：位点总数超过 maxMarks 时，按切点数从少到多
+ * 逐个酶纳入，直到再加一个酶就超限为止（单/双切点酶总会纳入）。被略去的酶
+ * 整体不画——每个位点都画只会糊成一圈色带（SnapGene 默认也只显示少切点酶）；
+ * 序列视图与酶切列表仍显示全部位点。
+ */
+export function overviewCuts(cuts: CutMark[], maxMarks: number): { shown: CutMark[]; dropped: { name: string; count: number }[] } {
+  if (cuts.length <= maxMarks) return { shown: cuts, dropped: [] }
+  const byEnzyme = new Map<string, number>()
+  for (const c of cuts) byEnzyme.set(c.name, (byEnzyme.get(c.name) ?? 0) + 1)
+  const order = [...byEnzyme.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+  const keep = new Set<string>()
+  const dropped: { name: string; count: number }[] = []
+  let total = 0
+  for (const [name, n] of order) {
+    if (n <= 2 || (dropped.length === 0 && total + n <= maxMarks)) {
+      keep.add(name)
+      total += n
+    } else {
+      dropped.push({ name, count: n })
+    }
+  }
+  return { shown: cuts.filter((c) => keep.has(c.name)), dropped }
+}
