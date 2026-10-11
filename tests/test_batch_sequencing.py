@@ -164,6 +164,93 @@ def test_excel_conclusion_互检矛盾合并为疑似伪影():
     assert "互检矛盾" not in out and "详见报告" not in out
 
 
+def test_excel_conclusion_部分比对不给合格():
+    """review 04 H1：有 read 大段未比对上参考（partial_alignment）时，未比对
+    部分没有验证，与网页 △ 同口径——结论不得以 合格 开头，归入 无法判定/"""
+    from app.sequencing_report import _conclusion_bucket
+    res = _res([], [], coverage=1.0)
+    res["reads"] = [{"filename": "x.ab1", "partial_alignment": {
+        "aligned_read_len": 11, "trimmed_length": 700, "circular": True}}]
+    out = batch.excel_conclusion("MX", res, 1, True)
+    assert out.startswith("无法判定：部分比对（x.ab1 仅 11/700bp 比对上参考）")
+    assert _conclusion_bucket(out) == "无法判定"
+    # 有确证差异也不升级为 合格；确证 CDS 不一致仍是 不合格
+    res["variants"] = [{"confidence": "high"}]
+    out = batch.excel_conclusion("MX", res, 1, True)
+    assert out.startswith("无法判定：") and "1 处确证差异" in out
+    res["cds_reports"] = [{"name": "MX", "coverage_status": "partial",
+                           "protein_identical": False}]
+    assert batch.excel_conclusion("MX", res, 1, True).startswith("不合格：MX")
+
+
+def test_excel_conclusion_实测过少不给合格():
+    """无完整覆盖的 CDS 且实测不足 MIN_VERDICT_COVERED_BP → 无法判定；
+    部分测序本身是常规策略：CDS 完整覆盖或实测足够时照常 合格"""
+    from core.sanger.batch import MIN_VERDICT_COVERED_BP
+    res = _res([], [], coverage=1.0)
+    res["consensus"]["covered_ranges"] = [(5, 24)]
+    out = batch.excel_conclusion("MX", res, 1, True)
+    assert out.startswith("无法判定：测序覆盖不足（仅 20bp 实测）")
+    res["consensus"]["covered_ranges"] = [(1, MIN_VERDICT_COVERED_BP)]
+    assert batch.excel_conclusion("MX", res, 1, True).startswith("合格：与设计一致")
+    res["consensus"]["covered_ranges"] = [(5, 24)]
+    res["cds_reports"] = [{"name": "MX", "coverage_status": "full",
+                           "protein_identical": True}]
+    assert batch.excel_conclusion("MX", res, 1, True).startswith("合格：")
+
+
+def _h1_case(read_fn):
+    """review 04 H1 复现：2000 bp 环状参考（CDS 1..300），单条 read 跑主流程"""
+    import logging
+    import random
+
+    from core.sanger.pipeline import analyze
+    rng = random.Random(5)
+
+    def rs(n):
+        return "".join(rng.choice("ACGT") for _ in range(n))
+
+    out = "ATG"
+    while len(out) < 297:
+        c = rs(3)
+        if c not in ("TAA", "TAG", "TGA"):
+            out += c
+    ref = out + "TAA" + rs(1700)
+    feats = [{"name": "CDS1", "type": "CDS", "start": 1, "end": 300,
+              "strand": "+", "description": ""}]
+    read = read_fn(ref, rs)
+    logging.disable(logging.WARNING)
+    try:
+        return analyze([("r0.ab1", make_ab1(read, [40] * len(read)))],
+                       ref, feats, circular=True)
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+@pytest.mark.parametrize("label,read_fn", [
+    ("错质粒：与参考无关的随机 read", lambda ref, rs: rs(700)),
+    ("前半来自参考、后半外源", lambda ref, rs: ref[300:700] + rs(400)),
+])
+def test_excel_conclusion_错质粒不入正确(label, read_fn):
+    """review 04 H1 端到端：错质粒/污染 read 此前得到 "合格：与设计一致；
+    测序覆盖 1%/20%" 并被归入 正确/"""
+    from app.sequencing_report import _conclusion_bucket
+    res = _h1_case(read_fn)
+    out = batch.excel_conclusion("P1", res, 1, True)
+    assert not out.startswith("合格"), (label, out)
+    assert out.startswith("无法判定：")
+    assert _conclusion_bucket(out) == "无法判定"
+
+
+def test_excel_conclusion_完整比对仍合格():
+    """对照：同一参考上完整比对的 read（覆盖 CDS）结论不变，仍归入 正确/"""
+    from app.sequencing_report import _conclusion_bucket
+    res = _h1_case(lambda ref, rs: ref[:700])
+    out = batch.excel_conclusion("P1", res, 1, True)
+    assert out.startswith("合格：与设计一致"), out
+    assert _conclusion_bucket(out) == "正确"
+
+
 # ---------------------------------------------------------------- 端到端
 
 
