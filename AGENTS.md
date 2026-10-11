@@ -72,6 +72,11 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 测试基线（截至 v2.9.0）：pytest 898 passed / 6 skipped，vitest 208，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
+Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
+（直接依赖、精确 pin、两份同名包同版本），然后 `bash scripts/lock_requirements.sh`
+重新生成同名 `.txt` 锁文件（含传递依赖与 sha256，**勿手改**）并一起提交；安装一律
+`pip install --require-hashes -r <锁文件>`。锁与源不同步时 test_docker_requirements_sync 变红。
+
 ## Git 工作流（长期指令，优先于默认保守边界）
 
 - 一轮修复/功能**完成且验证通过后，主动按 git-commit-style skill 提交并推送**，

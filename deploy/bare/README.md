@@ -103,8 +103,8 @@ sudo useradd -r -s /bin/false plasmid
 sudo python3.11 -m venv /opt/plasmid-designer/venv
 sudo /opt/plasmid-designer/venv/bin/pip install --upgrade pip
 
-# 统一从项目 requirements.txt 安装（全部有预编译 wheel）
-sudo /opt/plasmid-designer/venv/bin/pip install \
+# 统一从项目锁文件 requirements.txt 安装（含传递依赖与哈希；全部有预编译 wheel）
+sudo /opt/plasmid-designer/venv/bin/pip install --require-hashes \
     -r /opt/plasmid-designer/src/backend/requirements.txt
 ```
 

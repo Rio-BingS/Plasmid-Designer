@@ -8,7 +8,14 @@
 
 ## [Unreleased]
 
-（暂无）
+### 升级注意
+
+- Python 依赖改为带哈希的锁文件：源清单改名为 `src/backend/requirements.in`、
+  `deploy/docker/requirements.backend.in`，同名 `.txt` 变为生成的锁文件（含全部
+  传递依赖与 sha256）。CI、Docker 镜像与裸机 `install.sh` 改用
+  `pip install --require-hashes`；手动安装或自定义镜像源的部署请同样从锁文件安装，
+  镜像源必须提供与 PyPI 相同的文件。biopython 并入 Docker 锁文件，不再单独安装。
+  更新方法见 README「Python 依赖锁定」。
 
 ## [2.9.0] - 2026-10-11
 

@@ -370,9 +370,9 @@ VENV_PIP="$INSTALL_DIR/venv/bin/pip"
 # 升级 pip
 $VENV_PIP install --upgrade pip setuptools wheel
 
-# 统一从项目 requirements.txt 安装（单一来源，随主项目同步；
-# 全部依赖有预编译 wheel，无需本地编译）
-$VENV_PIP install --no-cache-dir --timeout=120 --retries=5 \
+# 统一从项目锁文件 requirements.txt 安装（单一来源，随主项目同步；含全部
+# 传递依赖与 sha256，按哈希校验；全部依赖有预编译 wheel，无需本地编译）
+$VENV_PIP install --no-cache-dir --timeout=120 --retries=5 --require-hashes \
     -r "$INSTALL_DIR/src/backend/requirements.txt"
 
 echo "  ✓ Python 依赖安装完成"
@@ -550,7 +550,7 @@ echo "  停止服务: systemctl stop plasmid-backend"
 echo ""
 echo "更新部署:"
 echo "  cd $INSTALL_DIR && git pull"
-echo "  source venv/bin/activate && pip install -r src/backend/requirements.txt"
+echo "  source venv/bin/activate && pip install --require-hashes -r src/backend/requirements.txt"
 echo "  cd src/frontend && npm ci && npm run build"
 echo "  sudo systemctl restart plasmid-backend"
 echo ""
