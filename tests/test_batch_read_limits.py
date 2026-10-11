@@ -256,7 +256,8 @@ def test_site_config_reports_effective_limits_per_caller(db_limits):
     c = TestClient(app)
     anon = c.get("/api/auth/site-config").json()["batch_read_limits"]
     assert anon == {brl.PER_GROUP: sr.MAX_BATCH_READS_PER_GROUP, brl.TOTAL: 60,
-                    "max_files": sr.MAX_BATCH_FILES, "max_upload_mb": 500}
+                    "max_files": sr.MAX_BATCH_FILES, "max_upload_mb": 500,
+                    "chunk_max_files": 200, "chunk_max_mb": 90, "session_max_mb": 2048}
     _uid, token = _db_user()
     h = {"Authorization": f"Bearer {token}"}
     mine = c.get("/api/auth/site-config", headers=h).json()["batch_read_limits"]
