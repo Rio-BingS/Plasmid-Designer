@@ -120,3 +120,53 @@ def test_heavy_reads_have_own_buckets(method, path, bucket):
 def test_export_bucket_stricter_than_default():
     assert rate_limit.RATE_LIMITS["export"]["requests"] < rate_limit.RATE_LIMITS["default"]["requests"]
     assert rate_limit.RATE_LIMITS["ncbi"]["requests"] < rate_limit.RATE_LIMITS["default"]["requests"]
+
+
+# ---------------- IPv6 前缀聚合（审查 02 H1） ----------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("203.0.113.7", "203.0.113.7"),
+    ("::ffff:203.0.113.7", "203.0.113.7"),
+    ("2001:db8:0:1::1", "2001:db8:0:1::/64"),
+    ("2001:db8:0:1:ffff:ffff:ffff:ffff", "2001:db8:0:1::/64"),
+    ("2001:DB8:0:1::abcd", "2001:db8:0:1::/64"),
+    ("fe80::1%eth0", "fe80::/64"),
+    ("unknown", "unknown"),
+    ("testclient", "testclient"),
+])
+def test_normalize_ip_for_key(raw, expected):
+    assert rate_limit.normalize_ip_for_key(raw) == expected
+
+
+def test_ipv6_same_64_shares_bucket():
+    k1 = rate_limit.get_rate_limit_key(_req("2001:db8::1", path="/api/design"), "design")
+    k2 = rate_limit.get_rate_limit_key(_req("2001:db8::2", path="/api/design"), "design")
+    k3 = rate_limit.get_rate_limit_key(_req("2001:db8:0:1::1", path="/api/design"), "design")
+    assert k1 == k2 == "rate:ip:2001:db8::/64:design"
+    assert k3 != k1
+
+
+def test_ipv6_auth_key_aggregated_and_ipv4_mapped():
+    k1 = rate_limit.get_rate_limit_key(_req("2001:db8::1"), "auth", "v@example.com")
+    k2 = rate_limit.get_rate_limit_key(_req("2001:db8::beef"), "auth", "v@example.com")
+    assert k1 == k2 == "rate:auth:2001:db8::/64:v@example.com"
+    k4 = rate_limit.get_rate_limit_key(_req("::ffff:8.8.8.8"), "auth", "v@example.com")
+    assert k4 == rate_limit.get_rate_limit_key(_req("8.8.8.8"), "auth", "v@example.com")
+
+
+def test_ipv6_forwarded_client_aggregated():
+    # 可信代理透传的 IPv6 真实地址同样按 /64 聚合
+    r1 = _req("127.0.0.1", {"X-Real-IP": "2001:db8:aa::1"}, path="/api/design")
+    r2 = _req("127.0.0.1", {"X-Real-IP": "2001:db8:aa::99"}, path="/api/design")
+    assert rate_limit.get_rate_limit_key(r1, "design") == rate_limit.get_rate_limit_key(r2, "design")
+
+
+def test_ipv6_rotation_within_64_hits_auth_ip_limit(monkeypatch):
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth", {"requests": 100, "window": 60})
+    monkeypatch.setitem(rate_limit.RATE_LIMITS, "auth_ip", {"requests": 3, "window": 60})
+    # TestClient 无法设置对端地址，经可信回环代理用 X-Real-IP 模拟 IPv6 客户端
+    c = TestClient(app, client=("127.0.0.1", 50000))
+    codes = [c.post("/api/auth/login", json={"email": f"s{i}@example.com", "password": "x" * 8},
+                    headers={"X-Real-IP": f"2001:db8:5::{i + 1:x}"}).status_code
+             for i in range(5)]
+    assert codes[3:] == [429, 429], codes
