@@ -353,6 +353,203 @@ def build_batch_zip(
     return buf.getvalue()
 
 
+MANIFEST_FIELDS = ["质粒", "克隆", "文件", "类型", "结论", "匹配方式", "归档路径",
+                   "大小KB", "MD5"]
+SOURCE_PATH_FIELD = "原始路径"
+
+
+class BatchArchive:
+    """整理包条目的增量构建器（batch_archive_entries 与离线脚本逐质粒落盘共用）
+
+    同名去重（_arc）、图谱只归档一份、报告与 json 的命名都只取决于同一质粒
+    文件夹内的组，因此逐个质粒文件夹构建与整批一次构建得到的条目完全相同；
+    整理清单的行按「所在结论桶的首组序号」排序，与整批构建的行序一致。
+    """
+
+    def __init__(self, plasmids: List[str], origin: str = "web",
+                 source_paths: bool = False, root: str = ZIP_ROOT):
+        self.prefix = f"{root}/" if root else ""
+        self.origin = origin
+        self.source_paths = source_paths
+        self.fields = MANIFEST_FIELDS + ([SOURCE_PATH_FIELD] if source_paths else [])
+        self._folders = _plasmid_folders(plasmids)
+        self._used_arcs: set = set()          # 全局防 zip 条目冲突
+        self._used_in_dir: Dict[str, set] = {}   # 同一文件夹内防同名（跨文件夹允许重名）
+        self._ref_archived: Dict[str, set] = {}  # 质粒文件夹 → 已归档图谱 (文件名, MD5)
+        self._manifest: List[Tuple[Tuple[float, int], Dict]] = []
+        self._seq = 0
+
+    def _arc(self, arcdir: str, base: str) -> str:
+        seen = self._used_in_dir.setdefault(arcdir, set())
+        name = base
+        n = 2
+        while name in seen:
+            stem, dot, suffix = base.rpartition(".")
+            name = (f"{stem} ({n}).{suffix}" if dot else f"{base} ({n})")
+            n += 1
+        seen.add(name)
+        arc = f"{self.prefix}{arcdir}/{name}" if arcdir else f"{self.prefix}{name}"
+        while arc in self._used_arcs:      # 理论到不了（目录内已唯一），兜底防冲突
+            arc += "_"
+        self._used_arcs.add(arc)
+        return arc
+
+    def _row(self, order: float, row: Dict, entry: Dict) -> Dict:
+        if self.source_paths:
+            row[SOURCE_PATH_FIELD] = str(entry.get("path") or "")
+        self._seq += 1
+        self._manifest.append(((order, self._seq), row))
+        return row
+
+    def folder_of(self, group: Dict) -> Optional[str]:
+        """组所在的质粒文件夹；图谱与 read 皆空的组无可归档，返回 None"""
+        if not (group["reference"] or group["reads"]):
+            return None
+        return _safe_component(self._folders.get(group["plasmid"] or "") or "sample")
+
+    def folder_dirs(self, folder: str) -> List[Tuple[str, None]]:
+        """质粒文件夹固定给出的 正确/ 错误/ 子文件夹（空置也保留）"""
+        return [(f"{self.prefix}{folder}/{d}/", None) for d in ("正确", "错误")]
+
+    def bucket_entries(self, folder: str, bucket: str,
+                       members: List[Tuple[Dict, Dict, Optional[Dict]]],
+                       order: int) -> Tuple[List, List[Dict]]:
+        """一个（质粒文件夹, 结论桶）的条目与整理清单行
+
+        members 为该桶内各组 (group, item, record)，按组序；order 为桶内首组
+        在整批中的序号（决定清单行序）。返回 (entries, rows)。"""
+        entries: List[Tuple[str, Optional[Union[bytes, str]]]] = []
+        rows: List[Dict] = []
+        # 同桶多组（克隆模式多克隆 / 表内别名写法并档）时报告与 json 带组名
+        # 后缀区分；单组保持干净名
+        multi = len(members) > 1
+        for g, item, record in members:
+            plasmid, clone = g["plasmid"], g["clone"]
+            if g["reference"]:
+                e = g["reference"]["file"]
+                data = e.get("bytes") or b""
+                seen = self._ref_archived.setdefault(folder, set())
+                key = (e.get("name"), _md5(data))
+                if key not in seen:     # 别名组/同质粒克隆共享同一图谱：只归档一份
+                    seen.add(key)
+                    arc = self._arc(folder, _safe_component(e.get("name") or "reference"))
+                    entries.append((arc, data))
+                    rows.append(self._row(order, {
+                        "质粒": plasmid or "", "克隆": clone or "",
+                        "文件": e.get("name") or arc.rsplit("/", 1)[-1],
+                        "类型": "参考图谱", "结论": "",
+                        "匹配方式": g["reference"]["how"], "归档路径": arc,
+                        "大小KB": round(len(data) / 1024, 1), "MD5": key[1],
+                    }, e))
+            copied = []
+            if g["reference"]:
+                copied.append({"name": g["reference"]["file"].get("name") or "reference",
+                               "kind": "参考图谱", "how": g["reference"]["how"]})
+            for r in g["reads"]:
+                e = r["file"]
+                data = e.get("bytes") or b""
+                arc = self._arc(f"{folder}/{bucket}",
+                                _safe_component(e.get("name") or "read"))
+                entries.append((arc, data))
+                copied.append({"name": e.get("name") or "read",
+                               "kind": "测序 read", "how": r["how"]})
+                rows.append(self._row(order, {
+                    "质粒": plasmid or "", "克隆": clone or "",
+                    "文件": e.get("name") or arc.rsplit("/", 1)[-1],
+                    "类型": "测序 read", "结论": item.get("conclusion") or "",
+                    "匹配方式": r["how"], "归档路径": arc,
+                    "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
+                }, e))
+            gname = item.get("clone") or plasmid or "sample"
+            rname = (f"测序分析报告-{_safe_component(gname)}.md" if multi
+                     else "测序分析报告.md")
+            entries.append((self._arc(f"{folder}/{bucket}", rname),
+                            _group_report_md(item, record, copied, self.origin)))
+            if record:
+                dump = {k: v for k, v in record.items()
+                        if k not in ("_trace_data", "_created_ts", "reference")}
+                jname = (f"分析结果-{_safe_component(gname)}.json" if multi
+                         else "分析结果.json")
+                entries.append((self._arc(f"{folder}/{bucket}", jname),
+                                json.dumps(dump, ensure_ascii=False, indent=1)))
+        return entries, rows
+
+    def unmatched_entry(self, u: Dict) -> Tuple[Tuple[str, bytes], Dict]:
+        """一个未匹配文件的条目与清单行（归入 未匹配文件/，清单排在最后）"""
+        entry = u["file"]
+        data = entry.get("bytes") or b""
+        arc = self._arc("未匹配文件", _safe_component(entry.get("name") or "file"))
+        row = self._row(float("inf"), {
+            "质粒": "", "克隆": "", "文件": entry.get("name") or arc.rsplit("/", 1)[-1],
+            "类型": "未匹配", "结论": "", "匹配方式": u["reason"], "归档路径": arc,
+            "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
+        }, entry)
+        return (arc, data), row
+
+    def manifest_csv(self, rows: Optional[List[Dict]] = None, header: bool = True) -> str:
+        """整理清单 CSV 文本（可追溯：归档路径 + MD5 + 该组结论）
+
+        rows 缺省为已构建的全部行（按整批行序）；header=False 只给数据行，
+        供离线脚本逐质粒追加。"""
+        if rows is None:
+            rows = [r for _k, r in sorted(self._manifest, key=lambda kr: kr[0])]
+        out = io.StringIO()
+        w = csv.DictWriter(out, fieldnames=self.fields)
+        if header:
+            w.writeheader()
+        w.writerows(rows)
+        return ("\ufeff" if header else "") + out.getvalue()
+
+    def manifest_entry(self) -> Tuple[str, str]:
+        return (f"{self.prefix}整理清单.csv", self.manifest_csv())
+
+    def overview_entry(self, payload: Dict) -> Tuple[str, str]:
+        """批次总览：各组结论 + 未匹配清单"""
+        lines = ["批量测序分析整理包",
+                 f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                 f"分组模式：{'克隆模式（每行一个克隆独立分析）' if payload.get('clone_mode') else '质粒模式'}",
+                 "归档结构：每个质粒一个文件夹（表内不同写法已合并），参考图谱在其根；"
+                 "其下 正确/ 错误/ 按各组一句话结论分置（合格→正确、不合格→错误，"
+                 "分析失败或缺图谱等无法判定的归 无法判定/）",
+                 "", f"各组结论（{len(payload['items'])} 组）："]
+        for it in payload["items"]:
+            label = f"{it['plasmid']}（克隆 {it['clone']}）" if it.get("clone") else it["plasmid"]
+            cov = (f"覆盖 {it['coverage_percent']}%" if it.get("coverage_percent") is not None
+                   else "覆盖 —")
+            lines.append(f"  [{it['status']}] {label} — reads={it['read_count']}，{cov}，"
+                         f"确证差异 {it['variant_count']} — {it['conclusion']}")
+        if payload["unmatched"]:
+            lines += ["", f"未匹配文件（{len(payload['unmatched'])} 个，归档在 未匹配文件/）："]
+            lines += [f"  {u['filename']} — {u['reason']}" for u in payload["unmatched"]]
+        if payload.get("ignored_files"):
+            lines += ["", f"已忽略无关文件：{'、'.join(payload['ignored_files'])}"]
+        return (f"{self.prefix}批次总览.txt", "\n".join(lines))
+
+    def excel_entries(self, excel_name: Optional[str], excel_original: Optional[bytes],
+                      excel_filled: Optional[bytes]) -> List[Tuple[str, bytes]]:
+        """信息表：结论回填版 + 原始备份（无可回填结论时保留原表）"""
+        if not (excel_name and excel_original):
+            return []
+        base = _safe_component(excel_name)
+        if excel_filled:
+            return [(f"{self.prefix}{base}", excel_filled),
+                    (f"{self.prefix}原始备份_{base}", excel_original)]
+        return [(f"{self.prefix}{base}", excel_original)]
+
+
+def archive_buckets(archive: BatchArchive, groups: List[Dict],
+                    items: List[Dict]) -> Dict[Tuple[str, str], List[int]]:
+    """预分桶 {(质粒文件夹, 结论桶): [组序号]}，键按首组序号排列"""
+    buckets: Dict[Tuple[str, str], List[int]] = {}
+    for i, (g, item) in enumerate(zip(groups, items)):
+        folder = archive.folder_of(g)
+        if folder is None:
+            continue
+        buckets.setdefault(
+            (folder, _conclusion_bucket(item.get("conclusion") or "")), []).append(i)
+    return buckets
+
+
 def batch_archive_entries(
     payload: Dict,
     groups: List[Dict],
@@ -382,159 +579,27 @@ def batch_archive_entries(
     归档布局：同一质粒（含表内别名写法合并，见 _plasmid_folders）一个文件夹，
     参考图谱在文件夹根；各组文件与报告按结论分入 正确/ 错误/（无法判定的入
     无法判定/），正确/错误 两个子文件夹固定保留（空置也给出，结构可预期）。
+    离线脚本按质粒文件夹逐个构建（BatchArchive），条目内容与这里相同。
     """
-    prefix = f"{root}/" if root else ""
-    manifest: List[Dict] = []
-    used_arcs: set = set()          # 全局防 zip 条目冲突
-    used_in_dir: Dict[str, set] = {}   # 同一文件夹内防同名（跨文件夹允许重名）
-
-    def _arc(arcdir: str, base: str) -> str:
-        seen = used_in_dir.setdefault(arcdir, set())
-        name = base
-        n = 2
-        while name in seen:
-            stem, dot, suffix = base.rpartition(".")
-            name = (f"{stem} ({n}).{suffix}" if dot else f"{base} ({n})")
-            n += 1
-        seen.add(name)
-        arc = f"{prefix}{arcdir}/{name}" if arcdir else f"{prefix}{name}"
-        while arc in used_arcs:      # 理论到不了（目录内已唯一），兜底防冲突
-            arc += "_"
-        used_arcs.add(arc)
-        return arc
-
     items = payload["items"]
-    folders = _plasmid_folders([g["plasmid"] or "" for g in groups])
-
-    # 预分桶：图谱与 read 皆空的组（未找到任何东西）无可归档，不产文件夹
-    buckets: Dict[Tuple[str, str], List[int]] = {}
-    for i, (g, item) in enumerate(zip(groups, items)):
-        if not (g["reference"] or g["reads"]):
-            continue
-        folder = _safe_component(folders.get(g["plasmid"] or "") or "sample")
-        buckets.setdefault(
-            (folder, _conclusion_bucket(item.get("conclusion") or "")), []).append(i)
+    archive = BatchArchive([g["plasmid"] or "" for g in groups], origin,
+                           source_paths, root)
+    buckets = archive_buckets(archive, groups, items)
 
     entries: List[Tuple[str, Optional[Union[bytes, str]]]] = []
-
-    def _put(arc: str, data: Optional[Union[bytes, str]]) -> None:
-        entries.append((arc, data))
-
-    def _src(e: Dict) -> Dict:
-        return {"原始路径": str(e.get("path") or "")} if source_paths else {}
-
     # 每个质粒文件夹固定给出 正确/错误 子文件夹（空置也保留）；无法判定/
     # 只在确有内容时出现
     for folder in sorted({folder for folder, _b in buckets}):
-        for d in ("正确", "错误"):
-            _put(f"{prefix}{folder}/{d}/", None)
-
-    ref_archived: Dict[str, set] = {}   # 质粒文件夹 → 已归档图谱 (文件名, MD5)
+        entries += archive.folder_dirs(folder)
     for (folder, bucket), idxs in buckets.items():
-        # 同桶多组（克隆模式多克隆 / 表内别名写法并档）时报告与 json 带组名
-        # 后缀区分；单组保持干净名
-        multi = len(idxs) > 1
-        for i in idxs:
-            g, item = groups[i], items[i]
-            plasmid, clone = g["plasmid"], g["clone"]
-            if g["reference"]:
-                e = g["reference"]["file"]
-                data = e.get("bytes") or b""
-                seen = ref_archived.setdefault(folder, set())
-                key = (e.get("name"), _md5(data))
-                if key not in seen:     # 别名组/同质粒克隆共享同一图谱：只归档一份
-                    seen.add(key)
-                    arc = _arc(folder, _safe_component(e.get("name") or "reference"))
-                    _put(arc, data)
-                    manifest.append({
-                        "质粒": plasmid or "", "克隆": clone or "",
-                        "文件": e.get("name") or arc.rsplit("/", 1)[-1],
-                        "类型": "参考图谱", "结论": "",
-                        "匹配方式": g["reference"]["how"], "归档路径": arc,
-                        "大小KB": round(len(data) / 1024, 1), "MD5": key[1],
-                        **_src(e),
-                    })
-            copied = []
-            if g["reference"]:
-                copied.append({"name": g["reference"]["file"].get("name") or "reference",
-                               "kind": "参考图谱", "how": g["reference"]["how"]})
-            for r in g["reads"]:
-                e = r["file"]
-                data = e.get("bytes") or b""
-                arc = _arc(f"{folder}/{bucket}", _safe_component(e.get("name") or "read"))
-                _put(arc, data)
-                copied.append({"name": e.get("name") or "read",
-                               "kind": "测序 read", "how": r["how"]})
-                manifest.append({
-                    "质粒": plasmid or "", "克隆": clone or "",
-                    "文件": e.get("name") or arc.rsplit("/", 1)[-1],
-                    "类型": "测序 read", "结论": item.get("conclusion") or "",
-                    "匹配方式": r["how"], "归档路径": arc,
-                    "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
-                    **_src(e),
-                })
-            record = records.get(item["analysis_id"]) if item.get("analysis_id") else None
-            gname = item.get("clone") or plasmid or "sample"
-            rname = (f"测序分析报告-{_safe_component(gname)}.md" if multi
-                     else "测序分析报告.md")
-            _put(_arc(f"{folder}/{bucket}", rname),
-                 _group_report_md(item, record, copied, origin))
-            if record:
-                dump = {k: v for k, v in record.items()
-                        if k not in ("_trace_data", "_created_ts", "reference")}
-                jname = (f"分析结果-{_safe_component(gname)}.json" if multi
-                         else "分析结果.json")
-                _put(_arc(f"{folder}/{bucket}", jname),
-                     json.dumps(dump, ensure_ascii=False, indent=1))
-
+        members = [(groups[i], items[i],
+                    records.get(items[i]["analysis_id"]) if items[i].get("analysis_id")
+                    else None) for i in idxs]
+        part, _rows = archive.bucket_entries(folder, bucket, members, idxs[0])
+        entries += part
     for u in unmatched:
-        entry = u["file"]
-        data = entry.get("bytes") or b""
-        arc = _arc("未匹配文件", _safe_component(entry.get("name") or "file"))
-        _put(arc, data)
-        manifest.append({
-            "质粒": "", "克隆": "", "文件": entry.get("name") or arc.rsplit("/", 1)[-1],
-            "类型": "未匹配", "结论": "", "匹配方式": u["reason"], "归档路径": arc,
-            "大小KB": round(len(data) / 1024, 1), "MD5": _md5(data),
-            **_src(entry),
-        })
-
-    # 整理清单（可追溯：归档路径 + MD5 + 该组结论）
-    out = io.StringIO()
-    w = csv.DictWriter(out, fieldnames=["质粒", "克隆", "文件", "类型", "结论",
-                                        "匹配方式", "归档路径", "大小KB", "MD5"]
-                       + (["原始路径"] if source_paths else []))
-    w.writeheader()
-    w.writerows(manifest)
-    _put(f"{prefix}整理清单.csv", "\ufeff" + out.getvalue())
-
-    # 批次总览：各组结论 + 未匹配清单
-    lines = ["批量测序分析整理包",
-             f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-             f"分组模式：{'克隆模式（每行一个克隆独立分析）' if payload.get('clone_mode') else '质粒模式'}",
-             "归档结构：每个质粒一个文件夹（表内不同写法已合并），参考图谱在其根；"
-             "其下 正确/ 错误/ 按各组一句话结论分置（合格→正确、不合格→错误，"
-             "分析失败或缺图谱等无法判定的归 无法判定/）",
-             "", f"各组结论（{len(payload['items'])} 组）："]
-    for it in payload["items"]:
-        label = f"{it['plasmid']}（克隆 {it['clone']}）" if it.get("clone") else it["plasmid"]
-        cov = (f"覆盖 {it['coverage_percent']}%" if it.get("coverage_percent") is not None
-               else "覆盖 —")
-        lines.append(f"  [{it['status']}] {label} — reads={it['read_count']}，{cov}，"
-                     f"确证差异 {it['variant_count']} — {it['conclusion']}")
-    if payload["unmatched"]:
-        lines += ["", f"未匹配文件（{len(payload['unmatched'])} 个，归档在 未匹配文件/）："]
-        lines += [f"  {u['filename']} — {u['reason']}" for u in payload["unmatched"]]
-    if payload.get("ignored_files"):
-        lines += ["", f"已忽略无关文件：{'、'.join(payload['ignored_files'])}"]
-    _put(f"{prefix}批次总览.txt", "\n".join(lines))
-
-    # 信息表：结论回填版 + 原始备份（无可回填结论时保留原表）
-    if excel_name and excel_original:
-        base = _safe_component(excel_name)
-        if excel_filled:
-            _put(f"{prefix}{base}", excel_filled)
-            _put(f"{prefix}原始备份_{base}", excel_original)
-        else:
-            _put(f"{prefix}{base}", excel_original)
+        entries.append(archive.unmatched_entry(u)[0])
+    entries.append(archive.manifest_entry())
+    entries.append(archive.overview_entry(payload))
+    entries += archive.excel_entries(excel_name, excel_original, excel_filled)
     return entries
