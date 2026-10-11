@@ -118,7 +118,7 @@ def _precheck(manifest: List[Dict], excel_bytes: Optional[bytes], read_limits: D
     reads, refs, _ignored = sr._classify_batch_blobs(blobs)
     rows = None
     if excel_bytes is not None:
-        _wb, _cols, rows = sr._load_batch_excel(excel_bytes)
+        _cols, rows = sr._load_batch_excel(excel_bytes)
     sr._group_and_check(reads, refs, rows, read_limits, max_files=None)
 
 
@@ -216,7 +216,10 @@ def _set_running(sid: str) -> None:
 
 def _finalize_sync(sid: str, min_q: int, owner_id: Optional[str],
                    read_limits: Dict) -> Dict:
-    """同步：读回暂存文件 → 与单请求入口相同的归类与批量管线"""
+    """同步：暂存文件 → 与单请求入口相同的归类与批量管线。
+
+    测序/图谱文件不整批读入内存：条目内容按需从磁盘读取（逐组比对、
+    逐个写入整理包），峰值内存约为单个分组的文件 + 整理包本身"""
     meta = store.load_meta(sid)
     blobs, excel = store.read_all(meta)
     reads, refs, ignored = sr._classify_batch_blobs(blobs)
@@ -364,15 +367,21 @@ async def delete_batch_session(session_id: str, request: Request,
 
 
 def sweep_now() -> int:
+    removed = 0
     try:
-        return store.sweep(local_jobs=set(_JOBS))
+        removed += store.sweep(local_jobs=set(_JOBS))
     except Exception:  # noqa: BLE001 清理失败不影响服务
         logger.exception("批量上传会话清理失败")
-        return 0
+    try:
+        # 整理包同样落盘：无人访问时也要按 TTL 清理
+        removed += sr._sweep_reports()
+    except Exception:  # noqa: BLE001
+        logger.exception("批量整理包清理失败")
+    return removed
 
 
 async def sweeper_loop(interval: float = SWEEP_INTERVAL) -> None:
-    """启动时清理一次残留，之后周期清理过期会话（lifespan 中启动）"""
+    """启动时清理一次残留，之后周期清理过期会话与整理包（lifespan 中启动）"""
     while True:
         await run_in_threadpool(sweep_now)
         await asyncio.sleep(interval)

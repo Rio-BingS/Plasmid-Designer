@@ -271,10 +271,7 @@ class TestResultCacheAlgoVersion:
         )
         assert dna != "STALE"
 
-        new_key = cache._generate_key(
-            "codon_opt", algo=CODON_OPT_ALGO, sequence=_AA, species="ecoli",
-            gc_min=40, gc_max=60, exclude_enzymes=[],
-        )
+        new_key = cache._codon_opt_key(_AA, "ecoli", 40, 60, [])
         assert cache.backend.get(new_key)["dna_sequence"] == dna
 
     def test_enzymes_ignores_entry_under_old_key(self):

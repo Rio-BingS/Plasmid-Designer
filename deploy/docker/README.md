@@ -130,8 +130,9 @@ CORS_ORIGINS=http://localhost      # 同源反代无需改；前端另域部署�
 AUTH_COOKIE_SECURE=auto            # 只走 HTTPS 时建议改为 true（见第九节）
 TRUSTED_PROXIES=127.0.0.1,::1,172.28.0.10     # 只信前端容器固定地址，勿写大网段
 PLASMID_SUBNET=172.28.0.0/24       # compose 网络固定网段；与宿主机网段冲突时改，
-PLASMID_GATEWAY=172.28.0.1         # 并同步 FRONTEND_IPV4、TRUSTED_PROXIES 与
-FRONTEND_IPV4=172.28.0.10          # nginx.conf 中 geo 的网关地址
+PLASMID_GATEWAY=172.28.0.1         # 并同步 FRONTEND_IPV4、TRUSTED_PROXIES
+FRONTEND_IPV4=172.28.0.10
+HOST_PROXY_ADDRS=auto              # 前端 nginx 信任谁转来的 X-Real-IP（见第九节）
 ```
 
 完整变量说明（管理员引导、邮件渠道等）见 `.env.example` 内注释。
@@ -439,7 +440,8 @@ server {
    （Cloudflare 免费版单请求体上限 100 MB、源站响应超时 100 秒：批量测序页已自动把
    文件切成 ≤90 MB 的分块上传，分析超过 `SEQUENCING_BATCH_FINALIZE_WAIT`（默认 60 秒）
    自动转为轮询，Cloudflare 侧无需改设置；分块暂存在具名卷 `batch-uploads`）
-4. 会话 Cookie 的 Secure 标记：容器 nginx 只信任来自 docker 网桥/本机的前置，透传其
+4. 会话 Cookie 的 Secure 标记：容器 nginx 只信任可信宿主机前置（默认即只绑本机时的
+   compose 网关，见下方「限流按真实客户端 IP 计」），透传其
    `X-Forwarded-Proto`（其余来源一律按本连接的 http 处理，防伪造），所以上面示例里的
    `proxy_set_header X-Forwarded-Proto $scheme;` 不能省，`AUTH_COOKIE_SECURE=auto`
    才能判出 https。对外只提供 HTTPS 的站点建议在 `.env` 中直接设 `AUTH_COOKIE_SECURE=true`，
@@ -454,13 +456,24 @@ server {
 > 另一个注册域名（跨站）时浏览器不会随 API 请求发送 Cookie，目前不支持这种部署。
 
 > 限流按真实客户端 IP 计：宿主机 nginx 解析真实 IP（Cloudflare 场景用
-> `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 只对
-> compose 网络网关（`172.28.0.1`，即宿主机经发布端口进入的来源）透传该头，后端
-> 只信前端容器固定地址（`172.28.0.10`）。经 docker-proxy 转发的外部连接（如未开启
-> Docker IPv6 时的 IPv6 客户端）同样显示为网关地址，所以有宿主机前置 nginx 时请把
-> `FRONTEND_PORT` 设为 `127.0.0.1:8080` 之类只绑本机，外部只能经宿主机 nginx 进入。
+> `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；后端只信前端容器固定地址
+> （`172.28.0.10`），前端 nginx 只对「可信宿主机前置」透传 `X-Real-IP`、
+> `X-Forwarded-For`、`X-Forwarded-Proto`。可信清单由 `HOST_PROXY_ADDRS` 决定，默认
+> `auto`：`FRONTEND_BIND` 为本机回环时信任 compose 网关（`PLASMID_GATEWAY`，宿主机
+> nginx 经发布端口进入的来源），`FRONTEND_BIND=0.0.0.0` 时谁都不信。原因：经
+> docker-proxy 转发的外部连接（如未开启 Docker IPv6 时的 IPv6 客户端、启用
+> userland-proxy 或 rootless 时）同样显示为网关地址，端口对外发布还信任网关，任何人
+> 都能伪造来源 IP 换限流桶。所以有宿主机前置 nginx 时请保持 `FRONTEND_BIND=127.0.0.1`；
+> 对外发布端口时不要再把网关写进 `HOST_PROXY_ADDRS`。只绑回环时，本机其它用户仍可
+> 直连发布端口并伪造来源，多用户主机可改用 `HOST_PROXY_ADDRS=none`（代价是所有经
+> 前置的请求共用一个限流桶）。
 > 从旧版升级：把 `.env` 里旧的 `TRUSTED_PROXIES=...,172.16.0.0/12` 改为新值，并先
 > `docker compose down` 再 `up -d`，让网络按固定网段重建。
+> 从 v2.9.x 升级：重新构建前端镜像（`docker compose up -d --build frontend`），
+> 入口脚本才会生成可信清单。`FRONTEND_BIND=0.0.0.0` 又在前面放了宿主机 nginx 的部署，
+> 升级后前置传来的真实 IP 不再被采信（所有请求共用网关一个限流桶）：请改为
+> `FRONTEND_BIND=127.0.0.1` 并让宿主机 nginx 反代 `127.0.0.1:端口`。改过
+> `PLASMID_GATEWAY` 的部署不必再手改 `nginx.conf`。
 
 ---
 

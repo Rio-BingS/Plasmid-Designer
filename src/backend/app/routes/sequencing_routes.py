@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
 from zipfile import BadZipFile
@@ -59,16 +59,17 @@ from app.auth.jwt_auth import User, get_current_user
 from app.design_service import get_vector_library
 from app import batch_read_limits, site_settings
 from app.gating import require_feature
-from app import sequencing_store
+from app import batch_report_store, sequencing_store
+from app.sequencing_upload_sessions import DiskBlob, LazyFileEntry
 from app.sequencing_batch import (
-    batch_payload, group_batch_uploads, plasmid_groups, reference_circular,
-    run_batch_groups,
+    batch_payload, estimate_batch_cost, group_batch_uploads, parse_group_references,
+    plasmid_groups, reference_circular, run_batch_groups,
 )
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import format_locus_line
 from core.sanger.batch import (
-    REF_EXTS, READ_EXTS, load_excel, match_clone_files, norm_stem,
-    rows_have_clones,
+    REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
+    parse_excel, rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
 from core.sanger.reference_parser import parse_reference_topology
@@ -77,9 +78,9 @@ router = APIRouter(prefix="/api", tags=["sequencing"])
 
 # 进程级内存存储：analysis_id → 完整结果（含 trace 峰图）
 _ANALYSES: Dict[str, Dict] = {}
-# 进程级内存存储：batch_id → {"created_ts", "zip"}（批量整理包，15 分钟有效）
-_BATCHES: Dict[str, Dict] = {}
-# 终审 C-07：两个全局 dict 由事件循环线程与线程池（_batch_pipeline/
+# 批量整理包不在进程内存里：写入磁盘私有目录（app.batch_report_store），
+# BACKEND_WORKERS>1 时任一 worker 都能提供下载
+# 终审 C-07：全局 dict 由事件循环线程与线程池（_batch_pipeline/
 # _sweep_expired 都在线程池里）并发增删遍历。dict 自身的单次操作是原子的，
 # 但「遍历 + 删除」的组合会抛 dictionary changed size during iteration。
 # 用一把可重入锁包住所有读写路径（同一线程内 sweep→register 可重入）。
@@ -107,8 +108,8 @@ MAX_REF_BP = 200_000
 # 终审 C-02：批量请求级总字节上限（单文件上限挡不住多文件叠加：
 # 400 × 20MB = 8GB 会先读进内存才被拒绝）
 MAX_BATCH_REQUEST_BYTES = 500 * 1024 * 1024
-# _BATCHES 整理包缓存的全局上限（此前无条数/总量上限：单批 256MB ×
-# 15 分钟内不限批次 → 内存可被反复打满）
+# 整理包存储（磁盘，全部 worker 共享）的全局上限（此前无条数/总量上限：
+# 单批 256MB × 15 分钟内不限批次 → 存储可被反复打满）
 MAX_BATCH_CACHE_ENTRIES = 8
 # 整理包缓存的总字节上限（此前按「单包上限 × 条数」= 2 GB 计算，形同虚设）
 MAX_BATCH_CACHE_TOTAL_BYTES = int(os.environ.get(
@@ -119,6 +120,23 @@ MAX_BATCH_CACHE_TOTAL_BYTES = int(os.environ.get(
 MAX_CONCURRENT_ALIGNMENTS = max(1, int(os.environ.get(
     "SEQUENCING_MAX_CONCURRENT", str(max(2, (os.cpu_count() or 2) // 2)))))
 HEAVY_QUEUE_TIMEOUT = float(os.environ.get("SEQUENCING_QUEUE_TIMEOUT", "30"))
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
+# 审查 02 M6：批次计算预算，单位 Mbp·read = Σ(参考长度 bp × 该组 read 数) / 10^6。
+# read 数上限管不住「大参考 × 多 read」：管理员调高上限后单批可达数小时。
+# 默认 50 覆盖默认 read 上限下的最坏情况（240 条 × 200 kb ≈ 48），正常质粒
+# 批次（10 kb × 240 条 ≈ 2.4）远低于此；0 关闭
+BATCH_COMPUTE_BUDGET_MBP = _env_float("SEQUENCING_BATCH_COMPUTE_BUDGET_MBP", 50)
+# 批次墙钟软时限（秒）：超时后剩余分组不再比对、记为失败，已完成的分组照常
+# 返回。只在组与组之间检查（工作线程无法安全中断），0 关闭
+BATCH_SOFT_TIMEOUT = _env_float("SEQUENCING_BATCH_SOFT_TIMEOUT", 1800)
 _HEAVY_SEMAPHORES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
@@ -162,27 +180,25 @@ async def _run_heavy(fn, *args, **kwargs):
 
 
 def _sweep_expired() -> None:
-    """清理过期的分析记录与批量整理包（每次访问入口处惰性触发）
+    """清理过期的分析记录（每次访问入口处惰性触发）
 
     终审 C-07：加锁——遍历中删除在并发下会抛 dictionary changed size
-    during iteration（_batch_pipeline 在线程池同样会触碰这两个 dict）。"""
+    during iteration（_batch_pipeline 在线程池同样会触碰 _ANALYSES）。"""
     now = time.time()
     with _STORE_LOCK:
         for aid in [aid for aid, r in _ANALYSES.items()
                     if now - r.get("_created_ts", 0) > ANALYSIS_TTL]:
             del _ANALYSES[aid]
-        for bid in [bid for bid, r in _BATCHES.items()
-                    if now - r["created_ts"] > BATCH_TTL]:
-            del _BATCHES[bid]
-        # 终审 C-02：整理包缓存再加一层「条数 + 总字节」硬上限（LRU）。
-        # 15 分钟 TTL 内不限批次时，单批最大 256MB × 任意次数即可打满内存
-        total_zip = sum(len(r.get("zip") or b"") for r in _BATCHES.values())
-        by_age = sorted(_BATCHES.items(), key=lambda kv: kv[1]["created_ts"])
-        while by_age and (len(_BATCHES) > MAX_BATCH_CACHE_ENTRIES
-                          or total_zip > MAX_BATCH_CACHE_TOTAL_BYTES):
-            bid, rec = by_age.pop(0)
-            total_zip -= len(rec.get("zip") or b"")
-            del _BATCHES[bid]
+
+
+def _sweep_reports() -> int:
+    """清理磁盘上的过期整理包（同步磁盘 I/O，调用方须在线程池中执行）。
+
+    终审 C-02：除 TTL 外再加「条数 + 总字节」硬上限，从最旧开始淘汰——
+    15 分钟内不限批次时，单批最大 256MB × 任意次数即可打满存储。
+    整理包目录为全部 worker 共享，上限对整个服务生效。"""
+    return batch_report_store.sweep(BATCH_TTL, MAX_BATCH_CACHE_ENTRIES,
+                                    MAX_BATCH_CACHE_TOTAL_BYTES)
 
 
 def _can_access(record: Dict, user: Optional[User],
@@ -550,8 +566,12 @@ def _run_batch(
             owner_id=owner_id, access_token=access_token)
         return aid, rec
 
-    items, records_by_id = run_batch_groups(groups, min_q, _register,
-                                            max_ref_bp=MAX_REF_BP)
+    # 图谱只解析一次：预算估算与逐组比对共用同一份解析结果
+    ref_cache = parse_group_references(groups, MAX_REF_BP)
+    _check_batch_compute_budget(estimate_batch_cost(groups, ref_cache))
+    items, records_by_id = run_batch_groups(
+        groups, min_q, _register, max_ref_bp=MAX_REF_BP, ref_cache=ref_cache,
+        soft_timeout=BATCH_SOFT_TIMEOUT or None)
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
@@ -584,6 +604,18 @@ def _group_and_check(
         groups = plasmid_groups(ordered, per_plasmid)
     _check_batch_read_caps(groups, read_limits)
     return groups, unmatched, clone_mode
+
+
+def _check_batch_compute_budget(cost_bp_reads: int) -> None:
+    """估算计算量超过预算时在比对前拒绝（413）"""
+    budget = BATCH_COMPUTE_BUDGET_MBP
+    if not budget or cost_bp_reads <= budget * 1_000_000:
+        return
+    raise HTTPException(
+        status_code=413,
+        detail=f"本批次估算计算量约 {cost_bp_reads / 1_000_000:.1f} Mbp·read"
+               f"（各组参考长度 × read 数之和），超过服务器上限（{budget:g} Mbp·read）："
+               "请拆分为多个批次提交，或只保留参考图谱中待验证的区段")
 
 
 def _batch_read_limits_for(user) -> Dict:
@@ -703,19 +735,25 @@ async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFil
 def _classify_batch_blobs(blobs: List[Tuple[str, bytes]]):
     """[(文件名, 字节)] → (reads, refs, ignored)：跳过 ~$ 临时文件与空文件，
     按扩展名分为测序 read / 参考图谱 / 忽略。单请求入口与分块上传 finalize
-    共用，两条路径的归类完全一致（字节为 None 时视为非空，供文件清单预检）。"""
+    共用，两条路径的归类完全一致（字节为 None 时视为非空，供文件清单预检）。
+
+    分块 finalize 传入 DiskBlob：条目包装为 LazyFileEntry，内容按需从磁盘
+    读取，整批不必同时驻留内存。"""
     reads: List[Dict] = []
     refs: List[Dict] = []
     ignored: List[str] = []
     for name, blob in blobs:
         name = name or "unnamed"
-        if name.startswith("~$") or blob == b"":
+        on_disk = isinstance(blob, DiskBlob)
+        if name.startswith("~$") or (blob.size == 0 if on_disk else blob == b""):
             continue
         ext = os.path.splitext(name)[1].lower()
         entry = {
             "name": name, "ext": ext, "bytes": blob,
             "stem": norm_stem(os.path.splitext(os.path.basename(name))[0]),
         }
+        if on_disk:
+            entry = LazyFileEntry(entry, blob)
         if ext in READ_EXTS:
             reads.append(entry)
         elif ext in REF_EXTS:
@@ -740,16 +778,25 @@ def _check_batch_excel(filename: Optional[str], excel_bytes: bytes) -> None:
 
 
 def _load_batch_excel(excel_bytes: bytes):
-    """解析信息表；格式问题统一转 400 中文提示。返回 (wb, cols, rows)"""
+    """流式解析信息表；格式问题统一转 400 中文提示。返回 (cols, rows)。
+
+    只读流式解析不构建整表对象；回填结论时再单独以可写模式打开"""
     try:
-        wb, _header, cols, rows = load_excel(excel_bytes)
+        _header, cols, rows = parse_excel(excel_bytes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (InvalidFileException, BadZipFile):
         raise HTTPException(
             status_code=400,
             detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
-    return wb, cols, rows
+    return cols, rows
+
+
+def _entry_size(entry: Dict) -> int:
+    """文件条目的字节数（磁盘条目取记录的大小，不为计数把文件读进内存）"""
+    if isinstance(entry, LazyFileEntry):
+        return entry.blob.size
+    return len(entry["bytes"])
 
 
 def _batch_pipeline(
@@ -762,8 +809,8 @@ def _batch_pipeline(
     excel_pack = None
     excel_rows = None
     if excel_bytes is not None:
-        wb, cols, excel_rows = _load_batch_excel(excel_bytes)
-        excel_pack = (excel_name, excel_bytes, wb, cols, excel_rows)
+        cols, excel_rows = _load_batch_excel(excel_bytes)
+        excel_pack = (excel_name, excel_bytes, cols, excel_rows)
 
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
@@ -774,36 +821,38 @@ def _batch_pipeline(
 
     # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
     # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）
-    total_bytes = sum(len(e["file"]["bytes"])
+    total_bytes = sum(_entry_size(e["file"])
                       for g in groups
                       for e in ([g["reference"]] if g["reference"] else []) + g["reads"])
-    total_bytes += sum(len(u["file"]["bytes"]) for u in raw_unmatched)
+    total_bytes += sum(_entry_size(u["file"]) for u in raw_unmatched)
     report_ready = total_bytes <= min(MAX_BATCH_CACHE_BYTES, MAX_BATCH_CACHE_TOTAL_BYTES)
     payload["report_ready"] = report_ready
     if report_ready:
         excel_original = excel_filled = None
         if excel_pack:
-            excel_name, excel_original, wb, cols, rows = excel_pack
-            excel_filled = backfill_excel(wb, cols, rows, payload["items"],
-                                          payload["clone_mode"])
+            excel_name, excel_original, cols, rows = excel_pack
+            # 回填需要可写的完整工作簿：只在真正打包时加载，用完即弃
+            excel_filled = backfill_excel(open_excel_for_write(excel_original), cols,
+                                          rows, payload["items"], payload["clone_mode"])
         # 终审 C-07：打包所需的记录来自本次 _run_batch 的直接产物
         # （records_by_id），不再事后回查全局 dict——回查会在记录被
         # 并发淘汰时 KeyError
         zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
                                     excel_original, excel_filled, records_by_id)
-        with _STORE_LOCK:
-            _BATCHES[payload["batch_id"]] = {
-                "created_ts": time.time(),
-                "zip": zip_bytes,
-                "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
-                # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
-                # 匿名批次绑定整批访问令牌
-                "owner_id": owner_id,
-                "access_token_hash": (sequencing_store.hash_access_token(batch_token)
-                                      if batch_token else None),
-            }
-            # 插入后再淘汰：条数与总字节上限任何时刻都不被突破
-            _sweep_expired()
+        saved = batch_report_store.save(payload["batch_id"], zip_bytes, {
+            "created_ts": time.time(),
+            "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
+            # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
+            # 匿名批次绑定整批访问令牌
+            "owner_id": owner_id,
+            "access_token_hash": (sequencing_store.hash_access_token(batch_token)
+                                  if batch_token else None),
+        })
+        del zip_bytes
+        # 写入失败（目录不可写/磁盘满）时不提供下载入口，分析结果照常返回
+        payload["report_ready"] = saved
+        # 写入后再淘汰：条数与总字节上限在每次写入后立即恢复
+        _sweep_reports()
     return payload
 
 
@@ -817,12 +866,12 @@ async def download_batch_report(batch_id: str, request: Request,
     与各组分析报告 + 整理清单 + 结论回填的信息表）；生成 15 分钟后随缓存自动
     清理，可重复下载。终审 B-03：非创建者（且非管理员）一律 404——包内含
     全部原始数据，不暴露存在性。"""
-    _sweep_expired()
-    with _STORE_LOCK:  # 终审 C-07
-        rec = _BATCHES.get(batch_id)
-    if rec is None:
-        raise HTTPException(status_code=404,
-                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    gone = HTTPException(status_code=404,
+                         detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+    await run_in_threadpool(_sweep_reports)
+    rec = await run_in_threadpool(batch_report_store.load_meta, batch_id)
+    if rec is None or time.time() - float(rec.get("created_ts", 0)) > BATCH_TTL:
+        raise gone
     owner = rec.get("owner_id")
     is_admin = bool(user and user.is_admin)
     if owner:
@@ -832,16 +881,31 @@ async def download_batch_report(batch_id: str, request: Request,
         allowed = is_admin or _token_hash_matches(_request_access_token(request),
                                                   rec.get("access_token_hash"))
     if not allowed:
-        raise HTTPException(status_code=404,
-                            detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
+        raise gone
+    # 先打开再流式发送：发送途中即使被清理删除，已打开的句柄仍可读完；
+    # 不再把整个 zip 读进内存
+    fh = await run_in_threadpool(batch_report_store.open_zip, batch_id)
+    if fh is None:
+        raise gone
+    size = os.fstat(fh.fileno()).st_size
+
+    def _chunks():
+        with fh:
+            while True:
+                buf = fh.read(1024 * 1024)
+                if not buf:
+                    break
+                yield buf
+
     # HTTP 头仅限 latin-1：中文文件名走 RFC 5987 filename*，ASCII 名兜底
     ascii_name = f"seqbatch_{batch_id[-6:]}.zip"
-    utf8_name = quote(f"{rec['zip_name']}.zip")
-    return Response(
-        content=rec["zip"],
+    utf8_name = quote(f"{rec.get('zip_name') or 'seqbatch'}.zip")
+    return StreamingResponse(
+        _chunks(),
         media_type="application/zip",
         headers={"Content-Disposition":
-                 f"attachment; filename={ascii_name}; filename*=UTF-8''{utf8_name}"},
+                 f"attachment; filename={ascii_name}; filename*=UTF-8''{utf8_name}",
+                 "Content-Length": str(size)},
     )
 
 
@@ -964,19 +1028,24 @@ async def get_read_trace(analysis_id: str, read_index: int, request: Request,
     return trace_data[read_index]
 
 
-@router.get("/sequencing/analyses/{analysis_id}/consensus/export")
-async def export_consensus(analysis_id: str, request: Request,
-                           format: str = "fasta",
-                           covered_only: bool = False,
-                           user: Optional[User] = Depends(get_current_user)):
-    """导出拼接结果（共识序列，FASTA / GenBank）
+def _mask_uncovered(seq: str, segs: List[Tuple[int, int]]) -> str:
+    """未测位置按 N 屏蔽（区间为 1 起始闭区间，坐标与特征不位移）。
 
-    covered_only=True 按「部分测序是常规策略」只导出 read 实测覆盖的区域：
-    - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
-    - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
-      misc_feature 注记。无覆盖区间信息时回退全量导出。
-    """
-    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
+    线性复杂度：此前逐碱基扫描全部区间是 O(len × 区间数)，200 kb 共识
+    配上碎片化覆盖时可达秒级"""
+    out = ["N"] * len(seq)
+    for s, e in segs:
+        lo, hi = max(s, 1) - 1, min(e, len(seq))
+        if lo < hi:
+            out[lo:hi] = seq[lo:hi]
+    return "".join(out)
+
+
+def _render_consensus_export(record: Dict, analysis_id: str, format: str,
+                             covered_only: bool) -> Tuple[str, str, str]:
+    """组装共识序列导出内容，返回 (content, ext, safe_name)。
+
+    纯 CPU 工作（N 屏蔽、逐行排版），由路由放进线程池执行"""
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
@@ -1009,10 +1078,7 @@ async def export_consensus(analysis_id: str, request: Request,
         definition = "Sanger consensus sequence"
         if segs:
             # 未测位置 N 屏蔽：坐标与特征不位移，下游软件可直接定位实测段
-            seq = "".join(
-                "N" if not any(s <= i + 1 <= e for s, e in segs) else b
-                for i, b in enumerate(seq)
-            )
+            seq = _mask_uncovered(seq, segs)
             feats = [
                 f"     misc_feature    {s}..{e}\n"
                 f"                     /note=\"实测覆盖区 {s}-{e}（未测位置已按 N 屏蔽）\""
@@ -1061,6 +1127,25 @@ async def export_consensus(analysis_id: str, request: Request,
             )
         ext = "fasta"
 
+    return content, ext, safe_name
+
+
+@router.get("/sequencing/analyses/{analysis_id}/consensus/export")
+async def export_consensus(analysis_id: str, request: Request,
+                           format: str = "fasta",
+                           covered_only: bool = False,
+                           user: Optional[User] = Depends(get_current_user)):
+    """导出拼接结果（共识序列，FASTA / GenBank）
+
+    covered_only=True 按「部分测序是常规策略」只导出 read 实测覆盖的区域：
+    - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
+    - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
+      misc_feature 注记。无覆盖区间信息时回退全量导出。
+    """
+    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
+    # 审查 02 M5：N 屏蔽与排版对 200 kb 序列是秒级 CPU，移出事件循环
+    content, ext, safe_name = await run_in_threadpool(
+        _render_consensus_export, record, analysis_id, format, covered_only)
     return PlainTextResponse(
         content=content,
         media_type="text/plain",

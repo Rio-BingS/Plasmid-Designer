@@ -3,7 +3,7 @@
 docker 部署曾默认信任 172.16.0.0/12：同网段任意容器/主机（或经 docker-proxy
 进入、来源显示为网桥网关的外部连接）都能伪造 X-Real-IP / XFF 换限流桶。
 现在 compose 网络固定网段，后端只信前端 nginx 容器的固定地址，前端 nginx
-只对网关透传 X-Real-IP；裸机默认仍只信本机。
+只对入口脚本生成的可信前置清单透传 X-Real-IP；裸机默认仍只信本机。
 """
 
 import ipaddress
@@ -70,19 +70,27 @@ def test_docker_network_pinned_and_consistent():
     assert "ipv4_address: ${FRONTEND_IPV4:-" in txt
 
 
-def test_frontend_nginx_realip_only_from_gateway():
-    env = _env(DOCKER / ".env.example")
+def test_frontend_nginx_realip_only_from_host_proxy_geo():
+    # 前端 nginx 内置只信容器回环，其余可信前置由入口脚本生成后 include
+    # （默认只绑回环时为网关，见 test_deploy_host_proxy_trust）
     conf = (DOCKER / "nginx.conf").read_text(encoding="utf-8")
-    m = re.search(r"geo \$trusted_realip \{(.*?)\}", conf, re.S)
+    m = re.search(r"geo \$from_host_proxy \{(.*?)\}", conf, re.S)
     assert m
-    trusted = []
+    trusted, includes = [], []
     for line in m.group(1).splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0] != "default":
-            assert parts[1].rstrip(";") == "$http_x_real_ip"
-            trusted.append(parts[0])
+        parts = line.split("#")[0].split()
+        if len(parts) != 2 or parts[0] == "default":
+            continue
+        if parts[0] == "include":
+            includes.append(parts[1].rstrip(";"))
+            continue
+        assert parts[1].rstrip(";") == "1"
+        trusted.append(parts[0])
     _assert_single_hosts(trusted)
-    assert set(trusted) - LOOPBACK == {env["PLASMID_GATEWAY"]}
+    assert set(trusted) == LOOPBACK
+    assert includes == ["/etc/nginx/host-proxy.geo"]
+    assert re.search(r"map \$from_host_proxy \$trusted_realip \{\s*1\s+\$http_x_real_ip;\s*"
+                     r"default\s+\$remote_addr;", conf)
 
 
 def test_bare_and_code_default_loopback_only():

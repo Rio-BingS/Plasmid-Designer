@@ -22,8 +22,9 @@ DEFAULT_CACHE_TTL = 3600  # 1 小时
 DESIGN_CACHE_TTL = 86400  # 24 小时
 VECTOR_CACHE_TTL = 604800  # 7 天
 
-# 结果缓存的算法版本（docs/CACHE.md）：产出代码或数据口径变化时必须递增，
+# 结果缓存的算法版本（docs/CACHE.md）：产出代码口径变化时必须递增，
 # 否则 Redis（appendonly，跨重启保留）会在 TTL 内继续返回旧结果。
+# 密码子表 YAML 的内容摘要已自动进入缓存键，只改表数据无需递增。
 # v2.1：修复反向互补映射错误
 # v2.2：密码子表按 Kazusa 重建、CHO 改回中国仓鼠、迭代循环生效、
 #       motif 避让覆盖反向链、滑窗精修（v2.5.0–v2.8.0）
@@ -264,6 +265,26 @@ class CacheManager:
         return self.backend.delete(key)
     
     # ==================== 密码子优化缓存 ====================
+
+    def _codon_opt_key(self, sequence, species, gc_min, gc_max, exclude_enzymes) -> str:
+        """密码子优化结果的缓存键。
+
+        除算法版本与输入外，还带上该物种所用密码子表文件的内容摘要
+        （按 mtime/大小在进程内缓存）：改 data/codon_tables/*.yaml 后旧结果
+        自动失效，不必手动递增 CODON_OPT_ALGO（审查 10 M6）。
+        """
+        from core.codon_optimizer import codon_table_fingerprint
+
+        return self._generate_key(
+            "codon_opt",
+            algo=CODON_OPT_ALGO,
+            table=codon_table_fingerprint(species),
+            sequence=sequence,
+            species=species,
+            gc_min=gc_min,
+            gc_max=gc_max,
+            exclude_enzymes=sorted(exclude_enzymes or []),
+        )
     
     def cache_codon_optimization(
         self,
@@ -275,15 +296,7 @@ class CacheManager:
         exclude_enzymes: Optional[List[str]] = None
     ) -> bool:
         """缓存密码子优化结果（exclude_enzymes 参与缓存键）"""
-        key = self._generate_key(
-            "codon_opt",
-            algo=CODON_OPT_ALGO,
-            sequence=sequence,
-            species=species,
-            gc_min=gc_min,
-            gc_max=gc_max,
-            exclude_enzymes=sorted(exclude_enzymes or []),
-        )
+        key = self._codon_opt_key(sequence, species, gc_min, gc_max, exclude_enzymes)
         return self.backend.set(key, result, DESIGN_CACHE_TTL)
 
     def get_codon_optimization(
@@ -295,15 +308,7 @@ class CacheManager:
         exclude_enzymes: Optional[List[str]] = None
     ) -> Optional[Dict]:
         """获取缓存的密码子优化结果"""
-        key = self._generate_key(
-            "codon_opt",
-            algo=CODON_OPT_ALGO,
-            sequence=sequence,
-            species=species,
-            gc_min=gc_min,
-            gc_max=gc_max,
-            exclude_enzymes=sorted(exclude_enzymes or []),
-        )
+        key = self._codon_opt_key(sequence, species, gc_min, gc_max, exclude_enzymes)
         return self.backend.get(key)
     
     # ==================== 载体信息缓存 ====================
