@@ -381,6 +381,45 @@ class TestEmailVerification:
         assert c.post("/api/auth/login", json={
             "email": "v@test.com", "password": "password123"}).status_code == 200
 
+    def test_verify_token_single_use(self, client, db, captured_mail):
+        """验证成功后旧 verify_token 重放：拒绝且不下发会话 Cookie"""
+        from app.auth.jwt_auth import AUTH_COOKIE_NAME
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+
+        vtoken = self._register(c, "once@test.com").json()["verify_token"]
+        code = captured_mail[0]["code"]
+        ok = c.post("/api/auth/verify-email", json={"verify_token": vtoken, "code": code})
+        assert ok.status_code == 200, ok.text
+        assert AUTH_COOKIE_NAME in ok.cookies
+        c.cookies.clear()
+
+        # 原样重放（正确验证码）与任意验证码重放都必须失败
+        for replay_code in (code, "000000"):
+            again = c.post("/api/auth/verify-email",
+                           json={"verify_token": vtoken, "code": replay_code})
+            assert again.status_code == 400, again.text
+            assert again.json()["detail"]["code"] == "ALREADY_VERIFIED"
+            assert "access_token" not in again.json()
+            assert AUTH_COOKIE_NAME not in again.cookies
+            assert "set-cookie" not in again.headers
+            assert c.get("/api/auth/me").status_code == 401
+
+    def test_verify_token_rejected_for_already_verified_user(self, client, db):
+        """已验证账号（含关闭验证时注册的）凭任何 verify_token 都拿不到会话"""
+        from app.auth.jwt_auth import AUTH_COOKIE_NAME, create_verify_token
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        user = _make_user(db, "done@test.com", email_verified=True)
+        r = c.post("/api/auth/verify-email", json={
+            "verify_token": create_verify_token(user.id), "code": "123456"})
+        assert r.status_code == 400
+        assert r.json()["detail"]["code"] == "ALREADY_VERIFIED"
+        assert AUTH_COOKIE_NAME not in r.cookies
+        assert "set-cookie" not in r.headers
+
     def test_resend_has_cooldown(self, client, db, captured_mail):
         c, state = client
         state["s"]["email_verification_required"] = True
