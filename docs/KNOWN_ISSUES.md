@@ -12,10 +12,7 @@
 
 1. **poly 内部「缺第几个 A」信息论不可解**：同聚物内的缺失落点无法由峰图唯一
    确定，维持「计数确证但定位存疑」注记即正确答案，非 bug。
-2. **离线脚本报告未与网页端完全同步**：`scripts/batch_sequencing_report.py`
-   已有同聚物判读章节，但没有网页整理包的「双峰（疑似混合）检测」章节，
-   归档结构也仍是平铺（网页端为按质粒 + 正确/错误/无法判定分置）。
-3. **两处框架弃用告警**：`app/config.py` 仍用 Pydantic v1 式 `class Config`
+2. **两处框架弃用告警**：`app/config.py` 仍用 Pydantic v1 式 `class Config`
    （PydanticDeprecatedSince20），`app/database/models.py` 仍用
    `declarative_base()`（SQLAlchemy MovedIn20Warning）；功能正常，升级大版本前需迁移。
 

@@ -28,7 +28,8 @@ app/
 ├── admin_routes.py          # 站点设置 / 用户管理 API（仅管理员）
 ├── gating.py / features.py / site_settings.py  # 功能矩阵门控与站点开关
 ├── sequencing_store.py      # 测序分析记录落库
-├── sequencing_report.py     # 批量测序整理包构建
+├── sequencing_batch.py      # 批量测序归组与逐组分析（与离线脚本共用）
+├── sequencing_report.py     # 批量测序整理包构建（与离线脚本共用）
 ├── mailer.py                # 邮箱验证码发送渠道
 ├── cache.py / cache_routes.py            # 缓存与管理 API
 ├── rate_limit.py / rate_limit_routes.py  # 速率限制与管理 API
