@@ -6,7 +6,10 @@
 - enzymes   酶集合与契约 MapEnzyme（复用 core.enzyme_sites 的 REBASE 酶模型）
 - orfs      双链、环状感知 ORF
 - annotate  常见元件库自动注释（k-mer 种子 + 局部比对 + 肽段翻译检索）
+- genbank   MapDocument → GenBank
+- document  组装 MapDocument
 """
 
+from core.plasmid_map.document import build_document, document_from_record  # noqa: F401
 from core.plasmid_map.parsers import MapParseError, parse_file, parse_text  # noqa: F401
 from core.plasmid_map.types import SCHEMA  # noqa: F401
