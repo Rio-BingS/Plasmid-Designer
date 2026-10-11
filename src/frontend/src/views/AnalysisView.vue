@@ -5,6 +5,7 @@ import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSe
 
 const OVERHANG_LABELS: Record<string, string> = { '5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端' }
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
+import { cleanSequence } from '@/utils/sequence'
 
 const route = useRoute()
 const sequence = ref('')
@@ -70,7 +71,7 @@ async function runAnalysis() {
   try {
     loading.value = true
     error.value = ''
-    result.value = await analyzeSequence(sequence.value, sequenceType.value)
+    result.value = await analyzeSequence(cleanSequence(sequence.value), sequenceType.value)
     activeSection.value = 'overview'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -84,7 +85,7 @@ async function runRestrictionAnalysis() {
   try {
     loading.value = true
     restrictionResult.value = await findRestrictionSites(
-      sequence.value,
+      cleanSequence(sequence.value),
       selectedRestrictionEnzymes.value.length ? selectedRestrictionEnzymes.value : undefined
     )
     activeSection.value = 'restriction'
@@ -99,7 +100,7 @@ async function runORFPrediction() {
   if (!sequence.value.trim() || isAminoAcid.value) return
   try {
     loading.value = true
-    orfResult.value = await predictORFs(sequence.value, orfMinLength.value)
+    orfResult.value = await predictORFs(cleanSequence(sequence.value), orfMinLength.value)
     activeSection.value = 'orf'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -122,10 +123,7 @@ async function runDigest() {
     digestLoading.value = true
     // 先清掉上一次结果：失败时不应继续展示旧酶组合的片段
     digestResult.value = null
-    // 粘贴的序列常带换行/空格（FASTA 分行），原样提交会让后端把空白计入
-    // 片段长度，且跨行的识别位点匹配不到——与页面显示的 bp 数口径一致
-    const cleanSeq = sequence.value.replace(/\s/g, '')
-    digestResult.value = await simulateDigest(cleanSeq, digestEnzymes.value, digestCircular.value)
+    digestResult.value = await simulateDigest(cleanSequence(sequence.value), digestEnzymes.value, digestCircular.value)
   } catch (e: any) {
     error.value = errorText(e)
   } finally {
@@ -137,7 +135,7 @@ async function runGCAnalysis() {
   if (!sequence.value.trim()) return
   try {
     loading.value = true
-    gcResult.value = await analyzeGC(sequence.value)
+    gcResult.value = await analyzeGC(cleanSequence(sequence.value))
     activeSection.value = 'gc'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -151,7 +149,7 @@ async function handleCompatibilityCheck() {
   try {
     compatibilityLoading.value = true
     const enzymes = compatibilityEnzymes.value.split(',').map(s => s.trim()).filter(Boolean)
-    compatibilityResult.value = await checkCompatibility(compatibilitySeq1.value, compatibilitySeq2.value, enzymes)
+    compatibilityResult.value = await checkCompatibility(cleanSequence(compatibilitySeq1.value), cleanSequence(compatibilitySeq2.value), enzymes)
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
   } finally {
@@ -174,7 +172,7 @@ async function handleExport() {
   if (!sequence.value.trim()) return
   try {
     exportLoading.value = true
-    await exportSequence(sequence.value, [], exportFormat.value, 'analysis_result')
+    await exportSequence(cleanSequence(sequence.value), [], exportFormat.value, 'analysis_result')
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
   } finally {
@@ -194,7 +192,7 @@ async function handleExport() {
           <option value="dna">DNA</option>
           <option value="amino_acid">氨基酸</option>
         </select>
-        <span class="seq-length" v-if="sequence">{{ sequence.replace(/\s/g, '').length }} bp</span>
+        <span class="seq-length" v-if="sequence">{{ cleanSequence(sequence).length }} bp</span>
       </div>
       <textarea
         v-model="sequence"
