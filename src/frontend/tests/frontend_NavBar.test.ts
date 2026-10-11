@@ -87,6 +87,31 @@ describe('NavBar', () => {
     expect(wrapper.find('.login-btn').text()).toContain('登录')
   })
 
+  it('会话核实中既不显示登录按钮也不显示用户菜单，只显示占位', async () => {
+    let settle!: (v: any) => void
+    vi.mocked(api.verifyToken).mockReturnValueOnce(new Promise((r) => { settle = r }))
+    const wrapper = mount(NavBar, {
+      global: {
+        plugins: [router],
+        stubs: {
+          AuthModal: true
+        }
+      }
+    })
+    await router.isReady()
+    await flushPromises()
+
+    expect(wrapper.find('.auth-placeholder').exists()).toBe(true)
+    expect(wrapper.find('.login-btn').exists()).toBe(false)
+    expect(wrapper.find('.user-btn').exists()).toBe(false)
+
+    settle({ valid: false, user: null })
+    await flushPromises()
+
+    expect(wrapper.find('.auth-placeholder').exists()).toBe(false)
+    expect(wrapper.find('.login-btn').exists()).toBe(true)
+  })
+
   it('shows user info when logged in', async () => {
     const wrapper = mount(NavBar, {
       global: {

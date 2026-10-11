@@ -76,7 +76,14 @@ function goToBatch() {
     </div>
     
     <div class="nav-user">
-      <div v-if="user" class="user-section">
+      <!-- 会话核实中：不显示登录按钮也不显示用户菜单，只占位防止布局跳动 -->
+      <span
+        v-if="authStore.checking"
+        class="auth-placeholder"
+        role="status"
+        aria-label="正在确认登录状态"
+      ></span>
+      <div v-else-if="user" class="user-section">
         <button class="user-btn" @click="handleAuthClick">
           <span class="user-avatar">{{ user.username?.charAt(0).toUpperCase() || 'U' }}</span>
           <span class="user-name">{{ user.username }}</span>
@@ -166,6 +173,15 @@ function goToBatch() {
 
 .user-section {
   position: relative;
+}
+
+.auth-placeholder {
+  display: inline-block;
+  width: 6.5rem;
+  height: 2.25rem;
+  border-radius: 9999px;
+  background: var(--bg-secondary);
+  opacity: 0.6;
 }
 
 .user-btn {
