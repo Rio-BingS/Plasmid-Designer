@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
+from core.genbank_format import format_locus_line  # noqa: E402
 from core.sanger.reference_parser import parse_reference, ReferenceParseError  # noqa: E402
 from abif_utils import make_ab1  # noqa: E402
 
@@ -26,7 +27,7 @@ def _origin_block(seq: str) -> str:
     return "\n".join(lines)
 
 
-GENBANK_TEXT = f"""LOCUS       TestRef          120 bp    DNA     circular SYN 01-JAN-2026
+GENBANK_TEXT = f"""{format_locus_line("TestRef", len(REF_SEQ), topology="circular", date="01-JAN-2026")}
 DEFINITION  test construct.
 ACCESSION   testref
 FEATURES             Location/Qualifiers
@@ -172,7 +173,7 @@ def test_vector_genbank_export_round_trips(client):
 # ==================== 参考拓扑（环状/线性）====================
 
 def _gb(seq: str, topology: str) -> str:
-    return (f"LOCUS       TopoRef          {len(seq)} bp    DNA     {topology} SYN 01-JAN-2026\n"
+    return (format_locus_line("TopoRef", len(seq), topology=topology, date="01-JAN-2026") + "\n"
             "DEFINITION  topology test.\nACCESSION   toporef\n"
             "FEATURES             Location/Qualifiers\n"
             f"     source          1..{len(seq)}\n"

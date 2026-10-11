@@ -61,3 +61,15 @@ def _reset_rate_limiter():
 
     limiter._requests.clear()
     yield
+
+
+# BiopythonParserWarning 一律视为错误：Biopython 遇到不规范的 LOCUS 行只告警、
+# 照样解析，字段可能读错。pytest.ini 已配置同一条过滤器，但命令行
+# `-W default` 等会覆盖 ini；标记级过滤器优先级高于命令行，这里逐项补上，
+# 无论怎么调用 pytest 都不会让这类告警悄悄回归。
+_PARSER_WARNING_AS_ERROR = pytest.mark.filterwarnings("error::Bio.BiopythonParserWarning")
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        item.add_marker(_PARSER_WARNING_AS_ERROR)

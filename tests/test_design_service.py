@@ -87,6 +87,11 @@ def test_run_design_end_to_end_minimal():
 
     gb = generate_genbank_from_result(result)
     assert "LOCUS" in gb and "ORIGIN" in gb
+    import io
+    from Bio import SeqIO
+    rec = SeqIO.read(io.StringIO(gb), "genbank")  # 解析告警在套件中即为错误
+    assert len(rec) == result.final_length
+    assert rec.annotations["topology"] == "circular"
     assert result.optimized_sequence in gb.replace(" ", "").replace("\n", "") or "insert" in gb
 
     m = map_data_from_result(result)
