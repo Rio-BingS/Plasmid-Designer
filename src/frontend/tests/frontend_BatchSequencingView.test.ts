@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import BatchSequencingView from '@/views/BatchSequencingView.vue'
 import type { SequencingBatchResult } from '@/api'
 
@@ -54,6 +55,7 @@ function mountView() {
 
 describe('BatchSequencingView', () => {
   beforeEach(() => {
+    setActivePinia(createPinia()) // 页面读取 auth store 里的本账号 read 上限
     vi.mocked(analyzeSequencingBatch).mockReset()
     vi.mocked(downloadBatchSequencingReport).mockReset()
     pushMock.mockReset()
