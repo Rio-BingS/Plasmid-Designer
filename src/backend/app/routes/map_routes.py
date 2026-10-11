@@ -45,7 +45,7 @@ MAP_CACHE_MAX_BP = int(os.environ.get("MAP_CACHE_MAX_BP", "50000"))
 MAP_CACHE_TTL = 3600
 # 产出口径版本：改变 MapDocument 内容的代码改动须递增（元件库变化已由
 # library_version 自动进键）
-MAP_ALGO_VERSION = "1"
+MAP_ALGO_VERSION = "2"
 
 ORF_MIN_AA_LO, ORF_MIN_AA_HI = 10, 5000
 EnzymeSetId = Field(default="common", max_length=40)
