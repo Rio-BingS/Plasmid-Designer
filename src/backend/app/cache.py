@@ -22,6 +22,15 @@ DEFAULT_CACHE_TTL = 3600  # 1 小时
 DESIGN_CACHE_TTL = 86400  # 24 小时
 VECTOR_CACHE_TTL = 604800  # 7 天
 
+# 结果缓存的算法版本（docs/CACHE.md）：产出代码或数据口径变化时必须递增，
+# 否则 Redis（appendonly，跨重启保留）会在 TTL 内继续返回旧结果。
+# v2.1：修复反向互补映射错误
+# v2.2：密码子表按 Kazusa 重建、CHO 改回中国仓鼠、迭代循环生效、
+#       motif 避让覆盖反向链、滑窗精修（v2.5.0–v2.8.0）
+CODON_OPT_ALGO = "v2.2"
+# v2：酶表统一到 Bio.Restriction（REBASE），由 26 种扩为 47 种（v2.8.0）
+ANALYSIS_ENZYMES_VERSION = "v2"
+
 
 class CacheBackend:
     """缓存后端抽象类"""
@@ -268,7 +277,7 @@ class CacheManager:
         """缓存密码子优化结果（exclude_enzymes 参与缓存键）"""
         key = self._generate_key(
             "codon_opt",
-            algo="v2.1",  # 算法升级时递增，避免命中旧版本结果（v2.1：修复反向互补映射错误）
+            algo=CODON_OPT_ALGO,
             sequence=sequence,
             species=species,
             gc_min=gc_min,
@@ -288,7 +297,7 @@ class CacheManager:
         """获取缓存的密码子优化结果"""
         key = self._generate_key(
             "codon_opt",
-            algo="v2.1",
+            algo=CODON_OPT_ALGO,
             sequence=sequence,
             species=species,
             gc_min=gc_min,
@@ -388,9 +397,12 @@ cache = CacheManager()
 
 
 # 装饰器：自动缓存函数结果
-def cached(prefix: str, ttl: int = DEFAULT_CACHE_TTL):
+def cached(prefix: str, ttl: int = DEFAULT_CACHE_TTL, version: Optional[str] = None):
     """
     缓存装饰器（同步与 async 函数均支持）
+
+    version：结果口径版本，产出逻辑变化时递增；键形如 ``prefix:version:hash``，
+    仍可按 ``prefix:*`` 批量清除。
 
     用法:
         @cached("my_function", ttl=3600)
@@ -401,7 +413,8 @@ def cached(prefix: str, ttl: int = DEFAULT_CACHE_TTL):
     import inspect
 
     def decorator(func):
-        key_func = lambda *args, **kwargs: cache._generate_key(prefix, *args, **kwargs)
+        key_prefix = f"{prefix}:{version}" if version else prefix
+        key_func = lambda *args, **kwargs: cache._generate_key(key_prefix, *args, **kwargs)
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
