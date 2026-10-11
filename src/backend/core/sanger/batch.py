@@ -77,63 +77,94 @@ def _check_xlsx_zip(fp) -> None:
                 "请只保留信息表本身后重新上传")
 
 
-def load_excel(src: Union[str, "Path", bytes, bytearray]):
-    """解析信息表，返回 (workbook, header_row, {列名: 列号}, [数据行])
-
-    src：文件路径（脚本离线用）或字节流（网页上传用）。
-    表头行取第一个含"质粒"的单元格所在行；找不到抛 ValueError。
-    解压后体积 / 行列数超过上限同样抛 ValueError。
-    """
+def _open_workbook(src: Union[str, "Path", bytes, bytearray], read_only: bool):
+    """zip 目录预检后打开工作簿（read_only=True 为流式只读，须 close）"""
     import openpyxl
 
     if isinstance(src, (bytes, bytearray)):
         _check_xlsx_zip(io.BytesIO(src))
-        wb = openpyxl.load_workbook(io.BytesIO(src))
-    else:
-        _check_xlsx_zip(src)
-        wb = openpyxl.load_workbook(src)
-    ws = wb.worksheets[0]
-    if ws.max_row > MAX_EXCEL_ROWS or ws.max_column > MAX_EXCEL_COLS:
-        raise ValueError(
-            f"信息表行列数超过上限（{MAX_EXCEL_ROWS} 行 × {MAX_EXCEL_COLS} 列），请检查文件")
-    header_row, cols = None, {}
-    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 20)):
-        for c in row:
-            if c.value and "质粒" in str(c.value):
-                header_row = c.row
-                break
-        if header_row:
-            break
-    if header_row is None:
-        raise ValueError("Excel 中找不到含'质粒'的表头行")
-    for c in ws[header_row]:
-        v = str(c.value or "")
-        if "质粒" in v:
-            cols["plasmid"] = c.column
-        elif "引物" in v:
-            cols["primer"] = c.column
-        elif "结果" in v:
-            cols["result"] = c.column
-        elif "克隆" in v or "样品" in v:
-            cols["clone"] = c.column
-    cols.setdefault("primer", cols["plasmid"] + 1)
-    cols.setdefault("result", cols["primer"] + 1)
+        return openpyxl.load_workbook(io.BytesIO(src), read_only=read_only)
+    _check_xlsx_zip(src)
+    return openpyxl.load_workbook(src, read_only=read_only)
 
-    rows = []
-    for r in range(header_row + 1, ws.max_row + 1):
-        name = _cell_str(ws.cell(row=r, column=cols["plasmid"]).value)
-        prim = _cell_str(ws.cell(row=r, column=cols["primer"]).value)
-        if not name and not prim:
-            continue
-        entries = [p.strip() for p in PRIMER_SPLIT.split(prim) if p.strip()]
-        rows.append({
-            "row": r,
-            "name": name,
-            "clone": _cell_str(ws.cell(row=r, column=cols["clone"]).value) if "clone" in cols else "",
-            "primers": entries,
-            "existing_result": ws.cell(row=r, column=cols["result"]).value,
-        })
-    return wb, header_row, cols, rows
+
+def open_excel_for_write(src: Union[str, "Path", bytes, bytearray]):
+    """以可写的完整模式打开信息表（结论回填用；先经 parse_excel 校验过上限）"""
+    return _open_workbook(src, read_only=False)
+
+
+def _limit_error() -> ValueError:
+    return ValueError(
+        f"信息表行列数超过上限（{MAX_EXCEL_ROWS} 行 × {MAX_EXCEL_COLS} 列），请检查文件")
+
+
+def parse_excel(src: Union[str, "Path", bytes, bytearray]):
+    """流式解析信息表，返回 (header_row, {列名: 列号}, [数据行])
+
+    openpyxl read_only 模式逐行读取，不为每个单元格建对象；行列数边读边查，
+    超限立即中止（不信任文件自带的 dimension 声明）。表头行取前 20 行中第一个
+    含"质粒"的单元格所在行；找不到、或超过上限时抛 ValueError。
+    """
+    wb = _open_workbook(src, read_only=True)
+    try:
+        ws = wb.worksheets[0]
+        # dimension 可缺失或与实际不符：按实际内容逐行读取
+        ws.reset_dimensions()
+        header_row, cols, rows = None, {}, []
+        for r, values in enumerate(ws.iter_rows(values_only=True), start=1):
+            if r > MAX_EXCEL_ROWS or len(values) > MAX_EXCEL_COLS:
+                raise _limit_error()
+            if header_row is None:
+                if r > 20:
+                    raise ValueError("Excel 中找不到含'质粒'的表头行")
+                if not any(v and "质粒" in str(v) for v in values):
+                    continue
+                header_row = r
+                for col, v in enumerate(values, start=1):
+                    v = str(v or "")
+                    if "质粒" in v:
+                        cols["plasmid"] = col
+                    elif "引物" in v:
+                        cols["primer"] = col
+                    elif "结果" in v:
+                        cols["result"] = col
+                    elif "克隆" in v or "样品" in v:
+                        cols["clone"] = col
+                cols.setdefault("primer", cols["plasmid"] + 1)
+                cols.setdefault("result", cols["primer"] + 1)
+                continue
+
+            def cell(col: int):
+                return values[col - 1] if col - 1 < len(values) else None
+
+            name = _cell_str(cell(cols["plasmid"]))
+            prim = _cell_str(cell(cols["primer"]))
+            if not name and not prim:
+                continue
+            entries = [p.strip() for p in PRIMER_SPLIT.split(prim) if p.strip()]
+            rows.append({
+                "row": r,
+                "name": name,
+                "clone": _cell_str(cell(cols["clone"])) if "clone" in cols else "",
+                "primers": entries,
+                "existing_result": cell(cols["result"]),
+            })
+        if header_row is None:
+            raise ValueError("Excel 中找不到含'质粒'的表头行")
+        return header_row, cols, rows
+    finally:
+        wb.close()
+
+
+def load_excel(src: Union[str, "Path", bytes, bytearray]):
+    """解析信息表，返回 (workbook, header_row, {列名: 列号}, [数据行])
+
+    src：文件路径（脚本离线用）或字节流（网页上传用）。先经 parse_excel
+    流式解析并检查上限，再单独以可写模式打开 workbook 供结论回填；只需要
+    数据行的调用方请直接用 parse_excel（不构建整表对象）。
+    """
+    header_row, cols, rows = parse_excel(src)
+    return open_excel_for_write(src), header_row, cols, rows
 
 
 def match_files(rows: List[Dict], files: List[Dict]):

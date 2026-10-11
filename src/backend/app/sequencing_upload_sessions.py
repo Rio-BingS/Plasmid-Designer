@@ -407,13 +407,53 @@ def append_files(meta: Dict, chunk_index: int, uploads: List, per_file_max: int)
     return {"duplicate": False, **summary}
 
 
+class DiskBlob:
+    """暂存在磁盘上的上传文件：只记路径与大小，内容按需读取"""
+
+    __slots__ = ("path", "size")
+
+    def __init__(self, path: str, size: int):
+        self.path = path
+        self.size = size
+
+    def read(self) -> bytes:
+        with open(self.path, "rb") as fh:
+            return fh.read()
+
+
+class LazyFileEntry(dict):
+    """批量管线的文件条目（{"name","ext","stem","bytes"}），"bytes" 每次访问时
+    从磁盘读取、不缓存在条目里。
+
+    finalize 此前把整批（最多 SESSION_MAX_BYTES）一次读进内存；现在比对时
+    只有当前分组的文件、打包时只有当前写入的文件驻留内存。"""
+
+    def __init__(self, data: Dict, blob: DiskBlob):
+        super().__init__(data)
+        self.pop("bytes", None)
+        self.blob = blob
+
+    def __getitem__(self, key):
+        if key == "bytes":
+            return self.blob.read()
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if key == "bytes":
+            return self.blob.read()
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        return key == "bytes" or super().__contains__(key)
+
+
 def read_all(meta: Dict):
-    """finalize 用：按上传顺序读回 [(name, bytes)] 与信息表 (name, bytes)|None"""
+    """按上传顺序返回 [(name, DiskBlob)] 与信息表 (name, bytes)|None。
+
+    测序/图谱文件不读入内存（DiskBlob 按需读取）；信息表很小，直接读回"""
     d = os.path.join(_session_dir(meta["id"]), "f")
-    blobs = []
-    for e in meta["files"]:
-        with open(os.path.join(d, e["disk"]), "rb") as fh:
-            blobs.append((e["name"], fh.read()))
+    blobs = [(e["name"], DiskBlob(os.path.join(d, e["disk"]), int(e.get("size", 0))))
+             for e in meta["files"]]
     excel = None
     if meta.get("excel"):
         with open(os.path.join(d, meta["excel"]["disk"]), "rb") as fh:

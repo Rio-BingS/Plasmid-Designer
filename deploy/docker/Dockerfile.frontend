@@ -29,6 +29,13 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
 
+# 可信宿主机前置清单：官方镜像入口在启动 nginx 前执行 /docker-entrypoint.d/*.sh，
+# 按 FRONTEND_BIND / PLASMID_GATEWAY / HOST_PROXY_ADDRS 生成 geo 片段。
+# 预置空清单：绕过入口脚本直接起 nginx 时默认谁都不信（失败安全）
+COPY deploy/docker/nginx-host-proxy.sh /docker-entrypoint.d/40-plasmid-host-proxy.sh
+RUN chmod 755 /docker-entrypoint.d/40-plasmid-host-proxy.sh \
+    && : > /etc/nginx/host-proxy.geo
+
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]
