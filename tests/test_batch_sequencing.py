@@ -362,6 +362,7 @@ def test_offline_output_matches_web_package(tmp_path):
     off_dirs = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_dir()}
 
     # 网页：同样的文件条目走端点的 _run_batch + build_batch_zip
+    batch.load_bytes(files)     # 离线逐质粒落盘后会释放字节
     web_entries = [{"name": f["name"], "ext": f["ext"], "stem": f["stem"],
                     "bytes": f["bytes"]} for f in files]
     reads = [e for e in web_entries if e["ext"] in batch.READ_EXTS]
@@ -515,3 +516,165 @@ def test_rerun_dry_run_reports_without_removing(tmp_path, monkeypatch, capsys):
     assert after == before
     assert not (out / "TST" / "无法判定").exists()
     assert (data_dir / "测序.xlsx").read_bytes() == xlsx_before
+
+
+# ---------------------------------------------------------------- 逐质粒落盘（review 05 M4）
+
+
+def _write_two_plasmids(data_dir: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["TST", "T1", None])
+    ws.append(["TS2", "T2", None])
+    wb.save(data_dir / "测序.xlsx")
+    for name, read in (("TST", "T1"), ("TS2", "T2")):
+        (data_dir / f"{name}.fasta").write_text(f">{name}\n{REF}\n", encoding="utf-8")
+        (data_dir / f"{read}.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+
+
+def _crash_on_second_analyze(monkeypatch):
+    """第 2 次跑管线时模拟 Ctrl-C（BaseException，不会被单组容错吞掉）"""
+    import app.sequencing_batch as sb
+    real = sb.analyze
+    calls = []
+
+    def fake(*a, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real(*a, **kw)
+    monkeypatch.setattr(sb, "analyze", fake)
+    return calls
+
+
+def test_interrupted_run_keeps_finished_plasmids(tmp_path, monkeypatch):
+    """中途中断：已分析完的质粒文件夹（副本、报告、JSON）与整理清单行已落盘，
+    此前整批跑完才写，中断即一个文件都没有"""
+    import csv
+    import io
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_two_plasmids(data_dir)
+    _crash_on_second_analyze(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, data_dir, "--no-write-back")
+
+    out = data_dir / "测序分析"
+    ok = out / "TST" / "正确"
+    assert (out / "TST" / "TST.fasta").read_bytes() == (data_dir / "TST.fasta").read_bytes()
+    assert (ok / "T1.ab1").read_bytes() == (data_dir / "T1.ab1").read_bytes()
+    assert "合格：与设计一致" in (ok / "测序分析报告.md").read_text(encoding="utf-8")
+    assert json.loads((ok / "分析结果.json").read_text(encoding="utf-8"))["sample_name"] == "TST"
+    assert not (out / "TS2").exists()
+    rows = list(csv.DictReader(io.StringIO(
+        (out / "整理清单.csv").read_text(encoding="utf-8-sig"))))
+    assert [(r["质粒"], r["归档路径"]) for r in rows] == [
+        ("TST", "TST/TST.fasta"), ("TST", "TST/正确/T1.ab1")]
+    assert (out / batch.JOURNAL_NAME).exists()
+
+
+def test_rerun_after_interrupt_cleans_from_journal(tmp_path, monkeypatch):
+    """中断留下的进行中记录在下次运行时参与清理：判定变化后，中断那次写到
+    正确/ 的副本被识别为本工具所写并清理；正常结束后进行中记录并入整理记录"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_two_plasmids(data_dir)
+    _crash_on_second_analyze(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, data_dir, "--no-write-back")
+    monkeypatch.undo()
+
+    out = data_dir / "测序分析"
+    (data_dir / "TST.fasta").unlink()       # 缺图谱 → 无法判定
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert not (out / "TST" / "正确" / "T1.ab1").exists()
+    assert not (out / "TST" / "正确" / "测序分析报告.md").exists()
+    assert not (out / "TST" / "TST.fasta").exists()
+    assert (out / "TST" / "无法判定" / "T1.ab1").exists()
+    assert (out / "TS2" / "正确" / "T2.ab1").exists()
+    assert not (out / batch.JOURNAL_NAME).exists()
+    rec = json.loads((out / batch.RECORD_NAME).read_text(encoding="utf-8"))["files"]
+    assert "TS2/正确/T2.ab1" in rec and "TST/正确/T1.ab1" not in rec
+    assert _manifest_paths(out) == {"TST/无法判定/T1.ab1", "TS2/TS2.fasta",
+                                    "TS2/正确/T2.ab1"}
+
+
+def test_bytes_released_after_each_plasmid(tmp_path, monkeypatch):
+    """分析第 2 个质粒时，第 1 个质粒的文件字节已随其文件夹落盘释放，
+    且第 2 个质粒的文件此前尚未读入（内存不随批次线性增长）"""
+    import app.sequencing_batch as sb
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_two_plasmids(data_dir)
+    _wb, _h, _cols, rows = batch.load_excel(data_dir / "测序.xlsx")
+    out = tmp_path / "out"
+    files = batch.scan_files(data_dir, out)
+    by_name = {f["name"]: f for f in files}
+    seen = []
+    real = sb.analyze
+
+    def spy(*a, **kw):
+        seen.append({n: "bytes" in f for n, f in by_name.items()})
+        if len(seen) == 2:
+            assert (out / "TST" / "正确" / "T1.ab1").exists()
+        return real(*a, **kw)
+    monkeypatch.setattr(sb, "analyze", spy)
+    batch.run_to_dir(files, rows, out, 20)
+    assert seen == [
+        {"TST.fasta": True, "T1.ab1": True, "TS2.fasta": False, "T2.ab1": False},
+        {"TST.fasta": False, "T1.ab1": False, "TS2.fasta": True, "T2.ab1": True},
+    ]
+    assert not any("bytes" in f for f in files)
+
+
+def test_streamed_entries_match_one_shot_build(tmp_path):
+    """逐质粒构建的条目与整批一次构建（batch_archive_entries）完全一致：
+    含表内别名并档（'17648' 与 '17648 MBYSTC' 隔行出现、结论不同）、同名 read
+    加序号、未匹配文件；整理清单行序也相同"""
+    from app.sequencing_report import batch_archive_entries
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    (data_dir / "17648 MBYSTC.fasta").write_text(f">a\n{REF}\n", encoding="utf-8")
+    (data_dir / "A1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+    (data_dir / "A2.ab1").write_bytes(make_ab1(REF[:90], [40] * 90))
+    (data_dir / "TST.fasta").write_text(f">TST\n{REF}\n", encoding="utf-8")
+    (data_dir / "T1.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+    (data_dir / "sub").mkdir()
+    (data_dir / "sub" / "T1.ab1").write_bytes(make_ab1(REF[3:], [40] * (len(REF) - 3)))
+    (data_dir / "孤儿.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "测序结果"])
+    ws.append(["17648", "A2", None])
+    ws.append(["TST", "T1", None])
+    ws.append(["17648 MBYSTC", "A1", None])
+    wb.save(data_dir / "测序.xlsx")
+    _wb, _h, _cols, rows = batch.load_excel(data_dir / "测序.xlsx")
+    files = batch.scan_files(data_dir, tmp_path / "out")
+
+    records = {}
+
+    class _Keep(batch.OfflineBatch):      # 留住分析记录，供整批再构建一次
+        def _register(self, *a):
+            aid, rec = super()._register(*a)
+            records[aid] = rec
+            return aid, rec
+
+    run = _Keep(files, rows, 20)
+    streamed = [e for chunk in run.chunks() for e in chunk.entries]
+    batch.load_bytes(files)
+    one_shot = batch_archive_entries(
+        run.payload, run.groups, run.unmatched, None, None, None, records,
+        origin="offline", source_paths=True, root="")
+
+    def norm(entries):
+        import re
+        return sorted((a, re.sub(r"生成时间：.*", "", d) if isinstance(d, str) else d)
+                      for a, d in entries)
+    assert norm(streamed) == norm(one_shot)
+    manifest = dict(streamed)["整理清单.csv"]
+    assert [ln.split(",")[6] for ln in manifest.splitlines()[1:]] == [
+        "17648 MBYSTC/无法判定/A2.ab1", "TST/TST.fasta", "TST/正确/T1.ab1",
+        "TST/正确/T1 (2).ab1", "17648 MBYSTC/17648 MBYSTC.fasta",
+        "17648 MBYSTC/正确/A1.ab1", "未匹配文件/孤儿.ab1"]
