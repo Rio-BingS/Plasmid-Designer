@@ -12,7 +12,7 @@ Plasmid Designer：自动化质粒构建设计平台。输入氨基酸/DNA 序�
 ## 技术栈与代码地图
 
 ```
-src/backend/                FastAPI（设计主线纯标准库；Sanger 分析用 biopython）
+src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-reader，tracy 可选）
   app/main.py               入口 ~120 行（仅组装：CORS/中间件/路由/启动）
   app/routes/               design|batch|vector|codon|analysis 路由 + models.py（共享 Pydantic 契约）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
