@@ -12,8 +12,8 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+import bcrypt
 import jwt
 
 from app.config import settings, validate_secret_key
@@ -26,9 +26,6 @@ SECRET_KEY = settings.SECRET_KEY
 validate_secret_key(SECRET_KEY)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
-
-# 密码加密
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Bearer Token 认证（API / 脚本客户端）；浏览器走 httpOnly Cookie
 security = HTTPBearer(auto_error=False)
@@ -106,13 +103,27 @@ def _clamp_password(password: str) -> str:
 
 
 def hash_password(password: str) -> str:
-    """生成密码哈希"""
-    return pwd_context.hash(_clamp_password(password))
+    """生成密码哈希（bcrypt $2b$，12 轮，与此前 passlib 默认产出格式一致）"""
+    hashed = bcrypt.hashpw(
+        _clamp_password(password).encode("utf-8"), bcrypt.gensalt(rounds=12)
+    )
+    return hashed.decode("ascii")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
-    return pwd_context.verify(_clamp_password(plain_password), hashed_password)
+    """验证密码；兼容 passlib 时代存下的 $2a$/$2b$/$2y$ 哈希。
+
+    哈希为空或格式非法时返回 False（不抛错），登录接口统一按密码错误处理
+    """
+    if not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(
+            _clamp_password(plain_password).encode("utf-8"),
+            hashed_password.encode("ascii"),
+        )
+    except (ValueError, UnicodeEncodeError):
+        return False
 
 
 # ==================== JWT 工具 ====================
