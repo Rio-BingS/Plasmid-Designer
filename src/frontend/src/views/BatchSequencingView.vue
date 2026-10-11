@@ -8,8 +8,13 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { analyzeSequencingBatch, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const authStore = useAuthStore()
+
+// 本账号的批量 read 上限（site-config 下发，随登录状态刷新；旧后端无此字段则不显示）
+const readLimits = computed(() => authStore.siteConfig?.batch_read_limits ?? null)
 
 // ==================== 文件导入（支持整个文件夹拖入） ====================
 const files = ref<File[]>([])
@@ -273,6 +278,10 @@ async function downloadReport() {
           不上传信息表时按「测序文件名包含图谱文件名」自动归组
         </p>
 
+        <p v-if="readLimits" class="excel-note limit-note" data-testid="read-limit-note">
+          本账号单批最多 {{ readLimits.max_total_reads }} 条 read（每组最多 {{ readLimits.max_reads_per_group }} 条），
+          单次最多 {{ readLimits.max_files }} 个文件；超出请拆分批次或联系管理员调整
+        </p>
         <div v-if="files.length || excelFile" class="staged">
           <p class="staged-line">
             <span>测序/图谱文件 × {{ files.length }} · 共 {{ stagedSizeMB }} MB</span>
