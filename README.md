@@ -1,6 +1,6 @@
 # Plasmid Designer v2
 
-自动化质粒构建设计平台 — 源码与部署配置分离版
+自动化质粒构建设计平台 — 源码与部署配置分离版（当前版本 v2.7.0）
 
 ## 项目结构
 
@@ -9,35 +9,33 @@ plasmid-designer-v2/
 ├── src/                        # 纯源代码
 │   ├── backend/                # FastAPI 后端
 │   │   ├── app/                # 应用层
-│   │   │   ├── main.py         # 入口 (~97行，路由挂载)
-│   │   │   ├── config.py       # 配置 + sys.path
+│   │   │   ├── main.py         # 入口（仅组装：CORS/中间件/路由/生命周期）
+│   │   │   ├── config.py       # 配置（环境变量 / .env）+ sys.path
+│   │   │   ├── design_service.py      # 单任务与批量共用的设计流水线
 │   │   │   ├── routes/         # 路由模块
 │   │   │   │   ├── design_routes.py   # 设计任务 API
 │   │   │   │   ├── batch_routes.py    # 批量设计 API
 │   │   │   │   ├── vector_routes.py   # 载体库 API
 │   │   │   │   ├── codon_routes.py    # 密码子表 API
+│   │   │   │   ├── sequencing_routes.py  # Sanger 测序分析 API
 │   │   │   │   └── models.py          # 共享 Pydantic 模型
-│   │   │   ├── storage/        # 双模式存储层
-│   │   │   │   ├── __init__.py        # STORAGE_MODE 工厂
-│   │   │   │   ├── base.py            # 抽象基类
-│   │   │   │   ├── memory_store.py    # 内存实现 (HF)
-│   │   │   │   └── db_store.py        # 数据库实现
-│   │   │   ├── auth/           # JWT 认证 (数据库版)
+│   │   │   ├── storage/        # 双模式存储层（STORAGE_MODE 工厂 + 内存/数据库实现）
+│   │   │   ├── auth/           # 认证：JWT 会话 Cookie + CSRF + 登出吊销
 │   │   │   ├── database/       # SQLAlchemy 数据模型与 CRUD
+│   │   │   ├── admin_routes.py # 站点设置 / 用户管理 API（仅管理员）
 │   │   │   ├── cache_routes.py # 缓存管理 API
 │   │   │   ├── rate_limit_routes.py  # 速率限制 API
 │   │   │   └── analysis_routes.py    # 序列分析 & 导出 API
-│   │   └── core/               # 核心引擎（引物设计、密码子优化等）
+│   │   └── core/               # 核心引擎（密码子优化、引物设计、酶切、sanger/ 测序管线等）
 │   └── frontend/               # Vue 3 前端
-│       └── src/
-│           ├── api/            # API 调用层 (44个函数)
-│           ├── stores/         # Pinia 状态管理
-│           │   ├── auth.ts     # 认证 Store
-│           │   ├── design.ts   # 设计 Store
-│           │   └── vectors.ts  # 载体 Store
-│           ├── views/          # 页面组件
-│           ├── components/     # 通用组件
-│           └── types/          # TypeScript 类型
+│       ├── src/
+│       │   ├── api/            # API 调用层（axios，改后端契约必同步这里）
+│       │   ├── stores/         # Pinia 状态管理（auth / design / vectors）
+│       │   ├── views/          # 页面组件
+│       │   ├── components/     # 通用组件（图谱、序列视图、测序面板等）
+│       │   ├── composables/    # 组合式函数（峰图融合视图 useSeqViz）
+│       │   └── types/          # TypeScript 类型
+│       └── tests/              # vitest 单测
 ├── deploy/                     # 部署配置（与源码分离）
 │   ├── docker/                 # Docker Compose 部署
 │   ├── bare/                   # Ubuntu systemd 裸机部署
@@ -56,7 +54,7 @@ plasmid-designer-v2/
 ### 环境要求
 
 - Python 3.11+
-- Node.js 22.12+（22 LTS）
+- Node.js 22.12+（22 LTS；Vite 8 / Vitest 5 的最低要求）
 - npm 10+
 
 ### 本地开发
@@ -65,6 +63,8 @@ plasmid-designer-v2/
 # 1. 后端
 cd src/backend
 pip install -r requirements.txt
+# SECRET_KEY 必填：未设置、占位、过短或低熵一律拒绝启动（本地开发同样适用）
+echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
 uvicorn app.main:app --reload
 
 # 2. 前端（新开终端）
@@ -73,7 +73,8 @@ npm install
 npm run dev
 ```
 
-前端开发服务器启动后访问 http://localhost:3000，Vite 会自动代理 `/api` 请求到后端 8000 端口。
+前端开发服务器启动后访问 http://localhost:3000，Vite 会自动代理 `/api` 请求到后端 8000 端口
+（同源，无需配置 CORS；`AUTH_COOKIE_SECURE` 默认 `auto`，http 下会话 Cookie 不置 Secure，可正常登录）。
 
 ### 存储模式
 
@@ -85,7 +86,7 @@ npm run dev
 | **memory** | `STORAGE_MODE=memory` | 测试/演示 | 纯内存 dict，重启丢失，无需数据库 |
 
 ```bash
-# 本地开发（默认使用数据库模式，SQLite）
+# 本地开发（默认使用数据库模式，SQLite 库位于 data/plasmid_designer.db）
 uvicorn app.main:app --reload
 
 # 内存模式（无需数据库）
@@ -94,28 +95,20 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 
 ### 部署
 
-#### Docker Compose（推荐）
+| 方式 | 组成 | 文档 |
+|------|------|------|
+| Docker Compose | backend（FastAPI，仅绑 127.0.0.1:8000）+ frontend（Nginx，80）+ PostgreSQL 15 + Redis 7 | [deploy/docker/README.md](deploy/docker/README.md) |
+| 裸机 systemd（Ubuntu） | uvicorn（127.0.0.1:8000）+ Nginx，SQLite 或 PostgreSQL | [deploy/bare/README.md](deploy/bare/README.md) |
 
-```bash
-cd deploy/docker
-docker-compose up -d
-```
+部署相关的关键环境变量（完整列表见各自的 `.env.example`）：
 
-Docker Compose 默认使用数据库模式，包含：
-- **backend**: FastAPI (端口 8000)
-- **frontend**: Nginx 反向代理 (端口 80)
-- **db**: PostgreSQL 15
-- **redis**: Redis 7 (缓存)
-
-通过 `.env` 文件或环境变量配置：
-```bash
-# docker-compose/.env
-DB_USER=plasmid
-DB_PASSWORD=your_secure_password
-SECRET_KEY=<openssl rand -hex 32 生成；必填，占位/过短/低熵值会拒绝启动>
-REDIS_ENABLED=true
-STORAGE_MODE=database
-```
+| 变量 | 说明 |
+|------|------|
+| `SECRET_KEY` | 必填，`openssl rand -hex 32` 生成；占位/过短/低熵值拒绝启动 |
+| `CORS_ORIGINS` | 前端经 Nginx 同源反代 `/api` 时无需改动；前端另域部署时必须填**显式来源**（逗号分隔或 JSON 数组），通配 `*` 下后端关闭凭证模式，浏览器不会携带会话 Cookie |
+| `AUTH_COOKIE_SECURE` | 会话 Cookie 的 Secure 标记：`auto`（默认，按请求协议 / 可信代理的 `X-Forwarded-Proto` 判定）、`true`（HTTPS 在更外层代理终止时必须设）、`false` |
+| `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
+| `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
 
 ## API 概览
 
@@ -155,7 +148,6 @@ STORAGE_MODE=database
 | GET | `/api/vectors/search/ncbi` | 搜索 NCBI（不导入） |
 | GET | `/api/vectors/preview/ncbi/{id}` | 预览 NCBI 载体 |
 | POST | `/api/vectors/import/upload` | 上传载体文件 |
-| POST | `/api/vectors/import/file` | 从本地文件导入 |
 | POST | `/api/vectors/import/batch` | 批量导入 |
 
 ### 序列分析 & 导出
@@ -166,11 +158,20 @@ STORAGE_MODE=database
 | POST | `/api/analysis/restriction-sites` | 限制性酶切位点 |
 | POST | `/api/analysis/orfs` | ORF 预测 |
 | POST | `/api/analysis/gc-analysis` | GC 含量分析 |
+| POST | `/api/analysis/digest` | 酶切消化模拟（单/双酶） |
 | POST | `/api/analysis/compatibility` | 克隆兼容性检查 |
 | GET | `/api/analysis/enzymes` | 酶列表 |
 | GET | `/api/analysis/export/formats` | 导出格式列表 |
 | POST | `/api/analysis/export` | 单格式导出 |
 | POST | `/api/analysis/export/all` | 全格式导出 (ZIP) |
+| GET | `/api/analysis/design/{id}/export` | 导出设计结果（`?format=`，默认 genbank） |
+| GET | `/api/analysis/vector/{id}/export` | 导出载体序列（`?format=`，默认 genbank） |
+
+### 密码子表
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/codon-tables` | 列出可用密码子表 |
 
 ### Sanger 测序分析
 
@@ -178,8 +179,9 @@ STORAGE_MODE=database
 |------|------|------|
 | POST | `/api/sequencing/analyze` | 上传参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）+ .ab1（可多个）全自动测序验证（单样品入口） |
 | POST | `/api/sequencing/analyze-batch` | 批量入口：整个交付文件夹（.ab1 + 图谱，可多质粒）+ 可选 Excel 信息表，按质粒归组逐个分析，返回每质粒一句话结论 |
-| POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个），参考序列取设计构建体 |
-| POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体 |
+| GET | `/api/sequencing/batches/{batch_id}/report` | 下载批量分析整理包（ZIP，生成后 15 分钟内可重复下载） |
+| POST | `/api/designs/{design_id}/sequencing/analyze` | 上传 .ab1（可多个），参考序列取设计构建体（有构建体序列时按环状比对） |
+| POST | `/api/vectors/{vector_id}/sequencing/analyze` | 同上，参考序列取自有序列的载体（按环状比对） |
 | GET | `/api/sequencing/analyses` | 历史分析列表（摘要，时间倒序） |
 | GET | `/api/sequencing/analyses/{id}` | 分析结果（结论/突变表/共识序列/覆盖率） |
 | GET | `/api/sequencing/analyses/{id}/trace/{read_index}` | 单条 read 峰图数据（四通道） |
@@ -190,6 +192,11 @@ STORAGE_MODE=database
 Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考文件的特征表，
 样品名取参考文件名主干。
 
+**环状参考**：参考拓扑取自文件（GenBank LOCUS 行 / SnapGene topology 标记），只有明确
+标为 linear 才按线性比对，其余（含无拓扑信息的 FASTA）按环状质粒处理——对「参考 + 参考
+头部」做比对后把坐标折回 1..L，跨原点的 read 整条比对、在峰图与报告中按折回坐标分两段
+展示，原点两侧的覆盖缺口合并后再判定。
+
 全自动管线（`core/sanger/`）：ABIF 解析（主路径 Bio.SeqIO "abi"，无 Biopython 时回退内置解析器）
 → Q 值末端修剪 → 双向比对自动判向（Biopython PairwiseAligner）→ 多 read 共识拼接（质量加权投票）
 → 突变特征注释（所在 CDS/氨基酸变化/移码/酶切位点破坏或新增；插入缺失下游的位点按平移配对，不误报为破坏+新增）→ 自动结论。
@@ -198,7 +205,9 @@ Biopython，SnapGene .dna 用 snapgene-reader；特征注释直接取自参考�
 CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动对齐区间内最佳 ORF（起始密码子→终止密码子，长度优先）再翻译，被大 CDS 完全包含的小特征（如 6xHis 标签）不重复报告；结论按置信度分层——只将中/高置信变异（确证变异）重建进 CDS 判定，低置信变异（疑似测序噪声）不计入，单独在结论末尾给出待复核提示；翻译产物与参考做 BLOSUM62 全局比对，给出「完整覆盖 + 翻译产物一致 / 移码 / 无义提前终止 / 起始或终止密码子丢失 / 框内插入缺失 / 错义与同义」的整段判定，后果标注 Sequence Ontology 标准词表（stop_gained、frameshift_variant 等，与 VEP/snpEff/bcftools csq 对齐），结论文案为一句话因果链（变异位置 + 类型 + 后果 + 关键数字）；未覆盖区域按参考填充并明确标注未验证。
 疑似混合样品可选用 [tracy](https://github.com/gear-genomics/tracy) decompose 解卷积
 （Docker 镜像内置二进制，本地安装 `conda install -c bioconda tracy` 或设置 `TRACY_BIN`；缺失时自动降级）。
-分析记录为进程级内存存储（重启失效）。
+分析记录在 database 模式下落库（`sequencing_analyses` 表，重启不丢；`SEQUENCING_DB_MAX_RECORDS`
+默认 2000 条，超出淘汰最旧），进程内只保留 15 分钟读取缓存；memory 模式下 15 分钟后过期。
+匿名创建的记录由创建响应下发的 `access_token` 访问，登录用户的记录仅本人与管理员可见。
 
 **批量分析**：归组与结论逻辑在 `core/sanger/batch.py`，网页与脚本两端共用：
 
@@ -232,7 +241,7 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 质粒图谱（`PlasmidMap.vue` + `SequenceView.vue`）为 SnapGene 风格双视图：填充式特征弧
 （重叠特征自动分层、方向箭头）、外侧特征标签多轨避让与位置刻度、内侧单一酶切位点蓝色
 高亮多轨布局、序列视图中酶名/切点标记分层与识别序列底纹、翻译行按链分置、PNG 2x 导出。
-图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置 ~48 种常用酶扫描生成（含识别序列）。
+图谱数据中的 `enzyme_sites` 由 `core/enzyme_sites.py` 内置的 47 种常用酶扫描生成（含识别序列）。
 
 **载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
 每个文件含 `data_provenance` 血统块（来源/地址/抓取日期）。数据来源：
@@ -251,12 +260,21 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 | POST | `/api/auth/verify-email` | 提交 6 位邮箱验证码完成注册并登录 |
 | POST | `/api/auth/resend-verification` | 重发验证码（60 秒冷却） |
 | GET | `/api/auth/site-config` | 公开站点配置（注册开关/功能开放范围，前端渲染依据） |
-| POST | `/api/auth/logout` | 用户登出 |
+| POST | `/api/auth/logout` | 用户登出（服务端吊销当前令牌并删除会话 Cookie，幂等） |
 | GET | `/api/auth/me` | 获取当前用户 |
-| GET | `/api/auth/verify` | 验证令牌 |
+| GET | `/api/auth/verify` | 检查当前会话是否有效 |
+| GET | `/api/auth/users` | 用户列表（仅管理员） |
 | GET/PUT | `/api/admin/settings` | 站点设置（仅管理员）：注册开关、邮箱验证开关、功能开放矩阵 |
 | GET | `/api/admin/users` | 用户列表（仅管理员） |
 | PUT/DELETE | `/api/admin/users/{id}` | 角色/启用/验证标记、删除（仅管理员） |
+
+**登录会话**：登录 / 注册 / 邮箱验证成功后，后端把 JWT 写入 httpOnly 会话 Cookie
+（`pd_session`，`Path=/api`、`SameSite=Lax`，Secure 由 `AUTH_COOKIE_SECURE` 决定），前端脚本
+读不到令牌、也不再存 localStorage。Cookie 认证的写请求（POST/PUT/PATCH/DELETE）必须带
+`X-Requested-With: XMLHttpRequest` 头（CSRF 防护，前端 axios 实例已统一携带；登录/注册等凭据
+端点豁免）。登出时服务端吊销令牌（`jti` 入吊销表），旧令牌即使被截获也无法再用。
+API / 脚本客户端仍可用 `Authorization: Bearer <token>`（登录响应体返回令牌），Bearer 请求不做
+CSRF 检查。
 
 **账号体系（角色 + 站点开关 + 功能门控）**：用户分三层——管理员（`is_admin`，不受任何开关
 限制）、普通登录用户、未登录访客。管理员通过 `/admin` 面板控制：
@@ -287,13 +305,14 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/api/cache/stats` | 缓存统计 |
-| POST | `/api/cache/clear` | 清除缓存 |
-| POST | `/api/cache/invalidate/design/{id}` | 失效设计缓存 |
-| POST | `/api/cache/invalidate/vector/{id}` | 失效载体缓存 |
+| GET | `/api/cache/stats` | 缓存统计（仅管理员） |
+| POST | `/api/cache/clear` | 清除缓存（仅管理员） |
+| POST | `/api/cache/invalidate/design/{id}` | 失效设计缓存（仅管理员） |
+| POST | `/api/cache/invalidate/vector/{id}` | 失效载体缓存（仅管理员） |
 | GET | `/api/cache/health` | 缓存健康检查 |
-| GET | `/api/rate-limit/status` | 速率限制状态 |
-| GET | `/api/rate-limit/config` | 速率限制配置 |
+| GET | `/api/rate-limit/status` | 速率限制状态（仅管理员） |
+| GET | `/api/rate-limit/config` | 速率限制配置（仅管理员） |
+| GET | `/api/rate-limit/health` | 限流健康检查 |
 
 ## 数据文件
 
@@ -303,29 +322,36 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 ## 运行测试
 
 ```bash
-# 后端测试
+# 后端测试（tests/conftest.py 已注入路径、隔离的测试库与随机 SECRET_KEY）
 cd tests
 pytest
 
-# 前端测试
+# 前端测试与类型检查
 cd src/frontend
 npm run test:run
+npm run type-check
 ```
+
+基线（截至 v2.7.0）：后端 631 passed / 6 skipped（跳过项为本机真实 .ab1 回归集等
+skip-if-missing 用例），前端 vitest 181 passed。CI（`.github/workflows/ci.yml`）在 push main
+与 PR 时跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 ## 模块接线状态
 
-> 2025 功能完整性核查后的如实标注，避免「代码存在但未生效」的误解。
+> 如实标注各模块是否真正接入主流程，避免「代码存在但未生效」的误解。历次修复记录见
+> [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)。
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | 设计流水线 / 批量设计 / 载体库 / 认证 / 导出 | ✅ 已接线 | 前后端契约对齐 |
 | 密码子优化 v2 与合成 oligo 设计 | ✅ 已实现 | 5' translational ramp、发夹削弱、隐蔽 motif 审查、变窗精修（GeneOptimizer 式）、Tm 均一化分片、错位交替 oligo、综合评分；插入片段来源与克隆方法正交，限制性克隆支持双酶切。算法路线图（含暂缓项）见 docs/ALGORITHM_ROADMAP.md |
-| 序列分析 API（restriction-sites/orfs/gc-analysis/compatibility） | ✅ 已修复 | 统一为 JSON body 参数 |
-| 数据库持久化（STORAGE_MODE=database） | ✅ 已修复 | id 错位与字段回填问题已解决 |
-| JWT SECRET_KEY | ✅ 已修复 | 必须通过环境变量/.env 设置；未设置、占位、过短或低熵一律拒绝启动（含 DEBUG 与本地开发） |
+| Sanger 测序分析（单样品 / 批量 / 环状参考） | ✅ 已接线 | `core/sanger/` + `sequencing_routes`；分析记录 database 模式落库 |
+| 序列分析 API（restriction-sites/orfs/gc-analysis/digest/compatibility） | ✅ 已接线 | 统一为 JSON body 参数 |
+| 数据库持久化（STORAGE_MODE=database） | ✅ 已接线 | 设计/批量/测序记录均可重启恢复 |
+| 登录会话 | ✅ 已接线 | httpOnly Cookie + CSRF 头 + 登出服务端吊销；SECRET_KEY 未设置、占位、过短或低熵一律拒绝启动（含 DEBUG 与本地开发） |
 | 请求追踪/慢请求日志中间件 | ✅ 已接线 | main.py 调用 setup_middleware |
 | 缓存子系统（app/cache.py + cache_routes） | ✅ 已接线 | 设计结果（24h）/ 密码子优化（24h）/ 载体列表与详情（7天）/ 密码子表与酶表（7天）已接入读写，写操作统一失效；批量进度与 analysis POST 不缓存（状态频繁变化 / 键空间不可控），详见 docs/CACHE.md |
-| 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer Token 写入 request.state.user，匿名请求仍按 IP 限流 |
+| 用户级限流配额（user_*） | ✅ 已生效 | AuthStateMiddleware（app/auth/middleware.py）解析 Bearer 头或会话 Cookie 写入 request.state.user，匿名请求仍按 IP 限流 |
 | enhanced_primer_designer / advanced_primer_designer / enhanced_codon_optimizer / vector_data_sources | 🧪 实验性 | 核心引擎备用实现，主流程未调用 |
 | output_generator | ✅ 生产使用 | 单设计主流程未直接调用，但分析页导出与 Sanger 报告生成依赖其数据结构，删除前须确认 |
 | task_queue.py + celery/flower | ❌ 已移除 | 全库零引用，实际使用 FastAPI BackgroundTasks |
@@ -335,10 +361,10 @@ npm run test:run
 
 | 层 | 技术 |
 |----|------|
-| 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router |
+| 前端 | Vue 3 + TypeScript + Vite 8 + Pinia + Vue Router；测试 Vitest 5 |
 | 后端 | FastAPI + Pydantic + SQLAlchemy + Redis |
 | 生物信息 | Biopython（Sanger ab1 解析 + 序列比对）、snapgene-reader（SnapGene .dna 参考）、openpyxl（批量测序信息表）；[tracy](https://github.com/gear-genomics/tracy) 为可选外部二进制（解卷积 / 重新 basecall，缺失自动降级） |
-| 认证 | JWT (PyJWT) + bcrypt (passlib) |
+| 认证 | JWT（PyJWT）存于 httpOnly 会话 Cookie + CSRF 头 + 服务端吊销；密码 bcrypt（passlib） |
 | 部署 | Docker Compose / bare systemd |
 
 ## License
