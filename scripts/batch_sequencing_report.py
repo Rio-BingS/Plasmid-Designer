@@ -666,7 +666,7 @@ def main():
     if rows_have_clones(rows):
         raise SystemExit(
             "信息表带「克隆号」列（克隆模式，每个克隆独立分析）："
-            "请使用网页端批量测序分析（/batch-sequencing）；"
+            "请使用网页端批量测序分析（/sequencing/batch）；"
             "本脚本目前仅支持无克隆号列的质粒模式信息表"
         )
     old_outs = [d for d in previous_output_dirs(data_dir)
