@@ -26,12 +26,11 @@ vi.mock('axios', () => ({
   }
 }))
 
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ clearAuth })
-}))
-
 import '@/api'
-import { bumpAuthEpoch, currentAuthEpoch } from '@/api/session'
+import { bumpAuthEpoch, currentAuthEpoch, onSessionExpired } from '@/api/session'
+
+// auth store 创建时会注册清理回调；这里直接注册 mock 观察拦截器的调用
+onSessionExpired(clearAuth)
 
 function send(url = '/vectors') {
   return handlers.request!({ url, headers: {} })

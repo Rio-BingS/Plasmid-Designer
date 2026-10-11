@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises } from '@vue/test-utils'
 import { useAuthStore } from '@/stores/auth'
-import { bumpAuthEpoch, currentAuthEpoch } from '@/api/session'
+import { bumpAuthEpoch, currentAuthEpoch, notifySessionExpired } from '@/api/session'
 import * as api from '@/api'
 
 vi.mock('@/api', () => ({
@@ -112,6 +112,13 @@ describe('auth store 会话', () => {
     store.clearAuth()
     expect(currentAuthEpoch()).toBe(before + 1)
     bumpAuthEpoch()
+  })
+
+  it('接口 401 经 session 回调清理当前 store 的登录态', () => {
+    const store = useAuthStore()
+    store.user = alice
+    notifySessionExpired()
+    expect(store.isAuthenticated).toBe(false)
   })
 })
 
