@@ -22,81 +22,81 @@ tags:
 features:
 - name: CMV enhancer
   type: other
-  start: 234
+  start: 235
   end: 614
   strand: +
   description: human cytomegalovirus immediate early enhancer
 - name: CMV promoter
   type: promoter
-  start: 614
+  start: 615
   end: 818
   strand: +
   description: human cytomegalovirus (CMV) immediate early promoter
 - name: T7 promoter
   type: promoter
-  start: 862
+  start: 863
   end: 881
   strand: +
   description: promoter for bacteriophage T7 RNA polymerase
 - name: MCS
   type: multiple_cloning_site
-  start: 894
+  start: 895
   end: 1002
   strand: +
   description: multiple cloning site
 - name: bGH poly(A) signal
   type: other
-  start: 1027
+  start: 1028
   end: 1252
   strand: +
   description: bovine growth hormone polyadenylation signal
 - name: f1 ori
   type: origin
-  start: 1297
+  start: 1298
   end: 1726
   strand: +
   description: f1 bacteriophage origin of replication; arrow indicates direction
     of (+) strand synthesis
 - name: SV40 promoter
   type: promoter
-  start: 1739
+  start: 1740
   end: 2069
   strand: +
   description: SV40 enhancer and early promoter
 - name: SV40 ori
   type: origin
-  start: 1919
+  start: 1920
   end: 2055
   strand: +
   description: SV40 origin of replication
 - name: NeoR/KanR
   type: resistance
-  start: 2135
+  start: 2136
   end: 2930
   strand: +
   description: confers resistance to neomycin, kanamycin, and G418 (Geneticin)
 - name: SV40 poly(A) signal
   type: other
-  start: 3103
+  start: 3104
   end: 3225
   strand: +
   description: SV40 polyadenylation signal
 - name: ori
   type: origin
-  start: 3675
+  start: 3676
   end: 4261
   strand: '-'
   description: high-copy-number ColE1/pMB1/pBR322/pUC origin of replication
 - name: AmpR
   type: resistance
-  start: 4431
+  start: 4432
   end: 5292
   strand: '-'
   description: confers resistance to ampicillin, carbenicillin, and related
     antibiotics
 - name: AmpR promoter
   type: promoter
-  start: 5292
+  start: 5293
   end: 5397
   strand: '-'
   description: 'color: #ffffff'

@@ -25,57 +25,57 @@ features:
   description: inducible promoter, regulated by Gal4
 - name: T7 promoter
   type: promoter
-  start: 474
+  start: 475
   end: 493
   strand: +
   description: promoter for bacteriophage T7 RNA polymerase
 - name: MCS
   type: multiple_cloning_site
-  start: 500
+  start: 501
   end: 600
   strand: +
   description: multiple cloning site
 - name: CYC1 terminator
   type: terminator
-  start: 608
+  start: 609
   end: 856
   strand: +
   description: transcription terminator for CYC1
 - name: ori
   type: origin
-  start: 1096
+  start: 1097
   end: 1685
   strand: '-'
   description: high-copy-number ColE1/pMB1/pBR322/pUC origin of replication
 - name: AmpR
   type: resistance
-  start: 1855
+  start: 1856
   end: 2716
   strand: '-'
   description: confers resistance fo ampicillin, carbenicillin, and related
     antibiotics
 - name: URA3
   type: CDS
-  start: 2811
+  start: 2812
   end: 3615
   strand: '-'
   description: yeast auxotrophic marker, counterselectable with 5-fluoroorotic
     acid (5-FOA)
 - name: URA3 promoter
   type: promoter
-  start: 3615
+  start: 3616
   end: 3831
   strand: '-'
   description: 'color: #ffffff'
 - name: 2μ ori
   type: origin
-  start: 4434
+  start: 4435
   end: 5315
   strand: +
   description: yeast 2μ plasmid origin of replication
 - name: f1 ori
   type: origin
-  start: 5383
+  start: 5384
   end: 5839
   strand: '-'
   description: f1 bacteriophage origin of replication; arrow indicates direction
