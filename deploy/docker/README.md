@@ -122,7 +122,7 @@ STORAGE_MODE=database
 FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
 BACKEND_PORT=8000                  # 后端仅绑定 127.0.0.1；宿主机 8000 被占用时改为 18000 等
 CORS_ORIGINS=http://localhost      # 同源反代无需改；前端另域部署时填显式来源，不要用 *
-AUTH_COOKIE_SECURE=auto            # HTTPS 在宿主机 nginx 终止时改为 true（见第八节）
+AUTH_COOKIE_SECURE=auto            # 只走 HTTPS 时建议改为 true（见第九节）
 TRUSTED_PROXIES=127.0.0.1,::1,172.28.0.10     # 只信前端容器固定地址，勿写大网段
 PLASMID_SUBNET=172.28.0.0/24       # compose 网络固定网段；与宿主机网段冲突时改，
 PLASMID_GATEWAY=172.28.0.1         # 并同步 FRONTEND_IPV4、TRUSTED_PROXIES 与
@@ -397,10 +397,18 @@ sudo ufw enable
 
 ```nginx
 server {
+    listen 80;
+    server_name plasmid.example.com;
+    return 301 https://$host$request_uri;          # 明文只做跳转，不反代
+}
+
+server {
     listen 443 ssl http2;
     server_name plasmid.example.com;
     ssl_certificate     /etc/ssl/xxx/origin.pem;   # 覆盖该子域的证书
     ssl_certificate_key /etc/ssl/xxx/origin.key;
+    # HSTS 只在 HTTPS server 下发；确认整站可走 HTTPS 后再加 includeSubDomains
+    add_header Strict-Transport-Security "max-age=31536000" always;
     # 与容器 nginx 的测序上传上限一致（批量交付文件夹常超百 MB），否则在这一层就被 413
     client_max_body_size 520m;
 
@@ -409,15 +417,20 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;   # 前置 nginx 需自行完成真实 IP 解析
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme; # 即 https：容器 nginx 透传给后端
         proxy_read_timeout 600s;                   # 批量测序分析耗时较长
     }
 }
 ```
 
 3. `nginx -t && nginx -s reload`
-4. `.env` 中设 `AUTH_COOKIE_SECURE=true`（HTTPS 在宿主机终止，容器内只见 http，auto 判断
-   不出），前端另域部署时再把 `CORS_ORIGINS` 设为显式来源（如 `https://plasmid.example.com`），
-   然后 `docker compose up -d backend` 使新环境变量生效（`restart` 不会重读 `.env`）
+4. 会话 Cookie 的 Secure 标记：容器 nginx 只信任来自 docker 网桥/本机的前置，透传其
+   `X-Forwarded-Proto`（其余来源一律按本连接的 http 处理，防伪造），所以上面示例里的
+   `proxy_set_header X-Forwarded-Proto $scheme;` 不能省，`AUTH_COOKIE_SECURE=auto`
+   才能判出 https。对外只提供 HTTPS 的站点建议在 `.env` 中直接设 `AUTH_COOKIE_SECURE=true`，
+   不依赖前置配置。前端另域部署时再把 `CORS_ORIGINS` 设为显式来源（如
+   `https://plasmid.example.com`），然后 `docker compose up -d backend` 使新环境变量生效
+   （`restart` 不会重读 `.env`）
 
 > 登录态保存在 httpOnly 会话 Cookie（Path=/api，SameSite=Lax）中。前端与 API
 > 同源（经 nginx 反代 `/api`）时无需任何 CORS 配置；前端另域部署时 `CORS_ORIGINS`
