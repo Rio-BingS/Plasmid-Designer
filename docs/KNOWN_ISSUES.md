@@ -33,7 +33,8 @@
   `invalidate_cache()`，否则污染同进程后续模块（设计端点会 403）。
 - 匿名 sequencing 记录的行为契约：创建响应下发 `access_token`（批量整批
   共用），前端存 sessionStorage 自动带头；列表不返回任何匿名记录 ID
-  （含持令牌者）；改造前无 token 的遗留记录保持公开。
+  （含持令牌者）；改造前无 token 的遗留记录仅管理员可读/删、列表不展示
+  （v2.6.0 起，4e769ae；不要改回公开）。
 - 前端 read↔ref 映射用 `query_start/query_end`（比对块绝对坐标，终审 A-20），
   不要回退到 `L-1-qi` 镜像式。
 - 真实 .ab1 回归集（`tests/test_real_data_regression.py`，skip-if-missing）
