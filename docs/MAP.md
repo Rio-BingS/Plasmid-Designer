@@ -53,6 +53,10 @@
 `GET /api/vectors/{id}/map`（`source=vector`）也返回 MapDocument，均可加
 `enzyme_set`、`orf_min_aa` 查询参数。
 
+`GET /api/vectors` 列表的每一项另带 `map_preview: {length, topology, features:[{name,
+type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的特征一致，
+不含序列 / 酶切 / ORF），供载体列表画缩略图（MapThumbnail）。
+
 错误一律中文 `detail`：413 超长 / 超体积，415 不支持的格式，422 非法序列或参数。
 
 ## 自动注释
