@@ -330,6 +330,7 @@ class MapEnzymeSite(BaseModel):
     cut_top: int
     cut_bottom: int
     strand: Literal[1, -1]
+    overhang: Optional[str] = Field(default=None, max_length=64)
 
 
 class MapEnzyme(BaseModel):

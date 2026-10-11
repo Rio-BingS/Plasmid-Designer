@@ -37,7 +37,8 @@ def test_enzyme_record_shape_and_overhangs():
     seq = "AAAA" + "GAATTC" + "AAAA" + "GGTCTC" + "A" * 30 + "GAGACC" + "A" * 40
     ecori = scan_enzyme(seq, "EcoRI", circular=False)
     assert (ecori["recognition"], ecori["ends"], ecori["overhang"]) == ("G^AATTC", "5'", "AATT")
-    assert ecori["sites"] == [{"position": 5, "cut_top": 5, "cut_bottom": 9, "strand": 1}]
+    assert ecori["sites"] == [{"position": 5, "cut_top": 5, "cut_bottom": 9, "strand": 1,
+                               "overhang": "AATT"}]
     bsai = scan_enzyme(seq, "BsaI", circular=False)
     assert bsai["recognition"] == "GGTCTC(1/5)" and bsai["ends"] == "5'"
     fwd, rev = bsai["sites"]
@@ -57,7 +58,7 @@ def test_circular_wraparound_site_and_linear_end_drop():
     e = scan_enzyme(seq, "EcoRI", circular=True)
     assert e["cut_count"] == 1
     assert e["sites"][0] == {"position": len(seq) - 1, "cut_top": len(seq) - 1,
-                             "cut_bottom": 3, "strand": 1}
+                             "cut_bottom": 3, "strand": 1, "overhang": "AATT"}
     # 线性分子末端的 Type IIS：切点落在分子外 → 不算切割
     assert scan_enzyme("A" * 20 + "GGTCTC" + "AA", "BsaI", circular=False)["cut_count"] == 0
 
@@ -71,6 +72,38 @@ def test_enzyme_sets_and_only_cutters_returned():
     assert "MluCI" not in sets["unique6"]["enzymes"]  # 4 碱基识别
     found = find_map_enzymes("AAGAATTCAA", ["EcoRI", "BamHI"], circular=False)
     assert [e["name"] for e in found] == ["EcoRI"]
+
+
+def test_site_overhang_actual_bases_type_iis_and_degenerate():
+    # BsaI GGTCTC(1/5)：正向位点突出端 = 位点后第 2..5 位；反向位点（GAGACC）在上游
+    seq = "AAAA" + "GGTCTC" + "A" + "CTGA" + "T" * 30 + "GTCA" + "G" + "GAGACC" + "A" * 40
+    bsai = scan_enzyme(seq, "BsaI", circular=False)
+    assert bsai["overhang"] == "NNNN"  # 酶级仍是 REBASE 模板
+    fwd, rev = bsai["sites"]
+    assert fwd["overhang"] == "CTGA"
+    assert rev["overhang"] == "GTCA"  # 正向链读法（底链上是 TGAC）
+    for s in bsai["sites"]:
+        lo, hi = sorted((s["cut_top"], s["cut_bottom"]))
+        assert s["overhang"] == seq[lo:hi]
+    # 简并识别：AvaI C^YCGRG → 实际碱基
+    ava = scan_enzyme("AA" + "CTCGAG" + "AA" + "CCCGGG" + "AA", "AvaI", circular=False)
+    assert ava["overhang"] == "YCGR"
+    assert [s["overhang"] for s in ava["sites"]] == ["TCGA", "CCGG"]
+    # 3' 突出端同样取两切点之间的正链碱基；平末端不给 overhang
+    pst = scan_enzyme("AA" + "CTGCAG" + "AA", "PstI", circular=False)
+    assert pst["sites"][0]["overhang"] == "TGCA"
+    sma = scan_enzyme("AA" + "CCCGGG" + "AA", "SmaI", circular=False)
+    assert "overhang" not in sma["sites"][0]
+
+
+def test_site_overhang_across_origin():
+    # BsaI 位点在末尾，切点与突出端跨原点
+    body = "C" * 40
+    seq = "TGCA" + body + "GGTCTC" + "A"  # 位点后 N1 = 'A'，突出端 = 开头 TGCA
+    e = scan_enzyme(seq, "BsaI", circular=True)
+    s = e["sites"][0]
+    assert s["overhang"] == "TGCA"
+    assert (s["cut_top"], s["cut_bottom"]) == (len(seq), 4)
 
 
 # ==================== ORF ====================
