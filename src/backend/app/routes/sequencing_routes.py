@@ -61,8 +61,8 @@ from app import batch_read_limits, site_settings
 from app.gating import require_feature
 from app import sequencing_store
 from app.sequencing_batch import (
-    batch_payload, group_batch_uploads, plasmid_groups, reference_circular,
-    run_batch_groups,
+    batch_payload, estimate_batch_cost, group_batch_uploads, parse_group_references,
+    plasmid_groups, reference_circular, run_batch_groups,
 )
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import format_locus_line
@@ -119,6 +119,23 @@ MAX_BATCH_CACHE_TOTAL_BYTES = int(os.environ.get(
 MAX_CONCURRENT_ALIGNMENTS = max(1, int(os.environ.get(
     "SEQUENCING_MAX_CONCURRENT", str(max(2, (os.cpu_count() or 2) // 2)))))
 HEAVY_QUEUE_TIMEOUT = float(os.environ.get("SEQUENCING_QUEUE_TIMEOUT", "30"))
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
+# 审查 02 M6：批次计算预算，单位 Mbp·read = Σ(参考长度 bp × 该组 read 数) / 10^6。
+# read 数上限管不住「大参考 × 多 read」：管理员调高上限后单批可达数小时。
+# 默认 50 覆盖默认 read 上限下的最坏情况（240 条 × 200 kb ≈ 48），正常质粒
+# 批次（10 kb × 240 条 ≈ 2.4）远低于此；0 关闭
+BATCH_COMPUTE_BUDGET_MBP = _env_float("SEQUENCING_BATCH_COMPUTE_BUDGET_MBP", 50)
+# 批次墙钟软时限（秒）：超时后剩余分组不再比对、记为失败，已完成的分组照常
+# 返回。只在组与组之间检查（工作线程无法安全中断），0 关闭
+BATCH_SOFT_TIMEOUT = _env_float("SEQUENCING_BATCH_SOFT_TIMEOUT", 1800)
 _HEAVY_SEMAPHORES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
@@ -550,8 +567,12 @@ def _run_batch(
             owner_id=owner_id, access_token=access_token)
         return aid, rec
 
-    items, records_by_id = run_batch_groups(groups, min_q, _register,
-                                            max_ref_bp=MAX_REF_BP)
+    # 图谱只解析一次：预算估算与逐组比对共用同一份解析结果
+    ref_cache = parse_group_references(groups, MAX_REF_BP)
+    _check_batch_compute_budget(estimate_batch_cost(groups, ref_cache))
+    items, records_by_id = run_batch_groups(
+        groups, min_q, _register, max_ref_bp=MAX_REF_BP, ref_cache=ref_cache,
+        soft_timeout=BATCH_SOFT_TIMEOUT or None)
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
@@ -584,6 +605,18 @@ def _group_and_check(
         groups = plasmid_groups(ordered, per_plasmid)
     _check_batch_read_caps(groups, read_limits)
     return groups, unmatched, clone_mode
+
+
+def _check_batch_compute_budget(cost_bp_reads: int) -> None:
+    """估算计算量超过预算时在比对前拒绝（413）"""
+    budget = BATCH_COMPUTE_BUDGET_MBP
+    if not budget or cost_bp_reads <= budget * 1_000_000:
+        return
+    raise HTTPException(
+        status_code=413,
+        detail=f"本批次估算计算量约 {cost_bp_reads / 1_000_000:.1f} Mbp·read"
+               f"（各组参考长度 × read 数之和），超过服务器上限（{budget:g} Mbp·read）："
+               "请拆分为多个批次提交，或只保留参考图谱中待验证的区段")
 
 
 def _batch_read_limits_for(user) -> Dict:

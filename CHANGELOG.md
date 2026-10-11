@@ -30,6 +30,12 @@
   `SEQUENCING_BATCH_SESSIONS_TOTAL × SEQUENCING_BATCH_SESSION_MAX_MB`（默认 16 × 2 GB），
   空间紧张时调小这两项。
 
+- **批量测序新增计算预算与软时限**：比对前按 Σ(参考长度 × read 数) 估算，超过
+  `SEQUENCING_BATCH_COMPUTE_BUDGET_MBP`（默认 50 Mbp·read）返回 413；整批运行
+  超过 `SEQUENCING_BATCH_SOFT_TIMEOUT`（默认 1800 秒）后剩余分组记为「分析失败」。
+  默认 read 上限下不会触发；曾在 `/admin` 大幅调高 read 上限、且参考图谱很大的
+  站点可能开始收到 413，需要时在 `.env` 调大或设 0 关闭（Docker 已透传）。
+
 ### 新增
 
 - 管理员可在 `/admin` 按分组（匿名访客 / 普通用户 / 管理员）设置批量测序的
