@@ -887,3 +887,70 @@ def test_interrupted_rerun_partial_manifest_md5_points_at_written_file(tmp_path,
         _run(monkeypatch, data_dir, "--no-write-back")
     assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
     assert all(ok for _p, ok in _manifest_md5_matches_files(out))
+
+
+# ---------------------------------------------------------------- 换输出目录重跑
+
+
+def _scanned_names(data_dir: Path, out: Path) -> list:
+    return sorted(f["rel"].as_posix() for f in batch.scan_files(data_dir, out))
+
+
+def test_rerun_other_out_dir_skips_previous_output_tree(tmp_path, monkeypatch, capsys):
+    """review 05 M5：换 --out-dir 重跑时，上次默认输出目录 测序分析/ 里的
+    read 与图谱副本不能被当成新输入（否则旧副本参与共识、图谱进未匹配）"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert (data_dir / "测序分析" / "TST" / "正确" / "T1.ab1").exists()
+
+    out2 = tmp_path / "out2"
+    assert _scanned_names(data_dir, out2) == ["T1.ab1", "TST.fasta"]
+    capsys.readouterr()
+    _run(monkeypatch, data_dir, "--no-write-back", "--out-dir", str(out2))
+    log = capsys.readouterr().out
+    assert "扫描到 2 个文件（1 个 .ab1，1 个图谱）" in log
+    assert "测序分析" in log and "跳过" in log
+    assert "· TST: 1 read" in log
+    assert not (out2 / "未匹配文件").exists()
+    assert _manifest_paths(out2) == {"TST/TST.fasta", "TST/正确/T1.ab1"}
+
+
+@pytest.mark.parametrize("marker", ["record", "journal", "manifest", "legacy_manifest"])
+def test_scan_skips_output_tree_detected_by_marker(tmp_path, marker):
+    """改过名或挪过位置的旧输出目录：凭整理记录 / 进行中记录 / 整理清单表头识别"""
+    data_dir = tmp_path / "results"
+    old = data_dir / "上周" / "结果备份"
+    (old / "P").mkdir(parents=True)
+    (data_dir / "P1.ab1").write_bytes(b"r")
+    (old / "P" / "P1.ab1").write_bytes(b"old copy")
+    (old / "P.fasta").write_text(">P\nACGT\n", encoding="utf-8")
+    if marker == "record":
+        (old / batch.RECORD_NAME).write_text('{"version": 1, "files": {}}', encoding="utf-8")
+    elif marker == "journal":
+        (old / batch.JOURNAL_NAME).write_text("", encoding="utf-8")
+    elif marker == "manifest":
+        (old / batch.MANIFEST_CSV).write_text(
+            "\ufeff质粒,克隆,文件,类型,结论,匹配方式,归档路径,大小KB,MD5,原始路径\n",
+            encoding="utf-8")
+    else:
+        (old / batch.MANIFEST_CSV).write_text(
+            "plasmid,name,kind,how,src,dst,kb,md5\n", encoding="utf-8")
+    assert _scanned_names(data_dir, tmp_path / "out") == ["P1.ab1"]
+    assert batch.previous_output_dirs(data_dir) == [old]
+
+
+def test_scan_keeps_user_folder_with_unrelated_manifest_name(tmp_path):
+    """只是碰巧叫 整理清单.csv、表头不是本工具格式的用户文件夹照常扫描；
+    数据文件夹本身带整理记录（如曾把输出写进数据目录）也不整体跳过"""
+    data_dir = tmp_path / "results"
+    sub = data_dir / "plate1"
+    sub.mkdir(parents=True)
+    (sub / "P1.ab1").write_bytes(b"r")
+    (sub / batch.MANIFEST_CSV).write_text("样品,备注\nP1,ok\n", encoding="utf-8")
+    (data_dir / batch.RECORD_NAME).write_text('{"version": 1, "files": {}}',
+                                             encoding="utf-8")
+    (data_dir / "P.fasta").write_text(">P\nACGT\n", encoding="utf-8")
+    assert _scanned_names(data_dir, tmp_path / "out") == ["P.fasta", "plate1/P1.ab1"]
+    assert batch.previous_output_dirs(data_dir) == []
