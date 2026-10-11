@@ -73,7 +73,7 @@ npm install
 npm run dev
 ```
 
-前端开发服务器启动后访问 http://localhost:5173，Vite 会自动代理 `/api` 请求到后端 8000 端口。
+前端开发服务器启动后访问 http://localhost:3000，Vite 会自动代理 `/api` 请求到后端 8000 端口。
 
 ### 存储模式
 
