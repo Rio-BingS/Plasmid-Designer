@@ -122,7 +122,10 @@ FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
 BACKEND_PORT=8000                  # 后端仅绑定 127.0.0.1；宿主机 8000 被占用时改为 18000 等
 CORS_ORIGINS=http://localhost      # 同源反代无需改；前端另域部署时填显式来源，不要用 *
 AUTH_COOKIE_SECURE=auto            # HTTPS 在宿主机 nginx 终止时改为 true（见第八节）
-TRUSTED_PROXIES=127.0.0.1,::1,172.16.0.0/12   # 自定义 Docker 网段时同步修改
+TRUSTED_PROXIES=127.0.0.1,::1,172.28.0.10     # 只信前端容器固定地址，勿写大网段
+PLASMID_SUBNET=172.28.0.0/24       # compose 网络固定网段；与宿主机网段冲突时改，
+PLASMID_GATEWAY=172.28.0.1         # 并同步 FRONTEND_IPV4、TRUSTED_PROXIES 与
+FRONTEND_IPV4=172.28.0.10          # nginx.conf 中 geo 的网关地址
 ```
 
 完整变量说明（管理员引导、邮件渠道等）见 `.env.example` 内注释。
@@ -418,8 +421,13 @@ server {
 > 必须是显式来源——通配 `*` 下浏览器不会携带 Cookie，登录后仍表现为未登录。
 
 > 限流按真实客户端 IP 计：宿主机 nginx 解析真实 IP（Cloudflare 场景用
-> `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 仅对
-> 内网可信来源透传该头，直连防伪造。
+> `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 只对
+> compose 网络网关（`172.28.0.1`，即宿主机经发布端口进入的来源）透传该头，后端
+> 只信前端容器固定地址（`172.28.0.10`）。经 docker-proxy 转发的外部连接（如未开启
+> Docker IPv6 时的 IPv6 客户端）同样显示为网关地址，所以有宿主机前置 nginx 时请把
+> `FRONTEND_PORT` 设为 `127.0.0.1:8080` 之类只绑本机，外部只能经宿主机 nginx 进入。
+> 从旧版升级：把 `.env` 里旧的 `TRUSTED_PROXIES=...,172.16.0.0/12` 改为新值，并先
+> `docker compose down` 再 `up -d`，让网络按固定网段重建。
 
 ---
 
