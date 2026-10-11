@@ -2,7 +2,7 @@
  * 图谱端点封装（契约 plasmid-map/1，前缀 /api/map，功能开关 map）。
  * 复用全站 axios 实例（会话 Cookie + CSRF 头 + 401 处理）。
  */
-import { http } from '@/api'
+import { formatApiError, http } from '@/api'
 import type { AnalyzeRequest, EnzymeSet, MapDocument, ParseOptions, Topology } from './types'
 
 function parseParams(opts: ParseOptions): Record<string, string | number | boolean> {
@@ -48,12 +48,54 @@ export async function exportGenbank(doc: MapDocument): Promise<Blob> {
   return r.data
 }
 
-export async function getVectorMap(vectorId: string): Promise<MapDocument> {
-  const r = await http.get(`/vectors/${encodeURIComponent(vectorId)}/map`)
+export async function getVectorMap(vectorId: string, opts?: Pick<ParseOptions, 'enzyme_set' | 'orf_min_aa'>): Promise<MapDocument> {
+  const url = `/vectors/${encodeURIComponent(vectorId)}/map`
+  const r = opts ? await http.get(url, { params: parseParams(opts) }) : await http.get(url)
   return r.data
 }
 
 export async function getDesignMap(designId: string): Promise<MapDocument> {
   const r = await http.get(`/design/${encodeURIComponent(designId)}/map`)
   return r.data
+}
+
+// ---------------------------------------------------------------- 上传限制与错误
+
+/** 上传上限（MB）：后端 MAP_MAX_UPLOAD_MB 默认 5，且未暴露查询端点，前端按默认值预检 */
+export const MAP_UPLOAD_LIMIT_MB = 5
+/** 后端可直接解析的文件扩展名 */
+export const MAP_FILE_EXTS = ['.gb', '.gbk', '.genbank', '.gbff', '.ape', '.fa', '.fasta', '.fas', '.fna', '.fsa', '.dna']
+/** 纯文本：前端读出内容后按粘贴文本解析 */
+export const MAP_TEXT_EXTS = ['.txt', '.seq']
+export const MAP_ACCEPT = [...MAP_FILE_EXTS, ...MAP_TEXT_EXTS].join(',')
+
+export function fileExt(name: string): string {
+  const i = name.lastIndexOf('.')
+  return i < 0 ? '' : name.slice(i).toLowerCase()
+}
+
+/** 上传前本地预检；返回中文错误或 null */
+export function checkMapFile(file: Pick<File, 'name' | 'size'>, limitMb = MAP_UPLOAD_LIMIT_MB): string | null {
+  const ext = fileExt(file.name)
+  if (![...MAP_FILE_EXTS, ...MAP_TEXT_EXTS].includes(ext)) {
+    return `不支持的文件格式${ext ? `（${ext}）` : ''}：请上传 GenBank（.gb/.gbk）、FASTA（.fa/.fasta）、SnapGene（.dna）或纯文本（.txt）`
+  }
+  if (file.size > limitMb * 1024 * 1024) return `文件过大（上限 ${limitMb} MB），请截取后再打开`
+  if (file.size === 0) return '文件为空'
+  return null
+}
+
+/** 图谱请求错误 → 中文提示（413/415/422 有专门文案，后端中文 detail 优先附上） */
+export function describeMapError(e: unknown, limitMb = MAP_UPLOAD_LIMIT_MB): string {
+  const err = e as { response?: { status?: number; data?: { detail?: unknown } } }
+  const status = err?.response?.status
+  const detail = err?.response?.data?.detail
+  const zh = typeof detail === 'string' && /[\u4e00-\u9fff]/.test(detail) ? detail : ''
+  if (status === 413) return zh || `文件过大（上限 ${limitMb} MB），请截取后再打开`
+  if (status === 415) return zh || '不支持的文件格式：请上传 GenBank、FASTA、SnapGene（.dna）或纯文本序列'
+  if (status === 422) {
+    if (zh) return `序列无法解析：${zh}`
+    return '序列无法解析：请检查是否为有效的 DNA 序列（A/C/G/T 及 IUPAC 简并碱基）或完整的 GenBank/FASTA 文本'
+  }
+  return formatApiError(e, '图谱解析失败')
 }

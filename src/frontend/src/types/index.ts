@@ -79,6 +79,8 @@ export interface VectorInfo {
   description: string
   features: { name: string; type: string }[]
   mcs_enzymes: string[]
+  /** 轻量图谱预览（后端可省略；缺省时列表不画缩略图） */
+  map_preview?: import('@/map/types').MapPreview | null
 }
 
 export interface CodonTable {

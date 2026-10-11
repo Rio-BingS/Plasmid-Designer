@@ -40,6 +40,8 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   const show = reactive({
     features: true, enzymes: true, orfs: false, primers: true, labels: true,
     complement: true, translations: true,
+    /** 显示被 dam/dcm 甲基化阻断的位点（灰色虚线） */
+    blocked: true,
   })
   const hiddenFeatures = ref<string[]>([])
   const enzymeFilter = reactive<EnzymeFilter>(defaultEnzymeFilter())
@@ -75,7 +77,7 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   })
   const enzymeList = computed(() => listEnzymes(doc.value.enzymes, enzymeFilter))
   const enzymes = computed(() => (show.enzymes ? visibleEnzymes(doc.value.enzymes, enzymeFilter) : []))
-  const cuts = computed(() => cutMarks(enzymes.value))
+  const cuts = computed(() => cutMarks(enzymes.value, show.blocked))
   const orfs = computed(() => (show.orfs ? doc.value.orfs : []))
   const primers = computed(() => (show.primers ? doc.value.primers : []))
   const selectedFeature = computed(() => doc.value.features.find((f) => f.id === selectedFeatureId.value) ?? null)
