@@ -331,6 +331,7 @@ class MapEnzymeSite(BaseModel):
     cut_bottom: int
     strand: Literal[1, -1]
     overhang: Optional[str] = Field(default=None, max_length=64)
+    blocked_by: Optional[List[Literal["dam", "dcm"]]] = Field(default=None, max_length=2)
 
 
 class MapEnzyme(BaseModel):
