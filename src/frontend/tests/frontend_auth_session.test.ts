@@ -122,6 +122,51 @@ describe('auth store 会话', () => {
   })
 })
 
+describe('启动会话核实中的 checking 状态', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('初始为 true，首次 /auth/verify 有结果（未登录）后变为 false', async () => {
+    const pending = deferred<any>()
+    vi.mocked(api.verifyToken).mockReturnValue(pending.promise)
+    const store = useAuthStore()
+    expect(store.checking).toBe(true)
+    store.initSession()
+    await flushPromises()
+    expect(store.checking).toBe(true)
+    pending.resolve({ valid: false, user: null })
+    await flushPromises()
+    expect(store.checking).toBe(false)
+    expect(store.isAuthenticated).toBe(false)
+  })
+
+  it('核实为已登录时同样结束 checking', async () => {
+    vi.mocked(api.verifyToken).mockResolvedValue({ valid: true, user: alice })
+    const store = useAuthStore()
+    await store.ensureSession()
+    expect(store.checking).toBe(false)
+    expect(store.user).toEqual(alice)
+  })
+
+  it('核实网络失败也结束 checking（不能一直占位）', async () => {
+    vi.mocked(api.verifyToken).mockRejectedValue(new Error('Network Error'))
+    const store = useAuthStore()
+    await store.ensureSession()
+    expect(store.checking).toBe(false)
+  })
+
+  it('核实未返回前已登录：登录结果即权威，立即结束 checking', async () => {
+    vi.mocked(api.verifyToken).mockReturnValue(new Promise(() => {}))
+    vi.mocked(api.login).mockResolvedValue({ user: alice })
+    const store = useAuthStore()
+    store.initSession()
+    await store.login('a@test.com', 'pw')
+    expect(store.checking).toBe(false)
+  })
+})
+
 describe('管理页路由守卫等待会话核实', () => {
   beforeEach(() => {
     vi.clearAllMocks()

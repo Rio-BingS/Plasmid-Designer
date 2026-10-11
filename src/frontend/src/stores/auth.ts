@@ -15,6 +15,9 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<any>(null)
   // 站点配置：未加载完成时视为全开放（导航不闪空），加载后按配置收紧
   const siteConfig = ref<SiteConfig | null>(null)
+  // 启动时的会话核实（/auth/verify）尚未有结果：此时既不能断定已登录也不能
+  // 断定未登录，导航栏据此显示占位，避免刷新时先闪「登录」再变成用户菜单
+  const checking = ref(true)
 
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.is_admin === true)
@@ -48,6 +51,7 @@ export const useAuthStore = defineStore('auth', () => {
   function setSession(sessionUser: any) {
     bumpAuthEpoch()
     user.value = sessionUser
+    checking.value = false // 登录响应即权威结果，无需再等启动核实
     refreshSiteConfig() // 登录后层级变化，刷新有效功能
   }
 
@@ -101,7 +105,11 @@ export const useAuthStore = defineStore('auth', () => {
   let sessionReady: Promise<boolean> | null = null
 
   function ensureSession(): Promise<boolean> {
-    if (!sessionReady) sessionReady = checkAuth()
+    if (!sessionReady) {
+      sessionReady = checkAuth().finally(() => {
+        checking.value = false
+      })
+    }
     return sessionReady
   }
 
@@ -126,6 +134,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user,
     siteConfig,
+    checking,
     isAuthenticated,
     isAdmin,
     username,
