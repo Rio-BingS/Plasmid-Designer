@@ -14,7 +14,7 @@
   4. 在输出目录写出与网页端「整理包」完全相同的结构：每个质粒一个文件夹
      （参考图谱在其根），其下 正确/ 错误/ 无法判定/ 按结论分置 read 副本、
      测序分析报告.md 与 分析结果.json；未匹配文件副本在 未匹配文件/；另有
-     整理清单.csv（归档路径 + MD5 + 原始路径）与 批次总览.txt。原始文件
+     整理清单.csv（实际写出路径 + MD5 + 原始路径）与 批次总览.txt。原始文件
      一律只读，不移动、不删除、不覆盖；
   5. 结论回填 Excel 的"测序结果"列（原表先备份到输出目录）。
 
@@ -24,6 +24,8 @@ app/sequencing_report.py），本脚本只负责本地扫描、落盘与 Excel �
 """
 
 import argparse
+import csv
+import io
 import shutil
 import sys
 from datetime import datetime
@@ -122,20 +124,42 @@ def run_offline_batch(files: List[Dict], rows: List[Dict], min_q: int = 20):
 
 
 _GENERATED = {".md", ".json", ".csv", ".txt"}
+MANIFEST_CSV = "整理清单.csv"
+
+
+def _fix_manifest_paths(text: str, mapping: Dict[str, str]) -> str:
+    """把整理清单.csv 的「归档路径」改成实际写出的路径（同名异内容加序号时）"""
+    body = text.lstrip("\ufeff")
+    reader = csv.DictReader(io.StringIO(body))
+    fields = reader.fieldnames or []
+    rows = list(reader)
+    if "归档路径" not in fields:
+        return text
+    for r in rows:
+        r["归档路径"] = mapping.get(r["归档路径"], r["归档路径"])
+    out = io.StringIO()
+    w = csv.DictWriter(out, fieldnames=fields)
+    w.writeheader()
+    w.writerows(rows)
+    return "\ufeff" + out.getvalue()
 
 
 def write_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path) -> List[Path]:
     """把整理包条目写到输出目录，返回写出的文件路径
 
     重跑时内容相同的文件跳过；报告/JSON/清单等生成物直接更新；同名但内容
-    不同的数据文件（.ab1/图谱副本）永不覆盖，改加序号另存并提示。"""
+    不同的数据文件（.ab1/图谱副本）永不覆盖，改加序号另存并提示，整理清单
+    记录加序号后的实际路径。"""
     written: List[Path] = []
+    mapping: Dict[str, str] = {}
     for arc, data in entries:
         dst = out_dir.joinpath(*[p for p in arc.split("/") if p])
         if data is None:
             dst.mkdir(parents=True, exist_ok=True)
             continue
         blob = data.encode("utf-8") if isinstance(data, str) else data
+        if mapping and dst.relative_to(out_dir).as_posix() == MANIFEST_CSV:
+            blob = _fix_manifest_paths(blob.decode("utf-8"), mapping).encode("utf-8")
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists() and dst.suffix.lower() not in _GENERATED:
             if dst.read_bytes() == blob:
@@ -144,10 +168,17 @@ def write_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path) ->
             n = 2
             alt = dst
             while alt.exists():
+                if alt.read_bytes() == blob:    # 上次已另存过同内容副本：复用
+                    break
                 alt = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
                 n += 1
-            print(f"! 输出目录已有同名不同内容的 {dst.name}，副本另存为 {alt.name}")
+            if not alt.exists():
+                print(f"! 输出目录已有同名不同内容的 {dst.name}，副本另存为 {alt.name}")
+            mapping[dst.relative_to(out_dir).as_posix()] = alt.relative_to(out_dir).as_posix()
             dst = alt
+            if dst.exists():
+                written.append(dst)
+                continue
         dst.write_bytes(blob)
         written.append(dst)
     return written
