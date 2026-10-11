@@ -954,3 +954,25 @@ def test_scan_keeps_user_folder_with_unrelated_manifest_name(tmp_path):
     (data_dir / "P.fasta").write_text(">P\nACGT\n", encoding="utf-8")
     assert _scanned_names(data_dir, tmp_path / "out") == ["P.fasta", "plate1/P1.ab1"]
     assert batch.previous_output_dirs(data_dir) == []
+
+
+def test_clone_mode_error_points_to_real_frontend_route(tmp_path, monkeypatch):
+    """review 10 L8：克隆模式信息表的拒绝提示要指向前端真实存在的批量测序
+    页面路由（src/frontend/src/router/index.ts），而不是不存在的旧路径"""
+    import re
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "克隆号", "测序引物", "测序结果"])
+    ws.append(["TST", "C1", "M13F", None])
+    wb.save(data_dir / "测序.xlsx")
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    msg = str(exc.value)
+    route = re.search(r"（(/[^）]+)）", msg).group(1)
+    router = (_REPO / "src" / "frontend" / "src" / "router" / "index.ts").read_text(
+        encoding="utf-8")
+    m = re.search(r"path:\s*'([^']+)',\s*name:\s*'sequencing-batch'", router)
+    assert m, "前端路由表里找不到 sequencing-batch"
+    assert route == m.group(1) == "/sequencing/batch"
