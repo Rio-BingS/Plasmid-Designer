@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from app.cache import cache
 from app.config import settings
 from core.genbank_format import format_locus_line
+from core.primer_designer import screen_gg_overhang_pair
 from app.routes.models import (
     CloningMethod,
     DesignRequest,
@@ -165,17 +166,26 @@ def derive_gg_overhangs(vector, enzyme_name: str) -> Tuple[str, str, bool]:
     """从载体 MCS 推导 Golden Gate 4bp overhang。
 
     返回 (5' overhang, 3' overhang, 是否成功从载体推导)。
+    在载体可用的 overhang 组合里优先选通过连接保真度筛查
+    （非回文、互差 ≥2 碱基、GC 不为 0/100%，见
+    core.primer_designer.screen_gg_overhang_pair）的一对；
+    一对都挑不出来时保持原行为（取首尾两个唯一位点），由调用方告警——
+    严格拒绝会让某些载体彻底无法设计。
     无法推导时回退默认值 AATG/GCTT 并置 derived=False（调用方应告警，
     用户需自行确认 overhang 与阅读框/载体衔接）。
     """
     if vector and vector.mcs and vector.mcs.sites:
         unique = [s for s in vector.mcs.sites if s.is_unique and s.overhang]
-        if len(unique) >= 2:
-            return (unique[0].overhang[:4].upper().ljust(4, "A")[:4],
-                    unique[-1].overhang[:4].upper().ljust(4, "A")[:4], True)
-        if len(unique) == 1:
-            oh = unique[0].overhang[:4].upper().ljust(4, "A")[:4]
-            return oh, _DEFAULT_GG_OVERHANGS[1], False
+        pads = [s.overhang[:4].upper().ljust(4, "A")[:4] for s in unique]
+        if len(pads) >= 2:
+            for i in range(len(pads)):
+                for j in range(len(pads) - 1, i, -1):
+                    if not screen_gg_overhang_pair(pads[i], pads[j]):
+                        return pads[i], pads[j], True
+            # 没有合格组合：保持原行为（首尾两个唯一位点）
+            return pads[0], pads[-1], True
+        if len(pads) == 1:
+            return pads[0], _DEFAULT_GG_OVERHANGS[1], False
     return _DEFAULT_GG_OVERHANGS[0], _DEFAULT_GG_OVERHANGS[1], False
 
 
@@ -567,6 +577,13 @@ def run_design(
                 result.warnings.append(
                     "警告：无法从载体 MCS 推导 Golden Gate overhang，"
                     f"已回退默认值 {overhang_5}/{overhang_3}，请自行确认 overhang 与阅读框及载体衔接"
+                )
+            gg_issues = screen_gg_overhang_pair(overhang_5, overhang_3)
+            if gg_issues:
+                result.warnings.append(
+                    f"警告：Golden Gate overhang {overhang_5}/{overhang_3} 未通过"
+                    "连接保真度筛查（" + "；".join(gg_issues) + "），"
+                    "该载体推不出更好的组合，已按此继续；建议改用自定义 overhang 或换载体"
                 )
             strategy_kwargs = {
                 "enzyme": request.enzyme,
