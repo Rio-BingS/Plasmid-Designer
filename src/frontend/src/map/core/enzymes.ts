@@ -5,7 +5,7 @@
  *   限定名单（如 Golden Gate 酶组）。酶组本身（common/unique6/...）由后端
  *   在 analyze 时按 enzyme_set 计算，前端只做显示层过滤。
  */
-import type { MapEnzyme } from '../types'
+import type { MapEnzyme, MethylationKind } from '../types'
 
 export const GOLDEN_GATE_ENZYMES = ['BsaI', 'BsmBI', 'BbsI', 'SapI', 'Esp3I', 'PaqCI']
 
@@ -72,17 +72,26 @@ export interface CutMark {
   position: number
   siteLength: number
   enzyme: MapEnzyme
+  /** 该位点被 dam/dcm 甲基化阻断（空 = 可切） */
+  blocked: MethylationKind[]
+  /** 该位点的突出端（位点级优先，否则酶级） */
+  overhang: string | null
 }
 
-/** 酶切位点展开成逐个切点，按位置排序 */
-export function cutMarks(enzymes: MapEnzyme[]): CutMark[] {
+/** 酶切位点展开成逐个切点，按位置排序；showBlocked=false 时略去甲基化阻断位点 */
+export function cutMarks(enzymes: MapEnzyme[], showBlocked = true): CutMark[] {
   const out: CutMark[] = []
   for (const e of enzymes) {
     const siteLength = recognitionLength(e.recognition)
-    e.sites.forEach((s, i) => out.push({
-      id: `${e.name}#${i}`, name: e.name, cut: s.cut_top, cutBottom: s.cut_bottom,
-      position: s.position, siteLength, enzyme: e,
-    }))
+    e.sites.forEach((s, i) => {
+      const blocked = s.blocked_by ?? []
+      if (blocked.length && !showBlocked) return
+      out.push({
+        id: `${e.name}#${i}`, name: e.name, cut: s.cut_top, cutBottom: s.cut_bottom,
+        position: s.position, siteLength, enzyme: e, blocked: [...blocked],
+        overhang: s.overhang !== undefined ? s.overhang : e.overhang,
+      })
+    })
   }
   return out.sort((a, b) => a.cut - b.cut || a.name.localeCompare(b.name))
 }
@@ -92,4 +101,25 @@ export function recognitionLength(recognition: string): number {
   const core = recognition.replace(/[\^_]/g, '').replace(/[()0-9/,-]/g, '')
   const trimmed = core.replace(/N+$/i, '')
   return Math.max(1, trimmed.length || core.length)
+}
+
+/** 甲基化阻断位点的显示色（灰、虚线 = "空心"） */
+export const BLOCKED_COLOR = '#9ca3af'
+
+export interface CutStyle extends EnzymeStyle { blocked: boolean; dash: string | undefined }
+
+/** 单个切点的样式：阻断位点灰色虚线、不加粗，其余同酶样式 */
+export function cutStyle(c: Pick<CutMark, 'enzyme' | 'blocked'>): CutStyle {
+  const st = enzymeStyle(c.enzyme)
+  if (c.blocked.length) return { ...st, color: BLOCKED_COLOR, weight: 400, unique: false, blocked: true, dash: '3 2' }
+  return { ...st, blocked: false, dash: undefined }
+}
+
+/** 该酶有多少位点被阻断 */
+export function blockedSiteCount(e: MapEnzyme): number {
+  return e.sites.filter((s) => s.blocked_by?.length).length
+}
+
+export function blockedText(kinds: string[]): string {
+  return `被 ${kinds.join('/')} 甲基化阻断`
 }

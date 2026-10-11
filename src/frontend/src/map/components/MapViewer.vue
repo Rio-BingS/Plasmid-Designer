@@ -6,11 +6,12 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useElementSize } from '@vueuse/core'
-import type { EnzymeSet, MapDocument } from '../types'
+import type { EnzymeSet, FeatureType, MapDocument, Strand } from '../types'
 import { createMapStore, provideMapStore, type ViewMode } from '../store'
 import { analyzeMap, exportGenbank, getEnzymeSets } from '../api'
 import { rangeLength } from '../core/coords'
-import { enzymeStyle, GOLDEN_GATE_ENZYMES } from '../core/enzymes'
+import { blockedSiteCount, enzymeStyle, GOLDEN_GATE_ENZYMES } from '../core/enzymes'
+import { addFeature, deleteFeature, pushHistory, updateFeature, validateRange, type FeaturePatch } from '../core/edit'
 import { FEATURE_TYPE_LABELS, featureColor } from '../core/palette'
 import { formatLength } from '../core/ticks'
 import { resolveHit } from '../hits'
@@ -22,6 +23,7 @@ import LinearMap from './LinearMap.vue'
 import SequenceMap from './SequenceMap.vue'
 import Minimap from './Minimap.vue'
 import MapTooltip from './MapTooltip.vue'
+import DigestPanel from './DigestPanel.vue'
 
 const props = withDefaults(defineProps<{
   doc: MapDocument
@@ -30,12 +32,20 @@ const props = withDefaults(defineProps<{
   sequenceHeight?: number
   /** 允许调用 /api/map/analyze 切换酶组（离线/无权限时可关） */
   allowAnalyze?: boolean
-}>(), { sequenceHeight: 360, allowAnalyze: true })
+  /** 允许编辑特征（重命名/改色/删除/从选区新增、重新分析）；结果页与载体详情页保持只读 */
+  editable?: boolean
+}>(), { sequenceHeight: 360, allowAnalyze: true, editable: false })
 
 const emit = defineEmits<{ (e: 'doc-change', doc: MapDocument): void }>()
 
 const docRef = ref(props.doc) as Ref<MapDocument>
-watch(() => props.doc, (d) => { docRef.value = d })
+/** 编辑撤销栈（editable） */
+const history = ref<MapDocument[]>([])
+watch(() => props.doc, (d) => {
+  if (d === docRef.value) return // 父组件回传本查看器刚发出的编辑结果
+  docRef.value = d
+  history.value = []
+})
 const store = provideMapStore(createMapStore(docRef))
 const doc = computed(() => docRef.value)
 const isCircular = computed(() => doc.value.topology === 'circular')
@@ -172,13 +182,86 @@ async function exportGb() {
   }
 }
 
+// ---------------- 编辑（editable） ----------------
+const editError = ref('')
+const reannotate = ref(false)
+const reanalyzing = ref(false)
+const TYPE_OPTIONS = Object.entries(FEATURE_TYPE_LABELS) as [FeatureType, string][]
+const STRAND_OPTIONS: { v: Strand; label: string }[] = [{ v: 1, label: '正链 →' }, { v: -1, label: '反链 ←' }, { v: 0, label: '无方向' }]
+
+function apply(next: MapDocument) {
+  if (next === docRef.value) return
+  history.value = pushHistory(history.value, docRef.value)
+  docRef.value = next
+  editError.value = ''
+  emit('doc-change', next)
+}
+function undo() {
+  const prev = history.value[history.value.length - 1]
+  if (!prev) return
+  history.value = history.value.slice(0, -1)
+  docRef.value = prev
+  emit('doc-change', prev)
+}
+function patchSelected(patch: FeaturePatch) {
+  const f = store.selectedFeature.value
+  if (f) apply(updateFeature(docRef.value, f.id, patch))
+}
+function onRename(e: Event) { patchSelected({ name: (e.target as HTMLInputElement).value }) }
+function onRecolor(e: Event) { patchSelected({ color: (e.target as HTMLInputElement).value }) }
+function onRetype(e: Event) { patchSelected({ type: (e.target as HTMLSelectElement).value as FeatureType }) }
+function onRestrand(e: Event) { patchSelected({ strand: Number((e.target as HTMLSelectElement).value) as Strand }) }
+function removeSelected() {
+  const f = store.selectedFeature.value
+  if (!f) return
+  apply(deleteFeature(docRef.value, f.id))
+  store.select(null)
+}
+
+const draft = ref<{ name: string; type: FeatureType; strand: Strand }>({ name: '', type: 'misc_feature', strand: 1 })
+const canAdd = computed(() => !!store.selection.value && !store.selectedFeatureId.value)
+const addRangeError = computed(() => validateRange(doc.value, store.selection.value))
+function addFromSelection() {
+  const r = store.selection.value
+  try {
+    if (!r) throw new Error('请先在图谱上拖选一段区域')
+    const next = addFeature(docRef.value, r, draft.value)
+    apply(next)
+    const created = next.features[next.features.length - 1]
+    store.select({ start: created.start, end: created.end }, { featureId: created.id })
+    draft.value = { ...draft.value, name: '' }
+  } catch (e) {
+    editError.value = (e as Error).message
+  }
+}
+
+async function reanalyze() {
+  reanalyzing.value = true
+  editError.value = ''
+  try {
+    const d = docRef.value
+    const res = await analyzeMap({
+      sequence: d.sequence, topology: d.topology, name: d.name, features: d.features, primers: d.primers,
+      annotate: reannotate.value, enzyme_set: d.meta.enzyme_set || 'common',
+    })
+    apply({ ...res, primers: res.primers?.length ? res.primers : d.primers, meta: { ...res.meta, source_format: d.meta.source_format } })
+  } catch (e) {
+    editError.value = `重新分析失败：${formatApiError(e, '请求失败')}`
+  } finally {
+    reanalyzing.value = false
+  }
+}
+
+// ---------------- 甲基化阻断 ----------------
+const hasBlocked = computed(() => doc.value.enzymes.some((e) => blockedSiteCount(e) > 0))
+
 // ---------------- 侧栏 ----------------
-const sideTab = ref<'features' | 'enzymes'>('features')
+const sideTab = ref<'features' | 'enzymes' | 'digest'>('features')
 const featureRows = computed(() => [...doc.value.features]
   .sort((a, b) => a.start - b.start || b.end - a.end)
   .map((f) => ({ f, color: featureColor(f), len: rangeLength(f, doc.value.length, isCircular.value), hidden: store.hiddenFeatures.value.includes(f.id) })))
 const enzymeRows = computed(() => store.enzymeList.value.map((e) => ({
-  e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name),
+  e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name), blocked: blockedSiteCount(e),
   sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 ? ' …' : ''),
 })))
 function selectEnzyme(name: string) { resolveHit(store, `e:${name}#0`)?.select() }
@@ -200,7 +283,7 @@ const unshownItems = computed(() => {
 })
 const showUnshown = ref(false)
 
-defineExpose({ store, view })
+defineExpose({ store, view, undo })
 </script>
 
 <template>
@@ -227,6 +310,9 @@ defineExpose({ store, view })
         <label class="mv-chip" title="只显示 Golden Gate 常用 IIS 型酶（BsaI/BsmBI/BbsI/SapI/Esp3I/PaqCI）">
           <input v-model="goldenGateOnly" type="checkbox" /> Golden Gate
         </label>
+        <label v-if="hasBlocked" class="mv-chip mv-blocked-toggle" title="被 dam/dcm 甲基化阻断的位点以灰色虚线显示">
+          <input v-model="store.show.blocked" type="checkbox" /> 显示甲基化阻断位点
+        </label>
         <span v-if="analyzing" class="mv-muted">计算中…</span>
       </div>
       <div class="mv-group mv-search" role="search">
@@ -244,13 +330,20 @@ defineExpose({ store, view })
         <span v-else-if="store.search.error" class="mv-error">{{ store.search.error }}</span>
         <span v-else-if="store.search.query" class="mv-muted">无匹配</span>
       </div>
+      <div v-if="editable" class="mv-group mv-edit-tools" role="group" aria-label="编辑">
+        <button type="button" class="mv-btn" :disabled="!history.length" title="撤销上一步编辑" @click="undo">撤销</button>
+        <label class="mv-chip" title="重新分析时丢弃并重算自动注释（已编辑过的特征保留）"><input v-model="reannotate" type="checkbox" /> 重新自动注释</label>
+        <button type="button" class="mv-btn mv-reanalyze" :disabled="!allowAnalyze || reanalyzing" title="按当前特征重算酶切位点与 ORF" @click="reanalyze">
+          {{ reanalyzing ? '分析中…' : '重新分析' }}
+        </button>
+      </div>
       <div class="mv-group mv-export" role="group" aria-label="导出">
         <button type="button" class="mv-btn" :disabled="!canExportImage" title="导出当前图谱为 SVG" @click="exportImage('svg')">SVG</button>
         <button type="button" class="mv-btn" :disabled="!canExportImage" title="导出当前图谱为 PNG（2 倍分辨率）" @click="exportImage('png')">PNG</button>
         <button type="button" class="mv-btn" title="导出 GenBank（含特征与颜色）" @click="exportGb">GenBank</button>
       </div>
     </div>
-    <p v-if="analyzeError || exportError" class="mv-error mv-banner">{{ analyzeError || exportError }}</p>
+    <p v-if="analyzeError || exportError || editError" class="mv-error mv-banner">{{ analyzeError || exportError || editError }}</p>
     <p v-for="(w, i) in doc.meta.warnings" :key="i" class="mv-warning mv-banner">{{ w }}</p>
 
     <div class="mv-body">
@@ -272,6 +365,45 @@ defineExpose({ store, view })
                   @click="sideTab = 'features'">特征 ({{ doc.features.length }})</button>
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'enzymes' }]" :aria-selected="sideTab === 'enzymes'"
                   @click="sideTab = 'enzymes'">酶切 ({{ store.enzymeList.value.length }})</button>
+          <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'digest' }]" :aria-selected="sideTab === 'digest'"
+                  @click="sideTab = 'digest'">消化</button>
+        </div>
+        <div v-if="editable && sideTab === 'features'" class="mv-editor">
+          <template v-if="store.selectedFeature.value">
+            <div class="mv-editor-title">编辑特征</div>
+            <div class="mv-editor-row">
+              <input :key="`n-${store.selectedFeature.value.id}`" class="mv-input mv-edit-name" :value="store.selectedFeature.value.name"
+                     aria-label="特征名称" maxlength="80" @change="onRename" />
+              <input :key="`c-${store.selectedFeature.value.id}`" class="mv-color" type="color" aria-label="特征颜色"
+                     :value="featureColor(store.selectedFeature.value)" @change="onRecolor" />
+            </div>
+            <div class="mv-editor-row">
+              <select class="mv-select" aria-label="特征类型" :value="store.selectedFeature.value.type" @change="onRetype">
+                <option v-for="[t, label] in TYPE_OPTIONS" :key="t" :value="t">{{ label }}</option>
+              </select>
+              <select class="mv-select" aria-label="方向" :value="store.selectedFeature.value.strand" @change="onRestrand">
+                <option v-for="o in STRAND_OPTIONS" :key="o.v" :value="o.v">{{ o.label }}</option>
+              </select>
+              <button v-if="store.selectedFeature.value.color" type="button" class="mv-btn" title="恢复按类型配色" @click="patchSelected({ color: '' })">默认色</button>
+              <button type="button" class="mv-btn mv-danger mv-delete" @click="removeSelected">删除</button>
+            </div>
+          </template>
+          <template v-else-if="canAdd">
+            <div class="mv-editor-title">从选区新增特征 <small class="mv-muted">{{ store.selection.value!.start }}..{{ store.selection.value!.end }}</small></div>
+            <div class="mv-editor-row">
+              <input v-model="draft.name" class="mv-input mv-new-name" placeholder="名称" aria-label="新特征名称" maxlength="80" @keydown.enter="addFromSelection" />
+            </div>
+            <div class="mv-editor-row">
+              <select v-model="draft.type" class="mv-select" aria-label="新特征类型">
+                <option v-for="[t, label] in TYPE_OPTIONS" :key="t" :value="t">{{ label }}</option>
+              </select>
+              <select v-model.number="draft.strand" class="mv-select" aria-label="新特征方向">
+                <option v-for="o in STRAND_OPTIONS" :key="o.v" :value="o.v">{{ o.label }}</option>
+              </select>
+              <button type="button" class="mv-btn mv-add" :disabled="!draft.name.trim() || !!addRangeError" @click="addFromSelection">添加</button>
+            </div>
+          </template>
+          <p v-else class="mv-muted mv-editor-hint">点选特征可编辑；在图上拖选一段区域可新增特征</p>
         </div>
         <ul v-if="sideTab === 'features'" class="mv-list mv-feature-list">
           <li v-if="!featureRows.length" class="mv-muted mv-empty">没有特征注释</li>
@@ -285,19 +417,20 @@ defineExpose({ store, view })
                     @click.stop="store.toggleFeatureHidden(r.f.id)">{{ r.hidden ? '○' : '●' }}</button>
           </li>
         </ul>
-        <div v-else class="mv-enzyme-panel">
+        <div v-else-if="sideTab === 'enzymes'" class="mv-enzyme-panel">
           <input v-model="store.enzymeFilter.query" class="mv-input mv-enz-query" type="search" placeholder="按酶名或识别序列筛选" aria-label="筛选酶" />
           <ul class="mv-list mv-enzyme-list">
             <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶</li>
             <li v-for="r in enzymeRows" :key="r.e.name" :class="['mv-row', { hidden: r.hidden }]" @click="selectEnzyme(r.e.name)">
               <span class="mv-name" :style="{ color: r.style.color, fontWeight: r.style.weight }">{{ r.e.name }}</span>
-              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}</span>
+              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b></span>
               <button type="button" class="mv-eye" :title="r.hidden ? '显示' : '隐藏'" :aria-label="r.hidden ? `显示 ${r.e.name}` : `隐藏 ${r.e.name}`"
                       @click.stop="store.toggleEnzymeHidden(r.e.name)">{{ r.hidden ? '○' : '●' }}</button>
             </li>
           </ul>
-          <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出</p>
+          <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出<template v-if="hasBlocked"> · <span style="color:#9ca3af">灰虚线</span> = 甲基化阻断</template></p>
         </div>
+        <DigestPanel v-if="sideTab === 'digest'" :store="store" />
       </aside>
     </div>
 
@@ -354,6 +487,14 @@ defineExpose({ store, view })
 .mv-eye { grid-row: 1 / span 2; grid-column: -2; border: none; background: none; color: var(--text-secondary); font-size: 12px; }
 .mv-auto { margin-left: 4px; font-size: 10px; color: var(--secondary-color); }
 .mv-empty { padding: 10px; }
+.mv-editor { padding: 6px 8px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); font-size: 12.5px; }
+.mv-editor-title { font-weight: 600; margin-bottom: 4px; }
+.mv-editor-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; align-items: center; }
+.mv-editor-row .mv-input { flex: 1; min-width: 0; width: auto; }
+.mv-editor-hint { padding: 2px 0; }
+.mv-color { width: 32px; height: 26px; padding: 0 2px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-primary); }
+.mv-danger { color: var(--error-color); border-color: var(--error-color); }
+.mv-blocked-badge { color: #6b7280; font-weight: 500; }
 .mv-legend { padding: 6px 8px; border-top: 1px solid var(--border-color); }
 .mv-status { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; margin-top: 0.5rem; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .mv-selection-text { color: var(--primary-color); }

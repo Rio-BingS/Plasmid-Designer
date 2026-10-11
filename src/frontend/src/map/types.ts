@@ -40,7 +40,13 @@ export interface MapEnzymeSite {
   cut_top: number
   cut_bottom: number
   strand: 1 | -1
+  /** 该位点自身的突出端序列（与酶级 overhang 不同时给出，如 IIS 型酶的实际 4 nt） */
+  overhang?: string | null
+  /** 该位点被宿主甲基化阻断（dam+/dcm+ 菌株中不切） */
+  blocked_by?: MethylationKind[]
 }
+
+export type MethylationKind = 'dam' | 'dcm'
 
 export interface MapEnzyme {
   name: string
@@ -49,7 +55,8 @@ export interface MapEnzyme {
   overhang: string | null
   cut_count: number
   sites: MapEnzymeSite[]
-  methylation?: string[]
+  /** 酶级甲基化敏感性（如 ["dam"]），来自 REBASE（后端可能省略） */
+  methylation?: MethylationKind[]
 }
 
 export interface MapOrf { start: number; end: number; strand: 1 | -1; frame: 0 | 1 | 2; aa_length: number }
@@ -80,6 +87,7 @@ export interface AnalyzeRequest {
   topology: Topology
   name?: string
   features?: MapFeature[]
+  primers?: MapPrimer[]
   annotate?: boolean
   enzyme_set?: string
   enzymes?: string[]
@@ -94,3 +102,10 @@ export interface ParseOptions {
 
 /** 1-based 闭区间（start > end 且环状 = 跨原点） */
 export interface Range { start: number; end: number }
+
+/** GET /api/vectors 列表项附带的轻量图谱预览（缩略图用，可能缺省） */
+export interface MapPreview {
+  length: number
+  topology: Topology
+  features: { name: string; type: string; start: number; end: number; strand: Strand }[]
+}
