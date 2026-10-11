@@ -20,6 +20,9 @@
      整理清单.csv）清理本次不再产出的旧副本（如判定变化后旧结论文件夹里的
      read 与报告），只删内容仍与当时写出一致的文件，用户改过或记录之外的
      文件不动；--dry-run 只打印将清理的文件；
+     逐质粒落盘：每个质粒文件夹分析完即写出并追加整理清单行，文件字节用到
+     时才读、写完即释放；中途中断时已完成的质粒保留，进行中记录
+     （.整理记录.进行中.jsonl）供下次重跑一并核对清理；
   5. 结论回填 Excel 的"测序结果"列（原表先备份到输出目录）。
 
 归组、分析、报告与归档条目全部复用网页端实现（app/sequencing_batch.py、
@@ -37,7 +40,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND = REPO_ROOT / "src" / "backend"
@@ -50,7 +53,11 @@ from app.sequencing_batch import (  # noqa: E402
     plasmid_groups,
     run_batch_groups,
 )
-from app.sequencing_report import backfill_excel, batch_archive_entries  # noqa: E402
+from app.sequencing_report import (  # noqa: E402
+    BatchArchive,
+    _conclusion_bucket,
+    backfill_excel,
+)
 # excel_conclusion / match_files 不在本脚本内直接使用，保留为模块属性以兼容
 # 既有 `import batch_sequencing_report` 的调用方
 from core.sanger.batch import (  # noqa: E402,F401
@@ -94,37 +101,125 @@ def load_bytes(files: List[Dict]) -> None:
 # ---------------------------------------------------------------- 分析（复用网页端流程）
 
 
-def run_offline_batch(files: List[Dict], rows: List[Dict], min_q: int = 20):
-    """离线批次的核心：归组 → 逐组分析 → 整理包条目（与网页端同一实现）
+def release_bytes(files: Iterable[Dict]) -> None:
+    """落盘后丢掉已读入的文件字节（再用到时 load_bytes 会重新读）"""
+    for f in files:
+        f.pop("bytes", None)
 
-    files 为 scan_files 条目（需已 load_bytes）；rows 为 load_excel 的行
-    （质粒模式）。返回 (payload, entries)：payload 同网页端点响应体
-    （items 即各组结论），entries 为整理包条目 [(相对输出目录的路径, 内容)]。
+
+@dataclass
+class ArchiveChunk:
+    """一个质粒文件夹（或收尾部分）的整理包条目与新增的整理清单行"""
+    entries: List[Tuple[str, Optional[object]]]
+    rows: List[Dict] = field(default_factory=list)
+
+
+class OfflineBatch:
+    """离线批次：归组 → 逐组分析 → 逐个质粒文件夹产出整理包条目
+
+    与网页端同一实现（归组、管线、结论、条目构建），但不把整批留在内存：
+    文件字节在分析该组前才读入，一个质粒文件夹（含表内别名并入的各组）的
+    最后一组分析完即产出该文件夹的条目，随后释放字节与分析记录。收尾块为
+    未匹配文件与 整理清单.csv / 批次总览.txt；chunks() 迭代完后 payload 可用。
     """
-    reads = [f for f in files if f["ext"] in READ_EXTS]
-    refs = [f for f in files if f["ext"] not in READ_EXTS]
-    ordered, per_plasmid, unmatched = group_batch_uploads(reads, refs, rows)
-    groups = plasmid_groups(ordered, per_plasmid)
 
-    seq = iter(range(1, 1 << 30))
+    def __init__(self, files: List[Dict], rows: List[Dict], min_q: int = 20,
+                 on_item=None):
+        self.files = files
+        self.min_q = min_q
+        self.on_item = on_item
+        reads = [f for f in files if f["ext"] in READ_EXTS]
+        refs = [f for f in files if f["ext"] not in READ_EXTS]
+        ordered, per_plasmid, self.unmatched = group_batch_uploads(reads, refs, rows)
+        self.groups = plasmid_groups(ordered, per_plasmid)
+        self.archive = BatchArchive([g["plasmid"] or "" for g in self.groups],
+                                    origin="offline", source_paths=True, root="")
+        self.items: List[Dict] = []
+        self.payload: Optional[Dict] = None
+        self._seq = 0
 
-    def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
+    def _register(self, label: str, ref_seq: str, features: List[Dict], res: Dict):
         # 本地记录与网页端分析记录同形（去掉峰图原始数据），供报告与 JSON
-        aid = f"local_{next(seq):03d}"
+        self._seq += 1
+        aid = f"local_{self._seq:03d}"
         rec = {"analysis_id": aid, "sample_name": label,
                "reference": ref_seq.upper(), "features": features,
                "created_at": datetime.now().isoformat(timespec="seconds"),
                **{k: v for k, v in res.items() if k != "traces"}}
         return aid, rec
 
-    # 离线不设参考长度上限（网页端的 MAX_REF_BP 是服务器资源防护）
-    items, records = run_batch_groups(groups, min_q, _register, max_ref_bp=None)
-    payload = batch_payload(items, unmatched, min_q, excel_mode=True,
-                            clone_mode=False, ignored=[])
-    entries = batch_archive_entries(payload, groups, unmatched, None, None, None,
-                                    records, origin="offline", source_paths=True,
-                                    root="")
-    return payload, entries
+    @staticmethod
+    def _group_files(g: Dict) -> List[Dict]:
+        return ([g["reference"]["file"]] if g["reference"] else []) + \
+            [r["file"] for r in g["reads"]]
+
+    def _folder_chunk(self, folder: str, idxs: List[int],
+                      records: Dict[str, Dict]) -> ArchiveChunk:
+        # 文件夹内按结论分桶，桶序与整批构建一致（首组序号先后）
+        buckets: Dict[str, List[int]] = {}
+        for i in idxs:
+            buckets.setdefault(
+                _conclusion_bucket(self.items[i].get("conclusion") or ""), []).append(i)
+        chunk = ArchiveChunk(entries=list(self.archive.folder_dirs(folder)))
+        for bucket, members in buckets.items():
+            part, rows = self.archive.bucket_entries(folder, bucket, [
+                (self.groups[i], self.items[i],
+                 records.get(self.items[i]["analysis_id"])
+                 if self.items[i].get("analysis_id") else None)
+                for i in members], members[0])
+            chunk.entries += part
+            chunk.rows += rows
+        return chunk
+
+    def chunks(self) -> Iterator[ArchiveChunk]:
+        folder_of = [self.archive.folder_of(g) for g in self.groups]
+        last = {f: i for i, f in enumerate(folder_of) if f is not None}
+        pending: Dict[str, List[int]] = {}
+        records: Dict[str, Dict] = {}
+        for i, g in enumerate(self.groups):
+            load_bytes(self._group_files(g))
+            # 逐组调用：离线不设参考长度上限（网页端的 MAX_REF_BP 是服务器
+            # 资源防护）
+            (item,), recs = run_batch_groups([g], self.min_q, self._register,
+                                             max_ref_bp=None)
+            self.items.append(item)
+            records.update(recs)
+            if self.on_item:
+                self.on_item(item)
+            folder = folder_of[i]
+            if folder is None:
+                continue
+            pending.setdefault(folder, []).append(i)
+            if last[folder] != i:
+                continue
+            idxs = pending.pop(folder)
+            yield self._folder_chunk(folder, idxs, records)
+            for j in idxs:
+                release_bytes(self._group_files(self.groups[j]))
+                aid = self.items[j].get("analysis_id")
+                if aid:
+                    records.pop(aid, None)
+
+        self.payload = batch_payload(self.items, self.unmatched, self.min_q,
+                                     excel_mode=True, clone_mode=False, ignored=[])
+        for u in self.unmatched:
+            load_bytes([u["file"]])
+            entry, row = self.archive.unmatched_entry(u)
+            yield ArchiveChunk(entries=[entry], rows=[row])
+            release_bytes([u["file"]])
+        yield ArchiveChunk(entries=[self.archive.manifest_entry(),
+                                    self.archive.overview_entry(self.payload)])
+
+
+def run_offline_batch(files: List[Dict], rows: List[Dict], min_q: int = 20):
+    """离线批次一次性跑完，返回 (payload, entries)（库调用/测试用）
+
+    payload 同网页端点响应体（items 即各组结论），entries 为整理包条目
+    [(相对输出目录的路径, 内容)]。命令行走 OfflineBatch 逐质粒落盘，
+    条目内容与此相同。"""
+    run = OfflineBatch(files, rows, min_q)
+    entries = [e for chunk in run.chunks() for e in chunk.entries]
+    return run.payload, entries
 
 
 # ---------------------------------------------------------------- 落盘（原件只读、副本不覆盖异内容）
@@ -135,6 +230,9 @@ MANIFEST_CSV = "整理清单.csv"
 # 本工具每次写出的全部文件（相对输出目录的路径 → MD5），供重跑时识别并
 # 清理上一次生成、本次已不再产出的旧副本（如判定变化后留在旧结论文件夹的）
 RECORD_NAME = ".整理记录.json"
+# 运行中逐个质粒追加的整理记录（每行一个 {"path","md5"}）；正常结束时并入
+# RECORD_NAME 并删除。中途崩溃时它记下已写出的文件，下次重跑据此一并核对清理
+JOURNAL_NAME = ".整理记录.进行中.jsonl"
 _KEEP_DIRS = {"正确", "错误"}
 
 
@@ -150,31 +248,53 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def _read_journal(out_dir: Path) -> Dict[str, str]:
+    jr = out_dir / JOURNAL_NAME
+    found: Dict[str, str] = {}
+    if not jr.is_file():
+        return found
+    try:
+        lines = jr.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return found
+    for ln in lines:
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            continue            # 崩溃时最后一行可能只写了一半
+        if isinstance(d, dict) and d.get("path") and d.get("md5"):
+            found[str(d["path"])] = str(d["md5"])
+    return found
+
+
 def load_previous_outputs(out_dir: Path) -> Dict[str, str]:
     """上一次运行由本工具写出的文件 {相对路径: MD5}
 
     优先读 RECORD_NAME（覆盖报告/JSON 等全部生成物）；没有时（旧版本跑出的
     目录）退回 整理清单.csv 的「归档路径 + MD5」，只能覆盖数据文件副本。
-    记录缺失或损坏时返回空，即不清理任何东西。"""
+    上次运行中途中断留下的 JOURNAL_NAME 叠加在上面。记录缺失或损坏时返回
+    空，即不清理任何东西。"""
+    journal = _read_journal(out_dir)
     rec = out_dir / RECORD_NAME
     if rec.is_file():
         try:
             data = json.loads(rec.read_text(encoding="utf-8"))
             files = data.get("files") if isinstance(data, dict) else None
             if isinstance(files, dict):
-                return {str(k): str(v) for k, v in files.items() if k and v}
+                return {**{str(k): str(v) for k, v in files.items() if k and v},
+                        **journal}
         except (OSError, ValueError):
             pass
-        return {}
+        return journal
     man = out_dir / MANIFEST_CSV
     if not man.is_file():
-        return {}
+        return journal
     try:
         rows = list(csv.DictReader(io.StringIO(man.read_text(encoding="utf-8-sig"))))
     except (OSError, ValueError, csv.Error):
-        return {}
-    return {r["归档路径"]: r["MD5"] for r in rows
-            if r.get("归档路径") and r.get("MD5")}
+        return journal
+    return {**{r["归档路径"]: r["MD5"] for r in rows
+               if r.get("归档路径") and r.get("MD5")}, **journal}
 
 
 def _owned_unmodified(dst: Path, out_dir: Path, previous: Dict[str, str],
@@ -220,76 +340,186 @@ def _fix_manifest_paths(text: str, mapping: Dict[str, str]) -> str:
     return "\ufeff" + out.getvalue()
 
 
-def plan_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path,
-                 previous: Optional[Dict[str, str]] = None,
-                 protected: Iterable[Path] = ()) -> ArchivePlan:
-    """算出落盘计划，不动磁盘
+class Archiver:
+    """把整理包条目分块落到输出目录（每块即一个质粒文件夹，见 OfflineBatch）
 
     规则：内容相同跳过；报告/JSON/清单等生成物直接更新；同名但内容不同的
     数据文件（.ab1/图谱副本）不覆盖、改加序号另存——除非该文件正是上次由本
-    工具写出且未被改动（previous 记录的 MD5 仍吻合）。previous 中本次不再
-    产出的文件：未改动的列入 remove，已改动的列入 kept（保留不删）。
-    protected 为原始输入文件，任何情况下都不会被替换或删除。"""
-    previous = previous or {}
-    protected = {Path(p).resolve() for p in protected}
-    plan = ArchivePlan()
-    taken: Set[Path] = set()
-    mapping: Dict[str, str] = {}
-    manifest_idx: List[int] = []
-    files: List[Tuple[str, Path, bytes]] = []
+    工具写出且未被改动（previous 记录的 MD5 仍吻合）。protected 为原始输入
+    文件，任何情况下都不会被替换或删除。
 
-    for arc, data in entries:
-        dst = out_dir.joinpath(*[p for p in arc.split("/") if p])
-        if data is None:
-            plan.dirs.append(dst)
-            continue
-        blob = data.encode("utf-8") if isinstance(data, str) else data
-        clash = dst in taken or (
-            dst.is_file() and dst.suffix.lower() not in _GENERATED
-            and dst.read_bytes() != blob
-            and not _owned_unmodified(dst, out_dir, previous, protected))
-        if clash:
-            n = 2
-            alt = dst
-            while alt in taken or (alt.exists() and alt.read_bytes() != blob):
-                alt = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
-                n += 1
-            rel_arc = dst.relative_to(out_dir).as_posix()
-            rel_alt = alt.relative_to(out_dir).as_posix()
-            mapping[rel_arc] = rel_alt
-            plan.renamed.append((rel_arc, rel_alt))
-            dst = alt
-        taken.add(dst)
-        if dst.relative_to(out_dir).as_posix() == MANIFEST_CSV:
-            manifest_idx.append(len(files))
-        files.append((arc, dst, blob))
+    每块写完立即追加到 JOURNAL_NAME（以及 append_manifest 追加整理清单行），
+    中途崩溃时已完成的质粒文件夹完整保留、可追溯；finish() 清理上次生成而
+    本次不再产出的旧副本，写出最终整理记录。dry_run 只打印计划。"""
 
-    for i in manifest_idx:         # 清单记录实际写出的路径
-        arc, dst, blob = files[i]
-        if mapping:
-            blob = _fix_manifest_paths(blob.decode("utf-8"), mapping).encode("utf-8")
-            files[i] = (arc, dst, blob)
+    def __init__(self, out_dir: Path, previous: Optional[Dict[str, str]] = None,
+                 protected: Iterable[Path] = (), dry_run: bool = False,
+                 manifest_fields: Optional[List[str]] = None):
+        self.out_dir = out_dir
+        self.previous = previous or {}
+        self.protected = {Path(p).resolve() for p in protected}
+        self.dry_run = dry_run
+        self.manifest_fields = manifest_fields
+        self.taken: Set[Path] = set()
+        self.mapping: Dict[str, str] = {}       # 归档路径 → 实际写出路径
+        self.record: Dict[str, str] = {}        # 本次全部文件 → MD5
+        self.renamed: List[Tuple[str, str]] = []
+        self._journal = None
 
-    for _arc, dst, blob in files:
-        plan.record[dst.relative_to(out_dir).as_posix()] = _md5(blob)
-        if dst.is_file() and dst.read_bytes() == blob:
-            plan.unchanged.append(dst)
-        else:
-            plan.writes.append((dst, blob))
+    # ---- 计划（不动磁盘）
+    def plan(self, entries: List[Tuple[str, Optional[object]]]) -> ArchivePlan:
+        out_dir = self.out_dir
+        plan = ArchivePlan()
+        manifest_idx: List[int] = []
+        files: List[Tuple[str, Path, bytes]] = []
 
-    for rel in sorted(previous):
-        if rel in plan.record or rel == RECORD_NAME:
-            continue
-        parts = [p for p in rel.split("/") if p]
-        if not parts or any(p in ("..", ".") for p in parts):
-            continue
-        old = out_dir.joinpath(*parts)
-        if not (old.exists() or old.is_symlink()):
-            continue
-        if _owned_unmodified(old, out_dir, previous, protected):
-            plan.remove.append(old)
-        else:
-            plan.kept.append(old)
+        for arc, data in entries:
+            dst = out_dir.joinpath(*[p for p in arc.split("/") if p])
+            if data is None:
+                plan.dirs.append(dst)
+                continue
+            blob = data.encode("utf-8") if isinstance(data, str) else data
+            clash = dst in self.taken or (
+                dst.is_file() and dst.suffix.lower() not in _GENERATED
+                and dst.read_bytes() != blob
+                and not _owned_unmodified(dst, out_dir, self.previous, self.protected))
+            if clash:
+                n = 2
+                alt = dst
+                while alt in self.taken or (alt.exists() and alt.read_bytes() != blob):
+                    alt = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
+                    n += 1
+                rel_arc = dst.relative_to(out_dir).as_posix()
+                rel_alt = alt.relative_to(out_dir).as_posix()
+                self.mapping[rel_arc] = rel_alt
+                plan.renamed.append((rel_arc, rel_alt))
+                dst = alt
+            self.taken.add(dst)
+            if dst.relative_to(out_dir).as_posix() == MANIFEST_CSV:
+                manifest_idx.append(len(files))
+            files.append((arc, dst, blob))
+
+        for i in manifest_idx:         # 清单记录实际写出的路径
+            arc, dst, blob = files[i]
+            if self.mapping:
+                blob = _fix_manifest_paths(blob.decode("utf-8"),
+                                           self.mapping).encode("utf-8")
+                files[i] = (arc, dst, blob)
+
+        for _arc, dst, blob in files:
+            plan.record[dst.relative_to(out_dir).as_posix()] = _md5(blob)
+            if dst.is_file() and dst.read_bytes() == blob:
+                plan.unchanged.append(dst)
+            else:
+                plan.writes.append((dst, blob))
+        self.record.update(plan.record)
+        self.renamed += plan.renamed
+        return plan
+
+    def stale(self) -> Tuple[List[Path], List[Path]]:
+        """上次生成、本次不再产出的文件：(未改动可删, 已改动保留)"""
+        remove: List[Path] = []
+        kept: List[Path] = []
+        for rel in sorted(self.previous):
+            if rel in self.record or rel in (RECORD_NAME, JOURNAL_NAME):
+                continue
+            parts = [p for p in rel.split("/") if p]
+            if not parts or any(p in ("..", ".") for p in parts):
+                continue
+            old = self.out_dir.joinpath(*parts)
+            if not (old.exists() or old.is_symlink()):
+                continue
+            if _owned_unmodified(old, self.out_dir, self.previous, self.protected):
+                remove.append(old)
+            else:
+                kept.append(old)
+        return remove, kept
+
+    # ---- 落盘
+    def begin(self) -> None:
+        """开跑：并入上次中断留下的进行中记录，清单先写表头"""
+        if self.dry_run:
+            return
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        if (self.out_dir / JOURNAL_NAME).exists():
+            self._write_record(self.previous)
+            (self.out_dir / JOURNAL_NAME).unlink()
+        self._journal = open(self.out_dir / JOURNAL_NAME, "a", encoding="utf-8")
+        if self.manifest_fields:
+            out = io.StringIO()
+            csv.DictWriter(out, fieldnames=self.manifest_fields).writeheader()
+            (self.out_dir / MANIFEST_CSV).write_text(
+                "\ufeff" + out.getvalue(), encoding="utf-8", newline="")
+
+    def write(self, entries: List[Tuple[str, Optional[object]]]) -> ArchivePlan:
+        plan = self.plan(entries)
+        if self.dry_run:
+            for src, alt in plan.renamed:
+                print(f"[预览] 同名不同内容的 {src} 将另存为 {alt}")
+            return plan
+        _apply_writes(plan)
+        if self._journal is not None:
+            for rel, md5 in plan.record.items():
+                self._journal.write(json.dumps({"path": rel, "md5": md5},
+                                               ensure_ascii=False) + "\n")
+            self._journal.flush()
+        return plan
+
+    def append_manifest(self, rows: List[Dict]) -> None:
+        """整理清单逐质粒追加（归档路径按实际写出路径）；收尾时整表重写"""
+        if self.dry_run or not rows or not self.manifest_fields:
+            return
+        out = io.StringIO()
+        w = csv.DictWriter(out, fieldnames=self.manifest_fields)
+        w.writerows([{**r, "归档路径": self.mapping.get(r["归档路径"], r["归档路径"])}
+                     for r in rows])
+        with open(self.out_dir / MANIFEST_CSV, "a", encoding="utf-8", newline="") as fh:
+            fh.write(out.getvalue())
+
+    def finish(self) -> ArchivePlan:
+        """清理旧副本、写出最终整理记录；返回本次汇总（remove/kept/renamed/record）"""
+        remove, kept = self.stale()
+        summary = ArchivePlan(renamed=list(self.renamed), remove=remove, kept=kept,
+                              record=dict(self.record))
+        tag = "[预览] 将" if self.dry_run else ""
+        for p in remove:
+            print(f"{tag}清理上次生成的旧副本：{p.relative_to(self.out_dir).as_posix()}")
+        for p in kept:
+            print(f"! 上次生成的 {p.relative_to(self.out_dir).as_posix()} 已不在本次结果中，"
+                  "但内容已被改动或无法核对，保留未删")
+        if self.dry_run:
+            return summary
+        for p in remove:
+            p.unlink()
+        _prune_empty_dirs(remove, self.out_dir)
+        self._write_record(self.record)
+        if self._journal is not None:
+            self._journal.close()
+            self._journal = None
+        (self.out_dir / JOURNAL_NAME).unlink(missing_ok=True)
+        return summary
+
+    def abort(self) -> None:
+        """中途失败：保留已写出的文件与进行中记录，只关闭记录文件"""
+        if self._journal is not None:
+            self._journal.close()
+            self._journal = None
+
+    def _write_record(self, files: Dict[str, str]) -> None:
+        (self.out_dir / RECORD_NAME).write_text(
+            json.dumps({"version": 1, "files": files}, ensure_ascii=False, indent=1),
+            encoding="utf-8")
+
+
+def plan_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path,
+                 previous: Optional[Dict[str, str]] = None,
+                 protected: Iterable[Path] = ()) -> ArchivePlan:
+    """一次性算出整批的落盘计划，不动磁盘（规则见 Archiver）
+
+    previous 中本次不再产出的文件：未改动的列入 remove，已改动的列入 kept。"""
+    arch = Archiver(out_dir, previous, protected)
+    plan = arch.plan(entries)
+    plan.remove, plan.kept = arch.stale()
     return plan
 
 
@@ -330,30 +560,36 @@ def write_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path) ->
 
 def sync_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path,
                  protected: Iterable[Path] = (), dry_run: bool = False) -> ArchivePlan:
-    """重跑安全的落盘：清理上次生成而本次不再产出的旧副本，再写出本次条目
+    """重跑安全的一次性落盘：写出本次条目，清理上次生成而本次不再产出的旧副本
 
     只删除输出目录内、上次运行记录过且内容仍与当时写出一致的文件；被用户
     改过的、记录之外的文件与原始输入一律不动。随后删掉因此变空的文件夹
     （正确/ 错误/ 保留），并写入新的整理记录。dry_run 只打印计划。"""
-    plan = plan_archive(entries, out_dir, load_previous_outputs(out_dir), protected)
-    tag = "[预览] 将" if dry_run else ""
-    for p in plan.remove:
-        print(f"{tag}清理上次生成的旧副本：{p.relative_to(out_dir).as_posix()}")
-    for p in plan.kept:
-        print(f"! 上次生成的 {p.relative_to(out_dir).as_posix()} 已不在本次结果中，"
-              "但内容已被改动或无法核对，保留未删")
-    if dry_run:
-        for src, alt in plan.renamed:
-            print(f"[预览] 同名不同内容的 {src} 将另存为 {alt}")
-        return plan
-    for p in plan.remove:
-        p.unlink()
-    _prune_empty_dirs(plan.remove, out_dir)
-    _apply_writes(plan)
-    (out_dir / RECORD_NAME).write_text(
-        json.dumps({"version": 1, "files": plan.record}, ensure_ascii=False, indent=1),
-        encoding="utf-8")
-    return plan
+    arch = Archiver(out_dir, load_previous_outputs(out_dir), protected, dry_run)
+    arch.begin()
+    arch.write(entries)
+    return arch.finish()
+
+
+def run_to_dir(files: List[Dict], rows: List[Dict], out_dir: Path, min_q: int = 20,
+               protected: Iterable[Path] = (), dry_run: bool = False,
+               on_item=None) -> Tuple[Dict, ArchivePlan]:
+    """命令行主流程：逐质粒分析并落盘（见 OfflineBatch / Archiver）
+
+    返回 (payload, 汇总计划)。中途异常时已写完的质粒文件夹、整理清单行与
+    进行中记录都留在输出目录。"""
+    run = OfflineBatch(files, rows, min_q, on_item=on_item)
+    arch = Archiver(out_dir, load_previous_outputs(out_dir), protected, dry_run,
+                    manifest_fields=run.archive.fields)
+    arch.begin()
+    try:
+        for chunk in run.chunks():
+            arch.write(chunk.entries)
+            arch.append_manifest(chunk.rows)
+    except BaseException:
+        arch.abort()
+        raise
+    return run.payload, arch.finish()
 
 
 # ---------------------------------------------------------------- 主流程
@@ -414,23 +650,23 @@ def main():
         # 输出目录留有上次运行记录时，需要本次结论才能知道哪些旧副本会被
         # 清理：只读地跑一遍分析，打印计划，不写、不删、不回填
         if out_dir.is_dir() and load_previous_outputs(out_dir):
-            load_bytes(files)
-            _payload, entries = run_offline_batch(files, rows, args.min_q)
-            plan = sync_archive(entries, out_dir, protected=inputs, dry_run=True)
+            _payload, plan = run_to_dir(files, rows, out_dir, args.min_q,
+                                        protected=inputs, dry_run=True)
             if not plan.remove:
                 print("[预览] 输出目录没有需要清理的旧副本")
         return
 
-    load_bytes(files)
-    payload, entries = run_offline_batch(files, rows, args.min_q)
-    for it in payload["items"]:
+    def _progress(it: Dict) -> None:
         n_var = it["variant_count"] + it["pending_count"]
         print(f"· {it['plasmid']}: {it['read_count']} read、{n_var} 处变异 → "
-              f"{it['conclusion'][:60]}…")
+              f"{it['conclusion'][:60]}…", flush=True)
+
+    # 逐质粒分析并落盘：每个质粒文件夹分析完即写出，中途中断时已完成的
+    # 部分（副本、报告、整理清单行）保留在输出目录
+    payload, _plan = run_to_dir(files, rows, out_dir, args.min_q,
+                                protected=inputs, on_item=_progress)
     for u in payload["unmatched"]:
         print(f"! 未匹配（原件保留原位，副本归入 未匹配文件/）：{u['filename']} — {u['reason']}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sync_archive(entries, out_dir, protected=inputs)
 
     # Excel 备份 + 回填
     if args.no_write_back:
