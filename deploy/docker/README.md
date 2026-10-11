@@ -119,7 +119,7 @@ DB_PASSWORD=<随机生成>              # 必填，留空 compose 拒绝启动�
 REDIS_PASSWORD=<随机生成>           # 同上
 SECRET_KEY=<64 位 hex>              # 必填；占位/过短/低熵值后端拒绝启动（deploy.sh 自动生成）
 DEBUG=false
-LOG_LEVEL=INFO
+LOG_LEVEL=INFO                     # 预留：后端目前不读取，日志级别固定 INFO
 STORAGE_MODE=database
 FRONTEND_PORT=80                   # 80 端口被占用时改为 8080 等
 FRONTEND_BIND=127.0.0.1            # 前端发布地址；不经宿主机反代直接对外时改为 0.0.0.0
@@ -445,6 +445,8 @@ server {
 > 登录态保存在 httpOnly 会话 Cookie（Path=/api，SameSite=Lax）中。前端与 API
 > 同源（经 nginx 反代 `/api`）时无需任何 CORS 配置；前端另域部署时 `CORS_ORIGINS`
 > 必须是显式来源——通配 `*` 下浏览器不会携带 Cookie，登录后仍表现为未登录。
+> SameSite=Lax 还要求前端与 API **同站**（同一注册域名下的不同子域可以）；前端放在
+> 另一个注册域名（跨站）时浏览器不会随 API 请求发送 Cookie，目前不支持这种部署。
 
 > 限流按真实客户端 IP 计：宿主机 nginx 解析真实 IP（Cloudflare 场景用
 > `real_ip_header CF-Connecting-IP`）并写入 `X-Real-IP`；docker 前端 nginx 只对

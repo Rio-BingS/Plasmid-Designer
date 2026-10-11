@@ -97,15 +97,19 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 合成 oligo 设计：错位交替（无完全互补对）、片数恒偶、DNAWorks 式 Tm 均一分片、
   交叉杂交 12mer 检查告警；长度范围 [oligo_length_min, max]（max 硬上限）
 - 插入片段来源与克隆方法正交（`insert_source` × `cloning_method`）；
-  旧值 `cloning_method=gene_synthesis` 由模型校验器归一（向后兼容）
+  旧值 `cloning_method=gene_synthesis` 由模型校验器归一为 insert_source=gene_synthesis +
+  限制性克隆，但仍须给 enzyme_5/enzyme_3（或 enzyme），否则 422——并非完全向后兼容
 - 限制性克隆双酶切 `enzyme_5/enzyme_3`；Gibson `gibson_site` 定位重组点；
   合成可 `exclude_enzymes` 让优化序列避开酶位点
 - 酶选择器统一用 `EnzymeAutocomplete`（可按酶名/识别序列搜索；API 失败回退内置酶表）
 - 认证：浏览器只走 httpOnly 会话 Cookie，前端不持有令牌；Cookie 认证的写请求缺
   `X-Requested-With` 一律 403（登录/注册/验证/重发豁免）；Bearer 头请求不查 CSRF。
-  前端另域部署时 `CORS_ORIGINS` 必须是显式来源（通配时后端关闭凭证）
-- 资源属主：design/batch/测序记录按 user_id 校验（无属主公开、创建者可见、管理员全见）；
-  匿名测序记录凭 `access_token` 访问（前端 sessionStorage 自动带头）；载体库是共享库，刻意无属主
+  前端另域部署时 `CORS_ORIGINS` 必须是显式来源（通配时后端关闭凭证）；Cookie 为
+  SameSite=Lax（写死），只支持同站另域，跨站部署浏览器不带 Cookie
+- 资源属主：design/batch/测序记录按 user_id 校验（创建者可见、管理员全见；design/batch
+  无属主公开）；匿名测序记录凭 `access_token` 访问（只认 `X-Access-Token` 头，前端
+  sessionStorage 自动带头），无令牌的遗留匿名测序记录仅管理员可读/删、列表不展示；
+  载体库是共享库，刻意无属主
 - 限流按（方法 + 路由模板）分类：只读请求一律 default 档，轮询不吃业务配额
 - 测序管线口径（`core/sanger/`）：
   - 参考拓扑：文件明确标 linear 才线性比对，否则按环状——比对「参考 + 参考头部」后折回
