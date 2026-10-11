@@ -148,3 +148,23 @@ describe('ticks', () => {
     expect(formatBp(1_200_000)).toBe('1.2M')
   })
 })
+
+describe('变高行虚拟滚动', () => {
+  it('rowOffsets / rowAtY / visibleRowsVar', async () => {
+    const { rowOffsets, rowAtY, visibleRowsVar } = await import('@/map/core/virtual')
+    const off = rowOffsets([10, 30, 20, 40])
+    expect(Array.from(off)).toEqual([0, 10, 40, 60, 100])
+    expect(rowAtY(off, 0)).toBe(0)
+    expect(rowAtY(off, 9.9)).toBe(0)
+    expect(rowAtY(off, 10)).toBe(1)
+    expect(rowAtY(off, 59)).toBe(2)
+    expect(rowAtY(off, 1000)).toBe(3)
+    expect(rowAtY(off, -5)).toBe(0)
+    expect(visibleRowsVar(10, 30, off, 0)).toEqual([1, 2])
+    expect(visibleRowsVar(10, 31, off, 0)).toEqual([1, 3])
+    expect(visibleRowsVar(0, 1000, off, 2)).toEqual([0, 4])
+    // 滚动位置越界（内容变短）时退回末尾
+    expect(visibleRowsVar(5000, 50, off, 0)).toEqual([2, 4])
+    expect(visibleRowsVar(0, 10, rowOffsets([]), 1)).toEqual([0, 0])
+  })
+})

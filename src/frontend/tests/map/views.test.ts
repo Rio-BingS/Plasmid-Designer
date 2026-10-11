@@ -123,9 +123,29 @@ describe('SequenceMap 虚拟滚动', () => {
     const perRow = (w.vm as any).perRow
     const inner = w.find('.smap-inner').attributes('style')!
     const h = Number(/height: (\d+(?:\.\d+)?)px/.exec(inner)![1])
-    expect(h).toBe(Math.ceil(L / perRow) * (w.vm as any).rowH)
+    const off: Float64Array = (w.vm as any).offsets
+    expect(off.length).toBe(Math.ceil(L / perRow) + 1)
+    expect(h).toBe(off[off.length - 1])
     // 跨原点特征在首行可见
     expect(w.findAll('.smap-bar').length).toBeGreaterThan(0)
+  })
+
+  it('行高按本行内容定：无特征/无酶切的行不为全局分道留白', () => {
+    const d = puc()
+    const w = mount(SequenceMap, { props: { doc: d, height: 400, width: 900 } })
+    const off: Float64Array = (w.vm as any).offsets
+    const perRow: number = (w.vm as any).perRow
+    const heights = Array.from({ length: off.length - 1 }, (_, i) => off[i + 1] - off[i])
+    const featRows = new Set<number>()
+    for (const f of d.features) for (let r = Math.floor((f.start - 1) / perRow); r <= Math.floor((f.end - 1) / perRow); r++) featRows.add(r)
+    const cutRows = new Set(d.enzymes.flatMap((e) => e.sites.map((s) => Math.floor(s.cut_top / perRow))))
+    const plain = heights.filter((_, i) => !featRows.has(i) && !cutRows.has(i))
+    const busy = heights.filter((_, i) => featRows.has(i))
+    expect(plain.length).toBeGreaterThan(0)
+    expect(Math.max(...plain)).toBeLessThan(Math.min(...busy))
+    // 渲染出的行顶部与 offsets 一致（行与行不重叠）
+    const tops = w.findAll('svg.smap-row').map((r) => Number(/top: (\d+(?:\.\d+)?)px/.exec(r.attributes('style')!)![1]))
+    tops.forEach((t, i) => { if (i) expect(t).toBeGreaterThan(tops[i - 1]) })
   })
 
   it('拖拽选区（行内）', async () => {
