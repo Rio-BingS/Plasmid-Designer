@@ -373,8 +373,9 @@ onMounted(load)
           </tbody>
         </table>
         <p class="hint">
-          注意：批量请求同时受单次上传总体积 {{ settings.batch_upload_max_mb ?? 500 }} MB
-          与单次最多 {{ settings.batch_max_files ?? 400 }} 个文件限制，调高 read 上限后这两项可能先触发。
+          批量测序页会把文件自动分批上传，文件个数不再限制批次；单批总体积上限
+          {{ settings.batch_session_max_mb ?? 2048 }} MB（环境变量 SEQUENCING_BATCH_SESSION_MAX_MB）。
+          旧的单请求接口仍受 {{ settings.batch_upload_max_mb ?? 500 }} MB / {{ settings.batch_max_files ?? 400 }} 个文件限制。
         </p>
 
         <button class="btn primary" :disabled="savingSettings" @click="saveSettings">
