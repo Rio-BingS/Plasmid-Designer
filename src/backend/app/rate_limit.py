@@ -230,6 +230,37 @@ def get_client_ip(request: Request) -> str:
     return client_host
 
 
+# IPv6 按前缀聚合：家宽/云主机通常整段分到一个 /64，按完整地址计数时
+# 同一 /64 内每换一个地址就是新桶，所有按 IP 的配额都能绕过（审查 02 H1）
+IPV6_PREFIX_LEN = 64
+
+
+def normalize_ip_for_key(ip: str) -> str:
+    """把客户端 IP 规范成限流维度。
+
+    - IPv4 原样返回
+    - IPv4 映射的 IPv6（::ffff:a.b.c.d）按其 IPv4 计
+    - 其余 IPv6 取 /IPV6_PREFIX_LEN 前缀（如 `2001:db8::/64`），丢弃 zone id
+    - 无法解析的值（如 "unknown"、测试客户端主机名）原样返回
+    """
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return ip
+    if addr.version == 4:
+        return str(addr)
+    if addr.ipv4_mapped is not None:
+        return str(addr.ipv4_mapped)
+    shift = 128 - IPV6_PREFIX_LEN
+    net = ipaddress.IPv6Network(((int(addr) >> shift) << shift, IPV6_PREFIX_LEN))
+    return str(net)
+
+
+def get_client_key_ip(request: Request) -> str:
+    """限流用的客户端维度：get_client_ip 之后再做 IPv6 前缀聚合"""
+    return normalize_ip_for_key(get_client_ip(request))
+
+
 def get_user_id(request: Request) -> Optional[str]:
     """获取用户 ID（如果已登录）"""
     user = getattr(request.state, "user", None)
@@ -254,8 +285,9 @@ def get_rate_limit_key(request: Request, endpoint: str, identity: Optional[str] 
 
     - auth 档：`rate:auth:{ip}:{email}`，忽略令牌（identity 为规范化邮箱）
     - 其余：已登录按用户，匿名按 IP
+    - {ip} 均经 normalize_ip_for_key：IPv6 按 /64 聚合
     """
-    ip = get_client_ip(request)
+    ip = get_client_key_ip(request)
     if endpoint in _AUTH_BUCKETS:
         return f"rate:{endpoint}:{ip}:{identity or '-'}"
 
@@ -383,7 +415,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             ip_cfg = self.limits.get("auth_ip")
             if ip_cfg:
                 ok, retry = limiter.is_allowed(
-                    f"rate:auth_ip:{get_client_ip(request)}",
+                    f"rate:auth_ip:{get_client_key_ip(request)}",
                     ip_cfg["requests"], ip_cfg["window"])
                 if not ok:
                     return self._too_many("auth_ip", ip_cfg, retry)
