@@ -44,6 +44,7 @@ import weakref
 import time
 import uuid
 import tempfile
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -77,7 +78,7 @@ router = APIRouter(prefix="/api", tags=["sequencing"])
 _ANALYSES: Dict[str, Dict] = {}
 # 进程级内存存储：batch_id → {"created_ts", "zip"}（批量整理包，15 分钟有效）
 _BATCHES: Dict[str, Dict] = {}
-# 终审 C-07：两个全局 dict 由事件循环线程与线程池（_run_batch/_pack/
+# 终审 C-07：两个全局 dict 由事件循环线程与线程池（_batch_pipeline/
 # _sweep_expired 都在线程池里）并发增删遍历。dict 自身的单次操作是原子的，
 # 但「遍历 + 删除」的组合会抛 dictionary changed size during iteration。
 # 用一把可重入锁包住所有读写路径（同一线程内 sweep→register 可重入）。
@@ -89,6 +90,13 @@ MAX_TRACE_STORED = 40                 # 峰图原始数据体积大，只保留�
 MAX_BATCH_FILES = 400                 # 批量单次最多 400 个文件
 MAX_BATCH_PLASMIDS = 60               # 批量单次最多 60 个质粒
 MAX_BATCH_GROUPS = 120                # 克隆模式下最多 120 个克隆分组
+# 审查 02 M6：批量此前只限文件数与分组数，一个分组可塞近 400 条 read
+# （200 kb 参考约 6 s/条），单请求可占住并发槽数十分钟。每组默认沿用
+# 单样品的 MAX_FILES，整批参与比对的 read 总数另设上限，均可经环境变量调整
+MAX_BATCH_READS_PER_GROUP = max(1, int(os.environ.get(
+    "SEQUENCING_BATCH_MAX_READS_PER_GROUP", str(MAX_FILES))))
+MAX_BATCH_TOTAL_READS = max(1, int(os.environ.get(
+    "SEQUENCING_BATCH_MAX_TOTAL_READS", "240")))
 ANALYSIS_TTL = 15 * 60                # 分析记录 15 分钟后自动删除
 BATCH_TTL = 15 * 60                   # 批量整理包同样 15 分钟后清理
 MAX_BATCH_CACHE_BYTES = 256 * 1024 * 1024   # 整理包缓存上限（超出则本次不提供下载）
@@ -123,8 +131,13 @@ def _heavy_semaphore() -> asyncio.Semaphore:
     return sem
 
 
-async def _run_heavy(fn, *args, **kwargs):
-    """在并发闸内把重型比对移交线程池；排队超时返回 503"""
+@asynccontextmanager
+async def _heavy_slot():
+    """占用一个并发槽；排队超时返回 503。
+
+    审查 02 M5：上传字节读入内存、Excel 解析、记录落库（json+zlib+DB）、
+    峰图回灌解压、整理包打包与比对同属重型内存/CPU 阶段，都须在槽内完成，
+    否则并发闸只限住了比对本身，少量并发请求仍可打满内存。"""
     sem = _heavy_semaphore()
     try:
         await asyncio.wait_for(sem.acquire(), timeout=HEAVY_QUEUE_TIMEOUT)
@@ -133,16 +146,22 @@ async def _run_heavy(fn, *args, **kwargs):
                             detail="测序分析任务繁忙，请稍后重试",
                             headers={"Retry-After": "30"})
     try:
-        return await run_in_threadpool(fn, *args, **kwargs)
+        yield
     finally:
         sem.release()
+
+
+async def _run_heavy(fn, *args, **kwargs):
+    """在并发闸内把重型同步工作移交线程池；排队超时返回 503"""
+    async with _heavy_slot():
+        return await run_in_threadpool(fn, *args, **kwargs)
 
 
 def _sweep_expired() -> None:
     """清理过期的分析记录与批量整理包（每次访问入口处惰性触发）
 
     终审 C-07：加锁——遍历中删除在并发下会抛 dictionary changed size
-    during iteration（_run_batch/_pack 在线程池同样会触碰这两个 dict）。"""
+    during iteration（_batch_pipeline 在线程池同样会触碰这两个 dict）。"""
     now = time.time()
     with _STORE_LOCK:
         for aid in [aid for aid, r in _ANALYSES.items()
@@ -237,6 +256,27 @@ def _get_analysis(analysis_id: str, user: Optional[User] = None,
         _ANALYSES[analysis_id] = result
         _enforce_caps_locked()
     return result
+
+
+def _get_cached_analysis(analysis_id: str, user: Optional[User] = None,
+                         access_token: Optional[str] = None) -> Optional[Dict]:
+    """只查内存缓存（廉价，可在事件循环上执行）；未命中返回 None"""
+    _sweep_expired()
+    with _STORE_LOCK:
+        result = _ANALYSES.get(analysis_id)
+    if result is not None and not _can_access(result, user, access_token):
+        raise HTTPException(status_code=403, detail="无权访问该分析记录")
+    return result
+
+
+async def _aget_analysis(analysis_id: str, user: Optional[User] = None,
+                         access_token: Optional[str] = None) -> Dict:
+    """路由用：缓存命中直接返回；未命中时的回灌（DB 读取、json 解析、峰图
+    zlib 解压）在并发闸内移交线程池，不阻塞事件循环（审查 02 M5）"""
+    cached = _get_cached_analysis(analysis_id, user, access_token)
+    if cached is not None:
+        return cached
+    return await _run_heavy(_get_analysis, analysis_id, user, access_token)
 
 
 def _enforce_caps_locked() -> None:
@@ -376,6 +416,19 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     return analysis_id, access_token, record
 
 
+def _analyze_and_register(
+    reference: str, sample_name: str, features: List[Dict],
+    ab1_blobs: List[Tuple[str, bytes]], min_q: int, allow_decompose: bool,
+    circular: bool, owner_id: Optional[str],
+) -> Tuple[Dict, Optional[str]]:
+    """同步：全自动分析 + 登记落库 + 摘要（调用方负责并发闸与线程池）"""
+    result = _run_full_analysis(reference, sample_name, features, ab1_blobs,
+                                min_q, allow_decompose, circular)
+    _aid, access_token, record = _register_analysis(
+        sample_name, reference, features, result, owner_id=owner_id)
+    return _summary(record), access_token
+
+
 async def _analyze_endpoint(
     reference: str,
     sample_name: str,
@@ -396,18 +449,15 @@ async def _analyze_endpoint(
             status_code=413,
             detail=f"参考序列过长（{len(reference)} bp > {MAX_REF_BP} bp）："
                    "请截取待验证区段后重新分析（局部比对开销随参考长度线性增长）")
-    ab1_blobs = await _read_ab1_files(files)
-
-    result = await _run_heavy(
-        _run_full_analysis, reference, sample_name, features, ab1_blobs, min_q, allow_decompose,
-        circular,
-    )
-
-    analysis_id, access_token, _rec = _register_analysis(
-        sample_name, reference, features, result,
-        owner_id=user.id if user else None)
-    with _STORE_LOCK:  # 终审 C-07
-        summary = _summary(_ANALYSES[analysis_id])
+    if not files or len(files) > MAX_FILES:  # 数量校验先于占槽
+        raise HTTPException(status_code=400, detail=f"请上传 1-{MAX_FILES} 个 .ab1 文件")
+    # 审查 02 M5：读入（最多 24×20MB）、比对、登记落库（json+zlib+DB 提交）
+    # 全部在同一个并发槽内；同步部分移交线程池，不阻塞事件循环
+    async with _heavy_slot():
+        ab1_blobs = await _read_ab1_files(files)
+        summary, access_token = await run_in_threadpool(
+            _analyze_and_register, reference, sample_name, features, ab1_blobs,
+            min_q, allow_decompose, circular, user.id if user else None)
     if access_token:
         # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
         summary["access_token"] = access_token
@@ -436,7 +486,7 @@ async def analyze_sequencing_upload(
     if not ref_bytes:
         raise HTTPException(status_code=400, detail="参考文件为空")
     try:
-        ref_seq, features, topology = await run_in_threadpool(
+        ref_seq, features, topology = await _run_heavy(
             parse_reference_topology, ref_name, ref_bytes)
     except ReferenceParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -496,6 +546,7 @@ def _run_batch(
         if len(ordered) > MAX_BATCH_PLASMIDS:
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
         groups = plasmid_groups(ordered, per_plasmid)
+    _check_batch_read_caps(groups)
 
     def _register(label: str, ref_seq: str, features: List[Dict], res: Dict):
         aid, _tok, rec = _register_analysis(
@@ -508,6 +559,28 @@ def _run_batch(
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
+
+
+def _check_batch_read_caps(groups: List[Dict]) -> None:
+    """按分组统计将参与比对的 read 数，超限在比对前拒绝（413）。
+
+    只计有参考图谱的分组（无图谱的分组不跑比对，不消耗计算）。"""
+    analyzable = [g for g in groups if g["reference"] and g["reads"]]
+    for g in analyzable:
+        n = len(g["reads"])
+        if n > MAX_BATCH_READS_PER_GROUP:
+            label = f"{g['clone']} {g['plasmid']}".strip() or g["plasmid"]
+            raise HTTPException(
+                status_code=413,
+                detail=f"分组「{label[:60]}」匹配到 {n} 条测序 read，超过每组上限"
+                       f"（{MAX_BATCH_READS_PER_GROUP} 条）：请检查信息表引物列或文件名归组，"
+                       "或将该质粒拆分后单独分析")
+    total = sum(len(g["reads"]) for g in analyzable)
+    if total > MAX_BATCH_TOTAL_READS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"本批次共有 {total} 条测序 read 需要比对，超过单次上限"
+                   f"（{MAX_BATCH_TOTAL_READS} 条）：请拆分为多个批次提交")
 
 
 @router.post(
@@ -539,6 +612,21 @@ async def analyze_sequencing_batch(
     if len(files) > MAX_BATCH_FILES:
         raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
 
+    # 审查 02 M5：上传读入（最多 500MB 进内存）、Excel 解析、逐组比对与
+    # 整理包打包（最多 256MB zip，峰值约数据量 2-3 倍）全部在同一个并发槽内
+    # 完成，同步部分移交线程池；此前读入/解析/打包都在闸外，并发闸形同半设
+    async with _heavy_slot():
+        reads, refs, ignored, excel_bytes = await _read_batch_uploads(files, excel)
+        # 匿名批量：整批共用一个访问令牌（终审 B-02），随响应下发一次
+        batch_token = secrets.token_urlsafe(16) if user is None else None
+        return await run_in_threadpool(
+            _batch_pipeline, reads, refs, ignored, min_q,
+            (excel.filename or "信息表.xlsx") if excel is not None else None,
+            excel_bytes, user.id if user else None, batch_token)
+
+
+async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFile]):
+    """批量上传读入与分类（调用方须已占并发槽），返回 (reads, refs, ignored, excel_bytes)"""
     reads: List[Dict] = []
     refs: List[Dict] = []
     ignored: List[str] = []
@@ -574,8 +662,7 @@ async def analyze_sequencing_batch(
             status_code=400,
             detail="未找到可用的测序文件（.ab1）或参考图谱（.dna/.gb/.fasta）")
 
-    excel_pack = None
-    excel_rows = None
+    excel_bytes = None
     if excel is not None:
         excel_bytes = await _read_limited(excel)
         if not excel_bytes:
@@ -591,27 +678,36 @@ async def analyze_sequencing_batch(
             raise HTTPException(
                 status_code=400,
                 detail="所选信息表是 Excel 临时文件（~$ 开头），请选择正式的信息表 .xlsx")
+    return reads, refs, ignored, excel_bytes
+
+
+def _batch_pipeline(
+    reads: List[Dict], refs: List[Dict], ignored: List[str], min_q: int,
+    excel_name: Optional[str], excel_bytes: Optional[bytes],
+    owner_id: Optional[str], batch_token: Optional[str],
+) -> Dict:
+    """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
+    excel_pack = None
+    excel_rows = None
+    if excel_bytes is not None:
         try:
-            wb, _header, cols, excel_rows = await run_in_threadpool(load_excel, excel_bytes)
+            wb, _header, cols, excel_rows = load_excel(excel_bytes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (InvalidFileException, BadZipFile):
             raise HTTPException(
                 status_code=400,
                 detail="信息表不是有效的 .xlsx 文件（可能正被 Excel/WPS 占用或已损坏），请关闭后重新选择")
-        excel_pack = (excel.filename or "信息表.xlsx", excel_bytes, wb, cols, excel_rows)
+        excel_pack = (excel_name, excel_bytes, wb, cols, excel_rows)
 
-    # 匿名批量：整批共用一个访问令牌（终审 B-02），随响应下发一次
-    batch_token = secrets.token_urlsafe(16) if user is None else None
-    payload, groups, raw_unmatched, records_by_id = await _run_heavy(
-        _run_batch, reads, refs, excel_rows, ignored, min_q,
-        owner_id=user.id if user else None, access_token=batch_token)
+    payload, groups, raw_unmatched, records_by_id = _run_batch(
+        reads, refs, excel_rows, ignored, min_q,
+        owner_id=owner_id, access_token=batch_token)
     if batch_token:
         payload["access_token"] = batch_token
 
     # 整理包（离线脚本产物的网页版）：按上传原始字节现场打包并缓存，15 分钟内
-    # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）；
-    # 打包与回填放线程池，避免大包阻塞事件循环
+    # 可重复下载。体积超上限时跳过打包（report_ready=False，前端不显示下载入口）
     total_bytes = sum(len(e["file"]["bytes"])
                       for g in groups
                       for e in ([g["reference"]] if g["reference"] else []) + g["reads"])
@@ -619,32 +715,29 @@ async def analyze_sequencing_batch(
     report_ready = total_bytes <= min(MAX_BATCH_CACHE_BYTES, MAX_BATCH_CACHE_TOTAL_BYTES)
     payload["report_ready"] = report_ready
     if report_ready:
-        def _pack() -> None:
-            excel_name = excel_original = excel_filled = None
-            if excel_pack:
-                excel_name, excel_original, wb, cols, rows = excel_pack
-                excel_filled = backfill_excel(wb, cols, rows, payload["items"],
-                                              payload["clone_mode"])
-            # 终审 C-07：打包所需的记录来自本次 _run_batch 的直接产物
-            # （records_by_id），不再事后回查全局 dict——回查会在记录被
-            # 并发淘汰时 KeyError
-            zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
-                                        excel_original, excel_filled, records_by_id)
-            with _STORE_LOCK:
-                _BATCHES[payload["batch_id"]] = {
-                    "created_ts": time.time(),
-                    "zip": zip_bytes,
-                    "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
-                    # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
-                    # 匿名批次绑定整批访问令牌
-                    "owner_id": user.id if user else None,
-                    "access_token_hash": (sequencing_store.hash_access_token(batch_token)
-                                          if batch_token else None),
-                }
-                # 插入后再淘汰：条数与总字节上限任何时刻都不被突破
-                _sweep_expired()
-
-        await run_in_threadpool(_pack)
+        excel_original = excel_filled = None
+        if excel_pack:
+            excel_name, excel_original, wb, cols, rows = excel_pack
+            excel_filled = backfill_excel(wb, cols, rows, payload["items"],
+                                          payload["clone_mode"])
+        # 终审 C-07：打包所需的记录来自本次 _run_batch 的直接产物
+        # （records_by_id），不再事后回查全局 dict——回查会在记录被
+        # 并发淘汰时 KeyError
+        zip_bytes = build_batch_zip(payload, groups, raw_unmatched, excel_name,
+                                    excel_original, excel_filled, records_by_id)
+        with _STORE_LOCK:
+            _BATCHES[payload["batch_id"]] = {
+                "created_ts": time.time(),
+                "zip": zip_bytes,
+                "zip_name": datetime.now().strftime("测序整理_%Y%m%d_%H%M"),
+                # 终审 B-03：整理包含全部原始 .ab1 与图谱，下载绑定创建者；
+                # 匿名批次绑定整批访问令牌
+                "owner_id": owner_id,
+                "access_token_hash": (sequencing_store.hash_access_token(batch_token)
+                                      if batch_token else None),
+            }
+            # 插入后再淘汰：条数与总字节上限任何时刻都不被突破
+            _sweep_expired()
     return payload
 
 
@@ -787,15 +880,15 @@ async def list_analyses(limit: int = 200, offset: int = 0,
 async def get_analysis(analysis_id: str, request: Request,
                        user: Optional[User] = Depends(get_current_user)):
     """获取分析结果（不含峰图原始数据；非创建者且非管理员返回 403）"""
-    return _summary(_get_analysis(analysis_id, user,
-                                  _request_access_token(request)))
+    return _summary(await _aget_analysis(analysis_id, user,
+                                         _request_access_token(request)))
 
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")
 async def get_read_trace(analysis_id: str, read_index: int, request: Request,
                          user: Optional[User] = Depends(get_current_user)):
     """获取单条 read 的峰图数据（四通道 + 碱基 + 质量值 + 峰位置）"""
-    record = _get_analysis(analysis_id, user, _request_access_token(request))
+    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
     trace_data = record.get("_trace_data", {})
     if not trace_data:
         raise HTTPException(status_code=404,
@@ -817,7 +910,7 @@ async def export_consensus(analysis_id: str, request: Request,
     - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
       misc_feature 注记。无覆盖区间信息时回退全量导出。
     """
-    record = _get_analysis(analysis_id, user, _request_access_token(request))
+    record = await _aget_analysis(analysis_id, user, _request_access_token(request))
     seq = record["consensus"]["sequence"]
     # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
     # Content-Disposition 响应头（引号/CR/LF）
@@ -912,10 +1005,10 @@ async def export_consensus(analysis_id: str, request: Request,
 @router.delete("/sequencing/analyses/{analysis_id}")
 async def delete_analysis(analysis_id: str, request: Request,
                           user: Optional[User] = Depends(get_current_user)):
-    _get_analysis(analysis_id, user, _request_access_token(request))
+    await _aget_analysis(analysis_id, user, _request_access_token(request))
     with _STORE_LOCK:  # 终审 C-07
         _ANALYSES.pop(analysis_id, None)
-    sequencing_store.delete_record(analysis_id)
+    await run_in_threadpool(sequencing_store.delete_record, analysis_id)
     return {"deleted": True, "analysis_id": analysis_id}
 
 

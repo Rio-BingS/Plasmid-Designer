@@ -64,7 +64,7 @@ plasmid-designer-v2/
 ```bash
 # 1. 后端
 cd src/backend
-pip install --require-hashes -r requirements.txt   # 锁文件，见下方「Python 依赖锁定」
+pip install --require-hashes -r requirements.txt -r requirements-dev.txt  # 锁文件，见「Python 依赖锁定」
 # SECRET_KEY 必填：未设置、占位、过短或低熵一律拒绝启动（本地开发同样适用）
 echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
 uvicorn app.main:app --reload
@@ -87,12 +87,15 @@ npm run dev
 
 | 源清单（手改） | 锁文件（生成，勿手改） | 用途 |
 |---|---|---|
-| `src/backend/requirements.in` | `src/backend/requirements.txt` | 本地开发、CI、裸机部署 |
+| `src/backend/requirements.in` | `src/backend/requirements.txt` | 运行时：裸机部署、本地开发、CI |
+| `src/backend/requirements-dev.in` | `src/backend/requirements-dev.txt` | 仅测试用的包（pytest、httpx2），本地开发与 CI 额外安装，不进生产 |
 | `deploy/docker/requirements.backend.in` | `deploy/docker/requirements.backend.txt` | Docker 后端镜像（含 biopython） |
+| `.github/ci/requirements-audit.in` | `.github/ci/requirements-audit.txt` | CI 的 pip-audit（独立 venv 按哈希安装） |
 
 增删或升级依赖：改 `.in`（两份清单的同名包版本保持一致）→ 在仓库根运行
 `bash scripts/lock_requirements.sh`（需要 `uv`，没有时脚本在临时 venv 里装一份）→
-跑全量测试 → 把 `.in` 与锁文件一起提交。只升级某个传递依赖用
+跑全量测试 → 把 `.in` 与锁文件一起提交。开发锁以运行时锁为约束（`-c`），两份锁里
+共有的包版本与哈希一致，可一次 `-r requirements.txt -r requirements-dev.txt` 安装。只升级某个传递依赖用
 `UV_ARGS="--upgrade-package <包名>" bash scripts/lock_requirements.sh`。锁文件按
 Python 3.11 起的通用解析生成，Linux 上 3.11 与 3.12 安装同一组版本；
 `tests/test_docker_requirements_sync.py` 会检查锁文件与源清单是否同步。
@@ -128,12 +131,13 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `SECRET_KEY` | 必填，`openssl rand -hex 32` 生成；占位/过短/低熵值拒绝启动 |
 | `CORS_ORIGINS` | 前端经 Nginx 同源反代 `/api` 时无需改动；前端另域部署时必须填**显式来源**（逗号分隔或 JSON 数组），通配 `*` 下后端关闭凭证模式，浏览器不会携带会话 Cookie。会话 Cookie 为 `SameSite=Lax`，只支持与 API **同站**（同一注册域名，如 `app.example.com` 与 `api.example.com`）的另域部署，跨站（不同注册域名）时浏览器不发送 Cookie，登录后仍表现为未登录 |
 | `AUTH_COOKIE_SECURE` | 会话 Cookie 的 Secure 标记：`auto`（默认，按请求协议 / 可信代理的 `X-Forwarded-Proto` 判定）、`true`（HTTPS 在更外层代理终止时必须设）、`false` |
+| `ENABLE_API_DOCS` | `/docs`、`/redoc`、`/openapi.json` 开关：本地开发默认开启；Docker compose 默认 `false`（容器 nginx 无法按来源限制）；裸机模板为 `true`，由 nginx 只对本机/内网开放 |
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
 
 ## API 概览
 
-启动后端后访问 Swagger 文档: http://localhost:8000/docs
+启动后端后访问 Swagger 文档: http://localhost:8000/docs（`ENABLE_API_DOCS=false` 时关闭）
 
 ### 设计任务
 
@@ -242,7 +246,9 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
   全自动管线，结果表给出每质粒一句话结论（合格/不合格/缺图谱…）与覆盖、确证差异
   数；成功分析的质粒注册为标准分析记录，「查看详情」深链到 `/sequencing?history=<id>`
   进入逐碱基核对。不上传信息表时按「测序文件名包含图谱文件名」归组（图谱名互为前缀
-  时取最长包含，仍无法唯一归组的列入未匹配清单）。
+  时取最长包含，仍无法唯一归组的列入未匹配清单）。单次请求每组参与比对的 read
+  默认最多 24 条、整批最多 240 条（`SEQUENCING_BATCH_MAX_READS_PER_GROUP`、
+  `SEQUENCING_BATCH_MAX_TOTAL_READS`），超限在比对前返回 413 并提示拆分批次。
 - **离线脚本**（`scripts/batch_sequencing_report.py`）：面向"Excel 信息表 + 测序
   结果文件夹"的交付场景一键批处理。Excel 表头含"质粒名称/测序引物/测序结果"，引物列填
   测序文件名（分号分隔，与网页端"参考文件与测序文件放同一文件夹"的约定一致）；脚本递归
@@ -260,6 +266,8 @@ CDS 测序结论：特征边界偏差（手动标注常有 1–3bp）时自动�
   `--dry-run` 只打印将清理的文件，不写、不删、不回填（有上次记录时会只读分析一遍）。
   每个质粒分析完即写出其文件夹并追加清单行（文件逐质粒读入、写完即释放），中途中断
   时已完成的质粒保留在输出目录，下次重跑据 `.整理记录.进行中.jsonl` 一并核对清理。
+  扫描时跳过数据文件夹下此前的输出目录（换 `--out-dir` 或改名后仍按整理记录/清单表头
+  识别），旧副本不会被当成新 read 重复分析。
 
 ```bash
 python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \

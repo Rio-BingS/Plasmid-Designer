@@ -887,3 +887,172 @@ def test_interrupted_rerun_partial_manifest_md5_points_at_written_file(tmp_path,
         _run(monkeypatch, data_dir, "--no-write-back")
     assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
     assert all(ok for _p, ok in _manifest_md5_matches_files(out))
+
+
+# ---------------------------------------------------------------- 换输出目录重跑
+
+
+def _scanned_names(data_dir: Path, out: Path) -> list:
+    return sorted(f["rel"].as_posix() for f in batch.scan_files(data_dir, out))
+
+
+def test_rerun_other_out_dir_skips_previous_output_tree(tmp_path, monkeypatch, capsys):
+    """review 05 M5：换 --out-dir 重跑时，上次默认输出目录 测序分析/ 里的
+    read 与图谱副本不能被当成新输入（否则旧副本参与共识、图谱进未匹配）"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    _run(monkeypatch, data_dir, "--no-write-back")
+    assert (data_dir / "测序分析" / "TST" / "正确" / "T1.ab1").exists()
+
+    out2 = tmp_path / "out2"
+    assert _scanned_names(data_dir, out2) == ["T1.ab1", "TST.fasta"]
+    capsys.readouterr()
+    _run(monkeypatch, data_dir, "--no-write-back", "--out-dir", str(out2))
+    log = capsys.readouterr().out
+    assert "扫描到 2 个文件（1 个 .ab1，1 个图谱）" in log
+    assert "测序分析" in log and "跳过" in log
+    assert "· TST: 1 read" in log
+    assert not (out2 / "未匹配文件").exists()
+    assert _manifest_paths(out2) == {"TST/TST.fasta", "TST/正确/T1.ab1"}
+
+
+@pytest.mark.parametrize("marker", ["record", "journal", "manifest", "legacy_manifest"])
+def test_scan_skips_output_tree_detected_by_marker(tmp_path, marker):
+    """改过名或挪过位置的旧输出目录：凭整理记录 / 进行中记录 / 整理清单表头识别"""
+    data_dir = tmp_path / "results"
+    old = data_dir / "上周" / "结果备份"
+    (old / "P").mkdir(parents=True)
+    (data_dir / "P1.ab1").write_bytes(b"r")
+    (old / "P" / "P1.ab1").write_bytes(b"old copy")
+    (old / "P.fasta").write_text(">P\nACGT\n", encoding="utf-8")
+    if marker == "record":
+        (old / batch.RECORD_NAME).write_text('{"version": 1, "files": {}}', encoding="utf-8")
+    elif marker == "journal":
+        (old / batch.JOURNAL_NAME).write_text("", encoding="utf-8")
+    elif marker == "manifest":
+        (old / batch.MANIFEST_CSV).write_text(
+            "\ufeff质粒,克隆,文件,类型,结论,匹配方式,归档路径,大小KB,MD5,原始路径\n",
+            encoding="utf-8")
+    else:
+        (old / batch.MANIFEST_CSV).write_text(
+            "plasmid,name,kind,how,src,dst,kb,md5\n", encoding="utf-8")
+    assert _scanned_names(data_dir, tmp_path / "out") == ["P1.ab1"]
+    assert batch.previous_output_dirs(data_dir) == [old]
+
+
+def test_scan_keeps_user_folder_with_unrelated_manifest_name(tmp_path):
+    """只是碰巧叫 整理清单.csv、表头不是本工具格式的用户文件夹照常扫描；
+    数据文件夹本身带整理记录（如曾把输出写进数据目录）也不整体跳过"""
+    data_dir = tmp_path / "results"
+    sub = data_dir / "plate1"
+    sub.mkdir(parents=True)
+    (sub / "P1.ab1").write_bytes(b"r")
+    (sub / batch.MANIFEST_CSV).write_text("样品,备注\nP1,ok\n", encoding="utf-8")
+    (data_dir / batch.RECORD_NAME).write_text('{"version": 1, "files": {}}',
+                                             encoding="utf-8")
+    (data_dir / "P.fasta").write_text(">P\nACGT\n", encoding="utf-8")
+    assert _scanned_names(data_dir, tmp_path / "out") == ["P.fasta", "plate1/P1.ab1"]
+    assert batch.previous_output_dirs(data_dir) == []
+
+
+def test_clone_mode_error_points_to_real_frontend_route(tmp_path, monkeypatch):
+    """review 10 L8：克隆模式信息表的拒绝提示要指向前端真实存在的批量测序
+    页面路由（src/frontend/src/router/index.ts），而不是不存在的旧路径"""
+    import re
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "克隆号", "测序引物", "测序结果"])
+    ws.append(["TST", "C1", "M13F", None])
+    wb.save(data_dir / "测序.xlsx")
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    msg = str(exc.value)
+    route = re.search(r"（(/[^）]+)）", msg).group(1)
+    router = (_REPO / "src" / "frontend" / "src" / "router" / "index.ts").read_text(
+        encoding="utf-8")
+    m = re.search(r"path:\s*'([^']+)',\s*name:\s*'sequencing-batch'", router)
+    assert m, "前端路由表里找不到 sequencing-batch"
+    assert route == m.group(1) == "/sequencing/batch"
+
+
+# ---------------------------------------------------------------- 参数与错误处理
+
+
+@pytest.mark.parametrize("where", ["same", "parent", "file"])
+def test_invalid_out_dir_rejected_before_writing(tmp_path, monkeypatch, where):
+    """review 05 L1：--out-dir 等于数据文件夹（或其上级）时此前扫描到 0 个文件、
+    把清单/总览写进数据目录并回填「未找到」；是普通文件时抛 traceback。
+    现在一律在写任何东西之前中文报错退出，信息表不动"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    target = {"same": data_dir, "parent": tmp_path,
+              "file": tmp_path / "afile"}[where]
+    if where == "file":
+        target.write_text("x", encoding="utf-8")
+    before = {p: p.read_bytes() for p in data_dir.rglob("*") if p.is_file()}
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir, "--out-dir", str(target))
+    assert isinstance(exc.value.code, str) and "输出目录" in exc.value.code
+    assert {p: p.read_bytes() for p in data_dir.rglob("*") if p.is_file()} == before
+    assert not (tmp_path / batch.MANIFEST_CSV).exists()
+
+
+@pytest.mark.parametrize("kind", ["junk", "not_workbook"])
+def test_unreadable_excel_gives_message_not_traceback(tmp_path, monkeypatch, kind):
+    """review 05 L1：损坏或并非工作簿的 .xlsx 此前直接抛 BadZipFile/KeyError"""
+    import io
+    import zipfile
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    if kind == "junk":
+        blob = b"PK\x03\x04junk"
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("a.txt", "x")
+        blob = buf.getvalue()
+    (data_dir / "测序.xlsx").write_bytes(blob)
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    assert isinstance(exc.value.code, str)
+    assert "无法读取信息表" in exc.value.code and "测序.xlsx" in exc.value.code
+    assert not (data_dir / "测序分析").exists()
+
+
+def test_write_back_locked_excel_keeps_original_and_explains(tmp_path, monkeypatch):
+    """review 05 L1：回填直接 write_bytes 覆盖原表（非原子），表被 Excel 占用
+    （Windows PermissionError）时只有 traceback。现在先写临时文件再替换；
+    替换失败时原表原样、不留临时文件，提示关闭后重跑，归档与备份已写出"""
+    data_dir = tmp_path / "results"
+    data_dir.mkdir()
+    _write_inputs(data_dir)
+    xlsx = data_dir / "测序.xlsx"
+    original = xlsx.read_bytes()
+
+    real_wb, real_replace = Path.write_bytes, os.replace
+
+    def locked_write(self, data):
+        if self == xlsx:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_wb(self, data)
+
+    def locked_replace(src, dst, *a, **kw):
+        if Path(dst) == xlsx:
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(Path, "write_bytes", locked_write)
+    monkeypatch.setattr(os, "replace", locked_replace)
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, data_dir)
+    assert isinstance(exc.value.code, str) and "回填" in exc.value.code
+    assert "正被" in exc.value.code
+    assert xlsx.read_bytes() == original
+    assert sorted(p.name for p in data_dir.iterdir()) == [
+        "T1.ab1", "TST.fasta", "测序.xlsx", "测序分析"]
+    out = data_dir / "测序分析"
+    assert (out / "TST" / "正确" / "T1.ab1").exists()
+    assert (out / "测序_原始备份.xlsx").read_bytes() == original

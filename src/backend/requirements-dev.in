@@ -1,0 +1,11 @@
+# 开发/测试依赖源清单（人工维护）：运行时依赖 + 仅测试用的包。
+# 生产（Docker、裸机 install.sh）只装 requirements.txt；CI 与本地开发额外装
+# 本文件生成的锁 requirements-dev.txt（scripts/lock_requirements.sh 生成，含哈希）。
+# -c 约束到运行时锁：开发锁里共有的包与生产锁版本、哈希完全一致。
+-r requirements.in
+-c requirements.txt
+
+# Testing
+pytest==9.1.1
+# starlette 1.x 的 TestClient 改用 httpx2，装旧 httpx 会报 StarletteDeprecationWarning
+httpx2==2.13.1

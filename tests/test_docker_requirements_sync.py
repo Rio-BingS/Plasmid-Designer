@@ -4,7 +4,8 @@ Python 依赖分两层：人工维护的源清单（*.in，只写直接依赖并
 scripts/lock_requirements.sh 生成的锁文件（*.txt，含全部传递依赖与 sha256
 哈希，安装一律 --require-hashes）。
 
-- src/backend/requirements.in  -> src/backend/requirements.txt（开发/CI/裸机）
+- src/backend/requirements.in  -> src/backend/requirements.txt（运行时：裸机/开发/CI）
+- src/backend/requirements-dev.in -> requirements-dev.txt（仅测试用的包，开发/CI）
 - deploy/docker/requirements.backend.in -> requirements.backend.txt（Docker 镜像）
 
 两份清单曾发生漂移（openpyxl 只加了 src 侧，容器内批量测序解析 Excel 直接 500）。
@@ -20,6 +21,13 @@ DOCKER_IN = REPO / "deploy" / "docker" / "requirements.backend.in"
 DOCKER_LOCK = REPO / "deploy" / "docker" / "requirements.backend.txt"
 SRC_IN = REPO / "src" / "backend" / "requirements.in"
 SRC_LOCK = REPO / "src" / "backend" / "requirements.txt"
+DEV_IN = REPO / "src" / "backend" / "requirements-dev.in"
+DEV_LOCK = REPO / "src" / "backend" / "requirements-dev.txt"
+AUDIT_IN = REPO / ".github" / "ci" / "requirements-audit.in"
+AUDIT_LOCK = REPO / ".github" / "ci" / "requirements-audit.txt"
+
+# 只在测试中使用的包：不得进入运行时清单与锁（审查 09 L-4）
+TEST_ONLY = ("pytest", "httpx2", "httpx", "pluggy", "iniconfig")
 
 # 包名可带 extras（uvicorn[standard]）与环境标记；取行首包名与 == 版本
 PKG_RE = re.compile(
@@ -36,7 +44,7 @@ def _pins(path: Path) -> dict:
     pins = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith(("#", "-r", "-c")):
             continue
         m = PKG_RE.match(line)
         if m:
@@ -85,7 +93,8 @@ def test_key_runtime_packages_present_in_docker_list():
 
 def test_lock_files_match_sources_and_carry_hashes():
     """锁文件必须由当前源清单生成：每个直接依赖都在锁里且版本相同，每项都带哈希"""
-    for src, lock in ((SRC_IN, SRC_LOCK), (DOCKER_IN, DOCKER_LOCK)):
+    for src, lock in ((SRC_IN, SRC_LOCK), (DOCKER_IN, DOCKER_LOCK), (DEV_IN, DEV_LOCK),
+                      (AUDIT_IN, AUDIT_LOCK)):
         entries = _lock_entries(lock)
         locked = {}
         for name, ver, n_hash in entries:
@@ -112,4 +121,43 @@ def test_install_entrypoints_require_hashes():
     assert re.search(r"--require-hashes[^\n]*\\\n\s*-r \"\$INSTALL_DIR/src/backend/requirements\.txt\"",
                      install_sh)
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "pip install --require-hashes -r src/backend/requirements.txt" in ci
+    assert re.search(
+        r"pip install --require-hashes \\\n\s*-r src/backend/requirements\.txt \\\n"
+        r"\s*-r src/backend/requirements-dev\.txt", ci
+    ), "CI 须同时按哈希安装运行时锁与开发锁"
+
+
+def test_test_only_packages_not_in_production():
+    """测试依赖只在开发锁里：运行时与 Docker 源清单、锁文件都不含（审查 09 L-4）"""
+    for path in (SRC_IN, DOCKER_IN):
+        leaked = set(_pins(path)) & set(TEST_ONLY)
+        assert not leaked, f"{path.relative_to(REPO)} 含测试依赖 {sorted(leaked)}"
+    for path in (SRC_LOCK, DOCKER_LOCK):
+        leaked = {n for n, _, _ in _lock_entries(path)} & set(TEST_ONLY)
+        assert not leaked, f"{path.relative_to(REPO)} 含测试依赖 {sorted(leaked)}"
+    dev = _pins(DEV_IN)
+    assert "pytest" in dev and "httpx2" in dev
+
+
+def test_dev_lock_consistent_with_runtime_lock():
+    """开发锁以运行时锁为约束：共有包版本一致，两份锁可一起 --require-hashes 安装"""
+    dev_text = DEV_IN.read_text(encoding="utf-8")
+    assert re.search(r"^-r requirements\.in$", dev_text, re.M)
+    assert re.search(r"^-c requirements\.txt$", dev_text, re.M)
+    runtime = {n: v for n, v, _ in _lock_entries(SRC_LOCK)}
+    dev = {}
+    for n, v, _ in _lock_entries(DEV_LOCK):
+        dev.setdefault(n, set()).add(v)
+    drift = {n: (v, sorted(dev.get(n, []))) for n, v in runtime.items() if v not in dev.get(n, set())}
+    assert not drift, f"开发锁与运行时锁版本不一致（runtime, dev）：{drift}"
+
+
+def test_ci_pip_audit_pinned_with_hashes():
+    """CI 的 pip-audit 按带哈希的锁安装，不再 `pip install pip-audit` 取最新版（审查 09 L-1）"""
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert not re.search(r"pip install\s+pip-audit\b", ci), "pip-audit 未锁版本"
+    assert re.search(
+        r"pip\"? install --require-hashes \\\n\s*-r \.github/ci/requirements-audit\.txt", ci
+    )
+    pins = _pins(AUDIT_IN)
+    assert pins.get("pip-audit"), "requirements-audit.in 须精确 pin pip-audit"
