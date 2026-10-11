@@ -24,8 +24,15 @@
   取模到 `1..length`（跨原点的位点与切点都会报出）；线性分子上切点落在分子外或
   恰在末端的位点不算切割。回文位点只报一次（`strand=1`），非回文按识别方向给
   `strand=±1`。`recognition` 用 NEB 记法（`G^AATTC`、`GGTCTC(1/5)`）；Type IIS 的
-  `overhang` 是 REBASE 的 `NNNN`。`methylation` 暂不提供（Bio.Restriction 不含
-  dam/dcm 敏感性数据）。
+  `overhang` 是 REBASE 的 `NNNN`（酶级模板）；每个粘端位点另有 `sites[].overhang`：
+  两切点之间的**实际碱基**，按正向链 5'→3' 读（Type IIS、AvaI 等简并识别的
+  突出端因位点而异；平末端位点省略）。
+- Dam / Dcm 甲基化：对 E. coli Dam（G**A**TC）或 Dcm（C**C**WGG）重叠敏感的酶带
+  `methylation: ["dam"|"dcm"]`；位点所在上下文会形成阻断性甲基化时给出
+  `sites[].blocked_by`（如 XbaI 的 `TCTAGAtc` / `gaTCTAGA`、StuI 的 `AGGCCTgg`）。
+  `cut_count` 仍统计全部位点。敏感性表人工整理自 NEB「Dam and Dcm Methylases of
+  E. coli」（数据源自 REBASE，见 `core/plasmid_map/methylation.py`），只收表中明确
+  列出的酶；需要多处重叠才阻断的 Acc65I / BsaHI / BslI 不标。
 - `orfs[]`：ATG 起始、遇终止结束、只报最上游 ATG（不报嵌套）；`aa_length` 不含终止
   密码子；坐标含终止密码子；环状分子上跨原点的 ORF 报一次。`frame` = 该 ORF 所在链
   （负链按反向互补序列计）起点坐标 mod 3。
@@ -46,11 +53,15 @@
 `GET /api/vectors/{id}/map`（`source=vector`）也返回 MapDocument，均可加
 `enzyme_set`、`orf_min_aa` 查询参数。
 
+`GET /api/vectors` 列表的每一项另带 `map_preview: {length, topology, features:[{name,
+type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的特征一致，
+不含序列 / 酶切 / ORF），供载体列表画缩略图（MapThumbnail）。
+
 错误一律中文 `detail`：413 超长 / 超体积，415 不支持的格式，422 非法序列或参数。
 
 ## 自动注释
 
-元件库 `data/features/common_features.json`（63 条，来源与扩展方法见
+元件库 `data/features/common_features.json`（66 条，来源与扩展方法见
 [data/features/README.md](../data/features/README.md)）。比对流程：
 
 1. ≥40 bp 的元件：库序列 14-mer 精确种子（库内出现 >6 次的低复杂度 k-mer 不用）

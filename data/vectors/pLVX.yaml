@@ -103,7 +103,7 @@ features:
   description: 'color: #ffffff'
 mcs:
   name: MCS
-  start: 665
+  start: 2803
   end: 2840
   frame: 1
   sites:
@@ -126,11 +126,6 @@ mcs:
     sequence: GCGGCCGC
     position: 2827
     overhang: GGCCGC
-    unique: true
-  - enzyme: AgeI
-    sequence: ACCGGT
-    position: 665
-    overhang: CCGG
     unique: true
 data_provenance:
   source: SnapGene Plasmid Library
