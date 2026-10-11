@@ -216,18 +216,43 @@ def _get_analysis(analysis_id: str, user: Optional[User] = None,
     _sweep_expired()
     with _STORE_LOCK:
         result = _ANALYSES.get(analysis_id)
-    if result is None:
-        # 内存缓存未命中（过期/重启）：从数据库回灌
-        result = sequencing_store.load_record(analysis_id)
-        if result is not None:
-            result["_created_ts"] = time.time()
-            with _STORE_LOCK:
-                _ANALYSES[analysis_id] = result
+    if result is not None:
+        if not _can_access(result, user, access_token):
+            raise HTTPException(status_code=403, detail="无权访问该分析记录")
+        return result
+    # 内存缓存未命中（过期/重启）：先只读记录本体做鉴权，通过后才解压峰图
+    # 并回灌缓存，且回灌与登记共用容量淘汰（审查 02 M3：此前无令牌请求
+    # 也会解压峰图驻留内存，回灌条数不受 MAX_STORED/MAX_TRACE_STORED 约束）
+    result = sequencing_store.load_record_meta(analysis_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     if not _can_access(result, user, access_token):
         raise HTTPException(status_code=403, detail="无权访问该分析记录")
+    result["_trace_data"] = sequencing_store.load_trace(analysis_id)
+    result["_created_ts"] = time.time()
+    with _STORE_LOCK:
+        cached = _ANALYSES.get(analysis_id)  # 并发回灌：以先到者为准
+        if cached is not None:
+            return cached
+        _ANALYSES[analysis_id] = result
+        _enforce_caps_locked()
     return result
+
+
+def _enforce_caps_locked() -> None:
+    """内存缓存容量淘汰（登记与回灌共用；调用方须持有 _STORE_LOCK）。
+
+    按进入缓存的时间（_created_ts）排序：回灌的旧记录视为最新访问，
+    不会刚回灌就被淘汰。记录超过 MAX_STORED 时删最旧记录；超过
+    MAX_TRACE_STORED 时只保留最新记录的峰图，其余记录仍可查看结论。"""
+    if len(_ANALYSES) <= min(MAX_STORED, MAX_TRACE_STORED):
+        return
+    ordered = sorted(_ANALYSES, key=lambda aid: _ANALYSES[aid].get("_created_ts", 0))
+    while len(ordered) > MAX_STORED:
+        del _ANALYSES[ordered.pop(0)]
+    for aid in ordered[:max(0, len(ordered) - MAX_TRACE_STORED)]:
+        if _ANALYSES[aid].get("_trace_data"):
+            _ANALYSES[aid]["_trace_data"] = {}
 
 
 async def _read_limited(f: UploadFile, max_bytes: int = MAX_FILE_SIZE) -> bytes:
@@ -345,16 +370,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     record.pop("traces", None)
     with _STORE_LOCK:  # 终审 C-07：登记 + 容量淘汰整体串行
         _ANALYSES[analysis_id] = record
-        if len(_ANALYSES) > MAX_STORED:
-            oldest = sorted(_ANALYSES.items(), key=lambda kv: kv[1]["created_at"])[0][0]
-            del _ANALYSES[oldest]
-        if len(_ANALYSES) > MAX_TRACE_STORED:
-            keep = {aid for aid, _ in sorted(_ANALYSES.items(),
-                                             key=lambda kv: kv[1]["created_at"],
-                                             reverse=True)[:MAX_TRACE_STORED]}
-            for aid, rec in _ANALYSES.items():
-                if aid not in keep and rec.get("_trace_data"):
-                    rec["_trace_data"] = {}
+        _enforce_caps_locked()
     # 持久化：database 模式下重启/内存过期后记录仍可回看（峰图一并压缩落库）
     sequencing_store.persist_record(record)
     return analysis_id, access_token, record
