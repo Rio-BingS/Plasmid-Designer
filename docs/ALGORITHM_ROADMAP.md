@@ -1,6 +1,6 @@
 # 密码子优化与合成 oligo 算法路线图
 
-> **状态（截至 v2.7.0）**：「已实现」项均在主流程生效；「暂缓项」为数据/依赖门槛
+> **状态（截至 v2.9.0）**：「已实现」项均在主流程生效；「暂缓项」为数据/依赖门槛
 > 较高的可选增强——**短期无实施计划，按需启动**。启动任何一项前请先阅读
 > 对应的「门槛与建议方案」。
 
@@ -14,10 +14,13 @@
 | GC 效率平滑（单位 CAI 损失换取 GC 调整量，单点贪心） | `core/codon_optimizer.py` | — |
 | 变窗多参数精修（滑窗枚举同义变体，窗口 CAI + GC 贴近度择优，跳过 5' 区） | `core/codon_optimizer.py`（_sliding_window_refinement） | GeneOptimizer，Raab 2010 (PMCID: PMC2955205) |
 | 合成 oligo 错位交替排列（无完全互补对、片数恒偶） | `core/primer_designer.py` | — |
-| DNAWorks 式 Tm 均一化分片（边界微调使相邻片 Tm 差最小，实测极差 ~1.1°C） | `core/primer_designer.py`（_tm_homogenize_boundaries） | Hoover & Lubkowski 2002 (NAR, e43) |
+| DNAWorks 式 Tm 均一化分片（v2.8.0 起均一化的是相邻片**重叠双链**的 Tm，边界位置与重叠长度 18-25nt 共同作为自由变量；1.2 kb 基因实测极差中位数 1.8-2.6°C，代价是多 2-4 条 oligo） | `core/primer_designer.py`（_tm_homogenize_boundaries） | Hoover & Lubkowski 2002 (NAR, e43) |
 | 交叉杂交审查（3' 端 12mer 与其他 oligo 互补匹配计数，检出告警） | `core/primer_designer.py`（cross_hybridization_count） | Thachuk & Condon 2007 (BIBE) |
 | 综合评分 score (0-100)：CAI 45% + GC 25% + 5' 结构 20% + motif 10% | `core/codon_optimizer.py`（_optimization_score） | — |
 | 排除限制酶位点（密码子优化 avoid_motifs 避让，缓存键纳入） | `app/design_service.py` | — |
+| 引物 Tm 最近邻法（SantaLucia DNA_NN4 + 盐校正，v2.8.0 收敛为单一实现） | `core/primer_designer.py`（Bio.SeqUtils.MeltingTemp.Tm_NN） | SantaLucia 1998 (PNAS) |
+| 限制酶参数统一取自 Bio.Restriction（REBASE），v2.8.0 起为唯一来源 | `core/enzyme_sites.py` | REBASE |
+| Golden Gate overhang 连接保真度筛查（v2.8.0） | `core/primer_designer.py`（screen_gg_overhang_pair） | Potapov 2018 (ACS Synth Biol) |
 
 ## 暂缓项（短期不做，按需启动）
 
@@ -66,6 +69,8 @@
 
 ### 5. 合成 oligo 交叉杂交完全规避
 
+- **现状（v2.8.0 后）**：仍只检测告警；`_tm_homogenize_boundaries` 已在 v2.8.0 重写为
+  「边界 + 重叠长度」坐标下降，惩罚项要加在这里（接口未变，建议方案依然成立）
 - **价值**：当前只检测告警；Thachuk & Condon 2007 给出 DP 形式化
   （最小 oligo 数 + Tm 均一 + 交叉杂交最小化），DFS 2022 实现了
   <1°C 偏差的搜索剪枝
@@ -95,7 +100,7 @@ L ≈ 1 周以上。
 
 | # | 项 | 用户价值 | 工作量（触达） | 依赖 / 许可 | 运行时风险 | 测试策略 |
 |---|---|---|---|---|---|---|
-| 5 | oligo 交叉杂交主动规避 | 高：直接影响全基因合成组装成功率，当前只给告警、用户无法自行消解 | **S-M**：`core/primer_designer.py`（`_tm_homogenize_boundaries` + `cross_hybridization_count`）、`app/design_service.py` 告警文案、`tests/test_primer_designer.py` | 无新依赖 | 中：边界搜索内嵌交叉杂交评分会把 O(边界×17) 放大为 O(边界×17×片数²)，需对 12mer 建索引并缓存，必要时设迭代上限 | 构造已知冲突序列断言计数降为 0；保留 Tm 极差 ≤1.5°C 与「片数恒偶、无完全互补对」回归断言 |
+| 5 | oligo 交叉杂交主动规避 | 高：直接影响全基因合成组装成功率，当前只给告警、用户无法自行消解 | **S-M**：`core/primer_designer.py`（`_tm_homogenize_boundaries` + `cross_hybridization_count`）、`app/design_service.py` 告警文案、`tests/test_primer_designer.py` | 无新依赖 | 中：v2.8.0 的坐标下降已同时搜索边界与重叠长度，再内嵌交叉杂交评分会进一步放大搜索开销，需对 12mer 建索引并缓存，必要时设迭代上限 | 构造已知冲突序列断言计数降为 0；保留现有重叠 Tm 极差 ≤5°C 与「片数恒偶、无完全互补对」回归断言 |
 | 6 | 密码子使用数据源更新 | 高：CAI/评分的输入质量，影响全部优化结果；Kazusa 数据停在 2007 | **S**：`data/codon_tables/*.yaml`、`tests/test_codon_tables_data.py`、导出脚本 | 仅数据（CoCoPUTs / HIVE-CUTs 公开下载）；需在 `data_provenance` 注明来源与抓取日期 | 低：纯数据替换，无运行时开销 | 频率和归一化校验（每个氨基酸家族和为 1）、与现表的差异报告、`tests/test_real_data_regression.py` 固定序列 CAI 基线更新 |
 | 3 | 完整 mRNA 折叠（MFE） | 中-高：把 5' 发夹计数近似升级为全序列能量，报告可信度明显提升 | **M**：新增 `core/rna_fold.py` 可选封装、`core/codon_optimizer.py::_optimization_score`、报告/导出层 | ViennaRNA（自定义许可，禁收费再分发）→ 只能可选安装，不进 `requirements.txt` | 中：O(n³) 时间 / O(n²) 内存，1-2 kb 量级在单核上约亚秒到数秒、内存十 MB 级可接受；必须只在终评调用一次，禁止进迭代热路径，并对超长序列设长度上限 | 未安装 ViennaRNA 时走降级分支的用例（CI 默认环境）；安装后对已知序列断言 MFE 落在参考区间 |
 | 4 | 密码子对偏好 CPB / 上下文 CC | 中：独立于 CAI 的评分维度，但对普通用户是「分数多一项」，不改变主序列质量感知 | **M**：新增 `data/codon_pairs/<species>.yaml`（3721 对/物种）、`core/codon_optimizer.py`（`_window_score` / `_optimization_score`）、新测试 | 仅数据（CoCoPUTs 提供 codon pair 表） | 中：滑窗精修已是 CPU 热点，窗口评分再加一项需保持 O(1) 查表，评分权重重标定会牵动既有基线 | 人工构造高/低 CPS 序列断言排序正确；综合 score 权重变更需同步刷新回归基线 |
