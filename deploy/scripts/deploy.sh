@@ -152,6 +152,9 @@ BACKEND_PORT=$(grep -E "^BACKEND_PORT=" .env | cut -d= -f2 | tr -d '[:space:]')
 BACKEND_PORT=${BACKEND_PORT:-8000}
 FRONTEND_PORT=$(grep -E "^FRONTEND_PORT=" .env | cut -d= -f2 | tr -d '[:space:]')
 FRONTEND_PORT=${FRONTEND_PORT:-80}
+# compose 插值时进程环境变量优先于 .env；用独立变量名，不改写已导出的 FRONTEND_BIND
+FRONTEND_BIND_ADDR="${FRONTEND_BIND:-$(env_value FRONTEND_BIND)}"
+FRONTEND_BIND_ADDR="${FRONTEND_BIND_ADDR:-127.0.0.1}"
 
 # 创建必要目录
 echo "创建数据目录..."
@@ -212,10 +215,19 @@ echo ""
 echo "=== 部署完成 ==="
 echo ""
 echo "访问地址:"
-echo "  前端: http://localhost:${FRONTEND_PORT}"
+echo "  前端: http://localhost:${FRONTEND_PORT}（发布于 ${FRONTEND_BIND_ADDR}）"
 echo "  后端(仅本机): http://localhost:${BACKEND_PORT}"
 echo "  API文档: http://localhost:${FRONTEND_PORT}/docs"
 echo ""
+case "$FRONTEND_BIND_ADDR" in
+    127.*|localhost|::1|"[::1]")
+        echo "注意: 前端端口只绑定本机 ${FRONTEND_BIND_ADDR}，公网无法直连。"
+        echo "  经宿主机 nginx 反代（推荐，见 deploy/docker/README.md 第九节）无需改动；"
+        echo "  不用反代、要直接以 http://服务器IP 访问时，在 .env 设 FRONTEND_BIND=0.0.0.0"
+        echo "  后重新运行本脚本（Docker 发布的端口不受 ufw 限制）"
+        echo ""
+        ;;
+esac
 echo "常用命令:"
 echo "  查看日志:    $COMPOSE_CMD logs -f"
 echo "  查看后端日志: $COMPOSE_CMD logs -f backend"

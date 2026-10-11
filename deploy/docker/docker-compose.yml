@@ -71,8 +71,11 @@ services:
       dockerfile: deploy/docker/Dockerfile.frontend
     container_name: plasmid-frontend
     restart: unless-stopped
+    # 默认只绑本机回环：Docker 发布的端口走自己的 iptables 链，ufw 拦不住，
+    # 绑 0.0.0.0 时宿主机 TLS 前置可被绕过。不经前置、直接对外服务时在 .env
+    # 设 FRONTEND_BIND=0.0.0.0
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-80}:80"
     depends_on:
       backend:
         condition: service_healthy
