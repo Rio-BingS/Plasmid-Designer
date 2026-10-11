@@ -143,3 +143,19 @@ Marmur-Doty）系统性高约 7°C，且相同长度与 GC 的不同序列不再
 给出负值，统一钳到 0.0；全简并（N）序列同样返回 0.0。
 设计耗时从约 2.6 ms/对 升到约 5.6 ms/对（已对候选序列做 Tm 缓存），仍远低于
 单次设计的其他开销。
+
+**同批其他用户可见变化（v2.8.0）**：
+
+- 限制酶：回文酶不再正反链重复计数，可判为唯一位点；三套酶表统一到
+  Bio.Restriction（REBASE），默认扫描 51 种、下拉 47 种；HindIII/SacI
+  不再误报兼容。部署后如用 Redis，请清除 `analysis_enzymes:*` 缓存。
+- 酶切模拟新增可选 `circular`（默认 false），环状时首尾片段合并。
+- 合成 oligo 按重叠双链 Tm 均一化（1.2 kb 基因 spread ≤5 °C），代价是
+  oligo 数量通常多 2–4 条。
+- Golden Gate overhang 新增保真度筛查；常见 MCS 回文 overhang 会给出警告。
+- Sanger：N/IUPAC 不再计为替换；>20 kb 参考改用 k-mer 定位加窗口比对
+  （200 kb 约 726 MB → 40 MB，结果一致）；共识按逐列 Q 加权；tracy 次级
+  basecall 作为混合峰印证（`tracy_corroboration`）。
+- GenBank `join()` 特征逐段解析，跨原点 CDS 按拼接序列判读。
+- 密码子优化滑窗精修只查改动窗口附近，残留 motif 时不再整体失效。
+- 删除三个零引用模块（enhanced/advanced primer、enhanced codon）。
