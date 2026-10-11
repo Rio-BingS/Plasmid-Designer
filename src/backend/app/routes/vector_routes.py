@@ -11,7 +11,7 @@ import tempfile
 import shutil
 from typing import List, Optional, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -23,7 +23,7 @@ from core.genbank_format import format_locus_line
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
-    BatchImportRequest, PlasmidMapData
+    BatchImportRequest, MapDocument
 )
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
@@ -240,47 +240,32 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
     )
 
 
-@router.get("/{vector_id}/map", response_model=PlasmidMapData)
-async def get_vector_map_data(vector_id: str):
-    """获取载体图谱数据"""
+@router.get("/{vector_id}/map", responses={200: {"model": MapDocument}})
+async def get_vector_map_data(
+    vector_id: str,
+    enzyme_set: str = Query(default="common", max_length=40),
+    orf_min_aa: int = Query(default=100, ge=10, le=5000),
+):
+    """载体图谱（契约 plasmid-map/1，特征 source=vector）"""
+    import hashlib
+
+    from app.map_documents import vector_map_document
+    from app.routes.map_routes import cached_document
+
     library = get_vector_library()
     vector = library.get_vector(vector_id)
-
     if not vector:
         raise HTTPException(status_code=404, detail="Vector not found")
-
-    features = []
-    for elem in vector.elements:
-        features.append({
-            "name": elem.name,
-            "type": elem.element_type.value,
-            "start": elem.start,
-            "end": elem.end,
-            "strand": elem.strand,
-            "description": elem.description
-        })
-
-    # 如果没有定义特征，添加基本注释
-    if not features and vector.mcs:
-        features.append({
-            "name": vector.mcs.name,
-            "type": "multiple_cloning_site",
-            "start": vector.mcs.start,
-            "end": vector.mcs.end,
-            "strand": "+",
-            "description": "Multiple Cloning Site"
-        })
-
-    from core.enzyme_sites import find_enzyme_sites
-
-    return PlasmidMapData(
-        name=vector.name,
-        length=vector.length,
-        # 序列视图需要完整序列（量级 ~10kb，无需截断）
-        sequence=vector.sequence,
-        features=features,
-        enzyme_sites=find_enzyme_sites(vector.sequence),
-    )
+    key = {
+        "vector": vector_id,
+        "seq": hashlib.sha256(vector.sequence.encode("utf-8")).hexdigest(),
+        "features": [(e.name, e.element_type.value, e.start, e.end, e.strand, e.description)
+                     for e in vector.elements],
+        "mcs": [vector.mcs.start, vector.mcs.end] if vector.mcs else None,
+        "enzyme_set": enzyme_set, "orf_min_aa": orf_min_aa,
+    }
+    return await cached_document("vector", key, vector_map_document, vector,
+                                 enzyme_set=enzyme_set, orf_min_aa=orf_min_aa)
 
 
 # ==================== NCBI 导入路由 ====================

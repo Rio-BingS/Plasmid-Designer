@@ -147,7 +147,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | GET | `/api/design/{id}` | 查询设计结果 |
 | GET | `/api/design/{id}/download/genbank` | 下载 GenBank 文件 |
 | GET | `/api/design/{id}/download/primers` | 下载引物订单 (TSV) |
-| GET | `/api/design/{id}/map` | 获取质粒图谱数据 |
+| GET | `/api/design/{id}/map` | 构建体图谱（MapDocument，见 [docs/MAP.md](docs/MAP.md)） |
 
 ### 批量设计
 
@@ -164,7 +164,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 |------|------|------|
 | GET | `/api/vectors` | 列出载体（支持类型/宿主过滤） |
 | GET | `/api/vectors/{id}` | 获取载体详情 |
-| GET | `/api/vectors/{id}/map` | 获取载体图谱数据 |
+| GET | `/api/vectors/{id}/map` | 载体图谱（MapDocument） |
 | GET | `/api/vectors/{id}/sequence` | 获取载体序列 (FASTA/GenBank) |
 | DELETE | `/api/vectors/{id}` | 删除载体 |
 | PUT | `/api/vectors/{id}` | 更新载体信息 |
@@ -191,6 +191,15 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | POST | `/api/analysis/export/all` | 全格式导出 (ZIP) |
 | GET | `/api/analysis/design/{id}/export` | 导出设计结果（`?format=`，默认 genbank） |
 | GET | `/api/analysis/vector/{id}/export` | 导出载体序列（`?format=`，默认 genbank） |
+
+### 质粒图谱（契约 plasmid-map/1，详见 [docs/MAP.md](docs/MAP.md)）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/api/map/parse` | 解析 GenBank / FASTA / SnapGene `.dna` 上传或粘贴文本 → MapDocument（可自动注释） |
+| POST | `/api/map/analyze` | 编辑后的序列 / 特征重算酶切、ORF、自动注释 |
+| GET | `/api/map/enzyme-sets` | 酶集合（common / unique6 / commercial / golden_gate） |
+| POST | `/api/map/export/genbank` | MapDocument → GenBank 下载 |
 
 ### 密码子表
 

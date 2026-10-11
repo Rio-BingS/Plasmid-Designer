@@ -1,25 +1,25 @@
 """设计任务路由 — 统一走 DesignService"""
 
+import hashlib
 import logging
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from app.auth.jwt_auth import User, get_current_user
 from app.cache import cache
 from app.design_service import (
     generate_genbank_from_result,
-    map_data_from_result,
     run_design,
 )
 from app.routes.models import (
     DesignRequest,
     DesignResult,
     DesignStatus,
-    PlasmidMapData,
+    MapDocument,
     PrimerInfo,
 )
 from app.storage import get_design_store
@@ -158,14 +158,30 @@ async def download_primers(design_id: str, user: Optional[User] = Depends(get_cu
     )
 
 
-@router.get("/{design_id}/map", response_model=PlasmidMapData)
-async def get_design_map_data(design_id: str, user: Optional[User] = Depends(get_current_user)):
+@router.get("/{design_id}/map", responses={200: {"model": MapDocument}})
+async def get_design_map_data(
+    design_id: str,
+    enzyme_set: str = Query(default="common", max_length=40),
+    orf_min_aa: int = Query(default=100, ge=10, le=5000),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """构建体图谱（契约 plasmid-map/1）：插入片段 source=design，载体元件 source=vector"""
+    from app.map_documents import design_map_document
+    from app.routes.map_routes import cached_document
+
     result = _ensure_design_access(_load(design_id), user)
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")
-
-    data = map_data_from_result(result)
-    return PlasmidMapData(**data)
+    key = {
+        "design": design_id,
+        "seq": hashlib.sha256((result.construct_sequence or result.optimized_sequence or "")
+                              .encode("utf-8")).hexdigest(),
+        "features": result.construct_features,
+        "insert": [result.insert_start, result.insert_end],
+        "enzyme_set": enzyme_set, "orf_min_aa": orf_min_aa,
+    }
+    return await cached_document("design", key, design_map_document, result,
+                                 enzyme_set=enzyme_set, orf_min_aa=orf_min_aa)
 
 
 def run_design_task(design_id: str, request: DesignRequest):
