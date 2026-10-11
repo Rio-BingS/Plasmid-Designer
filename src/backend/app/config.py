@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = _VERSION  # 发版改 core/_version.py
     # 生产环境保持 False；开发调试时通过 .env / 环境变量显式打开
     DEBUG: bool = False
+    # /docs、/redoc、/openapi.json 开关。本地开发默认开启；Docker compose 默认 false
+    # （容器 nginx 无法按来源限制，开启即对公网暴露全部接口结构，审查 10 L7）
+    ENABLE_API_DOCS: bool = True
 
     # 服务器配置
     HOST: str = "0.0.0.0"
