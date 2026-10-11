@@ -7,53 +7,83 @@
  "features": [
   {
    "id": "f1",
-   "name": "lac promoter/operator",
-   "type": "promoter",
-   "start": 108,
-   "end": 208,
-   "strand": 1,
+   "name": "lacZ-alpha",
+   "type": "cds",
+   "start": 146,
+   "end": 469,
+   "strand": -1,
    "source": "vector",
-   "notes": "lac 启动子与操纵序列（IPTG 诱导）"
+   "notes": "lacZ alpha 片段（蓝白斑筛选），MCS 嵌入读码框内；完整 ORF（107 aa）"
   },
   {
    "id": "f2",
-   "name": "lacZ-alpha",
-   "type": "cds",
-   "start": 216,
-   "end": 539,
-   "strand": 1,
+   "name": "MCS",
+   "type": "mcs",
+   "start": 396,
+   "end": 452,
+   "strand": -1,
    "source": "vector",
-   "notes": "lacZ alpha 片段（蓝白斑筛选），MCS 嵌入读码框内"
+   "notes": "多克隆位点（lacZα 方向）: HindIII-SphI-PstI-SalI-XbaI-BamHI-SmaI-KpnI-SacI-EcoRI"
   },
   {
    "id": "f3",
-   "name": "MCS",
-   "type": "mcs",
-   "start": 233,
-   "end": 289,
+   "name": "lac operator",
+   "type": "protein_bind",
+   "start": 489,
+   "end": 505,
    "strand": -1,
    "source": "vector",
-   "notes": "多克隆位点: HindIII-SphI-PstI-SalI-XbaI-BamHI-SmaI-KpnI-SacI-EcoRI"
+   "notes": "lac 阻遏蛋白结合位点（17 bp）"
   },
   {
    "id": "f4",
-   "name": "AmpR (bla)",
-   "type": "marker",
-   "start": 885,
-   "end": 1745,
-   "strand": 1,
+   "name": "lac promoter",
+   "type": "promoter",
+   "start": 513,
+   "end": 543,
+   "strand": -1,
    "source": "vector",
-   "notes": "氨苄西林抗性（beta-lactamase）"
+   "notes": "E. coli lac 启动子（IPTG 诱导）"
   },
   {
    "id": "f5",
-   "name": "pUC ori",
-   "type": "rep_origin",
-   "start": 1785,
-   "end": 2535,
-   "strand": 1,
+   "name": "CAP binding site",
+   "type": "protein_bind",
+   "start": 558,
+   "end": 579,
+   "strand": -1,
    "source": "vector",
-   "notes": "ColE1/pBR322 衍生的高拷贝复制起始区"
+   "notes": "分解代谢物激活蛋白（CAP）结合位点"
+  },
+  {
+   "id": "f6",
+   "name": "ori",
+   "type": "rep_origin",
+   "start": 867,
+   "end": 1455,
+   "strand": -1,
+   "source": "vector",
+   "notes": "高拷贝 pUC 复制起始区（ColE1/pMB1 衍生）"
+  },
+  {
+   "id": "f7",
+   "name": "AmpR (bla)",
+   "type": "marker",
+   "start": 1626,
+   "end": 2486,
+   "strand": -1,
+   "source": "vector",
+   "notes": "氨苄西林抗性（beta-lactamase），完整 ORF（286 aa）"
+  },
+  {
+   "id": "f8",
+   "name": "AmpR promoter",
+   "type": "promoter",
+   "start": 2487,
+   "end": 2591,
+   "strand": -1,
+   "source": "vector",
+   "notes": "bla 启动子"
   }
  ],
  "enzymes": [
