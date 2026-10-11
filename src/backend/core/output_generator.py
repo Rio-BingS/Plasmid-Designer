@@ -12,6 +12,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
+from core.genbank_format import format_locus_line
+
 
 @dataclass
 class PlasmidDesign:
@@ -61,9 +63,8 @@ class GenBankGenerator:
         # LOCUS
         locus_name = design.design_name[:16].replace(' ', '_')
         length = len(design.final_sequence)
-        date_str = datetime.now().strftime("%d-%b-%Y").upper()
-        
-        lines.append(f"LOCUS       {locus_name:<16} {length} bp    DNA     circular SYN {date_str}")
+
+        lines.append(format_locus_line(locus_name, length, topology="circular"))
         lines.append(f"DEFINITION  {design.design_name}")
         lines.append(f"ACCESSION   {design.design_id}")
         lines.append(f"VERSION     {design.design_id}.1")

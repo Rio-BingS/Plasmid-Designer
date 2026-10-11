@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import struct
 import logging
 
+from core.genbank_format import format_locus_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,11 +61,10 @@ class GenBankExporter:
         # LOCUS 行
         locus_name = data.name[:16].replace(' ', '_').replace('-', '_')
         seq_length = len(data.sequence)
-        mol_type = "DNA" if "circular" in str(data.is_circular) else "DNA"
         topology = "circular" if data.is_circular else "linear"
-        date_str = data.created_at.strftime("%d-%b-%Y").upper()
-        
-        lines.append(f"LOCUS       {locus_name:<16} {seq_length:>6} bp    {mol_type}     {topology:<8} SYN {date_str}")
+
+        lines.append(format_locus_line(locus_name, seq_length, topology=topology,
+                                       date=data.created_at))
         
         # DEFINITION
         lines.append(f"DEFINITION  {data.description or data.name}")
