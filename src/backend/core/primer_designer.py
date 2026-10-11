@@ -86,6 +86,51 @@ def _tm_nn(seq: str) -> float:
     )
 
 
+# ---------------------------------------------------------------------------
+# Golden Gate overhang 连接保真度筛查（规则版，无外部数据依赖）
+#
+# 依据 Potapov 2018 / Pryor 2020 的 T4 连接保真度实验给出的通用规则：
+# 回文 overhang 会与自身连接、两个 overhang 相差不足 2 个碱基会互相错连、
+# 0%/100% GC 的 overhang（AAAA/TTTT 类）连接效率与特异性都差。
+GG_OVERHANG_LENGTH = 4
+GG_MIN_MISMATCHES = 2
+
+
+def _hamming(a: str, b: str) -> int:
+    return sum(1 for x, y in zip(a, b) if x != y) + abs(len(a) - len(b))
+
+
+def screen_gg_overhang_pair(overhang_5: str, overhang_3: str) -> List[str]:
+    """筛查一对 Golden Gate overhang，返回告警文案（空列表表示通过）。
+
+    只做规则判定，不加载连接保真度矩阵（那需要额外依赖与离线数据）。
+    调用方应「告警而非报错」：严格拒绝会让某些载体完全无法设计。
+    """
+    issues: List[str] = []
+    pair = (("5'", overhang_5.upper()), ("3'", overhang_3.upper()))
+
+    for side, oh in pair:
+        if len(oh) != GG_OVERHANG_LENGTH or any(b not in "ATGC" for b in oh):
+            issues.append(f"{side} overhang {oh or '(空)'} 不是合法的 4nt 序列")
+            continue
+        if oh == revcomp(oh):
+            issues.append(f"{side} overhang {oh} 是回文，会与自身连接成反向插入")
+        gc = gc_percent(oh)
+        if gc == 0 or gc == 100:
+            issues.append(f"{side} overhang {oh} 的 GC 为 {gc:.0f}%，连接效率与特异性都差")
+
+    a, b = pair[0][1], pair[1][1]
+    if len(a) == len(b) == GG_OVERHANG_LENGTH:
+        # 与对方、以及对方的反向互补（实际连接面）都要有足够差异
+        dist = min(_hamming(a, b), _hamming(a, revcomp(b)))
+        if dist < GG_MIN_MISMATCHES:
+            issues.append(
+                f"5' overhang {a} 与 3' overhang {b} 仅相差 {dist} 个碱基"
+                f"（需 ≥{GG_MIN_MISMATCHES}），两端会互相错连"
+            )
+    return issues
+
+
 class PrimerType(Enum):
     PRIMER = "primer"
     GIBSON_FP = "gibson_forward"
@@ -372,6 +417,13 @@ class PrimerDesigner:
             notes=f"Golden Gate reverse, {enzyme_name}, overhang: {overhang_seq_3}"
         )
         
+        # overhang 连接保真度筛查：不通过只告警，不拒绝设计
+        gg_issues = screen_gg_overhang_pair(overhang_seq_5, overhang_seq_3)
+        if gg_issues:
+            warn = "；警告：overhang 连接保真度筛查未通过：" + "；".join(gg_issues)
+            forward.notes += warn
+            reverse.notes += warn
+
         product_size = len(insert_seq)
         annealing_temp = self._calculate_annealing_temp(forward.tm, reverse.tm)
         

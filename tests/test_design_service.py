@@ -365,6 +365,56 @@ def test_gg_overhang_fallback_flagged_in_warnings():
         assert any("overhang" in w and "回退" in w for w in result.warnings)
 
 
+def test_gg_overhang_screen_prefers_valid_pair_from_vector():
+    """载体能给出合规组合时优先选它（而不是固定取首尾两个位点）"""
+    from types import SimpleNamespace
+
+    from core.primer_designer import screen_gg_overhang_pair
+
+    def site(overhang):
+        return SimpleNamespace(overhang=overhang, is_unique=True)
+
+    # 首尾组合 GATC/TCGA 全是回文，中间的 AATG/GCTT 合规
+    vector = SimpleNamespace(mcs=SimpleNamespace(
+        sites=[site("GATC"), site("AATG"), site("GCTT"), site("TCGA")]
+    ))
+    oh5, oh3, derived = derive_gg_overhangs(vector, "BsaI")
+    assert derived is True
+    assert screen_gg_overhang_pair(oh5, oh3) == []
+    assert (oh5, oh3) == ("AATG", "GCTT")
+
+
+def test_gg_overhang_screen_degrades_to_warning_when_nothing_valid():
+    """一对合规组合都挑不出来时保持原行为，只在 warnings 里说明"""
+    from types import SimpleNamespace
+
+    from core.primer_designer import screen_gg_overhang_pair
+
+    def site(overhang):
+        return SimpleNamespace(overhang=overhang, is_unique=True)
+
+    vector = SimpleNamespace(mcs=SimpleNamespace(
+        sites=[site("GATC"), site("TCGA"), site("AATT")]
+    ))
+    oh5, oh3, derived = derive_gg_overhangs(vector, "BsaI")
+    assert (oh5, oh3, derived) == ("GATC", "AATT", True)  # 原行为：首尾两个位点
+    assert screen_gg_overhang_pair(oh5, oh3)  # 但确实不合规
+
+
+def test_gg_overhang_screen_warning_surfaced_in_design_result():
+    """设计结果里能看到 overhang 筛查告警（pUC19 的 MCS overhang 全是回文）"""
+    req = DesignRequest(
+        sequence="ATGAAAGTGCTGGGTAAACCGTTTTAA",
+        sequence_type=SequenceType.DNA,
+        cloning_method=CloningMethod.GOLDEN_GATE,
+        enzyme="BsaI",
+        vector_id="pUC19",
+    )
+    result = run_design("design_test_gg_screen", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert any("连接保真度筛查" in w for w in result.warnings), result.warnings
+
+
 def test_gibson_placeholder_backbone_warns():
     """回归：载体骨架含 N 占位时，Gibson 同源臂不可信，应在 warnings 中明确告警"""
     from app.design_service import run_design as _rd

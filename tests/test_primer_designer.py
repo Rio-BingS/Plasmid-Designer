@@ -417,6 +417,47 @@ def test_synthesis_oligos_short_sequence_staggered_pair():
     assert b.sequence != a.sequence.translate(str.maketrans("ATGC", "TACG"))[::-1]
 
 
+def test_gg_overhang_screen_accepts_valid_pair():
+    """默认的 AATG/GCTT 是合规组合，不应报任何问题"""
+    from core.primer_designer import screen_gg_overhang_pair
+
+    assert screen_gg_overhang_pair("AATG", "GCTT") == []
+    assert screen_gg_overhang_pair("aatg", "gctt") == []
+
+
+@pytest.mark.parametrize("oh5,oh3,keyword", [
+    ("GATC", "AATG", "回文"),      # 回文 overhang 会与自身连接
+    ("AATG", "GATC", "回文"),
+    ("AATG", "AATC", "相差"),      # 仅 1 个碱基之差，两端互相错连
+    ("AATG", "CATT", "相差"),      # 互为反向互补，连接面完全相同
+    ("AAAA", "GCTT", "GC"),        # 0% GC
+    ("GGCC", "AATG", "GC"),        # 100% GC（同时也是回文）
+    ("AT", "GCTT", "4nt"),         # 非法长度
+])
+def test_gg_overhang_screen_rejects(oh5, oh3, keyword):
+    from core.primer_designer import screen_gg_overhang_pair
+
+    issues = screen_gg_overhang_pair(oh5, oh3)
+    assert issues, f"{oh5}/{oh3} 应被筛查出问题"
+    assert any(keyword in i for i in issues), issues
+
+
+def test_golden_gate_primers_warn_on_bad_overhangs_but_still_design():
+    """筛查不通过只告警、不拒绝设计（某些载体推不出合规组合）"""
+    designer = PrimerDesigner()
+    seq = "ATGAAAGCTGCTGCTAAAGGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTTTAA"
+
+    good = designer.design_golden_gate_primers(seq, "BsaI", "AATG", "GCTT", "gg")
+    assert "连接保真度" not in (good.forward.notes or "")
+
+    bad = designer.design_golden_gate_primers(seq, "BsaI", "GATC", "GATC", "gg")
+    assert bad.forward.sequence and bad.reverse.sequence
+    for p in (bad.forward, bad.reverse):
+        assert "连接保真度" in p.notes and "回文" in p.notes
+    # 引物结构本身不受筛查影响
+    assert bad.forward.overhang.startswith("GGGGTCTCA")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
