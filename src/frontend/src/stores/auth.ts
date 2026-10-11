@@ -4,7 +4,7 @@ import {
   login as apiLogin, register as apiRegister, logout as apiLogout, verifyToken,
   getSiteConfig, type SiteConfig
 } from '@/api'
-import { bumpAuthEpoch, currentAuthEpoch } from '@/api/session'
+import { bumpAuthEpoch, currentAuthEpoch, onSessionExpired } from '@/api/session'
 
 // 旧版本把令牌与用户信息存在 localStorage（XSS 可直接读走）；
 // 现在令牌只在后端下发的 httpOnly Cookie 里，启动时清掉遗留数据
@@ -119,6 +119,9 @@ export const useAuthStore = defineStore('auth', () => {
     bumpAuthEpoch()
     user.value = null
   }
+
+  // 接口返回 401（当前会话已失效）时由 api 拦截器经 session 模块回调清理
+  onSessionExpired(clearAuth)
 
   return {
     user,

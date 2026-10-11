@@ -23,3 +23,18 @@ export function bumpAuthEpoch(): number {
   epoch += 1
   return epoch
 }
+
+// 会话失效回调：由 auth store 在创建时注册。api 拦截器只调用这里，
+// 不直接引用 auth store——auth store 静态依赖 api，反向再引用就成环，
+// 原先的动态 import 又会让构建报「既被动态又被静态导入」
+let expiredHandler: (() => void) | null = null
+
+/** 注册会话失效（401）时的清理回调；重复注册以最后一次为准 */
+export function onSessionExpired(handler: (() => void) | null): void {
+  expiredHandler = handler
+}
+
+/** 通知会话已失效；尚无 auth store（如单测环境）时无状态可清 */
+export function notifySessionExpired(): void {
+  expiredHandler?.()
+}
