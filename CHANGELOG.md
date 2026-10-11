@@ -29,9 +29,16 @@
   （`join()` 与跨原点特征、ApE / SnapGene 颜色）、编辑后重算、酶集合
   （common / unique6 / commercial / golden_gate）、GenBank 导出。环状感知的双链切点、
   ORF 查找。上限 `MAP_MAX_LENGTH`（默认 300000 bp）、`MAP_MAX_UPLOAD_MB`（默认 5）。
-- 图谱自动注释：63 条常见元件库（载体库与 NCBI GenBank 中可核验的序列，逐条记录
-  来源，`scripts/build_feature_library.py` 重建），k-mer 种子 + 局部比对，报告
-  identity / coverage，覆盖不足标 fragment；肽标签按翻译检索。
+- 图谱自动注释：66 条常见元件库（载体库与 NCBI GenBank 中可核验的序列，逐条记录
+  来源，`scripts/build_feature_library.py` 重建；含 p15A ori、AcV5 标签与 pUC 标准
+  589 bp ori），k-mer 种子 + 局部比对，报告 identity / coverage，覆盖不足标 fragment；
+  肽标签按翻译检索。
+- 图谱酶切位点给出每个粘端位点的实际突出端碱基（`sites[].overhang`，Type IIS 与
+  AvaI 等简并识别酶不再只有 `NNNN` 模板），并按 NEB / REBASE 的重叠甲基化表标出对
+  Dam / Dcm 敏感的酶（`methylation`）与会被常规菌株甲基化阻断的位点（`sites[].blocked_by`，
+  如 XbaI 的 `TCTAGATC`、StuI 的 `AGGCCTGG`）。
+- `GET /api/vectors` 列表每项新增 `map_preview`（长度、拓扑、归一后的特征，不含序列），
+  供载体列表画图谱缩略图。
 
 - 全新质粒图谱查看器（前端 `src/map/`，SVG，零新依赖）：环形 / 线性 / 序列 / 分屏
   四种视图共享选区与悬停（任一视图选中，其余同步高亮）；环形图可拖拽中心旋转、
@@ -53,6 +60,11 @@
 
 - 7 个 SnapGene 来源载体（pcDNA3.1、pET-21a、pET-28a、pFastBac1、pGEX-4T-1、pLVX、
   pYES2）的特征起点整体左移一位，CDS 长度不是 3 的倍数、翻译读码框错位；已更正。
+- pUC19 的特征坐标沿用了另一套编号（M77789），与 L09137 序列整体错位：lacZα、AmpR
+  不是完整 ORF，MCS 不含所列酶切位点。已按序列本身重标（lacZα complement(146..469)、
+  MCS 396..452、lac operator / promoter、CAP 位点、ori 867..1455、AmpR
+  complement(1626..2486) 及其启动子）。
+- pLVX 的 mcs 列了序列中不存在的 AgeI 位点（mcs 区间因此从 665 起算），已移除。
 
 ## [2.10.0] - 2026-10-12
 

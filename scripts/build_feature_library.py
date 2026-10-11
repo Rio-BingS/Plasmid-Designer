@@ -115,6 +115,20 @@ VECTOR_SPECS = [
     ("pYES2", "URA3", 0, "URA3", "marker", "orf", "yeast auxotrophic marker"),
     ("pYES2", "URA3 promoter", 0, "URA3 promoter", "promoter", None, "URA3 promoter"),
     ("pYES2", "2μ ori", 0, "2μ ori", "rep_origin", None, "yeast 2μ plasmid origin"),
+    # pUC19（L09137，坐标已按序列核验）：AmpR / 启动子 / lac 元件与已有条目序列相同，
+    # 只追加来源；ori 是标准 589 bp 版本（pcDNA3.1 的 ori 在 poly(A) 段少 3 bp）
+    ("pUC19", "lacZ-alpha", 0, "lacZα", "cds", "orf",
+     "LacZ alpha fragment (pUC19); blue/white screening"),
+    ("pUC19", "lac operator", 0, "lac operator", "protein_bind", None,
+     "lac repressor binding site (17 bp)"),
+    ("pUC19", "lac promoter", 0, "lac promoter", "promoter", None, "E. coli lac promoter"),
+    ("pUC19", "CAP binding site", 0, "CAP binding site", "protein_bind", None,
+     "catabolite activator protein binding site"),
+    ("pUC19", "ori", 0, "ori", "rep_origin", None,
+     "high-copy-number ColE1/pMB1/pBR322/pUC origin of replication (589 bp, pUC19)"),
+    ("pUC19", "AmpR (bla)", 0, "AmpR", "marker", "orf",
+     "beta-lactamase; ampicillin/carbenicillin resistance"),
+    ("pUC19", "AmpR promoter", 0, "AmpR promoter", "promoter", None, "bla promoter"),
 ]
 
 # (accession, start, end, strand, 库内名称, FeatureType, check, 备注)；坐标 1-based 闭区间
@@ -147,6 +161,11 @@ NCBI_SPECS = [
      "Gateway attB2 recombination site"),
     ("MZ215989", 2253, 3353, 1, "MBP", "tag", "fusion",
      "maltose binding protein (E. coli malE) fusion tag"),
+    # p15A ori：X06403（pACYC184）的 rep_origin 注释 581..1493 比常用元件大得多；取其中
+    # 与 LC760188.1（pBAD33）/ OP654170.1 / PZ357611.1 注释的 546 bp "p15A ori" 完全一致
+    # 的区段（X06402 pACYC177 783..1328(+) 亦完全一致）
+    ("X06403", 848, 1393, -1, "p15A ori", "rep_origin", None,
+     "medium-copy-number p15A origin of replication (pACYC184)"),
 ]
 
 # 短肽标签 / 蛋白酶位点：按翻译检索。peptide 必须出现在来源区段的翻译里。
@@ -171,6 +190,9 @@ PEPTIDE_SPECS = [
      "c-Myc epitope tag"),
     ("ncbi", "OQ547858", 470, 511, 1, "V5", "tag", "GKPIPNPLLGLDST",
      "V5 epitope tag (simian virus 5)"),
+    # MP192394.1：EP3516068 序列 64，/note="AcV5-TAG"（JC052329.1 亦同肽段）
+    ("ncbi", "MP192394", 1, 27, 1, "AcV5", "tag", "SWKDASGWS",
+     "AcV5 epitope tag"),
 ]
 
 STARTS = {"ATG", "GTG", "TTG"}

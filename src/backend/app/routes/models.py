@@ -188,6 +188,21 @@ class DesignResult(BaseModel):
 
 # ==================== 载体信息 ====================
 
+class VectorMapPreviewFeature(BaseModel):
+    name: str
+    type: str  # 契约 FeatureType（已归一）
+    start: int
+    end: int
+    strand: Literal[1, -1, 0]
+
+
+class VectorMapPreview(BaseModel):
+    """载体列表缩略图（MapThumbnail）用：不含序列"""
+    length: int
+    topology: Literal["circular", "linear"]
+    features: List[VectorMapPreviewFeature] = Field(default_factory=list)
+
+
 class VectorInfo(BaseModel):
     """载体信息"""
     id: str
@@ -200,6 +215,7 @@ class VectorInfo(BaseModel):
     description: str
     features: List[Dict]
     mcs_enzymes: List[str]
+    map_preview: Optional[VectorMapPreview] = None  # 仅列表接口填充
 
 
 # ==================== 批量设计 ====================
@@ -330,6 +346,8 @@ class MapEnzymeSite(BaseModel):
     cut_top: int
     cut_bottom: int
     strand: Literal[1, -1]
+    overhang: Optional[str] = Field(default=None, max_length=64)
+    blocked_by: Optional[List[Literal["dam", "dcm"]]] = Field(default=None, max_length=2)
 
 
 class MapEnzyme(BaseModel):

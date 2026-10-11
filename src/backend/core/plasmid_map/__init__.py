@@ -4,6 +4,7 @@
 - parsers   GenBank / FASTA / SnapGene .dna / 粘贴文本 → ParsedRecord
 - types     FeatureType 归一、颜色
 - enzymes   酶集合与契约 MapEnzyme（复用 core.enzyme_sites 的 REBASE 酶模型）
+- methylation  Dam/Dcm 甲基化敏感性表与位点阻断判断（NEB / REBASE）
 - orfs      双链、环状感知 ORF
 - annotate  常见元件库自动注释（k-mer 种子 + 局部比对 + 肽段翻译检索）
 - genbank   MapDocument → GenBank
