@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from app.cache import cache
 from app.config import settings
 from app.design_service import get_vector_library, invalidate_vector_library_cache
+from app.map_documents import vector_map_preview
 from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import format_locus_line
 from core.seq_utils import gc_percent
@@ -27,6 +28,9 @@ from app.routes.models import (
 )
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
+
+# 列表响应形状版本，进缓存键：形状变化（如新增 map_preview）后不读旧缓存
+VECTOR_LIST_SHAPE = 2
 
 
 def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
@@ -57,8 +61,8 @@ async def list_vectors(
     vector_type: Optional[str] = None,
     host: Optional[str] = None
 ):
-    """列出所有可用载体"""
-    filters = {"vector_type": vector_type, "host": host}
+    """列出所有可用载体（每项附 map_preview 供列表缩略图）"""
+    filters = {"vector_type": vector_type, "host": host, "shape": VECTOR_LIST_SHAPE}
 
     cached_list = cache.get_vector_list(filters)
     if cached_list is not None:
@@ -86,7 +90,8 @@ async def list_vectors(
             copy_number=v.copy_number,
             description=v.description,
             features=[{"name": e.name, "type": e.element_type.value} for e in v.elements],
-            mcs_enzymes=mcs_enzymes
+            mcs_enzymes=mcs_enzymes,
+            map_preview=vector_map_preview(v),
         ))
 
     try:
