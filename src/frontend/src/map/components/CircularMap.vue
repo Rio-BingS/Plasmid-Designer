@@ -117,9 +117,16 @@ const labelR = computed(() => S.value / 2 - labelMargin.value)
 const R0 = computed(() => labelR.value - (compact.value ? 24 : 28) - (hasPrimers.value ? 12 : 0))
 /** 环上所有图元的最外半径：引线从这里折向标签，且不再回到圈内 */
 const fanR = computed(() => R0.value + 12 + (hasPrimers.value ? 12 : 0))
-/** 主链两条线的间距（刻度画在两线之间） */
-const RAIL = 4
 const laneH = computed(() => Math.min(18, Math.max(10, S.value * 0.027)))
+/**
+ * 主链两条线的间距（SnapGene 式双链）：随特征厚度缩放，约为其 0.4，
+ * 特征第 0 道正好骑在双链中线上（上下各露出约 30%），比例更协调。
+ */
+const RAIL = computed(() => Math.round(Math.min(7, Math.max(4, laneH.value * 0.4)) * 2) / 2)
+/** 双链中线半径：第 0 道特征 [R0 - laneH, R0] 以它为中心 */
+const Rb = computed(() => R0.value - laneH.value / 2)
+const strandOut = computed(() => Rb.value + RAIL.value / 2)
+const strandIn = computed(() => Rb.value - RAIL.value / 2)
 const laneGap = 2
 const L = computed(() => store.L.value)
 
@@ -168,10 +175,12 @@ const ang = (x: number) => xToAngle(x, L.value, store.rotation.value)
 const maxLanes = computed(() => Math.max(1, Math.min(8, Math.floor((R0.value * 0.55 - 6) / (laneH.value + laneGap)))))
 const featLanes = computed(() => stackLanes(
   store.features.value.map((f) => ({ id: f.id, start: f.start, end: f.end })), L.value,
-  { circular: true, gap: Math.ceil((L.value * 3) / (TAU * R0.value)), maxLanes: maxLanes.value },
+  // 首尾相接的特征（如 lacI promoter 695..772 与 lacI 773..）留在同一道，与 SnapGene 一致
+  { circular: true, gap: 0, maxLanes: maxLanes.value },
 ))
 function laneRadii(lane: number): [number, number] {
-  const outer = R0.value - RAIL - 3 - lane * (laneH.value + laneGap)
+  // 第 0 道骑在双链上，更多的道依次向内
+  const outer = R0.value - lane * (laneH.value + laneGap)
   return [outer - laneH.value, outer]
 }
 const featInner = computed(() => laneRadii(Math.max(0, featLanes.value.laneCount - 1))[0])
@@ -251,7 +260,8 @@ type CutGeom = ReturnType<typeof cutGeomOf>
 function cutGeomOf(c: (typeof overview.value.shown)[number]) {
   const st = cutStyle(c)
   const a = ang(c.cut)
-  const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
+  // 切线从外链伸出（画在特征之下，被特征遮住的部分自然隐去）
+  const [x1, y1] = polar(cx.value, cy.value, strandOut.value, a)
   const [x2, y2] = polar(cx.value, cy.value, R0.value + 10, a)
   return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2, color: st.color, weight: st.weight, dash: st.dash }
 }
@@ -389,8 +399,9 @@ const tickGeoms = computed(() => {
   const t = ticks(1, L.value, target)
   const major = t.positions.filter((p) => p < L.value - t.step * 0.3).map((p) => {
     const a = ang(p)
-    const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
-    const [x2, y2] = polar(cx.value, cy.value, R0.value - RAIL - 2.5, a)
+    // 主刻度：从外链穿过双链向内伸出一点
+    const [x1, y1] = polar(cx.value, cy.value, strandOut.value, a)
+    const [x2, y2] = polar(cx.value, cy.value, strandIn.value - 3.5, a)
     const [tx, ty] = polar(cx.value, cy.value, rNum, a)
     return { p, x1, y1, x2, y2, tx, ty, label: showNum ? formatBp(p) : '' }
   })
@@ -401,8 +412,8 @@ const tickGeoms = computed(() => {
     for (let p = sub; p < L.value; p += sub) {
       if (p % t.step === 0) continue
       const a = ang(p)
-      const [x1, y1] = polar(cx.value, cy.value, R0.value - 0.5, a)
-      const [x2, y2] = polar(cx.value, cy.value, R0.value - RAIL + 0.5, a)
+      const [x1, y1] = polar(cx.value, cy.value, strandOut.value, a)
+      const [x2, y2] = polar(cx.value, cy.value, strandIn.value, a)
       minor.push({ p, x1, y1, x2, y2 })
     }
   }
@@ -411,8 +422,8 @@ const tickGeoms = computed(() => {
 })
 const originMark = computed(() => {
   const a = ang(0)
-  const [x1, y1] = polar(cx.value, cy.value, R0.value - RAIL - 4, a)
-  const [x2, y2] = polar(cx.value, cy.value, R0.value + 5, a)
+  const [x1, y1] = polar(cx.value, cy.value, strandIn.value - 5, a)
+  const [x2, y2] = polar(cx.value, cy.value, strandOut.value + 5, a)
   return { x1, y1, x2, y2 }
 })
 
@@ -607,9 +618,9 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <path v-if="hoverPath" :d="hoverPath" fill="#f59e0b" fill-opacity="0.12" class="cmap-hover" />
       <path v-if="selectionPath" :d="selectionPath" fill="#4f46e5" fill-opacity="0.12" stroke="#4f46e5" stroke-opacity="0.45" stroke-width="0.8" class="cmap-selection" />
 
-      <!-- 主链：SnapGene 式双线，刻度画在两线之间 -->
-      <circle :cx="cx" :cy="cy" :r="R0" fill="none" stroke="#2b3038" stroke-width="1.5" />
-      <circle :cx="cx" :cy="cy" :r="R0 - RAIL" fill="none" stroke="#2b3038" stroke-width="1.5" />
+      <!-- 主链：SnapGene 式双线，特征骑在双链上，刻度画在两线之间 -->
+      <circle :cx="cx" :cy="cy" :r="strandOut" fill="none" stroke="#3a4048" stroke-width="1.1" class="cmap-strand" />
+      <circle :cx="cx" :cy="cy" :r="strandIn" fill="none" stroke="#3a4048" stroke-width="1.1" class="cmap-strand" />
       <line :x1="originMark.x1" :y1="originMark.y1" :x2="originMark.x2" :y2="originMark.y2" stroke="#2b3038" stroke-width="1.8" stroke-linecap="round" />
       <g class="cmap-ticks">
         <!-- 刻度线合成两条 path（几百个 line 元素在旋转时逐个打补丁太慢） -->
@@ -623,6 +634,11 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <!-- 搜索命中 -->
       <path v-for="h in searchGeoms" :key="h.key" :d="h.d" :data-hit="h.key"
             :fill="h.current ? '#f97316' : '#facc15'" class="cmap-search" />
+
+      <!-- 酶切刻度 -->
+      <line v-for="c in cutGeoms" :key="c.key" :data-hit="c.key" :x1="c.x1" :y1="c.y1" :x2="c.x2" :y2="c.y2"
+            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.4 : 0.9" :stroke-dasharray="c.dash" stroke-linecap="round"
+            :class="['cmap-cut', { 'is-blocked': c.blocked.length }]" />
 
       <!-- 特征 -->
       <g v-for="g in featGeoms" :key="g.key" :data-hit="g.key"
@@ -642,11 +658,6 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <!-- ORF / 引物 -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
       <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#68ace4" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
-
-      <!-- 酶切刻度 -->
-      <line v-for="c in cutGeoms" :key="c.key" :data-hit="c.key" :x1="c.x1" :y1="c.y1" :x2="c.x2" :y2="c.y2"
-            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.4 : 0.9" :stroke-dasharray="c.dash" stroke-linecap="round"
-            :class="['cmap-cut', { 'is-blocked': c.blocked.length }]" />
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
