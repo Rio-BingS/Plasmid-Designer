@@ -18,7 +18,7 @@ SnapGene 端点另受 `SNAPGENE_ONLINE_ENABLED`（默认 true；false → 404）
 
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -84,6 +84,14 @@ async def map_online_sources(user=Depends(get_current_user)) -> Dict[str, Any]:
 async def map_snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """SnapGene 在线库的集合列表（与载体库侧共用 1 小时缓存；开关 + 需登录）"""
     return await _online_call(oi.snapgene_sets_payload)
+
+
+@router.get("/import/snapgene/search")
+async def map_snapgene_search(q: str = Query(..., min_length=1, max_length=80),
+                              limit: int = Query(50, ge=1, le=200),
+                              _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
+    """按质粒名跨集合搜索（与载体库侧共用集合索引缓存）"""
+    return await _online_call(oi.snapgene_search_payload, q, limit)
 
 
 @router.get("/import/snapgene/sets/{set_id}")

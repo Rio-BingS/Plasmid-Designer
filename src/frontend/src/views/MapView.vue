@@ -9,7 +9,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EnzymeSet, MapDocument, ParseOptions, Topology } from '@/map/types'
 import {
   checkMapFile, describeMapError, ENSEMBL_ID_RE, fileExt, getEnzymeSets, getOnlineSnapgeneIndex,
-  getOnlineSnapgeneSets, getOnlineSources, getVectorMap, importNcbi, importOnlineEnsembl,
+  getOnlineSnapgeneSets, getOnlineSources, searchOnlineSnapgene, getVectorMap, importNcbi, importOnlineEnsembl,
   importOnlineSnapgene, MAP_ACCEPT, MAP_TEXT_EXTS, MAP_UPLOAD_LIMIT_MB, NCBI_ACCESSION_RE,
   normalizeAccession, parseMapFile, parseMapText,
 } from '@/map/api'
@@ -67,6 +67,8 @@ const sgSetId = ref('')
 const sgRows = ref<SnapgenePlasmid[]>([])
 const sgLoading = ref(false)
 const sgError = ref('')
+/** 非空 = 正在显示跨集合搜索结果（集合框里输入的是质粒名，如 pET-30a） */
+const sgSearch = ref('')
 const ensemblId = ref('')
 const ensemblType = ref<'genomic' | 'cds' | 'cdna'>('cds')
 const onlineSources = ref<OnlineSourceInfo[]>([])
@@ -115,6 +117,7 @@ async function loadSnapgeneSets() {
 let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  sgSearch.value = ''
   const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
@@ -129,8 +132,26 @@ async function loadSnapgeneIndex() {
   }
 }
 
+/** 集合框输入的不是集合：按质粒名跨集合搜索 */
+async function searchSnapgeneByName(q: string) {
+  const gen = ++sgIndexGen
+  sgSearch.value = q
+  sgLoading.value = true
+  sgError.value = ''
+  sgRows.value = []
+  try {
+    const rows = (await searchOnlineSnapgene(q)).plasmids || []
+    if (gen === sgIndexGen) sgRows.value = rows
+  } catch (e) {
+    if (gen === sgIndexGen) sgError.value = describeMapError(e)
+  } finally {
+    if (gen === sgIndexGen) sgLoading.value = false
+  }
+}
+
 async function openOnlineSnapgene(row: SnapgenePlasmid) {
-  await run(() => importOnlineSnapgene({ set_id: sgSetId.value, plasmid_id: row.plasmid_id, ...options() }))
+  const setId = row.set_id || sgSetId.value
+  await run(() => importOnlineSnapgene({ set_id: setId, plasmid_id: row.plasmid_id, ...options() }))
 }
 
 async function openOnlineEnsembl() {
@@ -354,19 +375,22 @@ async function doSaveAsVector() {
 
         <template v-if="onlineSource === 'snapgene' && snapgeneAvailable">
           <div class="map-row">
-            <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input map-online-set" @change="loadSnapgeneIndex" />
+            <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input map-online-set"
+                               @change="loadSnapgeneIndex" @search="searchSnapgeneByName" />
             <button type="button" class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
               {{ sgLoading ? '加载中…' : '刷新' }}
             </button>
           </div>
           <p v-if="sgError" class="map-online-error">{{ sgError }}</p>
           <p v-else-if="sgRows.length === 0" class="map-drop-sub">
-            {{ sgLoading ? '正在获取集合索引…' : '该集合没有条目' }}
+            {{ sgLoading
+              ? (sgSearch ? `正在全部集合中搜索「${sgSearch}」，首次约 20 秒…` : '正在获取集合索引…')
+              : (sgSearch ? `没有找到「${sgSearch}」，换个写法试试（如 pET-30a、pET28）` : '该集合没有条目') }}
           </p>
           <ul v-else class="map-online-list">
-            <li v-for="row in sgRows" :key="row.plasmid_id">
+            <li v-for="row in sgRows" :key="(row.set_id || '') + '/' + row.plasmid_id">
               <span class="map-online-id">{{ row.plasmid_id }}</span>
-              <span class="map-online-name">{{ row.name }}</span>
+              <span class="map-online-name">{{ row.name }}<small v-if="row.set_name" class="map-online-set-name"> · {{ row.set_name }}</small></span>
               <button type="button" class="btn btn-primary btn-sm" :disabled="loading"
                       @click="openOnlineSnapgene(row)">打开</button>
             </li>
@@ -476,6 +500,7 @@ h1 { font-size: 2rem; margin-bottom: 0.25rem; }
 }
 .map-online-list li { display: flex; gap: 0.6rem; align-items: center; padding: 0.3rem 0.1rem; border-bottom: 1px solid var(--border-color); }
 .map-online-id { font-family: Consolas, Menlo, 'Courier New', monospace; font-size: 0.8rem; color: var(--primary-color); }
+.map-online-set-name { color: var(--text-secondary, #888); }
 .map-online-name { flex: 1; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-online-license { border-top: 1px solid var(--border-color); padding-top: 0.4rem; }
 .map-options { display: flex; gap: 0.6rem 1.2rem; align-items: center; flex-wrap: wrap; font-size: 0.9rem; }

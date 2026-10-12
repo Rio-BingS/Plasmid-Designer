@@ -66,6 +66,14 @@ export async function getOnlineSnapgeneSets(): Promise<{ count: number; sets: Sn
   return r.data
 }
 
+/** SnapGene 在线库：按质粒名跨集合搜索（冷缓存约 20 秒） */
+export async function searchOnlineSnapgene(q: string): Promise<{
+  query: string; count: number; truncated: boolean; plasmids: SnapgenePlasmid[]; failed_sets: string[]
+}> {
+  const r = await http.get('/map/import/snapgene/search', { params: { q }, timeout: 90_000 })
+  return r.data
+}
+
 /** SnapGene 在线库：集合内全部序列 */
 export async function getOnlineSnapgeneIndex(
   setId: string,
