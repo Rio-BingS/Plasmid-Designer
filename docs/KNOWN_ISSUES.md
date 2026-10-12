@@ -281,6 +281,17 @@ Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），�
 
 审查报告：v2.12.0 代码审查 01（在线序列来源导入）。
 
+| 项 | 结果 |
+|---|---|
+| H1 Cookie 随重定向泄露 | `_http_get` 改用自建 opener（`_NoRedirectHandler`），手动跟随 ≤3 跳，每跳校验 https + 主机白名单（`_checked_host`，裸主机名）；Cookie 用 `add_unredirected_header`，跨主机即永久丢弃；上游直链非 https/非 addgene 主机直接拒绝（`UnsafeUrlError`）。测试走真实 OpenerDirector |
+| H2 SnapGene 在线库 | 见下「已接受风险」：`SNAPGENE_ONLINE_ENABLED` 默认关、登录可用、落库管理员；前端按开关 + 登录态显示 |
+| M1 匿名 try_sequence | 仅管理员（匿名 401、普通用户 403）；`session_configured` 只对管理员如实下发 |
+| M2 Cookie 多用户 | 文档改为仅单用户自托管；开放注册或 >1 启用账号时启动告警 |
+| M3 节流 | 按站点预占时间槽、锁外 sleep；排队超 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 s）→ 429 |
+| M4 限流档 | 载体库侧 SnapGene 集合/索引/预览、Ensembl lookup/预览归入 `ncbi` 档 |
+| M5 出处 URL | `SaveMapAsVectorRequest.url` 只收 http(s)；落盘与 `_parse_provenance` 读取时丢弃非 http(s) 的 `url`/`*_url`（前端 href 白名单由图谱前端分支负责） |
+| L1–L7 | polyA 别名小写；落盘撞车 409 + 同 ID 覆盖标 `replaced`、ID 与文件名同一归一；NCBI/批量导入写 LOCUS 拓扑；Addgene 本地索引按 mtime 缓存；上传按 `MAP_MAX_LENGTH` 限长、回执去掉 `path`；错误不回显上游字节、`*_BASE` 去 userinfo；Addgene robots 描述更正 |
+
 **已接受风险（决策记录，避免下次审查重复争论）——SnapGene 在线库**
 
 - 事实：SnapGene 网站条款 (a) 禁止 "reproduce or store material from this website in any
