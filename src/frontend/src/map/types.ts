@@ -130,6 +130,8 @@ export interface EnzymeDetail {
   /** 可商购新切酶（识别序列相同、切点不同） */
   neoschizomers: string[]
   methylation?: MethylationKind[]
+  /** 修饰依赖型酶（只切甲基化等修饰过的 DNA，如 MspJI/AbaSI）；这类酶不进图谱酶组 */
+  modification_dependent?: boolean
 }
 
 /** GET /api/map/suppliers：REBASE 厂商及其可供的酶 */
