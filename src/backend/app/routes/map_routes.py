@@ -50,7 +50,7 @@ MAP_CACHE_MAX_BP = int(os.environ.get("MAP_CACHE_MAX_BP", "50000"))
 MAP_CACHE_TTL = 3600
 # 产出口径版本：改变 MapDocument 内容的代码改动须递增（元件库变化已由
 # library_version 自动进键）
-MAP_ALGO_VERSION = "3"
+MAP_ALGO_VERSION = "4"
 
 # NCBI 原始 GenBank 文本缓存：与产出口径无关（不进 MAP_ALGO_VERSION），
 # 只缓存不超过上限的文本；不带版本号的 accession 可能被 NCBI 更新，TTL 取 1 天

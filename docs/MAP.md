@@ -13,7 +13,11 @@
 - `sequence` 恒为大写 IUPAC DNA（U→T），长度上限 `MAP_MAX_LENGTH`。
 - `features[]`：`type` 已归一为契约 FeatureType（GenBank `CDS` → `cds`，抗性 CDS →
   `marker`，`regulatory` 按 `/regulatory_class` 归类，misc_feature 按名称推断
-  promoter / polyA_signal / ltr / mcs…）；`join()` 保留为 `segments`（单段省略）；
+  promoter / polyA_signal / ltr / mcs…）；`join()` 保留为 `segments`（单段省略），
+  **按生物学顺序**排列：负链特征沿负链 5'→3'，即坐标降序（`complement(join(10..50,100..200))`
+  → `[{100,200},{10,50}]`；负链跨原点 `complement(join(900..1000,1..100))` → `[{1,100},{900,1000}]`）。
+  特征序列 = 各段依次取（负链取反向互补）后拼接（`parsers.extract_feature`），GenBank 导出
+  按同一顺序写出，Biopython / SnapGene 读回后序列一致；
   `color` 只在文件给出时出现（`/ApEinfo_fwdcolor|revcolor`、`/note="color: #…"`、
   SnapGene 特征颜色）；`source` 为 `file | auto | design | vector`；`id` 在文档内稳定
   （调用方给的合法唯一 id 原样保留，其余按 `来源-序号` 补齐）。
