@@ -1,4 +1,4 @@
-"""在线序列来源导入路由：SnapGene 在线库 / Ensembl / Addgene
+"""在线序列来源导入路由：SnapGene 在线库 / Ensembl / UniProt / Addgene
 
 设计要点（与既有 /api/vectors/import/* 保持一致）：
 
@@ -6,10 +6,14 @@
   导入期间全站无响应）；真正落库的写端点需管理员，且路径落在
   `/api/vectors/import` 前缀下，沿用中间件的 upload 限流档。
 * 只读端点（集合/索引/预览/来源清单）进进程缓存，避免前端切页签反复外呼；
-  缓存键统一 `online:*` 前缀，落库后按需失效。
+  缓存键统一 `online:*` 前缀，落库后按需失效。UniProt 检索与条目查询是外呼
+  代理，只读但走 ncbi 档（见 app/rate_limit.py 的 _READ_RULES）。
 * 一切失败经 `MapParseError.status` 映射 HTTP 状态（422/403/404/413/502/503/504）。
 * 导入落库走 `app/vector_import.save_record`（与文件上传同一条路径，形状与
-  data/vectors/*.yaml 一致），并在描述里写入出处，满足来源站的引用要求。
+  data/vectors/*.yaml 一致），出处写进结构化 `data_provenance` **并**在描述里
+  保留一句可读标注，满足来源站的引用要求。
+* Addgene：匿名只读元数据；只有部署方配置了 `ADDGENE_SESSION_COOKIE`（用户自己的
+  会话）时才带凭据取全长序列——凭据只发给 addgene.org，不落盘、不回显、不代登录。
 """
 
 from typing import Any, Dict, Optional
@@ -28,7 +32,7 @@ from app.routes.models import (
     EnsemblImportRequest,
     OnlinePreviewResponse,
 )
-from app.vector_import import save_record
+from app.vector_import import provenance_block, save_record
 from core import online_sources as src
 from core.plasmid_map.parsers import MapParseError
 from core.seq_utils import gc_percent
@@ -140,6 +144,10 @@ async def import_snapgene(req: SnapGeneImportRequest,
         vector_id=f"snapgene_{_check(src.validate_plasmid_id, req.plasmid_id)}",
         attribution=("来源：SnapGene 在线质粒库（引用 www.snapgene.com/resources）；"
                      "学术/非营利/政府可无条件使用，商业用途须获 GraphPad Software, LLC 许可"),
+        provenance=provenance_block(
+            "SnapGene 在线质粒库", url=url, license=src.SNAPGENE_LICENSE,
+            set=req.set_id, plasmid=req.plasmid_id,
+            citation="www.snapgene.com/resources"),
     )
     invalidate_vector_library_cache()
     _invalidate_vector_cache(result["id"])
@@ -193,6 +201,9 @@ async def import_ensembl(req: EnsemblImportRequest,
         url=url,
         vector_id=f"ensembl_{_check(src.validate_ensembl_id, req.identifier)}_{req.seq_type}",
         attribution="来源：Ensembl REST（数据无使用限制，建议注明来源）",
+        provenance=provenance_block(
+            "Ensembl REST", url=url, license=src.ENSEMBL_LICENSE,
+            identifier=req.identifier, seq_type=req.seq_type),
     )
     invalidate_vector_library_cache()
     _invalidate_vector_cache(result["id"])
@@ -234,12 +245,83 @@ async def addgene_metadata(plasmid_id: str,
         "sequence_available": False,
         "license": src.ADDGENE_LICENSE,
         "note": ("Addgene 全长序列需登录：请用自己账号在浏览器下载后走"
-                 "「上传文件」导入，或改用 NCBI 上的对应 GenBank 记录"),
+                 "「上传文件」导入，或改用 NCBI 上的对应 GenBank 记录；"
+                 "若已自行登录，可把浏览器会话 Cookie 配到 ADDGENE_SESSION_COOKIE 后直接导入"),
     }
     if try_sequence:
-        # 预期失败（403 + 指引）；成功则说明上游放开了匿名，也照实返回
+        # 无凭据时预期失败（403 + 指引）；配了用户自有会话则照实返回
         data = await _call(src.addgene_sequence_bytes, oid)
         out["sequence_available"] = True
         out["sequence_bytes"] = len(data)
-        out["note"] = "上游允许匿名取序列（接口有变），请改用返回的直链自行核对后导入"
+        out["note"] = ("已用你配置的 Addgene 会话取到序列文件；"
+                       "可点「导入为本地载体」落库（序列与注释版权归 Addgene/原作者）"
+                       if src.addgene_has_session() else
+                       "上游允许匿名取序列（接口有变），请改用返回的直链自行核对后导入")
+    out["session_configured"] = src.addgene_has_session()
+    return out
+
+
+@router.post("/import/addgene/{plasmid_id}")
+async def import_addgene(plasmid_id: str,
+                         fmt: str = Query(default="genbank", pattern="^(genbank|dna)$"),
+                         name: Optional[str] = Query(default=None, max_length=80),
+                         _: object = Depends(get_admin_user)) -> Dict[str, Any]:
+    """用配置好的 Addgene 会话把全长序列导入载体库（需管理员；无凭据 → 403）
+
+    设计边界：**不代为登录、不绕登录墙、不保存凭据**。凭据来自部署方的
+    `ADDGENE_SESSION_COOKIE`（用户自己在浏览器登录后的会话），且只发给 addgene.org。
+    """
+    oid = _check(src.validate_addgene_id, plasmid_id)
+    record = await _call(src.addgene_record, oid, fmt=fmt, name=name,
+                         max_length=MAP_MAX_LENGTH)
+    url = f"https://www.addgene.org/{oid}/"
+    result = await run_in_threadpool(
+        save_record, record,
+        source="addgene",
+        vectors_dir=config.settings.VECTORS_DIR,
+        url=url,
+        vector_id=f"addgene_{oid}",
+        attribution=("来源：Addgene（非商业研究可按其条款使用，须保留版权声明）；"
+                     "序列由用户自备登录态获取"),
+        provenance=provenance_block(
+            "Addgene", url=url, license=src.ADDGENE_LICENSE,
+            plasmid=oid, format=fmt, credential="用户自备会话"),
+    )
+    invalidate_vector_library_cache()
+    _invalidate_vector_cache(result["id"])
+    return {"success": True, "vector": result, "license": src.ADDGENE_LICENSE}
+
+
+# ==================== UniProt（蛋白库：只做反查，不给质粒序列） ====================
+
+@router.get("/import/uniprot/search")
+async def uniprot_search(query: str = Query(..., min_length=1, max_length=120),
+                         limit: int = Query(default=10, ge=1, le=25),
+                         reviewed_only: bool = Query(default=False)) -> Dict[str, Any]:
+    """按基因/蛋白名/登录号检索 UniProt（精简字段；核酸交叉引用见条目端点）"""
+    rows = await _call(src.uniprot_search, query, limit=limit, reviewed_only=reviewed_only)
+    return {
+        "query": query, "count": len(rows),
+        "results": rows,
+        "license": src.UNIPROT_LICENSE,
+        "note": ("UniProt 是蛋白库、不含质粒序列；检索只返回精简字段，"
+                 "点条目（GET /api/vectors/import/uniprot/{登录号}）看 Entrez/EMBL/RefSeq 交叉引用，"
+                 "再据此去核酸来源取 DNA"),
+    }
+
+
+@router.get("/import/uniprot/{accession}")
+async def uniprot_entry(accession: str, with_fasta: bool = Query(default=False)) -> Dict[str, Any]:
+    """UniProt 条目详情 + 核酸交叉引用（with_fasta=1 时附蛋白 FASTA 供人工核对）"""
+    entry = await _call(src.uniprot_entry, accession)
+    out: Dict[str, Any] = {
+        "accession": entry.get("accession") or accession,
+        "entry": entry,
+        "nucleotide": src.nucleotide_candidates(entry),
+        "url": f"https://www.uniprot.org/uniprotkb/{entry.get('accession') or accession}/entry",
+        "license": src.UNIPROT_LICENSE,
+        "note": "UniProt 不给核酸序列：到核酸来源（NCBI/Ensembl）取 DNA 后再导入",
+    }
+    if with_fasta:
+        out["fasta"] = await _call(src.uniprot_fasta, accession)
     return out

@@ -247,6 +247,10 @@ export interface OnlineSourceInfo {
   license: string
   importable: boolean
   note: string
+  /** 该来源的全长序列是否需要登录（Addgene） */
+  requires_login?: boolean
+  /** 部署方是否配置了用户自备凭据（Addgene 会话 Cookie） */
+  session_configured?: boolean
 }
 
 export interface OnlinePreview {
@@ -317,6 +321,73 @@ export async function getAddgeneMetadata(plasmidId: string, trySequence: boolean
   const response = await api.get(`/vectors/import/addgene/${encodeURIComponent(plasmidId)}`, {
     params: { try_sequence: trySequence }
   })
+  return response.data
+}
+
+// Addgene 全长序列导入（需管理员 + 部署方已配置用户自备会话 Cookie）：
+// 后端不代登录、不绕登录墙，只带用户自己的凭据取自己有权访问的序列。
+export async function importFromAddgene(
+  plasmidId: string, fmt: 'genbank' | 'dna' = 'genbank', name?: string
+): Promise<any> {
+  const response = await api.post(`/vectors/import/addgene/${encodeURIComponent(plasmidId)}`, null, {
+    params: { fmt, name }
+  })
+  return response.data
+}
+
+// -------------------- UniProt（蛋白库：只做反查，不给质粒序列） --------------------
+
+export interface UniProtNucleotide {
+  source: string
+  accession: string
+  label: string
+  url: string
+}
+
+export interface UniProtEntry {
+  accession: string
+  entry_id: string
+  name: string
+  gene: string
+  organism: string
+  length: number
+  reviewed: boolean
+  cross_references: { database: string; id: string; protein_id?: string; molecule_type?: string }[]
+}
+
+export async function searchUniprot(
+  query: string, limit: number = 10, reviewedOnly: boolean = false
+): Promise<{ query: string; count: number; results: UniProtEntry[]; license: string; note: string }> {
+  const response = await api.get('/vectors/import/uniprot/search', {
+    params: { query, limit, reviewed_only: reviewedOnly }
+  })
+  return response.data
+}
+
+export async function getUniprotEntry(
+  accession: string, withFasta: boolean = false
+): Promise<{ accession: string; entry: UniProtEntry; nucleotide: UniProtNucleotide[]; url: string; license: string; note: string; fasta?: string }> {
+  const response = await api.get(`/vectors/import/uniprot/${encodeURIComponent(accession)}`, {
+    params: { with_fasta: withFasta }
+  })
+  return response.data
+}
+
+// 图谱页「另存为载体」（需管理员）：序列与特征由图谱页提交，后端不再外呼，
+// 保证保存的与用户眼前看到的是同一份数据。
+export async function saveMapAsVector(payload: {
+  name: string
+  sequence: string
+  topology: string
+  features: {
+    name: string; type: string; start: number; end: number
+    strand?: number; notes?: string; color?: string
+  }[]
+  source?: string
+  url?: string
+  description?: string
+}): Promise<any> {
+  const response = await api.post('/vectors/import/from-map', payload)
   return response.data
 }
 
