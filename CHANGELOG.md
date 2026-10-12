@@ -31,6 +31,8 @@
 - 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
   的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
   排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
+- 载体库侧会外呼的只读代理（SnapGene 集合 / 索引 / 预览、Ensembl lookup / 预览）改走
+  `ncbi` 限流档，与图谱侧和文档描述一致（此前落在 100 次/分钟的 default 档）。
 - 在线来源外呼不再自动跟随重定向：每一跳都重新校验 https + 主机白名单（按裸主机名，
   最多 3 跳），Addgene 会话 Cookie 改为不随重定向转发、跨主机即丢弃；上游给出的
   `file://`、`http://` 等非 https 直链一律拒绝。此前一次 302 就能把 Cookie 发到任意

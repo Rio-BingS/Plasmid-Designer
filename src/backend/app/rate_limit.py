@@ -490,6 +490,12 @@ _READ_RULES: List[Tuple[str, str]] = [
     # 在线来源的集合/索引列举同样是外呼代理（与载体库侧共用缓存）
     ("/api/map/import/snapgene/sets", "ncbi"),
     ("/api/map/import/snapgene/sets/{id}", "ncbi"),
+    # 载体库侧同一批外呼代理（审查 M4：此前落在 default 档 100/min，与图谱侧不一致）
+    ("/api/vectors/import/snapgene/sets", "ncbi"),
+    ("/api/vectors/import/snapgene/sets/{id}", "ncbi"),
+    ("/api/vectors/import/snapgene/preview", "ncbi"),
+    ("/api/vectors/import/ensembl/lookup/{id}", "ncbi"),
+    ("/api/vectors/import/ensembl/preview", "ncbi"),
 ]
 
 
