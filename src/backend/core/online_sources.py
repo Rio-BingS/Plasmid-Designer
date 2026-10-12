@@ -15,8 +15,9 @@
 * Ensembl REST：数据本身无使用限制（代码 Apache-2.0），注明来源即可。
 * UniProt：数据以 CC BY 4.0 提供（须署名）。**UniProt 是蛋白库**、不含质粒序列：
   本站只用它按基因/蛋白名反查 Entrez/EMBL/RefSeq 交叉引用，再把用户引到核酸来源。
-* Addgene：非商业研究可下载；**2026-08 起全长序列文件需登录**，
-  `robots.txt`/ToS 禁止商业抓取与非公开路径访问 → 本模块**绝不绕过登录**：
+* Addgene：非商业研究可下载；**2026-08 起全长序列文件需登录**。
+  `robots.txt` 只禁 `/emta/`、`/emta-addgene-public/`、`/users/login/`；禁止商业抓取与
+  访问非公开部分的是其网站条款（Terms of Use, Permitted Use）→ 本模块**绝不绕过登录**：
   匿名只取元数据与图谱图；配置了 `ADDGENE_SESSION_COOKIE`（用户自己的浏览器会话）时
   才带着该凭据取全长序列——仅以 https 发往 addgene.org（重定向逐跳校验、跨主机即丢弃），
   不写入响应/日志、不代用户登录。该模式只适合单用户自托管（凭据本身存于 .env/进程环境）。
