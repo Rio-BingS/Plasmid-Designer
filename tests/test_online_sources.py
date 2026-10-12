@@ -91,6 +91,7 @@ def no_network(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("测试中不允许真实网络请求")
     monkeypatch.setattr(src.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(src, "_default_open", _boom)  # 自建 opener 同样禁网
     monkeypatch.setattr(src, "_MIN_INTERVAL", {})  # 免等待
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
@@ -260,8 +261,9 @@ def test_ensembl_lookup_params():
 # ---------------------------------------------------------------- Addgene
 
 def test_addgene_never_bypasses_login():
-    meta = {"seqObjectId": "244694", "mapPngUrl": "https://x/a.png",
-            "genbankUrl": "https://x/a.gbk", "snapgeneUrl": "https://x/a.dna"}
+    meta = {"seqObjectId": "244694", "mapPngUrl": "https://media.addgene.org/a.png",
+            "genbankUrl": "https://media.addgene.org/a.gbk",
+            "snapgeneUrl": "https://media.addgene.org/a.dna"}
     assert src.addgene_metadata("244694", opener=_opener(meta))["seqObjectId"] == "244694"
     # 元数据里没有序列直链 → 同样按"需登录"处理
     with pytest.raises(src.AddgeneLoginRequired):
@@ -820,20 +822,21 @@ def test_save_map_as_vector_endpoint(client, vectors_dir):
 # ================================================================ Addgene（用户自备凭据）
 
 def test_addgene_cookie_only_sent_to_addgene(monkeypatch):
-    """凭据只发给 addgene.org：上游元数据给的直链指向别处时不带 Cookie"""
+    """凭据只发给 https 的 addgene.org：直链指向别处或是 http 时不带 Cookie"""
     monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=secret-token")
     assert src.addgene_has_session() is True
     assert src.addgene_session_cookie() == "SESSION=secret-token"
     for host in ("https://www.addgene.org/api/x/", "https://addgene.org/a.gbk",
-                 "https://media.addgene.org/a.gbk"):
-        assert src._addgene_session_headers(host)["Cookie"] == "SESSION=secret-token"
+                 "https://media.addgene.org/a.gbk", "https://www.addgene.org:443/a.gbk"):
+        assert src._addgene_cookie_for(host) == "SESSION=secret-token"
     for evil in ("https://evil.example.com/a.gbk", "https://addgene.org.evil.com/a.gbk",
-                 "http://127.0.0.1/a.gbk"):
-        assert src._addgene_session_headers(evil) == {}
+                 "http://127.0.0.1/a.gbk", "http://www.addgene.org/a.gbk",
+                 "file:///etc/passwd", "https://evil.com@x.example/a"):
+        assert src._addgene_cookie_for(evil) is None
 
     monkeypatch.delenv("ADDGENE_SESSION_COOKIE")
     assert src.addgene_has_session() is False and src.addgene_session_cookie() == ""
-    assert src._addgene_session_headers("https://www.addgene.org/api/x/") == {}
+    assert src._addgene_cookie_for("https://www.addgene.org/api/x/") is None
 
 
 def test_addgene_record_uses_session_and_parses(monkeypatch):
@@ -1013,3 +1016,181 @@ def test_online_import_rate_limit_buckets_for_new_endpoints():
     assert classify_endpoint("GET", "/api/vectors/import/addgene/52961") == "ncbi"
     assert classify_endpoint("GET", "/api/vectors/import/addgene/search") == "default"
     assert classify_endpoint("GET", "/api/vectors/import/sources") == "default"
+
+
+# ================================================================ 重定向与 scheme（审查 H1）
+# 走真实的 urllib OpenerDirector（src._default_open → build_opener + 重定向处理器），
+# 只把最底层的 http(s)_open 换成内存里的"互联网"，从而真实执行 urllib 的 3xx 处理链。
+
+import email.message
+import urllib.request
+import urllib.response
+
+_REAL_DEFAULT_OPEN = src._default_open
+
+
+class _FakeNet:
+    """url → (status, headers, body)；记录每次真正发出的请求（含 unredirected 头）"""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.requests = []
+
+    def handlers(self):
+        net = self
+
+        def _serve(req):
+            url = req.full_url
+            hdrs = {k.lower(): v for k, v in req.header_items()}
+            net.requests.append((url, hdrs))
+            status, headers, body = net.routes.get(url, (404, {}, b"nope"))
+            msg = email.message.Message()
+            for k, v in headers.items():
+                msg[k] = v
+            resp = urllib.response.addinfourl(io.BytesIO(body), msg, url, status)
+            resp.msg = "fake"
+            return resp
+
+        class _Https(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return _serve(req)
+
+        class _Http(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return _serve(req)
+
+        return [_Https(), _Http()]
+
+
+@pytest.fixture()
+def fake_net(monkeypatch):
+    def _make(routes):
+        net = _FakeNet(routes)
+        monkeypatch.setattr(src, "_default_open", _REAL_DEFAULT_OPEN)
+        monkeypatch.setattr(src, "_EXTRA_HANDLERS", net.handlers())
+        return net
+    return _make
+
+
+def test_stdlib_redirect_would_leak_plain_cookie_header(fake_net):
+    """对照组：标准 urllib 自动重定向会把普通 Cookie 头带到第三方主机（H1 的根因），
+    而 add_unredirected_header 加的头不会被带走。"""
+    net = fake_net({
+        "https://sequences.addgene.org/x.gbk": (302, {"Location": "https://evil.example/x"}, b""),
+        "https://evil.example/x": (200, {}, b"LOCUS"),
+    })
+    std = urllib.request.build_opener(*net.handlers())
+    std.open(urllib.request.Request("https://sequences.addgene.org/x.gbk",
+                                    headers={"Cookie": "sessionid=SECRET"})).read()
+    assert net.requests[-1][0] == "https://evil.example/x"
+    assert net.requests[-1][1].get("cookie") == "sessionid=SECRET"   # 泄露
+
+    net.requests.clear()
+    req = urllib.request.Request("https://sequences.addgene.org/x.gbk")
+    req.add_unredirected_header("Cookie", "sessionid=SECRET")
+    std.open(req).read()
+    assert net.requests[0][1].get("cookie") == "sessionid=SECRET"
+    assert "cookie" not in net.requests[1][1]
+
+
+def test_cookie_not_sent_across_host_redirect(fake_net, monkeypatch):
+    """Addgene 直链 302 到第三方主机：不跟随（主机不在白名单），且第三方从未收到请求"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://www.addgene.org/api/get-sequence-file-collection/52961/":
+            (200, {}, json.dumps({"genbankUrl": "https://sequences.addgene.org/x.gbk"}).encode()),
+        "https://sequences.addgene.org/x.gbk":
+            (302, {"Location": "https://bucket.s3.example.com/x.gbk?sig=1"}, b""),
+        "https://bucket.s3.example.com/x.gbk?sig=1": (200, {}, _gbk()),
+    })
+    with pytest.raises(src.UnsafeUrlError) as ei:
+        src.addgene_sequence_bytes("52961")
+    assert "白名单" in str(ei.value)
+    urls = [u for u, _ in net.requests]
+    assert "https://bucket.s3.example.com/x.gbk?sig=1" not in urls
+    # 元数据接口本身不带 Cookie（只有直链下载才带）
+    assert "cookie" not in net.requests[0][1]
+    assert net.requests[1][1].get("cookie") == "sessionid=SECRET"
+
+
+def test_cookie_dropped_on_cross_host_hop_within_addgene(fake_net, monkeypatch):
+    """addgene 子域之间跳转（白名单内）：允许跟随，但跨主机后不再带 Cookie"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://www.addgene.org/api/get-sequence-file-collection/52961/":
+            (200, {}, json.dumps({"genbankUrl": "https://sequences.addgene.org/x.gbk"}).encode()),
+        "https://sequences.addgene.org/x.gbk":
+            (302, {"Location": "https://media.addgene.org/x.gbk"}, b""),
+        "https://media.addgene.org/x.gbk":
+            (302, {"Location": "https://sequences.addgene.org/final.gbk"}, b""),
+        "https://sequences.addgene.org/final.gbk": (200, {}, _gbk()),
+    })
+    data = src.addgene_sequence_bytes("52961")
+    assert data.startswith(b"LOCUS")
+    hops = {u: h for u, h in net.requests}
+    assert hops["https://sequences.addgene.org/x.gbk"].get("cookie") == "sessionid=SECRET"
+    assert "cookie" not in hops["https://media.addgene.org/x.gbk"]
+    # 跳回原主机也不再恢复凭据（一旦跨主机即永久丢弃）
+    assert "cookie" not in hops["https://sequences.addgene.org/final.gbk"]
+
+
+def test_redirect_downgrade_to_http_rejected(fake_net, monkeypatch):
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://sequences.addgene.org/x.gbk":
+            (301, {"Location": "http://sequences.addgene.org/x.gbk"}, b""),
+        "http://sequences.addgene.org/x.gbk": (200, {}, _gbk()),
+    })
+    with pytest.raises(src.UnsafeUrlError):
+        src._http_get("https://sequences.addgene.org/x.gbk", max_bytes=1 << 20,
+                      cookie="sessionid=SECRET")
+    assert [u for u, _ in net.requests] == ["https://sequences.addgene.org/x.gbk"]
+
+
+def test_redirect_hop_limit_and_relative_location(fake_net):
+    base = src.ENSEMBL_BASE
+    net = fake_net({
+        f"{base}/a": (302, {"Location": "/b"}, b""),
+        f"{base}/b": (307, {"Location": f"{base}/c"}, b""),
+        f"{base}/c": (200, {}, b"ok"),
+        f"{base}/loop": (302, {"Location": f"{base}/loop"}, b""),
+    })
+    assert src._http_get(f"{base}/a", max_bytes=100) == b"ok"
+    with pytest.raises(src.OnlineSourceError) as ei:
+        src._http_get(f"{base}/loop", max_bytes=100)
+    assert ei.value.status == 502 and "跳" in str(ei.value)
+    assert sum(1 for u, _ in net.requests if u.endswith("/loop")) == src._MAX_REDIRECTS + 1
+
+
+def test_redirect_to_private_or_unknown_host_rejected(fake_net):
+    """SnapGene/Ensembl/UniProt 外呼被上游 302 到内网/任意主机：拒绝（SSRF 面）"""
+    net = fake_net({
+        f"{src.ENSEMBL_BASE}/x": (302, {"Location": "https://169.254.169.254/latest"}, b""),
+    })
+    with pytest.raises(src.UnsafeUrlError):
+        src._http_get(f"{src.ENSEMBL_BASE}/x", max_bytes=100)
+    assert all("169.254" not in u for u, _ in net.requests)
+
+
+@pytest.mark.parametrize("direct", [
+    "file:///etc/passwd", "http://www.addgene.org/x.gbk", "ftp://www.addgene.org/x.gbk",
+    "data:text/plain,LOCUS", "https://evil.example.com/x.gbk",
+    "https://www.addgene.org.evil.com/x.gbk",
+])
+def test_addgene_direct_link_scheme_and_host_checked(monkeypatch, direct):
+    """上游 JSON 给出的直链：非 https / 非 addgene 主机一律拒绝，且根本不外呼"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    monkeypatch.setattr(src, "addgene_metadata", lambda oid, **kw: {"genbankUrl": direct})
+    calls = []
+    with pytest.raises(src.UnsafeUrlError):
+        src.addgene_sequence_bytes("52961", opener=_opener(b"LOCUS", calls))
+    assert calls == []
+
+
+def test_checked_host_uses_bare_hostname():
+    assert src._checked_host("https://www.addgene.org:443/a") == "www.addgene.org"
+    assert src._checked_host(f"{src.SNAPGENE_BASE}/sets.php?xml") == "www.snapgene.com"
+    for bad in ("http://rest.ensembl.org/x", "https://rest.ensembl.org.evil.com/x",
+                "https://user@evil.com/x", "file:///etc/passwd", ""):
+        with pytest.raises(src.UnsafeUrlError):
+            src._checked_host(bad)
