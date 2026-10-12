@@ -8,8 +8,8 @@
 用法::
 
     python scripts/smoke_online_sources.py                 # 跳过（退出码 0）
-    python scripts/smoke_online_sources.py --run           # 全跑
-    python scripts/smoke_online_sources.py --run --only snapgene,uniprot
+    python scripts/smoke_online_sources.py --run           # Ensembl/UniProt/Addgene
+    SNAPGENE_ONLINE_ENABLED=true python scripts/smoke_online_sources.py --run --only snapgene,uniprot
     python scripts/smoke_online_sources.py --run --timeout 40
 
 约定：
@@ -20,6 +20,8 @@
   需要登录，失败是预期）；1 有硬失败（SnapGene/Ensembl/UniProt 任一步）。
 * 需要 `ONLINE_IMPORT_ENABLED` 未被设为 false；本脚本不导入 app.*，
   所以不需要 SECRET_KEY。
+* SnapGene 默认**不跑**：必须显式 `--only snapgene` 且 `SNAPGENE_ONLINE_ENABLED=true`
+  （与服务端同一开关，默认关闭；robots.txt `Disallow: /local`）。
 
 许可提醒：SnapGene 在线库学术/非营利/政府可用但须引用 www.snapgene.com/resources，
 商业用途须获 GraphPad 许可，其 robots.txt 明确 Disallow: /local → 本脚本只做
@@ -156,7 +158,9 @@ def main(argv=None) -> int:
         print("ONLINE_IMPORT_ENABLED=false：外呼被部署方关闭，冒烟无法进行")
         return 0
 
-    wanted = [s.strip() for s in args.only.split(",") if s.strip()] or list(STEPS)
+    # SnapGene 在线库默认不在冒烟范围内（合规高风险来源，见 SNAPGENE_ONLINE_ENABLED）
+    wanted = ([s.strip() for s in args.only.split(",") if s.strip()]
+              or [s for s in STEPS if s != "snapgene"])
     unknown = [s for s in wanted if s not in STEPS]
     if unknown:
         print(f"未知来源：{unknown}（可选：{','.join(STEPS)}）")
@@ -166,7 +170,10 @@ def main(argv=None) -> int:
     t0 = time.time()
     ok = True
     if "snapgene" in wanted:
-        ok &= smoke_snapgene(args.timeout)
+        if src.snapgene_online_enabled():
+            ok &= smoke_snapgene(args.timeout)
+        else:
+            _report("info", "snapgene", "SNAPGENE_ONLINE_ENABLED 未开启，跳过")
     if "ensembl" in wanted:
         ok &= smoke_ensembl(args.timeout)
     if "uniprot" in wanted:

@@ -16,7 +16,7 @@ import type { OnlineSourceInfo, SnapgenePlasmid, SnapgeneSet } from '@/map/types
 import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
 import { saveMapAsVector } from '@/api'
-import { useIsAdmin } from '@/composables/useIsAdmin'
+import { useIsAdmin, useIsAuthenticated } from '@/composables/useIsAdmin'
 
 const PAGE_TITLE = '质粒图谱 - Plasmid Designer'
 const EXAMPLE_VECTOR = 'pUC19'
@@ -54,7 +54,12 @@ const accession = ref('')
 const accessionValid = computed(() => NCBI_ACCESSION_RE.test(normalizeAccession(accession.value)))
 
 // 在线导入（SnapGene 在线库 / Ensembl）：与载体库页共用后端缓存与许可文案
-const onlineSource = ref<'snapgene' | 'ensembl'>('snapgene')
+// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// 两者都满足才出现该选项；否则只给 Ensembl（后端仍是权威：关 → 404，匿名 → 401）
+const loggedIn = useIsAuthenticated()
+const snapgeneEnabled = ref(false)
+const snapgeneAvailable = computed(() => snapgeneEnabled.value && loggedIn.value)
+const onlineSource = ref<'snapgene' | 'ensembl'>('ensembl')
 const sgSets = ref<SnapgeneSet[]>([])
 const sgSetId = ref('')
 const sgRows = ref<SnapgenePlasmid[]>([])
@@ -71,11 +76,23 @@ const ensemblValid = computed(() => ENSEMBL_ID_RE.test(ensemblId.value.trim()))
 async function ensureOnlineMeta() {
   if (onlineSources.value.length === 0) {
     try {
-      onlineSources.value = (await getOnlineSources()).sources || []
+      const res = await getOnlineSources()
+      onlineSources.value = res.sources || []
+      snapgeneEnabled.value = res.snapgene_online_enabled === true
     } catch { /* 许可提示拿不到不阻断导入 */ }
   }
-  if (sgSets.value.length === 0 && !sgLoading.value) await loadSnapgeneSets()
+  if (snapgeneAvailable.value && onlineSource.value === 'snapgene'
+      && sgSets.value.length === 0 && !sgLoading.value) await loadSnapgeneSets()
 }
+
+// 选中 SnapGene 时才去取集合（关闭/未登录时根本不发请求）
+watch(onlineSource, (v) => {
+  if (v === 'snapgene' && snapgeneAvailable.value && sgSets.value.length === 0 && !sgLoading.value) {
+    loadSnapgeneSets()
+  }
+})
+// 登出或开关不可用时退回 Ensembl，避免停留在不可用的来源上
+watch(snapgeneAvailable, (ok) => { if (!ok && onlineSource.value === 'snapgene') onlineSource.value = 'ensembl' })
 
 async function loadSnapgeneSets() {
   sgLoading.value = true
@@ -321,11 +338,11 @@ async function doSaveAsVector() {
 
       <div v-else-if="mode === 'online'" class="map-online">
         <div class="map-online-src" role="radiogroup" aria-label="在线来源">
-          <label><input v-model="onlineSource" type="radio" value="snapgene" /> SnapGene 在线库</label>
+          <label v-if="snapgeneAvailable"><input v-model="onlineSource" type="radio" value="snapgene" /> SnapGene 在线库</label>
           <label><input v-model="onlineSource" type="radio" value="ensembl" /> Ensembl</label>
         </div>
 
-        <template v-if="onlineSource === 'snapgene'">
+        <template v-if="onlineSource === 'snapgene' && snapgeneAvailable">
           <div class="map-row">
             <select v-model="sgSetId" class="form-input map-online-set" aria-label="SnapGene 集合" @change="loadSnapgeneIndex">
               <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }}（{{ s.set_id }}）</option>

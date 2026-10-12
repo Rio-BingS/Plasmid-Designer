@@ -37,6 +37,16 @@ class ExternalVector:
     features: List[Dict]
     url: Optional[str] = None
     original_format: Optional[str] = None
+    # 真实拓扑（LOCUS 行）：此前 NCBI/批量导入不写 topology，线性记录被当环状画
+    topology: str = "circular"
+
+
+def locus_topology(content: str) -> str:
+    """GenBank LOCUS 行里的拓扑：含 linear 记为线性；其余（含缺省）沿用载体库默认的环状"""
+    m = re.search(r'^LOCUS[^\n]*', content or "", re.MULTILINE)
+    if m and re.search(r'\blinear\b', m.group(0), re.IGNORECASE):
+        return "linear"
+    return "circular"
 
 
 class NCBIClient:
@@ -159,7 +169,8 @@ class NCBIClient:
             antibiotic_resistance=[],
             features=features,
             url=f"https://www.ncbi.nlm.nih.gov/nuccore/{seq_id}",
-            original_format="genbank"
+            original_format="genbank",
+            topology=locus_topology(content),
         )
     
     def search_and_fetch(self, query: str, limit: int = 5) -> List[ExternalVector]:
@@ -240,7 +251,8 @@ class GenBankImporter:
             host=[],
             antibiotic_resistance=[],
             features=[],
-            original_format="genbank"
+            original_format="genbank",
+            topology=locus_topology(content),
         )
     
     def import_directory(self, dir_path: str, recursive: bool = True) -> List[ExternalVector]:
@@ -320,6 +332,7 @@ class VectorLibraryManager:
                 'name': vector.name,
                 'source': vector.source,
                 'sequence': vector.sequence,
+                'topology': 'linear' if vector.topology == 'linear' else 'circular',
                 'description': vector.description,
                 'features': features,
                 'url': vector.url,

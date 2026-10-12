@@ -1,7 +1,7 @@
 """共享 Pydantic 模型 — 从 main.py 提取"""
 
 import os
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Literal
 from enum import Enum
 from datetime import datetime
@@ -477,5 +477,18 @@ class SaveMapAsVectorRequest(BaseModel):
     features: List[MapSaveFeature] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
     source: str = Field(default="map", max_length=40,
                         description="出处标签，如 snapgene / ensembl / ncbi / upload / paste")
-    url: str = Field(default="", max_length=500)
+    url: str = Field(default="", max_length=500,
+                     description="出处链接：只接受 http(s)://（空串表示无）")
     description: str = Field(default="", max_length=2000)
+
+    @field_validator("url")
+    @classmethod
+    def _http_url_only(cls, v: str) -> str:
+        """出处 URL 只收 http(s)：详情页把它渲染成链接，javascript: 等是存储型 XSS（审查 M5）"""
+        v = (v or "").strip()
+        if not v:
+            return ""
+        from core.vector_library import safe_http_url
+        if not safe_http_url(v):
+            raise ValueError("url 只接受 http:// 或 https:// 开头的链接")
+        return v
