@@ -18,6 +18,7 @@ plasmid-designer-v2/
 │   │   │   │   ├── design_routes.py   # 设计任务 API
 │   │   │   │   ├── batch_routes.py    # 批量设计 API
 │   │   │   │   ├── vector_routes.py   # 载体库 API
+│   │   │   │   ├── online_source_routes.py  # 在线来源导入（SnapGene 在线库/Ensembl/Addgene）
 │   │   │   │   ├── codon_routes.py    # 密码子表 API
 │   │   │   │   ├── sequencing_routes.py  # Sanger 测序分析 API
 │   │   │   │   └── models.py          # 共享 Pydantic 模型
@@ -134,6 +135,9 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `ENABLE_API_DOCS` | `/docs`、`/redoc`、`/openapi.json` 开关：本地开发默认开启；Docker compose 默认 `false`（容器 nginx 无法按来源限制）；裸机模板为 `true`，由 nginx 只对本机/内网开放 |
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
+| `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
+| `ONLINE_TIMEOUT` / `ONLINE_MAX_BYTES` | 在线来源单次外呼超时（秒，默认 25）与单文件体积上限（字节，默认 8 MB） |
+| `NCBI_EMAIL` / `NCBI_API_KEY` | NCBI E-utilities 联系邮箱（建议填）与 API key（可选，限速 3 → 10 次/秒） |
 
 ## API 概览
 
@@ -172,8 +176,25 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | POST | `/api/vectors/import/ncbi-id` | 通过 NCBI ID 直接导入 |
 | GET | `/api/vectors/search/ncbi` | 搜索 NCBI（不导入） |
 | GET | `/api/vectors/preview/ncbi/{id}` | 预览 NCBI 载体 |
-| POST | `/api/vectors/import/upload` | 上传载体文件 |
+| POST | `/api/vectors/import/upload` | 上传载体文件（GenBank / FASTA / SnapGene `.dna`；解析走 `core/plasmid_map/parsers`，保留注释与颜色） |
 | POST | `/api/vectors/import/batch` | 批量导入 |
+| GET | `/api/vectors/import/sources` | 在线来源清单与许可摘要（前端据此渲染页签） |
+| GET | `/api/vectors/import/snapgene/sets` | SnapGene 在线库：19 个集合（结果缓存 1 小时） |
+| GET | `/api/vectors/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引 |
+| GET | `/api/vectors/import/snapgene/preview` | SnapGene 在线库：下载 `.dna` 并解析预览（`?set_id=&plasmid_id=`） |
+| POST | `/api/vectors/import/snapgene` | SnapGene 在线库：导入到载体库（仅管理员） |
+| GET | `/api/vectors/import/ensembl/lookup/{id}` | Ensembl 元数据（名称/物种/位置） |
+| GET | `/api/vectors/import/ensembl/preview` | Ensembl 序列预览（`?identifier=&seq_type=genomic\|cds\|cdna`） |
+| POST | `/api/vectors/import/ensembl` | 从 Ensembl 导入 DNA 序列（仅管理员；线性片段） |
+| GET | `/api/vectors/import/addgene/search` | 在本机 SnapGene 的 Addgene 索引里离线搜索（约 17 万条） |
+| GET | `/api/vectors/import/addgene/{质粒号}` | Addgene 匿名元数据；全长序列需登录，后端**不绕登录**（返回指引） |
+
+> ⚖️ 在线来源的许可边界：SnapGene 质粒库学术/非营利/政府可无条件使用（须引用
+> `www.snapgene.com/resources`），**商业用途须先获 GraphPad Software, LLC 许可**，其
+> `robots.txt` 亦明确 `Disallow: /local`；Addgene 全长序列 2026-08 起需登录、禁止商业抓取。
+> 因此这些通道只做**低频、单次、人工触发**的读取（进程级限速 + 结果缓存），不批量镜像、
+> 不再分发；`ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼。导入的载体描述里会写入出处，
+> 便于成果中标注来源。
 
 ### 序列分析 & 导出
 
