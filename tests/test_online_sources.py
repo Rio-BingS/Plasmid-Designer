@@ -98,7 +98,7 @@ def no_network(monkeypatch):
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
-    # SnapGene 在线库默认关闭（审查 H2）；功能用例统一打开，默认值与关闭行为另有专门用例
+    # SnapGene 在线库默认开启，仍显式设 true 以免受外部环境影响，默认值与关闭行为另有专门用例
     monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "true")
     cache.backend.clear_pattern("online:*")
     yield
@@ -1269,20 +1269,21 @@ def _no_upstream(monkeypatch):
     monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
 
 
-def test_snapgene_online_default_off(monkeypatch):
+def test_snapgene_online_default_on(monkeypatch):
     monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
-    assert src.snapgene_online_enabled() is False
-    # 与总开关相互独立：总开关开着，SnapGene 仍是关的
-    assert src.import_enabled() is True
+    assert src.snapgene_online_enabled() is True
+    # 与总开关相互独立：SnapGene 可单独关闭
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "false")
+    assert src.snapgene_online_enabled() is False and src.import_enabled() is True
     for raw, want in (("true", True), ("1", True), ("on", True), ("false", False),
-                      ("", False), ("nope", False)):
+                      ("0", False), ("off", False), ("", True), ("nope", True)):
         monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", raw)
         assert src.snapgene_online_enabled() is want
 
 
 def test_snapgene_core_refuses_when_off(monkeypatch):
     """核心层也兜底：开关关闭时连 opener 都不调用"""
-    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "false")
     seen = []
     for fn, args in ((src.snapgene_sets, ()), (src.snapgene_set_index, ("yeast_plasmids",)),
                      (src.snapgene_plasmid_bytes, ("yeast_plasmids", "pYES2"))):
@@ -1294,7 +1295,7 @@ def test_snapgene_core_refuses_when_off(monkeypatch):
 
 @pytest.mark.parametrize("method,url,body", _SNAPGENE_READ_ENDPOINTS)
 def test_snapgene_endpoints_404_when_off(client, vectors_dir, monkeypatch, method, url, body):
-    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "false")
     _no_upstream(monkeypatch)
     c, _ = client
     for headers in (None, _user(), _admin()):
@@ -1304,7 +1305,7 @@ def test_snapgene_endpoints_404_when_off(client, vectors_dir, monkeypatch, metho
 
 
 def test_snapgene_save_404_when_off_even_for_admin(client, vectors_dir, monkeypatch):
-    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "false")
     _no_upstream(monkeypatch)
     c, _ = client
     body = {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}
@@ -1338,7 +1339,7 @@ def test_sources_payload_reports_snapgene_flag(client, vectors_dir, monkeypatch)
     assert on["snapgene_online_enabled"] is True and sg["enabled"] is True
     assert sg["requires_login"] is True and sg["importable"] is True
 
-    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "false")
     for path in ("/api/map/import/sources", "/api/vectors/import/sources"):
         off = c.get(path).json()
         sg = next(s for s in off["sources"] if s["id"] == "snapgene")

@@ -12,7 +12,7 @@
 `www.snapgene.com/resources`），**商业用途须先获 GraphPad Software, LLC 许可**，
 其 robots.txt 明确 `Disallow: /local` → 只做低频单次、人工触发的读取；
 `ONLINE_IMPORT_ENABLED=false` 时全部端点返回 503（零外呼）。
-SnapGene 端点另受 `SNAPGENE_ONLINE_ENABLED`（默认 false → 404）约束，开启后也只对
+SnapGene 端点另受 `SNAPGENE_ONLINE_ENABLED`（默认 true；false → 404）约束，开启后也只对
 已登录用户开放（匿名 401），见 `app/online_import.require_snapgene_user`。
 """
 
