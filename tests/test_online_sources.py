@@ -1699,3 +1699,23 @@ def test_upload_unexpected_errors_are_generic(client, vectors_dir, monkeypatch):
                 files={"file": ("x.fasta", f">x\n{SEQ300}\n".encode(), "text/plain")},
                 headers=_admin())
     assert r2.status_code == 500 and str(vectors_dir) not in r2.text
+
+
+def test_errors_do_not_echo_upstream_bytes():
+    """L6：非 .dna 响应（如登录页 HTML）不回显进错误详情"""
+    page = b"<html><body>Login required; csrftoken=abc123</body></html>"
+    with pytest.raises(MapParseError) as ei:
+        src.assert_snapgene_dna(page, "x/y")
+    assert ei.value.status == 415
+    assert "csrftoken" not in str(ei.value) and "<html" not in str(ei.value)
+
+
+def test_sources_payload_strips_base_userinfo(client, monkeypatch):
+    monkeypatch.setattr(src, "ENSEMBL_BASE", "https://user:s3cret@proxy.example:8443/ensembl")
+    monkeypatch.setattr(src, "UNIPROT_BASE", "https://rest.uniprot.org")
+    c, _ = client
+    body = c.get("/api/map/import/sources")
+    assert body.status_code == 200 and "s3cret" not in body.text and "user:" not in body.text
+    ids = {s["id"]: s for s in body.json()["sources"]}
+    assert ids["ensembl"]["url"] == "https://proxy.example:8443/ensembl"
+    assert ids["uniprot"]["url"] == "https://rest.uniprot.org"

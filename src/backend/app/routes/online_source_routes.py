@@ -188,7 +188,7 @@ async def ensembl_preview(identifier: str = Query(..., max_length=64),
     if cached is not None:
         return cached
     record = await _call(src.ensembl_record, identifier, seq_type, max_length=MAP_MAX_LENGTH)
-    url = f"{src.ENSEMBL_BASE}/sequence/id/{_check(src.validate_ensembl_id, identifier)}?type={seq_type}"
+    url = f"{src.public_base(src.ENSEMBL_BASE)}/sequence/id/{_check(src.validate_ensembl_id, identifier)}?type={seq_type}"
     resp = _preview(record, source=f"ensembl:{seq_type}", url=url,
                     license_text=src.ENSEMBL_LICENSE)
     oi.cache_set(key, resp.model_dump(mode="json"))
@@ -201,7 +201,7 @@ async def import_ensembl(req: EnsemblImportRequest,
     """从 Ensembl 导入 DNA 序列到载体库（需管理员）"""
     record = await _call(src.ensembl_record, req.identifier, req.seq_type,
                          name=req.name, max_length=MAP_MAX_LENGTH)
-    url = (f"{src.ENSEMBL_BASE}/sequence/id/{src.validate_ensembl_id(req.identifier)}"
+    url = (f"{src.public_base(src.ENSEMBL_BASE)}/sequence/id/{src.validate_ensembl_id(req.identifier)}"
            f"?type={req.seq_type}")
     result = await run_in_threadpool(
         save_record, record,
