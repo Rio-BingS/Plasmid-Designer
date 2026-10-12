@@ -28,6 +28,9 @@
   普通用户 403）：配置了 `ADDGENE_SESSION_COOKIE` 时该分支会以部署方的 Addgene 账号
   下载全长序列，此前任何访客都能驱动；来源清单与该端点的 `session_configured` 也只对
   管理员如实下发。
+- 载体出处链接只接受 `http(s)://`：`POST /api/vectors/import/from-map` 的 `url` 不合规时
+  422，落盘与读取 `data_provenance` 时也会丢弃非 http(s) 的 `url` / `*_url`（此前
+  `javascript:` 链接会在载体详情页渲染成可点击链接，形成存储型 XSS）。
 - 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
   的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
   排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
