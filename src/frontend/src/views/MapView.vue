@@ -92,17 +92,21 @@ async function loadSnapgeneSets() {
   }
 }
 
+// 集合索引请求号：快速切换集合时只认最后一次请求，乱序返回的旧集合不覆盖列表
+let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
   sgRows.value = []
   try {
-    sgRows.value = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    const rows = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    if (gen === sgIndexGen) sgRows.value = rows
   } catch (e) {
-    sgError.value = describeMapError(e)
+    if (gen === sgIndexGen) sgError.value = describeMapError(e)
   } finally {
-    sgLoading.value = false
+    if (gen === sgIndexGen) sgLoading.value = false
   }
 }
 
