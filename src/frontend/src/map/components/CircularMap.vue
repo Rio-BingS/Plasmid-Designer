@@ -7,7 +7,9 @@ let instanceCounter = 0
  * 环形图谱（SVG）：主链 + 刻度、特征分道箭头（内置/外置标签）、ORF/引物环、
  * 酶切刻度与标签、搜索命中、选区扇形与光标。
  * 交互：在环带上拖拽 = 选区（可跨原点）；拖拽中心区 / Shift+拖拽 = 旋转；
- * Ctrl+滚轮 = 以指针为中心缩放；Alt/Shift+滚轮 = 旋转；放大后拖拽外围空白 = 平移。
+ * Ctrl+滚轮 = 以指针为中心缩放；Alt/Shift+滚轮 = 旋转；
+ * 按钮 / 滑块缩放以选区（无选区时以环上一点）为锚，见 zoomStep；
+ * 放大后拖拽环带以外的任意空白（或中键拖拽）= 平移，平移范围受 clampCenter 限制。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
@@ -140,25 +142,98 @@ const cropH = computed(() => (crop.value[1] > crop.value[0] ? crop.value[1] - cr
 /** 视图中心（未平移时） */
 const vcx = computed(() => cx.value)
 const vcy = computed(() => cropTop.value + cropH.value / 2)
+const MAX_ZOOM = 20
+/**
+ * svg 的像素宽度。未放大时是 S×cropH 的图；放大后占满容器整宽——否则在比 maxSize 宽的
+ * 面板里，放大的环会被硬裁在 S 宽的方框左右两侧，旁边却是空白。
+ */
+function svgWidthAt(z: number) {
+  return z > 1 && props.size === undefined ? Math.max(S.value, Math.floor(wrapW.value || 0)) : S.value
+}
+const svgW = computed(() => svgWidthAt(zoom.value))
+/** 可视区宽高（用户坐标）：1 个用户单位在缩放 z 时约等于 z 像素 */
+const viewW = computed(() => svgW.value / zoom.value)
+const viewH = computed(() => cropH.value / zoom.value)
 const viewBox = computed(() => {
-  const w = S.value / zoom.value
-  const h = cropH.value / zoom.value
-  const x = vcx.value + pan.value.x - w / 2
-  const y = vcy.value + pan.value.y - h / 2
-  return `${r2(x)} ${r2(y)} ${r2(w)} ${r2(h)}`
+  const x = vcx.value + pan.value.x - viewW.value / 2
+  const y = vcy.value + pan.value.y - viewH.value / 2
+  return `${r2(x)} ${r2(y)} ${r2(viewW.value)} ${r2(viewH.value)}`
 })
 function r2(n: number) { return Math.round(n * 100) / 100 }
+/** 当前视图中心（用户坐标） */
+function viewCenter(): [number, number] {
+  return [vcx.value + pan.value.x, vcy.value + pan.value.y]
+}
+/**
+ * 限制缩放 z 下的视图中心：
+ * 1. 环不能整个移出视野——中心到圆心的距离不超过 外圈半径 + 0.45×可视区短边；
+ * 2. 不平移到内容框（方形画布 × 竖直裁切）以外；可视区比内容还宽/高时居中。
+ */
+function clampCenter(c: [number, number], z: number): [number, number] {
+  if (z <= 1) return [vcx.value, vcy.value]
+  const w = svgWidthAt(z) / z
+  const h = cropH.value / z
+  let [x, y] = c
+  const dmax = fanR.value + 0.45 * Math.min(w, h)
+  const dx = x - cx.value
+  const dy = y - cy.value
+  const d = Math.hypot(dx, dy)
+  if (d > dmax) {
+    x = cx.value + (dx * dmax) / d
+    y = cy.value + (dy * dmax) / d
+  }
+  const axis = (v: number, lo: number, hi: number, span: number) =>
+    (span >= hi - lo ? (lo + hi) / 2 : Math.min(hi - span / 2, Math.max(lo + span / 2, v)))
+  return [axis(x, 0, S.value, w), axis(y, cropTop.value, cropTop.value + cropH.value, h)]
+}
+function setCenter(c: [number, number], z: number) {
+  const [x, y] = clampCenter(c, z)
+  pan.value = z <= 1 ? { x: 0, y: 0 } : { x: x - vcx.value, y: y - vcy.value }
+}
+/** 缩放到 z；给定 focus 时保持该点在屏幕上不动（Ctrl+滚轮），否则保持视图中心 */
 function setZoom(z: number, focus?: [number, number]) {
-  const nz = Math.min(20, Math.max(1, z))
+  const nz = Math.min(MAX_ZOOM, Math.max(1, z))
+  let c = viewCenter()
   if (focus) {
     // 保持指针下的点不动：c' = P - (P - c)·z/z'
-    const c = [vcx.value + pan.value.x, vcy.value + pan.value.y]
     const k = zoom.value / nz
-    pan.value = { x: focus[0] - (focus[0] - c[0]) * k - vcx.value, y: focus[1] - (focus[1] - c[1]) * k - vcy.value }
+    c = [focus[0] - (focus[0] - c[0]) * k, focus[1] - (focus[1] - c[1]) * k]
   }
   zoom.value = nz
-  if (nz === 1) pan.value = { x: 0, y: 0 }
+  setCenter(c, nz)
 }
+/**
+ * 按钮 / 滑块放大时的锚点（环上的一点，SnapGene / Benchling 式）：
+ * 有选区取选区中点、只有光标取光标处；否则视图中心落在环内空白（名称、刻度数字）时取离它最近的
+ * 环上点（正中时取 12 点钟）；视图已在环带或其外侧（用户平移过去的）时返回 null，保持当前中心。
+ * 锚点半径取环的外缘 fanR：特征在它内侧、标签在它外侧，放大后两者都在视野里。
+ */
+function zoomAnchor(): [number, number] | null {
+  const s = store.selection.value
+  const caret = store.caret.value
+  if (s || caret !== null) {
+    const u = s ? unroll(s, L.value) : { from: caret!, to: caret! }
+    return polar(cx.value, cy.value, fanR.value, ang((u.from + u.to) / 2))
+  }
+  const [x, y] = viewCenter()
+  const d = Math.hypot(x - cx.value, y - cy.value)
+  if (zoom.value > 1 && d >= featInner.value) return null
+  const a = d < 1 ? 0 : pointAngle(cx.value, cy.value, x, y)
+  return polar(cx.value, cy.value, fanR.value, a)
+}
+/** 按钮 / 滑块缩放：放大时把锚点移到视图中心（不再对着圆心放大、只剩中间的名称）；缩小时保持中心 */
+function zoomStep(z: number) {
+  const nz = Math.min(MAX_ZOOM, Math.max(1, z))
+  const anchor = nz > zoom.value ? zoomAnchor() : null
+  if (!anchor) return setZoom(nz)
+  zoom.value = nz
+  setCenter(anchor, nz)
+}
+const zoomLog = computed({
+  get: () => Math.log2(zoom.value),
+  set: (v: number) => zoomStep(2 ** v),
+})
+const MAX_ZOOM_LOG = Math.log2(MAX_ZOOM)
 function resetView() {
   zoom.value = 1
   pan.value = { x: 0, y: 0 }
@@ -481,26 +556,32 @@ function svgPoint(e: { clientX: number; clientY: number }): [number, number] {
   }
   const rect = svg?.getBoundingClientRect()
   if (!rect || !rect.width) return [cx.value, cy.value - R0.value]
-  const w = S.value / zoom.value
-  const h = cropH.value / zoom.value
+  const w = viewW.value
+  const h = viewH.value
   return [vcx.value + pan.value.x - w / 2 + ((e.clientX - rect.left) / rect.width) * w,
     vcy.value + pan.value.y - h / 2 + ((e.clientY - rect.top) / rect.height) * h]
 }
 
 function onPointerDown(e: PointerEvent) {
-  if (!props.interactive || e.button > 0) return
+  // 左键；放大后中键拖拽 = 平移
+  const middle = e.button === 1 && zoom.value > 1
+  if (!props.interactive || (e.button > 0 && !middle)) return
+  if (middle) e.preventDefault()
   const [x, y] = svgPoint(e)
   const r = Math.hypot(x - cx.value, y - cy.value)
   const a = pointAngle(cx.value, cy.value, x, y)
   moved = false
   downKey = hitKeyOf(e.target)
-  if (e.shiftKey || (!downKey && r < selInner.value - 6)) {
+  // 放大后：环带（选区半径到环外缘）以外、不在特征/标签上的任意位置拖拽都是平移（含中心区）
+  const offBand = r < selInner.value - 6 || r > fanR.value + 6
+  if (middle || (!e.shiftKey && !downKey && zoom.value > 1 && offBand)) {
+    mode = 'pan'
+    const [pcx, pcy] = viewCenter()
+    startPan = { x: pcx, y: pcy, px: e.clientX, py: e.clientY }
+  } else if (e.shiftKey || (!downKey && r < selInner.value - 6)) {
     mode = 'rotate'
     startAngle = a
     startRot = store.rotation.value
-  } else if (!downKey && r > labelR.value + 4 && zoom.value > 1) {
-    mode = 'pan'
-    startPan = { x: pan.value.x, y: pan.value.y, px: e.clientX, py: e.clientY }
   } else {
     mode = 'select'
     anchorX = angleToX(a, L.value, store.rotation.value)
@@ -520,8 +601,8 @@ function onPointerMove(e: PointerEvent) {
     store.rotation.value = startRot + (a - startAngle)
     moved = true
   } else if (mode === 'pan') {
-    const k = S.value / zoom.value / Math.max(1, svgEl.value?.getBoundingClientRect().width || S.value)
-    pan.value = { x: startPan.x - (e.clientX - startPan.px) * k, y: startPan.y - (e.clientY - startPan.py) * k }
+    const k = viewW.value / Math.max(1, svgEl.value?.getBoundingClientRect().width || svgW.value)
+    setCenter([startPan.x - (e.clientX - startPan.px) * k, startPan.y - (e.clientY - startPan.py) * k], zoom.value)
     moved = true
   } else if (mode === 'select') {
     const nx = unwrapNear(angleToX(a, L.value, store.rotation.value), prevX, L.value)
@@ -595,14 +676,14 @@ watch([contentBounds, rotating], ([[t, b]]) => {
 }, { immediate: true })
 const svgH = computed(() => Math.round(cropH.value))
 
-defineExpose({ svgEl, resetView, setZoom, zoom })
+defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
 </script>
 
 <template>
   <div ref="wrap" class="cmap">
     <svg
       ref="svgEl" :class="['cmap-svg', { 'has-feat-hover': hoverKey?.startsWith('f:') }]" data-map-export="circular" xmlns="http://www.w3.org/2000/svg"
-      :viewBox="viewBox" :width="S" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
+      :viewBox="viewBox" :width="svgW" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
       :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
       @pointerleave="onLeave" @wheel="onWheel"
@@ -699,8 +780,10 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
     </svg>
 
     <div v-if="interactive" class="cmap-controls">
-      <button type="button" title="缩小" @click="setZoom(zoom / 1.4)">−</button>
-      <button type="button" title="放大（Ctrl+滚轮）" @click="setZoom(zoom * 1.4)">+</button>
+      <button type="button" title="缩小" class="cmap-zoom-out" @click="zoomStep(zoom / 1.4)">−</button>
+      <input v-model.number="zoomLog" class="cmap-zoom" type="range" min="0" :max="MAX_ZOOM_LOG" step="0.05"
+             :title="`缩放 ${zoom.toFixed(1)}×（以选区为中心；Ctrl+滚轮以指针为中心）`" aria-label="缩放" />
+      <button type="button" title="放大（以选区为中心；Ctrl+滚轮以指针为中心）" class="cmap-zoom-in" @click="zoomStep(zoom * 1.4)">+</button>
       <label class="cmap-rot" title="旋转（拖拽中心 / Alt+滚轮）">
         ⟳ <input v-model.number="rotDeg" type="range" min="-180" max="180" step="1" />
       </label>
@@ -726,4 +809,5 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 }
 .cmap-rot { display: inline-flex; align-items: center; gap: 4px; }
 .cmap-rot input { width: 110px; }
+.cmap-zoom { width: 90px; }
 </style>
