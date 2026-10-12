@@ -471,10 +471,13 @@ function svgPoint(e: { clientX: number; clientY: number }): [number, number] {
   const ctm = svg?.getScreenCTM?.()
   if (svg && ctm && typeof ctm.inverse === 'function' && typeof svg.createSVGPoint === 'function') {
     const pt = svg.createSVGPoint()
-    pt.x = e.clientX
-    pt.y = e.clientY
-    const p = pt.matrixTransform(ctm.inverse())
-    return [p.x, p.y]
+    // happy-dom 20 的 SVGPoint 没有 matrixTransform，测试环境走下方的包围盒换算
+    if (pt && typeof pt.matrixTransform === 'function') {
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(ctm.inverse())
+      return [p.x, p.y]
+    }
   }
   const rect = svg?.getBoundingClientRect()
   if (!rect || !rect.width) return [cx.value, cy.value - R0.value]
