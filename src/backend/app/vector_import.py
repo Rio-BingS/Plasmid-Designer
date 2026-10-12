@@ -6,20 +6,45 @@ feature 有 `name` → 整份 YAML 加载抛 KeyError、被 load_from_directory 
 except 吞掉，载体**静默消失**；`.dna` 上传也被当文本 GenBank 解析，得到空序列。
 现在统一走 `core.plasmid_map.parsers`（GenBank/FASTA/SnapGene .dna 同一套解析），
 并由本模块负责落盘形状，两个导入入口共用。
+
+落盘形状的另外两条约定：
+
+* `data_provenance`：出处结构化记录（来源/URL/许可/抓取时间 + 来源特有字段，
+  形状与内置载体 YAML 一致，见 `provenance_block`）——描述里那句可读标注不能替代它
+* `topology`：真实拓扑（线性片段不能被当环状画，见 `app/map_documents`）
 """
 
 from __future__ import annotations
 
 import os
 import re
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import yaml
 
-from core.plasmid_map.parsers import ParsedRecord
+from core.plasmid_map.parsers import ParsedRecord, clean_sequence
 
 # 落盘文件名白名单：仅保留字母/数字/点/下划线/连字符（防路径分隔符注入）
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def now_iso() -> str:
+    """出处记录用的抓取时间（UTC，秒级；与内置载体的 fetched_at 同字段名）"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def provenance_block(source: str, *, url: str = "", license: str = "",
+                     **extra: object) -> Dict[str, str]:
+    """统一出处块：形状与内置载体 `data_provenance` 一致（source/url/fetched_at）
+    并带 `license` 与来源特有字段（set/plasmid/identifier/filename…），空值丢弃。
+    """
+    data: Dict[str, object] = {
+        "source": source, "url": url, "fetched_at": now_iso(), "license": license,
+    }
+    data.update(extra)
+    return {str(k): str(v) for k, v in data.items() if v not in (None, "")}
+
 
 
 def safe_slug(name: str, fallback: str = "vector") -> str:
@@ -44,7 +69,8 @@ def _strand_str(strand) -> str:
 def record_to_vector_dict(record: ParsedRecord, *, source: str, url: Optional[str] = None,
                           vector_id: Optional[str] = None,
                           description: Optional[str] = None,
-                          attribution: Optional[str] = None) -> Dict:
+                          attribution: Optional[str] = None,
+                          provenance: Optional[Dict[str, str]] = None) -> Dict:
     """ParsedRecord → 载体 YAML 字典（features/name/type/start/end/strand/description）"""
     features: List[Dict] = []
     dropped_segments = 0
@@ -82,8 +108,56 @@ def record_to_vector_dict(record: ParsedRecord, *, source: str, url: Optional[st
     }
     if url:
         data["url"] = url
+    if provenance:
+        # 结构化出处（界面展示 + 日后重取依据）；缺 url 时用参数补，避免两处不一致
+        prov = {str(k): str(v) for k, v in provenance.items() if v not in (None, "")}
+        if url and not prov.get("url"):
+            prov["url"] = url
+        prov.setdefault("fetched_at", now_iso())
+        data["data_provenance"] = prov
     data["_warnings"] = warnings
     return data
+
+
+def record_from_parts(*, name: str, sequence: str, topology: str = "circular",
+                      features: Optional[List[Dict]] = None,
+                      source_format: str = "vector",
+                      max_length: Optional[int] = None) -> ParsedRecord:
+    """已解析好的序列 + 特征 → ParsedRecord（图谱页「另存为载体」等复用）。
+
+    序列经 `clean_sequence`（去空白/数字、大写、U→T、非法字符 422、超长 413），
+    特征只保留 start/end 为整数的条目，跨原点复合特征按整体跨度收下。
+    """
+    seq = clean_sequence(sequence, max_length)
+    feats: List[Dict] = []
+    dropped = 0
+    for f in features or []:
+        start, end = f.get("start"), f.get("end")
+        if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < 1:
+            continue
+        if f.get("segments"):
+            dropped += 1
+        feats.append({
+            "name": str(f.get("name") or f.get("type") or "feature")[:80],
+            "type": str(f.get("type") or "misc_feature"),
+            "start": start,
+            "end": end,
+            "strand": f.get("strand", 0),
+            "notes": str(f.get("notes") or f.get("description") or "")[:300],
+            "segments": f.get("segments"),
+            "color": f.get("color"),
+        })
+    warns = ["序列由图谱页保存（可编辑注释与酶切结果不随载体库保存）"]
+    if dropped:
+        warns.append(f"{dropped} 个跨原点复合特征只保留了整体跨度（载体库不支持分段）")
+    return ParsedRecord(
+        name=str(name or "sequence")[:80],
+        topology="linear" if str(topology).lower() == "linear" else "circular",
+        sequence=seq,
+        source_format=source_format,
+        features=feats,
+        warnings=warns,
+    )
 
 
 def write_vector_yaml(data: Dict, vectors_dir: str, *, filename: Optional[str] = None) -> str:
@@ -102,10 +176,12 @@ def write_vector_yaml(data: Dict, vectors_dir: str, *, filename: Optional[str] =
 def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
                 url: Optional[str] = None, vector_id: Optional[str] = None,
                 description: Optional[str] = None,
-                attribution: Optional[str] = None) -> Dict:
+                attribution: Optional[str] = None,
+                provenance: Optional[Dict[str, str]] = None) -> Dict:
     """解析结果 → 载体库；返回接口回执（id/name/length/features/path/warnings）"""
     data = record_to_vector_dict(record, source=source, url=url, vector_id=vector_id,
-                                 description=description, attribution=attribution)
+                                 description=description, attribution=attribution,
+                                 provenance=provenance)
     path = write_vector_yaml(data, vectors_dir)
     return {
         "id": data["id"],
@@ -116,5 +192,6 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
         "source": source,
         "url": url or "",
         "path": path,
+        "provenance": data.get("data_provenance", {}),
         "warnings": data.get("_warnings", []),
     }

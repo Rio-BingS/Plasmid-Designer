@@ -79,8 +79,12 @@ export interface VectorInfo {
   description: string
   features: { name: string; type: string }[]
   mcs_enzymes: string[]
+  /** 拓扑：导入的线性片段不会显示成环状质粒 */
+  topology?: 'circular' | 'linear'
   /** 轻量图谱预览（后端可省略；缺省时列表不画缩略图） */
   map_preview?: import('@/map/types').MapPreview | null
+  /** 结构化出处（YAML 的 data_provenance）：来源站/URL/许可/抓取时间 */
+  data_provenance?: Record<string, string>
 }
 
 export interface CodonTable {

@@ -222,7 +222,12 @@ class VectorInfo(BaseModel):
     description: str
     features: List[Dict]
     mcs_enzymes: List[str]
+    # 拓扑：导入的线性片段（PCR 产物/Ensembl 片段）不再是"一律环状"
+    topology: Literal["circular", "linear"] = "circular"
     map_preview: Optional[VectorMapPreview] = None  # 仅列表接口填充
+    # 结构化出处（YAML 的 data_provenance）：内置载体记来源库/集合/日期，
+    # 导入载体记来源站 + URL + 许可 + 抓取时间
+    data_provenance: Dict[str, str] = Field(default_factory=dict)
 
 
 # ==================== 批量设计 ====================
@@ -449,3 +454,28 @@ class MapDocument(BaseModel):
         if self.length != len(self.sequence):
             raise ValueError("length 与 sequence 长度不一致")
         return self
+
+
+class MapSaveFeature(BaseModel):
+    """图谱页「另存为载体」的特征（比 MapFeature 宽松：不限于图谱类型枚举）"""
+    name: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(default="misc_feature", max_length=60)
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal[1, -1, 0] = 0
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    description: Optional[str] = Field(default=None, max_length=300)
+    segments: Optional[List[MapSegment]] = Field(default=None, max_length=200)
+    color: Optional[str] = Field(default=None, max_length=32)
+
+
+class SaveMapAsVectorRequest(BaseModel):
+    """把图谱页当前打开的（可编辑）序列与注释存进载体库"""
+    name: str = Field(..., min_length=1, max_length=80)
+    sequence: str = Field(..., min_length=1, max_length=MAP_MAX_LENGTH)
+    topology: MapTopology = "circular"
+    features: List[MapSaveFeature] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    source: str = Field(default="map", max_length=40,
+                        description="出处标签，如 snapgene / ensembl / ncbi / upload / paste")
+    url: str = Field(default="", max_length=500)
+    description: str = Field(default="", max_length=2000)

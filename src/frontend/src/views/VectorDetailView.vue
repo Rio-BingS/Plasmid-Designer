@@ -18,6 +18,20 @@ const copied = ref(false)
 
 const vectorId = computed(() => route.params.id as string)
 
+// 结构化出处（data_provenance）：除 source/url/license/fetched_at 外的键按原名列出
+const PROV_LABELS: Record<string, string> = {
+  source: '来源', url: '原始链接', license: '许可', fetched_at: '抓取时间',
+  citation: '引用要求', set: '集合', plasmid: '质粒号', identifier: '标识',
+  seq_type: '序列类型', filename: '文件名', format: '格式', origin: '打开方式',
+  credential: '凭据来源',
+}
+const provenanceRows = computed(() => {
+  const prov = vectorInfo.value?.data_provenance || {}
+  return Object.entries(prov)
+    .filter(([, v]) => !!v)
+    .map(([k, v]) => ({ key: k, label: PROV_LABELS[k] || k, value: v }))
+})
+
 function goToSequencing() {
   router.push({ path: '/sequencing', query: { mode: 'vector', ref: vectorId.value } })
 }
@@ -98,6 +112,17 @@ async function downloadSeq(format: string) {
           <span v-for="a in vectorInfo.antibiotic_resistance" :key="'a' + a" class="meta-tag">{{ a }}</span>
           <span v-if="vectorInfo.description" class="vector-description">{{ vectorInfo.description }}</span>
         </div>
+        <div v-if="provenanceRows.length" class="provenance">
+          <p class="provenance-title">出处 / 许可</p>
+          <ul class="provenance-list">
+            <li v-for="row in provenanceRows" :key="row.key">
+              <span class="provenance-key">{{ row.label }}</span>
+              <a v-if="row.key === 'url'" :href="row.value" target="_blank" rel="noopener" class="provenance-value">{{ row.value }} ↗</a>
+              <span v-else class="provenance-value">{{ row.value }}</span>
+            </li>
+          </ul>
+          <p class="provenance-tip">序列与注释版权归原数据源所有，请按上表许可使用并保留出处。</p>
+        </div>
         <div class="seq-actions">
           <button class="btn btn-small" @click="copySequence">{{ copied ? '✓ 已复制' : '📋 复制序列' }}</button>
           <button class="btn btn-small" @click="downloadSeq('fasta')">🧬 FASTA</button>
@@ -126,5 +151,12 @@ async function downloadSeq(format: string) {
 .vector-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; align-items: center; }
 .meta-tag { padding: 0.25rem 0.75rem; background: var(--bg-secondary); border-radius: 9999px; font-size: 0.75rem; color: var(--text-secondary); }
 .vector-description { width: 100%; font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem; line-height: 1.5; }
+.provenance { margin-top: 0.75rem; padding: 0.6rem 0.85rem; background: var(--bg-secondary); border-radius: 8px; }
+.provenance-title { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem; }
+.provenance-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.provenance-list li { display: flex; gap: 0.5rem; font-size: 0.8rem; line-height: 1.5; }
+.provenance-key { flex: 0 0 5rem; color: var(--text-secondary); }
+.provenance-value { color: var(--text-primary); word-break: break-all; }
+.provenance-tip { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.35rem; }
 @media (max-width: 640px) { .header h1 { font-size: 1.5rem; } }
 </style>
