@@ -12,17 +12,18 @@
   data/vectors/*.yaml 一致），并在描述里写入出处，满足来源站的引用要求。
 """
 
-import hashlib
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from app import config
+from app import online_import as oi
 from app.cache import cache
 from app.auth.jwt_auth import get_admin_user
 from app.design_service import invalidate_vector_library_cache
 from app.routes.models import (
+    MAP_MAX_LENGTH,
     SnapGeneImportRequest,
     EnsemblImportRequest,
     OnlinePreviewResponse,
@@ -33,9 +34,6 @@ from core.plasmid_map.parsers import MapParseError
 from core.seq_utils import gc_percent
 
 router = APIRouter(prefix="/api/vectors", tags=["online-sources"])
-
-# 只读端点缓存 TTL：集合列表/索引变化很慢，预览按内容哈希缓存
-CACHE_TTL = 3600
 
 
 def _fail(exc: MapParseError) -> HTTPException:
@@ -57,20 +55,6 @@ def _check(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except MapParseError as exc:
         raise _fail(exc) from exc
-
-
-def _cache_get(key: str):
-    try:
-        return cache.backend.get(key)
-    except Exception:  # noqa: BLE001 - 缓存不可用不影响主流程
-        return None
-
-
-def _cache_set(key: str, value) -> None:
-    try:
-        cache.backend.set(key, value, CACHE_TTL)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
@@ -104,109 +88,42 @@ def _preview(record, *, source: str, url: str, license_text: str) -> OnlinePrevi
 
 @router.get("/import/sources")
 async def list_online_sources() -> Dict[str, Any]:
-    """可用在线来源与许可摘要（前端据此渲染页签与提示）"""
-    enabled = src.import_enabled()
-    return {
-        "enabled": enabled,
-        "disclaimer": src.DISCLAIMER,
-        "sources": [
-            {
-                "id": "snapgene",
-                "name": "SnapGene 在线质粒库",
-                "kind": "online_library",
-                "url": src.SNAPGENE_BASE,
-                "license": src.SNAPGENE_LICENSE,
-                "importable": True,
-                "note": "19 个集合（基础克隆载体/CRISPR/荧光蛋白/酵母质粒…），含完整图谱与注释",
-            },
-            {
-                "id": "ensembl",
-                "name": "Ensembl REST",
-                "kind": "online_sequence",
-                "url": src.ENSEMBL_BASE,
-                "license": src.ENSEMBL_LICENSE,
-                "importable": True,
-                "note": "按 Ensembl ID 取 genomic / cds / cdna 序列（蛋白序列不作为质粒序列导入）",
-            },
-            {
-                "id": "addgene",
-                "name": "Addgene",
-                "kind": "online_library",
-                "url": "https://www.addgene.org",
-                "license": src.ADDGENE_LICENSE,
-                "importable": False,
-                "note": "只提供本地索引搜索与匿名元数据；全长序列需登录，本工具不代为登录",
-            },
-            {
-                "id": "ncbi",
-                "name": "NCBI GenBank（已有通道）",
-                "kind": "online_sequence",
-                "url": "https://www.ncbi.nlm.nih.gov/nuccore/",
-                "license": "NCBI 公共数据；个别提交者可能主张权利",
-                "importable": True,
-                "note": "见 /api/vectors/import/ncbi、/api/vectors/import/ncbi-id；图谱页亦可用 accession 打开",
-            },
-        ],
-    }
+    """可用在线来源与许可摘要（前端据此渲染页签与提示；与图谱页同一份数据）"""
+    return oi.sources_payload()
 
 
 # ==================== SnapGene 在线库 ====================
 
 @router.get("/import/snapgene/sets")
 async def snapgene_sets() -> Dict[str, Any]:
-    """列出 SnapGene 在线序列集合（低频：结果缓存 1 小时）"""
-    key = "online:snapgene:sets"
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-    sets = await _call(src.snapgene_sets)
-    payload = {"count": len(sets), "sets": sets, "license": src.SNAPGENE_LICENSE}
-    _cache_set(key, payload)
-    return payload
+    """列出 SnapGene 在线序列集合（低频：与图谱页共用同一份 1 小时缓存）"""
+    return await _call(oi.snapgene_sets_payload)
 
 
 @router.get("/import/snapgene/sets/{set_id}")
 async def snapgene_set_index(set_id: str) -> Dict[str, Any]:
     """列出集合内全部序列（索引，等价客户端 snapgeneSequences/<set>.xml）"""
-    key = f"online:snapgene:index:{set_id}"
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-    rows = await _call(src.snapgene_set_index, set_id)
-    payload = {"set_id": _check(src.validate_set_id, set_id), "count": len(rows), "plasmids": rows}
-    _cache_set(key, payload)
-    return payload
+    return await _call(oi.snapgene_index_payload, set_id)
 
 
-def _snapgene_fetch(set_id: str, plasmid_id: str):
-    """下载 .dna 并解析（阻塞），返回 (record, url, 文件名)"""
-    data = src.snapgene_plasmid_bytes(set_id, plasmid_id)
-    sid = src.validate_set_id(set_id)
-    pid = src.validate_plasmid_id(plasmid_id)
-    url = (f"{src.SNAPGENE_BASE}/fetch.php?set={sid}&plasmid={pid}")
-    # 索引里的 filename 更友好（如 "SARS Genome.dna"），拿不到就用 plasmid_id
-    name = pid
-    try:
-        name = next((p["filename"] for p in src.snapgene_set_index(sid)
-                     if p["plasmid_id"] == pid), "") or pid
-        name = name[:-4] if name.lower().endswith(".dna") else name
-    except MapParseError:
-        pass
-    return src.snapgene_record(data, name=name), url
+async def _snapgene_fetch(set_id: str, plasmid_id: str):
+    """下载并解析单个 .dna（阻塞调用交线程池），返回 (record, url)"""
+    record, url, _name = await _call(oi.snapgene_plasmid_record, set_id, plasmid_id,
+                                     MAP_MAX_LENGTH)
+    return record, url
 
 
 @router.get("/import/snapgene/preview", response_model=OnlinePreviewResponse)
 async def snapgene_preview(set_id: str = Query(..., max_length=64),
                            plasmid_id: str = Query(..., max_length=120)):
     """下载并解析单个 .dna 作预览（不落库）"""
-    key = "online:snapgene:preview:" + hashlib.sha256(
-        f"{set_id}|{plasmid_id}".encode("utf-8")).hexdigest()[:32]
-    cached = _cache_get(key)
+    key = oi.preview_cache_key("snapgene", set_id, plasmid_id)
+    cached = oi.cache_get(key)
     if cached is not None:
         return cached
-    record, url = await _call(_snapgene_fetch, set_id, plasmid_id)
+    record, url = await _snapgene_fetch(set_id, plasmid_id)
     resp = _preview(record, source="snapgene", url=url, license_text=src.SNAPGENE_LICENSE)
-    _cache_set(key, resp.model_dump(mode="json"))
+    oi.cache_set(key, resp.model_dump(mode="json"))
     return resp
 
 
@@ -214,7 +131,7 @@ async def snapgene_preview(set_id: str = Query(..., max_length=64),
 async def import_snapgene(req: SnapGeneImportRequest,
                           _: object = Depends(get_admin_user)) -> Dict[str, Any]:
     """从 SnapGene 在线库导入一个序列到载体库（需管理员）"""
-    record, url = await _call(_snapgene_fetch, req.set_id, req.plasmid_id)
+    record, url = await _snapgene_fetch(req.set_id, req.plasmid_id)
     result = await run_in_threadpool(
         save_record, record,
         source="snapgene",
@@ -234,14 +151,14 @@ async def import_snapgene(req: SnapGeneImportRequest,
 @router.get("/import/ensembl/lookup/{identifier}")
 async def ensembl_lookup(identifier: str, expand: bool = False) -> Dict[str, Any]:
     """Ensembl 元数据（名称/类型/物种/位置）"""
-    key = f"online:ensembl:lookup:{identifier}:{int(bool(expand))}"
-    cached = _cache_get(key)
+    key = oi.preview_cache_key("ensembl-lookup", identifier, str(int(bool(expand))))
+    cached = oi.cache_get(key)
     if cached is not None:
         return cached
     data = await _call(src.ensembl_lookup, identifier, expand=expand)
     payload = {"identifier": _check(src.validate_ensembl_id, identifier), "entry": data,
                "license": src.ENSEMBL_LICENSE}
-    _cache_set(key, payload)
+    oi.cache_set(key, payload)
     return payload
 
 
@@ -249,15 +166,15 @@ async def ensembl_lookup(identifier: str, expand: bool = False) -> Dict[str, Any
 async def ensembl_preview(identifier: str = Query(..., max_length=64),
                           seq_type: str = Query(default="cds")):
     """取 Ensembl 序列并解析作预览（不落库）"""
-    key = f"online:ensembl:preview:{identifier}:{seq_type}"
-    cached = _cache_get(key)
+    key = oi.preview_cache_key("ensembl", identifier, seq_type)
+    cached = oi.cache_get(key)
     if cached is not None:
         return cached
-    record = await _call(src.ensembl_record, identifier, seq_type)
+    record = await _call(src.ensembl_record, identifier, seq_type, max_length=MAP_MAX_LENGTH)
     url = f"{src.ENSEMBL_BASE}/sequence/id/{_check(src.validate_ensembl_id, identifier)}?type={seq_type}"
     resp = _preview(record, source=f"ensembl:{seq_type}", url=url,
                     license_text=src.ENSEMBL_LICENSE)
-    _cache_set(key, resp.model_dump(mode="json"))
+    oi.cache_set(key, resp.model_dump(mode="json"))
     return resp
 
 
@@ -265,7 +182,8 @@ async def ensembl_preview(identifier: str = Query(..., max_length=64),
 async def import_ensembl(req: EnsemblImportRequest,
                          _: object = Depends(get_admin_user)) -> Dict[str, Any]:
     """从 Ensembl 导入 DNA 序列到载体库（需管理员）"""
-    record = await _call(src.ensembl_record, req.identifier, req.seq_type, name=req.name)
+    record = await _call(src.ensembl_record, req.identifier, req.seq_type,
+                         name=req.name, max_length=MAP_MAX_LENGTH)
     url = (f"{src.ENSEMBL_BASE}/sequence/id/{src.validate_ensembl_id(req.identifier)}"
            f"?type={req.seq_type}")
     result = await run_in_threadpool(

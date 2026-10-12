@@ -7,9 +7,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EnzymeSet, MapDocument, ParseOptions, Topology } from '@/map/types'
 import {
-  checkMapFile, describeMapError, fileExt, getEnzymeSets, getVectorMap, importNcbi, MAP_ACCEPT, MAP_TEXT_EXTS,
-  MAP_UPLOAD_LIMIT_MB, NCBI_ACCESSION_RE, normalizeAccession, parseMapFile, parseMapText,
+  checkMapFile, describeMapError, ENSEMBL_ID_RE, fileExt, getEnzymeSets, getOnlineSnapgeneIndex,
+  getOnlineSnapgeneSets, getOnlineSources, getVectorMap, importNcbi, importOnlineEnsembl,
+  importOnlineSnapgene, MAP_ACCEPT, MAP_TEXT_EXTS, MAP_UPLOAD_LIMIT_MB, NCBI_ACCESSION_RE,
+  normalizeAccession, parseMapFile, parseMapText,
 } from '@/map/api'
+import type { OnlineSourceInfo, SnapgenePlasmid, SnapgeneSet } from '@/map/types'
 import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
 
@@ -18,7 +21,7 @@ const EXAMPLE_VECTOR = 'pUC19'
 
 const doc = ref<MapDocument | null>(loadMapSession())
 const showInput = ref(!doc.value)
-const mode = ref<'file' | 'paste' | 'ncbi'>('file')
+const mode = ref<'file' | 'paste' | 'ncbi' | 'online'>('file')
 const loading = ref(false)
 const error = ref('')
 const notSaved = ref(false)
@@ -47,6 +50,75 @@ const pasteLooksGenbank = computed(() => /^\s*LOCUS\b/.test(pasteText.value))
 // NCBI accession
 const accession = ref('')
 const accessionValid = computed(() => NCBI_ACCESSION_RE.test(normalizeAccession(accession.value)))
+
+// 在线导入（SnapGene 在线库 / Ensembl）：与载体库页共用后端缓存与许可文案
+const onlineSource = ref<'snapgene' | 'ensembl'>('snapgene')
+const sgSets = ref<SnapgeneSet[]>([])
+const sgSetId = ref('')
+const sgRows = ref<SnapgenePlasmid[]>([])
+const sgLoading = ref(false)
+const sgError = ref('')
+const ensemblId = ref('')
+const ensemblType = ref<'genomic' | 'cds' | 'cdna'>('cds')
+const onlineSources = ref<OnlineSourceInfo[]>([])
+// 许可文案随选中来源切换（SnapGene 与 Ensembl 条款不同）
+const onlineLicense = computed(
+  () => onlineSources.value.find((s) => s.id === onlineSource.value)?.license || '')
+const ensemblValid = computed(() => ENSEMBL_ID_RE.test(ensemblId.value.trim()))
+
+async function ensureOnlineMeta() {
+  if (onlineSources.value.length === 0) {
+    try {
+      onlineSources.value = (await getOnlineSources()).sources || []
+    } catch { /* 许可提示拿不到不阻断导入 */ }
+  }
+  if (sgSets.value.length === 0 && !sgLoading.value) await loadSnapgeneSets()
+}
+
+async function loadSnapgeneSets() {
+  sgLoading.value = true
+  sgError.value = ''
+  try {
+    const res = await getOnlineSnapgeneSets()
+    sgSets.value = res.sets || []
+    if (!sgSetId.value && sgSets.value.length) sgSetId.value = sgSets.value[0].set_id
+    if (sgSetId.value) await loadSnapgeneIndex()
+  } catch (e) {
+    sgError.value = describeMapError(e)
+  } finally {
+    sgLoading.value = false
+  }
+}
+
+async function loadSnapgeneIndex() {
+  if (!sgSetId.value) return
+  sgLoading.value = true
+  sgError.value = ''
+  sgRows.value = []
+  try {
+    sgRows.value = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+  } catch (e) {
+    sgError.value = describeMapError(e)
+  } finally {
+    sgLoading.value = false
+  }
+}
+
+async function openOnlineSnapgene(row: SnapgenePlasmid) {
+  await run(() => importOnlineSnapgene({ set_id: sgSetId.value, plasmid_id: row.plasmid_id, ...options() }))
+}
+
+async function openOnlineEnsembl() {
+  const id = ensemblId.value.trim()
+  if (!id) { error.value = '请输入 Ensembl ID，如 ENSG00000139618 或 ENST00000288602'; return }
+  if (!ensemblValid.value) { error.value = `Ensembl ID 格式看起来不对：${id}`; return }
+  await run(() => importOnlineEnsembl({ identifier: id, seq_type: ensemblType.value, ...options() }))
+}
+
+function openOnlineTab() {
+  mode.value = 'online'
+  ensureOnlineMeta()
+}
 
 // 拖放
 const dragging = ref(false)
@@ -157,6 +229,7 @@ function closeDoc() {
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'file' }]" :aria-selected="mode === 'file'" @click="mode = 'file'">上传文件</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'paste' }]" :aria-selected="mode === 'paste'" @click="mode = 'paste'">粘贴序列</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'ncbi' }]" :aria-selected="mode === 'ncbi'" @click="mode = 'ncbi'">NCBI 导入</button>
+        <button type="button" role="tab" :class="['map-tab', { active: mode === 'online' }]" :aria-selected="mode === 'online'" @click="openOnlineTab">在线导入</button>
       </div>
 
       <div v-if="mode === 'file'"
@@ -176,6 +249,56 @@ function closeDoc() {
         </div>
         <p class="map-drop-sub">经 NCBI E-utilities 获取完整 GenBank 记录（含注释）；序列不超过 300 kb。
           <span v-if="accession.trim() && !accessionValid" class="map-ncbi-hint">格式看起来不对：应为字母 + 数字，可带版本号（.1）</span></p>
+      </div>
+
+      <div v-else-if="mode === 'online'" class="map-online">
+        <div class="map-online-src" role="radiogroup" aria-label="在线来源">
+          <label><input v-model="onlineSource" type="radio" value="snapgene" /> SnapGene 在线库</label>
+          <label><input v-model="onlineSource" type="radio" value="ensembl" /> Ensembl</label>
+        </div>
+
+        <template v-if="onlineSource === 'snapgene'">
+          <div class="map-row">
+            <select v-model="sgSetId" class="form-input map-online-set" aria-label="SnapGene 集合" @change="loadSnapgeneIndex">
+              <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }}（{{ s.set_id }}）</option>
+            </select>
+            <button type="button" class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
+              {{ sgLoading ? '加载中…' : '刷新' }}
+            </button>
+          </div>
+          <p v-if="sgError" class="map-online-error">{{ sgError }}</p>
+          <p v-else-if="sgRows.length === 0" class="map-drop-sub">
+            {{ sgLoading ? '正在获取集合索引…' : '该集合没有条目' }}
+          </p>
+          <ul v-else class="map-online-list">
+            <li v-for="row in sgRows" :key="row.plasmid_id">
+              <span class="map-online-id">{{ row.plasmid_id }}</span>
+              <span class="map-online-name">{{ row.name }}</span>
+              <button type="button" class="btn btn-primary btn-sm" :disabled="loading"
+                      @click="openOnlineSnapgene(row)">打开</button>
+            </li>
+          </ul>
+        </template>
+
+        <template v-else>
+          <div class="map-row">
+            <input v-model="ensemblId" class="form-input map-accession" type="text"
+                   placeholder="Ensembl ID，如 ENSG00000139618、ENST00000288602"
+                   maxlength="64" spellcheck="false" aria-label="Ensembl ID"
+                   @keydown.enter.prevent="openOnlineEnsembl" />
+            <select v-model="ensemblType" class="form-input map-online-set" aria-label="序列类型">
+              <option value="cds">CDS（编码序列）</option>
+              <option value="cdna">cDNA</option>
+              <option value="genomic">基因组区段</option>
+            </select>
+            <button type="button" class="btn btn-primary" :disabled="loading || !ensemblId.trim()"
+                    @click="openOnlineEnsembl">打开</button>
+          </div>
+          <p class="map-drop-sub">导入的是线性片段（非质粒），蛋白序列不能作为图谱序列。
+            <span v-if="ensemblId.trim() && !ensemblValid" class="map-ncbi-hint">格式看起来不对</span></p>
+        </template>
+
+        <p class="map-drop-sub map-online-license">{{ onlineLicense }}</p>
       </div>
 
       <div v-else class="map-paste">
@@ -248,6 +371,20 @@ h1 { font-size: 2rem; margin-bottom: 0.25rem; }
 .map-ncbi { display: flex; flex-direction: column; gap: 0.4rem; }
 .map-accession { flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; font-family: Consolas, Menlo, 'Courier New', monospace; }
 .map-ncbi-hint { color: var(--warning-color); margin-left: 0.4rem; }
+/* 在线导入（SnapGene 在线库 / Ensembl） */
+.map-online { display: flex; flex-direction: column; gap: 0.5rem; }
+.map-online-src { display: flex; gap: 1rem; font-size: 0.9rem; }
+.map-online-src label { display: inline-flex; gap: 0.3rem; align-items: center; }
+.map-online-set { max-width: 22rem; padding: 0.35rem 0.5rem; }
+.map-online-error { color: var(--error-color); font-size: 0.9rem; }
+.map-online-list {
+  list-style: none; margin: 0; padding: 0; max-height: 16rem; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.25rem;
+}
+.map-online-list li { display: flex; gap: 0.6rem; align-items: center; padding: 0.3rem 0.1rem; border-bottom: 1px solid var(--border-color); }
+.map-online-id { font-family: Consolas, Menlo, 'Courier New', monospace; font-size: 0.8rem; color: var(--primary-color); }
+.map-online-name { flex: 1; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-online-license { border-top: 1px solid var(--border-color); padding-top: 0.4rem; }
 .map-options { display: flex; gap: 0.6rem 1.2rem; align-items: center; flex-wrap: wrap; font-size: 0.9rem; }
 .map-options label { display: inline-flex; gap: 0.4rem; align-items: center; }
 .map-select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); }

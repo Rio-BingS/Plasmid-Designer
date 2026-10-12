@@ -223,7 +223,16 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | GET | `/api/map/enzymes/{name}` | 单把酶详情：REBASE 厂商、可商购同切酶/新切酶、Type IIS、Golden Gate 适用、甲基化 |
 | GET | `/api/map/suppliers` | REBASE 厂商代码/名称及各自可供的酶（图谱页按厂商筛选） |
 | POST | `/api/map/import/ncbi` | 按 NCBI accession（如 `L09137`、`M77789.1`）取 GenBank 记录 → MapDocument（限流档 `ncbi`） |
+| GET | `/api/map/import/sources` | 在线来源清单与许可摘要（与载体库页同一份数据） |
+| GET | `/api/map/import/snapgene/sets` | SnapGene 在线库：19 个集合（限流档 `ncbi`；与载体库侧**共用缓存**） |
+| GET | `/api/map/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引 |
+| POST | `/api/map/import/snapgene` | SnapGene 在线库 → MapDocument（下载 `.dna`，含完整注释；限流档 `ncbi`） |
+| POST | `/api/map/import/ensembl` | Ensembl ID（`genomic`/`cds`/`cdna`）→ MapDocument（线性片段；限流档 `ncbi`） |
 | POST | `/api/map/export/genbank` | MapDocument → GenBank 下载 |
+
+> 在线导入的许可边界与载体库侧同源（见上文「载体库」小节）：SnapGene 学术/非营利/政府可用
+> 须引用来源、商业须 GraphPad 许可，只做低频单次读取；`ONLINE_IMPORT_ENABLED=false` 时相关
+> 端点返回 503。图谱页 **不提供 Addgene 入口**——其全长序列需登录，本工具不代为登录。
 
 ### 密码子表
 
