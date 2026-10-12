@@ -1651,3 +1651,51 @@ def test_addgene_local_index_cached_until_file_changes(tmp_path, monkeypatch):
     idx.write_text("{ broken", encoding="utf-8")
     os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 9_000_000_000))
     assert src.addgene_local_index("lenti", index_path=p) == []
+
+
+def test_upload_enforces_length_and_hides_server_path(client, vectors_dir, monkeypatch):
+    """L5：上传解析按 MAP_MAX_LENGTH 限长；回执不暴露服务器绝对路径"""
+    from app.routes import vector_routes
+    c, _ = client
+    monkeypatch.setattr(vector_routes, "MAP_MAX_LENGTH", 100)
+    r = c.post("/api/vectors/import/upload",
+               files={"file": ("big.fasta", f">big\n{SEQ300}\n".encode(), "text/plain")},
+               headers=_admin())
+    assert r.status_code == 413, r.text
+    assert list(vectors_dir.iterdir()) == []
+
+    monkeypatch.setattr(vector_routes, "MAP_MAX_LENGTH", 10_000)
+    ok = c.post("/api/vectors/import/upload",
+                files={"file": ("ok.fasta", f">ok\n{SEQ300}\n".encode(), "text/plain")},
+                headers=_admin())
+    assert ok.status_code == 200, ok.text
+    assert str(vectors_dir) not in ok.text and "path" not in ok.json()["vector"]
+    # 其他落库端点（另存为载体）同样不带路径
+    fm = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, name="noPath"),
+                headers=_admin())
+    assert fm.status_code == 200 and "path" not in fm.json()["vector"]
+    assert str(vectors_dir) not in fm.text
+
+
+def test_upload_unexpected_errors_are_generic(client, vectors_dir, monkeypatch):
+    import core.plasmid_map.parsers as parsers
+    from app import vector_import
+    c, _ = client
+    real_parse = parsers.parse_file
+
+    def _parse_boom(*a, **k):
+        raise RuntimeError("secret internal /srv/path")
+    monkeypatch.setattr(parsers, "parse_file", _parse_boom)
+    r = c.post("/api/vectors/import/upload",
+               files={"file": ("x.fasta", f">x\n{SEQ300}\n".encode(), "text/plain")},
+               headers=_admin())
+    assert r.status_code == 400 and "secret" not in r.text
+    monkeypatch.setattr(parsers, "parse_file", real_parse)
+
+    def _save_boom(*a, **k):
+        raise OSError(f"disk full at {vectors_dir}")
+    monkeypatch.setattr(vector_import, "save_record", _save_boom)
+    r2 = c.post("/api/vectors/import/upload",
+                files={"file": ("x.fasta", f">x\n{SEQ300}\n".encode(), "text/plain")},
+                headers=_admin())
+    assert r2.status_code == 500 and str(vectors_dir) not in r2.text
