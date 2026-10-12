@@ -22,12 +22,23 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import yaml
+from fastapi import HTTPException
 
 from core.plasmid_map.parsers import ParsedRecord, clean_sequence
 from core.vector_library import is_url_key, safe_http_url
 
 # 落盘文件名白名单：仅保留字母/数字/点/下划线/连字符（防路径分隔符注入）
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+class VectorIdConflict(HTTPException):
+    """目标 YAML 已被**另一条**载体占用（文件名撞车）：409，不静默覆盖。"""
+
+    def __init__(self, filename: str, existing_id: str, new_id: str):
+        super().__init__(
+            status_code=409,
+            detail=(f"载体文件 {filename} 已被另一条载体（{existing_id}）占用，"
+                    f"新载体 {new_id} 未保存；请换一个名称后重试"))
 
 
 def now_iso() -> str:
@@ -97,7 +108,9 @@ def record_to_vector_dict(record: ParsedRecord, *, source: str, url: Optional[st
     url = safe_http_url(url) or None
     desc_parts = [p for p in (description, attribution) if p]
     data: Dict = {
-        "id": vector_id or make_vector_id(source, record.name),
+        # ID 与文件名同一套归一（safe_slug）：此前 ID 保留空格/冒号而文件名已归一，
+        # 两者不一致，不同 ID 还会撞到同一文件（审查 L2）
+        "id": safe_slug(vector_id) if vector_id else make_vector_id(source, record.name),
         "name": record.name,
         "source": source,
         "sequence": record.sequence,
@@ -164,14 +177,36 @@ def record_from_parts(*, name: str, sequence: str, topology: str = "circular",
     )
 
 
+def vector_yaml_path(data: Dict, vectors_dir: str, *, filename: Optional[str] = None) -> str:
+    return os.path.join(vectors_dir, f"{safe_slug(filename or data['id'])}.yaml")
+
+
+def _existing_id(path: str) -> Optional[str]:
+    """已存在的 YAML 里的载体 id（读不出来时返回 None，按「别人的文件」处理）"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError):
+        return None
+    if isinstance(doc, dict) and doc.get("id") is not None:
+        return str(doc.get("id"))
+    return None
+
+
 def write_vector_yaml(data: Dict, vectors_dir: str, *, filename: Optional[str] = None) -> str:
     """落盘为 `<vectors_dir>/<safe_slug(id)>.yaml`，返回路径。
 
+    同名文件已存在时：若其中是**同一个 id**（再次导入/更新同一条载体）则覆盖；
+    若是另一条载体（或读不出 id）则抛 `VectorIdConflict`（409），不静默覆盖。
     `_warnings` 只用于接口回执，不写进 YAML。
     """
     payload = {k: v for k, v in data.items() if not k.startswith("_")}
     os.makedirs(vectors_dir, exist_ok=True)
-    path = os.path.join(vectors_dir, f"{safe_slug(filename or data['id'])}.yaml")
+    path = vector_yaml_path(data, vectors_dir, filename=filename)
+    if os.path.exists(path):
+        existing = _existing_id(path)
+        if existing != str(data["id"]):
+            raise VectorIdConflict(os.path.basename(path), existing or "未知", str(data["id"]))
     with open(path, "w", encoding="utf-8") as fh:
         yaml.dump(payload, fh, allow_unicode=True, default_flow_style=False, sort_keys=False)
     return path
@@ -182,11 +217,16 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
                 description: Optional[str] = None,
                 attribution: Optional[str] = None,
                 provenance: Optional[Dict[str, str]] = None) -> Dict:
-    """解析结果 → 载体库；返回接口回执（id/name/length/features/path/warnings）"""
+    """解析结果 → 载体库；返回接口回执（id/name/length/features/path/replaced/warnings）"""
     data = record_to_vector_dict(record, source=source, url=url, vector_id=vector_id,
                                  description=description, attribution=attribution,
                                  provenance=provenance)
+    replaced = os.path.exists(vector_yaml_path(data, vectors_dir))
     path = write_vector_yaml(data, vectors_dir)
+    # 覆盖同 id 载体时明确告知（审查 L2）
+    warnings = list(data.get("_warnings", []))
+    if replaced:
+        warnings.append(f"已覆盖载体库中同 ID 的载体 {data['id']}")
     return {
         "id": data["id"],
         "name": data["name"],
@@ -196,6 +236,7 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
         "source": source,
         "url": data.get("url", ""),
         "path": path,
+        "replaced": replaced,
         "provenance": data.get("data_provenance", {}),
-        "warnings": data.get("_warnings", []),
+        "warnings": warnings,
     }
