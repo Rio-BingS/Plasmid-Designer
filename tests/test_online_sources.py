@@ -1602,3 +1602,21 @@ def test_from_map_conflict_returns_409(client, vectors_dir):
     r = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, name="clash"),
                headers=_admin())
     assert r.status_code == 409 and "other" in r.json()["detail"]
+
+
+def test_ncbi_and_batch_import_paths_write_topology(tmp_path):
+    """L3：NCBI / 批量 GenBank 导入写出 LOCUS 行的真实拓扑（此前线性记录被画成环状）"""
+    from core.external_vector_importer import (GenBankImporter, NCBIClient,
+                                               VectorLibraryManager, locus_topology)
+    lin, circ = _gbk(topology="linear", name="LINFRAG").decode(), _gbk(name="CIRCP").decode()
+    assert locus_topology(lin) == "linear" and locus_topology(circ) == "circular"
+    assert locus_topology("no locus here") == "circular"
+
+    manager = VectorLibraryManager()
+    v1 = NCBIClient()._parse_genbank_response(lin, "AB000001")
+    v2 = GenBankImporter()._parse_genbank(circ)
+    assert v1.topology == "linear" and v2.topology == "circular"
+    manager.vectors = {v1.id: v1, v2.id: v2}
+    assert manager.export_to_yaml(str(tmp_path)) == 2
+    assert _load_vector(tmp_path, "ncbi_AB000001").topology == "linear"
+    assert _load_vector(tmp_path, "genbank_CIRCP").topology == "circular"
