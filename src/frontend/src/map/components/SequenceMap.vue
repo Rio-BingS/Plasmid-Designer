@@ -314,6 +314,14 @@ function onPointerUp(e: PointerEvent) {
   dragging = false
 }
 function onLeave() { if (!dragging) store.hover.value = null }
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel() {
+  if (!dragging) return
+  dragging = false
+  moved = false
+  downKey = null
+  store.hover.value = null
+}
 
 defineExpose({ scroller, perRow, offsets, totalHeight })
 </script>
@@ -322,7 +330,8 @@ defineExpose({ scroller, perRow, offsets, totalHeight })
   <div class="smap">
     <div ref="scroller" class="smap-scroll" :style="{ height: `${height}px` }" @scroll.passive="onScroll">
       <div ref="inner" class="smap-inner" :style="{ height: `${totalHeight}px` }"
-           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointerleave="onLeave">
+           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointerleave="onLeave"
+           @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel">
         <svg v-for="r in rows" :key="r.row" class="smap-row" :width="W" :height="r.g.rowH"
              :style="{ top: `${r.top}px` }" xmlns="http://www.w3.org/2000/svg">
           <!-- 底色：悬停 / 搜索命中 / 选区 -->
