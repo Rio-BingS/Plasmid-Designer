@@ -4,6 +4,7 @@
  * accession → POST /api/map/import/ncbi → 可编辑的 MapViewer。
  * 文档放 sessionStorage，刷新不丢；示例按钮载入内置载体 pUC19。
  */
+import SnapgeneSetPicker from '../components/SnapgeneSetPicker.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EnzymeSet, MapDocument, ParseOptions, Topology } from '@/map/types'
 import {
@@ -353,9 +354,7 @@ async function doSaveAsVector() {
 
         <template v-if="onlineSource === 'snapgene' && snapgeneAvailable">
           <div class="map-row">
-            <select v-model="sgSetId" class="form-input map-online-set" aria-label="SnapGene 集合" @change="loadSnapgeneIndex">
-              <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }}（{{ s.set_id }}）</option>
-            </select>
+            <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input map-online-set" @change="loadSnapgeneIndex" />
             <button type="button" class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
               {{ sgLoading ? '加载中…' : '刷新' }}
             </button>
@@ -469,7 +468,7 @@ h1 { font-size: 2rem; margin-bottom: 0.25rem; }
 .map-online { display: flex; flex-direction: column; gap: 0.5rem; }
 .map-online-src { display: flex; gap: 1rem; font-size: 0.9rem; }
 .map-online-src label { display: inline-flex; gap: 0.3rem; align-items: center; }
-.map-online-set { max-width: 22rem; padding: 0.35rem 0.5rem; }
+.map-online-set { flex: 1 1 16rem; min-width: 0; max-width: 28rem; width: auto; padding: 0.35rem 0.5rem; text-overflow: ellipsis; }
 .map-online-error { color: var(--error-color); font-size: 0.9rem; }
 .map-online-list {
   list-style: none; margin: 0; padding: 0; max-height: 16rem; overflow-y: auto;
