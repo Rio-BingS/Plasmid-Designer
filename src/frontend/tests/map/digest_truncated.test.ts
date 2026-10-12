@@ -1,10 +1,11 @@
 /**
  * 位点明细被截断的酶（后端 sites_truncated / 总量封顶时清空明细）：
- * 酶切列表给出提示，消化面板禁用这类酶，避免少算切口得出错误片段。
+ * 酶切列表给出提示，消化面板禁用这类酶，避免少算切口得出错误片段；
+ * 酶详情显示修饰依赖型标记。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import type { MapDocument, MapEnzyme } from '@/map/types'
+import type { EnzymeDetail, MapDocument, MapEnzyme } from '@/map/types'
 import pUC19 from '../fixtures/map/pUC19.json'
 import { sitesIncomplete } from '@/map/core/digest'
 
@@ -95,7 +96,7 @@ describe('消化面板：明细被截断的酶', () => {
   })
 })
 
-describe('酶切列表', () => {
+describe('酶切列表与酶详情', () => {
   it('截断的酶显示“明细不全”，其余不显示', async () => {
     const w = mount(MapViewer, { props: { doc: withTruncated() } })
     await flushPromises()
@@ -105,5 +106,20 @@ describe('酶切列表', () => {
     expect(row('MseI').find('.mv-truncated-badge').attributes('title')).toContain('3 个位点明细')
     expect(row('AluI').find('.mv-meta').text()).toContain('…')
     expect(row('EcoRI').find('.mv-truncated-badge').exists()).toBe(false)
+  })
+
+  it('修饰依赖型酶的详情带标记', async () => {
+    const detail: EnzymeDetail = {
+      name: 'MspJI', site: 'CNNR', recognition: 'CNNR(9/13)', ends: "5'", overhang: 'NNNN', type_iis: true,
+      golden_gate: false, suppliers: [], isoschizomers: [], neoschizomers: [], modification_dependent: true,
+    }
+    apiMocks.getEnzymeDetail.mockResolvedValue(detail)
+    const w = mount(MapViewer, { props: { doc: withTruncated(), allowAnalyze: true } })
+    await flushPromises()
+    await w.findAll('.mv-tabs button')[1].trigger('click')
+    await flushPromises()
+    await w.findAll('.mv-enzyme-list .mv-row').find((r) => r.find('.mv-name').text() === 'MseI')!.trigger('click')
+    await flushPromises()
+    expect(w.find('.mv-enz-detail .mv-badges').text()).toContain('修饰依赖型')
   })
 })
