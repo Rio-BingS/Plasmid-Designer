@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   layoutCircularLabels, layoutLinearLabels, spacedPositions, boxesOverlap, featurePriority,
-  enzymePriority, fitsInside, labelSide, type CircularLabelInput,
+  enzymePriority, fitsInside, labelSide, type CircularLabelInput, spacedVar, internalArcLabel,
+  leadersCross, leaderHitsBox, segmentsCross,
 } from '@/map/core/labels'
 import { textWidth, truncateText } from '@/map/core/text'
 import { TAU } from '@/map/core/coords'
@@ -60,7 +61,7 @@ describe('环形外置标签：无碰撞（属性测试）', () => {
       for (const p of layout.placed) {
         expect(p.box.y).toBeGreaterThanOrEqual(400 - (230 + 28) - 1e-6)
         expect(p.box.y + p.box.h).toBeLessThanOrEqual(400 + 230 + 28 + 1e-6)
-        expect(p.leader).toHaveLength(3)
+        expect(p.leader).toHaveLength(4)
         expect(p.leader.flat().every(Number.isFinite)).toBe(true)
       }
     }
@@ -94,6 +95,128 @@ describe('环形外置标签：无碰撞（属性测试）', () => {
     const layout = layoutCircularLabels(inputs, { cx: 0, cy: 0, labelRadius: 120, fontSize: 10, lineHeight: 30 })
     const ys = inputs.map((l) => layout.placed.find((p) => p.id === l.id)!.y)
     for (let i = 1; i < ys.length; i++) expect(ys[i]).toBeGreaterThan(ys[i - 1])
+  })
+})
+
+describe('环形外置标签：SnapGene 式扇形（属性测试）', () => {
+  const segDist = (p: number[], q: number[], c: number[]) => {
+    const dx = q[0] - p[0], dy = q[1] - p[1]
+    const L2 = dx * dx + dy * dy
+    const t = L2 ? Math.max(0, Math.min(1, ((c[0] - p[0]) * dx + (c[1] - p[1]) * dy) / L2)) : 0
+    return Math.hypot(p[0] + t * dx - c[0], p[1] + t * dy - c[1])
+  }
+  function check(seed: number, opts: { stretch: boolean; chips: boolean }) {
+    const r = rng(seed)
+    for (let round = 0; round < 80; round++) {
+      const n = randInt(r, 0, 90)
+      const inputs = randomInputs(r, n).map((l) => ({
+        ...l, radius: 150 + r() * 40,
+        ...(opts.chips && r() < 0.4 ? { width: textWidth(l.text, 11) + 10, height: 17 } : {}),
+      }))
+      const o = {
+        cx: 400, cy: 400, labelRadius: 230, fontSize: 11, lineHeight: 14, fanRadius: 205,
+        halfHeight: opts.stretch ? 330 : 258, stretch: opts.stretch, xMin: 0, xMax: 800,
+      }
+      const { placed, hidden } = layoutCircularLabels(inputs, o)
+      expect(placed.length + hidden.length).toBe(n)
+      expect(new Set([...placed.map((p) => p.id), ...hidden]).size).toBe(n)
+      for (let i = 0; i < placed.length; i++) {
+        const p = placed[i]
+        // 水平/竖直边界
+        expect(p.box.x).toBeGreaterThanOrEqual(-1e-6)
+        expect(p.box.x + p.box.w).toBeLessThanOrEqual(800 + 1e-6)
+        expect(p.box.y).toBeGreaterThanOrEqual(400 - o.halfHeight - 1e-6)
+        expect(p.box.y + p.box.h).toBeLessThanOrEqual(400 + o.halfHeight + 1e-6)
+        // 扇形段不进入环（fanRadius）
+        expect(segDist(p.leader[1], p.leader[2], [400, 400])).toBeGreaterThanOrEqual(205 - 1e-6)
+        // 框不压环
+        const nearX = Math.max(p.box.x, Math.min(400, p.box.x + p.box.w))
+        const nearY = Math.max(p.box.y, Math.min(400, p.box.y + p.box.h))
+        expect(Math.hypot(nearX - 400, nearY - 400)).toBeGreaterThan(205)
+        for (let j = 0; j < placed.length; j++) {
+          if (i === j) continue
+          const q = placed[j]
+          if (j > i) {
+            expect(boxesOverlap(p.box, q.box)).toBe(false)
+            expect(leadersCross(p.leader, q.leader)).toBe(false)
+          }
+          expect(leaderHitsBox(p.leader, q.box)).toBe(false)
+        }
+      }
+    }
+  }
+  it('圆形曲线：框不重叠、引线不交叉、不压字、不扎进环', () => check(11, { stretch: false, chips: false }))
+  it('椭圆拉伸 + 色块标签（变行高）同样成立', () => check(12, { stretch: true, chips: true }))
+
+  it('顶部扎堆时向上延伸（stretch），比不拉伸少隐藏', () => {
+    const inputs: CircularLabelInput[] = Array.from({ length: 26 }, (_, i) => ({
+      id: `t${i}`, text: `Enz${i}`, angle: 0.02 + i * 0.012, radius: 200, priority: 1,
+    }))
+    const base = { cx: 400, cy: 400, labelRadius: 230, fontSize: 11, lineHeight: 14, fanRadius: 205, xMin: 0, xMax: 800 }
+    const flat = layoutCircularLabels(inputs, { ...base, halfHeight: 250 })
+    const tall = layoutCircularLabels(inputs, { ...base, halfHeight: 380, stretch: true })
+    expect(tall.hidden.length).toBeLessThanOrEqual(flat.hidden.length)
+    expect(Math.min(...tall.placed.map((p) => p.box.y))).toBeLessThan(400 - 230)
+  })
+
+  it('不拥挤时引线纯径向（标签落在锚点射线上）', () => {
+    const { placed } = layoutCircularLabels([{ id: 'a', text: 'AmpR', angle: 2, radius: 180, priority: 1 }],
+      { cx: 0, cy: 0, labelRadius: 230, fontSize: 11, lineHeight: 14, fanRadius: 205, stretch: true })
+    const [, knee, t0] = placed[0].leader
+    expect(Math.atan2(t0[0], -t0[1])).toBeCloseTo(Math.atan2(knee[0], -knee[1]), 1)
+  })
+
+  it('同列标签保持角度顺序', () => {
+    const r = rng(5)
+    const inputs = Array.from({ length: 40 }, (_, i) => ({ id: `a${i}`, text: 'NotI', angle: 0.1 + r() * 2.9, radius: 200, priority: 1 }))
+    const { placed } = layoutCircularLabels(inputs, { cx: 400, cy: 400, labelRadius: 230, fontSize: 11, lineHeight: 14, fanRadius: 205, stretch: true, halfHeight: 330, xMin: 0, xMax: 800 })
+    const byAngle = [...placed].sort((p, q) => inputs.find((x) => x.id === p.id)!.angle - inputs.find((x) => x.id === q.id)!.angle)
+    for (let i = 1; i < byAngle.length; i++) expect(byAngle[i].y).toBeGreaterThan(byAngle[i - 1].y)
+  })
+})
+
+describe('几何工具', () => {
+  it('segmentsCross：相交/平行/共端点', () => {
+    expect(segmentsCross([0, 0], [10, 10], [0, 10], [10, 0])).toBe(true)
+    expect(segmentsCross([0, 0], [10, 0], [0, 1], [10, 1])).toBe(false)
+    expect(segmentsCross([0, 0], [10, 0], [10, 0], [10, 10])).toBe(false)
+  })
+  it('spacedVar：变行高相邻不重叠、在范围内', () => {
+    const r = rng(9)
+    for (let k = 0; k < 200; k++) {
+      const n = randInt(r, 1, 25)
+      const hs = Array.from({ length: n }, () => (r() < 0.5 ? 14 : 18))
+      const ideal = Array.from({ length: n }, () => r() * 500).sort((a, b) => a - b)
+      const ys = spacedVar(ideal, hs, 0, 500)
+      for (let i = 1; i < n; i++) expect(ys[i] - ys[i - 1]).toBeGreaterThanOrEqual((hs[i] + hs[i - 1]) / 2 - 1e-9)
+      if (hs.reduce((s, h) => s + h, 0) <= 500) {
+        expect(ys[0] - hs[0] / 2).toBeGreaterThanOrEqual(-1e-9)
+        expect(ys[n - 1] + hs[n - 1] / 2).toBeLessThanOrEqual(500 + 1e-9)
+      }
+    }
+  })
+})
+
+describe('弧带内置标签（textPath）', () => {
+  it('弧长够才内置；条太窄不内置', () => {
+    const w = textWidth('AmpR', 11)
+    // 弧长（字身内侧半径）= Δθ·(rm − 5.5)；rm = 200
+    const need = (w + 8) / (200 - 5.5)
+    expect(internalArcLabel('AmpR', 11, 0, need * 1.05, 192, 208)).not.toBeNull()
+    expect(internalArcLabel('AmpR', 11, 0, need * 0.95, 192, 208)).toBeNull()
+    // 减去箭头长后放不下
+    expect(internalArcLabel('AmpR', 11, 0, need * 1.05, 192, 208, 14)).toBeNull()
+    // 条宽 < 字高 + 2
+    expect(internalArcLabel('AmpR', 11, 0, 1, 195, 205)).toBeNull()
+    expect(internalArcLabel('', 11, 0, 1, 192, 208)).toBeNull()
+  })
+  it('下半圈反向走，路径半径偏外；上半圈偏内', () => {
+    const top = internalArcLabel('lacI', 10, -0.3, 0.3, 190, 206)!
+    const bottom = internalArcLabel('lacI', 10, Math.PI - 0.3, Math.PI + 0.3, 190, 206)!
+    expect(top.flip).toBe(false)
+    expect(bottom.flip).toBe(true)
+    expect(top.r).toBeLessThan(198)
+    expect(bottom.r).toBeGreaterThan(198)
   })
 })
 
