@@ -22,6 +22,13 @@
   按「能用序列工具（`analysis`）即可用图谱」一次性继承，管理员可在功能矩阵单独收紧。
 - Docker 部署须重新构建后端镜像（镜像新增 `data/features/` 元件库）；裸机部署随项目
   文件复制，无需额外操作。
+- **Golden Gate 引物结果变化**：识别序列与 overhang 之间的间隔改按酶的切割偏移计算。
+  BsaI / BsmBI 不变（1 nt）；**BbsI 引物由 1 个间隔碱基改为 2 个**——此前 BbsI（N2/N6）
+  切下的 overhang 错位一位，用旧版设计的 BbsI 引物请重新设计。Golden Gate 设计请求的
+  `enzyme` 不是可商购、切 4 nt 5' 突出端的 Type IIS 酶时，现在直接 422（此前在引物设计
+  阶段才报错）；`GET /api/analysis/enzymes` 的缓存版本递增为 v3。
+- 可选新环境变量 `NCBI_EMAIL`（建议）、`NCBI_API_KEY`（图谱页 NCBI 导入用，Docker 已透传，
+  两份 `.env.example` 有说明）；不设也能用。
 
 ### 新增
 
@@ -39,6 +46,22 @@
   如 XbaI 的 `TCTAGATC`、StuI 的 `AGGCCTGG`）。
 - `GET /api/vectors` 列表每项新增 `map_preview`（长度、拓扑、归一后的特征，不含序列），
   供载体列表画图谱缩略图。
+- 图谱酶数据（REBASE，经 Biopython `Bio.Restriction`）：`GET /api/map/enzymes/{name}`
+  酶详情（REBASE 厂商代码与名称、可商购同切酶 / 新切酶、Type IIS、Golden Gate 适用、
+  甲基化敏感性）、`GET /api/map/suppliers` 厂商表，酶组新增 `type_iis`（全部可商购
+  Type IIS 酶）。Type IIS 判定有单测守护：非回文、确定碱基 ≥4、切点全在位点同侧之外。
+  Biopython 的最适 / 失活温度对全部酶都是 37 / 65 °C 占位值，不予展示。
+- 图谱页酶切面板可按厂商（NEB、Thermo 等）筛选，点酶显示详情；取过的详情同时出现在
+  悬停提示里。
+- 图谱页「NCBI 导入」：输入 GenBank / RefSeq accession（如 `L09137`、`M77789.1`），后端
+  `POST /api/map/import/ncbi` 经 E-utilities efetch（`gbwithparts`，带 tool / email，
+  可选 API key）取完整记录并走现有解析流水线；校验 accession、沿用体积与长度上限、
+  文本缓存 24 小时、限流 `ncbi` 档、受 `map` 功能开关控制。
+- Golden Gate 设计的可选酶改由 REBASE 数据给出：全部可商购、切出 4 nt 5' 突出端的
+  Type IIS 酶（BsaI / BsmBI / BbsI 仍排最前，另有 Esp3I、PaqCI、BsmAI、Eco31I、BpiI、
+  AarI 等），设计页下拉随之扩展；`GET /api/analysis/enzymes` 新增 `golden_gate_enzymes`。
+- README「数据来源与致谢」与站内免责声明补充 REBASE 引用（Roberts R.J. et al.,
+  Nucleic Acids Res. 51:D629-D630 (2023), doi:10.1093/nar/gkac975）与 NCBI 致谢。
 
 - 全新质粒图谱查看器（前端 `src/map/`，SVG，零新依赖）：环形 / 线性 / 序列 / 分屏
   四种视图共享选区与悬停（任一视图选中，其余同步高亮）；环形图可拖拽中心旋转、
@@ -77,6 +100,10 @@
 
 ### 修复
 
+- Golden Gate 引物对 BbsI 的间隔碱基数错误（一律写 1 个，BbsI 需 2 个），切下的
+  overhang 错位一位；现按各酶切割偏移计算，并以「引物装回扩增产物再酶切」的测试守护。
+- 经典双酶切拒绝 Type IIS 酶改按 REBASE 判定：手写名单之外的 Type IIS 酶（如 FokI）
+  也给出「请改用 Golden Gate」的明确提示，而不是笼统的「未知限制酶」。
 - 7 个 SnapGene 来源载体（pcDNA3.1、pET-21a、pET-28a、pFastBac1、pGEX-4T-1、pLVX、
   pYES2）的特征起点整体左移一位，CDS 长度不是 3 的倍数、翻译读码框错位；已更正。
 - pUC19 的特征坐标沿用了另一套编号（M77789），与 L09137 序列整体错位：lacZα、AmpR

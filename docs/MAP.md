@@ -46,7 +46,10 @@
 |------|------|
 | `POST /parse` | multipart `file`（.gb/.gbk/.genbank、.fa/.fasta/.fas、.dna）或 JSON `{text, name?, topology?}`；参数 `annotate`（缺省：没有特征才注释）、`enzyme_set`（默认 `common`）、`orf_min_aa`（默认 100），可放查询串或表单 / JSON 字段 |
 | `POST /analyze` | JSON `{sequence, topology, name?, features?, primers?, annotate?, enzyme_set?, enzymes?, orf_min_aa?}`：编辑后重算。`annotate=true` 时丢弃传入的 `source=auto` 特征重新注释 |
-| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI） |
+| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI）/ `type_iis`（全部可商购 Type IIS 酶，判定规则见下） |
+| `GET /enzymes/{name}` | 酶详情 `{name, site, recognition, ends, overhang, type_iis, golden_gate, suppliers:[{code,name}], isoschizomers, neoschizomers, methylation?}`；同切酶 = 识别序列与切点都相同，新切酶 = 识别序列相同、切点不同，均只列可商购的。未知酶 404 |
+| `GET /suppliers` | `[{code, name, enzymes}]`：REBASE 厂商代码 / 名称及其可供的酶，按酶数降序；前端据此做显示层的厂商筛选 |
+| `POST /import/ncbi` | JSON `{accession, annotate?, enzyme_set?, orf_min_aa?}` → MapDocument（`source_format=genbank`）。accession 校验（GenBank / WGS / RefSeq，版本号可选）→ E-utilities efetch `db=nuccore&rettype=gbwithparts&retmode=text`（带 `tool`、`email`、`api_key`）→ 现有 GenBank 解析。错误：422 格式无效、404 未找到、413 超限、502 NCBI 异常、503 NCBI 限流、504 超时 |
 | `POST /export/genbank` | 请求体 MapDocument → `.gb` 下载；颜色写 `/ApEinfo_fwdcolor` + `/ApEinfo_revcolor`，自动注释特征附 `/note` 说明来源库与 identity/coverage |
 
 `GET /api/design/{id}/map`（插入片段 `source=design`，载体元件 `source=vector`）与
@@ -58,6 +61,15 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 不含序列 / 酶切 / ORF），供载体列表画缩略图（MapThumbnail）。
 
 错误一律中文 `detail`：413 超长 / 超体积，415 不支持的格式，422 非法序列或参数。
+
+**Type IIS 判定**（`core.enzyme_sites.is_type_iis`，图谱 `type_iis` 酶组、酶详情与 Golden Gate
+共用）：识别序列非回文（按 IUPAC 反向互补比较）、确定碱基（ACGT）≥ 4 个（排除 MspJI / FspEI /
+LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列同一侧之外（全部 ≥ 末端且至少一个
+严格在外，或全部 ≤ 起点且至少一个严格在外）。BssSI 这类非回文但一条链切在位点内的酶不算；
+两侧双切的 Type IIB 不在可扫描酶之列。Golden Gate 候选另要求识别序列纯 ACGT、切出 4 nt 5' 突出端。
+
+酶的最适 / 失活温度不提供：Biopython 1.88 的 `opt_temp` / `inact_temp` 对全部酶都是 37 / 65 °C
+的占位值（TaqI 也是），作为数据展示会误导。
 
 ## 自动注释
 
@@ -83,7 +95,17 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 | `MAP_MAX_UPLOAD_MB` | 5 | 上传文件 / JSON 文本体积上限 |
 | `MAP_CACHE_MAX_BP` | 50000 | 只缓存不超过该长度的结果（防内存缓存被大文档撑满） |
 | `MAP_FEATURE_LIBRARY` | — | 可选：元件库 JSON 路径（默认 `$DATA_DIR/features/` 或仓库 `data/features/`） |
+| `NCBI_EMAIL` | — | 建议设置：NCBI E-utilities 要求的联系邮箱（随请求发送） |
+| `NCBI_API_KEY` | — | 可选：NCBI API key，速率上限由 3 次/秒提高到 10 次/秒 |
+| `NCBI_TOOL` | `PlasmidDesigner` | E-utilities `tool` 参数 |
+| `NCBI_TIMEOUT` | 20 | 单次 efetch 超时（秒） |
+| `NCBI_TEXT_CACHE_MAX_BYTES` | 2097152 | 只缓存不超过该体积的 NCBI GenBank 文本（缓存 24 小时） |
 
 解析、比对、酶切扫描都在线程池执行。结果缓存 1 小时，键含输入摘要、选项、
 元件库版本（库文件 sha256）与 `MAP_ALGO_VERSION`（`map_routes.py`；改变结果口径的
 代码改动须递增）。限流沿用中间件 default 档，与 `/api/analysis` 相同。
+
+NCBI 导入：下载体积上限沿用 `MAP_MAX_UPLOAD_MB`，序列长度上限沿用 `MAP_MAX_LENGTH`（读到 LOCUS
+行即判断，超长记录不必下载完）；efetch 在线程池执行，进程内相邻请求间隔 ≥0.34 s（有 API key
+时 0.11 s），按客户端走限流 `ncbi` 档（匿名 10 次/分钟、登录用户 30 次/分钟）；GenBank 文本缓存
+24 小时，生成的 MapDocument 走上面的常规缓存。
