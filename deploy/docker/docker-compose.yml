@@ -64,8 +64,8 @@ services:
       - NCBI_MAX_CONCURRENCY=${NCBI_MAX_CONCURRENCY:-4}
       # 在线序列来源导入（SnapGene 在线库 / Ensembl / UniProt / Addgene）：设 false 可整体关闭外呼
       - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
-      # SnapGene 在线库单独开关（默认关；开启须自行接受其网站条款风险，见 .env.example）
-      - SNAPGENE_ONLINE_ENABLED=${SNAPGENE_ONLINE_ENABLED:-false}
+      # SnapGene 在线库单独开关（默认开、仅登录可用；设 false 关闭，见 .env.example）
+      - SNAPGENE_ONLINE_ENABLED=${SNAPGENE_ONLINE_ENABLED:-true}
       - ONLINE_TIMEOUT=${ONLINE_TIMEOUT:-25}
       - ONLINE_MAX_BYTES=${ONLINE_MAX_BYTES:-8388608}
       # Addgene 用户自备会话 Cookie（可选，仅适合单用户自托管；多用户实例启动时告警）：
