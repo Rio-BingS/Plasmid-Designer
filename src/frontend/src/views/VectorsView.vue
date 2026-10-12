@@ -28,6 +28,7 @@ import {
 } from '@/api'
 import type { OnlinePreview, OnlineSourceInfo, UniProtNucleotide } from '@/api'
 import { downloadTextFile } from '@/utils/download'
+import { safeHttpUrl } from '@/utils/safeUrl'
 import MapThumbnail from '@/map/components/MapThumbnail.vue'
 import { previewToThumb } from '@/map/preview'
 
@@ -628,7 +629,7 @@ async function openUniprotEntry(accession: string) {
       <div v-for="item in ncbiResults" :key="item.id" class="ncbi-result-item">
         <div class="ncbi-result-info">
           <span class="ncbi-id">{{ item.id }}</span>
-          <a :href="item.url" target="_blank" class="ncbi-link">NCBI 链接 ↗</a>
+          <a v-if="safeHttpUrl(item.url)" :href="safeHttpUrl(item.url)!" target="_blank" rel="noopener" class="ncbi-link">NCBI 链接 ↗</a>
         </div>
         <div class="ncbi-result-actions">
           <button class="btn btn-small btn-secondary" @click="openPreview(item.id)">👁️ 预览</button>
@@ -707,7 +708,7 @@ async function openUniprotEntry(accession: string) {
           <span class="online-name">{{ row.name }}</span>
         </div>
         <div class="online-item-actions">
-          <a class="ncbi-link" :href="`https://www.addgene.org/${row.id}/`" target="_blank" rel="noopener">页面 ↗</a>
+          <a class="ncbi-link" :href="`https://www.addgene.org/${encodeURIComponent(String(row.id))}/`" target="_blank" rel="noopener">页面 ↗</a>
           <button class="btn btn-small btn-secondary" @click="doAddgeneMetadata(String(row.id))">元数据</button>
         </div>
       </div>
@@ -716,8 +717,8 @@ async function openUniprotEntry(accession: string) {
       <p><strong>#{{ addgeneMeta.plasmid_id }}</strong> — 序列文件需登录，本工具不代为登录。</p>
       <p class="online-hint">{{ addgeneMeta.note }}</p>
       <p class="online-hint">可用直链：
-        <a v-if="addgeneMeta.metadata?.mapPngUrl" :href="addgeneMeta.metadata.mapPngUrl" target="_blank" rel="noopener">map.png ↗</a>
-        <a v-if="addgeneMeta.metadata?.genbankUrl" :href="addgeneMeta.metadata.genbankUrl" target="_blank" rel="noopener">.gbk（需登录）↗</a>
+        <a v-if="safeHttpUrl(addgeneMeta.metadata?.mapPngUrl)" :href="safeHttpUrl(addgeneMeta.metadata?.mapPngUrl)!" target="_blank" rel="noopener">map.png ↗</a>
+        <a v-if="safeHttpUrl(addgeneMeta.metadata?.genbankUrl)" :href="safeHttpUrl(addgeneMeta.metadata?.genbankUrl)!" target="_blank" rel="noopener">.gbk（需登录）↗</a>
       </p>
     </div>
     <div class="online-row">
@@ -764,7 +765,7 @@ async function openUniprotEntry(accession: string) {
     </div>
     <div v-if="uniprotEntry" class="addgene-meta">
       <p><strong>{{ uniprotEntry.accession }}</strong> — {{ uniprotEntry.name }}（{{ uniprotEntry.organism }}）
-        <a :href="`https://www.uniprot.org/uniprotkb/${uniprotEntry.accession}/entry`" target="_blank" rel="noopener" class="ncbi-link">UniProt ↗</a>
+        <a :href="`https://www.uniprot.org/uniprotkb/${encodeURIComponent(uniprotEntry.accession)}/entry`" target="_blank" rel="noopener" class="ncbi-link">UniProt ↗</a>
       </p>
       <p class="online-hint">UniProt 不含质粒序列；下面是该蛋白对应的核酸记录，可去对应站点取 DNA 后再导入：</p>
       <ul v-if="uniprotNucleotide.length" class="online-list">
@@ -774,7 +775,7 @@ async function openUniprotEntry(accession: string) {
             <span class="online-name">{{ c.label }}</span>
           </div>
           <div class="online-item-actions">
-            <a class="ncbi-link" :href="c.url" target="_blank" rel="noopener">打开 ↗</a>
+            <a v-if="safeHttpUrl(c.url)" class="ncbi-link" :href="safeHttpUrl(c.url)!" target="_blank" rel="noopener">打开 ↗</a>
             <button class="btn btn-small btn-secondary" @click="ncbiQuery = c.accession; switchTab('ncbi'); handleSearchNcbi()">
               去 NCBI 标签页
             </button>
@@ -833,8 +834,8 @@ async function openUniprotEntry(accession: string) {
             来源：{{ onlinePreview.source }}（{{ onlinePreview.topology === 'circular' ? '环状' : '线性' }}）
           </p>
           <p class="online-hint">{{ onlinePreview.license }}</p>
-          <p v-if="onlinePreview.url" class="online-hint">
-            <a :href="onlinePreview.url" target="_blank" rel="noopener">原始来源 ↗</a>
+          <p v-if="safeHttpUrl(onlinePreview.url)" class="online-hint">
+            <a :href="safeHttpUrl(onlinePreview.url)!" target="_blank" rel="noopener">原始来源 ↗</a>
           </p>
           <div v-if="onlinePreview.features.length" class="feature-preview">
             <span v-for="(f, i) in onlinePreview.features.slice(0, 12)" :key="`${f.name || f.type}-${i}`" class="feature-chip">
