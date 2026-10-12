@@ -8,6 +8,56 @@
 
 ## [Unreleased]
 
+### 升级注意
+
+- **SnapGene 在线库默认关闭**：新增独立开关 `SNAPGENE_ONLINE_ENABLED`（默认
+  `false`，与 `ONLINE_IMPORT_ENABLED` 无关）。升级后载体库与图谱页的「SnapGene 在线库」
+  页签消失，相关端点（`/api/vectors/import/snapgene*`、`/api/map/import/snapgene*`）返回
+  404 + 说明。需要该功能的部署方须显式设为 `true`，并知悉其网站条款禁止存入检索系统、
+  robots.txt 禁止 `/local`（仅建议学术/非营利自用实例开启，见 `docs/KNOWN_ISSUES.md`
+  「已接受风险」）。开启后这些只读端点也**需要登录**（匿名 401），存入载体库仍需管理员。
+  Docker 部署需同步 `docker-compose.yml`（新增该变量透传）；已导入的 SnapGene 载体不受影响。
+- `ADDGENE_SESSION_COOKIE` 明确为**仅适合单用户自托管**：配置了它且站点开放注册或已有
+  1 个以上启用账号时，后端启动会记一条告警（多用户下等同共享你的 Addgene 账号）。此前
+  文档称其「不落盘」不准确——它就在 `.env` 与容器环境里；多用户实例请清空该变量，改为
+  浏览器下载序列文件后「上传文件」导入。
+- 导入/上传/另存为载体不再静默覆盖**另一条**载体：目标 YAML 已被不同 ID 的载体占用时
+  返回 409（此前名称含空格、超长截断等情况会让不同载体撞到同一文件互相覆盖）；同一 ID
+  再次导入仍会覆盖，回执新增 `replaced` 并在 `warnings` 中写明。新导入载体的 ID 与文件名
+  使用同一套字符归一（空格、冒号等变成下划线，如 `snapgene_SARS Genome` →
+  `snapgene_SARS_Genome`），已有载体不受影响。
+
+### 修复
+
+- `GET /api/vectors/import/addgene/{质粒号}?try_sequence=true` 改为仅管理员（匿名 401、
+  普通用户 403）：配置了 `ADDGENE_SESSION_COOKIE` 时该分支会以部署方的 Addgene 账号
+  下载全长序列，此前任何访客都能驱动；来源清单与该端点的 `session_configured` 也只对
+  管理员如实下发。
+- 载体出处链接只接受 `http(s)://`：`POST /api/vectors/import/from-map` 的 `url` 不合规时
+  422，落盘与读取 `data_provenance` 时也会丢弃非 http(s) 的 `url` / `*_url`（此前
+  `javascript:` 链接会在载体详情页渲染成可点击链接，形成存储型 XSS）。
+- 导入载体里 `polyA_signal` 类型现在正确归为调控元件（别名表键大小写不一致，此前
+  永远落成 other）。
+- NCBI 导入（`/api/vectors/import/ncbi`、`ncbi-id`、批量导入）写出 LOCUS 行的真实拓扑：
+  此前这条路径不写 `topology`，线性 GenBank 记录仍被画成环状（2.12.0 的「按真实拓扑
+  显示」只覆盖了上传/在线来源/另存为）。已导入的旧载体需重新导入才会更新。
+- Addgene 本地索引搜索把解析结果缓存在进程内（按文件修改时间与大小失效），不再每次
+  请求整读约 7 MB 的 JSON。
+- 载体文件上传按图谱同一序列上限（`MAP_MAX_LENGTH`，默认 300 kb）解析，超长 413；
+  解析器意外异常返回 400、落盘失败返回 500 通用文案（不含内部信息）。各导入端点的回执
+  不再包含服务器上的绝对路径 `path` 字段。
+- 在线来源的错误信息不再回显上游响应的前若干字节（可能是登录页 HTML）；来源清单与
+  出处链接里的 `*_BASE` 会去掉 `user:pass@` 凭据部分再展示。
+- 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
+  的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
+  排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
+- 载体库侧会外呼的只读代理（SnapGene 集合 / 索引 / 预览、Ensembl lookup / 预览）改走
+  `ncbi` 限流档，与图谱侧和文档描述一致（此前落在 100 次/分钟的 default 档）。
+- 在线来源外呼不再自动跟随重定向：每一跳都重新校验 https + 主机白名单（按裸主机名，
+  最多 3 跳），Addgene 会话 Cookie 改为不随重定向转发、跨主机即丢弃；上游给出的
+  `file://`、`http://` 等非 https 直链一律拒绝。此前一次 302 就能把 Cookie 发到任意
+  主机（含 http 明文降级），SnapGene/Ensembl/UniProt 外呼也可被 302 到内网地址。
+
 ## [2.12.0] - 2026-10-12
 
 ### 升级注意

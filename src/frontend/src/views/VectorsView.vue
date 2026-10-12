@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
-import { useIsAdmin } from '@/composables/useIsAdmin'
+import { useIsAdmin, useIsAuthenticated } from '@/composables/useIsAdmin'
 import {
   getVectors,
   deleteVector,
@@ -34,6 +34,7 @@ import { previewToThumb } from '@/map/preview'
 const router = useRouter()
 // 载体库是共享库但写入需管理员：非管理员不显示导入/上传入口（点了也只会 403）
 const canImport = useIsAdmin()
+const loggedIn = useIsAuthenticated()
 const vectors = ref<VectorInfo[]>([])
 // 列表缩略图：来自 GET /api/vectors 的 map_preview，缺省时不画
 const thumbs = computed(() => new Map(vectors.value.map((v) => [v.id, previewToThumb(v.map_preview, v.name)])))
@@ -84,6 +85,10 @@ const sgSetId = ref('')
 const sgRows = ref<any[]>([])
 const sgLoading = ref(false)
 const sgError = ref('')
+// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// 两者都满足才显示页签（后端仍是权威：关 → 404，匿名 → 401）
+const snapgeneEnabled = ref(false)
+const snapgeneAvailable = computed(() => snapgeneEnabled.value && loggedIn.value)
 // Ensembl
 const ensemblId = ref('')
 const ensemblType = ref('cds')
@@ -292,12 +297,14 @@ async function ensureOnlineSources() {
     const res = await getOnlineSources()
     onlineSources.value = res.sources || []
     onlineNotice.value = res.disclaimer || ''
+    snapgeneEnabled.value = res.snapgene_online_enabled === true
   } catch {
     // 未登录/未开放功能时静默：各面板自己的错误位会显示具体原因
   }
 }
 
 function switchTab(tab: 'local' | 'ncbi' | 'snapgene' | 'ensembl' | 'addgene' | 'uniprot') {
+  if (tab === 'snapgene' && !snapgeneAvailable.value) return
   activeTab.value = tab
   onlineMsg.value = ''
   ensureOnlineSources()
@@ -498,7 +505,7 @@ async function openUniprotEntry(accession: string) {
     <div class="source-tabs">
       <button class="source-tab" :class="{ active: activeTab === 'local' }" @click="switchTab('local')">本地载体</button>
       <button class="source-tab" :class="{ active: activeTab === 'ncbi' }" @click="switchTab('ncbi')">NCBI 搜索</button>
-      <button class="source-tab" :class="{ active: activeTab === 'snapgene' }" @click="switchTab('snapgene')">SnapGene 在线库</button>
+      <button v-if="snapgeneAvailable" class="source-tab" :class="{ active: activeTab === 'snapgene' }" @click="switchTab('snapgene')">SnapGene 在线库</button>
       <button class="source-tab" :class="{ active: activeTab === 'ensembl' }" @click="switchTab('ensembl')">Ensembl</button>
       <button class="source-tab" :class="{ active: activeTab === 'addgene' }" @click="switchTab('addgene')">Addgene</button>
       <button class="source-tab" :class="{ active: activeTab === 'uniprot' }" @click="switchTab('uniprot')">UniProt</button>
@@ -639,7 +646,7 @@ async function openUniprotEntry(accession: string) {
   </div>
 
   <!-- SnapGene 在线库 Tab -->
-  <div v-if="activeTab === 'snapgene'" class="online-section">
+  <div v-if="activeTab === 'snapgene' && snapgeneAvailable" class="online-section">
     <p class="online-license">{{ snapgeneLicense }}</p>
     <div class="online-row">
       <select v-model="sgSetId" class="form-select" @change="loadSnapgeneIndex">

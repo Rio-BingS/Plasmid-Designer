@@ -15,10 +15,12 @@
 * Ensembl REST：数据本身无使用限制（代码 Apache-2.0），注明来源即可。
 * UniProt：数据以 CC BY 4.0 提供（须署名）。**UniProt 是蛋白库**、不含质粒序列：
   本站只用它按基因/蛋白名反查 Entrez/EMBL/RefSeq 交叉引用，再把用户引到核酸来源。
-* Addgene：非商业研究可下载；**2026-08 起全长序列文件需登录**，
-  `robots.txt`/ToS 禁止商业抓取与非公开路径访问 → 本模块**绝不绕过登录**：
+* Addgene：非商业研究可下载；**2026-08 起全长序列文件需登录**。
+  `robots.txt` 只禁 `/emta/`、`/emta-addgene-public/`、`/users/login/`；禁止商业抓取与
+  访问非公开部分的是其网站条款（Terms of Use, Permitted Use）→ 本模块**绝不绕过登录**：
   匿名只取元数据与图谱图；配置了 `ADDGENE_SESSION_COOKIE`（用户自己的浏览器会话）时
-  才带着该凭据取全长序列——凭据只发给 addgene.org，不落盘、不回显、不代用户登录。
+  才带着该凭据取全长序列——仅以 https 发往 addgene.org（重定向逐跳校验、跨主机即丢弃），
+  不写入响应/日志、不代用户登录。该模式只适合单用户自托管（凭据本身存于 .env/进程环境）。
 
 环境变量：ONLINE_IMPORT_ENABLED（默认 true，设 false 整体关闭外呼）、
 ONLINE_TIMEOUT（秒，默认 25）、ONLINE_MAX_BYTES（单次下载上限，默认 8 MB）、
@@ -59,8 +61,24 @@ _MIN_INTERVAL = {
     "rest.uniprot.org": 0.2,
     "www.addgene.org": 1.0,
 }
-_last_request: Dict[str, float] = {}
+# 每个站点的「下一个可用时间槽」（monotonic 秒）；锁只保护这张表的读改写，
+# 不在锁内 sleep（审查 M3：此前全局锁内 sleep → 各站点串行、线程池可被占满）
+_next_slot: Dict[str, float] = {}
 _throttle_lock = threading.Lock()
+
+def public_base(url: str) -> str:
+    """对外展示的基地址：去掉 userinfo（`https://user:pass@proxy/...` 不能回显给匿名用户）"""
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    if parts.username is None and parts.password is None:
+        return str(url or "")
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
 
 # ---------------------------------------------------------------- 许可文案
 
@@ -109,6 +127,28 @@ def _ensure_enabled() -> None:
         raise OnlineSourceError("在线导入已被部署方关闭（ONLINE_IMPORT_ENABLED=false）", 503)
 
 
+SNAPGENE_DISABLED_MSG = (
+    "SnapGene 在线库未启用：部署方需显式设置 SNAPGENE_ONLINE_ENABLED=true"
+    "（默认关闭；其网站条款禁止存入检索系统、robots.txt 禁止 /local，仅限学术/非营利自用实例）")
+
+
+def snapgene_online_enabled() -> bool:
+    """SNAPGENE_ONLINE_ENABLED 开关（默认 **关闭**，与 ONLINE_IMPORT_ENABLED 相互独立）。
+
+    v2.12 审查 H2：SnapGene `/local` 在线库属合规高风险来源（网站条款 (a) 禁止
+    "reproduce or store … in any … electronic retrieval system"、robots.txt
+    `Disallow: /local`、端点来自客户端逆向），用户决定默认关闭、仅登录用户可用，
+    由部署方自行接受风险后显式开启。Ensembl/UniProt/Addgene/NCBI 不受影响。
+    """
+    raw = os.environ.get("SNAPGENE_ONLINE_ENABLED", "false").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _ensure_snapgene_enabled() -> None:
+    if not snapgene_online_enabled():
+        raise OnlineSourceError(SNAPGENE_DISABLED_MSG, 404)
+
+
 def _timeout() -> float:
     try:
         return float(os.environ.get("ONLINE_TIMEOUT", "25"))
@@ -116,60 +156,171 @@ def _timeout() -> float:
         return 25.0
 
 
+def _throttle_max_wait() -> float:
+    """单次外呼最多为节流排队等待多久（秒，ONLINE_THROTTLE_MAX_WAIT，默认 10）"""
+    try:
+        return max(0.0, float(os.environ.get("ONLINE_THROTTLE_MAX_WAIT", "10")))
+    except ValueError:
+        return 10.0
+
+
 def _throttle(host: str) -> None:
-    """同一站点两次外呼之间至少间隔 _MIN_INTERVAL[host]（进程级）。"""
+    """同一站点两次外呼之间至少间隔 _MIN_INTERVAL[host]（进程级，按站点独立）。
+
+    锁内只「预占」下一个时间槽，锁外 sleep：不同站点互不阻塞，同站点按槽排队。
+    排队超过 `_throttle_max_wait()` 直接拒绝（429），不让请求无限占着线程池。
+    """
     interval = _MIN_INTERVAL.get(host, 0.5)
     with _throttle_lock:
-        wait = _last_request.get(host, 0.0) + interval - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_request[host] = time.monotonic()
+        now = time.monotonic()
+        slot = max(now, _next_slot.get(host, 0.0))
+        wait = slot - now
+        if wait > _throttle_max_wait():
+            raise OnlineSourceError(
+                f"上游 {host} 的请求排队过长（需等待约 {wait:.0f} 秒），请稍后再试", 429)
+        _next_slot[host] = slot + interval
+    if wait > 0:
+        time.sleep(wait)
+
+
+class UnsafeUrlError(OnlineSourceError):
+    """外呼目标（含重定向的每一跳）不是 https 或主机不在白名单：一律拒绝，不外呼。"""
+
+    def __init__(self, message: str):
+        super().__init__(message, 502)
+
+
+# 重定向最多跟几跳（每一跳都重新校验 scheme + 主机白名单）
+_MAX_REDIRECTS = 3
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+
+def _is_addgene_host(host: str) -> bool:
+    host = (host or "").lower()
+    return host == "addgene.org" or host.endswith(".addgene.org")
+
+
+def _allowed_hosts() -> set:
+    """外呼主机白名单：各来源基地址（含部署方改过的 *_BASE）的主机名。
+
+    Addgene 的 addgene.org 及其子域另由 `_is_addgene_host` 放行。按调用时的
+    模块常量计算，测试/部署改了 *_BASE 也能同步生效。
+    """
+    hosts = set()
+    for base in (SNAPGENE_BASE, ENSEMBL_BASE, UNIPROT_BASE):
+        h = urllib.parse.urlsplit(base).hostname
+        if h:
+            hosts.add(h.lower())
+    return hosts
+
+
+def _checked_host(url: str) -> str:
+    """校验外呼 URL：只允许 https + 白名单主机（按裸主机名比对，不含端口/userinfo）。
+
+    拒绝 file:// / ftp:// / data: / http:// 等一切非 https 链接——此前上游 JSON 给出的
+    直链 scheme 未受限，`urlopen` 会照读本地文件或把凭据明文发出。
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        host = (parts.hostname or "").lower()
+    except ValueError as e:
+        raise UnsafeUrlError("外呼地址无法解析，已拒绝") from e
+    if parts.scheme.lower() != "https":
+        raise UnsafeUrlError(
+            f"只允许 https 外呼，已拒绝 {parts.scheme or '(无 scheme)'}:// 链接")
+    if not host or not (host in _allowed_hosts() or _is_addgene_host(host)):
+        raise UnsafeUrlError(f"外呼主机 {host or '(空)'} 不在白名单内，已拒绝")
+    return host
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """禁止 urllib 自动跟随重定向。
+
+    CPython 的 HTTPRedirectHandler 会把原请求的普通头（含 Cookie）原样复制到
+    新请求，不区分跨主机、也不阻止 https→http 降级。这里返回 None，3xx 以
+    HTTPError 抛给 `_http_get`，由它逐跳校验后决定是否跟随、是否带凭据。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+# 测试可往这里塞自定义 handler（如本地伪 HTTPS 服务），走的仍是真实 OpenerDirector
+_EXTRA_HANDLERS: list = []
+
+
+def _default_open(req, timeout=None):
+    """真实外呼：自建 opener（禁自动重定向），不用全局 urlopen。"""
+    opener = urllib.request.build_opener(_NoRedirectHandler(), *_EXTRA_HANDLERS)
+    return opener.open(req, timeout=timeout)
+
+
+def _translate_http_error(e: "urllib.error.HTTPError") -> OnlineSourceError:
+    if e.code in (400, 403, 404):
+        return OnlineSourceError(f"上游未找到或拒绝访问（HTTP {e.code}）", 404)
+    if e.code == 429:
+        return OnlineSourceError("上游请求过于频繁，请稍后再试", 503)
+    return OnlineSourceError(f"上游服务返回错误（HTTP {e.code}）", 502)
 
 
 def _http_get(url: str, *, max_bytes: int, accept: str = "*/*",
               timeout: Optional[float] = None,
-              headers: Optional[Dict[str, str]] = None,
+              cookie: Optional[str] = None,
               opener: Optional[Callable] = None) -> bytes:
     """带体积上限的外呼；上游错误统一翻译成 OnlineSourceError。
 
-    `headers` 只用于必需场景（如 Addgene 用户自备会话 Cookie），调用方必须保证
-    不把凭据发给不相关的主机（见 `_addgene_session_headers`）。
+    安全约束（v2.12 审查 H1）：
+    * 起始 URL 与**每一跳**重定向目标都必须是 https 且主机在白名单内；
+      最多跟 `_MAX_REDIRECTS` 跳，自动重定向被禁用（见 `_NoRedirectHandler`）。
+    * `cookie`（Addgene 用户自备会话）只用 `add_unredirected_header` 附带，
+      且只发给与起始 URL 相同的 addgene.org 主机；一旦跨主机跳转即永久丢弃。
     """
     _ensure_enabled()
-    host = urllib.parse.urlsplit(url).netloc
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "PlasmidDesigner/online-import (+academic use)",
-        "Accept": accept,
-        **(headers or {}),
-    })
-    open_fn = opener or urllib.request.urlopen
-    _throttle(host)
-    buf = bytearray()
-    try:
-        with open_fn(req, timeout=timeout if timeout is not None else _timeout()) as resp:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                buf.extend(chunk)
-                if len(buf) > max_bytes:
-                    raise OnlineSourceError(
-                        f"上游文件过大（超过 {max_bytes // (1024 * 1024)} MB），已中止下载", 413)
-    except OnlineSourceError:
-        raise
-    except urllib.error.HTTPError as e:
-        if e.code in (400, 403, 404):
-            raise OnlineSourceError(f"上游未找到或拒绝访问（HTTP {e.code}）", 404) from e
-        if e.code == 429:
-            raise OnlineSourceError("上游请求过于频繁，请稍后再试", 503) from e
-        raise OnlineSourceError(f"上游服务返回错误（HTTP {e.code}）", 502) from e
-    except (socket.timeout, TimeoutError) as e:
-        raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
-    except urllib.error.URLError as e:
-        if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
+    origin_host = _checked_host(url)
+    send_cookie = bool(cookie) and _is_addgene_host(origin_host)
+    open_fn = opener or _default_open
+    to = timeout if timeout is not None else _timeout()
+    current = url
+    for _hop in range(_MAX_REDIRECTS + 1):
+        host = _checked_host(current)
+        send_cookie = send_cookie and host == origin_host
+        req = urllib.request.Request(current, headers={
+            "User-Agent": "PlasmidDesigner/online-import (+academic use)",
+            "Accept": accept,
+        })
+        if send_cookie:
+            req.add_unredirected_header("Cookie", cookie)
+        _throttle(host)
+        buf = bytearray()
+        try:
+            with open_fn(req, timeout=to) as resp:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise OnlineSourceError(
+                            f"上游文件过大（超过 {max_bytes // (1024 * 1024)} MB），已中止下载", 413)
+        except OnlineSourceError:
+            raise
+        except urllib.error.HTTPError as e:
+            if e.code in _REDIRECT_CODES:
+                location = e.headers.get("Location") if e.headers is not None else None
+                e.close()
+                if not location:
+                    raise OnlineSourceError("上游重定向缺少目标地址", 502) from e
+                current = urllib.parse.urljoin(current, location)
+                continue
+            raise _translate_http_error(e) from e
+        except (socket.timeout, TimeoutError) as e:
             raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
-        raise OnlineSourceError("无法连接上游数据源，请稍后再试", 502) from e
-    return bytes(buf)
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
+                raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
+            raise OnlineSourceError("无法连接上游数据源，请稍后再试", 502) from e
+        return bytes(buf)
+    raise OnlineSourceError(f"上游重定向超过 {_MAX_REDIRECTS} 跳，已中止", 502)
 
 
 def _http_get_json(url: str, **kw) -> dict:
@@ -210,6 +361,7 @@ def validate_plasmid_id(raw: str) -> str:
 def snapgene_sets(*, timeout: Optional[float] = None,
                   opener: Optional[Callable] = None) -> List[Dict[str, str]]:
     """列出在线序列集合（GET /local/sets.php?xml）"""
+    _ensure_snapgene_enabled()
     url = f"{SNAPGENE_BASE}/sets.php?xml"
     raw = _http_get(url, max_bytes=2 * 1024 * 1024, accept="application/xml",
                     timeout=timeout, opener=opener)
@@ -224,6 +376,7 @@ def snapgene_sets(*, timeout: Optional[float] = None,
 def snapgene_set_index(set_id: str, *, timeout: Optional[float] = None,
                        opener: Optional[Callable] = None) -> List[Dict[str, object]]:
     """取集合内全部序列的索引（GET /local/fetch.php?set=<id>）"""
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     url = f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}"
     raw = _http_get(url, max_bytes=16 * 1024 * 1024, accept="application/xml",
@@ -257,6 +410,7 @@ def snapgene_plasmid_bytes(set_id: str, plasmid_id: str, *, max_bytes: Optional[
                            timeout: Optional[float] = None,
                            opener: Optional[Callable] = None) -> bytes:
     """下载单个 .dna（GET /local/fetch.php?set=&plasmid=），并校验 SnapGene 魔法串"""
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     pid = validate_plasmid_id(plasmid_id)
     url = (f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}"
@@ -274,6 +428,7 @@ def snapgene_set_zip_bytes(set_id: str, *, max_bytes: Optional[int] = None,
 
     体积上限单独放宽到 ONLINE_ZIP_MAX_BYTES；调用方应提醒用户整包可达数 MB。
     """
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     url = f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}&zip"
     data = _http_get(url, max_bytes=max_bytes or ZIP_MAX_BYTES,
@@ -284,11 +439,13 @@ def snapgene_set_zip_bytes(set_id: str, *, max_bytes: Optional[int] = None,
 
 
 def assert_snapgene_dna(data: bytes, what: str = "序列") -> None:
-    """校验是 SnapGene .dna 二进制（前 64 字节内含魔法串），否则 415"""
+    """校验是 SnapGene .dna 二进制（前 64 字节内含魔法串），否则 415
+
+    错误信息不回显上游响应内容（审查 L6：可能是登录页 HTML 等），只给长度。
+    """
     if SNAPGENE_MAGIC not in data[:64]:
-        head = data[:80].decode("utf-8", errors="replace").replace("\n", " ")
         raise OnlineSourceError(
-            f"{what} 返回的不是 SnapGene .dna 文件（接口可能已变化）：{head!r}", 415)
+            f"{what} 返回的不是 SnapGene .dna 文件（接口可能已变化；收到 {len(data)} 字节）", 415)
 
 
 def snapgene_record(data: bytes, *, name: Optional[str] = None,
@@ -542,7 +699,9 @@ def addgene_metadata(object_id: str, *, timeout: Optional[float] = None,
 def addgene_session_cookie() -> str:
     """用户自备的 Addgene 会话 Cookie（未配置则空串）。
 
-    **只从环境变量读**，不落盘、不进日志、不回显；调用方不得把它写进响应。
+    **只从环境变量读**，不进日志、不回显，调用方不得把它写进响应；注意它本身存于
+    部署方的 `.env`/进程环境里，只适合单用户自托管（多用户实例启动时告警，见
+    `app/online_import.addgene_shared_session_warning`）。
     """
     return (os.environ.get("ADDGENE_SESSION_COOKIE") or "").strip()
 
@@ -552,15 +711,22 @@ def addgene_has_session() -> bool:
     return bool(addgene_session_cookie())
 
 
-def _addgene_session_headers(url: str) -> Dict[str, str]:
-    """仅对 addgene.org 主机附带会话 Cookie（防止上游给的直链指向别处时泄凭据）"""
+def _addgene_cookie_for(url: str) -> Optional[str]:
+    """仅当 URL 是 https 且主机（裸主机名，不含端口）属 addgene.org 时返回会话 Cookie。
+
+    这只是起点校验；重定向时的逐跳校验与跨主机丢弃由 `_http_get` 负责。
+    """
     cookie = addgene_session_cookie()
-    host = urllib.parse.urlsplit(url).netloc.lower()
     if not cookie:
-        return {}
-    if not (host == "addgene.org" or host.endswith(".addgene.org")):
-        return {}
-    return {"Cookie": cookie}
+        return None
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        host = parts.hostname or ""
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "https" or not _is_addgene_host(host):
+        return None
+    return cookie
 
 
 def addgene_sequence_bytes(object_id: str, *, fmt: str = "genbank",
@@ -579,11 +745,17 @@ def addgene_sequence_bytes(object_id: str, *, fmt: str = "genbank",
     if not direct:
         raise AddgeneLoginRequired(
             f"Addgene 元数据里没有 {key}（该质粒可能未公开序列文件）")
+    # 直链来自上游 JSON：先校验（https + addgene.org），不合格直接拒绝且不带凭据
+    host = _checked_host(direct)
+    if not _is_addgene_host(host):
+        raise UnsafeUrlError(f"Addgene 元数据给出的下载链接不在 addgene.org 下（{host}），已拒绝")
     logged_in = addgene_has_session()
     try:
         return _http_get(direct, max_bytes=DEFAULT_MAX_BYTES, accept="*/*",
-                         timeout=timeout, headers=_addgene_session_headers(direct),
+                         timeout=timeout, cookie=_addgene_cookie_for(direct),
                          opener=opener)
+    except UnsafeUrlError:
+        raise
     except OnlineSourceError as e:
         if logged_in:
             raise AddgeneLoginRequired(
@@ -616,6 +788,38 @@ def addgene_record(object_id: str, *, fmt: str = "genbank", name: Optional[str] 
     return rec
 
 
+# Addgene 本地索引（约 7 MB / 17 万条）解析结果的进程内缓存：
+# {路径: (mtime_ns, size, 列表)}；文件变了（mtime/大小）才重读（审查 L4：此前每次请求整读）
+_addgene_index_cache: Dict[str, tuple] = {}
+_addgene_index_lock = threading.Lock()
+
+
+def _read_addgene_index(path: str) -> list:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        data = json.load(fh)
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+
+def _addgene_index_rows(path: str) -> list:
+    """按 (mtime, size) 校验的缓存读取；读失败返回空列表（不缓存失败结果）"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    with _addgene_index_lock:
+        hit = _addgene_index_cache.get(path)
+        if hit is not None and hit[:2] == key:
+            return hit[2]
+        try:
+            rows = _read_addgene_index(path)
+        except (OSError, ValueError):
+            _addgene_index_cache.pop(path, None)
+            return []
+        _addgene_index_cache[path] = (key[0], key[1], rows)
+        return rows
+
+
 def addgene_local_index(term: str, limit: int = 20,
                         index_path: Optional[str] = None) -> List[Dict[str, object]]:
     """在 SnapGene 客户端自带的 Addgene 全量索引里离线搜索（不联网）。
@@ -630,12 +834,8 @@ def addgene_local_index(term: str, limit: int = 20,
     if not os.path.isfile(path):
         return []
     term = str(term or "").strip()
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
+    data = _addgene_index_rows(path)
+    if not data:
         return []
     if term.isdigit():
         return [e for e in data if str(e.get("id")) == term][:limit]

@@ -131,8 +131,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   **许可边界**：SnapGene 库学术/非营利/政府可用但须引用 `www.snapgene.com/resources`，
   商业用途须 GraphPad 书面许可、其 robots.txt `Disallow: /local`；Addgene 全长序列
   2026-08 起需登录——无凭据时代码**不绕登录**（403 + 指引）；配置了用户自备的
-  `ADDGENE_SESSION_COOKIE` 时才带凭据取序列，且只发给 addgene.org（主机白名单）、
-  不落盘/不回显/不记日志。故只做低频单次读取（进程级限速 + 结果缓存），
+  `ADDGENE_SESSION_COOKIE` 时才带凭据取序列（仅管理员触发、仅单用户自托管适用），
+  且只以 https 发往 addgene.org：`_http_get` 禁自动重定向、逐跳校验 https + 主机白名单，
+  Cookie 用 unredirected 头且跨主机即丢弃；不写入响应/日志。故只做低频单次读取（进程级限速 + 结果缓存），
   `ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼；不要给它加定时同步/批量镜像。
   **UniProt 是蛋白库**：只用于反查 Entrez/EMBL/RefSeq/Ensembl 交叉引用，蛋白序列不导入
 - 导入载体的出处与拓扑必须结构化落盘：`data_provenance`（`provenance_block`：
