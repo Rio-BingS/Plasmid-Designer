@@ -55,6 +55,8 @@ export interface MapEnzyme {
   overhang: string | null
   cut_count: number
   sites: MapEnzymeSite[]
+  /** 位点过多时 sites 只含部分明细（cut_count 仍为完整计数）；后端仅在截断时给出 true */
+  sites_truncated?: boolean
   /** 酶级甲基化敏感性（如 ["dam"]），来自 REBASE（后端可能省略） */
   methylation?: MethylationKind[]
 }
