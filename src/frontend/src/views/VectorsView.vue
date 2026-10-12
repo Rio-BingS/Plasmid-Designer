@@ -319,18 +319,21 @@ async function loadSnapgeneSets() {
   }
 }
 
+// 集合索引请求号：快速切换集合时只认最后一次请求，乱序返回的旧集合不覆盖列表
+let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
   sgRows.value = []
   try {
     const res = await getSnapgeneSetIndex(sgSetId.value)
-    sgRows.value = res.plasmids || []
+    if (gen === sgIndexGen) sgRows.value = res.plasmids || []
   } catch (e: any) {
-    sgError.value = errText(e, '集合索引加载失败')
+    if (gen === sgIndexGen) sgError.value = errText(e, '集合索引加载失败')
   } finally {
-    sgLoading.value = false
+    if (gen === sgIndexGen) sgLoading.value = false
   }
 }
 
