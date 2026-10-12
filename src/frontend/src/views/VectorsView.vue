@@ -663,7 +663,7 @@ async function openUniprotEntry(accession: string) {
     <p class="online-license">{{ snapgeneLicense }}</p>
     <div class="online-row">
       <select v-model="sgSetId" class="form-select" @change="loadSnapgeneIndex">
-        <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }} ({{ s.set_id }})</option>
+        <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id" :title="s.set_id">{{ s.name }}</option>
       </select>
       <button class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
         {{ sgLoading ? '加载中...' : '🔄 刷新' }}
