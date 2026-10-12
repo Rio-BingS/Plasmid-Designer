@@ -155,6 +155,8 @@ export interface OnlineSourceInfo {
 
 export interface OnlineSourcesPayload {
   enabled: boolean
+  /** SnapGene 在线库开关（默认 false）；开启后也只对已登录用户开放 */
+  snapgene_online_enabled?: boolean
   disclaimer: string
   sources: OnlineSourceInfo[]
 }
