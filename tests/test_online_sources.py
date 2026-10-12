@@ -96,6 +96,8 @@ def no_network(monkeypatch):
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
+    # SnapGene 在线库默认关闭（审查 H2）；功能用例统一打开，默认值与关闭行为另有专门用例
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "true")
     cache.backend.clear_pattern("online:*")
     yield
     cache.backend.clear_pattern("online:*")
@@ -371,15 +373,15 @@ def test_snapgene_sets_cached(client, vectors_dir, monkeypatch):
                                                "filename": "pYES2.dna", "index": 0}])
 
     c, _ = client
-    first = c.get("/api/vectors/import/snapgene/sets")
-    second = c.get("/api/vectors/import/snapgene/sets")
+    first = c.get("/api/vectors/import/snapgene/sets", headers=_user())
+    second = c.get("/api/vectors/import/snapgene/sets", headers=_user())
     assert first.status_code == 200 and first.json()["count"] == 1
     assert second.json() == first.json() and len(calls) == 1
 
-    idx = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids")
+    idx = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids", headers=_user())
     assert idx.status_code == 200, idx.text
     assert idx.json()["count"] == 1 and idx.json()["plasmids"][0]["plasmid_id"] == "pYES2"
-    assert c.get("/api/vectors/import/snapgene/sets/..%2Fetc").status_code in (404, 422)
+    assert c.get("/api/vectors/import/snapgene/sets/..%2Fetc", headers=_user()).status_code in (404, 422)
 
 
 def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
@@ -391,7 +393,7 @@ def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
 
     c, _ = client
     prev = c.get("/api/vectors/import/snapgene/preview",
-                 params={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+                 params={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert prev.status_code == 200, prev.text
     d = prev.json()
     assert d["length"] == 300 and d["topology"] == "circular"
@@ -545,13 +547,13 @@ def test_online_sources_shared_between_map_and_vectors(client, monkeypatch):
                                                "filename": "pYES2.dna", "index": 0}])
 
     c, _ = client
-    a = c.get("/api/vectors/import/snapgene/sets")
-    b = c.get("/api/map/import/snapgene/sets")
+    a = c.get("/api/vectors/import/snapgene/sets", headers=_user())
+    b = c.get("/api/map/import/snapgene/sets", headers=_user())
     assert a.status_code == b.status_code == 200
     assert b.json() == a.json() and len(calls) == 1
 
-    ia = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids")
-    ib = c.get("/api/map/import/snapgene/sets/yeast_plasmids")
+    ia = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids", headers=_user())
+    ib = c.get("/api/map/import/snapgene/sets/yeast_plasmids", headers=_user())
     assert ia.json() == ib.json() and ib.json()["count"] == 1
 
 
@@ -574,7 +576,7 @@ def test_map_import_snapgene_builds_document_once(client, vectors_dir, monkeypat
 
     c, _ = client
     r = c.post("/api/map/import/snapgene",
-               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["schema"] == "plasmid-map/1" and d["name"] == "pYES2"
@@ -584,12 +586,12 @@ def test_map_import_snapgene_builds_document_once(client, vectors_dir, monkeypat
     assert calls == [("yeast_plasmids", "pYES2", MAP_MAX_LENGTH)]
 
     r2 = c.post("/api/map/import/snapgene",
-                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert r2.json() == d and len(calls) == 1        # MapDocument 缓存命中，不重复下载
     # 换酶组：按选项分键 → 重新构建（但不再下载集合索引）
     r3 = c.post("/api/map/import/snapgene",
                 json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2",
-                      "enzyme_set": "golden_gate"})
+                      "enzyme_set": "golden_gate"}, headers=_user())
     assert r3.status_code == 200 and r3.json()["meta"]["enzyme_set"] == "golden_gate"
     assert len(calls) == 2
 
@@ -600,9 +602,9 @@ def test_map_import_snapgene_errors_and_gating(client, vectors_dir, monkeypatch)
     monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
 
     c, s = client
-    r = c.post("/api/map/import/snapgene", json={"set_id": "s", "plasmid_id": "p"})
+    r = c.post("/api/map/import/snapgene", json={"set_id": "s", "plasmid_id": "p"}, headers=_user())
     assert r.status_code == 404 and "404" in r.json()["detail"]
-    assert c.post("/api/map/import/snapgene", json={}).status_code == 422
+    assert c.post("/api/map/import/snapgene", json={}, headers=_user()).status_code == 422
 
     s["anonymous_features"] = [f for f in ALL_FEATURES if f != "map"]
     assert c.get("/api/map/import/sources").status_code == 403
@@ -670,6 +672,26 @@ def _admin():
 
 
 _ADMIN_HEADERS = None
+_USER_HEADERS = None
+
+
+def _user():
+    """模块级普通登录用户令牌（SnapGene 在线库只读端点需登录，审查 H2）"""
+    global _USER_HEADERS
+    if _USER_HEADERS is None:
+        import uuid
+        from app.auth.jwt_auth import create_access_token, db_user_to_user, hash_password
+        from app.database import SessionLocal, create_user
+        email = f"usr-online-{uuid.uuid4().hex[:8]}@example.com"
+        db = SessionLocal()
+        try:
+            u = create_user(db, email=email, username=email.split("@")[0],
+                            hashed_password=hash_password("Passw0rd!!"), is_admin=False,
+                            email_verified=True)
+            _USER_HEADERS = {"Authorization": f"Bearer {create_access_token(db_user_to_user(u))}"}
+        finally:
+            db.close()
+    return _USER_HEADERS
 
 
 # ================================================================ 出处记录（data_provenance）
@@ -1194,3 +1216,110 @@ def test_checked_host_uses_bare_hostname():
                 "https://user@evil.com/x", "file:///etc/passwd", ""):
         with pytest.raises(src.UnsafeUrlError):
             src._checked_host(bad)
+
+
+# ================================================================ SnapGene 在线库开关（审查 H2）
+
+_SNAPGENE_READ_ENDPOINTS = [
+    ("GET", "/api/vectors/import/snapgene/sets", None),
+    ("GET", "/api/vectors/import/snapgene/sets/yeast_plasmids", None),
+    ("GET", "/api/vectors/import/snapgene/preview?set_id=yeast_plasmids&plasmid_id=pYES2", None),
+    ("GET", "/api/map/import/snapgene/sets", None),
+    ("GET", "/api/map/import/snapgene/sets/yeast_plasmids", None),
+    ("POST", "/api/map/import/snapgene", {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}),
+]
+
+
+def _call(c, method, url, body, headers=None):
+    if method == "GET":
+        return c.get(url, headers=headers or {})
+    return c.post(url, json=body, headers=headers or {})
+
+
+def _no_upstream(monkeypatch):
+    """任何 SnapGene 外呼都算失败：开关/鉴权必须在外呼之前拦下"""
+    def _boom(*a, **k):
+        raise AssertionError("不应外呼 SnapGene")
+    for name in ("snapgene_sets", "snapgene_set_index", "snapgene_plasmid_bytes"):
+        monkeypatch.setattr(src, name, _boom)
+    monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
+
+
+def test_snapgene_online_default_off(monkeypatch):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    assert src.snapgene_online_enabled() is False
+    # 与总开关相互独立：总开关开着，SnapGene 仍是关的
+    assert src.import_enabled() is True
+    for raw, want in (("true", True), ("1", True), ("on", True), ("false", False),
+                      ("", False), ("nope", False)):
+        monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", raw)
+        assert src.snapgene_online_enabled() is want
+
+
+def test_snapgene_core_refuses_when_off(monkeypatch):
+    """核心层也兜底：开关关闭时连 opener 都不调用"""
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    seen = []
+    for fn, args in ((src.snapgene_sets, ()), (src.snapgene_set_index, ("yeast_plasmids",)),
+                     (src.snapgene_plasmid_bytes, ("yeast_plasmids", "pYES2"))):
+        with pytest.raises(MapParseError) as ei:
+            fn(*args, opener=_opener(SETS_XML, seen))
+        assert ei.value.status == 404 and "SNAPGENE_ONLINE_ENABLED" in str(ei.value)
+    assert seen == []
+
+
+@pytest.mark.parametrize("method,url,body", _SNAPGENE_READ_ENDPOINTS)
+def test_snapgene_endpoints_404_when_off(client, vectors_dir, monkeypatch, method, url, body):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    _no_upstream(monkeypatch)
+    c, _ = client
+    for headers in (None, _user(), _admin()):
+        r = _call(c, method, url, body, headers)
+        assert r.status_code == 404, r.text
+        assert "SNAPGENE_ONLINE_ENABLED" in r.json()["detail"]
+
+
+def test_snapgene_save_404_when_off_even_for_admin(client, vectors_dir, monkeypatch):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    _no_upstream(monkeypatch)
+    c, _ = client
+    body = {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}
+    for headers in (None, _user(), _admin()):
+        r = c.post("/api/vectors/import/snapgene", json=body, headers=headers or {})
+        assert r.status_code == 404 and "SNAPGENE_ONLINE_ENABLED" in r.json()["detail"]
+    assert list(vectors_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("method,url,body", _SNAPGENE_READ_ENDPOINTS)
+def test_snapgene_endpoints_require_login_when_on(client, vectors_dir, monkeypatch,
+                                                  method, url, body):
+    _no_upstream(monkeypatch)
+    c, _ = client
+    r = _call(c, method, url, body)
+    assert r.status_code == 401 and "登录" in r.json()["detail"]
+
+
+def test_snapgene_save_stays_admin_only_when_on(client, vectors_dir, monkeypatch):
+    _no_upstream(monkeypatch)
+    c, _ = client
+    body = {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}
+    assert c.post("/api/vectors/import/snapgene", json=body).status_code == 401
+    assert c.post("/api/vectors/import/snapgene", json=body, headers=_user()).status_code == 403
+
+
+def test_sources_payload_reports_snapgene_flag(client, vectors_dir, monkeypatch):
+    c, _ = client
+    on = c.get("/api/map/import/sources").json()
+    sg = next(s for s in on["sources"] if s["id"] == "snapgene")
+    assert on["snapgene_online_enabled"] is True and sg["enabled"] is True
+    assert sg["requires_login"] is True and sg["importable"] is True
+
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    for path in ("/api/map/import/sources", "/api/vectors/import/sources"):
+        off = c.get(path).json()
+        sg = next(s for s in off["sources"] if s["id"] == "snapgene")
+        assert off["snapgene_online_enabled"] is False
+        assert sg["enabled"] is False and sg["importable"] is False
+        assert "SNAPGENE_ONLINE_ENABLED" in sg["note"]
+        # 其他来源不受 SnapGene 开关影响
+        assert off["enabled"] is True

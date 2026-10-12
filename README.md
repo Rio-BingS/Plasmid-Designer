@@ -137,6 +137,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
 | `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/UniProt/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
+| `SNAPGENE_ONLINE_ENABLED` | SnapGene 在线质粒库（`/local`）单独开关，**默认 `false`**，与 `ONLINE_IMPORT_ENABLED` 相互独立：关闭时 SnapGene 相关端点一律 404；开启后也只对已登录用户开放（匿名 401），存入载体库仍需管理员。其网站条款禁止存入检索系统、robots.txt `Disallow: /local`，仅建议学术/非营利自用实例在接受该风险后开启（见 `docs/KNOWN_ISSUES.md`「已接受风险」） |
 | `ONLINE_TIMEOUT` / `ONLINE_MAX_BYTES` | 在线来源单次外呼超时（秒，默认 25）与单文件体积上限（字节，默认 8 MB） |
 | `ADDGENE_SESSION_COOKIE` | 可选。你自己在浏览器登录 Addgene 后的会话 Cookie，用于取**你有权访问**的全长序列；只发给 `addgene.org`（元数据里指向别处的主机不带），不落盘/不回显/不记日志；留空时相关端点 403 + 指引（不代登录、不绕登录墙） |
 | `SNAPGENE_BASE` / `ENSEMBL_BASE` / `UNIPROT_BASE` | 仅自建镜像/代理时需要改的基地址（默认各站官方地址） |

@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app import config
 from app import online_import as oi
+from app.online_import import require_snapgene_enabled, require_snapgene_user
 from app.cache import cache
 from app.auth.jwt_auth import get_admin_user
 from app.design_service import invalidate_vector_library_cache
@@ -98,14 +99,17 @@ async def list_online_sources() -> Dict[str, Any]:
 
 # ==================== SnapGene 在线库 ====================
 
+# 开关（SNAPGENE_ONLINE_ENABLED，默认关）+ 需登录；落库另需管理员（见 import_snapgene）
+
 @router.get("/import/snapgene/sets")
-async def snapgene_sets() -> Dict[str, Any]:
+async def snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """列出 SnapGene 在线序列集合（低频：与图谱页共用同一份 1 小时缓存）"""
     return await _call(oi.snapgene_sets_payload)
 
 
 @router.get("/import/snapgene/sets/{set_id}")
-async def snapgene_set_index(set_id: str) -> Dict[str, Any]:
+async def snapgene_set_index(set_id: str,
+                             _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """列出集合内全部序列（索引，等价客户端 snapgeneSequences/<set>.xml）"""
     return await _call(oi.snapgene_index_payload, set_id)
 
@@ -119,7 +123,8 @@ async def _snapgene_fetch(set_id: str, plasmid_id: str):
 
 @router.get("/import/snapgene/preview", response_model=OnlinePreviewResponse)
 async def snapgene_preview(set_id: str = Query(..., max_length=64),
-                           plasmid_id: str = Query(..., max_length=120)):
+                           plasmid_id: str = Query(..., max_length=120),
+                           _: object = Depends(require_snapgene_user)):
     """下载并解析单个 .dna 作预览（不落库）"""
     key = oi.preview_cache_key("snapgene", set_id, plasmid_id)
     cached = oi.cache_get(key)
@@ -133,6 +138,7 @@ async def snapgene_preview(set_id: str = Query(..., max_length=64),
 
 @router.post("/import/snapgene")
 async def import_snapgene(req: SnapGeneImportRequest,
+                          _enabled: None = Depends(require_snapgene_enabled),
                           _: object = Depends(get_admin_user)) -> Dict[str, Any]:
     """从 SnapGene 在线库导入一个序列到载体库（需管理员）"""
     record, url = await _snapgene_fetch(req.set_id, req.plasmid_id)
