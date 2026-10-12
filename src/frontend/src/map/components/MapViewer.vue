@@ -26,6 +26,7 @@ import SequenceMap from './SequenceMap.vue'
 import Minimap from './Minimap.vue'
 import MapTooltip from './MapTooltip.vue'
 import DigestPanel from './DigestPanel.vue'
+import { sitesIncomplete } from '../core/digest'
 
 const props = withDefaults(defineProps<{
   doc: MapDocument
@@ -317,7 +318,8 @@ const featureRows = computed(() => [...doc.value.features]
   .map((f) => ({ f, color: featureColor(f), len: rangeLength(f, doc.value.length, isCircular.value), hidden: store.hiddenFeatures.value.includes(f.id) })))
 const enzymeRows = computed(() => store.enzymeList.value.map((e) => ({
   e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name), blocked: blockedSiteCount(e),
-  sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 ? ' …' : ''),
+  sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 || sitesIncomplete(e) ? ' …' : ''),
+  truncated: sitesIncomplete(e),
 })))
 function selectEnzyme(name: string) {
   resolveHit(store, `e:${name}#0`)?.select()
@@ -552,7 +554,7 @@ defineExpose({ store, view, undo })
             <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶<template v-if="supplierEmptyHint">（所选厂商在当前酶组中没有切点；可换「全部商品酶」酶组）</template></li>
             <li v-for="r in enzymeRows" :key="r.e.name" :class="['mv-row', { hidden: r.hidden }]" @click="selectEnzyme(r.e.name)">
               <span class="mv-name" :style="{ color: r.style.color, fontWeight: r.style.weight }">{{ r.e.name }}</span>
-              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b></span>
+              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b><b v-if="r.truncated" class="mv-truncated-badge" :title="`切点过多，只返回了 ${r.e.sites.length} 个位点明细（图上只画这些），不能用于消化模拟`"> · 明细不全</b></span>
               <button type="button" class="mv-eye" :title="r.hidden ? '显示' : '隐藏'" :aria-label="r.hidden ? `显示 ${r.e.name}` : `隐藏 ${r.e.name}`"
                       @click.stop="store.toggleEnzymeHidden(r.e.name)">{{ r.hidden ? '○' : '●' }}</button>
             </li>
@@ -661,6 +663,7 @@ defineExpose({ store, view, undo })
 .mv-color { width: 32px; height: 26px; padding: 0 2px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-primary); }
 .mv-danger { color: var(--error-color); border-color: var(--error-color); }
 .mv-blocked-badge { color: #6b7280; font-weight: 500; }
+.mv-truncated-badge { color: #92400e; font-weight: 500; }
 .mv-legend { padding: 6px 8px; border-top: 1px solid var(--border-color); }
 .mv-status { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; margin-top: 0.5rem; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .mv-selection-text { color: var(--primary-color); }
