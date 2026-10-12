@@ -7,6 +7,7 @@ ORF → 分配稳定 id。纯函数，重计算由路由层放进线程池并缓
 
 from typing import Dict, Iterable, List, Optional
 
+import core.plasmid_map.annotate as annotate_mod
 from core.plasmid_map.annotate import annotate as run_annotate
 from core.plasmid_map.annotate import circular_overlap
 from core.plasmid_map.enzymes import find_map_enzymes, resolve_enzymes
@@ -135,7 +136,8 @@ def build_document(
     enzymes: Optional[List[str]] = None,
     orf_min_aa: int = DEFAULT_MIN_AA,
 ) -> Dict:
-    """sequence 须已清洗（大写 IUPAC）；annotate=None 时「无特征才注释」"""
+    """sequence 须已清洗（大写 IUPAC）；annotate=None 时「无特征且不超过
+    AUTO_ANNOTATE_MAX_BP 才注释」，显式 True 总是注释（受比对预算约束）"""
     warns = list(warnings or [])
     length = len(sequence)
     circular = topology == "circular"
@@ -143,9 +145,13 @@ def build_document(
 
     if annotate is None:
         annotate = not any(f["source"] != "auto" for f in feats)
+        if annotate and length > annotate_mod.AUTO_ANNOTATE_MAX_BP:
+            annotate = False
+            warns.append(f"序列超过 {annotate_mod.AUTO_ANNOTATE_MAX_BP:,} bp，未自动注释常见元件"
+                         "（可显式开启 annotate）")
     if annotate:
         base = [f for f in feats if f["source"] != "auto"]
-        auto = run_annotate(sequence, circular)
+        auto = run_annotate(sequence, circular, warnings=warns)
         feats = base + _drop_duplicate_auto(auto, base, length, circular)
 
     names, ewarns = resolve_enzymes(enzyme_set, enzymes)
