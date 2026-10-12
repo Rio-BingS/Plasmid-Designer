@@ -16,6 +16,12 @@ from typing import Dict, List, Optional, Tuple
 
 from core.seq_utils import revcomp
 from core.plasmid_map.types import (
+    MAX_FEATURES,
+    MAX_LOCATION_PARTS,
+    MAX_PRIMER_SEQ,
+    MAX_PRIMERS,
+    MAX_QUALIFIERS,
+    MAX_SEGMENTS,
     normalize_color,
     normalize_type,
     strip_color_note,
@@ -175,6 +181,7 @@ def _parse_genbank_text(text: str, fallback_name: str, max_length, topology) -> 
     from Bio import BiopythonParserWarning, SeqIO
 
     warns: List[str] = []
+    _precheck_genbank_locations(text)
     try:
         with _w.catch_warnings():
             # LOCUS 行不规范时 Biopython 只告警；对用户文件放行（pytest.ini
@@ -185,6 +192,50 @@ def _parse_genbank_text(text: str, fallback_name: str, max_length, topology) -> 
         raise MapParseError(f"GenBank 文件解析失败：{e}", 422) from e
     record = _first_record(records, warns, "GenBank 文件")
     return _from_seqrecord(record, "genbank", fallback_name, max_length, topology, warns)
+
+
+_FEATURE_KEY_LINE = re.compile(r"^ {5}(\S+)\s+(.*)$")
+
+
+def _precheck_genbank_locations(text: str) -> None:
+    """Biopython 解析超长 join()/order() 很慢（8 万段约 5 s）：先扫特征表，
+    任一位置串分段数超过 MAX_LOCATION_PARTS 直接 422，不进 SeqIO"""
+    start = text.find("\nFEATURES")
+    if start < 0:
+        return
+    parts = 0
+    in_loc = False
+    for line in text[start + 1:].split("\n")[1:]:
+        if line.startswith("ORIGIN") or line.startswith("CONTIG") or line.startswith("//"):
+            break
+        m = _FEATURE_KEY_LINE.match(line)
+        if m:
+            parts = m.group(2).count(",") + 1
+            in_loc = True
+        elif in_loc and line.startswith(" " * 21) and not line[21:].startswith("/"):
+            parts += line.count(",")
+        else:
+            in_loc = False
+            continue
+        if parts > MAX_LOCATION_PARTS:
+            raise MapParseError(
+                f"特征位置分段过多（超过 {MAX_LOCATION_PARTS} 段的 join/order），无法打开", 422)
+
+
+def _precheck_snapgene_segments(data: bytes) -> None:
+    """SnapGene 特征的 Segment 数同样预检（Biopython 逐段拼 CompoundLocation）"""
+    pos = 0
+    while pos + 5 <= len(data):
+        ptype = data[pos]
+        (length,) = struct.unpack(">I", data[pos + 1:pos + 5])
+        body = data[pos + 5:pos + 5 + length]
+        pos += 5 + length
+        if ptype != 0x0A:
+            continue
+        for chunk in body.split(b"</Feature>"):
+            if chunk.count(b"<Segment") > MAX_LOCATION_PARTS:
+                raise MapParseError(
+                    f"特征分段过多（超过 {MAX_LOCATION_PARTS} 段），无法打开", 422)
 
 
 def _parse_fasta_text(text: str, fallback_name: str, max_length, topology) -> ParsedRecord:
@@ -210,9 +261,39 @@ def _parse_fasta_text(text: str, fallback_name: str, max_length, topology) -> Pa
     return rec
 
 
+def _snapgene_location(rangespec, strand, record, is_primer=False):
+    """Bio.SeqIO.SnapGeneIO._parse_location 的修正版（Biopython 1.8x）。
+
+    原实现把跨原点的段一律拆成 [s..L, 1..e]；负链特征的多段顺序它会整体
+    倒排成生物学顺序，唯独单段内的这两截没倒，于是负链跨原点特征的
+    parts 不是生物学顺序（extract 得到 rc(s..L)+rc(1..e)，应为
+    rc(1..e)+rc(s..L)）。这里负链跨原点时直接给出 [1..e, s..L]。"""
+    from Bio.SeqFeature import SimpleLocation
+
+    start, end = (int(x) for x in rangespec.split("-"))
+    start -= 1  # SnapGene 1-based
+    if is_primer:  # 引物坐标在 SnapGene 文件里整体偏 -1（与上游实现一致）
+        start += 1
+        end += 1
+    if start >= end:
+        l1 = SimpleLocation(start, len(record), strand=strand)
+        l2 = SimpleLocation(0, end, strand=strand)
+        return l2 + l1 if strand == -1 else l1 + l2
+    return SimpleLocation(start, end, strand=strand)
+
+
+def _install_snapgene_location_fix() -> None:
+    from Bio.SeqIO import SnapGeneIO
+
+    if getattr(SnapGeneIO, "_parse_location", None) is not _snapgene_location:
+        SnapGeneIO._parse_location = _snapgene_location
+
+
 def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> ParsedRecord:
     from Bio import SeqIO
 
+    _install_snapgene_location_fix()
+    _precheck_snapgene_segments(data)
     warns: List[str] = []
     try:
         records = list(SeqIO.parse(io.BytesIO(data), "snapgene"))
@@ -224,12 +305,13 @@ def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> Pa
                            warns, snapgene_colors=colors)
 
 
-def _snapgene_feature_colors(data: bytes) -> List[Optional[str]]:
+def _snapgene_feature_colors(data: bytes) -> List[Tuple[str, Optional[str]]]:
     """SnapGene 特征颜色存在 Segment 的 color 属性里，Bio.SeqIO 不读：
-    这里按文件中特征出现顺序取第一段颜色（与 SeqIO 的非引物特征顺序一致）"""
+    这里按文件中特征出现顺序取 (特征名, 第一段颜色)，由 _take_snapgene_color
+    按名称与 SeqIO 特征对齐（不再单纯按序号，避免中途错位后整体张冠李戴）"""
     from xml.dom.minidom import parseString
 
-    colors: List[Optional[str]] = []
+    colors: List[Tuple[str, Optional[str]]] = []
     pos = 0
     try:
         while pos + 5 <= len(data):
@@ -247,15 +329,34 @@ def _snapgene_feature_colors(data: bytes) -> List[Optional[str]]:
                         continue
                     color = normalize_color(seg.getAttribute("color"))
                     break
-                colors.append(color)
+                colors.append((feat.getAttribute("name") or "", color))
     except Exception:
         return []
     return colors
 
 
+_SG_COLOR_LOOKAHEAD = 4
+
+
+def _take_snapgene_color(queue: List[Tuple[str, Optional[str]]], pos: List[int],
+                         sf) -> Optional[str]:
+    """按 SnapGene 特征名把 XML 里的颜色对到 SeqIO 特征上（Bio 把 SnapGene 名
+    写进 label，label 另有时写进 name）。允许跳过少量未对上的 XML 条目；
+    对不上就不给颜色，也不消耗队列"""
+    q = sf.qualifiers or {}
+    names = {str(v) for key in ("name", "label") for v in (q.get(key) or [])}
+    i = pos[0]
+    for j in range(i, min(len(queue), i + _SG_COLOR_LOOKAHEAD)):
+        if queue[j][0] in names:
+            pos[0] = j + 1
+            return queue[j][1]
+    return None
+
+
 def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
                     topology, warns: List[str],
-                    snapgene_colors: Optional[List[Optional[str]]] = None) -> ParsedRecord:
+                    snapgene_colors: Optional[List[Tuple[str, Optional[str]]]] = None
+                    ) -> ParsedRecord:
     try:
         raw_seq = str(record.seq)
     except Exception as e:  # 未定义序列（Bio UndefinedSequenceError）
@@ -269,14 +370,20 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
 
     length = len(seq)
     circular = rec.topology == "circular"
-    color_iter = iter(snapgene_colors or [])
+    color_queue = list(snapgene_colors or [])
+    color_pos = [0]
     cds_spans = set()
     pending_genes: List[Tuple[Dict, Tuple]] = []
     dropped = 0
+    too_many_segments = 0
+    quals_trimmed = 0
+    mixed_strand = 0
+    order_ops = 0
+    primers_over = 0
     for sf in record.features:
         if sf.type == "source":
             continue
-        sg_color = next(color_iter, None) if sf.type != "primer_bind" else None
+        sg_color = _take_snapgene_color(color_queue, color_pos, sf) if color_queue else None
         try:
             built = _feature_from_seqfeature(sf, length, circular, sg_color)
         except Exception:
@@ -285,7 +392,22 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
         if built is None:
             dropped += 1
             continue
-        if sf.type == "primer_bind":
+        if len(built.get("segments") or ()) > MAX_SEGMENTS:
+            too_many_segments += 1
+            continue
+        if built.pop("_qualifiers_trimmed", False):
+            quals_trimmed += 1
+        loc_parts = list(getattr(sf.location, "parts", None) or [])
+        if len(loc_parts) > 1:
+            if len({p.strand for p in loc_parts}) > 1:
+                mixed_strand += 1
+            if getattr(sf.location, "operator", "join") == "order":
+                order_ops += 1
+        if sf.type == "primer_bind" and \
+                len(extract_span(seq, built["start"], built["end"], 1)) <= MAX_PRIMER_SEQ:
+            if len(rec.primers) >= MAX_PRIMERS:
+                primers_over += 1
+                continue
             rec.primers.append(_primer_from_feature(built, seq))
             continue
         span_key = (built["start"], built["end"], built["strand"])
@@ -301,6 +423,21 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
             rec.features.append(built)
     if dropped:
         rec.warnings.append(f"{dropped} 个特征坐标无效或超出序列，已忽略")
+    if too_many_segments:
+        rec.warnings.append(f"{too_many_segments} 个特征分段超过 {MAX_SEGMENTS} 段，已忽略")
+    if quals_trimmed:
+        rec.warnings.append(f"{quals_trimmed} 个特征的限定符超过 {MAX_QUALIFIERS} 条，多余的已忽略")
+    if mixed_strand:
+        rec.warnings.append(f"{mixed_strand} 个特征的分段跨正负两条链，已按无方向处理"
+                            "（各段的链信息不保留，导出时会丢失）")
+    if order_ops:
+        rec.warnings.append(f"{order_ops} 个特征使用 order()（段间顺序不确定），已按 join() 处理，"
+                            "导出时写作 join()")
+    if primers_over:
+        rec.warnings.append(f"引物超过 {MAX_PRIMERS} 条，其余 {primers_over} 条已忽略")
+    if len(rec.features) > MAX_FEATURES:
+        rec.warnings.append(f"特征超过 {MAX_FEATURES} 个，其余已忽略")
+        del rec.features[MAX_FEATURES:]
     return rec
 
 
@@ -356,8 +493,11 @@ def _feature_color(q: Dict, strand: int, sg_color: Optional[str]) -> Optional[st
 def location_to_span(location, length: int, circular: bool) -> Tuple[int, int, int, Optional[List[Dict]]]:
     """Biopython 位置 → (start, end, strand, segments)，1-based 闭区间。
 
-    跨原点的复合位置（环状）整体跨度 start > end；segments 按文件中的
-    生物学顺序给出，单段时为 None。坐标越界抛 ValueError。
+    跨原点的复合位置（环状）整体跨度 start > end；segments 按生物学顺序
+    给出（GenBank 的 complement(join(..)) 由 Biopython 倒排成生物学顺序，
+    SnapGene 负链跨原点段经 _snapgene_location 修正），单段时为 None。
+    契约约定：负链 segments 沿负链 5'→3'，见 extract_feature。
+    坐标越界抛 ValueError。
     """
     parts = list(getattr(location, "parts", None) or [location])
     segs = []
@@ -425,6 +565,9 @@ def _feature_from_seqfeature(sf, length: int, circular: bool,
         val = v[0] if isinstance(v, (list, tuple)) and v else v
         if val is None or isinstance(val, (list, tuple)):
             continue
+        if len(quals) >= MAX_QUALIFIERS:
+            feat["_qualifiers_trimmed"] = True
+            break
         quals[str(k)[:40]] = str(val)[:MAX_QUALIFIER_CHARS]
     feat["qualifiers"] = quals
     return feat
@@ -437,6 +580,16 @@ def extract_span(seq: str, start: int, end: int, strand: int = 1) -> str:
     else:
         sub = seq[start - 1:] + seq[:end]
     return revcomp(sub) if strand == -1 else sub
+
+
+def extract_feature(seq: str, feat: Dict) -> str:
+    """特征的契约序列（沿特征自身方向 5'→3'）：segments 按生物学顺序逐段
+    extract_span 后拼接（负链每段取反向互补，段顺序即负链上的阅读顺序）；
+    无 segments 时就是整体跨度。GenBank 导出 → 重新读入后 Biopython
+    SeqFeature.extract 应与此一致。"""
+    strand = feat.get("strand") or 0
+    segs = feat.get("segments") or [{"start": feat["start"], "end": feat["end"]}]
+    return "".join(extract_span(seq, int(s["start"]), int(s["end"]), strand) for s in segs)
 
 
 def _primer_from_feature(feat: Dict, seq: str) -> Dict:

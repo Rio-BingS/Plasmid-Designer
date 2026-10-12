@@ -6,14 +6,17 @@
   导入期间全站无响应）；真正落库的写端点需管理员，且路径落在
   `/api/vectors/import` 前缀下，沿用中间件的 upload 限流档。
 * 只读端点（集合/索引/预览/来源清单）进进程缓存，避免前端切页签反复外呼；
-  缓存键统一 `online:*` 前缀，落库后按需失效。UniProt 检索与条目查询是外呼
-  代理，只读但走 ncbi 档（见 app/rate_limit.py 的 _READ_RULES）。
+  缓存键统一 `online:*` 前缀，落库后按需失效。会外呼的只读代理（SnapGene
+  集合/索引/预览、Ensembl lookup/预览、UniProt 检索/条目、Addgene 元数据）都走
+  ncbi 档（见 app/rate_limit.py 的 _READ_RULES）；来源清单与 Addgene 本地索引
+  搜索不出网，走 default 档。
 * 一切失败经 `MapParseError.status` 映射 HTTP 状态（422/403/404/413/502/503/504）。
 * 导入落库走 `app/vector_import.save_record`（与文件上传同一条路径，形状与
   data/vectors/*.yaml 一致），出处写进结构化 `data_provenance` **并**在描述里
   保留一句可读标注，满足来源站的引用要求。
 * Addgene：匿名只读元数据；只有部署方配置了 `ADDGENE_SESSION_COOKIE`（用户自己的
-  会话）时才带凭据取全长序列——凭据只发给 addgene.org，不落盘、不回显、不代登录。
+  会话，仅适合单用户自托管）时才由管理员带凭据取全长序列——仅以 https 发往
+  addgene.org（重定向逐跳校验、跨主机即丢弃），不回显、不代登录。
 """
 
 from typing import Any, Dict, Optional
@@ -23,8 +26,9 @@ from starlette.concurrency import run_in_threadpool
 
 from app import config
 from app import online_import as oi
+from app.online_import import require_snapgene_enabled, require_snapgene_user
 from app.cache import cache
-from app.auth.jwt_auth import get_admin_user
+from app.auth.jwt_auth import get_admin_user, get_current_user
 from app.design_service import invalidate_vector_library_cache
 from app.routes.models import (
     MAP_MAX_LENGTH,
@@ -91,21 +95,24 @@ def _preview(record, *, source: str, url: str, license_text: str) -> OnlinePrevi
 # ==================== 来源清单 ====================
 
 @router.get("/import/sources")
-async def list_online_sources() -> Dict[str, Any]:
+async def list_online_sources(user=Depends(get_current_user)) -> Dict[str, Any]:
     """可用在线来源与许可摘要（前端据此渲染页签与提示；与图谱页同一份数据）"""
-    return oi.sources_payload()
+    return oi.sources_payload(is_admin=bool(user is not None and user.is_admin))
 
 
 # ==================== SnapGene 在线库 ====================
 
+# 开关（SNAPGENE_ONLINE_ENABLED，默认关）+ 需登录；落库另需管理员（见 import_snapgene）
+
 @router.get("/import/snapgene/sets")
-async def snapgene_sets() -> Dict[str, Any]:
+async def snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """列出 SnapGene 在线序列集合（低频：与图谱页共用同一份 1 小时缓存）"""
     return await _call(oi.snapgene_sets_payload)
 
 
 @router.get("/import/snapgene/sets/{set_id}")
-async def snapgene_set_index(set_id: str) -> Dict[str, Any]:
+async def snapgene_set_index(set_id: str,
+                             _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """列出集合内全部序列（索引，等价客户端 snapgeneSequences/<set>.xml）"""
     return await _call(oi.snapgene_index_payload, set_id)
 
@@ -119,7 +126,8 @@ async def _snapgene_fetch(set_id: str, plasmid_id: str):
 
 @router.get("/import/snapgene/preview", response_model=OnlinePreviewResponse)
 async def snapgene_preview(set_id: str = Query(..., max_length=64),
-                           plasmid_id: str = Query(..., max_length=120)):
+                           plasmid_id: str = Query(..., max_length=120),
+                           _: object = Depends(require_snapgene_user)):
     """下载并解析单个 .dna 作预览（不落库）"""
     key = oi.preview_cache_key("snapgene", set_id, plasmid_id)
     cached = oi.cache_get(key)
@@ -133,6 +141,7 @@ async def snapgene_preview(set_id: str = Query(..., max_length=64),
 
 @router.post("/import/snapgene")
 async def import_snapgene(req: SnapGeneImportRequest,
+                          _enabled: None = Depends(require_snapgene_enabled),
                           _: object = Depends(get_admin_user)) -> Dict[str, Any]:
     """从 SnapGene 在线库导入一个序列到载体库（需管理员）"""
     record, url = await _snapgene_fetch(req.set_id, req.plasmid_id)
@@ -179,7 +188,7 @@ async def ensembl_preview(identifier: str = Query(..., max_length=64),
     if cached is not None:
         return cached
     record = await _call(src.ensembl_record, identifier, seq_type, max_length=MAP_MAX_LENGTH)
-    url = f"{src.ENSEMBL_BASE}/sequence/id/{_check(src.validate_ensembl_id, identifier)}?type={seq_type}"
+    url = f"{src.public_base(src.ENSEMBL_BASE)}/sequence/id/{_check(src.validate_ensembl_id, identifier)}?type={seq_type}"
     resp = _preview(record, source=f"ensembl:{seq_type}", url=url,
                     license_text=src.ENSEMBL_LICENSE)
     oi.cache_set(key, resp.model_dump(mode="json"))
@@ -192,7 +201,7 @@ async def import_ensembl(req: EnsemblImportRequest,
     """从 Ensembl 导入 DNA 序列到载体库（需管理员）"""
     record = await _call(src.ensembl_record, req.identifier, req.seq_type,
                          name=req.name, max_length=MAP_MAX_LENGTH)
-    url = (f"{src.ENSEMBL_BASE}/sequence/id/{src.validate_ensembl_id(req.identifier)}"
+    url = (f"{src.public_base(src.ENSEMBL_BASE)}/sequence/id/{src.validate_ensembl_id(req.identifier)}"
            f"?type={req.seq_type}")
     result = await run_in_threadpool(
         save_record, record,
@@ -230,12 +239,23 @@ async def addgene_search(term: str = Query(..., min_length=1, max_length=60),
 
 @router.get("/import/addgene/{plasmid_id}")
 async def addgene_metadata(plasmid_id: str,
-                           try_sequence: bool = Query(default=False)) -> Dict[str, Any]:
+                           try_sequence: bool = Query(default=False),
+                           user=Depends(get_current_user)) -> Dict[str, Any]:
     """Addgene 匿名元数据（各文件 URL）；try_sequence=true 时尝试取全长序列
 
     实测（2026-08 起）：匿名只能拿到 map 图，`.gbk`/`.dna` 直链 404 → 本端点一律
     返回 403 + 合法路径指引，**不代为登录、不绕登录墙**（Addgene ToS 明文禁止）。
+
+    `try_sequence` 分支**仅管理员**（审查 M1）：配置了 `ADDGENE_SESSION_COOKIE` 时它会以
+    部署方的 Addgene 账号身份下载，不能让匿名/普通用户驱动；`session_configured`
+    同样只对管理员下发。
     """
+    is_admin = bool(user is not None and user.is_admin)
+    if try_sequence and not is_admin:
+        if user is None:
+            raise HTTPException(status_code=401, detail="取 Addgene 全长序列需管理员登录",
+                                headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(status_code=403, detail="取 Addgene 全长序列需要管理员权限")
     oid = _check(src.validate_addgene_id, plasmid_id)
     meta = await _call(src.addgene_metadata, oid)
     out: Dict[str, Any] = {
@@ -257,7 +277,7 @@ async def addgene_metadata(plasmid_id: str,
                        "可点「导入为本地载体」落库（序列与注释版权归 Addgene/原作者）"
                        if src.addgene_has_session() else
                        "上游允许匿名取序列（接口有变），请改用返回的直链自行核对后导入")
-    out["session_configured"] = src.addgene_has_session()
+    out["session_configured"] = src.addgene_has_session() if is_admin else False
     return out
 
 
@@ -269,7 +289,7 @@ async def import_addgene(plasmid_id: str,
     """用配置好的 Addgene 会话把全长序列导入载体库（需管理员；无凭据 → 403）
 
     设计边界：**不代为登录、不绕登录墙、不保存凭据**。凭据来自部署方的
-    `ADDGENE_SESSION_COOKIE`（用户自己在浏览器登录后的会话），且只发给 addgene.org。
+    `ADDGENE_SESSION_COOKIE`（用户自己在浏览器登录后的会话），仅以 https 发往 addgene.org。
     """
     oid = _check(src.validate_addgene_id, plasmid_id)
     record = await _call(src.addgene_record, oid, fmt=fmt, name=name,

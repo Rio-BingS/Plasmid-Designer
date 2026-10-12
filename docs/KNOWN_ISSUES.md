@@ -42,11 +42,15 @@
 - 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
   读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
   `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。
+  SnapGene 在线库受独立开关 `SNAPGENE_ONLINE_ENABLED` 约束（**默认 false**，关 → 404），
+  开启后只读端点也须登录（`app/online_import.require_snapgene_user`，匿名 401），落库仍
+  管理员；不要把它并回 `ONLINE_IMPORT_ENABLED`、不要放开匿名（见下「已接受风险」）。
   Addgene 全长序列 2026-08 起需登录：无凭据时 `addgene_sequence_bytes` **必须**抛
   `AddgeneLoginRequired`（403 + 指引），任何情况下不得代登录/绕登录墙；有
-  `ADDGENE_SESSION_COOKIE`（用户自备）时也只把凭据发给 `addgene.org`
-  （`_addgene_session_headers` 做主机白名单，元数据给的直链指向别处就不带），
-  且不得写入响应/日志/磁盘。
+  `ADDGENE_SESSION_COOKIE`（用户自备，仅单用户自托管适用）时也只以 https 发给
+  `addgene.org`：`_http_get` 禁用 urllib 自动重定向、逐跳校验 https + 主机白名单
+  （裸主机名），Cookie 用 `add_unredirected_header` 且跨主机即永久丢弃；取序列的
+  `try_sequence` 分支仅管理员；不得写入响应/日志。不要改回 `urlopen` 或普通请求头。
 - UniProt 是**蛋白库**：`core/online_sources.py` 只允许用它反查 Entrez/EMBL/RefSeq/
   Ensembl 交叉引用（`nucleotide_candidates`）再把用户引到核酸来源；不要把蛋白序列
   当质粒/图谱序列导入（`ENSEMBL_SEQ_TYPES` 拒绝 protein 是同一原则）。
@@ -270,3 +274,45 @@ Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），�
    同时载体响应缓存 `vector:<id>` 跨用例命中会让断言读到别的用例的载体。
 2. **冒烟脚本不要打印 `↳` 之类字符**：Windows 控制台默认 GBK，`print` 直接
    `UnicodeEncodeError` 让冒烟整体判失败；`_report` 现按 GBK 编码兜底。
+
+---
+
+### 2026-10-12 v2.12.0 审查修复：在线来源（`fix/rv12-online`）
+
+审查报告：v2.12.0 代码审查 01（在线序列来源导入）。
+
+| 项 | 结果 |
+|---|---|
+| H1 Cookie 随重定向泄露 | `_http_get` 改用自建 opener（`_NoRedirectHandler`），手动跟随 ≤3 跳，每跳校验 https + 主机白名单（`_checked_host`，裸主机名）；Cookie 用 `add_unredirected_header`，跨主机即永久丢弃；上游直链非 https/非 addgene 主机直接拒绝（`UnsafeUrlError`）。测试走真实 OpenerDirector |
+| H2 SnapGene 在线库 | 见下「已接受风险」：`SNAPGENE_ONLINE_ENABLED` 默认关、登录可用、落库管理员；前端按开关 + 登录态显示 |
+| M1 匿名 try_sequence | 仅管理员（匿名 401、普通用户 403）；`session_configured` 只对管理员如实下发 |
+| M2 Cookie 多用户 | 文档改为仅单用户自托管；开放注册或 >1 启用账号时启动告警 |
+| M3 节流 | 按站点预占时间槽、锁外 sleep；排队超 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 s）→ 429 |
+| M4 限流档 | 载体库侧 SnapGene 集合/索引/预览、Ensembl lookup/预览归入 `ncbi` 档 |
+| M5 出处 URL | `SaveMapAsVectorRequest.url` 只收 http(s)；落盘与 `_parse_provenance` 读取时丢弃非 http(s) 的 `url`/`*_url`（前端 href 白名单由图谱前端分支负责） |
+| L1–L7 | polyA 别名小写；落盘撞车 409 + 同 ID 覆盖标 `replaced`、ID 与文件名同一归一；NCBI/批量导入写 LOCUS 拓扑；Addgene 本地索引按 mtime 缓存；上传按 `MAP_MAX_LENGTH` 限长、回执去掉 `path`；错误不回显上游字节、`*_BASE` 去 userinfo；Addgene robots 描述更正 |
+
+**已接受风险（决策记录，避免下次审查重复争论）——SnapGene 在线库**
+
+- 事实：SnapGene 网站条款 (a) 禁止 "reproduce or store material from this website in any
+  public or private electronic retrieval system"；`snapgene.com/robots.txt` 仍有
+  `Disallow: /local`（2026-10-12 复核）；`/local/sets.php`、`/local/fetch.php` 来自对
+  SnapGene 客户端的逆向，客户端 EULA 禁止 reverse engineer。v2.12.0 把它做成了「存入
+  本地载体库」+ 匿名可触发的代理，且默认开启。
+- 用户决定（2026-10-12）：**保留功能，但默认关闭、仅登录用户可用**。新增独立开关
+  `SNAPGENE_ONLINE_ENABLED`（默认 false，与 `ONLINE_IMPORT_ENABLED` 无关）；关闭时
+  载体库侧集合/索引/预览/导入与图谱页集合/索引/打开全部 404（核心层 `_ensure_snapgene_enabled`
+  兜底，零外呼）；开启后只读端点需登录（匿名 401），存入载体库仍需管理员；前端在开关
+  关闭或未登录时隐藏 SnapGene 页签。
+- 风险归属：开启即视为部署方知悉并接受上述条款冲突；仅建议学术/非营利/政府的自用实例
+  开启，须引用 `www.snapgene.com/resources`，商业用途须先获 GraphPad 书面许可。中长期
+  方案仍是向 GraphPad 申请接口授权或改用 NCBI 对应记录。
+- `scripts/smoke_online_sources.py` 默认不再跑 SnapGene（需 `--only snapgene` 且开关为 true）。
+
+**Addgene 会话 Cookie 模式的定位（审查 M2）**：只适合**单用户自托管**（部署者 = 唯一使用者 =
+Addgene 账号持有人）。多用户实例里它等同共享一个人的 Addgene 账号，导入的序列也对全站可见；
+启动时若配置了 `ADDGENE_SESSION_COOKIE` 且「开放注册」或已有 >1 个启用账号，
+`app/online_import.log_addgene_shared_session_warning` 记一条 WARNING（不回显 Cookie）。此前
+文档所说「不落盘」不成立（`.env`、容器环境、`docker inspect` 都能看到），已改为「不写入应用
+数据/响应/日志」；推荐替代是浏览器下载后走「上传文件」。
+

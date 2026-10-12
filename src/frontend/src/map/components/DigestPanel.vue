@@ -6,7 +6,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import type { MapStore } from '../store'
-import { blockedKinds, DEFAULT_GEL, digest, formatBp, gelBands, gelY, LADDER_1KB, sortBySize, type DigestFragment } from '../core/digest'
+import { blockedKinds, DEFAULT_GEL, digest, formatBp, gelBands, gelY, LADDER_1KB, sitesIncomplete, sortBySize, type DigestFragment } from '../core/digest'
 
 const props = defineProps<{ store: MapStore }>()
 const MAX = 3
@@ -22,21 +22,29 @@ const candidates = computed(() => {
   const q = query.value.trim().toLowerCase()
   return props.store.enzymeList.value.filter((e) => !hidden.has(e.name) && (!q || e.name.toLowerCase().includes(q)))
 })
-// 文档变化（换酶组/重新分析）后去掉已不存在的酶
+// 位点明细被截断的酶：少算切口会得出错误片段，不参与消化
+const TRUNCATED_HINT = '切点过多，后端只返回了部分位点明细，无法模拟消化'
+const truncatedNames = computed(() => new Set(doc.value.enzymes.filter(sitesIncomplete).map((e) => e.name)))
+const hasTruncatedCandidate = computed(() => candidates.value.some((e) => truncatedNames.value.has(e.name)))
+// 文档变化（换酶组/重新分析）后去掉已不存在或明细被截断的酶
 watch(() => doc.value.enzymes, (list) => {
-  const names = new Set(list.map((e) => e.name))
+  const names = new Set(list.filter((e) => !sitesIncomplete(e)).map((e) => e.name))
   chosen.value = chosen.value.filter((n) => names.has(n))
 })
 
 function toggle(name: string) {
   const i = chosen.value.indexOf(name)
   if (i >= 0) chosen.value = chosen.value.filter((n) => n !== name)
-  else if (chosen.value.length < MAX) chosen.value = [...chosen.value, name]
+  else if (chosen.value.length < MAX && !truncatedNames.value.has(name)) chosen.value = [...chosen.value, name]
+}
+function pickDisabled(name: string): boolean {
+  if (chosen.value.includes(name)) return false
+  return chosen.value.length >= MAX || truncatedNames.value.has(name)
 }
 
 const selectedEnzymes = computed(() => chosen.value
   .map((n) => doc.value.enzymes.find((e) => e.name === n))
-  .filter((e): e is NonNullable<typeof e> => !!e))
+  .filter((e): e is NonNullable<typeof e> => !!e && !sitesIncomplete(e)))
 const blocked = computed(() => {
   const s = new Set<string>()
   for (const e of selectedEnzymes.value) for (const k of blockedKinds(e)) s.add(k)
@@ -70,13 +78,14 @@ function selectFragment(f: DigestFragment) {
       <ul class="dg-enz-list">
         <li v-if="!candidates.length" class="dg-muted">没有可选的酶（检查酶切图层与过滤条件）</li>
         <li v-for="e in candidates" :key="e.name">
-          <label :class="{ disabled: !chosen.includes(e.name) && chosen.length >= MAX }">
-            <input type="checkbox" :checked="chosen.includes(e.name)" :disabled="!chosen.includes(e.name) && chosen.length >= MAX"
+          <label :class="{ disabled: pickDisabled(e.name) }" :title="truncatedNames.has(e.name) ? TRUNCATED_HINT : undefined">
+            <input type="checkbox" :checked="chosen.includes(e.name)" :disabled="pickDisabled(e.name)"
                    :data-enzyme="e.name" @change="toggle(e.name)" />
-            {{ e.name }} <small class="dg-muted">{{ e.cut_count }} 切点</small>
+            {{ e.name }} <small class="dg-muted">{{ e.cut_count }} 切点<template v-if="truncatedNames.has(e.name)">（明细不全）</template></small>
           </label>
         </li>
       </ul>
+      <p v-if="hasTruncatedCandidate" class="dg-truncated" role="note">标“明细不全”的酶{{ TRUNCATED_HINT }}；可在酶切列表查看其完整切点数。</p>
       <label v-if="blocked.length" class="dg-blocked">
         <input v-model="skipBlocked" type="checkbox" /> 跳过被 {{ blocked.join('/') }} 甲基化阻断的位点
       </label>
@@ -129,6 +138,7 @@ function selectFragment(f: DigestFragment) {
 .dg-enz-list { list-style: none; max-height: 150px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 1px 6px; }
 .dg-enz-list label { display: flex; gap: 4px; align-items: center; cursor: pointer; white-space: nowrap; overflow: hidden; }
 .dg-enz-list label.disabled { opacity: 0.45; cursor: default; }
+.dg-truncated { margin-top: 4px; color: #92400e; font-size: 12px; }
 .dg-blocked { display: flex; gap: 4px; align-items: center; margin-top: 4px; color: #92400e; font-size: 12px; }
 .dg-result { padding: 6px 8px; }
 .dg-summary { margin-bottom: 6px; }

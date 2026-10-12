@@ -69,6 +69,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 管理员引导失败: {e}")
 
+    # Addgene 用户自备会话只适合单用户自托管：多用户部署时告警（审查 M2）
+    try:
+        from app.online_import import log_addgene_shared_session_warning
+        log_addgene_shared_session_warning()
+    except Exception as e:  # pragma: no cover - 告警失败不阻断启动
+        print(f"⚠️ Addgene 会话检查失败: {e}")
+
     # 批量测序分块上传会话：启动时清理上次残留的暂存目录，之后周期清理过期会话
     from app.routes.sequencing_session_routes import sweeper_loop
     sweeper = asyncio.create_task(sweeper_loop())
@@ -217,6 +224,11 @@ app.add_middleware(CsrfMiddleware)
 # 请求追踪 + 慢请求监控中间件与统一日志（此前已实现但从未接线）
 from app.middleware import setup_middleware
 setup_middleware(app)
+
+# /api/map/* 请求体流式体积上限：边收边计数，超限直接 413（不进下游、不整体读入）；
+# 位于 CORS 之内，413 也带 CORS 头
+from app.map_body_limit import MapBodyLimitMiddleware
+app.add_middleware(MapBodyLimitMiddleware)
 
 # CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
 # 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。

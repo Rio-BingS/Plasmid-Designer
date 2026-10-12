@@ -16,11 +16,41 @@ from pathlib import Path
 import yaml
 
 
+# 出处 URL 只接受 http(s)：载体详情页把 data_provenance.url 渲染成 <a :href>，
+# `javascript:` 之类会成为存储型 XSS（v2.12 审查 M5）。写入与读取两头都过滤。
+_HTTP_URL_RE = re.compile(r"^https?://[^\s/?#]+[^\s]*$", re.IGNORECASE)
+
+
+def safe_http_url(value) -> str:
+    """是 http(s) 绝对 URL 则原样（去首尾空白）返回，否则返回空串"""
+    v = str(value or "").strip()
+    return v if _HTTP_URL_RE.match(v) else ""
+
+
+def is_url_key(key: str) -> bool:
+    k = str(key).lower()
+    return k == "url" or k.endswith("_url")
+
+
 def _parse_provenance(raw) -> Dict[str, str]:
-    """data_provenance → {键: 字符串}（脏数据不让整份载体被兜底 except 吞掉）"""
+    """data_provenance → {键: 字符串}（脏数据不让整份载体被兜底 except 吞掉）
+
+    `url` / `*_url` 键只保留 http(s) 链接：手改的 YAML 或旧版本写入的
+    `javascript:` 链接在读取时即丢弃，不会下发给前端。
+    """
     if not isinstance(raw, dict):
         return {}
-    return {str(k): str(v) for k, v in raw.items() if v not in (None, "")}
+    out: Dict[str, str] = {}
+    for k, v in raw.items():
+        if v in (None, ""):
+            continue
+        sv = str(v)
+        if is_url_key(k):
+            sv = safe_http_url(sv)
+            if not sv:
+                continue
+        out[str(k)] = sv
+    return out
 
 
 class ElementType(Enum):
@@ -57,6 +87,8 @@ _TYPE_ALIASES: Dict[str, ElementType] = {
     "rbs": ElementType.REGULATORY,
     "misc_feature": ElementType.OTHER,
 }
+# 查表一律用 raw_type.lower()：键也统一小写，否则 polyA_signal 这类带大写的键永远命不中
+_TYPE_ALIASES = {k.lower(): v for k, v in _TYPE_ALIASES.items()}
 
 
 @dataclass
