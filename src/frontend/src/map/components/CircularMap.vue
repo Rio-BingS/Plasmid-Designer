@@ -522,9 +522,9 @@ const searchGeoms = computed(() => store.search.hits.slice(0, 500).map((h, i) =>
   const pad = L.value / 1500
   return { key: `s:${i}`, current: i === store.search.index, d: arcBandPath(cx.value, cy.value, R0.value + 1, R0.value + 6, ang(u.from - pad), ang(u.to + pad)) }
 }))
-const hoverKey = computed(() => store.hover.value?.id ?? null)
+const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
 const hoverPath = computed(() => {
-  const h = store.hover.value
+  const h = store.hoverTarget.value
   if (!h?.range || h.id.startsWith('f:')) return ''
   const u = unroll(h.range, L.value)
   return arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)))

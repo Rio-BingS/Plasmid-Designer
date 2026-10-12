@@ -334,9 +334,9 @@ const caretX = computed(() => {
 const searchRects = computed(() => store.search.hits.slice(0, 1000).flatMap((h, i) => visSegs(h).map((v, j) => ({
   key: `s:${i}`, k: `${i}-${j}`, x: v.x1, w: Math.max(2, v.x2 - v.x1), current: i === store.search.index,
 }))))
-const hoverKey = computed(() => store.hover.value?.id ?? null)
+const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
 const hoverRects = computed(() => {
-  const h = store.hover.value
+  const h = store.hoverTarget.value
   if (!h?.range || h.id.startsWith('t:')) return []
   return visSegs(h.range).map((v, i) => ({ k: i, x: v.x1, w: Math.max(1.5, v.x2 - v.x1) }))
 })
