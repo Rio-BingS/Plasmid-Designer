@@ -68,8 +68,24 @@ def sources_payload() -> Dict[str, Any]:
                 "kind": "online_library",
                 "url": "https://www.addgene.org",
                 "license": src.ADDGENE_LICENSE,
+                "importable": src.addgene_has_session(),
+                "requires_login": True,
+                "session_configured": src.addgene_has_session(),
+                "note": ("本地索引搜索 + 匿名元数据；全长序列需登录——本工具不代为登录。"
+                         + ("已配置 ADDGENE_SESSION_COOKIE：可用你自己的登录态取序列"
+                            if src.addgene_has_session() else
+                            "如需直接取序列，可把自己浏览器登录后的会话 Cookie 配到 "
+                            "ADDGENE_SESSION_COOKIE（仅本机后端使用，不落盘、不回显）")),
+            },
+            {
+                "id": "uniprot",
+                "name": "UniProt",
+                "kind": "protein_lookup",
+                "url": src.UNIPROT_BASE,
+                "license": src.UNIPROT_LICENSE,
                 "importable": False,
-                "note": "只提供本地索引搜索与匿名元数据；全长序列需登录，本工具不代为登录",
+                "note": ("蛋白库（CC BY 4.0），不给质粒序列：按基因/蛋白名查条目，"
+                         "给出 Entrez/EMBL/RefSeq/Ensembl 交叉引用，再据此去核酸来源取 DNA"),
             },
             {
                 "id": "ncbi",

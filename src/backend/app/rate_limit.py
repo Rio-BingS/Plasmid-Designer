@@ -480,6 +480,13 @@ _READ_RULES: List[Tuple[str, str]] = [
     ("/api/sequencing/analyses/{id}/consensus/export", "export"),
     ("/api/vectors/search/ncbi", "ncbi"),
     ("/api/vectors/preview/ncbi/{id}", "ncbi"),
+    # 在线来源的外呼代理（元数据/条目查询）：与 NCBI 代理同档。
+    # 更具体的路径必须排在 {id} 模板之前：Addgene 本地索引搜索不联网，
+    # 保持 default 档（读 17 万条本地 JSON，但不出网）
+    ("/api/vectors/import/addgene/search", "default"),
+    ("/api/vectors/import/addgene/{id}", "ncbi"),
+    ("/api/vectors/import/uniprot/search", "ncbi"),
+    ("/api/vectors/import/uniprot/{id}", "ncbi"),
     # 在线来源的集合/索引列举同样是外呼代理（与载体库侧共用缓存）
     ("/api/map/import/snapgene/sets", "ncbi"),
     ("/api/map/import/snapgene/sets/{id}", "ncbi"),

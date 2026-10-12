@@ -15,6 +15,8 @@ import {
 import type { OnlineSourceInfo, SnapgenePlasmid, SnapgeneSet } from '@/map/types'
 import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
+import { saveMapAsVector } from '@/api'
+import { useIsAdmin } from '@/composables/useIsAdmin'
 
 const PAGE_TITLE = '质粒图谱 - Plasmid Designer'
 const EXAMPLE_VECTOR = 'pUC19'
@@ -209,6 +211,57 @@ function closeDoc() {
   saveMapSession(null)
   showInput.value = true
 }
+
+// -------------------- 另存为载体（需管理员） --------------------
+// 序列与注释直接取当前文档（用户可能已在图谱编辑器里改过），后端不再外呼，
+// 保证存进载体库的与眼前这份是同一份数据。
+const canSaveAsVector = useIsAdmin()
+const saveOpen = ref(false)
+const saveName = ref('')
+const saveBusy = ref(false)
+const saveMsg = ref('')
+const saveFailed = ref(false)
+
+function openSaveAsVector() {
+  saveName.value = doc.value?.name || ''
+  saveMsg.value = ''
+  saveOpen.value = true
+}
+
+async function doSaveAsVector() {
+  const d = doc.value
+  if (!d) return
+  const name = saveName.value.trim()
+  if (!name) { saveMsg.value = '请填写载体名称'; saveFailed.value = true; return }
+  saveBusy.value = true
+  saveMsg.value = ''
+  saveFailed.value = false
+  try {
+    const res = await saveMapAsVector({
+      name,
+      sequence: d.sequence,
+      topology: d.topology,
+      features: d.features.map((f) => ({
+        name: f.name || f.type,
+        type: f.type,
+        start: f.start,
+        end: f.end,
+        strand: f.strand,
+        notes: f.notes,
+        color: f.color,
+      })),
+      source: d.meta?.source_format || 'map',
+      description: `由图谱页保存（原文档：${d.name}，${d.length} bp）`,
+    })
+    saveMsg.value = `已存进载体库：${res.vector.name}（${res.vector.length} bp，${res.vector.features} 个特征）`
+    saveOpen.value = false
+  } catch (e) {
+    saveFailed.value = true
+    saveMsg.value = `保存失败：${describeMapError(e)}`
+  } finally {
+    saveBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -219,10 +272,25 @@ function closeDoc() {
         <p class="subtitle">打开 GenBank / FASTA / SnapGene 文件或粘贴序列，查看环形/线性/序列图谱，编辑注释、模拟酶切</p>
       </div>
       <div v-if="doc" class="map-head-actions">
+        <button v-if="canSaveAsVector" type="button" class="btn btn-secondary btn-sm" @click="openSaveAsVector">💾 另存为载体</button>
         <button type="button" class="btn btn-secondary btn-sm" @click="showInput = !showInput">{{ showInput ? '收起' : '打开其他序列' }}</button>
         <button type="button" class="btn btn-secondary btn-sm map-close" @click="closeDoc">关闭当前图谱</button>
       </div>
     </header>
+
+    <div v-if="saveOpen && doc" class="card map-saveas">
+      <div class="map-row">
+        <input v-model="saveName" class="form-input map-name" type="text" maxlength="80"
+               placeholder="载体名称，如 pUC19-insert" aria-label="载体名称" @keydown.enter.prevent="doSaveAsVector" />
+        <button type="button" class="btn btn-primary" :disabled="saveBusy" @click="doSaveAsVector">
+          {{ saveBusy ? '保存中…' : '存入载体库' }}
+        </button>
+        <button type="button" class="btn btn-secondary" @click="saveOpen = false">取消</button>
+      </div>
+      <p class="map-drop-sub">存入的是当前文档的序列与注释（{{ doc.length.toLocaleString() }} bp · {{ doc.features.length }} 个元件）；
+        酶切位点/ORF 等分析结果不随载体库保存，需要时打开载体详情会重算。</p>
+    </div>
+    <p v-if="saveMsg" :class="['map-saveas-msg', saveFailed ? 'map-error' : 'map-muted']" role="status">{{ saveMsg }}</p>
 
     <section v-if="showInput" class="card map-input">
       <div class="map-tabs" role="tablist">
@@ -390,6 +458,9 @@ h1 { font-size: 2rem; margin-bottom: 0.25rem; }
 .map-select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); }
 .map-error { color: var(--error-color); background: #fef2f2; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.9rem; }
 .map-muted { color: var(--text-secondary); font-size: 0.85rem; }
+/* 另存为载体（需管理员） */
+.map-saveas { display: flex; flex-direction: column; gap: 0.5rem; }
+.map-saveas-msg { font-size: 0.85rem; }
 .map-empty { color: var(--text-secondary); text-align: center; padding: 2rem; }
 @media (max-width: 640px) {
   h1 { font-size: 1.5rem; }
