@@ -1558,3 +1558,47 @@ def test_type_aliases_case_insensitive(raw, expected):
         "id": "t", "name": "t", "sequence": "ACGT" * 10,
         "features": [{"name": "f", "type": raw, "start": 1, "end": 4}]})
     assert v.elements[0].element_type.value == expected
+
+
+def _rec(name="v", seq=SEQ300):
+    from app.vector_import import record_from_parts
+    return record_from_parts(name=name, sequence=seq)
+
+
+def test_save_record_refuses_to_overwrite_other_vector(tmp_path):
+    """L2：文件名撞车（不同 ID 归一到同一文件）→ 409，原文件保持不变"""
+    from app.vector_import import VectorIdConflict, save_record
+    (tmp_path / "snapgene_A_B.yaml").write_text(
+        "id: someone_else\nname: x\nsequence: ACGT\nfeatures: []\n", encoding="utf-8")
+    with pytest.raises(VectorIdConflict) as ei:
+        save_record(_rec(), source="snapgene", vectors_dir=str(tmp_path), vector_id="snapgene_A B")
+    assert ei.value.status_code == 409 and "someone_else" in ei.value.detail
+    assert "someone_else" in (tmp_path / "snapgene_A_B.yaml").read_text(encoding="utf-8")
+
+    # 读不出 id 的文件同样不覆盖
+    (tmp_path / "x_bad.yaml").write_text("{ not yaml", encoding="utf-8")
+    with pytest.raises(VectorIdConflict):
+        save_record(_rec(), source="x", vectors_dir=str(tmp_path), vector_id="x_bad")
+
+
+def test_save_record_same_id_overwrite_is_reported(tmp_path):
+    """同一 ID 再次导入：允许覆盖（更新），但回执与告警写明 replaced"""
+    from app.vector_import import save_record
+    first = save_record(_rec(), source="snapgene", vectors_dir=str(tmp_path),
+                        vector_id="snapgene_SARS Genome")
+    assert first["id"] == "snapgene_SARS_Genome"          # ID 与文件名同一套归一
+    assert first["replaced"] is False
+    again = save_record(_rec(seq=SEQ300[:200]), source="snapgene", vectors_dir=str(tmp_path),
+                        vector_id="snapgene_SARS_Genome")
+    assert again["replaced"] is True and any("覆盖" in w for w in again["warnings"])
+    v = _load_vector(tmp_path, "snapgene_SARS_Genome")
+    assert v is not None and len(v.sequence) == 200
+
+
+def test_from_map_conflict_returns_409(client, vectors_dir):
+    (vectors_dir / "paste_clash.yaml").write_text(
+        "id: other\nname: o\nsequence: ACGT\nfeatures: []\n", encoding="utf-8")
+    c, _ = client
+    r = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, name="clash"),
+               headers=_admin())
+    assert r.status_code == 409 and "other" in r.json()["detail"]
