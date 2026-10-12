@@ -14,6 +14,11 @@
 - 图谱行为变化：`annotate` 缺省时超过 50 kb 的序列不再自动注释常见元件（`meta.warnings`
   提示，显式 `annotate=true` 仍注释）；新增可选环境变量 `MAP_AUTO_ANNOTATE_MAX_BP`、
   `MAP_ANNOTATE_MAX_CELLS`（见 docs/MAP.md）。
+- 图谱酶组变化：`commercial` / `unique6` / `type_iis` 与厂商表不再包含修饰依赖型酶
+  （AbaSI、MspJI、FspEI、SgeI、LpnPI 及 SibEnzyme 的 9 把 5mC 依赖酶）；`MapEnzyme` 新增
+  可选字段 `sites_truncated`（位点明细被截断时为 true，`cut_count` 仍是完整计数），
+  酶详情新增 `modification_dependent`。新增可选环境变量 `MAP_MAX_SITES_PER_ENZYME`、
+  `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`。
 
 ### 修复
 
@@ -26,6 +31,10 @@
   ~8 s / ~750 MB，匿名可触发）。现在单次比对窗口恒为元件长 + 60 bp，候选按种子
   覆盖跨度排序并受比对次数与 DP 单元格总量预算约束（超出告警），同样输入约 1.7 s /
   30 MB；正负链共用排序，负链元件不再因正链先用完预算被静默漏掉。
+- 图谱 `commercial` 酶组：修饰依赖型酶让位点数爆炸（300 kb 响应 45 MB，50 kb 文档
+  在内存缓存里常驻约 35 MB/条），且 MspJI/LpnPI/SgeI 计数与 Biopython 不一致。现在排除
+  这类酶，位点明细按酶/按文档封顶，序列化超过 1 MB 的文档不进缓存、缓存总字节封顶；
+  300 kb commercial 响应约 6 MB。
 
 ## [2.12.0] - 2026-10-12
 

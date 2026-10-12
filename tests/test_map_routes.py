@@ -203,3 +203,30 @@ def test_vector_list_items_carry_map_preview(client):
         [(f["name"], f["type"], f["start"], f["end"], f["strand"]) for f in puc["features"]]
     # 第二次走缓存，形状不变
     assert c.get("/api/vectors").json() == r.json()
+
+
+def test_large_documents_not_cached_and_total_bytes_bounded(client, monkeypatch):
+    """按序列化体积决定是否缓存；本进程缓存总字节超限时淘汰最早写入的"""
+    import app.routes.map_routes as M
+    from app.cache import cache
+
+    c, _ = client
+    monkeypatch.setattr(M, "_cache_sizes", type(M._cache_sizes)())
+    stored = {}
+    monkeypatch.setattr(cache.backend, "set", lambda k, v, ttl=None: stored.__setitem__(k, v) or True)
+    monkeypatch.setattr(cache.backend, "get", lambda k: stored.get(k))
+    monkeypatch.setattr(cache.backend, "delete", lambda k: stored.pop(k, None) is not None)
+
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_DOC_BYTES", 100)
+    r = c.post("/api/map/parse", json={"text": SEQ, "annotate": False})
+    assert r.status_code == 200 and not stored
+
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_DOC_BYTES", 10 ** 7)
+    size = M._doc_bytes(r.json())
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_TOTAL_BYTES", int(size * 2.5))
+    for i in range(4):
+        rr = c.post("/api/map/parse", json={"text": SEQ, "annotate": False, "name": f"n{i}"})
+        assert rr.status_code == 200
+    assert len(stored) == 2 and len(M._cache_sizes) == 2
+    assert all(f'"n{i}"' not in json.dumps(v) for v in stored.values() for i in (0, 1))
+    assert sum(v[0] for v in M._cache_sizes.values()) <= int(size * 2.5) + 200

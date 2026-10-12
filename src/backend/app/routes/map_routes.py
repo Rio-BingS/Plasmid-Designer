@@ -10,7 +10,8 @@ POST /api/map/import/ncbi      NCBI accession → efetch GenBank → MapDocument
 
 整个路由挂 `map` 功能开关（main.py）。解析/比对/扫描是 CPU 计算，一律移交
 线程池；结果按「输入摘要 + 选项 + 元件库版本 + 算法版本」缓存（只缓存
-不超过 MAP_CACHE_MAX_BP 的序列，避免内存缓存被大文档撑满）。
+不超过 MAP_CACHE_MAX_BP、序列化不超过 MAP_CACHE_MAX_DOC_BYTES 的文档，本进程
+写入总量不超过 MAP_CACHE_MAX_TOTAL_BYTES，避免内存缓存被大文档撑满）。
 限流沿用中间件 default 档（与 /api/analysis 相同）；NCBI 导入走 ncbi 档
 （外呼代理，rate_limit._WRITE_EXACT_RULES）。
 """
@@ -19,7 +20,10 @@ import hashlib
 import json
 import os
 import re
-from typing import Any, Dict, List, Literal, Optional
+import threading
+import time
+from collections import OrderedDict
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -47,6 +51,11 @@ router = APIRouter(prefix="/api/map", tags=["map"])
 MAP_MAX_UPLOAD_MB = float(os.environ.get("MAP_MAX_UPLOAD_MB", "5"))
 MAP_MAX_UPLOAD_BYTES = int(MAP_MAX_UPLOAD_MB * 1024 * 1024)
 MAP_CACHE_MAX_BP = int(os.environ.get("MAP_CACHE_MAX_BP", "50000"))
+# 体积门槛：序列化后超过此字节数的文档不缓存（commercial 酶组的高频切酶位点
+# 会让 50 kb 文档膨胀到数 MB，内存缓存里驻留约 4 倍）；同时限制本进程写入
+# 缓存的图谱文档总字节数，超出按写入先后淘汰（MemoryCache 只按条数封顶）
+MAP_CACHE_MAX_DOC_BYTES = int(os.environ.get("MAP_CACHE_MAX_DOC_BYTES", str(1024 * 1024)))
+MAP_CACHE_MAX_TOTAL_BYTES = int(os.environ.get("MAP_CACHE_MAX_TOTAL_BYTES", str(64 * 1024 * 1024)))
 MAP_CACHE_TTL = 3600
 # 产出口径版本：改变 MapDocument 内容的代码改动须递增（元件库变化已由
 # library_version 自动进键）
@@ -74,9 +83,39 @@ def _cache_get(key: str):
         return None
 
 
-def _cache_put(key: str, doc: Dict) -> None:
+_cache_sizes: "OrderedDict[str, Tuple[int, float]]" = OrderedDict()  # key → (字节, 到期)
+_cache_sizes_lock = threading.Lock()
+
+
+def _doc_bytes(doc: Dict) -> int:
+    return len(json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _cache_put(key: str, doc: Dict, size: Optional[int] = None) -> None:
+    """按长度与序列化体积决定是否缓存；size 为调用方已算好的体积（线程池里）"""
     if doc.get("length", 0) > MAP_CACHE_MAX_BP:
         return
+    if size is None:
+        size = _doc_bytes(doc)
+    if size > MAP_CACHE_MAX_DOC_BYTES:
+        return
+    evict = []
+    now = time.monotonic()
+    with _cache_sizes_lock:
+        for k in [k for k, (_, exp) in _cache_sizes.items() if exp <= now]:
+            del _cache_sizes[k]
+        _cache_sizes.pop(key, None)
+        _cache_sizes[key] = (size, now + MAP_CACHE_TTL)
+        total = sum(v[0] for v in _cache_sizes.values())
+        while total > MAP_CACHE_MAX_TOTAL_BYTES and len(_cache_sizes) > 1:
+            k, (sz, _) = _cache_sizes.popitem(last=False)
+            total -= sz
+            evict.append(k)
+    for k in evict:
+        try:
+            cache.backend.delete(k)
+        except Exception:
+            pass
     try:
         cache.backend.set(key, doc, MAP_CACHE_TTL)
     except Exception:
@@ -93,11 +132,18 @@ async def cached_document(kind: str, key_payload: Any, fn, *args, **kwargs) -> D
     hit = _cache_get(key)
     if hit is not None:
         return hit
+
+    def run():
+        doc = fn(*args, **kwargs)
+        size = _doc_bytes(doc) if doc.get("length", 0) <= MAP_CACHE_MAX_BP else None
+        return doc, size
+
     try:
-        doc = await run_in_threadpool(fn, *args, **kwargs)
+        doc, size = await run_in_threadpool(run)
     except MapParseError as e:
         raise _http_error(e)
-    _cache_put(key, doc)
+    if size is not None:
+        _cache_put(key, doc, size)
     return doc
 
 
