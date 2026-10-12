@@ -51,6 +51,10 @@
 - 图谱请求体：此前先整体读入（JSON `request.body()`、multipart spool、`/analyze` / `/export`
   由 pydantic 全量解析）才比较大小，chunked 传输还能绕过 Content-Length 预检，实际上限是
   nginx 的 100 MB。现在 `/api/map/*` 由 ASGI 中间件边收边计数、超限即 413，nginx 也单独收紧。
+- Golden Gate：只检查插入片段内部（且按切点过滤，贴着末端、切点落在片段外的位点漏报）；
+  引物尾（位点 + 间隔 + overhang）与插入片段拼接处新生的位点不报。现在按识别序列计数，
+  对完整扩增子数位点、多出的写进设计告警与引物备注；间隔碱基不再固定为 A，按拼接上下文
+  挑一个不形成额外位点的组合（例如 BfuAI 系 + overhang CCTG）。
 
 ## [2.12.0] - 2026-10-12
 
