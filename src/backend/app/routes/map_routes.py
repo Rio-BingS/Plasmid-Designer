@@ -3,6 +3,8 @@
 POST /api/map/parse            上传文件（multipart file）或 JSON 文本 → MapDocument
 POST /api/map/analyze          编辑后的序列/特征 → 重算酶切/ORF/自动注释
 GET  /api/map/enzyme-sets      酶集合
+GET  /api/map/enzymes/{name}   单把酶详情（厂商、同切酶、Type IIS、甲基化）
+GET  /api/map/suppliers        REBASE 厂商及各自可供的酶（前端按厂商过滤）
 POST /api/map/export/genbank   MapDocument → .gb 下载
 
 整个路由挂 `map` 功能开关（main.py）。解析/比对/扫描是 CPU 计算，一律移交
@@ -33,7 +35,7 @@ from core.plasmid_map import (
 )
 from core.plasmid_map.annotate import library_version
 from core.plasmid_map.document import build_document
-from core.plasmid_map.enzymes import enzyme_sets
+from core.plasmid_map.enzymes import enzyme_detail, enzyme_sets, suppliers
 from core.plasmid_map.genbank import document_to_genbank
 from core.plasmid_map.parsers import clean_sequence
 
@@ -258,9 +260,31 @@ async def analyze_map(req: MapAnalyzeRequest):
 
 @router.get("/enzyme-sets")
 async def get_enzyme_sets() -> List[Dict]:
-    """酶集合：common / unique6 / commercial / golden_gate"""
+    """酶集合：common / unique6 / commercial / golden_gate / type_iis"""
     sets = await run_in_threadpool(enzyme_sets)
     return [dict(s) for s in sets]
+
+
+_ENZYME_NAME = re.compile(r"^[A-Za-z0-9.\-]{2,20}$")
+
+
+@router.get("/enzymes/{name}")
+async def get_enzyme_detail(name: str) -> Dict:
+    """单把酶的详情（REBASE / Bio.Restriction）：识别序列、末端、厂商、
+    可商购同切酶/新切酶、Type IIS 与 Golden Gate 适用性、甲基化敏感性"""
+    if not _ENZYME_NAME.match(name or ""):
+        raise HTTPException(status_code=422, detail="酶名格式无效")
+    detail = await run_in_threadpool(enzyme_detail, name)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"未知或不支持的酶：{name}")
+    return detail
+
+
+@router.get("/suppliers")
+async def get_suppliers() -> List[Dict]:
+    """REBASE 厂商代码、名称及各自可供的酶（按酶数从多到少）"""
+    rows = await run_in_threadpool(suppliers)
+    return [dict(r) for r in rows]
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
