@@ -69,6 +69,13 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 
 错误一律中文 `detail`：413 超长 / 超体积，415 不支持的格式，422 非法序列或参数。
 
+**条数上限**（`core/plasmid_map/types.py`，`MapDocument` 校验与解析/组装共用同一份常量，
+`/parse` 的产出总能原样提交给 `/analyze`、`/export/genbank`）：features ≤ 5000、primers ≤ 5000、
+每个特征 segments ≤ 200、qualifiers ≤ 100、`primers[].sequence` ≤ 1000、orfs ≤ 20000、
+`meta.warnings` ≤ 200。解析时超出的部分丢弃 / 截断并写 `meta.warnings`（分段超 200 的特征
+整条忽略；长于 1000 bp 的 `primer_bind` 作为 `primer_bind` 类型特征保留）。位置串分段超过
+1000 段的 GenBank `join()/order()` 或 SnapGene 特征在交给 Biopython 之前直接 422。
+
 **Type IIS 判定**（`core.enzyme_sites.is_type_iis`，图谱 `type_iis` 酶组、酶详情与 Golden Gate
 共用）：识别序列非回文（按 IUPAC 反向互补比较）、确定碱基（ACGT）≥ 4 个（排除 MspJI / FspEI /
 LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列同一侧之外（全部 ≥ 末端且至少一个

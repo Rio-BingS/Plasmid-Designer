@@ -16,6 +16,12 @@ from typing import Dict, List, Optional, Tuple
 
 from core.seq_utils import revcomp
 from core.plasmid_map.types import (
+    MAX_FEATURES,
+    MAX_LOCATION_PARTS,
+    MAX_PRIMER_SEQ,
+    MAX_PRIMERS,
+    MAX_QUALIFIERS,
+    MAX_SEGMENTS,
     normalize_color,
     normalize_type,
     strip_color_note,
@@ -175,6 +181,7 @@ def _parse_genbank_text(text: str, fallback_name: str, max_length, topology) -> 
     from Bio import BiopythonParserWarning, SeqIO
 
     warns: List[str] = []
+    _precheck_genbank_locations(text)
     try:
         with _w.catch_warnings():
             # LOCUS 行不规范时 Biopython 只告警；对用户文件放行（pytest.ini
@@ -185,6 +192,50 @@ def _parse_genbank_text(text: str, fallback_name: str, max_length, topology) -> 
         raise MapParseError(f"GenBank 文件解析失败：{e}", 422) from e
     record = _first_record(records, warns, "GenBank 文件")
     return _from_seqrecord(record, "genbank", fallback_name, max_length, topology, warns)
+
+
+_FEATURE_KEY_LINE = re.compile(r"^ {5}(\S+)\s+(.*)$")
+
+
+def _precheck_genbank_locations(text: str) -> None:
+    """Biopython 解析超长 join()/order() 很慢（8 万段约 5 s）：先扫特征表，
+    任一位置串分段数超过 MAX_LOCATION_PARTS 直接 422，不进 SeqIO"""
+    start = text.find("\nFEATURES")
+    if start < 0:
+        return
+    parts = 0
+    in_loc = False
+    for line in text[start + 1:].split("\n")[1:]:
+        if line.startswith("ORIGIN") or line.startswith("CONTIG") or line.startswith("//"):
+            break
+        m = _FEATURE_KEY_LINE.match(line)
+        if m:
+            parts = m.group(2).count(",") + 1
+            in_loc = True
+        elif in_loc and line.startswith(" " * 21) and not line[21:].startswith("/"):
+            parts += line.count(",")
+        else:
+            in_loc = False
+            continue
+        if parts > MAX_LOCATION_PARTS:
+            raise MapParseError(
+                f"特征位置分段过多（超过 {MAX_LOCATION_PARTS} 段的 join/order），无法打开", 422)
+
+
+def _precheck_snapgene_segments(data: bytes) -> None:
+    """SnapGene 特征的 Segment 数同样预检（Biopython 逐段拼 CompoundLocation）"""
+    pos = 0
+    while pos + 5 <= len(data):
+        ptype = data[pos]
+        (length,) = struct.unpack(">I", data[pos + 1:pos + 5])
+        body = data[pos + 5:pos + 5 + length]
+        pos += 5 + length
+        if ptype != 0x0A:
+            continue
+        for chunk in body.split(b"</Feature>"):
+            if chunk.count(b"<Segment") > MAX_LOCATION_PARTS:
+                raise MapParseError(
+                    f"特征分段过多（超过 {MAX_LOCATION_PARTS} 段），无法打开", 422)
 
 
 def _parse_fasta_text(text: str, fallback_name: str, max_length, topology) -> ParsedRecord:
@@ -242,6 +293,7 @@ def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> Pa
     from Bio import SeqIO
 
     _install_snapgene_location_fix()
+    _precheck_snapgene_segments(data)
     warns: List[str] = []
     try:
         records = list(SeqIO.parse(io.BytesIO(data), "snapgene"))
@@ -302,6 +354,9 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
     cds_spans = set()
     pending_genes: List[Tuple[Dict, Tuple]] = []
     dropped = 0
+    too_many_segments = 0
+    quals_trimmed = 0
+    primers_over = 0
     for sf in record.features:
         if sf.type == "source":
             continue
@@ -314,7 +369,16 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
         if built is None:
             dropped += 1
             continue
-        if sf.type == "primer_bind":
+        if len(built.get("segments") or ()) > MAX_SEGMENTS:
+            too_many_segments += 1
+            continue
+        if built.pop("_qualifiers_trimmed", False):
+            quals_trimmed += 1
+        if sf.type == "primer_bind" and \
+                len(extract_span(seq, built["start"], built["end"], 1)) <= MAX_PRIMER_SEQ:
+            if len(rec.primers) >= MAX_PRIMERS:
+                primers_over += 1
+                continue
             rec.primers.append(_primer_from_feature(built, seq))
             continue
         span_key = (built["start"], built["end"], built["strand"])
@@ -330,6 +394,15 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
             rec.features.append(built)
     if dropped:
         rec.warnings.append(f"{dropped} 个特征坐标无效或超出序列，已忽略")
+    if too_many_segments:
+        rec.warnings.append(f"{too_many_segments} 个特征分段超过 {MAX_SEGMENTS} 段，已忽略")
+    if quals_trimmed:
+        rec.warnings.append(f"{quals_trimmed} 个特征的限定符超过 {MAX_QUALIFIERS} 条，多余的已忽略")
+    if primers_over:
+        rec.warnings.append(f"引物超过 {MAX_PRIMERS} 条，其余 {primers_over} 条已忽略")
+    if len(rec.features) > MAX_FEATURES:
+        rec.warnings.append(f"特征超过 {MAX_FEATURES} 个，其余已忽略")
+        del rec.features[MAX_FEATURES:]
     return rec
 
 
@@ -457,6 +530,9 @@ def _feature_from_seqfeature(sf, length: int, circular: bool,
         val = v[0] if isinstance(v, (list, tuple)) and v else v
         if val is None or isinstance(val, (list, tuple)):
             continue
+        if len(quals) >= MAX_QUALIFIERS:
+            feat["_qualifiers_trimmed"] = True
+            break
         quals[str(k)[:40]] = str(val)[:MAX_QUALIFIER_CHARS]
     feat["qualifiers"] = quals
     return feat
