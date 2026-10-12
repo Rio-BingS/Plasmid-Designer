@@ -65,6 +65,20 @@ _MIN_INTERVAL = {
 _next_slot: Dict[str, float] = {}
 _throttle_lock = threading.Lock()
 
+def public_base(url: str) -> str:
+    """对外展示的基地址：去掉 userinfo（`https://user:pass@proxy/...` 不能回显给匿名用户）"""
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    if parts.username is None and parts.password is None:
+        return str(url or "")
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
 # ---------------------------------------------------------------- 许可文案
 
 SNAPGENE_LICENSE = (
@@ -424,11 +438,13 @@ def snapgene_set_zip_bytes(set_id: str, *, max_bytes: Optional[int] = None,
 
 
 def assert_snapgene_dna(data: bytes, what: str = "序列") -> None:
-    """校验是 SnapGene .dna 二进制（前 64 字节内含魔法串），否则 415"""
+    """校验是 SnapGene .dna 二进制（前 64 字节内含魔法串），否则 415
+
+    错误信息不回显上游响应内容（审查 L6：可能是登录页 HTML 等），只给长度。
+    """
     if SNAPGENE_MAGIC not in data[:64]:
-        head = data[:80].decode("utf-8", errors="replace").replace("\n", " ")
         raise OnlineSourceError(
-            f"{what} 返回的不是 SnapGene .dna 文件（接口可能已变化）：{head!r}", 415)
+            f"{what} 返回的不是 SnapGene .dna 文件（接口可能已变化；收到 {len(data)} 字节）", 415)
 
 
 def snapgene_record(data: bytes, *, name: Optional[str] = None,
