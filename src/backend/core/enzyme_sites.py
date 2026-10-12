@@ -244,6 +244,42 @@ def sites_cut_positions(sites: List[Dict]) -> Dict[str, List[int]]:
     return out
 
 
+# ==================== 修饰依赖型酶（数据驱动 + 少量人工名单） ====================
+
+_MOD_DEP_MAX_DEFINITE = 3
+
+# 规则抓不到的修饰依赖型商品酶：SibEnzyme 的 9 把 5mC 依赖「MD DNA endonuclease」
+# （只切含 5-甲基胞嘧啶的位点、不切未修饰 DNA；E. coli 质粒没有这类 CpG 甲基化），
+# 名单见 http://sibenzyme.com/wp-content/uploads/pdf/1md-dna-endonucleases.pdf 。
+# Dam 依赖的 DpnI / MalI（GATC 上的 m6A，dam+ 菌株抽提的质粒确实带）不在此列。
+_MODIFICATION_DEPENDENT_NAMES = frozenset({
+    "AoxI", "BisI", "BlsI", "GlaI", "GluI", "KroI", "MteI", "PcsI", "PkrI",
+})
+
+
+def is_modification_dependent(spec: Optional[Dict]) -> bool:
+    """修饰依赖型酶（Type IIM：只切 5mC / 5hmC / m6A 等修饰过的 DNA）。
+
+    规则：识别序列确定碱基（ACGT）≤ 3 个，且两条链切点都在识别序列之外
+    （REBASE 把 AbaSI「C」、FspEI「CC」、MspJI「CNNR」、SgeI「CNNG」、
+    LpnPI「CCDG」记作在位点外 12–16 nt 处切割的「位点」，实为一小段修饰
+    上下文）——Bio.Restriction 没有专门标记，按几何特征识别；另加
+    _MODIFICATION_DEPENDENT_NAMES 中规则抓不到的 CpG 甲基化依赖酶。
+    对普通质粒图谱没有意义，且位点数爆炸（AbaSI 每个 C 一个位点），
+    图谱的 commercial / unique6 / suppliers 集合都排除。"""
+    if not spec:
+        return False
+    if spec.get("name") in _MODIFICATION_DEPENDENT_NAMES:
+        return True
+    site = spec["site"]
+    size = len(site)
+    if sum(1 for ch in site if ch in "ACGT") > _MOD_DEP_MAX_DEFINITE:
+        return False
+    c1, c2 = spec["cut"]
+    lo, hi = min(c1, c2), max(c1, c2)
+    return lo >= size or hi <= 0
+
+
 # ==================== Type IIS / Golden Gate（数据驱动） ====================
 
 _TYPE_IIS_MIN_DEFINITE = 4

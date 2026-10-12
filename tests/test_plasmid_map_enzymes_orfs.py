@@ -177,3 +177,76 @@ def test_orfs_vector_kanr_found():
     orfs = find_orfs(seq, circular=True, min_aa=100)
     assert {"start": 3995, "end": 4810, "strand": 1} in [
         {k: o[k] for k in ("start", "end", "strand")} for o in orfs]
+
+
+# ==================== 修饰依赖型酶与位点上限（v2.12.0 审查 H3） ====================
+
+MOD_DEP = {"AbaSI", "MspJI", "FspEI", "SgeI", "LpnPI"}
+
+
+def test_modification_dependent_enzymes_excluded_from_sets():
+    from core.enzyme_sites import get_enzyme, is_modification_dependent
+    from core.plasmid_map.enzymes import enzyme_detail, suppliers
+
+    sets = {s["id"]: set(s["enzymes"]) for s in enzyme_sets()}
+    for sid in ("commercial", "unique6", "type_iis", "golden_gate", "common"):
+        assert not (sets[sid] & MOD_DEP), sid
+        assert not any(is_modification_dependent(get_enzyme(n)) for n in sets[sid]), sid
+    # 规则推导：≤3 个确定碱基且切在位点外 → 5 把全中；SibEnzyme 5mC 依赖酶走名单
+    assert all(is_modification_dependent(get_enzyme(n)) for n in MOD_DEP)
+    assert is_modification_dependent(get_enzyme("GlaI"))
+    assert not sets["commercial"] & {"GlaI", "BisI", "KroI"}
+    # 普通的低特异性酶与 Dam 依赖的 DpnI 仍在
+    for n in ("CviJI", "SetI", "DpnI", "MluCI", "EcoRI", "BsaI"):
+        assert not is_modification_dependent(get_enzyme(n)), n
+        assert n in sets["commercial"], n
+    assert not any(MOD_DEP & set(r["enzymes"]) for r in suppliers())
+    d = enzyme_detail("AbaSI")  # 详情仍可查，带标记
+    assert d is not None and d["modification_dependent"] is True
+    assert enzyme_detail("EcoRI")["modification_dependent"] is False
+
+
+def test_sites_capped_per_enzyme_with_true_cut_count(monkeypatch):
+    import core.plasmid_map.enzymes as E
+
+    seq = ("GAATTC" + "A" * 20) * 30
+    full = scan_enzyme(seq, "EcoRI", circular=True)
+    assert full["cut_count"] == 30 and "sites_truncated" not in full
+    monkeypatch.setattr(E, "MAX_SITES_PER_ENZYME", 7)
+    warns = []
+    out = find_map_enzymes(seq, ["EcoRI", "BamHI"], circular=True, warnings=warns)
+    (e,) = out
+    assert e["cut_count"] == 30 and e["sites_truncated"] is True
+    assert e["sites"] == full["sites"][:7]  # 按位置保留最前面的
+    assert warns and "EcoRI" in warns[0]
+
+
+def test_total_site_budget_drops_most_frequent_cutters_first(monkeypatch):
+    import core.plasmid_map.enzymes as E
+
+    seq = ("GAATTC" + "A" * 4 + "GGATCC" + "A" * 4 + "AGCT" + "TT" + "AGCT" + "TT") * 20
+    monkeypatch.setattr(E, "MAX_TOTAL_SITES", 45)
+    warns = []
+    out = {e["name"]: e for e in find_map_enzymes(seq, ["EcoRI", "BamHI", "AluI"], True,
+                                                 warnings=warns)}
+    assert out["AluI"]["cut_count"] == 40 and out["AluI"]["sites"] == []
+    assert out["AluI"]["sites_truncated"] is True
+    assert len(out["EcoRI"]["sites"]) == 20 and "sites_truncated" not in out["EcoRI"]
+    assert sum(len(e["sites"]) for e in out.values()) <= 45
+    assert warns
+
+
+def test_commercial_document_size_bounded():
+    """50 kb 随机序列 + commercial：旧实现 91 494 个位点 / 8.3 MB（AbaSI 等占大头）"""
+    import json
+    import random
+
+    from core.plasmid_map.document import build_document
+
+    rng = random.Random(0)
+    seq = "".join(rng.choice("ACGT") for _ in range(50_000))
+    d = build_document(name="x", sequence=seq, topology="circular", source_format="raw",
+                       annotate=False, enzyme_set="commercial")
+    names = {e["name"] for e in d["enzymes"]}
+    assert not names & MOD_DEP
+    assert len(json.dumps(d)) < 5_000_000

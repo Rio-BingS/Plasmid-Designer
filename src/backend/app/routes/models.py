@@ -409,6 +409,8 @@ class MapEnzyme(BaseModel):
     overhang: Optional[str] = None
     cut_count: int
     sites: List[MapEnzymeSite] = Field(default_factory=list)
+    # 位点过多时 sites 只含部分明细（cut_count 仍为完整计数）
+    sites_truncated: Optional[bool] = None
     methylation: Optional[List[str]] = None
 
 
