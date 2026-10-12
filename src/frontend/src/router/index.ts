@@ -1,18 +1,20 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
-import DesignView from '@/views/DesignView.vue'
-import ResultView from '@/views/ResultView.vue'
-import VectorsView from '@/views/VectorsView.vue'
-import VectorDetailView from '@/views/VectorDetailView.vue'
-import BatchDesignView from '@/views/BatchDesignView.vue'
-import AnalysisView from '@/views/AnalysisView.vue'
-import SequencingView from '@/views/SequencingView.vue'
-import BatchSequencingView from '@/views/BatchSequencingView.vue'
-import CacheView from '@/views/CacheView.vue'
-import MapView from '@/views/MapView.vue'
-import AdminView from '@/views/AdminView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 import { useAuthStore } from '@/stores/auth'
+
+// 首页与 403 页随主包加载；其余页面按路由拆包（图谱模块只在用到它的页面加载）
+const DesignView = () => import('@/views/DesignView.vue')
+const ResultView = () => import('@/views/ResultView.vue')
+const VectorsView = () => import('@/views/VectorsView.vue')
+const VectorDetailView = () => import('@/views/VectorDetailView.vue')
+const BatchDesignView = () => import('@/views/BatchDesignView.vue')
+const AnalysisView = () => import('@/views/AnalysisView.vue')
+const SequencingView = () => import('@/views/SequencingView.vue')
+const BatchSequencingView = () => import('@/views/BatchSequencingView.vue')
+const CacheView = () => import('@/views/CacheView.vue')
+const MapView = () => import('@/views/MapView.vue')
+const AdminView = () => import('@/views/AdminView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -63,6 +65,19 @@ router.beforeEach(async (to) => {
     return { name: 'forbidden', query: { feature } }
   }
   return true
+})
+
+// 按路由拆包后，重新部署会删掉旧的分包文件；还开着旧页面的标签页导航时会加载失败。
+// 遇到这种错误整页跳到目标地址一次以拿到新版本（同一地址只重试一次，避免死循环）。
+const CHUNK_ERROR_RE = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i
+router.onError((err, to) => {
+  if (!CHUNK_ERROR_RE.test(String((err as Error)?.message ?? err))) return
+  const KEY = 'pd.chunk-reload'
+  try {
+    if (sessionStorage.getItem(KEY) === to.fullPath) return
+    sessionStorage.setItem(KEY, to.fullPath)
+  } catch { /* 存储不可用时仍尝试一次 */ }
+  window.location.assign(to.fullPath)
 })
 
 export default router
