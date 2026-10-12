@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from app.auth.jwt_auth import User, get_current_user
 from app.design_service import run_design
@@ -183,6 +184,21 @@ async def get_batch_report(batch_id: str, user: Optional[User] = Depends(get_cur
     return report
 
 
+def _format_row_error(exc: Exception) -> str:
+    """单条失败原因转成可读文本：pydantic 校验错误只保留业务消息，
+    去掉 "1 validation error for DesignRequest ... [type=value_error]" 这类样板"""
+    if isinstance(exc, ValidationError):
+        msgs = []
+        for err in exc.errors():
+            msg = str(err.get("msg", ""))
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, "):]
+            field = ".".join(str(x) for x in err.get("loc", ()) if x != "body")
+            msgs.append(f"{field}: {msg}" if field else msg)
+        return "；".join(msgs) or "参数校验失败"
+    return str(exc)
+
+
 def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: List[str]):
     """后台批量设计：每条序列调用统一 run_design。"""
     job = _load_batch(batch_id)
@@ -222,7 +238,7 @@ def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: Lis
                 job.failed += 1
         except Exception as e:
             job.errors.append(
-                {"index": i, "sequence_name": sequence_name, "error": str(e)}
+                {"index": i, "sequence_name": sequence_name, "error": _format_row_error(e)}
             )
             job.failed += 1
 
