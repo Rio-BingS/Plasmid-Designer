@@ -64,13 +64,16 @@ async def require_snapgene_user(_: None = Depends(require_snapgene_enabled),
     return user
 
 
-def sources_payload() -> Dict[str, Any]:
+def sources_payload(*, is_admin: bool = False) -> Dict[str, Any]:
     """在线来源清单：可用性 + 许可摘要 + 导入开关（前端据此渲染页签与提示）
 
     `snapgene_online_enabled`：SnapGene 在线库开关（默认 false）；前端据此
     以及是否已登录决定是否显示 SnapGene 页签（后端仍是权威：关 → 404，匿名 → 401）。
     """
     snapgene_on = src.snapgene_online_enabled()
+    # Addgene 会话是否配置只告诉管理员（审查 M1：匿名不该知道本实例挂了谁的账号；
+    # 导入也只有管理员能做，对其他人 importable 恒为 False 才诚实）
+    addgene_session = src.addgene_has_session() and is_admin
     return {
         "enabled": src.import_enabled(),
         "snapgene_online_enabled": snapgene_on,
@@ -103,14 +106,13 @@ def sources_payload() -> Dict[str, Any]:
                 "kind": "online_library",
                 "url": "https://www.addgene.org",
                 "license": src.ADDGENE_LICENSE,
-                "importable": src.addgene_has_session(),
+                "importable": addgene_session,
                 "requires_login": True,
-                "session_configured": src.addgene_has_session(),
+                "session_configured": addgene_session,
                 "note": ("本地索引搜索 + 匿名元数据；全长序列需登录——本工具不代为登录。"
-                         + ("已配置 ADDGENE_SESSION_COOKIE：可用你自己的登录态取序列"
-                            if src.addgene_has_session() else
-                            "如需直接取序列，可把自己浏览器登录后的会话 Cookie 配到 "
-                            "ADDGENE_SESSION_COOKIE（仅本机后端使用，不落盘、不回显）")),
+                         + ("已配置 ADDGENE_SESSION_COOKIE：管理员可用该登录态取序列"
+                            if addgene_session else
+                            "建议用自己的 Addgene 账号在浏览器下载序列文件后走「上传文件」导入")),
             },
             {
                 "id": "uniprot",

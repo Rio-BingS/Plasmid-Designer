@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import online_import as oi
+from app.auth.jwt_auth import get_current_user
 from app.online_import import require_snapgene_user
 from app.routes.map_routes import cached_document
 from app.routes.models import MAP_MAX_LENGTH, MapDocument
@@ -74,9 +75,9 @@ async def _online_call(fn, *args, **kwargs):
 
 
 @router.get("/import/sources")
-async def map_online_sources() -> Dict[str, Any]:
+async def map_online_sources(user=Depends(get_current_user)) -> Dict[str, Any]:
     """在线来源清单与许可摘要（与载体库侧同一份数据）"""
-    return oi.sources_payload()
+    return oi.sources_payload(is_admin=bool(user is not None and user.is_admin))
 
 
 @router.get("/import/snapgene/sets")

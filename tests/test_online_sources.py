@@ -458,7 +458,8 @@ def test_addgene_routes(client, vectors_dir, monkeypatch):
     d = r.json()
     assert d["sequence_available"] is False and d["metadata"]["seqObjectId"] == "244694"
     assert "上传文件" in d["note"]
-    r2 = c.get("/api/vectors/import/addgene/244694", params={"try_sequence": 1})
+    r2 = c.get("/api/vectors/import/addgene/244694", params={"try_sequence": 1},
+               headers=_admin())
     assert r2.status_code == 403 and "绕过登录" in r2.json()["detail"]
     assert c.get("/api/vectors/import/addgene/abc").status_code == 422
 
@@ -1024,9 +1025,16 @@ def test_sources_payload_lists_uniprot_and_addgene_session(client, vectors_dir, 
     assert ids["addgene"]["session_configured"] is False and ids["addgene"]["importable"] is False
 
     monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=x")
-    ids2 = {s["id"]: s for s in c.get("/api/vectors/import/sources").json()["sources"]}
+    ids2 = {s["id"]: s for s in c.get("/api/vectors/import/sources",
+                                        headers=_admin()).json()["sources"]}
     assert ids2["addgene"]["session_configured"] is True
     assert ids2["addgene"]["importable"] is True and "已配置" in ids2["addgene"]["note"]
+    # 会话是否配置只告诉管理员（审查 M1）：匿名与普通用户一律 False
+    for headers in (None, _user()):
+        for path in ("/api/vectors/import/sources", "/api/map/import/sources"):
+            ad = {s["id"]: s for s in c.get(path, headers=headers or {}).json()["sources"]}
+            assert ad["addgene"]["session_configured"] is False
+            assert ad["addgene"]["importable"] is False and "已配置" not in ad["addgene"]["note"]
 
 
 def test_online_import_rate_limit_buckets_for_new_endpoints():
@@ -1323,3 +1331,37 @@ def test_sources_payload_reports_snapgene_flag(client, vectors_dir, monkeypatch)
         assert "SNAPGENE_ONLINE_ENABLED" in sg["note"]
         # 其他来源不受 SnapGene 开关影响
         assert off["enabled"] is True
+
+
+# ================================================================ Addgene try_sequence 仅管理员（审查 M1）
+
+def test_addgene_try_sequence_admin_only(client, vectors_dir, monkeypatch):
+    """配置了部署方会话时，匿名/普通用户不能驱动它去下载全长序列"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    monkeypatch.setattr(osr.src, "addgene_metadata", lambda oid, **kw: {"seqObjectId": oid})
+    calls = []
+
+    def _seq(oid, **kw):
+        calls.append(oid)
+        return b"LOCUS x"
+    monkeypatch.setattr(osr.src, "addgene_sequence_bytes", _seq)
+
+    c, _ = client
+    anon = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"})
+    assert anon.status_code == 401
+    user = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"},
+                 headers=_user())
+    assert user.status_code == 403
+    assert calls == []          # 未经管理员，绝不以部署方账号外呼
+
+    # 不带 try_sequence 的元数据仍对匿名开放，但不暴露会话是否配置
+    meta = c.get("/api/vectors/import/addgene/52961")
+    assert meta.status_code == 200 and meta.json()["session_configured"] is False
+    assert calls == []
+
+    adm = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"},
+                headers=_admin())
+    assert adm.status_code == 200, adm.text
+    body = adm.json()
+    assert body["sequence_available"] is True and body["sequence_bytes"] == 7
+    assert body["session_configured"] is True and calls == ["52961"]
