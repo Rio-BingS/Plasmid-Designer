@@ -6,11 +6,13 @@ GET  /api/map/enzyme-sets      酶集合
 GET  /api/map/enzymes/{name}   单把酶详情（厂商、同切酶、Type IIS、甲基化）
 GET  /api/map/suppliers        REBASE 厂商及各自可供的酶（前端按厂商过滤）
 POST /api/map/export/genbank   MapDocument → .gb 下载
+POST /api/map/import/ncbi      NCBI accession → efetch GenBank → MapDocument
 
 整个路由挂 `map` 功能开关（main.py）。解析/比对/扫描是 CPU 计算，一律移交
 线程池；结果按「输入摘要 + 选项 + 元件库版本 + 算法版本」缓存（只缓存
 不超过 MAP_CACHE_MAX_BP 的序列，避免内存缓存被大文档撑满）。
-限流沿用中间件 default 档（与 /api/analysis 相同）。
+限流沿用中间件 default 档（与 /api/analysis 相同）；NCBI 导入走 ncbi 档
+（外呼代理，rate_limit._WRITE_EXACT_RULES）。
 """
 
 import hashlib
@@ -37,6 +39,7 @@ from core.plasmid_map.annotate import library_version
 from core.plasmid_map.document import build_document
 from core.plasmid_map.enzymes import enzyme_detail, enzyme_sets, suppliers
 from core.plasmid_map.genbank import document_to_genbank
+from core.plasmid_map.ncbi import fetch_genbank_text, normalize_accession
 from core.plasmid_map.parsers import clean_sequence
 
 router = APIRouter(prefix="/api/map", tags=["map"])
@@ -48,6 +51,11 @@ MAP_CACHE_TTL = 3600
 # 产出口径版本：改变 MapDocument 内容的代码改动须递增（元件库变化已由
 # library_version 自动进键）
 MAP_ALGO_VERSION = "3"
+
+# NCBI 原始 GenBank 文本缓存：与产出口径无关（不进 MAP_ALGO_VERSION），
+# 只缓存不超过上限的文本；不带版本号的 accession 可能被 NCBI 更新，TTL 取 1 天
+NCBI_TEXT_CACHE_TTL = 86400
+NCBI_TEXT_CACHE_MAX_BYTES = int(os.environ.get("NCBI_TEXT_CACHE_MAX_BYTES", str(2 * 1024 * 1024)))
 
 ORF_MIN_AA_LO, ORF_MIN_AA_HI = 10, 5000
 EnzymeSetId = Field(default="common", max_length=40)
@@ -102,6 +110,13 @@ class MapTextRequest(BaseModel):
     annotate: Optional[bool] = None
     enzyme_set: Optional[str] = Field(default=None, max_length=40)
     orf_min_aa: Optional[int] = Field(default=None, ge=ORF_MIN_AA_LO, le=ORF_MIN_AA_HI)
+
+
+class MapNcbiRequest(BaseModel):
+    accession: str = Field(..., min_length=1, max_length=40)
+    annotate: Optional[bool] = None
+    enzyme_set: str = EnzymeSetId
+    orf_min_aa: int = Field(default=100, ge=ORF_MIN_AA_LO, le=ORF_MIN_AA_HI)
 
 
 class MapAnalyzeRequest(BaseModel):
@@ -285,6 +300,41 @@ async def get_suppliers() -> List[Dict]:
     """REBASE 厂商代码、名称及各自可供的酶（按酶数从多到少）"""
     rows = await run_in_threadpool(suppliers)
     return [dict(r) for r in rows]
+
+
+def _ncbi_text(acc: str) -> str:
+    """NCBI GenBank 文本：先查缓存，未命中再 efetch（阻塞，线程池里调用）"""
+    key = f"map:ncbi-text:{acc}"
+    hit = _cache_get(key)
+    if isinstance(hit, str):
+        return hit
+    text = fetch_genbank_text(acc, max_bytes=MAP_MAX_UPLOAD_BYTES, max_length=MAP_MAX_LENGTH)
+    if len(text) <= NCBI_TEXT_CACHE_MAX_BYTES:
+        try:
+            cache.backend.set(key, text, NCBI_TEXT_CACHE_TTL)
+        except Exception:
+            pass
+    return text
+
+
+def _ncbi_build(acc: str, opts: Dict) -> Dict:
+    text = _ncbi_text(acc)
+    rec = parse_text(text, max_length=MAP_MAX_LENGTH)
+    return document_from_record(rec, **opts)
+
+
+@router.post("/import/ncbi", responses={200: {"model": MapDocument}})
+async def import_ncbi(req: MapNcbiRequest):
+    """按 NCBI accession（如 L09137、M77789.1）取 GenBank 记录并解析成 MapDocument。
+
+    efetch（rettype=gbwithparts）在线程池执行；GenBank 文本与 MapDocument
+    分别缓存；超过体积/长度上限 413，未找到 404，NCBI 异常 502/503/504。"""
+    try:
+        acc = normalize_accession(req.accession)
+    except MapParseError as e:
+        raise _http_error(e)
+    opts = {"annotate": req.annotate, "enzyme_set": req.enzyme_set, "orf_min_aa": req.orf_min_aa}
+    return await cached_document("ncbi", {"acc": acc, "opts": opts}, _ncbi_build, acc, opts)
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
