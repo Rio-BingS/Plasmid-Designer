@@ -173,6 +173,9 @@ export interface SnapgenePlasmid {
   name: string
   filename: string
   index: number
+  /** 跨集合搜索结果才有：所在集合 */
+  set_id?: string
+  set_name?: string
 }
 
 export interface SnapgeneImportRequest {
