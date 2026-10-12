@@ -147,3 +147,18 @@ def test_normalize_color():
     assert normalize_color("#AbC") == "#aabbcc"
     assert normalize_color("color: #12ab34") == "#12ab34"
     assert normalize_color("red") is None
+
+
+def test_mixed_strand_join_and_order_warn():
+    """混合链 join 与 order() 的语义契约里存不下：解析时告警，不再静默丢失"""
+    feats = (
+        "     misc_feature    join(10..20,complement(30..40))\n"
+        "                     /label=\"mixed\"\n"
+        "     misc_feature    order(50..60,70..80)\n"
+        "                     /label=\"ord\"\n"
+    )
+    rec = parse_text(_gb(SEQ300, feats))
+    by = {f["name"]: f for f in rec.features}
+    assert by["mixed"]["strand"] == 0
+    w = " ".join(rec.warnings)
+    assert "跨正负两条链" in w and "order()" in w
