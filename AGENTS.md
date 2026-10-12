@@ -16,7 +16,7 @@ Plasmid Designer：自动化质粒构建设计平台。输入氨基酸/DNA 序�
 ```
 src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-reader，tracy 可选）
   app/main.py               入口（仅组装：CORS/中间件/路由/生命周期）
-  app/routes/               design|batch|vector|online_source|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
+  app/routes/               design|batch|vector|online_source|map_online|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
   app/vector_import.py      ★ 外部/在线序列 → 载体库 YAML（形状与 data/vectors/*.yaml 一致，导入统一入口）
   app/online_import.py      ★ 在线来源共享装配层（来源清单/许可、SnapGene 集合索引缓存、单序列下载+命名）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
@@ -43,6 +43,7 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
 src/frontend/               Vue3+TS+Vite 8+Pinia（dev 端口 3000，代理 /api → 8000；Node ≥22.12）
   src/api/index.ts          全部后端调用（axios，withCredentials + X-Requested-With）——改后端契约必同步这里
   src/api/session.ts        会话代际（迟到的 401 不踢掉新会话）
+  src/composables/useIsAdmin.ts 管理员判定（无 pinia 宿主降级为 false）——隐藏导入/上传等写入口
   src/views/AnalysisView.vue 序列分析页（位点/ORF/GC/消化模拟/兼容性/导出）
   src/components/EnzymeAutocomplete.vue 可搜索酶选择器（单/多选，全站统一）
   src/map/                           ★ 质粒图谱（契约 plasmid-map/1，见 types.ts/api.ts）：core/ 纯算法
@@ -71,12 +72,14 @@ cd tests && ../.venv/Scripts/python -m pytest -q
 cd src/frontend && npm run dev        # 或 test:run / type-check / build
 # 冒烟（20 项，需后端先起）
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
+# 联网冒烟（默认不联网，只读不写；--run 或 ONLINE_SMOKE=1 才真打 SnapGene/Ensembl/UniProt/Addgene）
+.venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-12 在线来源导入后）：pytest 1315 passed / 39 skipped
+测试基线（本机 Windows，2026-10-12 在线来源收尾后）：pytest 1327 passed / 39 skipped
 （另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
 `test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
-的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 427，vue-tsc 0。
+的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 438，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -127,8 +130,18 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   MapDocument 缓存按「输入摘要 + 选项 + 元件库/算法版本」分键，命中时不重复下载。
   **许可边界**：SnapGene 库学术/非营利/政府可用但须引用 `www.snapgene.com/resources`，
   商业用途须 GraphPad 书面许可、其 robots.txt `Disallow: /local`；Addgene 全长序列
-  2026-08 起需登录——代码**不绕登录**（返回 403 + 指引）。故只做低频单次读取（进程级
-  限速 + 结果缓存），`ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼；不要给它加定时同步/批量镜像
+  2026-08 起需登录——无凭据时代码**不绕登录**（403 + 指引）；配置了用户自备的
+  `ADDGENE_SESSION_COOKIE` 时才带凭据取序列，且只发给 addgene.org（主机白名单）、
+  不落盘/不回显/不记日志。故只做低频单次读取（进程级限速 + 结果缓存），
+  `ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼；不要给它加定时同步/批量镜像。
+  **UniProt 是蛋白库**：只用于反查 Entrez/EMBL/RefSeq/Ensembl 交叉引用，蛋白序列不导入
+- 导入载体的出处与拓扑必须结构化落盘：`data_provenance`（`provenance_block`：
+  source/url/fetched_at/license + 来源特有字段，与内置载体 YAML 同形状；描述里那句
+  可读标注不能替代）与 `topology`（线性片段不能被当环状画，见
+  `app/map_documents._vector_topology`）；图谱页「另存为载体」走
+  `POST /api/vectors/import/from-map`（提交当前文档，后端不再外呼）
+- 载体库写入口（上传/批量导入/编辑/删除/在线导入/另存为载体）界面按 `useIsAdmin()`
+  隐藏，后端 403 仍是权威；载体库是共享库、刻意无属主
 - 载体导入落盘形状由 `app/vector_import.py` 统一：features 必须带 `name`（缺省回退到
   type），否则 `VectorLibrary._parse_vector_dict` 抛 KeyError、整份载体被
   `load_from_directory` 的兜底 except 吞掉而静默消失（历史 bug）
@@ -166,7 +179,10 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - **`tests/test_config_cors.py` 会 `reload(app.config)`**（生成新的 settings 实例）：
   模块里 `from app.config import settings` 拿到的是旧对象，之后用例打桩
   `settings.VECTORS_DIR` 之类对那个模块不生效——路由里一律用 `config.settings.X`
-  在调用时解析（曾导致测试把载体写进真实 `data/vectors/`）
+  在调用时解析（曾导致测试把载体写进真实 `data/vectors/`）。**测试打桩载体目录要打两处**
+  （`app.config.settings` + `app.design_service.settings`，后者供 `get_vector_library`），
+  并清 `cache.backend.clear_pattern("vector:*")`：否则全量跑时「刚导入的载体 404」
+  （单跑该文件是绿的）
 - **PowerShell 数组切片改文件会把整个文件清空**：结构化编辑一律用小步 edit 锚点
 - **从父组件拆子组件时，模板用到的 scoped CSS 必须随迁**：父级 `<style scoped>` 只作用到
   子组件根节点；共享状态用 defineModel，不要在子组件里另起孤立 ref

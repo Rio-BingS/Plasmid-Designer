@@ -18,7 +18,8 @@ plasmid-designer-v2/
 │   │   │   │   ├── design_routes.py   # 设计任务 API
 │   │   │   │   ├── batch_routes.py    # 批量设计 API
 │   │   │   │   ├── vector_routes.py   # 载体库 API
-│   │   │   │   ├── online_source_routes.py  # 在线来源导入（SnapGene 在线库/Ensembl/Addgene）
+│   │   │   │   ├── online_source_routes.py  # 在线来源导入（SnapGene 在线库/Ensembl/UniProt/Addgene）
+│   │   │   │   ├── map_online_routes.py     # 图谱页在线导入（SnapGene 在线库/Ensembl）
 │   │   │   │   ├── codon_routes.py    # 密码子表 API
 │   │   │   │   ├── sequencing_routes.py  # Sanger 测序分析 API
 │   │   │   │   └── models.py          # 共享 Pydantic 模型
@@ -36,7 +37,7 @@ plasmid-designer-v2/
 │       │   ├── stores/         # Pinia 状态管理（auth / design / vectors）
 │       │   ├── views/          # 页面组件
 │       │   ├── components/     # 通用组件（图谱、序列视图、测序面板等）
-│       │   ├── composables/    # 组合式函数（峰图融合视图 useSeqViz）
+│       │   ├── composables/    # 组合式函数（峰图融合视图 useSeqViz、管理员判定 useIsAdmin）
 │       │   └── types/          # TypeScript 类型
 │       └── tests/              # vitest 单测
 ├── deploy/                     # 部署配置（与源码分离）
@@ -135,8 +136,10 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `ENABLE_API_DOCS` | `/docs`、`/redoc`、`/openapi.json` 开关：本地开发默认开启；Docker compose 默认 `false`（容器 nginx 无法按来源限制）；裸机模板为 `true`，由 nginx 只对本机/内网开放 |
 | `TRUSTED_PROXIES` | 可信反向代理 IP/CIDR，只有来自它们的 `X-Real-IP` / `X-Forwarded-For` 才用于限流 |
 | `STORAGE_MODE` / `DATABASE_URL` / `REDIS_ENABLED` | 存储模式、数据库连接串、是否启用 Redis 缓存 |
-| `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
+| `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/UniProt/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
 | `ONLINE_TIMEOUT` / `ONLINE_MAX_BYTES` | 在线来源单次外呼超时（秒，默认 25）与单文件体积上限（字节，默认 8 MB） |
+| `ADDGENE_SESSION_COOKIE` | 可选。你自己在浏览器登录 Addgene 后的会话 Cookie，用于取**你有权访问**的全长序列；只发给 `addgene.org`（元数据里指向别处的主机不带），不落盘/不回显/不记日志；留空时相关端点 403 + 指引（不代登录、不绕登录墙） |
+| `SNAPGENE_BASE` / `ENSEMBL_BASE` / `UNIPROT_BASE` | 仅自建镜像/代理时需要改的基地址（默认各站官方地址） |
 | `NCBI_EMAIL` / `NCBI_API_KEY` | NCBI E-utilities 联系邮箱（建议填）与 API key（可选，限速 3 → 10 次/秒） |
 
 ## API 概览
@@ -187,14 +190,25 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | GET | `/api/vectors/import/ensembl/preview` | Ensembl 序列预览（`?identifier=&seq_type=genomic\|cds\|cdna`） |
 | POST | `/api/vectors/import/ensembl` | 从 Ensembl 导入 DNA 序列（仅管理员；线性片段） |
 | GET | `/api/vectors/import/addgene/search` | 在本机 SnapGene 的 Addgene 索引里离线搜索（约 17 万条） |
-| GET | `/api/vectors/import/addgene/{质粒号}` | Addgene 匿名元数据；全长序列需登录，后端**不绕登录**（返回指引） |
+| GET | `/api/vectors/import/addgene/{质粒号}` | Addgene 匿名元数据；`?try_sequence=1` 时用配置的会话凭据尝试取序列，取不到则 403 + 指引（**不代登录、不绕登录墙**） |
+| POST | `/api/vectors/import/addgene/{质粒号}` | 用你自己配置的 Addgene 会话（`ADDGENE_SESSION_COOKIE`）把全长序列导入载体库（仅管理员；`?fmt=genbank\|dna`） |
+| GET | `/api/vectors/import/uniprot/search` | UniProt 检索（`?query=&limit=&reviewed_only=`）：蛋白库，只反查核酸来源 |
+| GET | `/api/vectors/import/uniprot/{登录号}` | UniProt 条目 + Entrez/EMBL/RefSeq/Ensembl 交叉引用（`?with_fasta=1` 附蛋白 FASTA） |
+| POST | `/api/vectors/import/from-map` | 把图谱页当前的（可编辑）序列与注释存进载体库（仅管理员；带 `data_provenance` 出处） |
 
 > ⚖️ 在线来源的许可边界：SnapGene 质粒库学术/非营利/政府可无条件使用（须引用
 > `www.snapgene.com/resources`），**商业用途须先获 GraphPad Software, LLC 许可**，其
-> `robots.txt` 亦明确 `Disallow: /local`；Addgene 全长序列 2026-08 起需登录、禁止商业抓取。
-> 因此这些通道只做**低频、单次、人工触发**的读取（进程级限速 + 结果缓存），不批量镜像、
-> 不再分发；`ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼。导入的载体描述里会写入出处，
-> 便于成果中标注来源。
+> `robots.txt` 亦明确 `Disallow: /local`；Addgene 全长序列 2026-08 起需登录、禁止商业抓取，
+> 本项目**不代为登录、不绕登录墙**（未配置凭据时返回 403 + 合法路径指引；配置了你自己
+> 浏览器的会话 Cookie 后，只把它发给 `addgene.org`，不落盘、不回显、不记日志）。
+> Ensembl 数据无使用限制（注明来源）；UniProt 为 CC BY 4.0（须署名）且**不含质粒序列**，
+> 只用它按基因/蛋白名反查核酸交叉引用。因此这些通道只做**低频、单次、人工触发**的读取
+> （进程级限速 + 结果缓存），不批量镜像、不再分发；`ONLINE_IMPORT_ENABLED=false` 可整体
+> 关闭外呼。导入的载体带结构化出处（`data_provenance`：来源/URL/许可/抓取时间，
+> 详见载体详情页「出处 / 许可」），便于成果中标注来源。
+>
+> 联网冒烟（默认不跑）：`python scripts/smoke_online_sources.py --run`（真打四个来源，
+> 只读不写；单测全部打桩，CI 不依赖外网）。
 
 ### 序列分析 & 导出
 
@@ -525,7 +539,11 @@ skip-if-missing 用例），前端 vitest 208 passed。CI（`.github/workflows/c
 - **NCBI**：内置载体中的 GenBank 记录与图谱页 accession 导入经 NCBI E-utilities 获取，
   感谢 NCBI 提供公开数据。部署者可设置 `NCBI_EMAIL`（建议）与 `NCBI_API_KEY`（可选，
   提高 NCBI 速率上限），见 [docs/MAP.md](docs/MAP.md)。
-- 本项目不调用 SnapGene 在线库、Addgene 网页或 NEB 在线工具的接口（许可 / robots / 服务条款不允许程序化使用）。
+- 本项目对第三方站点的程序化访问遵循各站条款：SnapGene 在线质粒库仅低频、单次、人工触发的
+  读取（其 `robots.txt` 明确 `Disallow: /local`，不做批量镜像/定时同步/再分发 zip，学术/非营利/
+  政府用途须引用 `www.snapgene.com/resources`，商业用途须先获 GraphPad Software, LLC 许可）；
+  Addgene 只取匿名元数据与本地索引，全长序列**不代登录、不绕登录墙**（可选使用部署者自备的
+  会话凭据取自己有权访问的序列），不调用 NEB 在线工具（无公开接口/条款不允许）。
 
 ## License
 
