@@ -36,36 +36,46 @@ function goToSequencing() {
   router.push({ path: '/sequencing', query: { mode: 'vector', ref: vectorId.value } })
 }
 
-async function loadVectorMap() {
+// 请求代次：快速 A→B 切换时，A 的慢响应回来不得覆盖 B（图谱、出处、加载态都按代次判断）
+let loadGen = 0
+
+async function loadVectorMap(gen: number, id: string) {
   try {
     loading.value = true
     error.value = ''
-    mapDoc.value = await getVectorMap(vectorId.value)
+    const doc = await getVectorMap(id)
+    if (gen !== loadGen) return
+    mapDoc.value = doc
   } catch (e: any) {
+    if (gen !== loadGen) return
     error.value = formatApiError(e, '载体数据加载失败')
   } finally {
-    loading.value = false
+    if (gen === loadGen) loading.value = false
   }
 }
 
-async function loadVectorInfo() {
+async function loadVectorInfo(gen: number, id: string) {
   try {
-    vectorInfo.value = await getVector(vectorId.value)
+    const info = await getVector(id)
+    if (gen === loadGen) vectorInfo.value = info
   } catch (e) {
-    console.warn('Failed to load vector info:', e)
+    if (gen === loadGen) console.warn('Failed to load vector info:', e)
   }
 }
 
-onMounted(() => {
-  loadVectorMap()
-  loadVectorInfo()
-})
+function loadAll() {
+  const gen = ++loadGen
+  const id = vectorId.value
+  // 先清掉上一个载体的出处，B 的 info 失败时不会继续显示 A 的
+  vectorInfo.value = null
+  void loadVectorMap(gen, id)
+  void loadVectorInfo(gen, id)
+}
+
+onMounted(loadAll)
 
 // 路由参数变化时组件会被复用（页内从载体 A 导航到 B），必须重载
-watch(vectorId, () => {
-  loadVectorMap()
-  loadVectorInfo()
-})
+watch(vectorId, loadAll)
 
 async function copySequence() {
   try {
