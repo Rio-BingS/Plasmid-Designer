@@ -68,9 +68,13 @@ const enzymeMap = computed(() =>
   Object.keys(availableEnzymeMap.value).length ? availableEnzymeMap.value : FALLBACK_ENZYME_MAP
 )
 
-// Golden Gate：仅 Type IIS 酶
+// Golden Gate：后端给出的候选酶（REBASE 数据驱动，BsaI/BsmBI/BbsI 在前）；
+// 旧后端没有该字段时回退到酶表里标了 is_type_iis 的酶
+const goldenGateEnzymes = ref<{ name: string; recognition_sequence: string }[]>([])
 const ggEnzymeMap = computed(() => {
   const out: Record<string, { recognition_sequence: string }> = {}
+  for (const e of goldenGateEnzymes.value) out[e.name] = { recognition_sequence: e.recognition_sequence }
+  if (Object.keys(out).length) return out
   for (const [name, meta] of Object.entries(enzymeMap.value)) {
     if (meta.is_type_iis) out[name] = { recognition_sequence: meta.recognition_sequence || '' }
   }
@@ -175,6 +179,7 @@ onMounted(async () => {
   try {
     const enzymeData = await getEnzymes()
     availableEnzymeMap.value = enzymeData.enzymes || {}
+    goldenGateEnzymes.value = Array.isArray(enzymeData.golden_gate_enzymes) ? enzymeData.golden_gate_enzymes : []
     availableEnzymes.value = Object.keys(enzymeData.enzymes || {})
     if (availableEnzymes.value.length && !availableEnzymes.value.includes(enzyme.value)) {
       enzyme.value = availableEnzymes.value[0]
