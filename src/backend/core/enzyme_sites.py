@@ -242,3 +242,85 @@ def sites_cut_positions(sites: List[Dict]) -> Dict[str, List[int]]:
                 cuts.append(c)
     out = {k: sorted(v) for k, v in out.items()}
     return out
+
+
+# ==================== Type IIS / Golden Gate（数据驱动） ====================
+
+_TYPE_IIS_MIN_DEFINITE = 4
+
+def is_type_iis(spec: Optional[Dict]) -> bool:
+    """Type IIS 判定（get_enzyme 返回的 spec）。
+
+    规则：识别序列非回文（按 IUPAC 反向互补比较），且两条链的切点都在
+    识别序列同一侧之外——全部 ≥ 序列末端且至少一个严格在外（下游切，
+    如 BsaI GGTCTC(1/5)、MlyI GAGTC(5/5) 平端），或全部 ≤ 序列起点且
+    至少一个严格在外（上游切）。切点有一条落在识别序列内部的非回文酶
+    （如 BssSI C^ACGAG）不算；两侧双切的酶（BaeI 等 Type IIB）已被
+    get_enzyme 排除。识别序列确定碱基（ACGT）少于 4 个的也不算：REBASE
+    里这类条目是修饰依赖型酶（Type IIM，MspJI/FspEI/LpnPI/AbaSI，「位点」
+    只是一小段甲基化上下文），不是经典 Type IIS。参考脚本的判定只认纯
+    ACGT、且拿相对末端的 fst3 与序列长度比较，会把切点口径算错，这里
+    不沿用。
+    """
+    if not spec:
+        return False
+    site = spec["site"]
+    size = len(site)
+    if sum(1 for ch in site if ch in "ACGT") < _TYPE_IIS_MIN_DEFINITE:
+        return False
+    if _revcomp(site) == site:
+        return False
+    c1, c2 = spec["cut"]
+    lo, hi = min(c1, c2), max(c1, c2)
+    downstream = lo >= size and hi > size
+    upstream = hi <= 0 and lo < 0
+    return downstream or upstream
+
+
+def golden_gate_geometry(name: str) -> Optional[Dict]:
+    """可用于 Golden Gate 引物设计的 Type IIS 酶几何参数；不适用返回 None。
+
+    条件：可商购（get_enzyme 认可）、Type IIS、识别序列纯 ACGT（要原样
+    拼进引物）、切出 4 nt 5' 突出端。上游切的酶换算成识别序列反向互补
+    写法（等价的下游切）。返回 {name, site, spacer, overhang_len}：
+    引物 5'-[site][spacer 个 N][4 nt overhang][退火区]-3'。
+    """
+    spec = get_enzyme(name)
+    if spec is None or not is_type_iis(spec):
+        return None
+    site = spec["site"]
+    if any(ch not in "ACGT" for ch in site):
+        return None
+    size = len(site)
+    c1, c2 = spec["cut"]
+    if c1 < 0:  # 上游切：镜像到反向互补位点（顶/底链互换）
+        site, c1, c2 = _revcomp(site), size - c2, size - c1
+    if c2 - c1 != 4:  # 只要 4 nt 5' 突出端
+        return None
+    return {"name": name, "site": site, "spacer": c1 - size, "overhang_len": 4}
+
+
+# Golden Gate 首选酶（文献/试剂盒最常用），其余可用酶按名称排在后面
+GOLDEN_GATE_PREFERRED: Tuple[str, ...] = ("BsaI", "BsmBI", "BbsI")
+
+
+@lru_cache(maxsize=1)
+def golden_gate_enzymes() -> Tuple[str, ...]:
+    """可商购、切出 4 nt 5' 突出端的全部 Type IIS 酶（Golden Gate 候选）。
+
+    BsaI / BsmBI / BbsI 固定排最前（保持既有偏好），其余按名称排序。"""
+    from Bio import Restriction as _R  # 惰性导入：见模块文档
+
+    names = sorted({e.__name__ for e in _R.CommOnly}, key=str.lower)
+    ok = [n for n in names if golden_gate_geometry(n) is not None]
+    head = [n for n in GOLDEN_GATE_PREFERRED if n in ok]
+    return tuple(head + [n for n in ok if n not in head])
+
+
+@lru_cache(maxsize=1)
+def type_iis_enzymes() -> Tuple[str, ...]:
+    """可商购的全部 Type IIS 酶（不限突出端），按名称排序"""
+    from Bio import Restriction as _R
+
+    names = sorted({e.__name__ for e in _R.CommOnly}, key=str.lower)
+    return tuple(n for n in names if is_type_iis(get_enzyme(n)))

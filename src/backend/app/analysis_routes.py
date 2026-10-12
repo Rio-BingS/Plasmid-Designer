@@ -626,22 +626,27 @@ async def check_cloning_compatibility(request: CompatibilityRequest) -> Dict:
 @router.get("/enzymes")
 @cached("analysis_enzymes", ttl=604800, version=ANALYSIS_ENZYMES_VERSION)  # 静态数据，缓存 7 天
 async def list_enzymes() -> Dict:
-    """获取支持的酶列表"""
-    from core.enzyme_sites import get_enzyme
+    """获取支持的酶列表；golden_gate_enzymes 为 Golden Gate 候选酶（REBASE
+    中可商购、切出 4 nt 5' 突出端的 Type IIS 酶，BsaI/BsmBI/BbsI 在前）"""
+    from core.enzyme_sites import get_enzyme, golden_gate_enzymes, is_type_iis
     from core.sequence_analysis import RESTRICTION_ENZYMES
 
     overhang_names = {'5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端'}
     enzymes_info = {}
     for name, (seq, cut, overhang) in RESTRICTION_ENZYMES.items():
-        c1, c2 = get_enzyme(name)["cut"]
         enzymes_info[name] = {
             "recognition_sequence": seq,
             "cut_type": overhang_names.get(overhang, '未知'),
-            # Type IIS：切点落在识别序列之外（BsaI/BsmBI/BbsI）
-            "is_type_iis": not (0 <= min(c1, c2) and max(c1, c2) <= len(seq)),
+            # Type IIS：非回文且切点落在识别序列同一侧之外
+            "is_type_iis": is_type_iis(get_enzyme(name)),
         }
-    
+    golden_gate = [
+        {"name": n, "recognition_sequence": get_enzyme(n)["site"]}
+        for n in golden_gate_enzymes()
+    ]
+
     return {
         "total": len(enzymes_info),
-        "enzymes": enzymes_info
+        "enzymes": enzymes_info,
+        "golden_gate_enzymes": golden_gate,
     }
