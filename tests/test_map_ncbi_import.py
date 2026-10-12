@@ -223,3 +223,14 @@ def test_import_uses_ncbi_rate_limit_bucket():
     assert RATE_LIMITS["ncbi"]["requests"] <= 10
     # 其他图谱写端点不受影响
     assert classify_endpoint("POST", "/api/map/parse") == "default"
+
+
+@pytest.mark.parametrize("var", ["NCBI_EMAIL", "NCBI_API_KEY"])
+def test_deploy_passes_ncbi_env(var):
+    """Docker 后端只拿到 compose environment 列出的变量；两份 .env.example 都要有说明"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "deploy"
+    assert f"{var}=${{{var}:-}}" in (root / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    for p in ("bare", "docker"):
+        assert f"{var}=" in (root / p / ".env.example").read_text(encoding="utf-8")
