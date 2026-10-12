@@ -2,7 +2,7 @@
  * 酶切显示规则（纯函数）：
  * - 单切点（cut_count = 1）加粗；平端酶用独立颜色；5'/3' 突出端各一色；
  * - 过滤：切点数（1 / ≤2 / 任意）、名称或识别序列搜索、逐个隐藏、
- *   限定名单（如 Golden Gate 酶组）。酶组本身（common/unique6/...）由后端
+ *   限定名单（如 Golden Gate 酶组）、限定厂商（REBASE 厂商可供的酶名单）。酶组本身（common/unique6/...）由后端
  *   在 analyze 时按 enzyme_set 计算，前端只做显示层过滤。
  */
 import type { MapEnzyme, MethylationKind } from '../types'
@@ -20,10 +20,12 @@ export interface EnzymeFilter {
   hidden: string[]
   /** 只显示名单内的酶（null = 不限），如 GOLDEN_GATE_ENZYMES */
   only: string[] | null
+  /** 只显示所选厂商可供的酶（GET /api/map/suppliers 的 enzymes；null/缺省 = 不限） */
+  supplier?: string[] | null
 }
 
 export function defaultEnzymeFilter(): EnzymeFilter {
-  return { maxCuts: null, query: '', hidden: [], only: null }
+  return { maxCuts: null, query: '', hidden: [], only: null, supplier: null }
 }
 
 export function matchesEnzymeQuery(e: MapEnzyme, query: string): boolean {
@@ -36,10 +38,12 @@ export function matchesEnzymeQuery(e: MapEnzyme, query: string): boolean {
 /** 满足除"逐个隐藏"外全部条件的酶（列表面板用：被隐藏的仍列出以便恢复） */
 export function listEnzymes(enzymes: MapEnzyme[], f: EnzymeFilter): MapEnzyme[] {
   const only = f.only ? new Set(f.only.map((n) => n.toLowerCase())) : null
+  const supplier = f.supplier ? new Set(f.supplier.map((n) => n.toLowerCase())) : null
   return enzymes
     .filter((e) => e.cut_count >= 1)
     .filter((e) => f.maxCuts === null || e.cut_count <= f.maxCuts)
     .filter((e) => !only || only.has(e.name.toLowerCase()))
+    .filter((e) => !supplier || supplier.has(e.name.toLowerCase()))
     .filter((e) => matchesEnzymeQuery(e, f.query))
     .sort((a, b) => a.cut_count - b.cut_count || a.name.localeCompare(b.name))
 }

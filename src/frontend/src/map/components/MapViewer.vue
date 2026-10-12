@@ -6,9 +6,10 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useElementSize } from '@vueuse/core'
-import type { EnzymeSet, FeatureType, MapDocument, Strand } from '../types'
+import type { EnzymeDetail, EnzymeSet, EnzymeSupplier, FeatureType, MapDocument, Strand } from '../types'
 import { createMapStore, provideMapStore, type ViewMode } from '../store'
-import { analyzeMap, exportGenbank, getEnzymeSets } from '../api'
+import { analyzeMap, exportGenbank, getEnzymeDetail, getEnzymeSets, getSuppliers } from '../api'
+import { supplierShortName } from '../enzymeMeta'
 import { rangeLength } from '../core/coords'
 import { blockedSiteCount, enzymeStyle, GOLDEN_GATE_ENZYMES } from '../core/enzymes'
 import { addFeature, deleteFeature, pushHistory, updateFeature, validateRange, type FeaturePatch } from '../core/edit'
@@ -264,7 +265,60 @@ const enzymeRows = computed(() => store.enzymeList.value.map((e) => ({
   e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name), blocked: blockedSiteCount(e),
   sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 ? ' …' : ''),
 })))
-function selectEnzyme(name: string) { resolveHit(store, `e:${name}#0`)?.select() }
+function selectEnzyme(name: string) {
+  resolveHit(store, `e:${name}#0`)?.select()
+  if (props.allowAnalyze) void showEnzymeDetail(name)
+}
+
+// ---------------- 厂商过滤 / 酶详情（REBASE，按需从后端取） ----------------
+const suppliers = ref<EnzymeSupplier[]>([])
+const supplierCode = ref('')
+const suppliersFailed = ref(false)
+let suppliersRequested = false
+async function ensureSuppliers() {
+  if (suppliersRequested || !props.allowAnalyze) return
+  suppliersRequested = true
+  try {
+    const rows = await getSuppliers()
+    if (Array.isArray(rows)) suppliers.value = rows
+    suppliersFailed.value = false
+  } catch {
+    suppliersRequested = false
+    suppliersFailed.value = true
+  }
+}
+// 酶切面板第一次打开时才取厂商表（静态数据，会话内缓存）
+watch(sideTab, (t) => { if (t === 'enzymes') void ensureSuppliers() }, { immediate: true })
+watch(supplierCode, (code) => {
+  const row = suppliers.value.find((x) => x.code === code)
+  store.enzymeFilter.supplier = row ? row.enzymes : null
+})
+const supplierEmptyHint = computed(() => !!supplierCode.value && !enzymeRows.value.length)
+
+const detailName = ref<string | null>(null)
+const detail = ref<EnzymeDetail | null>(null)
+const detailLoading = ref(false)
+const detailError = ref('')
+async function showEnzymeDetail(name: string) {
+  detailName.value = name
+  detailError.value = ''
+  detail.value = null
+  detailLoading.value = true
+  try {
+    const d = await getEnzymeDetail(name)
+    if (detailName.value === name) detail.value = d
+  } catch (e) {
+    if (detailName.value === name) detailError.value = `酶详情加载失败：${formatApiError(e, '请求失败')}`
+  } finally {
+    if (detailName.value === name) detailLoading.value = false
+  }
+}
+function closeDetail() { detailName.value = null; detail.value = null; detailError.value = '' }
+const detailEnds = computed(() => {
+  const d = detail.value
+  if (!d) return ''
+  return d.ends === 'blunt' ? '平端' : `${d.ends} 突出${d.overhang ? ` ${d.overhang}` : ''}`
+})
 
 // ---------------- 状态栏 ----------------
 const selectionText = computed(() => {
@@ -432,9 +486,16 @@ defineExpose({ store, view, undo })
           </li>
         </ul>
         <div v-else-if="sideTab === 'enzymes'" class="mv-enzyme-panel">
-          <input v-model="store.enzymeFilter.query" class="mv-input mv-enz-query" type="search" placeholder="按酶名或识别序列筛选" aria-label="筛选酶" />
+          <div class="mv-enz-filters">
+            <input v-model="store.enzymeFilter.query" class="mv-input mv-enz-query" type="search" placeholder="按酶名或识别序列筛选" aria-label="筛选酶" />
+            <select v-model="supplierCode" class="mv-select mv-supplier" aria-label="按厂商筛选"
+                    :title="suppliersFailed ? '厂商列表加载失败' : '只显示该厂商可供的酶（REBASE 厂商数据）'" :disabled="!suppliers.length">
+              <option value="">全部厂商</option>
+              <option v-for="sp in suppliers" :key="sp.code" :value="sp.code">{{ supplierShortName(sp) }}（{{ sp.enzymes.length }}）</option>
+            </select>
+          </div>
           <ul class="mv-list mv-enzyme-list">
-            <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶</li>
+            <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶<template v-if="supplierEmptyHint">（所选厂商在当前酶组中没有切点；可换「全部商品酶」酶组）</template></li>
             <li v-for="r in enzymeRows" :key="r.e.name" :class="['mv-row', { hidden: r.hidden }]" @click="selectEnzyme(r.e.name)">
               <span class="mv-name" :style="{ color: r.style.color, fontWeight: r.style.weight }">{{ r.e.name }}</span>
               <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b></span>
@@ -442,6 +503,29 @@ defineExpose({ store, view, undo })
                       @click.stop="store.toggleEnzymeHidden(r.e.name)">{{ r.hidden ? '○' : '●' }}</button>
             </li>
           </ul>
+          <div v-if="detailName" class="mv-enz-detail" aria-live="polite">
+            <div class="mv-enz-detail-head">
+              <b>{{ detailName }}</b>
+              <button type="button" class="mv-eye" aria-label="关闭酶详情" title="关闭" @click="closeDetail">×</button>
+            </div>
+            <p v-if="detailLoading" class="mv-muted">加载中…</p>
+            <p v-else-if="detailError" class="mv-error">{{ detailError }}</p>
+            <template v-else-if="detail">
+              <div class="mv-enz-detail-line">{{ detail.recognition }} · {{ detailEnds }}</div>
+              <div v-if="detail.type_iis || detail.golden_gate || detail.methylation?.length" class="mv-badges">
+                <span v-if="detail.type_iis" class="mv-badge">Type IIS</span>
+                <span v-if="detail.golden_gate" class="mv-badge">可用于 Golden Gate</span>
+                <span v-if="detail.methylation?.length" class="mv-badge mv-badge-warn">甲基化敏感：{{ detail.methylation.join('/') }}</span>
+              </div>
+              <dl class="mv-enz-dl">
+                <dt>厂商</dt>
+                <dd>{{ detail.suppliers.length ? detail.suppliers.map((x) => x.name).join('、') : '无商业来源记录' }}</dd>
+                <template v-if="detail.isoschizomers.length"><dt>同切酶</dt><dd>{{ detail.isoschizomers.join('、') }}</dd></template>
+                <template v-if="detail.neoschizomers.length"><dt>新切酶</dt><dd>{{ detail.neoschizomers.join('、') }}</dd></template>
+              </dl>
+              <p class="mv-muted mv-enz-source">数据来源：REBASE（经 Biopython Bio.Restriction）</p>
+            </template>
+          </div>
           <p class="mv-legend mv-muted"><b>加粗</b> = 单切点 · <span style="color:#c0392b">红</span> = 平端 · <span style="color:#1f4e9c">蓝</span> = 5′ 突出 · <span style="color:#7b3fa0">紫</span> = 3′ 突出<template v-if="hasBlocked"> · <span style="color:#9ca3af">灰虚线</span> = 甲基化阻断</template></p>
         </div>
         <DigestPanel v-if="sideTab === 'digest'" :store="store" />
@@ -489,7 +573,20 @@ defineExpose({ store, view, undo })
 .mv-tab.active { background: var(--bg-primary); color: var(--primary-color); font-weight: 600; }
 .mv-list { list-style: none; overflow-y: auto; font-size: 12.5px; }
 .mv-enzyme-panel { display: flex; flex-direction: column; min-height: 0; }
-.mv-enz-query { width: auto; margin: 6px; }
+.mv-enz-filters { display: flex; gap: 4px; margin: 6px; }
+.mv-enz-query { width: auto; flex: 1; min-width: 0; }
+.mv-supplier { max-width: 120px; }
+.mv-enz-detail { padding: 6px 8px; border-top: 1px solid var(--border-color); background: var(--bg-secondary); font-size: 12px; }
+.mv-enz-detail-head { display: flex; justify-content: space-between; align-items: center; }
+.mv-enz-detail-head .mv-eye { grid-row: auto; grid-column: auto; }
+.mv-enz-detail-line { margin: 2px 0; font-family: Consolas, Menlo, 'Courier New', monospace; }
+.mv-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+.mv-badge { padding: 0 6px; border-radius: 10px; background: #eef2ff; color: var(--primary-color); font-size: 11px; }
+.mv-badge-warn { background: #fffbeb; color: #92400e; }
+.mv-enz-dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 6px; margin: 4px 0 0; }
+.mv-enz-dl dt { color: var(--text-secondary); }
+.mv-enz-dl dd { margin: 0; word-break: break-word; }
+.mv-enz-source { margin-top: 4px; font-size: 11px; }
 .mv-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) 22px; grid-template-rows: auto auto; column-gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--bg-secondary); cursor: pointer; }
 .mv-enzyme-list .mv-row { grid-template-columns: minmax(0, 1fr) 22px; }
 .mv-row:hover { background: var(--bg-secondary); }
