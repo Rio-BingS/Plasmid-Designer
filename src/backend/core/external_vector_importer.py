@@ -299,19 +299,29 @@ class VectorLibraryManager:
             return len(vectors)
     
     def export_to_yaml(self, output_dir: str) -> int:
-        """导出所有载体为 YAML 格式"""
+        """导出所有载体为 YAML 格式
+
+        features 必须带 name/strand（VectorLibrary._parse_vector_dict 的契约），
+        否则落盘的 YAML 加载时抛 KeyError、载体静默消失。
+        """
         os.makedirs(output_dir, exist_ok=True)
         count = 0
         for vid, vector in self.vectors.items():
             filename = f"{vector.name.replace('/', '_')}.yaml"
             filepath = os.path.join(output_dir, filename)
+            features = []
+            for f in vector.features or []:
+                item = dict(f)
+                item['name'] = str(item.get('name') or item.get('type') or 'feature')[:80]
+                item.setdefault('strand', '+')
+                features.append(item)
             data = {
                 'id': vector.id,
                 'name': vector.name,
                 'source': vector.source,
                 'sequence': vector.sequence,
                 'description': vector.description,
-                'features': vector.features,
+                'features': features,
                 'url': vector.url
             }
             with open(filepath, 'w', encoding='utf-8') as f:
