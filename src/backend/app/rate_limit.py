@@ -437,6 +437,8 @@ _WRITE_EXACT_RULES: List[Tuple[str, str, str]] = [
     ("POST", "/api/sequencing/batch-sessions/{id}/files", "upload_chunk"),
     ("POST", "/api/sequencing/batch-sessions/{id}/finalize", "batch"),
     ("DELETE", "/api/sequencing/batch-sessions/{id}", "default"),
+    # 图谱页按 accession 从 NCBI 导入：外呼代理，与 /api/vectors/search/ncbi 同档
+    ("POST", "/api/map/import/ncbi", "ncbi"),
 ]
 
 
