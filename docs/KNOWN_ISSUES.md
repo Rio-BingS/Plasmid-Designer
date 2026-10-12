@@ -47,9 +47,10 @@
   管理员；不要把它并回 `ONLINE_IMPORT_ENABLED`、不要放开匿名（见下「已接受风险」）。
   Addgene 全长序列 2026-08 起需登录：无凭据时 `addgene_sequence_bytes` **必须**抛
   `AddgeneLoginRequired`（403 + 指引），任何情况下不得代登录/绕登录墙；有
-  `ADDGENE_SESSION_COOKIE`（用户自备）时也只把凭据发给 `addgene.org`
-  （`_addgene_session_headers` 做主机白名单，元数据给的直链指向别处就不带），
-  且不得写入响应/日志/磁盘。
+  `ADDGENE_SESSION_COOKIE`（用户自备，仅单用户自托管适用）时也只以 https 发给
+  `addgene.org`：`_http_get` 禁用 urllib 自动重定向、逐跳校验 https + 主机白名单
+  （裸主机名），Cookie 用 `add_unredirected_header` 且跨主机即永久丢弃；取序列的
+  `try_sequence` 分支仅管理员；不得写入响应/日志。不要改回 `urlopen` 或普通请求头。
 - UniProt 是**蛋白库**：`core/online_sources.py` 只允许用它反查 Entrez/EMBL/RefSeq/
   Ensembl 交叉引用（`nucleotide_candidates`）再把用户引到核酸来源；不要把蛋白序列
   当质粒/图谱序列导入（`ENSEMBL_SEQ_TYPES` 拒绝 protein 是同一原则）。
@@ -296,4 +297,11 @@ Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），�
   开启，须引用 `www.snapgene.com/resources`，商业用途须先获 GraphPad 书面许可。中长期
   方案仍是向 GraphPad 申请接口授权或改用 NCBI 对应记录。
 - `scripts/smoke_online_sources.py` 默认不再跑 SnapGene（需 `--only snapgene` 且开关为 true）。
+
+**Addgene 会话 Cookie 模式的定位（审查 M2）**：只适合**单用户自托管**（部署者 = 唯一使用者 =
+Addgene 账号持有人）。多用户实例里它等同共享一个人的 Addgene 账号，导入的序列也对全站可见；
+启动时若配置了 `ADDGENE_SESSION_COOKIE` 且「开放注册」或已有 >1 个启用账号，
+`app/online_import.log_addgene_shared_session_warning` 记一条 WARNING（不回显 Cookie）。此前
+文档所说「不落盘」不成立（`.env`、容器环境、`docker inspect` 都能看到），已改为「不写入应用
+数据/响应/日志」；推荐替代是浏览器下载后走「上传文件」。
 

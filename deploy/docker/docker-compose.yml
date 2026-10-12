@@ -58,8 +58,9 @@ services:
       - SNAPGENE_ONLINE_ENABLED=${SNAPGENE_ONLINE_ENABLED:-false}
       - ONLINE_TIMEOUT=${ONLINE_TIMEOUT:-25}
       - ONLINE_MAX_BYTES=${ONLINE_MAX_BYTES:-8388608}
-      # Addgene 用户自备会话 Cookie（可选）：只发给 addgene.org，不落盘、不回显。
-      # 留空 = 不代登录、不绕登录墙（相关端点 403 + 指引）
+      # Addgene 用户自备会话 Cookie（可选，仅适合单用户自托管；多用户实例启动时告警）：
+      # 仅管理员导入时以 https 发往 addgene.org。注意它会出现在容器环境（docker inspect）。
+      # 留空 = 不代登录、不绕登录墙（相关端点 403 + 指引；推荐浏览器下载后上传）
       - ADDGENE_SESSION_COOKIE=${ADDGENE_SESSION_COOKIE:-}
       # 可信反向代理：只信前端 nginx 容器的固定地址（FRONTEND_IPV4，见下方 networks），
       # 不再信整个 172.16.0.0/12——同网段其它容器/主机可伪造 X-Real-IP 换限流桶。
