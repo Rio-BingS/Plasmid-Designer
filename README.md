@@ -184,15 +184,15 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | POST | `/api/vectors/import/upload` | 上传载体文件（GenBank / FASTA / SnapGene `.dna`；解析走 `core/plasmid_map/parsers`，保留注释与颜色） |
 | POST | `/api/vectors/import/batch` | 批量导入 |
 | GET | `/api/vectors/import/sources` | 在线来源清单与许可摘要（前端据此渲染页签） |
-| GET | `/api/vectors/import/snapgene/sets` | SnapGene 在线库：19 个集合（结果缓存 1 小时） |
-| GET | `/api/vectors/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引 |
-| GET | `/api/vectors/import/snapgene/preview` | SnapGene 在线库：下载 `.dna` 并解析预览（`?set_id=&plasmid_id=`） |
-| POST | `/api/vectors/import/snapgene` | SnapGene 在线库：导入到载体库（仅管理员） |
-| GET | `/api/vectors/import/ensembl/lookup/{id}` | Ensembl 元数据（名称/物种/位置） |
-| GET | `/api/vectors/import/ensembl/preview` | Ensembl 序列预览（`?identifier=&seq_type=genomic\|cds\|cdna`） |
+| GET | `/api/vectors/import/snapgene/sets` | SnapGene 在线库：集合列表（结果缓存 1 小时；需 `SNAPGENE_ONLINE_ENABLED=true` 且登录，限流档 `ncbi`） |
+| GET | `/api/vectors/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引（同上） |
+| GET | `/api/vectors/import/snapgene/preview` | SnapGene 在线库：下载 `.dna` 并解析预览（`?set_id=&plasmid_id=`；同上） |
+| POST | `/api/vectors/import/snapgene` | SnapGene 在线库：导入到载体库（需开关开启 + 管理员） |
+| GET | `/api/vectors/import/ensembl/lookup/{id}` | Ensembl 元数据（名称/物种/位置；限流档 `ncbi`） |
+| GET | `/api/vectors/import/ensembl/preview` | Ensembl 序列预览（`?identifier=&seq_type=genomic\|cds\|cdna`；限流档 `ncbi`） |
 | POST | `/api/vectors/import/ensembl` | 从 Ensembl 导入 DNA 序列（仅管理员；线性片段） |
 | GET | `/api/vectors/import/addgene/search` | 在本机 SnapGene 的 Addgene 索引里离线搜索（约 17 万条） |
-| GET | `/api/vectors/import/addgene/{质粒号}` | Addgene 匿名元数据；`?try_sequence=1` 时用配置的会话凭据尝试取序列，取不到则 403 + 指引（**不代登录、不绕登录墙**） |
+| GET | `/api/vectors/import/addgene/{质粒号}` | Addgene 匿名元数据；`?try_sequence=1`（仅管理员）时用配置的会话凭据尝试取序列，取不到则 403 + 指引（**不代登录、不绕登录墙**） |
 | POST | `/api/vectors/import/addgene/{质粒号}` | 用你自己配置的 Addgene 会话（`ADDGENE_SESSION_COOKIE`）把全长序列导入载体库（仅管理员；`?fmt=genbank\|dna`） |
 | GET | `/api/vectors/import/uniprot/search` | UniProt 检索（`?query=&limit=&reviewed_only=`）：蛋白库，只反查核酸来源 |
 | GET | `/api/vectors/import/uniprot/{登录号}` | UniProt 条目 + Entrez/EMBL/RefSeq/Ensembl 交叉引用（`?with_fasta=1` 附蛋白 FASTA） |
@@ -241,9 +241,9 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | GET | `/api/map/suppliers` | REBASE 厂商代码/名称及各自可供的酶（图谱页按厂商筛选） |
 | POST | `/api/map/import/ncbi` | 按 NCBI accession（如 `L09137`、`M77789.1`）取 GenBank 记录 → MapDocument（限流档 `ncbi`） |
 | GET | `/api/map/import/sources` | 在线来源清单与许可摘要（与载体库页同一份数据） |
-| GET | `/api/map/import/snapgene/sets` | SnapGene 在线库：19 个集合（限流档 `ncbi`；与载体库侧**共用缓存**） |
-| GET | `/api/map/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引 |
-| POST | `/api/map/import/snapgene` | SnapGene 在线库 → MapDocument（下载 `.dna`，含完整注释；限流档 `ncbi`） |
+| GET | `/api/map/import/snapgene/sets` | SnapGene 在线库：集合列表（限流档 `ncbi`；与载体库侧**共用缓存**；需 `SNAPGENE_ONLINE_ENABLED=true` 且登录） |
+| GET | `/api/map/import/snapgene/sets/{set_id}` | SnapGene 在线库：集合索引（同上） |
+| POST | `/api/map/import/snapgene` | SnapGene 在线库 → MapDocument（下载 `.dna`，含完整注释；限流档 `ncbi`；同上） |
 | POST | `/api/map/import/ensembl` | Ensembl ID（`genomic`/`cds`/`cdna`）→ MapDocument（线性片段；限流档 `ncbi`） |
 | POST | `/api/map/export/genbank` | MapDocument → GenBank 下载 |
 

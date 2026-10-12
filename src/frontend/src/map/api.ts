@@ -60,7 +60,7 @@ export async function getOnlineSources(): Promise<OnlineSourcesPayload> {
   return r.data
 }
 
-/** SnapGene 在线库：19 个集合（后端与载体库侧共用 1 小时缓存） */
+/** SnapGene 在线库：集合列表（后端与载体库侧共用 1 小时缓存；需部署方开启且已登录） */
 export async function getOnlineSnapgeneSets(): Promise<{ count: number; sets: SnapgeneSet[]; license: string }> {
   const r = await http.get('/map/import/snapgene/sets')
   return r.data
