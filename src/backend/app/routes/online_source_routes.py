@@ -6,8 +6,10 @@
   导入期间全站无响应）；真正落库的写端点需管理员，且路径落在
   `/api/vectors/import` 前缀下，沿用中间件的 upload 限流档。
 * 只读端点（集合/索引/预览/来源清单）进进程缓存，避免前端切页签反复外呼；
-  缓存键统一 `online:*` 前缀，落库后按需失效。UniProt 检索与条目查询是外呼
-  代理，只读但走 ncbi 档（见 app/rate_limit.py 的 _READ_RULES）。
+  缓存键统一 `online:*` 前缀，落库后按需失效。会外呼的只读代理（SnapGene
+  集合/索引/预览、Ensembl lookup/预览、UniProt 检索/条目、Addgene 元数据）都走
+  ncbi 档（见 app/rate_limit.py 的 _READ_RULES）；来源清单与 Addgene 本地索引
+  搜索不出网，走 default 档。
 * 一切失败经 `MapParseError.status` 映射 HTTP 状态（422/403/404/413/502/503/504）。
 * 导入落库走 `app/vector_import.save_record`（与文件上传同一条路径，形状与
   data/vectors/*.yaml 一致），出处写进结构化 `data_provenance` **并**在描述里

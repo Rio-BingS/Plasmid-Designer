@@ -500,8 +500,22 @@ def test_rate_limit_buckets_unchanged():
     from app.rate_limit import classify_endpoint
     assert classify_endpoint("POST", "/api/vectors/import/snapgene") == "upload"
     assert classify_endpoint("POST", "/api/vectors/import/ensembl") == "upload"
-    assert classify_endpoint("GET", "/api/vectors/import/snapgene/sets") == "default"
     assert classify_endpoint("GET", "/api/vectors/import/sources") == "default"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/vectors/import/snapgene/sets",
+    "/api/vectors/import/snapgene/sets/yeast_plasmids",
+    "/api/vectors/import/snapgene/preview",
+    "/api/vectors/import/ensembl/lookup/ENSG00000139618",
+    "/api/vectors/import/ensembl/preview",
+    "/api/map/import/snapgene/sets",
+    "/api/map/import/snapgene/sets/yeast_plasmids",
+])
+def test_outbound_proxy_gets_use_ncbi_bucket(path):
+    """会外呼的只读代理两侧口径一致，都走 ncbi 档（审查 M4）"""
+    from app.rate_limit import classify_endpoint
+    assert classify_endpoint("GET", path) == "ncbi"
 
 
 # ---------------------------------------------------------------- 落盘形状回归
