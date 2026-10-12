@@ -92,7 +92,8 @@ def no_network(monkeypatch):
         raise AssertionError("测试中不允许真实网络请求")
     monkeypatch.setattr(src.urllib.request, "urlopen", _boom)
     monkeypatch.setattr(src, "_MIN_INTERVAL", {})  # 免等待
-    for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE"):
+    for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
+              "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
     cache.backend.clear_pattern("online:*")
     yield
@@ -323,11 +324,25 @@ def admin_headers():
 
 @pytest.fixture()
 def vectors_dir(tmp_path, monkeypatch):
-    from app.config import settings
+    """把载体目录指到临时目录。
+
+    注意 **两个模块都要打**：`tests/test_config_cors.py` 会 reload(app.config)
+    造出新的 settings 实例，而 `app.design_service` 是 `from app.config import
+    settings`（旧对象）——只打 `app.config.settings` 时路由写进临时目录、
+    载体库缓存却仍从真实 data/vectors 加载（表现为刚导入的载体 404，
+    与 KNOWN_ISSUES「reload(app.config) 陷阱」同源）。
+    同时清掉载体响应缓存：`vector:<id>` 会跨用例命中，断言到别的用例的载体。
+    """
+    from app import config, design_service
     d = tmp_path / "vectors"
     d.mkdir()
-    monkeypatch.setattr(settings, "VECTORS_DIR", str(d))
-    return d
+    for mod in (config, design_service):
+        monkeypatch.setattr(mod.settings, "VECTORS_DIR", str(d))
+    design_service.invalidate_vector_library_cache()
+    cache.backend.clear_pattern("vector:*")
+    yield d
+    design_service.invalidate_vector_library_cache()
+    cache.backend.clear_pattern("vector:*")
 
 
 def test_sources_endpoint_lists_licenses(client, vectors_dir):
@@ -653,3 +668,348 @@ def _admin():
 
 
 _ADMIN_HEADERS = None
+
+
+# ================================================================ 出处记录（data_provenance）
+# 导入的载体除描述里那句可读标注外，还必须有结构化出处：内置载体早有
+# data_provenance（来源库/集合/日期），导入载体此前只在 description 里写了一句，
+# 界面无法结构化展示、日后也无法按 URL 重取。
+
+def _gbk(seq: str = SEQ300, features: str = "", topology: str = "circular",
+         name: str = "TESTPLAS") -> bytes:
+    """可被 Biopython 接受的 GenBank 文本（与 test_plasmid_map_parsers._gb 同构）"""
+    lines = [f"LOCUS       {name:<16}{len(seq):>12} bp    DNA     {topology:<8} SYN 01-JAN-2026",
+             "DEFINITION  test.", "FEATURES             Location/Qualifiers", features.rstrip("\n"),
+             "ORIGIN"]
+    for i in range(0, len(seq), 60):
+        chunk = seq[i:i + 60].lower()
+        lines.append(f"{i + 1:>9} " + " ".join(chunk[j:j + 10] for j in range(0, len(chunk), 10)))
+    lines.append("//")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _load_vector(vectors_dir, vid):
+    from core.vector_library import VectorLibrary
+    lib = VectorLibrary()
+    lib.load_from_directory(str(vectors_dir))
+    return lib.get_vector(vid)
+
+
+def test_snapgene_import_records_provenance(client, vectors_dir, monkeypatch):
+    record = src.snapgene_record(_snapgene_bytes(), name="pYES2")
+    url = "https://www.snapgene.com/local/fetch.php?set=yeast_plasmids&plasmid=pYES2"
+
+    async def _fetch(set_id, plasmid_id):
+        return record, url
+    monkeypatch.setattr(osr, "_snapgene_fetch", _fetch)
+
+    c, _ = client
+    r = c.post("/api/vectors/import/snapgene",
+               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_admin())
+    assert r.status_code == 200, r.text
+    prov = r.json()["vector"]["provenance"]
+    assert prov["source"] == "SnapGene 在线质粒库" and prov["url"] == url
+    assert prov["set"] == "yeast_plasmids" and prov["plasmid"] == "pYES2"
+    assert prov["fetched_at"].endswith("Z") and "GraphPad" in prov["license"]
+    assert prov["citation"] == "www.snapgene.com/resources"
+
+    # 落盘 → 重新加载（VectorLibrary）后出处仍在，且与回执一致
+    v = _load_vector(vectors_dir, "snapgene_pYES2")
+    assert v is not None and v.provenance == prov
+    # 详情接口把出处带给前端（详情页的「出处 / 许可」块）
+    d = c.get("/api/vectors/snapgene_pYES2")
+    assert d.status_code == 200, d.text
+    assert d.json()["data_provenance"] == prov
+
+
+def test_upload_and_ncbi_style_provenance_shape(tmp_path):
+    """上传/批量导入的历史路径也写出 data_provenance，且加载端容错非 dict"""
+    from app.vector_import import provenance_block, record_from_parts, save_record
+    from core.external_vector_importer import ExternalVector, VectorLibraryManager
+    from core.vector_library import VectorLibrary
+
+    rec = record_from_parts(name="up", sequence=SEQ300)
+    save_record(rec, source="genbank", vectors_dir=str(tmp_path),
+                provenance=provenance_block("本地上传文件", filename="x.gbk", format="genbank"))
+    manager = VectorLibraryManager()
+    manager.vectors["ncbi_L09137"] = ExternalVector(
+        id="ncbi_L09137", name="L09137", sequence=SEQ300, source="NCBI",
+        description="from NCBI", vector_type="cloning", host=[], antibiotic_resistance=[],
+        features=[{"name": "f", "type": "CDS", "start": 1, "end": 30}],
+        url="https://www.ncbi.nlm.nih.gov/nuccore/L09137")
+    manager.export_to_yaml(str(tmp_path))
+
+    lib = VectorLibrary()
+    assert lib.load_from_directory(str(tmp_path)) == 2
+    assert lib.get_vector("genbank_up").provenance["filename"] == "x.gbk"
+    ncbi = lib.get_vector("ncbi_L09137")
+    assert ncbi.provenance["url"].endswith("/L09137") and ncbi.provenance["source"] == "NCBI"
+
+    # 脏数据（data_provenance 不是 dict）不能让整份载体加载失败
+    (tmp_path / "dirty.yaml").write_text(
+        "id: dirty\nname: dirty\nsequence: ACGTACGTACGT\ndata_provenance: oops\n"
+        "features:\n- name: f\n  type: CDS\n  start: 1\n  end: 3\n", encoding="utf-8")
+    lib2 = VectorLibrary()
+    assert lib2.load_from_directory(str(tmp_path)) == 3
+    assert lib2.get_vector("dirty").provenance == {}
+
+
+def test_save_map_as_vector_endpoint(client, vectors_dir):
+    """图谱页「另存为载体」：序列/特征由图谱页提交，落盘后载体库能加载"""
+    c, _ = client
+    payload = {
+        "name": "myConstruct",
+        "sequence": SEQ300,
+        "topology": "circular",
+        "features": [{"name": "insert", "type": "insert", "start": 1, "end": 30,
+                      "strand": 1, "notes": "来自图谱页"}],
+        "source": "paste",
+        "description": "由图谱页保存",
+    }
+    assert c.post("/api/vectors/import/from-map", json=payload).status_code in (401, 403)
+
+    r = c.post("/api/vectors/import/from-map", json=payload, headers=_admin())
+    assert r.status_code == 200, r.text
+    vec = r.json()["vector"]
+    assert vec["id"] == "paste_myConstruct" and vec["length"] == 300
+    assert vec["features"] == 1 and vec["topology"] == "circular"
+
+    v = _load_vector(vectors_dir, "paste_myConstruct")
+    assert v is not None and len(v.sequence) == 300
+    assert v.elements[0].name == "insert"
+    assert v.provenance["source"] == "图谱页保存" and v.provenance["origin"] == "paste"
+
+    # 图谱类型别名：mcs/rep_origin 不再落成 other（导入载体的类型保真）
+    alias = c.post("/api/vectors/import/from-map",
+                   json=dict(payload, name="typedMap", features=[
+                       {"name": "MCS", "type": "mcs", "start": 1, "end": 20},
+                       {"name": "ori", "type": "rep_origin", "start": 21, "end": 60},
+                       {"name": "ins", "type": "insert", "start": 61, "end": 90}]),
+                   headers=_admin())
+    assert alias.status_code == 200, alias.text
+    vt = _load_vector(vectors_dir, "paste_typedMap")
+    assert [e.element_type.value for e in vt.elements] == [
+        "multiple_cloning_site", "origin", "other"]
+
+    # 非法碱基 422；超 MAP_MAX_LENGTH 被请求模型挡下（同为 4xx，不会静默截断）
+    assert c.post("/api/vectors/import/from-map",
+                  json=dict(payload, sequence="ACGTZ"), headers=_admin()).status_code == 422
+    from app.routes.models import MAP_MAX_LENGTH
+    huge = c.post("/api/vectors/import/from-map",
+                  json=dict(payload, sequence="ACGT" * (MAP_MAX_LENGTH // 4 + 1)),
+                  headers=_admin())
+    assert huge.status_code in (413, 422)
+    # 名称必填
+    assert c.post("/api/vectors/import/from-map",
+                  json=dict(payload, name=""), headers=_admin()).status_code == 422
+
+    # 线性拓扑与 strand=-1 原样保留
+    lin = c.post("/api/vectors/import/from-map",
+                 json=dict(payload, name="linFrag", topology="linear",
+                           features=[{"name": "rev", "type": "cds", "start": 1, "end": 30,
+                                      "strand": -1}]), headers=_admin())
+    assert lin.status_code == 200 and lin.json()["vector"]["topology"] == "linear"
+    v2 = _load_vector(vectors_dir, "paste_linFrag")
+    assert v2.topology == "linear" and v2.elements[0].strand == "-"
+    # 线性片段不再被当环状质粒（列表/详情/图谱三处口径一致）
+    assert c.get("/api/vectors/paste_linFrag").json()["topology"] == "linear"
+    mp = next(v for v in c.get("/api/vectors").json() if v["id"] == "paste_linFrag")
+    assert mp["topology"] == "linear" and mp["map_preview"]["topology"] == "linear"
+
+
+# ================================================================ Addgene（用户自备凭据）
+
+def test_addgene_cookie_only_sent_to_addgene(monkeypatch):
+    """凭据只发给 addgene.org：上游元数据给的直链指向别处时不带 Cookie"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=secret-token")
+    assert src.addgene_has_session() is True
+    assert src.addgene_session_cookie() == "SESSION=secret-token"
+    for host in ("https://www.addgene.org/api/x/", "https://addgene.org/a.gbk",
+                 "https://media.addgene.org/a.gbk"):
+        assert src._addgene_session_headers(host)["Cookie"] == "SESSION=secret-token"
+    for evil in ("https://evil.example.com/a.gbk", "https://addgene.org.evil.com/a.gbk",
+                 "http://127.0.0.1/a.gbk"):
+        assert src._addgene_session_headers(evil) == {}
+
+    monkeypatch.delenv("ADDGENE_SESSION_COOKIE")
+    assert src.addgene_has_session() is False and src.addgene_session_cookie() == ""
+    assert src._addgene_session_headers("https://www.addgene.org/api/x/") == {}
+
+
+def test_addgene_record_uses_session_and_parses(monkeypatch):
+    meta = {"seqObjectId": "52961", "genbankUrl": "https://www.addgene.org/x.gbk"}
+    monkeypatch.setattr(src, "addgene_metadata", lambda oid, **kw: meta)
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=abc")
+    seen = []
+    rec = src.addgene_record("52961", name="lentiCRISPRv2",
+                             opener=_opener(_gbk(), seen))
+    assert len(rec.sequence) == 300 and rec.name == "lentiCRISPRv2"
+    assert seen[0][0].get_header("Cookie") == "SESSION=abc"
+
+    # 凭据过期/无权限 → 403 且提示更新凭据（仍然不代登录）
+    with pytest.raises(src.AddgeneLoginRequired) as ei:
+        src.addgene_record("52961",
+                           opener=_raiser(urllib.error.HTTPError("u", 403, "Forbidden", {}, None)))
+    assert ei.value.status == 403 and "过期" in str(ei.value)
+
+    # 无凭据时：匿名失败 → 403 + 「不绕过登录」指引，且绝不返回空序列
+    monkeypatch.delenv("ADDGENE_SESSION_COOKIE")
+    with pytest.raises(src.AddgeneLoginRequired) as ei2:
+        src.addgene_record("52961",
+                           opener=_raiser(urllib.error.HTTPError("u", 404, "Not Found", {}, None)))
+    assert ei2.value.status == 403 and "不绕过登录" in str(ei2.value)
+
+
+def test_addgene_import_route(client, vectors_dir, monkeypatch):
+    record = src.snapgene_record(_snapgene_bytes(), name="lentiCRISPRv2")
+
+    def _rec(oid, **kw):
+        assert oid == "52961" and kw.get("fmt") == "dna"
+        return record
+    monkeypatch.setattr(osr.src, "addgene_record", _rec)
+
+    c, _ = client
+    assert c.post("/api/vectors/import/addgene/52961").status_code in (401, 403)
+    r = c.post("/api/vectors/import/addgene/52961", params={"fmt": "dna"}, headers=_admin())
+    assert r.status_code == 200, r.text
+    v = r.json()["vector"]
+    assert v["id"] == "addgene_52961" and v["length"] == 300
+    assert v["provenance"]["credential"] == "用户自备会话"
+    assert "Addgene" in v["provenance"]["source"]
+    assert _load_vector(vectors_dir, "addgene_52961") is not None
+    # fmt 只接受 genbank/dna
+    assert c.post("/api/vectors/import/addgene/52961", params={"fmt": "exe"},
+                  headers=_admin()).status_code == 422
+
+
+def test_addgene_login_required_surfaces_403(client, vectors_dir, monkeypatch):
+    def _boom(oid, **kw):
+        raise src.AddgeneLoginRequired("Addgene 全长序列需要登录…不绕过登录")
+    monkeypatch.setattr(osr.src, "addgene_record", _boom)
+    c, _ = client
+    r = c.post("/api/vectors/import/addgene/52961", headers=_admin())
+    assert r.status_code == 403 and "绕过登录" in r.json()["detail"]
+
+
+# ================================================================ UniProt（蛋白库反查）
+
+UNIPROT_ENTRY = {
+    "primaryAccession": "P04637",
+    "uniProtkbId": "P53_HUMAN",
+    "entryType": "UniProtKB reviewed (Swiss-Prot)",
+    "proteinDescription": {"recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}},
+    "genes": [{"geneName": {"value": "TP53"}}],
+    "organism": {"scientificName": "Homo sapiens"},
+    "sequence": {"length": 393},
+    "uniProtKBCrossReferences": [
+        {"database": "EMBL", "id": "X54156",
+         "properties": [{"key": "ProteinId", "value": "CAA38098.1"},
+                        {"key": "MoleculeType", "value": "mRNA"}]},
+        {"database": "RefSeq", "id": "NM_000546.6"},
+        {"database": "Ensembl", "id": "ENST00000269305.9",
+         "properties": [{"key": "ProteinId", "value": "ENST00000269305.9"}]},
+        {"database": "CCDS", "id": "CCDS11118.1"},
+        {"database": "PDB", "id": "1TUP"},
+        {"database": "STRING", "id": "9606.ENSP00000269305"},
+    ],
+}
+
+
+def test_uniprot_search_and_entry(monkeypatch):
+    seen = []
+    rows = src.uniprot_search("TP53", limit=2, opener=_opener({"results": [UNIPROT_ENTRY]}, seen))
+    assert len(rows) == 1 and rows[0]["accession"] == "P04637"
+    assert rows[0]["gene"] == "TP53" and rows[0]["length"] == 393 and rows[0]["reviewed"] is True
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(seen[0][0].full_url).query)
+    assert q["size"] == ["2"] and q["query"] == ["TP53"] and q["fields"]
+
+    src.uniprot_search("TP53", reviewed_only=True, opener=_opener({"results": []}, seen))
+    q2 = urllib.parse.parse_qs(urllib.parse.urlsplit(seen[1][0].full_url).query)
+    assert "reviewed:true" in q2["query"][0]
+
+    entry = src.uniprot_entry("P04637", opener=_opener(UNIPROT_ENTRY))
+    assert entry["entry_id"] == "P53_HUMAN" and entry["name"].startswith("Cellular tumor")
+    # 只有核酸库进候选：蛋白/结构/互作库（PDB、STRING）不算取 DNA 的入口
+    cands = src.nucleotide_candidates(entry)
+    accs = {c["accession"] for c in cands}
+    assert accs == {"X54156", "NM_000546.6", "ENST00000269305", "CCDS11118.1"}
+    assert all(c["url"].startswith("https://") for c in cands)
+    assert next(c for c in cands if c["accession"] == "ENST00000269305")["source"] == "ensembl"
+
+    # 参数校验与上游异常映射
+    with pytest.raises(MapParseError) as ei:
+        src.uniprot_search("", opener=_opener({"results": []}))
+    assert ei.value.status == 422
+    with pytest.raises(MapParseError) as ei2:
+        src.uniprot_entry("bad/id", opener=_opener({}))
+    assert ei2.value.status == 422
+    with pytest.raises(MapParseError) as ei3:
+        src.uniprot_search("TP53", opener=_opener({"nope": 1}))
+    assert ei3.value.status == 502
+
+
+def test_uniprot_fasta_and_search_shape(monkeypatch):
+    fasta = b">sp|P04637|P53_HUMAN Cellular tumor antigen p53\nMEEPQSDPSV\n"
+    assert src.uniprot_fasta("P04637", opener=_opener(fasta)).startswith(">sp|P04637")
+    with pytest.raises(MapParseError) as ei:
+        src.uniprot_fasta("P04637", opener=_opener(b"not fasta"))
+    assert ei.value.status == 502
+    # 条目里没有推荐名时退回提交名
+    view = src._uniprot_entry_view({
+        "primaryAccession": "A0A1", "proteinDescription":
+            {"submissionNames": [{"fullName": {"value": "Putative thing"}}]},
+        "uniProtKBCrossReferences": []})
+    assert view["name"] == "Putative thing" and view["reviewed"] is False
+
+
+def test_uniprot_routes(client, monkeypatch):
+    monkeypatch.setattr(osr.src, "uniprot_search",
+                        lambda q, **kw: [src._uniprot_entry_view(UNIPROT_ENTRY)])
+    monkeypatch.setattr(osr.src, "uniprot_entry",
+                        lambda acc, **kw: src._uniprot_entry_view(UNIPROT_ENTRY))
+    monkeypatch.setattr(osr.src, "uniprot_fasta", lambda acc, **kw: ">sp|P04637|\nMEEPQ\n")
+
+    c, _ = client
+    r = c.get("/api/vectors/import/uniprot/search", params={"query": "TP53"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 1 and body["results"][0]["accession"] == "P04637"
+    # 检索是精简字段（不带交叉引用），核酸入口一律由条目端点给出
+    assert "nucleotide" not in body["results"][0] and "GET" in body["note"]
+    assert "CC BY" in body["license"]
+
+    e = c.get("/api/vectors/import/uniprot/P04637")
+    assert e.status_code == 200, e.text
+    assert e.json()["entry"]["gene"] == "TP53" and e.json()["nucleotide"]
+    assert "fasta" not in e.json()
+    f = c.get("/api/vectors/import/uniprot/P04637", params={"with_fasta": 1})
+    assert f.json()["fasta"].startswith(">sp|P04637")
+
+    assert c.get("/api/vectors/import/uniprot/bad/id").status_code == 404  # 路径分段 → 未匹配
+    assert c.get("/api/vectors/import/uniprot/search", params={"query": ""}).status_code == 422
+
+
+def test_sources_payload_lists_uniprot_and_addgene_session(client, vectors_dir, monkeypatch):
+    c, _ = client
+    ids = {s["id"]: s for s in c.get("/api/vectors/import/sources").json()["sources"]}
+    assert set(ids) >= {"snapgene", "ensembl", "addgene", "ncbi", "uniprot"}
+    assert ids["uniprot"]["importable"] is False and "CC BY" in ids["uniprot"]["license"]
+    assert "蛋白库" in ids["uniprot"]["note"]
+    assert ids["addgene"]["requires_login"] is True
+    assert ids["addgene"]["session_configured"] is False and ids["addgene"]["importable"] is False
+
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=x")
+    ids2 = {s["id"]: s for s in c.get("/api/vectors/import/sources").json()["sources"]}
+    assert ids2["addgene"]["session_configured"] is True
+    assert ids2["addgene"]["importable"] is True and "已配置" in ids2["addgene"]["note"]
+
+
+def test_online_import_rate_limit_buckets_for_new_endpoints():
+    from app.rate_limit import classify_endpoint
+    assert classify_endpoint("POST", "/api/vectors/import/from-map") == "upload"
+    assert classify_endpoint("POST", "/api/vectors/import/addgene/52961") == "upload"
+    assert classify_endpoint("GET", "/api/vectors/import/uniprot/search") == "ncbi"
+    assert classify_endpoint("GET", "/api/vectors/import/uniprot/P04637") == "ncbi"
+    assert classify_endpoint("GET", "/api/vectors/import/addgene/52961") == "ncbi"
+    assert classify_endpoint("GET", "/api/vectors/import/addgene/search") == "default"
+    assert classify_endpoint("GET", "/api/vectors/import/sources") == "default"
