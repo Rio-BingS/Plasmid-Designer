@@ -568,10 +568,11 @@ defineExpose({ store, view, undo })
             <p v-else-if="detailError" class="mv-error">{{ detailError }}</p>
             <template v-else-if="detail">
               <div class="mv-enz-detail-line">{{ detail.recognition }} · {{ detailEnds }}</div>
-              <div v-if="detail.type_iis || detail.golden_gate || detail.methylation?.length" class="mv-badges">
+              <div v-if="detail.type_iis || detail.golden_gate || detail.methylation?.length || detail.modification_dependent" class="mv-badges">
                 <span v-if="detail.type_iis" class="mv-badge">Type IIS</span>
                 <span v-if="detail.golden_gate" class="mv-badge">可用于 Golden Gate</span>
                 <span v-if="detail.methylation?.length" class="mv-badge mv-badge-warn">甲基化敏感：{{ detail.methylation.join('/') }}</span>
+                <span v-if="detail.modification_dependent" class="mv-badge mv-badge-warn" title="只切含甲基化等修饰的 DNA，不进图谱酶组">修饰依赖型</span>
               </div>
               <dl class="mv-enz-dl">
                 <dt>厂商</dt>
