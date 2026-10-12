@@ -24,6 +24,10 @@ import {
   importFromEnsembl,
   searchAddgeneIndex,
   getAddgeneMetadata,
+  importFromAddgene,
+  searchUniprot,
+  getUniprotEntry,
+  saveMapAsVector,
 } from '@/api'
 
 describe('在线序列来源 API 层', () => {
@@ -78,5 +82,38 @@ describe('在线序列来源 API 层', () => {
     await getAddgeneMetadata('244694')
     expect(mockGet).toHaveBeenCalledWith('/vectors/import/addgene/244694',
       { params: { try_sequence: false } })
+  })
+
+  it('Addgene 带凭据导入走 POST 且质粒号 URL 编码', async () => {
+    await importFromAddgene('#52961', 'dna', 'lentiCRISPRv2')
+    expect(mockPost).toHaveBeenCalledWith('/vectors/import/addgene/%2352961', null,
+      { params: { fmt: 'dna', name: 'lentiCRISPRv2' } })
+  })
+
+  it('UniProt 检索/条目端点参数与后端一致（蛋白库反查核酸来源）', async () => {
+    await searchUniprot('TP53', 10, true)
+    expect(mockGet).toHaveBeenCalledWith('/vectors/import/uniprot/search',
+      { params: { query: 'TP53', limit: 10, reviewed_only: true } })
+    await getUniprotEntry('P04637', true)
+    expect(mockGet).toHaveBeenCalledWith('/vectors/import/uniprot/P04637',
+      { params: { with_fasta: true } })
+  })
+
+  it('UniProt 登录号 URL 编码（防路径注入）', async () => {
+    await getUniprotEntry('a/b?c')
+    expect(mockGet).toHaveBeenCalledWith('/vectors/import/uniprot/a%2Fb%3Fc',
+      { params: { with_fasta: false } })
+  })
+
+  it('图谱页另存为载体：整份序列与特征走 POST /vectors/import/from-map', async () => {
+    const payload = {
+      name: 'myConstruct',
+      sequence: 'ACGT',
+      topology: 'linear',
+      features: [{ name: 'ins', type: 'insert', start: 1, end: 4, strand: 1 }],
+      source: 'paste',
+    }
+    await saveMapAsVector(payload)
+    expect(mockPost).toHaveBeenCalledWith('/vectors/import/from-map', payload)
   })
 })
