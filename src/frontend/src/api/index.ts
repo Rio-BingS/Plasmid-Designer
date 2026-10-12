@@ -58,7 +58,23 @@ api.interceptors.response.use(
  *  必须带上 loc 里的字段名，否则界面上只会出现「Field required；Field required」
  *  这种看不出缺了什么的文案。
  */
+/**
+ * Cloudflare 网关错误（520–527，或 502/504 时返回的 Cloudflare 英文说明）翻译成中文。
+ * 这类错误不是后端给的业务提示，原文对用户没有可行动的信息。返回空串表示不是网关错误。
+ */
+export function gatewayErrorText(e: any): string {
+  const status = Number(e?.response?.status) || 0
+  const data = e?.response?.data
+  const raw = typeof data === 'string' ? data : `${data?.title ?? ''} ${data?.detail ?? ''}`
+  const fromCf = /cloudflare/i.test(raw)
+  if (!(status >= 520 && status <= 527) && !(fromCf && status >= 500)) return ''
+  if (status === 524) return '服务器处理超时（Cloudflare 524：超过 100 秒未返回），请稍后重试'
+  return `网关错误（HTTP ${status}）：服务器暂时没有返回有效响应，可能正在重启或过载，请稍后重试；持续出现请查看后端日志`
+}
+
 export function formatApiError(e: any, fallback = '请求失败'): string {
+  const gw = gatewayErrorText(e)
+  if (gw) return gw
   const detail = e?.response?.data?.detail
   if (typeof detail === 'string') return detail
   if (Array.isArray(detail)) {
@@ -286,6 +302,13 @@ export async function getSnapgeneSets(): Promise<{ count: number; sets: { set_id
 
 export async function getSnapgeneSetIndex(setId: string): Promise<{ set_id: string; count: number; plasmids: any[] }> {
   const response = await api.get(`/vectors/import/snapgene/sets/${encodeURIComponent(setId)}`)
+  return response.data
+}
+
+export async function searchSnapgene(q: string): Promise<{
+  query: string; count: number; truncated: boolean; plasmids: any[]; failed_sets: string[]
+}> {
+  const response = await api.get('/vectors/import/snapgene/search', { params: { q }, timeout: 90_000 })
   return response.data
 }
 

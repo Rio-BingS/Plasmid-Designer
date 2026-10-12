@@ -386,6 +386,49 @@ def test_snapgene_sets_cached(client, vectors_dir, monkeypatch):
     assert c.get("/api/vectors/import/snapgene/sets/..%2Fetc", headers=_user()).status_code in (404, 422)
 
 
+def test_snapgene_unknown_set_is_404_not_502():
+    """上游对不存在的集合回 200 + 空包体：给 404 + 提示改用质粒名搜索（此前 502 解析失败）"""
+    with pytest.raises(src.OnlineSourceError) as ei:
+        src.snapgene_set_index("pet-30a", opener=_opener(b""))
+    assert ei.value.status == 404 and "pet-30a" in str(ei.value) and "质粒名" in str(ei.value)
+
+
+def _search_stubs(monkeypatch, failing=()):
+    sets = [{"set_id": "basic", "name": "Basic"}, {"set_id": "pet", "name": "pET & Duet"},
+            {"set_id": "broken", "name": "Broken"}]
+    index = {
+        "basic": [{"plasmid_id": "pUC19", "name": "pUC19", "filename": "pUC19.dna", "index": 0}],
+        "pet": [{"plasmid_id": "pET-30a(+)", "name": "pET-30a(+)", "filename": "pET-30a(+).dna", "index": 0},
+                {"plasmid_id": "pET-30b(+)", "name": "pET-30b(+)", "filename": "x.dna", "index": 1},
+                {"plasmid_id": "pET-30_Ek_LIC", "name": "pET-30 Ek/LIC", "filename": "y.dna", "index": 2}],
+    }
+
+    def _idx(set_id, **kw):
+        if set_id in failing or set_id not in index:
+            raise src.OnlineSourceError("boom", 502)
+        return index[set_id]
+    monkeypatch.setattr(oi.src, "snapgene_sets", lambda **kw: sets)
+    monkeypatch.setattr(oi.src, "snapgene_set_index", _idx)
+
+
+def test_snapgene_search_across_sets(client, vectors_dir, monkeypatch):
+    _search_stubs(monkeypatch)
+    c, _ = client
+    for base in ("/api/vectors", "/api/map"):
+        r = c.get(f"{base}/import/snapgene/search", params={"q": "pet-30a"}, headers=_user())
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [p["plasmid_id"] for p in body["plasmids"]] == ["pET-30a(+)"]
+        assert body["plasmids"][0]["set_id"] == "pet" and body["plasmids"][0]["set_name"] == "pET & Duet"
+        assert body["failed_sets"] == ["broken"]
+    # 前缀命中排在包含命中之前；大小写/连字符不敏感
+    r = c.get("/api/map/import/snapgene/search", params={"q": "PET 30"}, headers=_user())
+    assert [p["plasmid_id"] for p in r.json()["plasmids"]][:2] == ["pET-30a(+)", "pET-30b(+)"]
+    assert r.json()["count"] == 3
+    assert c.get("/api/map/import/snapgene/search", params={"q": "-"}, headers=_user()).status_code == 422
+    assert c.get("/api/map/import/snapgene/search", params={"q": "pet"}).status_code == 401
+
+
 def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
     record = src.snapgene_record(_snapgene_bytes(), name="pYES2")
 
@@ -512,6 +555,8 @@ def test_rate_limit_buckets_unchanged():
     "/api/vectors/import/ensembl/preview",
     "/api/map/import/snapgene/sets",
     "/api/map/import/snapgene/sets/yeast_plasmids",
+    "/api/map/import/snapgene/search",
+    "/api/vectors/import/snapgene/search",
 ])
 def test_outbound_proxy_gets_use_ncbi_bucket(path):
     """会外呼的只读代理两侧口径一致，都走 ncbi 档（审查 M4）"""
