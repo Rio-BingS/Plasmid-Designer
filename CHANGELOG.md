@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-10-12
+
+### 新增
+- 图谱页与载体库页的 SnapGene 集合改为可输入的组合框：可输入名称（不区分大小写）、集合 ID 或只命中一个集合的关键字，也可从候选列表选择；列表外但格式合法的 ID 交后端校验。
+
+### 修复
+- SnapGene 集合下拉选项不再拼接内部 ID，避免文字过长被截断；集合 ID 改为悬停提示，输入框随行宽伸缩。
+
 ## [2.13.0] - 2026-10-12
 
 ### 升级注意
@@ -801,7 +809,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.0...HEAD
+[2.14.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...v2.11.1
