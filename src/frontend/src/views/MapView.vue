@@ -17,6 +17,7 @@ import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
 import { saveMapAsVector } from '@/api'
 import { useIsAdmin } from '@/composables/useIsAdmin'
+import { onTabKeydown } from '@/utils/tabKeys'
 
 const PAGE_TITLE = '质粒图谱 - Plasmid Designer'
 const EXAMPLE_VECTOR = 'pUC19'
@@ -301,7 +302,7 @@ async function doSaveAsVector() {
     <p v-if="saveMsg" :class="['map-saveas-msg', saveFailed ? 'map-error' : 'map-muted']" role="status">{{ saveMsg }}</p>
 
     <section v-if="showInput" class="card map-input">
-      <div class="map-tabs" role="tablist">
+      <div class="map-tabs" role="tablist" @keydown="onTabKeydown">
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'file' }]" :aria-selected="mode === 'file'" @click="mode = 'file'">上传文件</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'paste' }]" :aria-selected="mode === 'paste'" @click="mode = 'paste'">粘贴序列</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'ncbi' }]" :aria-selected="mode === 'ncbi'" @click="mode = 'ncbi'">NCBI 导入</button>

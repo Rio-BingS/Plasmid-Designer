@@ -19,6 +19,7 @@ import { resolveHit } from '../hits'
 import { downloadPng, downloadSvg, safeFilename } from '../export'
 import { downloadBlob } from '@/utils/download'
 import { formatApiError } from '@/api'
+import { onTabKeydown } from '@/utils/tabKeys'
 import CircularMap from './CircularMap.vue'
 import LinearMap from './LinearMap.vue'
 import SequenceMap from './SequenceMap.vue'
@@ -481,7 +482,7 @@ defineExpose({ store, view, undo })
       </div>
 
       <aside class="mv-side">
-        <div class="mv-tabs" role="tablist">
+        <div class="mv-tabs" role="tablist" @keydown="onTabKeydown">
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'features' }]" :aria-selected="sideTab === 'features'"
                   @click="sideTab = 'features'">特征 ({{ doc.features.length }})</button>
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'enzymes' }]" :aria-selected="sideTab === 'enzymes'"
