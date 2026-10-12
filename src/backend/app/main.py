@@ -69,6 +69,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 管理员引导失败: {e}")
 
+    # Addgene 用户自备会话只适合单用户自托管：多用户部署时告警（审查 M2）
+    try:
+        from app.online_import import log_addgene_shared_session_warning
+        log_addgene_shared_session_warning()
+    except Exception as e:  # pragma: no cover - 告警失败不阻断启动
+        print(f"⚠️ Addgene 会话检查失败: {e}")
+
     # 批量测序分块上传会话：启动时清理上次残留的暂存目录，之后周期清理过期会话
     from app.routes.sequencing_session_routes import sweeper_loop
     sweeper = asyncio.create_task(sweeper_loop())
