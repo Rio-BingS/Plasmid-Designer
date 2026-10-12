@@ -20,6 +20,10 @@
 
 ### 修复
 
+- `GET /api/vectors/import/addgene/{质粒号}?try_sequence=true` 改为仅管理员（匿名 401、
+  普通用户 403）：配置了 `ADDGENE_SESSION_COOKIE` 时该分支会以部署方的 Addgene 账号
+  下载全长序列，此前任何访客都能驱动；来源清单与该端点的 `session_configured` 也只对
+  管理员如实下发。
 - 在线来源外呼不再自动跟随重定向：每一跳都重新校验 https + 主机白名单（按裸主机名，
   最多 3 跳），Addgene 会话 Cookie 改为不随重定向转发、跨主机即丢弃；上游给出的
   `file://`、`http://` 等非 https 直链一律拒绝。此前一次 302 就能把 Cookie 发到任意
