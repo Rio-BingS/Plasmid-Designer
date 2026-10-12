@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from core.plasmid_map.parsers import ParsedRecord, clean_sequence
+from core.vector_library import is_url_key, safe_http_url
 
 # 落盘文件名白名单：仅保留字母/数字/点/下划线/连字符（防路径分隔符注入）
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -92,6 +93,8 @@ def record_to_vector_dict(record: ParsedRecord, *, source: str, url: Optional[st
     if dropped_segments:
         warnings.append(f"{dropped_segments} 个跨原点复合特征只保留了整体跨度（载体库不支持分段）")
 
+    # 出处 URL 只收 http(s)（审查 M5）：非法值直接丢弃，不落盘
+    url = safe_http_url(url) or None
     desc_parts = [p for p in (description, attribution) if p]
     data: Dict = {
         "id": vector_id or make_vector_id(source, record.name),
@@ -111,6 +114,7 @@ def record_to_vector_dict(record: ParsedRecord, *, source: str, url: Optional[st
     if provenance:
         # 结构化出处（界面展示 + 日后重取依据）；缺 url 时用参数补，避免两处不一致
         prov = {str(k): str(v) for k, v in provenance.items() if v not in (None, "")}
+        prov = {k: v for k, v in prov.items() if not is_url_key(k) or safe_http_url(v)}
         if url and not prov.get("url"):
             prov["url"] = url
         prov.setdefault("fetched_at", now_iso())
@@ -190,7 +194,7 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
         "topology": data["topology"],
         "features": len(data["features"]),
         "source": source,
-        "url": url or "",
+        "url": data.get("url", ""),
         "path": path,
         "provenance": data.get("data_provenance", {}),
         "warnings": data.get("_warnings", []),
