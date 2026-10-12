@@ -93,6 +93,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(src.urllib.request, "urlopen", _boom)
     monkeypatch.setattr(src, "_default_open", _boom)  # 自建 opener 同样禁网
     monkeypatch.setattr(src, "_MIN_INTERVAL", {})  # 免等待
+    monkeypatch.setattr(src, "_next_slot", {})     # 节流时间槽不跨用例
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
@@ -1427,3 +1428,45 @@ def test_addgene_shared_session_warning_tolerates_db_errors(monkeypatch):
     monkeypatch.setattr(site_settings, "get_settings", _boom)
     monkeypatch.setattr(dbmod, "SessionLocal", _boom)
     assert oi.addgene_shared_session_warning() is None
+
+
+# ================================================================ 节流（审查 M3）
+
+def test_throttle_does_not_serialize_different_hosts(monkeypatch):
+    """A 站点在排队 sleep 时，B 站点的请求不能被同一把锁卡住（旧实现锁内 sleep）"""
+    import threading
+    import time as _time
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"a.example": 0.6, "b.example": 0.6})
+    src._throttle("a.example")                     # 占掉 a 的当前槽
+    t = threading.Thread(target=src._throttle, args=("a.example",))   # 需等 ~0.6 s
+    t.start()
+    _time.sleep(0.05)                              # 确保线程已进入 sleep
+    t0 = _time.monotonic()
+    src._throttle("b.example")
+    elapsed = _time.monotonic() - t0
+    t.join()
+    assert elapsed < 0.3, f"不同站点被串行化：B 等了 {elapsed:.2f}s"
+
+
+def test_throttle_reserves_slots_and_bounds_queue(monkeypatch):
+    waits = []
+    monkeypatch.setattr(src.time, "sleep", lambda s: waits.append(round(s, 1)))
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"x.example": 1.0})
+    monkeypatch.setenv("ONLINE_THROTTLE_MAX_WAIT", "1.5")
+    src._throttle("x.example")
+    src._throttle("x.example")
+    assert waits == [1.0]                          # 第二个请求排到下一个槽
+    with pytest.raises(src.OnlineSourceError) as ei:
+        src._throttle("x.example")                 # 需等 ~2 s > 1.5 s 上限
+    assert ei.value.status == 429 and "排队" in str(ei.value)
+    assert waits == [1.0]                          # 被拒的请求不 sleep、不占槽
+    assert src._next_slot["x.example"] - src.time.monotonic() < 2.1
+
+
+def test_throttle_queue_full_maps_to_http_429(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"rest.ensembl.org": 100.0})
+    monkeypatch.setenv("ONLINE_THROTTLE_MAX_WAIT", "1")
+    monkeypatch.setattr(src, "_next_slot", {"rest.ensembl.org": src.time.monotonic() + 50})
+    r = c.get("/api/vectors/import/ensembl/lookup/ENSG00000139618")
+    assert r.status_code == 429 and "排队" in r.json()["detail"]

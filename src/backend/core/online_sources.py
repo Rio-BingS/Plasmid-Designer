@@ -60,7 +60,9 @@ _MIN_INTERVAL = {
     "rest.uniprot.org": 0.2,
     "www.addgene.org": 1.0,
 }
-_last_request: Dict[str, float] = {}
+# 每个站点的「下一个可用时间槽」（monotonic 秒）；锁只保护这张表的读改写，
+# 不在锁内 sleep（审查 M3：此前全局锁内 sleep → 各站点串行、线程池可被占满）
+_next_slot: Dict[str, float] = {}
 _throttle_lock = threading.Lock()
 
 # ---------------------------------------------------------------- 许可文案
@@ -139,14 +141,31 @@ def _timeout() -> float:
         return 25.0
 
 
+def _throttle_max_wait() -> float:
+    """单次外呼最多为节流排队等待多久（秒，ONLINE_THROTTLE_MAX_WAIT，默认 10）"""
+    try:
+        return max(0.0, float(os.environ.get("ONLINE_THROTTLE_MAX_WAIT", "10")))
+    except ValueError:
+        return 10.0
+
+
 def _throttle(host: str) -> None:
-    """同一站点两次外呼之间至少间隔 _MIN_INTERVAL[host]（进程级）。"""
+    """同一站点两次外呼之间至少间隔 _MIN_INTERVAL[host]（进程级，按站点独立）。
+
+    锁内只「预占」下一个时间槽，锁外 sleep：不同站点互不阻塞，同站点按槽排队。
+    排队超过 `_throttle_max_wait()` 直接拒绝（429），不让请求无限占着线程池。
+    """
     interval = _MIN_INTERVAL.get(host, 0.5)
     with _throttle_lock:
-        wait = _last_request.get(host, 0.0) + interval - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_request[host] = time.monotonic()
+        now = time.monotonic()
+        slot = max(now, _next_slot.get(host, 0.0))
+        wait = slot - now
+        if wait > _throttle_max_wait():
+            raise OnlineSourceError(
+                f"上游 {host} 的请求排队过长（需等待约 {wait:.0f} 秒），请稍后再试", 429)
+        _next_slot[host] = slot + interval
+    if wait > 0:
+        time.sleep(wait)
 
 
 class UnsafeUrlError(OnlineSourceError):
