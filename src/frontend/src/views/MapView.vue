@@ -149,15 +149,19 @@ function setDoc(d: MapDocument) {
   error.value = ''
 }
 
+// 解析请求号：解析中又拖入/选择了另一个文件时，只采用最后一次的结果（先发后到的不覆盖）
+let runGen = 0
 async function run(task: () => Promise<MapDocument>) {
+  const gen = ++runGen
   loading.value = true
   error.value = ''
   try {
-    setDoc(await task())
+    const d = await task()
+    if (gen === runGen) setDoc(d)
   } catch (e) {
-    error.value = describeMapError(e)
+    if (gen === runGen) error.value = describeMapError(e)
   } finally {
-    loading.value = false
+    if (gen === runGen) loading.value = false
   }
 }
 

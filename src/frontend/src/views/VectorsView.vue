@@ -97,6 +97,8 @@ const addgeneError = ref('')
 const addgeneLoading = ref(false)
 // Addgene 全长序列导入（需管理员 + 后端已配置用户自备会话）
 const addgeneImporting = ref(false)
+/** SnapGene / Ensembl 在线导入在途锁：防双击重复导入（或第二次得到 409） */
+const onlineImporting = ref(false)
 // UniProt（蛋白库反查：条目 → 核酸交叉引用 → 去 NCBI/Ensembl 取 DNA）
 const uniprotQuery = ref('')
 const uniprotReviewed = ref(false)
@@ -350,6 +352,8 @@ async function openSnapgenePreview(row: any) {
 
 /** 列表里直接导入（省去预览一步） */
 async function importSnapgeneRow(row: any) {
+  if (onlineImporting.value) return
+  onlineImporting.value = true
   onlineMsg.value = ''
   try {
     const res = await importFromSnapgene(sgSetId.value, row.plasmid_id)
@@ -357,6 +361,8 @@ async function importSnapgeneRow(row: any) {
     await loadVectors()
   } catch (e: any) {
     onlineMsg.value = `导入失败: ${errText(e, '')}`
+  } finally {
+    onlineImporting.value = false
   }
 }
 
@@ -377,7 +383,8 @@ async function openEnsemblPreview() {
 /** 预览弹窗里的"确认导入"：只对可导入来源生效（Addgene 不在此列） */
 async function confirmOnlineImport() {
   const p = onlinePreview.value
-  if (!p) return
+  if (!p || onlineImporting.value) return
+  onlineImporting.value = true
   onlineMsg.value = ''
   try {
     if (p.source.startsWith('ensembl')) {
@@ -391,6 +398,8 @@ async function confirmOnlineImport() {
     await loadVectors()
   } catch (e: any) {
     onlineMsg.value = `导入失败: ${errText(e, '')}`
+  } finally {
+    onlineImporting.value = false
   }
 }
 
@@ -427,7 +436,7 @@ async function doAddgeneMetadata(id: string) {
 /** 用部署方配置的（用户自备）Addgene 会话把全长序列导入载体库 */
 async function doAddgeneImport(id: string) {
   const pid = String(id || '').replace('#', '').trim()
-  if (!pid) return
+  if (!pid || addgeneImporting.value) return
   addgeneImporting.value = true
   onlineMsg.value = ''
   addgeneError.value = ''
@@ -665,7 +674,7 @@ async function openUniprotEntry(accession: string) {
         </div>
         <div class="online-item-actions">
           <button class="btn btn-small btn-secondary" @click="openSnapgenePreview(row)">👁️ 预览</button>
-          <button v-if="canImport" class="btn btn-small btn-primary" @click="importSnapgeneRow(row)">📥 导入</button>
+          <button v-if="canImport" class="btn btn-small btn-primary" :disabled="onlineImporting" @click="importSnapgeneRow(row)">📥 导入</button>
         </div>
       </div>
     </div>
@@ -852,7 +861,9 @@ async function openUniprotEntry(accession: string) {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" @click="showOnlinePreview = false">取消</button>
-        <button v-if="canImport" class="btn btn-primary" @click="confirmOnlineImport">📥 导入到载体库</button>
+        <button v-if="canImport" class="btn btn-primary" :disabled="onlineImporting" @click="confirmOnlineImport">
+          {{ onlineImporting ? '导入中...' : '📥 导入到载体库' }}
+        </button>
         <span v-else class="online-hint">导入需管理员权限</span>
       </div>
     </div>
