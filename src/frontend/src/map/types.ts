@@ -139,3 +139,49 @@ export interface NcbiImportRequest {
   enzyme_set?: string
   orf_min_aa?: number
 }
+
+// ==================== 在线序列来源（SnapGene 在线库 / Ensembl） ====================
+// 许可提示随 /api/map/import/sources 下发；Addgene 后端不代登录，本页不提供其入口
+
+export interface OnlineSourceInfo {
+  id: string
+  name: string
+  kind: string
+  url: string
+  license: string
+  importable: boolean
+  note: string
+}
+
+export interface OnlineSourcesPayload {
+  enabled: boolean
+  disclaimer: string
+  sources: OnlineSourceInfo[]
+}
+
+export interface SnapgeneSet { set_id: string; name: string }
+
+/** 集合索引里的条目：plasmid_id 是下载用的 ID，filename 是落盘名（更接近真实质粒名） */
+export interface SnapgenePlasmid {
+  plasmid_id: string
+  name: string
+  filename: string
+  index: number
+}
+
+export interface SnapgeneImportRequest {
+  set_id: string
+  plasmid_id: string
+  annotate?: boolean
+  enzyme_set?: string
+  orf_min_aa?: number
+}
+
+export interface EnsemblImportRequest {
+  identifier: string
+  seq_type: 'genomic' | 'cds' | 'cdna'
+  annotate?: boolean
+  enzyme_set?: string
+  orf_min_aa?: number
+}
+

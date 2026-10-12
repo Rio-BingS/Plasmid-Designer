@@ -10,11 +10,13 @@ app/
 ├── config.py                # 配置（环境变量 / .env）+ sys.path
 ├── design_service.py        # 单任务与批量共用的设计流水线
 ├── vector_import.py         # 外部/在线序列 → 载体库 YAML（导入落盘形状唯一入口）
+├── online_import.py         # 在线来源共享装配层（来源清单/许可、集合索引缓存、单序列下载+命名）
 ├── routes/                  # 路由模块
 │   ├── design_routes.py     # 设计任务 API
 │   ├── batch_routes.py      # 批量设计 API
 │   ├── vector_routes.py     # 载体库 API
-│   ├── online_source_routes.py  # 在线来源导入（SnapGene 在线库/Ensembl/Addgene）
+│   ├── online_source_routes.py  # 载体库在线导入（SnapGene 在线库/Ensembl/Addgene）
+│   ├── map_online_routes.py # 图谱页在线导入（SnapGene 在线库/Ensembl）
 │   ├── codon_routes.py      # 密码子表 API
 │   ├── sequencing_routes.py # Sanger 测序分析 API
 │   └── models.py            # 共享 Pydantic 模型

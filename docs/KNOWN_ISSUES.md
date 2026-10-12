@@ -205,3 +205,17 @@ Marmur-Doty）系统性高约 7°C，且相同长度与 GC 的不同序列不再
 Ensembl `lookup ENSG00000139618` → BRCA2/GRCh38，`ENST00000288602` cds → 2,421 bp 线性；
 Addgene `244694` 元数据可取、`.gbk` 直链 404 → 按预期 403 指引；本机 Addgene 索引 169,016 条可离线搜索。
 `ensembl_ping` 在本机网络下超时（lookup/sequence 正常），故只作诊断用、不要接成健康检查。
+
+**图谱页侧（同批追加）**：`/api/map/import/sources|snapgene/sets|snapgene|ensembl` —— 图谱页新增
+「在线导入」页签（SnapGene 在线库按集合选序列 / Ensembl 按 ID 取 genomic·cds·cdna），
+直接打开成可编辑的 MapDocument（含自动注释与酶切）。集合/索引与载体库侧**共用同一批缓存**
+（`app/online_import`），图谱页的 MapDocument 按「输入摘要 + 选项 + 元件库/算法版本」分键，
+命中时不重复下载；集合/索引与导入写端点走 `ncbi` 限流档（外呼代理）。`MAP_MAX_LENGTH`
+（300 kb）在解析阶段生效：Ensembl `seq_type=genomic` 给染色体 ID 会 413。
+
+实跑：`POST /api/map/import/snapgene`（coronavirus_resources/SARS_Genome）→
+`plasmid-map/1 SARS Genome 29,751 bp linear 49 特征 41 个酶切位点`。
+
+**已知环境问题（非代码缺陷）**：本机网络下 `rest.ensembl.org` 偶发超时——
+`ensembl ping` 常常失败、`POST /api/map/import/ensembl` 实测出现过 504（映射正确，重试即可），
+而同一时刻 `lookup`/`sequence` 又可能成功；因此不要把 `ensembl_ping` 接成健康检查或门控。

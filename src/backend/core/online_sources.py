@@ -275,15 +275,17 @@ def assert_snapgene_dna(data: bytes, what: str = "序列") -> None:
 
 
 def snapgene_record(data: bytes, *, name: Optional[str] = None,
-                    topology: Optional[str] = None) -> ParsedRecord:
+                    topology: Optional[str] = None,
+                    max_length: Optional[int] = None) -> ParsedRecord:
     """.dna 字节 → ParsedRecord（交给项目统一解析器，含特征/颜色/拓扑）
 
     `name` 来自集合索引（filename/name），比文件内部的名字可靠：实测 SnapGene
     .dna 里的 `record.name` 是状态标记（如 "REVIEWED"），并非质粒名。
+    `max_length` 由调用方按用途给上限（图谱页传 MAP_MAX_LENGTH，超限 413）。
     """
     filename = f"{name or 'snapgene'}.dna"
     try:
-        rec = parse_file(filename, data, topology=topology)
+        rec = parse_file(filename, data, max_length=max_length, topology=topology)
     except MapParseError as e:
         raise OnlineSourceError(f"SnapGene 文件解析失败：{e}", e.status) from e
     if name:
@@ -337,12 +339,18 @@ def ensembl_sequence(identifier: str, seq_type: str = "cds", *, timeout: Optiona
 
 
 def ensembl_record(identifier: str, seq_type: str = "cds", *, name: Optional[str] = None,
+                   max_length: Optional[int] = None,
                    timeout: Optional[float] = None,
                    opener: Optional[Callable] = None) -> ParsedRecord:
-    """Ensembl 序列 → ParsedRecord（默认线性：导入的是片段而非质粒）"""
+    """Ensembl 序列 → ParsedRecord（默认线性：导入的是片段而非质粒）
+
+    `max_length` 按用途给上限：`seq_type=genomic` 时返回的是整个基因区，
+    给染色体 ID 会很大——图谱页传 MAP_MAX_LENGTH，超限 413。
+    """
     text = ensembl_sequence(identifier, seq_type, timeout=timeout, opener=opener)
     try:
-        rec = parse_text(text, name=name or validate_ensembl_id(identifier), topology="linear")
+        rec = parse_text(text, name=name or validate_ensembl_id(identifier),
+                         topology="linear", max_length=max_length)
     except MapParseError as e:
         raise OnlineSourceError(f"Ensembl 序列解析失败：{e}", e.status) from e
     rec.source_format = f"ensembl:{seq_type}"
