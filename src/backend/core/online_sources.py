@@ -381,6 +381,11 @@ def snapgene_set_index(set_id: str, *, timeout: Optional[float] = None,
     url = f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}"
     raw = _http_get(url, max_bytes=16 * 1024 * 1024, accept="application/xml",
                     timeout=timeout, opener=opener)
+    if not raw.strip():
+        # 上游对不存在的集合回 200 + 空包体；常见是把质粒名（如 pET-30a）当集合输入
+        raise OnlineSourceError(
+            f"SnapGene 没有集合「{sid}」。要找某个质粒（如 pET-30a），"
+            "直接在集合框输入质粒名回车即可跨集合搜索", 404)
     return parse_set_index(raw, sid)
 
 

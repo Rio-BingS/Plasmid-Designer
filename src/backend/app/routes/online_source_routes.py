@@ -110,6 +110,14 @@ async def snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str,
     return await _call(oi.snapgene_sets_payload)
 
 
+@router.get("/import/snapgene/search")
+async def snapgene_search(q: str = Query(..., min_length=1, max_length=80),
+                          limit: int = Query(50, ge=1, le=200),
+                          _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
+    """按质粒名跨集合搜索（如 pET-30a）；冷缓存约 20 秒，之后走 1 小时缓存"""
+    return await _call(oi.snapgene_search_payload, q, limit)
+
+
 @router.get("/import/snapgene/sets/{set_id}")
 async def snapgene_set_index(set_id: str,
                              _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
