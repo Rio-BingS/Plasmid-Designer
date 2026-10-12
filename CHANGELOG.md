@@ -8,6 +8,51 @@
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-10-12
+
+### 升级注意
+
+- 可选新环境变量 `ADDGENE_SESSION_COOKIE`：填写你自己在浏览器登录 Addgene 后的
+  会话 Cookie，后端才能取**你有权访问**的全长序列并直接导入载体库（只发给
+  `addgene.org`，不落盘/不回显/不记日志）。不填也能用：相关端点返回 403 + 合法
+  路径指引，工具始终不代登录、不绕登录墙。Docker 部署需同步 `docker-compose.yml`
+  （新增三个环境变量透传），裸机部署随项目文件复制即可，无数据迁移。
+- 载体响应新增字段（向后兼容，前端刷新即可）：`GET /api/vectors`、
+  `GET /api/vectors/{id}` 增加 `topology` 与 `data_provenance`。行为变化：导入的
+  线性片段（PCR 产物、Ensembl 片段、线性 GenBank 记录）现在按其真实拓扑显示为
+  线性图谱，此前一律当环状质粒画。
+
+### 新增
+
+- 在线来源导入收尾（载体库页与图谱页）：
+  - **结构化出处**：导入的载体落 `data_provenance`（来源 / URL / 许可 / 抓取时间 +
+    集合、质粒号、登录号等），载体详情页新增「出处 / 许可」块，便于成果中标注来源；
+    内置载体与 NCBI 批量导入路径同形状
+  - **图谱页「另存为载体」**：`POST /api/vectors/import/from-map` 把当前打开（含编辑器
+    里改过的注释）的序列与特征存进载体库，后端不再外呼——保存的与看到的一定是同一份
+  - **UniProt 通道**：按基因 / 蛋白名 / 登录号检索条目并反查 Entrez / EMBL / RefSeq /
+    Ensembl 交叉引用（UniProt 是蛋白库、不含质粒序列，只作引路）；载体库新增
+    「UniProt」页签
+  - **Addgene**：配置自带会话后可把全长序列导入载体库（`POST
+    /api/vectors/import/addgene/{质粒号}`）；本地索引搜索与匿名元数据保持原样
+  - **联网冒烟**：`scripts/smoke_online_sources.py`（默认不联网，`--run` 才真打
+    SnapGene / Ensembl / UniProt / Addgene，只读不写）
+- 载体库写入口（上传 / 批量导入 / 编辑 / 删除 / 在线导入 / 另存为载体）对非管理员隐藏，
+  后端 403 仍是权威
+- 图谱契约的元件类型（`rep_origin`、`mcs`、`marker`、`signal_peptide` 等）导入载体库后
+  不再一律显示为 `other`
+
+### 变更
+
+- 载体拓扑按真实值保存与展示：线性片段不再被当环状质粒画（列表缩略图、载体详情、
+  载体图谱三处一致）
+
+### 修复
+
+- 导入的载体此前只在描述里写一句来源，出处无法结构化展示、也无法按 URL 重取
+- 测试隔离：打桩载体目录只打了 `app.config.settings`，而 `app.design_service` 持有
+  reload 前的旧实例，全量跑时表现为「刚导入的载体 404」（单跑该文件是绿的）
+
 ## [2.11.1] - 2026-10-12
 
 ### 修复
@@ -595,7 +640,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...v2.10.0
