@@ -41,6 +41,11 @@
   （`client_max_body_size 17m`）。裸机部署须把新的 nginx.conf 复制到位并 `nginx -s reload`；
   Docker 部署重建前端镜像。新增可选环境变量 `MAP_MAX_JSON_MB`（默认 16，`/api/map/*` 除
   `/parse` 外写请求的体积上限）；调大它或 `MAP_MAX_UPLOAD_MB` 时同步调大 nginx 这一项。
+- Docker 部署需同步 `docker-compose.yml`：新增透传 `MAP_MAX_JSON_MB`、
+  `MAP_AUTO_ANNOTATE_MAX_BP`、`MAP_ANNOTATE_MAX_CELLS`、`MAP_MAX_SITES_PER_ENZYME`、
+  `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`、
+  `NCBI_TIMEOUT`、`NCBI_MAX_CONCURRENCY`（缺省值与代码默认一致；两份 `.env.example`
+  已补说明），否则在 `.env` 里调整这些值对容器不生效。
 - 前端改为按路由拆包：`dist/assets/` 里会多出一批分包文件（`MapView-*.js`、
   `MapViewer-*.js` 等），部署时请整体替换 `dist/`（裸机/Docker 现有流程本来就是
   整目录复制，无需改动）。`index.html` 不应被长缓存；还开着旧版本页面的标签页在

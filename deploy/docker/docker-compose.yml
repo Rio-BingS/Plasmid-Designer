@@ -49,9 +49,19 @@ services:
       # 质粒图谱序列长度 / 上传体积上限（见 .env.example）
       - MAP_MAX_LENGTH=${MAP_MAX_LENGTH:-300000}
       - MAP_MAX_UPLOAD_MB=${MAP_MAX_UPLOAD_MB:-5}
+      # 图谱请求体 / 自动注释 / 位点明细 / 缓存上限（见 .env.example 与 docs/MAP.md）
+      - MAP_MAX_JSON_MB=${MAP_MAX_JSON_MB:-16}
+      - MAP_AUTO_ANNOTATE_MAX_BP=${MAP_AUTO_ANNOTATE_MAX_BP:-50000}
+      - MAP_ANNOTATE_MAX_CELLS=${MAP_ANNOTATE_MAX_CELLS:-60000000}
+      - MAP_MAX_SITES_PER_ENZYME=${MAP_MAX_SITES_PER_ENZYME:-500}
+      - MAP_MAX_TOTAL_SITES=${MAP_MAX_TOTAL_SITES:-60000}
+      - MAP_CACHE_MAX_DOC_BYTES=${MAP_CACHE_MAX_DOC_BYTES:-1048576}
+      - MAP_CACHE_MAX_TOTAL_BYTES=${MAP_CACHE_MAX_TOTAL_BYTES:-67108864}
       # NCBI accession 导入（可选）
       - NCBI_EMAIL=${NCBI_EMAIL:-}
       - NCBI_API_KEY=${NCBI_API_KEY:-}
+      - NCBI_TIMEOUT=${NCBI_TIMEOUT:-30}
+      - NCBI_MAX_CONCURRENCY=${NCBI_MAX_CONCURRENCY:-4}
       # 在线序列来源导入（SnapGene 在线库 / Ensembl / UniProt / Addgene）：设 false 可整体关闭外呼
       - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
       # SnapGene 在线库单独开关（默认关；开启须自行接受其网站条款风险，见 .env.example）
