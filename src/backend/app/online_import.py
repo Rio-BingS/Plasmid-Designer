@@ -14,8 +14,11 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
+from fastapi import Depends, HTTPException, status
+
+from app.auth.jwt_auth import get_current_user
 from app.cache import cache
 from core import online_sources as src
 from core.plasmid_map.parsers import ParsedRecord
@@ -38,10 +41,39 @@ def cache_set(key: str, value: Any) -> None:
         pass
 
 
+def require_snapgene_enabled() -> None:
+    """SnapGene 在线库开关（SNAPGENE_ONLINE_ENABLED，默认关）：关闭时一律 404 + 说明。
+
+    放在鉴权依赖之前声明，关闭时匿名/登录用户都得到同一个明确的 404。
+    """
+    if not src.snapgene_online_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=src.SNAPGENE_DISABLED_MSG)
+
+
+async def require_snapgene_user(_: None = Depends(require_snapgene_enabled),
+                                user=Depends(get_current_user)):
+    """SnapGene 在线库只读端点（集合/索引/预览/图谱打开）：开关打开 + 已登录。
+
+    匿名访客不能触发服务器去抓 `/local`（v2.12 审查 H2：此前任何访客都能代理外呼）。
+    """
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="SnapGene 在线库仅对已登录用户开放，请先登录",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return user
+
+
 def sources_payload() -> Dict[str, Any]:
-    """在线来源清单：可用性 + 许可摘要 + 导入开关（前端据此渲染页签与提示）"""
+    """在线来源清单：可用性 + 许可摘要 + 导入开关（前端据此渲染页签与提示）
+
+    `snapgene_online_enabled`：SnapGene 在线库开关（默认 false）；前端据此
+    以及是否已登录决定是否显示 SnapGene 页签（后端仍是权威：关 → 404，匿名 → 401）。
+    """
+    snapgene_on = src.snapgene_online_enabled()
     return {
         "enabled": src.import_enabled(),
+        "snapgene_online_enabled": snapgene_on,
         "disclaimer": src.DISCLAIMER,
         "sources": [
             {
@@ -50,8 +82,11 @@ def sources_payload() -> Dict[str, Any]:
                 "kind": "online_library",
                 "url": src.SNAPGENE_BASE,
                 "license": src.SNAPGENE_LICENSE,
-                "importable": True,
-                "note": "19 个集合（基础克隆载体/CRISPR/荧光蛋白/酵母质粒…），含完整图谱与注释",
+                "enabled": snapgene_on,
+                "importable": snapgene_on,
+                "requires_login": True,
+                "note": ("集合含基础克隆载体/CRISPR/荧光蛋白/酵母质粒等，含完整图谱与注释；"
+                         "仅登录用户可用" if snapgene_on else src.SNAPGENE_DISABLED_MSG),
             },
             {
                 "id": "ensembl",

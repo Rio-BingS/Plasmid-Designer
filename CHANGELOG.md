@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+### 升级注意
+
+- **SnapGene 在线库默认关闭**：新增独立开关 `SNAPGENE_ONLINE_ENABLED`（默认
+  `false`，与 `ONLINE_IMPORT_ENABLED` 无关）。升级后载体库与图谱页的「SnapGene 在线库」
+  页签消失，相关端点（`/api/vectors/import/snapgene*`、`/api/map/import/snapgene*`）返回
+  404 + 说明。需要该功能的部署方须显式设为 `true`，并知悉其网站条款禁止存入检索系统、
+  robots.txt 禁止 `/local`（仅建议学术/非营利自用实例开启，见 `docs/KNOWN_ISSUES.md`
+  「已接受风险」）。开启后这些只读端点也**需要登录**（匿名 401），存入载体库仍需管理员。
+  Docker 部署需同步 `docker-compose.yml`（新增该变量透传）；已导入的 SnapGene 载体不受影响。
+
 ### 修复
 
 - 在线来源外呼不再自动跟随重定向：每一跳都重新校验 https + 主机白名单（按裸主机名，
