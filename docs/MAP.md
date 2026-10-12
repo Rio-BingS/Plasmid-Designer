@@ -126,7 +126,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 | `NCBI_EMAIL` | — | 建议设置：NCBI E-utilities 要求的联系邮箱（随请求发送） |
 | `NCBI_API_KEY` | — | 可选：NCBI API key，速率上限由 3 次/秒提高到 10 次/秒 |
 | `NCBI_TOOL` | `PlasmidDesigner` | E-utilities `tool` 参数 |
-| `NCBI_TIMEOUT` | 20 | 单次 efetch 超时（秒） |
+| `NCBI_TIMEOUT` | 30 | 单次导入的**总时长**上限（秒）：节流排队 + 连接 + 全部读取，超时 504（排队就超时 503） |
+| `NCBI_MAX_CONCURRENCY` | 4 | 同时进行的 NCBI 导入数（独立线程令牌，不占全局线程池） |
 | `NCBI_TEXT_CACHE_MAX_BYTES` | 2097152 | 只缓存不超过该体积的 NCBI GenBank 文本（缓存 24 小时） |
 
 解析、比对、酶切扫描都在线程池执行。结果缓存 1 小时，键含输入摘要、选项、
@@ -134,6 +135,7 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 代码改动须递增）。限流沿用中间件 default 档，与 `/api/analysis` 相同。
 
 NCBI 导入：下载体积上限沿用 `MAP_MAX_UPLOAD_MB`，序列长度上限沿用 `MAP_MAX_LENGTH`（读到 LOCUS
-行即判断，超长记录不必下载完）；efetch 在线程池执行，进程内相邻请求间隔 ≥0.34 s（有 API key
-时 0.11 s），按客户端走限流 `ncbi` 档（匿名 10 次/分钟、登录用户 30 次/分钟）；GenBank 文本缓存
+行即判断，超长记录不必下载完）；efetch 在独立的 anyio CapacityLimiter（`NCBI_MAX_CONCURRENCY`）
+上执行，不占 `/parse`、`/analyze` 等共用的全局线程池；进程内相邻请求间隔 ≥0.34 s（有 API key
+时 0.11 s，锁内只预约时间点、锁外等待），按客户端走限流 `ncbi` 档（匿名 10 次/分钟、登录用户 30 次/分钟）；GenBank 文本缓存
 24 小时，生成的 MapDocument 走上面的常规缓存。

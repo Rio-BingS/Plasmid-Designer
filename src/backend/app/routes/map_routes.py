@@ -25,6 +25,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+import anyio
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
@@ -128,6 +130,12 @@ def _http_error(e: MapParseError) -> HTTPException:
 
 async def cached_document(kind: str, key_payload: Any, fn, *args, **kwargs) -> Dict:
     """线程池里算 MapDocument，带缓存；MapParseError → HTTP 错误"""
+    return await _cached_document(kind, key_payload, None, fn, args, kwargs)
+
+
+async def _cached_document(kind: str, key_payload: Any, limiter, fn, args, kwargs) -> Dict:
+    """limiter 为 None 时用全局线程池；给定 anyio CapacityLimiter 时在其独立
+    的令牌里跑（外呼类任务不占全局 40 个令牌）"""
     key = _cache_key(kind, key_payload)
     hit = _cache_get(key)
     if hit is not None:
@@ -139,7 +147,10 @@ async def cached_document(kind: str, key_payload: Any, fn, *args, **kwargs) -> D
         return doc, size
 
     try:
-        doc, size = await run_in_threadpool(run)
+        if limiter is None:
+            doc, size = await run_in_threadpool(run)
+        else:
+            doc, size = await anyio.to_thread.run_sync(run, limiter=limiter)
     except MapParseError as e:
         raise _http_error(e)
     if size is not None:
@@ -348,6 +359,18 @@ async def get_suppliers() -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+NCBI_MAX_CONCURRENCY = max(1, int(os.environ.get("NCBI_MAX_CONCURRENCY", "4")))
+_ncbi_limiter_obj: Optional[anyio.CapacityLimiter] = None
+
+
+def _ncbi_limiter() -> anyio.CapacityLimiter:
+    """NCBI 导入专用的线程令牌（惰性创建：CapacityLimiter 须在事件循环里构造）"""
+    global _ncbi_limiter_obj
+    if _ncbi_limiter_obj is None:
+        _ncbi_limiter_obj = anyio.CapacityLimiter(NCBI_MAX_CONCURRENCY)
+    return _ncbi_limiter_obj
+
+
 def _ncbi_text(acc: str) -> str:
     """NCBI GenBank 文本：先查缓存，未命中再 efetch（阻塞，线程池里调用）"""
     key = f"map:ncbi-text:{acc}"
@@ -380,7 +403,8 @@ async def import_ncbi(req: MapNcbiRequest):
     except MapParseError as e:
         raise _http_error(e)
     opts = {"annotate": req.annotate, "enzyme_set": req.enzyme_set, "orf_min_aa": req.orf_min_aa}
-    return await cached_document("ncbi", {"acc": acc, "opts": opts}, _ncbi_build, acc, opts)
+    return await _cached_document("ncbi", {"acc": acc, "opts": opts}, _ncbi_limiter(),
+                                  _ncbi_build, (acc, opts), {})
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")

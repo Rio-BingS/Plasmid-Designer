@@ -19,6 +19,8 @@
   可选字段 `sites_truncated`（位点明细被截断时为 true，`cut_count` 仍是完整计数），
   酶详情新增 `modification_dependent`。新增可选环境变量 `MAP_MAX_SITES_PER_ENZYME`、
   `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`。
+- `NCBI_TIMEOUT` 语义改为单次 NCBI 导入的总时长上限（默认由 20 改为 30 秒；此前只是单次
+  socket 读超时）；新增可选 `NCBI_MAX_CONCURRENCY`（默认 4）。
 
 ### 修复
 
@@ -35,6 +37,9 @@
   在内存缓存里常驻约 35 MB/条），且 MspJI/LpnPI/SgeI 计数与 Biopython 不一致。现在排除
   这类酶，位点明细按酶/按文档封顶，序列化超过 1 MB 的文档不进缓存、缓存总字节封顶；
   300 kb commercial 响应约 6 MB。
+- NCBI 导入：节流锁里 sleep 使并发导入串行排队、各自占着全局线程池令牌，慢速响应还能
+  把线程占任意久。现在锁内只预约时间点、锁外等待，导入跑在独立的小线程令牌池上，并有
+  整次取数的总时长上限。
 
 ## [2.12.0] - 2026-10-12
 
