@@ -452,6 +452,14 @@ function onWheel(e: WheelEvent) {
 }
 
 function onLeave() { if (mode === 'none') store.hover.value = null }
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel() {
+  if (mode === 'none') return
+  mode = 'none'
+  moved = false
+  downKey = null
+  store.hover.value = null
+}
 
 defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
 </script>
@@ -469,6 +477,7 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
       :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H" role="img" :aria-label="`${store.doc.value.name} 线性图谱`"
       :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel"
       @pointerleave="onLeave" @wheel="onWheel"
     >
       <rect v-for="r in hoverRects" :key="'h' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#f59e0b" fill-opacity="0.1" />

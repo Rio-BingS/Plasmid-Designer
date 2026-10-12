@@ -626,6 +626,15 @@ function onPointerUp(e: PointerEvent) {
   mode = 'none'
 }
 
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel() {
+  if (mode === 'none') return
+  mode = 'none'
+  moved = false
+  downKey = null
+  store.hover.value = null
+}
+
 function onWheel(e: WheelEvent) {
   if (!props.interactive) return
   if (e.ctrlKey || e.metaKey) {
@@ -686,6 +695,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
       :viewBox="viewBox" :width="svgW" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
       :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel"
       @pointerleave="onLeave" @wheel="onWheel"
     >
       <defs>
