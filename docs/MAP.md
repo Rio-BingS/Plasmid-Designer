@@ -81,6 +81,10 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列同一侧之外（全部 ≥ 末端且至少一个
 严格在外，或全部 ≤ 起点且至少一个严格在外）。BssSI 这类非回文但一条链切在位点内的酶不算；
 两侧双切的 Type IIB 不在可扫描酶之列。Golden Gate 候选另要求识别序列纯 ACGT、切出 4 nt 5' 突出端。
+候选只按几何条件筛（`core.enzyme_sites.golden_gate_enzymes()`，31 把），并不都适合实际组装：
+AarI 需要额外加寡核苷酸辅因子才能有效切割；FokI、BbvI、SfaNI 等常见但识别序列短、位点频繁，
+也少有配套的 Golden Gate 试剂盒。推荐优先用 `GOLDEN_GATE_PREFERRED`（BsaI / BsmBI / BbsI）及
+Esp3I、PaqCI 等专为 Golden Gate 设计的酶。
 
 **修饰依赖型酶**（`core.enzyme_sites.is_modification_dependent`）：只切 5mC / 5hmC 等修饰过的 DNA，
 对普通质粒图谱没有意义，且位点数爆炸（AbaSI 的「位点」是单个 C）。规则：识别序列确定碱基 ≤3 个且
@@ -89,7 +93,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 9 把 5mC 依赖 MD 酶（AoxI、BisI、BlsI、GlaI、GluI、KroI、MteI、PcsI、PkrI）。`commercial`、
 `unique6`、`type_iis`、`/suppliers` 都排除它们；显式点名 `enzymes` 仍可扫描（受位点上限约束），
 酶详情带 `modification_dependent: true`。Dam 依赖的 DpnI / MalI 不排除（dam⁺ 菌株抽提的质粒
-确实带 GATC 甲基化）。
+确实带 GATC 甲基化）。显式点名 MspJI / LpnPI / SgeI 时，位点按识别序列的全部（含自重叠）实例计数，
+与 Biopython `search()` 的计数不一致（实测 pET-28a 上 MspJI 1242 vs 912），仅供参考。
 
 酶的最适 / 失活温度不提供：Biopython 1.88 的 `opt_temp` / `inact_temp` 对全部酶都是 37 / 65 °C
 的占位值（TaqI 也是），作为数据展示会误导。
