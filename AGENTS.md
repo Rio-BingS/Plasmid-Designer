@@ -30,6 +30,7 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
   core/sequence_analysis.py 酶切位点/ORF/GC/消化模拟/兼容性；RESTRICTION_ENZYMES 兼容视图
   core/clone_strategy.py    克隆方案文本生成；core/export_formats.py 多格式导出
   core/vector_library.py    载体库（data/vectors/*.yaml）
+  core/plasmid_map/         ★ 图谱契约 plasmid-map/1（解析/酶切/ORF/元件库自动注释/GenBank 导出，docs/MAP.md）
   core/enzyme_sites.py      ★ 唯一限制酶模型（Bio.Restriction/REBASE，默认菜单 51 种），扫描生成图谱酶切位点
   core/sanger/              ★ Sanger 测序全自动管线：reference_parser（GenBank/FASTA/.dna +
                             拓扑）/ abif_reader（SeqIO abi 主路径 + 内置解析器回退）/
@@ -42,11 +43,12 @@ src/frontend/               Vue3+TS+Vite 8+Pinia（dev 端口 3000，代理 /api
   src/api/session.ts        会话代际（迟到的 401 不踢掉新会话）
   src/views/AnalysisView.vue 序列分析页（位点/ORF/GC/消化模拟/兼容性/导出）
   src/components/EnzymeAutocomplete.vue 可搜索酶选择器（单/多选，全站统一）
-  src/components/PlasmidMap.vue      ★ SnapGene 风格环形图谱（Canvas）
-  src/components/SequenceView.vue    ★ 线性序列视图（虚拟滚动/翻译/酶标注/scrollTo 联动）
+  src/map/                           ★ 质粒图谱（契约 plasmid-map/1，见 types.ts/api.ts）：core/ 纯算法
+                                     （坐标/分道/标签布局/酶过滤/搜索/Tm，均有单测）+ store.ts 共享
+                                     状态 + components/（MapViewer 组合 Circular/Linear/SequenceMap）
   src/components/SequencingPanel.vue ★ Sanger 上传→一键分析→结论/突变表/比对峰图融合视图；
                                      展示卡在 components/sequencing/（PolyCard/ConclusionCards/
-                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap）
+                                     ReadTable/VariantTable/AlleleCard/ConsensusCard/MatchMap→map/LinearMap）
   src/composables/useSeqViz.ts       ★ 峰图融合视图（状态/交互/canvas 绘制）
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML，带 data_provenance)
 deploy/                     docker-compose / bare(Ubuntu systemd)

@@ -422,17 +422,20 @@ def design_primers_for_method(
 
 
 def _golden_gate_site_warning(sequence: str, enzyme_name: str) -> Optional[str]:
-    """返回插入序列内 Type IIS 位点警告（含双链方向）。"""
-    from core.sequence_analysis import RESTRICTION_ENZYMES, RestrictionSiteAnalyzer
+    """返回插入序列内 Type IIS 位点警告（含双链方向）。
 
-    if enzyme_name not in RESTRICTION_ENZYMES:
+    酶参数走 REBASE（get_enzyme），任何 Golden Gate 候选酶都能检查，
+    不再只认默认菜单里的 BsaI/BsmBI/BbsI。"""
+    from core.enzyme_sites import find_enzyme_sites, get_enzyme
+
+    spec = get_enzyme(enzyme_name)
+    if spec is None:
         return f"未知 Golden Gate 酶 {enzyme_name}，无法检查内部识别位点"
-    sites = RestrictionSiteAnalyzer().find_sites(sequence, [enzyme_name])
+    sites = find_enzyme_sites(sequence, [enzyme_name], circular=False)
     if not sites:
         return None
-    recognition = RESTRICTION_ENZYMES[enzyme_name][0]
     return (
-        f"插入序列内部含 {len(sites)} 个 {enzyme_name} 识别位点 {recognition}，"
+        f"插入序列内部含 {len(sites)} 个 {enzyme_name} 识别位点 {spec['site']}，"
         "Golden Gate 可能切碎"
     )
 
@@ -689,31 +692,3 @@ def generate_genbank_from_result(result: DesignResult) -> str:
         lines.append(f"{i + 1:>9} {groups}")
     lines.append("//")
     return "\n".join(lines)
-
-
-def map_data_from_result(result: DesignResult) -> Dict:
-    construct = result.construct_sequence or result.optimized_sequence or ""
-    features = list(result.construct_features or [])
-    if not features:
-        features = [
-            {
-                "name": "Insert",
-                "type": "CDS",
-                "start": 1,
-                "end": len(result.optimized_sequence or ""),
-                "strand": "+",
-                "description": "Optimized insert",
-            }
-        ]
-    from core.enzyme_sites import find_enzyme_sites
-    return {
-        "name": result.vector_name or "Construct",
-        "length": len(construct) or result.final_length or 0,
-        "sequence": construct,
-        "features": features,
-        # 有载体构建体时为环状质粒，需扫描跨原点位点；仅优化序列时为线性
-        "enzyme_sites": (
-            find_enzyme_sites(construct, circular=bool(result.construct_sequence))
-            if construct else []
-        ),
-    }

@@ -96,8 +96,15 @@ class DesignOptions(BaseModel):
             self.insert_source = "gene_synthesis"
             self.cloning_method = CloningMethod.RESTRICTION
         # 克隆酶必填（不再默认 BsaI）
-        if self.cloning_method == CloningMethod.GOLDEN_GATE and not self.enzyme:
-            raise ValueError("Golden Gate 需指定 Type IIS 酶（enzyme），如 BsaI/BsmBI/BbsI")
+        if self.cloning_method == CloningMethod.GOLDEN_GATE:
+            if not self.enzyme:
+                raise ValueError("Golden Gate 需指定 Type IIS 酶（enzyme），如 BsaI/BsmBI/BbsI")
+            from core.enzyme_sites import golden_gate_geometry
+            if golden_gate_geometry(self.enzyme) is None:
+                raise ValueError(
+                    f"不支持的 Golden Gate 酶 {self.enzyme}：需为可商购、切出 4 nt 5' 突出端的 "
+                    "Type IIS 酶（如 BsaI/BsmBI/BbsI/Esp3I/PaqCI）"
+                )
         if self.cloning_method == CloningMethod.RESTRICTION and not (
             (self.enzyme_5 and self.enzyme_3) or self.enzyme
         ):
@@ -188,6 +195,21 @@ class DesignResult(BaseModel):
 
 # ==================== 载体信息 ====================
 
+class VectorMapPreviewFeature(BaseModel):
+    name: str
+    type: str  # 契约 FeatureType（已归一）
+    start: int
+    end: int
+    strand: Literal[1, -1, 0]
+
+
+class VectorMapPreview(BaseModel):
+    """载体列表缩略图（MapThumbnail）用：不含序列"""
+    length: int
+    topology: Literal["circular", "linear"]
+    features: List[VectorMapPreviewFeature] = Field(default_factory=list)
+
+
 class VectorInfo(BaseModel):
     """载体信息"""
     id: str
@@ -200,12 +222,19 @@ class VectorInfo(BaseModel):
     description: str
     features: List[Dict]
     mcs_enzymes: List[str]
+    map_preview: Optional[VectorMapPreview] = None  # 仅列表接口填充
 
 
 # ==================== 批量设计 ====================
 
 class BatchDesignRequest(DesignOptions):
-    """批量设计请求"""
+    """批量设计请求
+
+    克隆酶与单条设计同一套校验（继承 DesignOptions）：Golden Gate 缺 enzyme 或
+    酶不在 golden_gate_enzymes 候选内时，整个批量请求在提交时即 422，不建任务。
+    刻意不在服务端回落 BsaI：v2.6.0 已为单条设计移除默认酶（静默套酶会产出
+    错误引物而无人察觉），批量与单条保持同一契约，调用方须显式传 enzyme。
+    """
     sequences: List[str] = Field(..., min_length=1, max_length=100)
     sequence_names: Optional[List[str]] = None
 
@@ -282,23 +311,107 @@ class BatchImportRequest(BaseModel):
     file_paths: List[str] = []
 
 
-# ==================== 质粒图谱 ====================
+# ==================== 质粒图谱（契约 plasmid-map/1，docs/MAP.md） ====================
+# 路由直接返回 core.plasmid_map 组装的字典（可选字段缺省即省略，符合契约）；
+# 这些模型用于请求体校验（编辑后重算、导出）与 OpenAPI 文档。
 
-class EnzymeSite(BaseModel):
-    """酶切位点（1-based）"""
-    name: str
+MAP_MAX_LENGTH = int(os.environ.get("MAP_MAX_LENGTH", "300000"))
+MAP_MAX_FEATURES = 5000
+MAP_MAX_ENZYMES = 1000
+
+MapFeatureType = Literal[
+    "cds", "promoter", "terminator", "rep_origin", "rbs", "marker", "tag",
+    "signal_peptide", "polyA_signal", "enhancer", "ltr", "primer_bind",
+    "protein_bind", "misc_rna", "misc_feature", "insert", "mcs",
+]
+MapTopology = Literal["circular", "linear"]
+
+
+class MapSegment(BaseModel):
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+
+
+class MapAutoInfo(BaseModel):
+    library: str = Field(..., max_length=80)
+    identity: float = Field(..., ge=0, le=1)
+    coverage: float = Field(..., ge=0, le=1)
+    fragment: bool
+
+
+class MapFeature(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    name: str = Field(..., max_length=200)
+    type: MapFeatureType
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal[1, -1, 0] = 0
+    segments: Optional[List[MapSegment]] = Field(default=None, max_length=200)
+    color: Optional[str] = Field(default=None, max_length=32)
+    source: Literal["file", "auto", "design", "vector"] = "file"
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    qualifiers: Optional[Dict[str, str]] = Field(default=None, max_length=100)
+    auto: Optional[MapAutoInfo] = None
+
+
+class MapEnzymeSite(BaseModel):
     position: int
-    strand: str = "+"
-    cut_fwd: int
-    cut_rev: int
-    overhang: Optional[str] = None
-    recognition: Optional[str] = None
+    cut_top: int
+    cut_bottom: int
+    strand: Literal[1, -1]
+    overhang: Optional[str] = Field(default=None, max_length=64)
+    blocked_by: Optional[List[Literal["dam", "dcm"]]] = Field(default=None, max_length=2)
 
 
-class PlasmidMapData(BaseModel):
-    """质粒图谱数据"""
+class MapEnzyme(BaseModel):
     name: str
-    length: int
-    sequence: Optional[str] = None
-    features: List[Dict] = []
-    enzyme_sites: List[EnzymeSite] = Field(default_factory=list)
+    recognition: str
+    ends: Literal["5'", "3'", "blunt"]
+    overhang: Optional[str] = None
+    cut_count: int
+    sites: List[MapEnzymeSite] = Field(default_factory=list)
+    methylation: Optional[List[str]] = None
+
+
+class MapOrf(BaseModel):
+    start: int
+    end: int
+    strand: Literal[1, -1]
+    frame: Literal[0, 1, 2]
+    aa_length: int
+
+
+class MapPrimer(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    name: str = Field(..., max_length=200)
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal[1, -1] = 1
+    sequence: Optional[str] = Field(default=None, max_length=1000)
+
+
+class MapMeta(BaseModel):
+    source_format: Literal["genbank", "fasta", "snapgene", "raw", "design", "vector"]
+    enzyme_set: str = Field(default="common", max_length=40)
+    warnings: List[str] = Field(default_factory=list, max_length=200)
+
+
+class MapDocument(BaseModel):
+    schema_: Literal["plasmid-map/1"] = Field(default="plasmid-map/1", alias="schema")
+    name: str = Field(..., max_length=200)
+    topology: MapTopology
+    length: int = Field(..., ge=1)
+    sequence: str = Field(..., min_length=1, max_length=MAP_MAX_LENGTH)
+    features: List[MapFeature] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    enzymes: List[MapEnzyme] = Field(default_factory=list, max_length=MAP_MAX_ENZYMES)
+    orfs: List[MapOrf] = Field(default_factory=list, max_length=20000)
+    primers: List[MapPrimer] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    meta: Optional[MapMeta] = None
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _length_matches(self):
+        if self.length != len(self.sequence):
+            raise ValueError("length 与 sequence 长度不一致")
+        return self

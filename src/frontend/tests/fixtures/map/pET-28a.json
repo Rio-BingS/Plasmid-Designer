@@ -1,0 +1,531 @@
+{
+ "schema": "plasmid-map/1",
+ "name": "pET-28a(+)",
+ "topology": "circular",
+ "length": 5369,
+ "sequence": "ATCCGGATATAGTTCCTCCTTTCAGCAAAAAACCCCTCAAGACCCGTTTAGAGGCCCCAAGGGGTTATGCTAGTTATTGCTCAGCGGTGGCAGCAGCCAACTCAGCTTCCTTTCGGGCTTTGTTAGCAGCCGGATCTCAGTGGTGGTGGTGGTGGTGCTCGAGTGCGGCCGCAAGCTTGTCGACGGAGCTCGAATTCGGATCCGCGACCCATTTGCTGTCCACCAGTCATGCTAGCCATATGGCTGCCGCGCGGCACCAGGCCGCTGCTGTGATGATGATGATGATGGCTGCTGCCCATGGTATATCTCCTTCTTAAAGTTAAACAAAATTATTTCTAGAGGGGAATTGTTATCCGCTCACAATTCCCCTATAGTGAGTCGTATTAATTTCGCGGGATCGAGATCTCGATCCTCTACGCCGGACGCATCGTGGCCGGCATCACCGGCGCCACAGGTGCGGTTGCTGGCGCCTATATCGCCGACATCACCGATGGGGAAGATCGGGCTCGCCACTTCGGGCTCATGAGCGCTTGTTTCGGCGTGGGTATGGTGGCAGGCCCCGTGGCCGGGGGACTGTTGGGCGCCATCTCCTTGCATGCACCATTCCTTGCGGCGGCGGTGCTCAACGGCCTCAACCTACTACTGGGCTGCTTCCTAATGCAGGAGTCGCATAAGGGAGAGCGTCGAGATCCCGGACACCATCGAATGGCGCAAAACCTTTCGCGGTATGGCATGATAGCGCCCGGAAGAGAGTCAATTCAGGGTGGTGAATGTGAAACCAGTAACGTTATACGATGTCGCAGAGTATGCCGGTGTCTCTTATCAGACCGTTTCCCGCGTGGTGAACCAGGCCAGCCACGTTTCTGCGAAAACGCGGGAAAAAGTGGAAGCGGCGATGGCGGAGCTGAATTACATTCCCAACCGCGTGGCACAACAACTGGCGGGCAAACAGTCGTTGCTGATTGGCGTTGCCACCTCCAGTCTGGCCCTGCACGCGCCGTCGCAAATTGTCGCGGCGATTAAATCTCGCGCCGATCAACTGGGTGCCAGCGTGGTGGTGTCGATGGTAGAACGAAGCGGCGTCGAAGCCTGTAAAGCGGCGGTGCACAATCTTCTCGCGCAACGCGTCAGTGGGCTGATCATTAACTATCCGCTGGATGACCAGGATGCCATTGCTGTGGAAGCTGCCTGCACTAATGTTCCGGCGTTATTTCTTGATGTCTCTGACCAGACACCCATCAACAGTATTATTTTCTCCCATGAAGACGGTACGCGACTGGGCGTGGAGCATCTGGTCGCATTGGGTCACCAGCAAATCGCGCTGTTAGCGGGCCCATTAAGTTCTGTCTCGGCGCGTCTGCGTCTGGCTGGCTGGCATAAATATCTCACTCGCAATCAAATTCAGCCGATAGCGGAACGGGAAGGCGACTGGAGTGCCATGTCCGGTTTTCAACAAACCATGCAAATGCTGAATGAGGGCATCGTTCCCACTGCGATGCTGGTTGCCAACGATCAGATGGCGCTGGGCGCAATGCGCGCCATTACCGAGTCCGGGCTGCGCGTTGGTGCGGATATCTCGGTAGTGGGATACGACGATACCGAAGACAGCTCATGTTATATCCCGCCGTTAACCACCATCAAACAGGATTTTCGCCTGCTGGGGCAAACCAGCGTGGACCGCTTGCTGCAACTCTCTCAGGGCCAGGCGGTGAAGGGCAATCAGCTGTTGCCCGTCTCACTGGTGAAAAGAAAAACCACCCTGGCGCCCAATACGCAAACCGCCTCTCCCCGCGCGTTGGCCGATTCATTAATGCAGCTGGCACGACAGGTTTCCCGACTGGAAAGCGGGCAGTGAGCGCAACGCAATTAATGTAAGTTAGCTCACTCATTAGGCACCGGGATCTCGACCGATGCCCTTGAGAGCCTTCAACCCAGTCAGCTCCTTCCGGTGGGCGCGGGGCATGACTATCGTCGCCGCACTTATGACTGTCTTCTTTATCATGCAACTCGTAGGACAGGTGCCGGCAGCGCTCTGGGTCATTTTCGGCGAGGACCGCTTTCGCTGGAGCGCGACGATGATCGGCCTGTCGCTTGCGGTATTCGGAATCTTGCACGCCCTCGCTCAAGCCTTCGTCACTGGTCCCGCCACCAAACGTTTCGGCGAGAAGCAGGCCATTATCGCCGGCATGGCGGCCCCACGGGTGCGCATGATCGTGCTCCTGTCGTTGAGGACCCGGCTAGGCTGGCGGGGTTGCCTTACTGGTTAGCAGAATGAATCACCGATACGCGAGCGAACGTGAAGCGACTGCTGCTGCAAAACGTCTGCGACCTGAGCAACAACATGAATGGTCTTCGGTTTCCGTGTTTCGTAAAGTCTGGAAACGCGGAAGTCAGCGCCCTGCACCATTATGTTCCGGATCTGCATCGCAGGATGCTGCTGGCTACCCTGTGGAACACCTACATCTGTATTAACGAAGCGCTGGCATTGACCCTGAGTGATTTTTCTCTGGTCCCGCCGCATCCATACCGCCAGTTGTTTACCCTCACAACGTTCCAGTAACCGGGCATGTTCATCATCAGTAACCCGTATCGTGAGCATCCTCTCTCGTTTCATCGGTATCATTACCCCCATGAACAGAAATCCCCCTTACACGGAGGCATCAGTGACCAAACAGGAAAAAACCGCCCTTAACATGGCCCGCTTTATCAGAAGCCAGACATTAACGCTTCTGGAGAAACTCAACGAGCTGGACGCGGATGAACAGGCAGACATCTGTGAATCGCTTCACGACCACGCTGATGAGCTTTACCGCAGCTGCCTCGCGCGTTTCGGTGATGACGGTGAAAACCTCTGACACATGCAGCTCCCGGAGACGGTCACAGCTTGTCTGTAAGCGGATGCCGGGAGCAGACAAGCCCGTCAGGGCGCGTCAGCGGGTGTTGGCGGGTGTCGGGGCGCAGCCATGACCCAGTCACGTAGCGATAGCGGAGTGTATACTGGCTTAACTATGCGGCATCAGAGCAGATTGTACTGAGAGTGCACCATATATGCGGTGTGAAATACCGCACAGATGCGTAAGGAGAAAATACCGCATCAGGCGCTCTTCCGCTTCCTCGCTCACTGACTCGCTGCGCTCGGTCGTTCGGCTGCGGCGAGCGGTATCAGCTCACTCAAAGGCGGTAATACGGTTATCCACAGAATCAGGGGATAACGCAGGAAAGAACATGTGAGCAAAAGGCCAGCAAAAGGCCAGGAACCGTAAAAAGGCCGCGTTGCTGGCGTTTTTCCATAGGCTCCGCCCCCCTGACGAGCATCACAAAAATCGACGCTCAAGTCAGAGGTGGCGAAACCCGACAGGACTATAAAGATACCAGGCGTTTCCCCCTGGAAGCTCCCTCGTGCGCTCTCCTGTTCCGACCCTGCCGCTTACCGGATACCTGTCCGCCTTTCTCCCTTCGGGAAGCGTGGCGCTTTCTCATAGCTCACGCTGTAGGTATCTCAGTTCGGTGTAGGTCGTTCGCTCCAAGCTGGGCTGTGTGCACGAACCCCCCGTTCAGCCCGACCGCTGCGCCTTATCCGGTAACTATCGTCTTGAGTCCAACCCGGTAAGACACGACTTATCGCCACTGGCAGCAGCCACTGGTAACAGGATTAGCAGAGCGAGGTATGTAGGCGGTGCTACAGAGTTCTTGAAGTGGTGGCCTAACTACGGCTACACTAGAAGGACAGTATTTGGTATCTGCGCTCTGCTGAAGCCAGTTACCTTCGGAAAAAGAGTTGGTAGCTCTTGATCCGGCAAACAAACCACCGCTGGTAGCGGTGGTTTTTTTGTTTGCAAGCAGCAGATTACGCGCAGAAAAAAAGGATCTCAAGAAGATCCTTTGATCTTTTCTACGGGGTCTGACGCTCAGTGGAACGAAAACTCACGTTAAGGGATTTTGGTCATGAACAATAAAACTGTCTGCTTACATAAACAGTAATACAAGGGGTGTTATGAGCCATATTCAACGGGAAACGTCTTGCTCTAGGCCGCGATTAAATTCCAACATGGATGCTGATTTATATGGGTATAAATGGGCTCGCGATAATGTCGGGCAATCAGGTGCGACAATCTATCGATTGTATGGGAAGCCCGATGCGCCAGAGTTGTTTCTGAAACATGGCAAAGGTAGCGTTGCCAATGATGTTACAGATGAGATGGTCAGACTAAACTGGCTGACGGAATTTATGCCTCTTCCGACCATCAAGCATTTTATCCGTACTCCTGATGATGCATGGTTACTCACCACTGCGATCCCCGGGAAAACAGCATTCCAGGTATTAGAAGAATATCCTGATTCAGGTGAAAATATTGTTGATGCGCTGGCAGTGTTCCTGCGCCGGTTGCATTCGATTCCTGTTTGTAATTGTCCTTTTAACAGCGATCGCGTATTTCGTCTCGCTCAGGCGCAATCACGAATGAATAACGGTTTGGTTGATGCGAGTGATTTTGATGACGAGCGTAATGGCTGGCCTGTTGAACAAGTCTGGAAAGAAATGCATAAACTTTTGCCATTCTCACCGGATTCAGTCGTCACTCATGGTGATTTCTCACTTGATAACCTTATTTTTGACGAGGGGAAATTAATAGGTTGTATTGATGTTGGACGAGTCGGAATCGCAGACCGATACCAGGATCTTGCCATCCTATGGAACTGCCTCGGTGAGTTTTCTCCTTCATTACAGAAACGGCTTTTTCAAAAATATGGTATTGATAATCCTGATATGAATAAATTGCAGTTTCATTTGATGCTCGATGAGTTTTTCTAAGAATTAATTCATGAGCGGATACATATTTGAATGTATTTAGAAAAATAAACAAATAGGGGTTCCGCGCACATTTCCCCGAAAAGTGCCACCTGAAATTGTAAACGTTAATATTTTGTTAAAATTCGCGTTAAATTTTTGTTAAATCAGCTCATTTTTTAACCAATAGGCCGAAATCGGCAAAATCCCTTATAAATCAAAAGAATAGACCGAGATAGGGTTGAGTGTTGTTCCAGTTTGGAACAAGAGTCCACTATTAAAGAACGTGGACTCCAACGTCAAAGGGCGAAAAACCGTCTATCAGGGCGATGGCCCACTACGTGAACCATCACCCTAATCAAGTTTTTTGGGGTCGAGGTGCCGTAAAGCACTAAATCGGAACCCTAAAGGGAGCCCCCGATTTAGAGCTTGACGGGGAAAGCCGGCGAACGTGGCGAGAAAGGAAGGGAAGAAAGCGAAAGGAGCGGGCGCTAGGGCGCTGGCAAGTGTAGCGGTCACGCTGCGCGTAACCACCACACCCGCCGCGCTTAATGCGCCGCTACAGGGCGCGTCCCATTCGCCA",
+ "features": [
+  {
+   "id": "f1",
+   "name": "T7 terminator",
+   "type": "terminator",
+   "start": 26,
+   "end": 73,
+   "strand": 1,
+   "source": "vector",
+   "notes": "transcription terminator for bacteriophage T7 RNA polymerase"
+  },
+  {
+   "id": "f2",
+   "name": "6xHis",
+   "type": "tag",
+   "start": 140,
+   "end": 157,
+   "strand": -1,
+   "source": "vector",
+   "notes": "color: #cc99b2"
+  },
+  {
+   "id": "f3",
+   "name": "MCS",
+   "type": "mcs",
+   "start": 158,
+   "end": 203,
+   "strand": 1,
+   "source": "vector",
+   "notes": "multiple cloning site"
+  },
+  {
+   "id": "f4",
+   "name": "T7 tag",
+   "type": "tag",
+   "start": 207,
+   "end": 239,
+   "strand": -1,
+   "source": "vector",
+   "notes": "color: #cc99b2"
+  },
+  {
+   "id": "f5",
+   "name": "thrombin site",
+   "type": "cds",
+   "start": 243,
+   "end": 260,
+   "strand": -1,
+   "source": "vector",
+   "notes": "color: #cc99b2"
+  },
+  {
+   "id": "f6",
+   "name": "6xHis",
+   "type": "tag",
+   "start": 270,
+   "end": 287,
+   "strand": -1,
+   "source": "vector",
+   "notes": "color: #cc99b2"
+  },
+  {
+   "id": "f7",
+   "name": "RBS",
+   "type": "protein_bind",
+   "start": 307,
+   "end": 312,
+   "strand": 1,
+   "source": "vector",
+   "notes": "ribosome binding site"
+  },
+  {
+   "id": "f8",
+   "name": "lac operator",
+   "type": "protein_bind",
+   "start": 343,
+   "end": 367,
+   "strand": 1,
+   "source": "vector",
+   "notes": "The lac repressor binds to the lac operator to inhibit transcription in E. coli. This inhibition can be relieved by addi"
+  },
+  {
+   "id": "f9",
+   "name": "T7 promoter",
+   "type": "promoter",
+   "start": 368,
+   "end": 386,
+   "strand": -1,
+   "source": "vector",
+   "notes": "promoter for bacteriophage T7 RNA polymerase"
+  },
+  {
+   "id": "f10",
+   "name": "lacI promoter",
+   "type": "promoter",
+   "start": 695,
+   "end": 772,
+   "strand": 1,
+   "source": "vector",
+   "notes": "lacI promoter"
+  },
+  {
+   "id": "f11",
+   "name": "lacI",
+   "type": "cds",
+   "start": 773,
+   "end": 1855,
+   "strand": 1,
+   "source": "vector",
+   "notes": "The lac repressor binds to the lac operator to inhibit transcription in E. coli. This inhibition can be relieved by addi"
+  },
+  {
+   "id": "f12",
+   "name": "rop",
+   "type": "cds",
+   "start": 2664,
+   "end": 2855,
+   "strand": 1,
+   "source": "vector",
+   "notes": "color: #993366"
+  },
+  {
+   "id": "f13",
+   "name": "ori",
+   "type": "rep_origin",
+   "start": 3285,
+   "end": 3873,
+   "strand": -1,
+   "source": "vector",
+   "notes": "high-copy-number ColE1/pMB1/pBR322/pUC origin of replication"
+  },
+  {
+   "id": "f14",
+   "name": "KanR",
+   "type": "marker",
+   "start": 3995,
+   "end": 4810,
+   "strand": 1,
+   "source": "vector",
+   "notes": "confers resistance to kanamycin"
+  },
+  {
+   "id": "f15",
+   "name": "f1 ori",
+   "type": "rep_origin",
+   "start": 4903,
+   "end": 5358,
+   "strand": -1,
+   "source": "vector",
+   "notes": "f1 bacteriophage origin of replication; arrow indicates direction of (+) strand synthesis"
+  }
+ ],
+ "enzymes": [
+  {
+   "name": "EcoRI",
+   "recognition": "G^AATTC",
+   "ends": "5'",
+   "overhang": "AATT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 192,
+     "cut_top": 192,
+     "cut_bottom": 196,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BamHI",
+   "recognition": "G^GATCC",
+   "ends": "5'",
+   "overhang": "GATC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 198,
+     "cut_top": 198,
+     "cut_bottom": 202,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "HindIII",
+   "recognition": "A^AGCTT",
+   "ends": "5'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 173,
+     "cut_top": 173,
+     "cut_bottom": 177,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NotI",
+   "recognition": "GC^GGCCGC",
+   "ends": "5'",
+   "overhang": "GGCC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 165,
+     "cut_top": 166,
+     "cut_bottom": 170,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "XhoI",
+   "recognition": "C^TCGAG",
+   "ends": "5'",
+   "overhang": "TCGA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 158,
+     "cut_top": 158,
+     "cut_bottom": 162,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SalI",
+   "recognition": "G^TCGAC",
+   "ends": "5'",
+   "overhang": "TCGA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 179,
+     "cut_top": 179,
+     "cut_bottom": 183,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SmaI",
+   "recognition": "CCC^GGG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 4298,
+     "cut_top": 4300,
+     "cut_bottom": 4300,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "XbaI",
+   "recognition": "T^CTAGA",
+   "ends": "5'",
+   "overhang": "CTAG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 335,
+     "cut_top": 335,
+     "cut_bottom": 339,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NheI",
+   "recognition": "G^CTAGC",
+   "ends": "5'",
+   "overhang": "CTAG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 231,
+     "cut_top": 231,
+     "cut_bottom": 235,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SacI",
+   "recognition": "GAGCT^C",
+   "ends": "3'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 186,
+     "cut_top": 190,
+     "cut_bottom": 186,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SphI",
+   "recognition": "GCATG^C",
+   "ends": "3'",
+   "overhang": "CATG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 594,
+     "cut_top": 598,
+     "cut_bottom": 594,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NcoI",
+   "recognition": "C^CATGG",
+   "ends": "5'",
+   "overhang": "CATG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 296,
+     "cut_top": 296,
+     "cut_bottom": 300,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NdeI",
+   "recognition": "CA^TATG",
+   "ends": "5'",
+   "overhang": "TA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 237,
+     "cut_top": 238,
+     "cut_bottom": 240,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NruI",
+   "recognition": "TCG^CGA",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 4081,
+     "cut_top": 4083,
+     "cut_bottom": 4083,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "PvuII",
+   "recognition": "CAG^CTG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 3,
+   "sites": [
+    {
+     "position": 1721,
+     "cut_top": 1723,
+     "cut_bottom": 1723,
+     "strand": 1
+    },
+    {
+     "position": 1814,
+     "cut_top": 1816,
+     "cut_bottom": 1816,
+     "strand": 1
+    },
+    {
+     "position": 2813,
+     "cut_top": 2815,
+     "cut_bottom": 2815,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BsmBI",
+   "recognition": "CGTCTCN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 3,
+   "sites": [
+    {
+     "position": 1732,
+     "cut_top": 1738,
+     "cut_bottom": 1742,
+     "strand": 1
+    },
+    {
+     "position": 2871,
+     "cut_top": 2865,
+     "cut_bottom": 2869,
+     "strand": -1
+    },
+    {
+     "position": 4436,
+     "cut_top": 4442,
+     "cut_bottom": 4446,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BbsI",
+   "recognition": "GAAGACNN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 4,
+   "sites": [
+    {
+     "position": 1262,
+     "cut_top": 1269,
+     "cut_bottom": 1273,
+     "strand": 1
+    },
+    {
+     "position": 1601,
+     "cut_top": 1608,
+     "cut_bottom": 1612,
+     "strand": 1
+    },
+    {
+     "position": 1989,
+     "cut_top": 1982,
+     "cut_bottom": 1986,
+     "strand": -1
+    },
+    {
+     "position": 2349,
+     "cut_top": 2342,
+     "cut_bottom": 2346,
+     "strand": -1
+    }
+   ]
+  },
+  {
+   "name": "EcoRV",
+   "recognition": "GAT^ATC",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 1571,
+     "cut_top": 1573,
+     "cut_bottom": 1573,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "ApaI",
+   "recognition": "GGGCC^C",
+   "ends": "3'",
+   "overhang": "GGCC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 1330,
+     "cut_top": 1334,
+     "cut_bottom": 1330,
+     "strand": 1
+    }
+   ]
+  }
+ ],
+ "orfs": [
+  {
+   "start": 523,
+   "end": 1023,
+   "strand": 1,
+   "frame": 0,
+   "aa_length": 166
+  },
+  {
+   "start": 896,
+   "end": 1855,
+   "strand": 1,
+   "frame": 1,
+   "aa_length": 319
+  },
+  {
+   "start": 1911,
+   "end": 2267,
+   "strand": 1,
+   "frame": 2,
+   "aa_length": 118
+  },
+  {
+   "start": 2264,
+   "end": 2632,
+   "strand": -1,
+   "frame": 1,
+   "aa_length": 122
+  },
+  {
+   "start": 3995,
+   "end": 4810,
+   "strand": 1,
+   "frame": 1,
+   "aa_length": 271
+  }
+ ],
+ "primers": [],
+ "meta": {
+  "source_format": "vector",
+  "enzyme_set": "common",
+  "warnings": []
+ }
+}

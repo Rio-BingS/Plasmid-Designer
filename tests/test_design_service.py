@@ -13,7 +13,6 @@ from app.design_service import (
     process_sequence,
     run_design,
     generate_genbank_from_result,
-    map_data_from_result,
     derive_gg_overhangs,
     get_vector_library,
     ensure_vector_backbone,
@@ -94,9 +93,15 @@ def test_run_design_end_to_end_minimal():
     assert rec.annotations["topology"] == "circular"
     assert result.optimized_sequence in gb.replace(" ", "").replace("\n", "") or "insert" in gb
 
-    m = map_data_from_result(result)
-    assert m["length"] == result.final_length
-    assert m["features"]
+    from app.map_documents import design_map_document
+    m = design_map_document(result)
+    assert m["schema"] == "plasmid-map/1" and m["topology"] == "circular"
+    assert m["length"] == result.final_length == len(m["sequence"])
+    sources = {f["source"] for f in m["features"]}
+    assert sources == {"design", "vector"}
+    insert = [f for f in m["features"] if f["source"] == "design"]
+    assert len(insert) == 1 and insert[0]["type"] == "cds"
+    assert (insert[0]["start"], insert[0]["end"]) == (result.insert_start, result.insert_end)
 
 
 def test_run_design_optimize_false():
@@ -443,8 +448,14 @@ def test_map_data_scans_construct_as_circular():
         construct_sequence=construct, vector_id="v", cloning_method=CloningMethod.GIBSON,
         created_at=datetime.now(),
     )
-    sites = [s for s in map_data_from_result(res)["enzyme_sites"] if s["name"] == "EcoRI"]
-    assert sites and sites[0]["position"] == len(construct) - 2
+    from app.map_documents import design_map_document
+    ecori = [e for e in design_map_document(res)["enzymes"] if e["name"] == "EcoRI"]
+    assert ecori and ecori[0]["cut_count"] == 1
+    site = ecori[0]["sites"][0]
+    assert site["position"] == len(construct) - 2
+    # G^AATTC：顶链切在 G（第 L-2 位）之后，底链切点跨过原点落在第 2 位之后
+    # （4 nt 突出端 AATT = L-1, L, 1, 2）
+    assert (site["cut_top"], site["cut_bottom"]) == (len(construct) - 2, 2)
 
 def test_restriction_request_requires_enzyme():
     """回归：enzyme 曾默认 BsaI，经典双酶切请求被静默套上 Type IIS 酶。

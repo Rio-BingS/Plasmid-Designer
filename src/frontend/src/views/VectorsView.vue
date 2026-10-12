@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
 import {
@@ -14,9 +14,13 @@ import {
   importFromNcbiId
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
+import MapThumbnail from '@/map/components/MapThumbnail.vue'
+import { previewToThumb } from '@/map/preview'
 
 const router = useRouter()
 const vectors = ref<VectorInfo[]>([])
+// 列表缩略图：来自 GET /api/vectors 的 map_preview，缺省时不画
+const thumbs = computed(() => new Map(vectors.value.map((v) => [v.id, previewToThumb(v.map_preview, v.name)])))
 const loading = ref(true)
 const filterType = ref('')
 const filterHost = ref('')
@@ -265,6 +269,10 @@ onMounted(() => {
           </div>
         </div>
         <p class="vector-source">{{ vector.source }}</p>
+        <div v-if="thumbs.get(vector.id)" class="vector-thumb">
+          <MapThumbnail :doc="thumbs.get(vector.id)!" :size="72" />
+          <span class="vector-thumb-meta">{{ thumbs.get(vector.id)!.length.toLocaleString() }} bp · {{ thumbs.get(vector.id)!.topology === 'circular' ? '环状' : '线性' }}</span>
+        </div>
         <div class="vector-info">
           <div class="info-item">
             <span class="label">类型:</span>
@@ -468,8 +476,11 @@ h1 {
 }
 .vectors-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1.5rem;
+}
+@media (max-width: 640px) {
+  .vectors-grid { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 }
 .vector-card {
   background: white;
@@ -481,6 +492,20 @@ h1 {
 }
 .vector-card:hover {
   box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+.vector-thumb {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+.vector-thumb :deep(.map-thumb) {
+  flex: none;
+  max-width: 100%;
+}
+.vector-thumb-meta {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
 }
 .card-header {
   display: flex;

@@ -8,6 +8,121 @@
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-10-12
+
+### 升级注意
+
+- **图谱接口破坏性变更**：`GET /api/design/{id}/map` 与 `GET /api/vectors/{id}/map`
+  改为返回 MapDocument（契约 `plasmid-map/1`，见 `docs/MAP.md`），不再返回旧的
+  `{name, length, sequence, features, enzyme_sites}`，无兼容层。主要差异：特征
+  `strand` 由 `"+"/"-"` 改为 `1/-1/0`，`type` 归一为契约 FeatureType（`resistance` →
+  `marker`、`origin` → `rep_origin`、`multiple_cloning_site` → `mcs`…），`description`
+  改名 `notes`；酶切位点改为按酶分组的 `enzymes[].sites[]`（回文位点只报一次，
+  双链切点 `cut_top/cut_bottom`）；新增 `topology`、`orfs`、`primers`、`meta`。
+  直接调用这两个端点的脚本须按新形状改写。
+- 新增功能开关 `map`（质粒图谱）。新库默认对访客与普通用户开放；已有站点升级后
+  按「能用序列工具（`analysis`）即可用图谱」一次性继承，管理员可在功能矩阵单独收紧。
+- Docker 部署须重新构建后端镜像（镜像新增 `data/features/` 元件库）；裸机部署随项目
+  文件复制，无需额外操作。
+- **Golden Gate 引物结果变化**：识别序列与 overhang 之间的间隔改按酶的切割偏移计算。
+  BsaI / BsmBI 不变（1 nt）；**BbsI 引物由 1 个间隔碱基改为 2 个**——此前 BbsI（N2/N6）
+  切下的 overhang 错位一位，用旧版设计的 BbsI 引物请重新设计。Golden Gate 设计请求的
+  `enzyme` 不是可商购、切 4 nt 5' 突出端的 Type IIS 酶时，现在直接 422（此前在引物设计
+  阶段才报错）；`GET /api/analysis/enzymes` 的缓存版本递增为 v3。
+- 可选新环境变量 `NCBI_EMAIL`（建议）、`NCBI_API_KEY`（图谱页 NCBI 导入用，Docker 已透传，
+  两份 `.env.example` 有说明）；不设也能用。
+
+### 新增
+
+- 质粒图谱后端 `/api/map/*`：解析 GenBank / FASTA / SnapGene `.dna` / 粘贴文本
+  （`join()` 与跨原点特征、ApE / SnapGene 颜色）、编辑后重算、酶集合
+  （common / unique6 / commercial / golden_gate）、GenBank 导出。环状感知的双链切点、
+  ORF 查找。上限 `MAP_MAX_LENGTH`（默认 300000 bp）、`MAP_MAX_UPLOAD_MB`（默认 5）。
+- 图谱自动注释：66 条常见元件库（载体库与 NCBI GenBank 中可核验的序列，逐条记录
+  来源，`scripts/build_feature_library.py` 重建；含 p15A ori、AcV5 标签与 pUC 标准
+  589 bp ori），k-mer 种子 + 局部比对，报告 identity / coverage，覆盖不足标 fragment；
+  肽标签按翻译检索。
+- 图谱酶切位点给出每个粘端位点的实际突出端碱基（`sites[].overhang`，Type IIS 与
+  AvaI 等简并识别酶不再只有 `NNNN` 模板），并按 NEB / REBASE 的重叠甲基化表标出对
+  Dam / Dcm 敏感的酶（`methylation`）与会被常规菌株甲基化阻断的位点（`sites[].blocked_by`，
+  如 XbaI 的 `TCTAGATC`、StuI 的 `AGGCCTGG`）。
+- `GET /api/vectors` 列表每项新增 `map_preview`（长度、拓扑、归一后的特征，不含序列），
+  供载体列表画图谱缩略图。
+- 图谱酶数据（REBASE，经 Biopython `Bio.Restriction`）：`GET /api/map/enzymes/{name}`
+  酶详情（REBASE 厂商代码与名称、可商购同切酶 / 新切酶、Type IIS、Golden Gate 适用、
+  甲基化敏感性）、`GET /api/map/suppliers` 厂商表，酶组新增 `type_iis`（全部可商购
+  Type IIS 酶）。Type IIS 判定有单测守护：非回文、确定碱基 ≥4、切点全在位点同侧之外。
+  Biopython 的最适 / 失活温度对全部酶都是 37 / 65 °C 占位值，不予展示。
+- 图谱页酶切面板可按厂商（NEB、Thermo 等）筛选，点酶显示详情；取过的详情同时出现在
+  悬停提示里。
+- 图谱页「NCBI 导入」：输入 GenBank / RefSeq accession（如 `L09137`、`M77789.1`），后端
+  `POST /api/map/import/ncbi` 经 E-utilities efetch（`gbwithparts`，带 tool / email，
+  可选 API key）取完整记录并走现有解析流水线；校验 accession、沿用体积与长度上限、
+  文本缓存 24 小时、限流 `ncbi` 档、受 `map` 功能开关控制。
+- Golden Gate 设计的可选酶改由 REBASE 数据给出：全部可商购、切出 4 nt 5' 突出端的
+  Type IIS 酶（BsaI / BsmBI / BbsI 仍排最前，另有 Esp3I、PaqCI、BsmAI、Eco31I、BpiI、
+  AarI 等），设计页下拉随之扩展；`GET /api/analysis/enzymes` 新增 `golden_gate_enzymes`。
+- README「数据来源与致谢」与站内免责声明补充 REBASE 引用（Roberts R.J. et al.,
+  Nucleic Acids Res. 51:D629-D630 (2023), doi:10.1093/nar/gkac975）与 NCBI 致谢。
+
+- 全新质粒图谱查看器（前端 `src/map/`，SVG，零新依赖）：环形 / 线性 / 序列 / 分屏
+  四种视图共享选区与悬停（任一视图选中，其余同步高亮）；环形图可拖拽中心旋转、
+  Ctrl+滚轮缩放，线性图可缩放平移并配缩略导航，序列视图虚拟滚动支持 300 kb。
+  特征按链画箭头并自动分道，标签放得下画在元件内、否则外置引线且互不重叠，
+  实在放不下的显示「N 项无法显示」并可展开明细。酶切：单切点加粗、平端红色，
+  可按酶组（由后端重算）、切点数（1 / ≤2 / 任意）、名称或识别序列、Golden Gate
+  过滤并逐个隐藏。Ctrl+F 序列搜索（双链、跨原点、最多 3 个错配、支持 IUPAC），
+  选区实时显示长度 / GC% / Tm；选中 CDS 显示翻译；可导出 SVG、2 倍 PNG 与 GenBank。
+- 独立图谱页 `/map`（导航「图谱」，受 `map` 功能开关控制）：拖放或选择 GenBank /
+  FASTA / SnapGene `.dna` / 纯文本文件（≤ 5 MB），或粘贴序列 / GenBank 文本并指定
+  名称与环状/线性；可选自动注释与酶组，「示例：pUC19」一键载入内置载体。文件过大、
+  格式不支持、序列无效分别给出中文提示；打开的图谱暂存在本标签页，刷新不丢。
+- 图谱编辑（仅 `/map` 页）：特征重命名、改色、改类型/方向、删除，从当前选区新增
+  特征，可撤销；「重新分析」按编辑后的特征重算酶切与 ORF（可选重新自动注释）；
+  导出 GenBank / SVG / PNG 均反映编辑结果。结果页与载体详情页保持只读。
+- 酶切消化面板（查看器侧栏「消化」）：从可见酶中选 1–3 个，列出片段长度、坐标
+  （环状感知，跨原点标注）与两端酶，并画虚拟凝胶泳道（1 kb ladder 对照）；点片段
+  在图上选中该区域。可选跳过被甲基化阻断的位点。
+- 被 dam/dcm 甲基化阻断的酶切位点以灰色虚线显示，悬停提示「被 dam/dcm 甲基化
+  阻断」，可用「显示甲基化阻断位点」开关隐藏；IIS 型酶等提示该位点实际突出端。
+
+### 变更
+
+- 设计结果页与载体详情页改用新查看器，旧的 Canvas 环形图与线性序列视图移除；
+  载体详情页不再分「图谱 / 元件列表 / 序列」标签页，元件与酶切列表并入查看器侧栏。
+- 测序分析的「匹配简图」改用同一套线性图谱绘制，read / 覆盖 / 变异信息与点击
+  跳峰图不变，另可缩放并悬停查看详情。
+- 载体库列表卡片显示图谱缩略图与长度/拓扑（来自列表接口的 `map_preview`，缺省时不显示）。
+- 环形图谱视觉重做（参考 SnapGene）：环外标签按角度排成左右两列的有序扇形，拥挤处
+  呈阶梯堆叠、必要时向上/下延伸，引线不再交叉、不压字、不穿回环内；同一切点的酶
+  合并成一行（`EagI - NotI (423)`，各酶名仍可单独悬停），名字后用小号灰字写切点位置
+  （窄屏省略）；特征弧带加粗，名字放得下就沿弧写在条内，否则用特征色淡底的色块标签；
+  双线主链之间画主/次刻度；特征配色整体柔和化（三个视图一致）；悬停特征时加外发光、
+  其余特征变淡。导出的 SVG/PNG 与屏幕一致。
+
+### 修复
+
+- 批量设计页选 Golden Gate 时从不发送 `enzyme`，而 Golden Gate 缺酶的设计请求
+  自 v2.6.0 起直接 422，整批提交必然失败。批量页新增 Type IIS 酶选择器（候选来自
+  `GET /api/analysis/enzymes` 的 `golden_gate_enzymes`，默认 BsaI）并随请求下发。
+  服务端维持原契约、**不**为批量接口回落默认 BsaI：静默套酶会产出错误引物，
+  批量与单条保持同一校验（整批请求在提交时 422，不创建任务）；逐条失败原因
+  改为只给业务消息，不再夹带 pydantic 样板文字。
+- 单条设计页在后端酶表不含 BsaI 时，会把 Golden Gate 的酶回退成全酶表首项
+  （可能是 EcoRI 这类非 Type IIS 酶），提交即 422；改为只在 Golden Gate 候选内回退。
+  两个设计页的提交错误改用统一格式化，422 的数组 `detail` 不再显示为 `[object Object]`。
+- Golden Gate 引物对 BbsI 的间隔碱基数错误（一律写 1 个，BbsI 需 2 个），切下的
+  overhang 错位一位；现按各酶切割偏移计算，并以「引物装回扩增产物再酶切」的测试守护。
+- 经典双酶切拒绝 Type IIS 酶改按 REBASE 判定：手写名单之外的 Type IIS 酶（如 FokI）
+  也给出「请改用 Golden Gate」的明确提示，而不是笼统的「未知限制酶」。
+- 7 个 SnapGene 来源载体（pcDNA3.1、pET-21a、pET-28a、pFastBac1、pGEX-4T-1、pLVX、
+  pYES2）的特征起点整体左移一位，CDS 长度不是 3 的倍数、翻译读码框错位；已更正。
+- pUC19 的特征坐标沿用了另一套编号（M77789），与 L09137 序列整体错位：lacZα、AmpR
+  不是完整 ORF，MCS 不含所列酶切位点。已按序列本身重标（lacZα complement(146..469)、
+  MCS 396..452、lac operator / promoter、CAP 位点、ori 867..1455、AmpR
+  complement(1626..2486) 及其启动子）。
+- pLVX 的 mcs 列了序列中不存在的 AgeI 位点（mcs 区间因此从 665 起算），已移除。
+
 ## [2.10.0] - 2026-10-12
 
 ### 升级注意
@@ -467,7 +582,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...HEAD
+[2.11.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...v2.10.0
 [2.9.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.0...v2.9.1
 [2.9.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.8.1...v2.9.0

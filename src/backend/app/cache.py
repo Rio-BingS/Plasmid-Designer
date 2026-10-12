@@ -30,7 +30,8 @@ VECTOR_CACHE_TTL = 604800  # 7 天
 #       motif 避让覆盖反向链、滑窗精修（v2.5.0–v2.8.0）
 CODON_OPT_ALGO = "v2.2"
 # v2：酶表统一到 Bio.Restriction（REBASE），由 26 种扩为 47 种（v2.8.0）
-ANALYSIS_ENZYMES_VERSION = "v2"
+# v3：增加 golden_gate_enzymes（REBASE 数据驱动的 Golden Gate 候选酶）
+ANALYSIS_ENZYMES_VERSION = "v3"
 
 
 class CacheBackend:

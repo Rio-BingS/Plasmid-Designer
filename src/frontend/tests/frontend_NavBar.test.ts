@@ -70,6 +70,20 @@ describe('NavBar', () => {
     expect(links[6].text()).toContain('序列工具')
   })
 
+  it('图谱入口按 map 功能开关显示', async () => {
+    vi.mocked(api.getSiteConfig).mockResolvedValueOnce({
+      registration_open: true, email_verification_required: false, tier: 'anonymous',
+      features: { anonymous: ['design', 'map'], user: ['design', 'map'] },
+      effective_features: ['design', 'map']
+    } as any)
+    const wrapper = mount(NavBar, { global: { plugins: [router], stubs: { AuthModal: true } } })
+    await router.isReady()
+    await flushPromises()
+    const labels = wrapper.findAll('.nav-link').map((l) => l.text())
+    expect(labels).toContain('图谱')
+    expect(labels).not.toContain('载体库')
+  })
+
   it('shows login button when user is not logged in', async () => {
     vi.mocked(api.verifyToken).mockResolvedValueOnce({ valid: false, user: null })
     const wrapper = mount(NavBar, {

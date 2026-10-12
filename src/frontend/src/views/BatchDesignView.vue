@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, getBatchReport, getVectors, getCodonTables, getEnzymes } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const router = useRouter()
@@ -16,6 +16,8 @@ const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction'>('gibson')
 const insertSource = ref<'pcr' | 'gene_synthesis'>('pcr')
 const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
+// Golden Gate 的 Type IIS 酶：后端必填（缺酶整批 422），默认 BsaI
+const enzyme = ref('BsaI')
 const availableEnzymeMap = ref<Record<string, { recognition_sequence?: string; is_type_iis?: boolean }>>({})
 const enzymeMap = computed(() =>
   Object.keys(availableEnzymeMap.value).length ? availableEnzymeMap.value : {
@@ -24,6 +26,19 @@ const enzymeMap = computed(() =>
     NcoI: { recognition_sequence: 'CCATGG' }, SalI: { recognition_sequence: 'GTCGAC' },
   }
 )
+// Golden Gate 候选酶（REBASE 数据驱动，BsaI/BsmBI/BbsI 在前）；
+// 旧后端没有该字段时回退到酶表里标了 is_type_iis 的酶
+const goldenGateEnzymes = ref<{ name: string; recognition_sequence: string }[]>([])
+const ggEnzymeMap = computed(() => {
+  const out: Record<string, { recognition_sequence: string }> = {}
+  for (const e of goldenGateEnzymes.value) out[e.name] = { recognition_sequence: e.recognition_sequence }
+  if (Object.keys(out).length) return out
+  for (const [name, meta] of Object.entries(enzymeMap.value)) {
+    if (meta.is_type_iis) out[name] = { recognition_sequence: meta.recognition_sequence || '' }
+  }
+  return out
+})
+
 const protocolLanguage = ref<'zh' | 'en'>('zh')
 const optimizeCodons = ref(true)
 const targetSpecies = ref('ecoli')
@@ -84,6 +99,9 @@ async function handleSubmit() {
   if (cloningMethod.value === 'restriction' && enzyme5.value === enzyme3.value) {
     error.value = '双酶切请选择两种不同的限制酶'; return
   }
+  if (cloningMethod.value === 'golden_gate' && !enzyme.value.trim()) {
+    error.value = '请选择 Golden Gate 使用的 Type IIS 酶'; return
+  }
   isSubmitting.value = true
   error.value = ''
   try {
@@ -102,15 +120,23 @@ async function handleSubmit() {
       oligo_length_min: oligoLengthMin.value,
       oligo_length_max: oligoLengthMax.value,
       overlap_length: overlapLength.value,
-      ...(cloningMethod.value === 'restriction' ? { enzyme_5: enzyme5.value, enzyme_3: enzyme3.value } : {})
+      ...(cloningMethod.value === 'restriction' ? { enzyme_5: enzyme5.value, enzyme_3: enzyme3.value } : {}),
+      ...(cloningMethod.value === 'golden_gate' ? { enzyme: enzyme.value } : {})
     })
     startPolling(result.batch_id)
-  } catch (e: any) { error.value = e.response?.data?.detail || e.message || '提交失败'; isSubmitting.value = false }
+  } catch (e: any) { error.value = formatApiError(e, '提交失败'); isSubmitting.value = false }
 }
 
 onMounted(async () => {
   try {
-    try { availableEnzymeMap.value = (await getEnzymes()).enzymes || {} } catch { /* 兜底表 */ }
+    try {
+      const enzymeData = await getEnzymes()
+      availableEnzymeMap.value = enzymeData.enzymes || {}
+      goldenGateEnzymes.value = Array.isArray(enzymeData.golden_gate_enzymes) ? enzymeData.golden_gate_enzymes : []
+      // 后端候选里没有默认的 BsaI 时（数据源差异）退到候选首项，避免提交即 422
+      const ggNames = Object.keys(ggEnzymeMap.value)
+      if (ggNames.length && !ggNames.includes(enzyme.value)) enzyme.value = ggNames[0]
+    } catch { /* 兜底表 */ }
     availableVectors.value = await getVectors()
     if (availableVectors.value.length && !availableVectors.value.find(v => v.id === vectorId.value)) {
       vectorId.value = availableVectors.value[0].id
@@ -233,6 +259,11 @@ onUnmounted(() => {
               <option value="golden_gate">Golden Gate</option>
               <option value="restriction">限制性酶切</option>
             </select>
+          </div>
+
+          <div class="form-group" v-if="cloningMethod === 'golden_gate'">
+            <label class="form-label">Type IIS 酶</label>
+            <EnzymeAutocomplete v-model="enzyme" :enzymes="ggEnzymeMap" placeholder="搜索 Type IIS 酶…" />
           </div>
 
           <div class="form-group" v-if="cloningMethod === 'restriction'">
