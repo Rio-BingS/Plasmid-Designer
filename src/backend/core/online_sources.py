@@ -18,7 +18,8 @@
 * Addgene：非商业研究可下载；**2026-08 起全长序列文件需登录**，
   `robots.txt`/ToS 禁止商业抓取与非公开路径访问 → 本模块**绝不绕过登录**：
   匿名只取元数据与图谱图；配置了 `ADDGENE_SESSION_COOKIE`（用户自己的浏览器会话）时
-  才带着该凭据取全长序列——凭据只发给 addgene.org，不落盘、不回显、不代用户登录。
+  才带着该凭据取全长序列——仅以 https 发往 addgene.org（重定向逐跳校验、跨主机即丢弃），
+  不写入响应/日志、不代用户登录。该模式只适合单用户自托管（凭据本身存于 .env/进程环境）。
 
 环境变量：ONLINE_IMPORT_ENABLED（默认 true，设 false 整体关闭外呼）、
 ONLINE_TIMEOUT（秒，默认 25）、ONLINE_MAX_BYTES（单次下载上限，默认 8 MB）、
@@ -662,7 +663,9 @@ def addgene_metadata(object_id: str, *, timeout: Optional[float] = None,
 def addgene_session_cookie() -> str:
     """用户自备的 Addgene 会话 Cookie（未配置则空串）。
 
-    **只从环境变量读**，不落盘、不进日志、不回显；调用方不得把它写进响应。
+    **只从环境变量读**，不进日志、不回显，调用方不得把它写进响应；注意它本身存于
+    部署方的 `.env`/进程环境里，只适合单用户自托管（多用户实例启动时告警，见
+    `app/online_import.addgene_shared_session_warning`）。
     """
     return (os.environ.get("ADDGENE_SESSION_COOKIE") or "").strip()
 

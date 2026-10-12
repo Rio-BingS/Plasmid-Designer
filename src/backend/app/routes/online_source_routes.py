@@ -13,7 +13,8 @@
   data/vectors/*.yaml 一致），出处写进结构化 `data_provenance` **并**在描述里
   保留一句可读标注，满足来源站的引用要求。
 * Addgene：匿名只读元数据；只有部署方配置了 `ADDGENE_SESSION_COOKIE`（用户自己的
-  会话）时才带凭据取全长序列——凭据只发给 addgene.org，不落盘、不回显、不代登录。
+  会话，仅适合单用户自托管）时才由管理员带凭据取全长序列——仅以 https 发往
+  addgene.org（重定向逐跳校验、跨主机即丢弃），不回显、不代登录。
 """
 
 from typing import Any, Dict, Optional
@@ -286,7 +287,7 @@ async def import_addgene(plasmid_id: str,
     """用配置好的 Addgene 会话把全长序列导入载体库（需管理员；无凭据 → 403）
 
     设计边界：**不代为登录、不绕登录墙、不保存凭据**。凭据来自部署方的
-    `ADDGENE_SESSION_COOKIE`（用户自己在浏览器登录后的会话），且只发给 addgene.org。
+    `ADDGENE_SESSION_COOKIE`（用户自己在浏览器登录后的会话），仅以 https 发往 addgene.org。
     """
     oid = _check(src.validate_addgene_id, plasmid_id)
     record = await _call(src.addgene_record, oid, fmt=fmt, name=name,

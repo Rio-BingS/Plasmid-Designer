@@ -1365,3 +1365,65 @@ def test_addgene_try_sequence_admin_only(client, vectors_dir, monkeypatch):
     body = adm.json()
     assert body["sequence_available"] is True and body["sequence_bytes"] == 7
     assert body["session_configured"] is True and calls == ["52961"]
+
+
+# ================================================================ Addgene 会话仅适合单用户（审查 M2）
+
+class _FakeQuery:
+    def __init__(self, n):
+        self.n = n
+
+    def filter(self, *a, **k):
+        return self
+
+    def count(self):
+        return self.n
+
+
+class _FakeDB:
+    def __init__(self, n):
+        self.n = n
+
+    def query(self, *a):
+        return _FakeQuery(self.n)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("cookie,registration,users,expect", [
+    ("", True, 5, None),                        # 未配置会话：不告警
+    ("sessionid=S", False, 1, None),            # 单用户自托管：不告警
+    ("sessionid=S", True, 1, "开放注册"),
+    ("sessionid=S", False, 3, "3 个启用账号"),
+])
+def test_addgene_shared_session_warning(monkeypatch, caplog, cookie, registration, users, expect):
+    import app.database as dbmod
+    if cookie:
+        monkeypatch.setenv("ADDGENE_SESSION_COOKIE", cookie)
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: {"registration_open": registration})
+    monkeypatch.setattr(dbmod, "SessionLocal", lambda: _FakeDB(users))
+    msg = oi.addgene_shared_session_warning()
+    if expect is None:
+        assert msg is None
+    else:
+        assert msg and expect in msg and "单用户" in msg and "上传文件" in msg
+        assert cookie not in msg            # 绝不回显 Cookie
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="plasmid_designer.online_import"):
+        oi.log_addgene_shared_session_warning()
+    warned = [r for r in caplog.records if r.name == "plasmid_designer.online_import"]
+    assert bool(warned) is (expect is not None)
+    assert all("sessionid=S" not in r.getMessage() for r in warned)
+
+
+def test_addgene_shared_session_warning_tolerates_db_errors(monkeypatch):
+    import app.database as dbmod
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=S")
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(site_settings, "get_settings", _boom)
+    monkeypatch.setattr(dbmod, "SessionLocal", _boom)
+    assert oi.addgene_shared_session_warning() is None
