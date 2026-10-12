@@ -156,7 +156,7 @@ def build_document(
 
     names, ewarns = resolve_enzymes(enzyme_set, enzymes)
     warns.extend(ewarns)
-    enz = find_map_enzymes(sequence, names, circular)
+    enz = find_map_enzymes(sequence, names, circular, warnings=warns)
     orfs = find_orfs(sequence, circular, orf_min_aa)
 
     feats.sort(key=lambda f: (f["start"], -_span_len(f["start"], f["end"], length)))

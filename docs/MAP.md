@@ -22,7 +22,10 @@
   SnapGene 特征颜色）；`source` 为 `file | auto | design | vector`；`id` 在文档内稳定
   （调用方给的合法唯一 id 原样保留，其余按 `来源-序号` 补齐）。
   GenBank 的 `gene` 与同跨度 `CDS` 成对出现时只保留 CDS；`primer_bind` 进 `primers[]`。
-- `enzymes[]`：只含至少切一次的酶。`sites[].position` 为识别序列在正向链上的
+- `enzymes[]`：只含至少切一次的酶。`cut_count` 恒为完整位点数；位点明细有上限：
+  单把酶最多 `MAP_MAX_SITES_PER_ENZYME`（默认 500）个（按位置保留最前面的），整份文档
+  最多 `MAP_MAX_TOTAL_SITES`（默认 60 000）个（超出时从切点最多的酶起清空明细）；
+  被截断的酶带 `sites_truncated: true`，`meta.warnings` 列出酶名。`sites[].position` 为识别序列在正向链上的
   最左碱基；`cut_top` / `cut_bottom` 为该链在「第几位碱基**之后**」被切（正向链坐标）。
   5' 突出端恒有 `cut_bottom > cut_top`，3' 突出端相反，平末端相等。环状分子切点
   取模到 `1..length`（跨原点的位点与切点都会报出）；线性分子上切点落在分子外或
@@ -50,8 +53,8 @@
 |------|------|
 | `POST /parse` | multipart `file`（.gb/.gbk/.genbank、.fa/.fasta/.fas、.dna）或 JSON `{text, name?, topology?}`；参数 `annotate`（缺省：没有特征才注释）、`enzyme_set`（默认 `common`）、`orf_min_aa`（默认 100），可放查询串或表单 / JSON 字段 |
 | `POST /analyze` | JSON `{sequence, topology, name?, features?, primers?, annotate?, enzyme_set?, enzymes?, orf_min_aa?}`：编辑后重算。`annotate=true` 时丢弃传入的 `source=auto` 特征重新注释 |
-| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI）/ `type_iis`（全部可商购 Type IIS 酶，判定规则见下） |
-| `GET /enzymes/{name}` | 酶详情 `{name, site, recognition, ends, overhang, type_iis, golden_gate, suppliers:[{code,name}], isoschizomers, neoschizomers, methylation?}`；同切酶 = 识别序列与切点都相同，新切酶 = 识别序列相同、切点不同，均只列可商购的。未知酶 404 |
+| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶，**不含修饰依赖型酶**，见下）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI）/ `type_iis`（全部可商购 Type IIS 酶，判定规则见下） |
+| `GET /enzymes/{name}` | 酶详情 `{name, site, recognition, ends, overhang, type_iis, modification_dependent, golden_gate, suppliers:[{code,name}], isoschizomers, neoschizomers, methylation?}`；同切酶 = 识别序列与切点都相同，新切酶 = 识别序列相同、切点不同，均只列可商购的。未知酶 404 |
 | `GET /suppliers` | `[{code, name, enzymes}]`：REBASE 厂商代码 / 名称及其可供的酶，按酶数降序；前端据此做显示层的厂商筛选 |
 | `POST /import/ncbi` | JSON `{accession, annotate?, enzyme_set?, orf_min_aa?}` → MapDocument（`source_format=genbank`）。accession 校验（GenBank / WGS / RefSeq，版本号可选）→ E-utilities efetch `db=nuccore&rettype=gbwithparts&retmode=text`（带 `tool`、`email`、`api_key`）→ 现有 GenBank 解析。错误：422 格式无效、404 未找到、413 超限、502 NCBI 异常、503 NCBI 限流、504 超时 |
 | `POST /export/genbank` | 请求体 MapDocument → `.gb` 下载；颜色写 `/ApEinfo_fwdcolor` + `/ApEinfo_revcolor`，自动注释特征附 `/note` 说明来源库与 identity/coverage |
@@ -71,6 +74,15 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列同一侧之外（全部 ≥ 末端且至少一个
 严格在外，或全部 ≤ 起点且至少一个严格在外）。BssSI 这类非回文但一条链切在位点内的酶不算；
 两侧双切的 Type IIB 不在可扫描酶之列。Golden Gate 候选另要求识别序列纯 ACGT、切出 4 nt 5' 突出端。
+
+**修饰依赖型酶**（`core.enzyme_sites.is_modification_dependent`）：只切 5mC / 5hmC 等修饰过的 DNA，
+对普通质粒图谱没有意义，且位点数爆炸（AbaSI 的「位点」是单个 C）。规则：识别序列确定碱基 ≤3 个且
+两条链切点都在识别序列之外（REBASE 把 AbaSI `C`、FspEI `CC`、MspJI `CNNR`、SgeI `CNNG`、LpnPI
+`CCDG` 记作在位点外 12–16 nt 切割；Bio.Restriction 没有专门标记），另加规则抓不到的 SibEnzyme
+9 把 5mC 依赖 MD 酶（AoxI、BisI、BlsI、GlaI、GluI、KroI、MteI、PcsI、PkrI）。`commercial`、
+`unique6`、`type_iis`、`/suppliers` 都排除它们；显式点名 `enzymes` 仍可扫描（受位点上限约束），
+酶详情带 `modification_dependent: true`。Dam 依赖的 DpnI / MalI 不排除（dam⁺ 菌株抽提的质粒
+确实带 GATC 甲基化）。
 
 酶的最适 / 失活温度不提供：Biopython 1.88 的 `opt_temp` / `inact_temp` 对全部酶都是 37 / 65 °C
 的占位值（TaqI 也是），作为数据展示会误导。
@@ -106,6 +118,10 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 | `MAP_CACHE_MAX_BP` | 50000 | 只缓存不超过该长度的结果（防内存缓存被大文档撑满） |
 | `MAP_AUTO_ANNOTATE_MAX_BP` | 50000 | `annotate` 缺省时只对不超过该长度的序列自动注释 |
 | `MAP_ANNOTATE_MAX_CELLS` | 60000000 | 单次请求自动注释比对的 DP 单元格总预算 |
+| `MAP_MAX_SITES_PER_ENZYME` | 500 | 单把酶返回的位点明细上限（`cut_count` 不受影响） |
+| `MAP_MAX_TOTAL_SITES` | 60000 | 单份文档的位点明细总上限 |
+| `MAP_CACHE_MAX_DOC_BYTES` | 1048576 | 序列化超过该字节数的文档不缓存 |
+| `MAP_CACHE_MAX_TOTAL_BYTES` | 67108864 | 本进程写入缓存的图谱文档总字节上限（超出按写入先后淘汰） |
 | `MAP_FEATURE_LIBRARY` | — | 可选：元件库 JSON 路径（默认 `$DATA_DIR/features/` 或仓库 `data/features/`） |
 | `NCBI_EMAIL` | — | 建议设置：NCBI E-utilities 要求的联系邮箱（随请求发送） |
 | `NCBI_API_KEY` | — | 可选：NCBI API key，速率上限由 3 次/秒提高到 10 次/秒 |
