@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-12
+
 ### 升级注意
 
 - **SnapGene 在线库默认关闭**：新增独立开关 `SNAPGENE_ONLINE_ENABLED`（默认
@@ -799,7 +801,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...v2.11.0
