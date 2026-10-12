@@ -21,6 +21,10 @@
   `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`。
 - `NCBI_TIMEOUT` 语义改为单次 NCBI 导入的总时长上限（默认由 20 改为 30 秒；此前只是单次
   socket 读超时）；新增可选 `NCBI_MAX_CONCURRENCY`（默认 4）。
+- **nginx 配置更新**：两份 `deploy/*/nginx.conf` 新增 `location ^~ /api/map/`
+  （`client_max_body_size 17m`）。裸机部署须把新的 nginx.conf 复制到位并 `nginx -s reload`；
+  Docker 部署重建前端镜像。新增可选环境变量 `MAP_MAX_JSON_MB`（默认 16，`/api/map/*` 除
+  `/parse` 外写请求的体积上限）；调大它或 `MAP_MAX_UPLOAD_MB` 时同步调大 nginx 这一项。
 
 ### 修复
 
@@ -44,6 +48,9 @@
   primers 无上限、长 primer_bind 的序列 >1000），再提交给 `/analyze` / `/export/genbank` 会
   422；超长 `join()` 解析要 5 s 以上。现在解析与组装按同一份常量截断并告警，分段超过
   1000 的位置串在进入 Biopython 前直接 422。
+- 图谱请求体：此前先整体读入（JSON `request.body()`、multipart spool、`/analyze` / `/export`
+  由 pydantic 全量解析）才比较大小，chunked 传输还能绕过 Content-Length 预检，实际上限是
+  nginx 的 100 MB。现在 `/api/map/*` 由 ASGI 中间件边收边计数、超限即 413，nginx 也单独收紧。
 
 ## [2.12.0] - 2026-10-12
 
