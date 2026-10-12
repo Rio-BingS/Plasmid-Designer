@@ -109,3 +109,27 @@ export interface MapPreview {
   topology: Topology
   features: { name: string; type: string; start: number; end: number; strand: Strand }[]
 }
+
+/** GET /api/map/enzymes/{name}：单把酶详情（REBASE / Bio.Restriction） */
+export interface EnzymeDetail {
+  name: string
+  site: string
+  recognition: string
+  ends: MapEnzyme['ends']
+  overhang: string | null
+  /** 非回文识别序列、在位点同一侧之外切割 */
+  type_iis: boolean
+  /** 可商购、切出 4 nt 5' 突出端的 Type IIS 酶（可用于 Golden Gate 引物设计） */
+  golden_gate: boolean
+  /** REBASE 厂商代码与名称 */
+  suppliers: { code: string; name: string }[]
+  /** 可商购同切酶（识别序列与切点都相同） */
+  isoschizomers: string[]
+  /** 可商购新切酶（识别序列相同、切点不同） */
+  neoschizomers: string[]
+  methylation?: MethylationKind[]
+}
+
+/** GET /api/map/suppliers：REBASE 厂商及其可供的酶 */
+export interface EnzymeSupplier { code: string; name: string; enzymes: string[] }
+
