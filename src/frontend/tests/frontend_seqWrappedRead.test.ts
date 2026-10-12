@@ -35,16 +35,19 @@ function mountMap(reads: ReadRow[]) {
 describe('跨原点 read 渲染', () => {
   it('匹配简图：跨原点 read 两段箭头，线性 read 一段；差异点按折回坐标', () => {
     const w = mountMap([wrapped, linear])
-    const rows = w.findAll('g.map-row')
+    const rows = w.findAll('g.lmap-track-item')
     expect(rows).toHaveLength(2)
     // 排序按 ref_start：线性 read（300）在前
     expect(rows[0].findAll('path')).toHaveLength(1)
     expect(rows[1].findAll('path')).toHaveLength(2)
-    expect(rows[1].find('title').text()).toContain('851-1000、1-250')
-    expect(rows[1].find('title').text()).toContain('跨越环状参考原点')
+    const item = (w.vm as any).tracks[0].items[1]
+    expect(item.tooltip.lines[0]).toContain('851-1000、1-250')
+    expect(item.tooltip.lines[0]).toContain('跨越环状参考原点')
     // 差异列 refPos 1001 → 折回 1：圆点落在轴最左端附近，而不是画到图外
     const cx = Number(rows[1].find('circle').attributes('cx'))
     expect(cx).toBeLessThan(200)
+    // 有跨原点 read 时按环状参考处理
+    expect((w.vm as any).doc.topology).toBe('circular')
   })
 
   it('read 表：跨原点 read 显示两段，线性 read 与旧格式一致', () => {

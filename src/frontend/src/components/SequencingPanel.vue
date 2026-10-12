@@ -213,8 +213,8 @@ void rowLayouts
 // sequencing/ConclusionCards.vue（低置信折叠态经 defineModel 共享）
 
 // ==================== 匹配简图（SnapGene 风格线性图谱） ====================
-// 整块（read 箭头分道/刻度轴/参考特征/去重开关/图例）已迁入
-// sequencing/MatchMap.vue；点击事件（open-read/jump-variant）回传父组件
+// 整块（read 箭头分道/刻度轴/参考特征/去重开关/图例）在
+// sequencing/MatchMap.vue（基于通用 map/LinearMap 的额外轨道）；点击事件（open-read/jump-variant）回传父组件
 // 走峰图联动。shortName 抽到 utils/seqPanelModel（简图标签/字母行芯片/
 // 工具栏复选框三处共用）。
 
@@ -348,7 +348,7 @@ async function downloadConsensus(format: string) {
       <MatchMap v-if="analysis.reads.length"
                 :reads="analysis.reads" :variants="analysis.variants"
                 :features="analysis.features" :coverage-ranges="analysis.coverage_ranges"
-                :reference-length="analysis.reference_length"
+                :reference-length="analysis.reference_length" :circular="analysis.circular"
                 @open-read="openReadInSeqviz" @jump-variant="jumpToVariant" />
 
       <!-- Read 摘要（子组件；查看按钮回传给峰图联动） -->

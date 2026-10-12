@@ -17,6 +17,7 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "sequencing": {"label": "测序分析"},
     "sequencing_batch": {"label": "批量测序分析"},
     "analysis": {"label": "序列工具"},
+    "map": {"label": "质粒图谱"},
     "codon": {"label": "密码子表"},
 }
 
@@ -25,7 +26,11 @@ FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
 # 读路径按此表做一次性继承迁移（标记列保证只跑一次，不与管理员后续显式勾选
 # 冲突），保持拆分前「批量测序随测序分析开关」的行为；管理员随后可在功能矩阵
 # 中对两者单独收紧
-SPLIT_INHERIT: Dict[str, str] = {"sequencing_batch": "sequencing"}
+#
+# 新增键同理：map（2026-10-12，独立的质粒图谱查看/编辑工具）出厂默认开放，
+# 但存量库的清单里没有它。按「能用序列工具的人群即可用图谱」继承一次，
+# 管理员此前对序列工具的收紧随之保留
+SPLIT_INHERIT: Dict[str, str] = {"sequencing_batch": "sequencing", "map": "analysis"}
 
 # 默认开关 = 全部开放，保持既有行为不变；管理员在后台自行收紧
 ALL_FEATURES: List[str] = list(FEATURE_REGISTRY.keys())

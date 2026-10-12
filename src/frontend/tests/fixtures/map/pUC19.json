@@ -1,0 +1,357 @@
+{
+ "schema": "plasmid-map/1",
+ "name": "pUC19",
+ "topology": "circular",
+ "length": 2686,
+ "sequence": "TCGCGCGTTTCGGTGATGACGGTGAAAACCTCTGACACATGCAGCTCCCGGAGACGGTCACAGCTTGTCTGTAAGCGGATGCCGGGAGCAGACAAGCCCGTCAGGGCGCGTCAGCGGGTGTTGGCGGGTGTCGGGGCTGGCTTAACTATGCGGCATCAGAGCAGATTGTACTGAGAGTGCACCATATGCGGTGTGAAATACCGCACAGATGCGTAAGGAGAAAATACCGCATCAGGCGCCATTCGCCATTCAGGCTGCGCAACTGTTGGGAAGGGCGATCGGTGCGGGCCTCTTCGCTATTACGCCAGCTGGCGAAAGGGGGATGTGCTGCAAGGCGATTAAGTTGGGTAACGCCAGGGTTTTCCCAGTCACGACGTTGTAAAACGACGGCCAGTGAATTCGAGCTCGGTACCCGGGGATCCTCTAGAGTCGACCTGCAGGCATGCAAGCTTGGCGTAATCATGGTCATAGCTGTTTCCTGTGTGAAATTGTTATCCGCTCACAATTCCACACAACATACGAGCCGGAAGCATAAAGTGTAAAGCCTGGGGTGCCTAATGAGTGAGCTAACTCACATTAATTGCGTTGCGCTCACTGCCCGCTTTCCAGTCGGGAAACCTGTCGTGCCAGCTGCATTAATGAATCGGCCAACGCGCGGGGAGAGGCGGTTTGCGTATTGGGCGCTCTTCCGCTTCCTCGCTCACTGACTCGCTGCGCTCGGTCGTTCGGCTGCGGCGAGCGGTATCAGCTCACTCAAAGGCGGTAATACGGTTATCCACAGAATCAGGGGATAACGCAGGAAAGAACATGTGAGCAAAAGGCCAGCAAAAGGCCAGGAACCGTAAAAAGGCCGCGTTGCTGGCGTTTTTCCATAGGCTCCGCCCCCCTGACGAGCATCACAAAAATCGACGCTCAAGTCAGAGGTGGCGAAACCCGACAGGACTATAAAGATACCAGGCGTTTCCCCCTGGAAGCTCCCTCGTGCGCTCTCCTGTTCCGACCCTGCCGCTTACCGGATACCTGTCCGCCTTTCTCCCTTCGGGAAGCGTGGCGCTTTCTCATAGCTCACGCTGTAGGTATCTCAGTTCGGTGTAGGTCGTTCGCTCCAAGCTGGGCTGTGTGCACGAACCCCCCGTTCAGCCCGACCGCTGCGCCTTATCCGGTAACTATCGTCTTGAGTCCAACCCGGTAAGACACGACTTATCGCCACTGGCAGCAGCCACTGGTAACAGGATTAGCAGAGCGAGGTATGTAGGCGGTGCTACAGAGTTCTTGAAGTGGTGGCCTAACTACGGCTACACTAGAAGAACAGTATTTGGTATCTGCGCTCTGCTGAAGCCAGTTACCTTCGGAAAAAGAGTTGGTAGCTCTTGATCCGGCAAACAAACCACCGCTGGTAGCGGTGGTTTTTTTGTTTGCAAGCAGCAGATTACGCGCAGAAAAAAAGGATCTCAAGAAGATCCTTTGATCTTTTCTACGGGGTCTGACGCTCAGTGGAACGAAAACTCACGTTAAGGGATTTTGGTCATGAGATTATCAAAAAGGATCTTCACCTAGATCCTTTTAAATTAAAAATGAAGTTTTAAATCAATCTAAAGTATATATGAGTAAACTTGGTCTGACAGTTACCAATGCTTAATCAGTGAGGCACCTATCTCAGCGATCTGTCTATTTCGTTCATCCATAGTTGCCTGACTCCCCGTCGTGTAGATAACTACGATACGGGAGGGCTTACCATCTGGCCCCAGTGCTGCAATGATACCGCGAGACCCACGCTCACCGGCTCCAGATTTATCAGCAATAAACCAGCCAGCCGGAAGGGCCGAGCGCAGAAGTGGTCCTGCAACTTTATCCGCCTCCATCCAGTCTATTAATTGTTGCCGGGAAGCTAGAGTAAGTAGTTCGCCAGTTAATAGTTTGCGCAACGTTGTTGCCATTGCTACAGGCATCGTGGTGTCACGCTCGTCGTTTGGTATGGCTTCATTCAGCTCCGGTTCCCAACGATCAAGGCGAGTTACATGATCCCCCATGTTGTGCAAAAAAGCGGTTAGCTCCTTCGGTCCTCCGATCGTTGTCAGAAGTAAGTTGGCCGCAGTGTTATCACTCATGGTTATGGCAGCACTGCATAATTCTCTTACTGTCATGCCATCCGTAAGATGCTTTTCTGTGACTGGTGAGTACTCAACCAAGTCATTCTGAGAATAGTGTATGCGGCGACCGAGTTGCTCTTGCCCGGCGTCAATACGGGATAATACCGCGCCACATAGCAGAACTTTAAAAGTGCTCATCATTGGAAAACGTTCTTCGGGGCGAAAACTCTCAAGGATCTTACCGCTGTTGAGATCCAGTTCGATGTAACCCACTCGTGCACCCAACTGATCTTCAGCATCTTTTACTTTCACCAGCGTTTCTGGGTGAGCAAAAACAGGAAGGCAAAATGCCGCAAAAAAGGGAATAAGGGCGACACGGAAATGTTGAATACTCATACTCTTCCTTTTTCAATATTATTGAAGCATTTATCAGGGTTATTGTCTCATGAGCGGATACATATTTGAATGTATTTAGAAAAATAAACAAATAGGGGTTCCGCGCACATTTCCCCGAAAAGTGCCACCTGACGTCTAAGAAACCATTATTATCATGACATTAACCTATAAAAATAGGCGTATCACGAGGCCCTTTCGTC",
+ "features": [
+  {
+   "id": "f1",
+   "name": "lacZ-alpha",
+   "type": "cds",
+   "start": 146,
+   "end": 469,
+   "strand": -1,
+   "source": "vector",
+   "notes": "lacZ alpha 片段（蓝白斑筛选），MCS 嵌入读码框内；完整 ORF（107 aa）"
+  },
+  {
+   "id": "f2",
+   "name": "MCS",
+   "type": "mcs",
+   "start": 396,
+   "end": 452,
+   "strand": -1,
+   "source": "vector",
+   "notes": "多克隆位点（lacZα 方向）: HindIII-SphI-PstI-SalI-XbaI-BamHI-SmaI-KpnI-SacI-EcoRI"
+  },
+  {
+   "id": "f3",
+   "name": "lac operator",
+   "type": "protein_bind",
+   "start": 489,
+   "end": 505,
+   "strand": -1,
+   "source": "vector",
+   "notes": "lac 阻遏蛋白结合位点（17 bp）"
+  },
+  {
+   "id": "f4",
+   "name": "lac promoter",
+   "type": "promoter",
+   "start": 513,
+   "end": 543,
+   "strand": -1,
+   "source": "vector",
+   "notes": "E. coli lac 启动子（IPTG 诱导）"
+  },
+  {
+   "id": "f5",
+   "name": "CAP binding site",
+   "type": "protein_bind",
+   "start": 558,
+   "end": 579,
+   "strand": -1,
+   "source": "vector",
+   "notes": "分解代谢物激活蛋白（CAP）结合位点"
+  },
+  {
+   "id": "f6",
+   "name": "ori",
+   "type": "rep_origin",
+   "start": 867,
+   "end": 1455,
+   "strand": -1,
+   "source": "vector",
+   "notes": "高拷贝 pUC 复制起始区（ColE1/pMB1 衍生）"
+  },
+  {
+   "id": "f7",
+   "name": "AmpR (bla)",
+   "type": "marker",
+   "start": 1626,
+   "end": 2486,
+   "strand": -1,
+   "source": "vector",
+   "notes": "氨苄西林抗性（beta-lactamase），完整 ORF（286 aa）"
+  },
+  {
+   "id": "f8",
+   "name": "AmpR promoter",
+   "type": "promoter",
+   "start": 2487,
+   "end": 2591,
+   "strand": -1,
+   "source": "vector",
+   "notes": "bla 启动子"
+  }
+ ],
+ "enzymes": [
+  {
+   "name": "EcoRI",
+   "recognition": "G^AATTC",
+   "ends": "5'",
+   "overhang": "AATT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 396,
+     "cut_top": 396,
+     "cut_bottom": 400,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BamHI",
+   "recognition": "G^GATCC",
+   "ends": "5'",
+   "overhang": "GATC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 417,
+     "cut_top": 417,
+     "cut_bottom": 421,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "HindIII",
+   "recognition": "A^AGCTT",
+   "ends": "5'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 447,
+     "cut_top": 447,
+     "cut_bottom": 451,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SalI",
+   "recognition": "G^TCGAC",
+   "ends": "5'",
+   "overhang": "TCGA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 429,
+     "cut_top": 429,
+     "cut_bottom": 433,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "PstI",
+   "recognition": "CTGCA^G",
+   "ends": "3'",
+   "overhang": "TGCA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 435,
+     "cut_top": 439,
+     "cut_bottom": 435,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SmaI",
+   "recognition": "CCC^GGG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 412,
+     "cut_top": 414,
+     "cut_bottom": 414,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "XbaI",
+   "recognition": "T^CTAGA",
+   "ends": "5'",
+   "overhang": "CTAG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 423,
+     "cut_top": 423,
+     "cut_bottom": 427,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "KpnI",
+   "recognition": "GGTAC^C",
+   "ends": "3'",
+   "overhang": "GTAC",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 408,
+     "cut_top": 412,
+     "cut_bottom": 408,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SacI",
+   "recognition": "GAGCT^C",
+   "ends": "3'",
+   "overhang": "AGCT",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 402,
+     "cut_top": 406,
+     "cut_bottom": 402,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "SphI",
+   "recognition": "GCATG^C",
+   "ends": "3'",
+   "overhang": "CATG",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 441,
+     "cut_top": 445,
+     "cut_bottom": 441,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "NdeI",
+   "recognition": "CA^TATG",
+   "ends": "5'",
+   "overhang": "TA",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 183,
+     "cut_top": 184,
+     "cut_bottom": 186,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "PvuII",
+   "recognition": "CAG^CTG",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 2,
+   "sites": [
+    {
+     "position": 306,
+     "cut_top": 308,
+     "cut_bottom": 308,
+     "strand": 1
+    },
+    {
+     "position": 628,
+     "cut_top": 630,
+     "cut_bottom": 630,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "ScaI",
+   "recognition": "AGT^ACT",
+   "ends": "blunt",
+   "overhang": null,
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 2177,
+     "cut_top": 2179,
+     "cut_bottom": 2179,
+     "strand": 1
+    }
+   ]
+  },
+  {
+   "name": "BsaI",
+   "recognition": "GGTCTCN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 1,
+   "sites": [
+    {
+     "position": 1766,
+     "cut_top": 1760,
+     "cut_bottom": 1764,
+     "strand": -1
+    }
+   ]
+  },
+  {
+   "name": "BsmBI",
+   "recognition": "CGTCTCN^NNNNN",
+   "ends": "5'",
+   "overhang": "NNNN",
+   "cut_count": 2,
+   "sites": [
+    {
+     "position": 51,
+     "cut_top": 45,
+     "cut_bottom": 49,
+     "strand": -1
+    },
+    {
+     "position": 2683,
+     "cut_top": 3,
+     "cut_bottom": 7,
+     "strand": 1
+    }
+   ]
+  }
+ ],
+ "orfs": [
+  {
+   "start": 146,
+   "end": 469,
+   "strand": -1,
+   "frame": 0,
+   "aa_length": 107
+  },
+  {
+   "start": 186,
+   "end": 542,
+   "strand": 1,
+   "frame": 2,
+   "aa_length": 118
+  },
+  {
+   "start": 1626,
+   "end": 2486,
+   "strand": -1,
+   "frame": 2,
+   "aa_length": 286
+  }
+ ],
+ "primers": [],
+ "meta": {
+  "source_format": "vector",
+  "enzyme_set": "common",
+  "warnings": []
+ }
+}

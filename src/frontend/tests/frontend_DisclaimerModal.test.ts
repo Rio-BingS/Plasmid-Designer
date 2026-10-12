@@ -20,6 +20,11 @@ describe('DisclaimerModal', () => {
     expect(wrapper.text()).toContain('免责声明')
     expect(wrapper.text()).toContain('仅供学习与科研参考')
     expect(wrapper.text()).toContain('严禁用于临床、诊断或生产用途')
+    // 数据来源致谢：REBASE 引用与 NCBI
+    const src = wrapper.find('.disclaimer-sources')
+    expect(src.text()).toContain('Nucleic Acids Res. 51:D629-D630 (2023)')
+    expect(src.find('a[href="https://doi.org/10.1093/nar/gkac975"]').exists()).toBe(true)
+    expect(src.text()).toContain('NCBI')
   })
 
   it('点击确认后关闭并写入 localStorage', async () => {
