@@ -7,7 +7,7 @@
  */
 
 /** 图谱 SVG 的字体栈（各视图 font-family 与此一致） */
-export const MAP_FONT = "Inter, -apple-system, 'Segoe UI', Roboto, sans-serif"
+export const MAP_FONT = "Inter, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Noto Sans CJK SC', sans-serif"
 
 export function estimateTextWidth(text: string, fontSize: number, bold = false): number {
   let em = 0

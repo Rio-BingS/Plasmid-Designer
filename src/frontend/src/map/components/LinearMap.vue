@@ -16,7 +16,7 @@ import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from 
 import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
-import { textWidth } from '../core/text'
+import { MAP_FONT, textWidth } from '../core/text'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import type { MapTrack, TrackItem } from '../tracks'
 import MapTooltip from './MapTooltip.vue'
@@ -451,7 +451,7 @@ defineExpose({ svgEl, zoomBy, fitAll, setViewport })
     <svg
       ref="svgEl" class="lmap-svg" data-map-export="linear" xmlns="http://www.w3.org/2000/svg"
       :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H" role="img" :aria-label="`${store.doc.value.name} 线性图谱`"
-      font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif"
+      :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
       @pointerleave="onLeave" @wheel="onWheel"
     >
