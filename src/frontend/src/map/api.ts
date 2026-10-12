@@ -4,7 +4,7 @@
  */
 import { formatApiError, http } from '@/api'
 import type {
-  AnalyzeRequest, EnzymeDetail, EnzymeSet, EnzymeSupplier, MapDocument, ParseOptions, Topology,
+  AnalyzeRequest, EnzymeDetail, EnzymeSet, EnzymeSupplier, MapDocument, NcbiImportRequest, ParseOptions, Topology,
 } from './types'
 import { clearEnzymeDetails, rememberEnzymeDetail } from './enzymeMeta'
 
@@ -43,6 +43,19 @@ export async function analyzeMap(req: AnalyzeRequest): Promise<MapDocument> {
 export async function getEnzymeSets(): Promise<EnzymeSet[]> {
   const r = await http.get('/map/enzyme-sets')
   return r.data
+}
+
+/** 按 NCBI accession（如 L09137、M77789.1）导入 GenBank 记录 */
+export async function importNcbi(req: NcbiImportRequest): Promise<MapDocument> {
+  const r = await http.post('/map/import/ncbi', req)
+  return r.data
+}
+
+/** 前端粗校验 NCBI 核酸 accession（后端再严格校验）：GenBank / WGS / RefSeq，版本号可选 */
+export const NCBI_ACCESSION_RE = /^(?:[A-Z]{1,2}\d{5,8}|[A-Z]{4,6}\d{8,10}|[A-Z]{2}_(?:[A-Z]{2,4})?\d{6,11})(?:\.\d{1,3})?$/
+
+export function normalizeAccession(raw: string): string {
+  return raw.replace(/\s+/g, '').toUpperCase()
 }
 
 // 酶详情 / 厂商表是静态数据：会话内缓存，同一请求并发只发一次
@@ -128,7 +141,12 @@ export function describeMapError(e: unknown, limitMb = MAP_UPLOAD_LIMIT_MB): str
   const zh = typeof detail === 'string' && /[\u4e00-\u9fff]/.test(detail) ? detail : ''
   if (status === 413) return zh || `文件过大（上限 ${limitMb} MB），请截取后再打开`
   if (status === 415) return zh || '不支持的文件格式：请上传 GenBank、FASTA、SnapGene（.dna）或纯文本序列'
+  // NCBI 导入：未找到 / NCBI 不可用 / 限流 / 超时，后端给中文 detail
+  if (status === 404 || status === 502 || status === 503 || status === 504) {
+    if (zh) return zh
+  }
   if (status === 422) {
+    if (zh && /accession/i.test(zh)) return zh
     if (zh) return `序列无法解析：${zh}`
     return '序列无法解析：请检查是否为有效的 DNA 序列（A/C/G/T 及 IUPAC 简并碱基）或完整的 GenBank/FASTA 文本'
   }

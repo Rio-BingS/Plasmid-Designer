@@ -1,4 +1,4 @@
-/** MapViewer 酶切面板：厂商过滤、酶详情 */
+/** MapViewer 酶切面板：厂商过滤、酶详情；/map 页 NCBI accession 导入 */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import type { EnzymeDetail, MapDocument } from '@/map/types'
@@ -6,11 +6,13 @@ import pUC19 from '../fixtures/map/pUC19.json'
 
 const apiMocks = vi.hoisted(() => ({
   getEnzymeSets: vi.fn(), analyzeMap: vi.fn(), exportGenbank: vi.fn(),
-  getSuppliers: vi.fn(), getEnzymeDetail: vi.fn(),
+  getSuppliers: vi.fn(), getEnzymeDetail: vi.fn(), importNcbi: vi.fn(),
+  parseMapFile: vi.fn(), parseMapText: vi.fn(), getVectorMap: vi.fn(),
 }))
 vi.mock('@/map/api', async (orig) => ({ ...(await orig<typeof import('@/map/api')>()), ...apiMocks }))
 
 import MapViewer from '@/map/components/MapViewer.vue'
+import MapView from '@/views/MapView.vue'
 import { resolveHit } from '@/map/hits'
 import { clearEnzymeDetails, rememberEnzymeDetail } from '@/map/enzymeMeta'
 
@@ -114,5 +116,39 @@ describe('MapViewer 酶切面板：厂商与详情', () => {
     const lines = resolveHit(store, 'e:BsaI#0')!.lines
     expect(lines).toContain('Type IIS · 可用于 Golden Gate')
     expect(lines).toContain('厂商：NEB')
+  })
+})
+
+describe('/map 页：NCBI 导入', () => {
+  it('输入 accession → importNcbi（带酶组/注释选项）→ 查看器', async () => {
+    apiMocks.importNcbi.mockResolvedValue(puc())
+    const w = mount(MapView)
+    await flushPromises()
+    await w.findAll('.map-tab')[2].trigger('click')
+    await w.find('select[aria-label="酶组"]').setValue('common')
+    await w.find('select[aria-label="自动注释"]').setValue('off')
+    await w.find('input[aria-label="NCBI accession"]').setValue(' m77789.1 ')
+    await w.find('.map-ncbi-open').trigger('click')
+    await flushPromises()
+    expect(apiMocks.importNcbi).toHaveBeenCalledWith({ accession: 'M77789.1', enzyme_set: 'common', annotate: false })
+    expect(w.find('.mv').exists()).toBe(true)
+  })
+
+  it('格式不对：本地提示，不发请求；后端 404 显示中文', async () => {
+    const w = mount(MapView)
+    await flushPromises()
+    await w.findAll('.map-tab')[2].trigger('click')
+    await w.find('input[aria-label="NCBI accession"]').setValue('pUC19')
+    expect(w.find('.map-ncbi-hint').exists()).toBe(true)
+    await w.find('input[aria-label="NCBI accession"]').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(w.find('.map-error').text()).toContain('accession 格式无效')
+    expect(apiMocks.importNcbi).not.toHaveBeenCalled()
+
+    apiMocks.importNcbi.mockRejectedValue({ response: { status: 404, data: { detail: 'NCBI 中未找到 accession X99999' } } })
+    await w.find('input[aria-label="NCBI accession"]').setValue('X99999')
+    await w.find('.map-ncbi-open').trigger('click')
+    await flushPromises()
+    expect(w.find('.map-error').text()).toContain('NCBI 中未找到 accession X99999')
   })
 })
