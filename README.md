@@ -139,7 +139,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/UniProt/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
 | `SNAPGENE_ONLINE_ENABLED` | SnapGene 在线质粒库（`/local`）单独开关，**默认 `false`**，与 `ONLINE_IMPORT_ENABLED` 相互独立：关闭时 SnapGene 相关端点一律 404；开启后也只对已登录用户开放（匿名 401），存入载体库仍需管理员。其网站条款禁止存入检索系统、robots.txt `Disallow: /local`，仅建议学术/非营利自用实例在接受该风险后开启（见 `docs/KNOWN_ISSUES.md`「已接受风险」） |
 | `ONLINE_TIMEOUT` / `ONLINE_MAX_BYTES` | 在线来源单次外呼超时（秒，默认 25）与单文件体积上限（字节，默认 8 MB） |
-| `ADDGENE_SESSION_COOKIE` | 可选。你自己在浏览器登录 Addgene 后的会话 Cookie，用于取**你有权访问**的全长序列；只发给 `addgene.org`（元数据里指向别处的主机不带），不落盘/不回显/不记日志；留空时相关端点 403 + 指引（不代登录、不绕登录墙） |
+| `ADDGENE_SESSION_COOKIE` | 可选，**仅适合单用户自托管**（部署者即唯一使用者与 Addgene 账号持有人）。你自己在浏览器登录 Addgene 后的会话 Cookie，用于管理员导入**你有权访问**的全长序列；只以 https 发往 `addgene.org`（重定向跨主机即丢弃），不写入应用数据/响应/日志，但它本身保存在 `.env` 与容器/进程环境里。多用户/开放注册实例启动时会告警（等同共享你的 Addgene 账号）。推荐替代：浏览器下载序列文件后走「上传文件」导入。留空时相关端点 403 + 指引（不代登录、不绕登录墙） |
 | `SNAPGENE_BASE` / `ENSEMBL_BASE` / `UNIPROT_BASE` | 仅自建镜像/代理时需要改的基地址（默认各站官方地址） |
 | `NCBI_EMAIL` / `NCBI_API_KEY` | NCBI E-utilities 联系邮箱（建议填）与 API key（可选，限速 3 → 10 次/秒） |
 
@@ -200,8 +200,9 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 > ⚖️ 在线来源的许可边界：SnapGene 质粒库学术/非营利/政府可无条件使用（须引用
 > `www.snapgene.com/resources`），**商业用途须先获 GraphPad Software, LLC 许可**，其
 > `robots.txt` 亦明确 `Disallow: /local`；Addgene 全长序列 2026-08 起需登录、禁止商业抓取，
-> 本项目**不代为登录、不绕登录墙**（未配置凭据时返回 403 + 合法路径指引；配置了你自己
-> 浏览器的会话 Cookie 后，只把它发给 `addgene.org`，不落盘、不回显、不记日志）。
+> 本项目**不代为登录、不绕登录墙**（未配置凭据时返回 403 + 合法路径指引，推荐在浏览器下载后
+> 「上传文件」导入；单用户自托管可配置你自己浏览器的会话 Cookie，仅管理员导入时以 https 发往
+> `addgene.org`，多用户实例不要用）。
 > Ensembl 数据无使用限制（注明来源）；UniProt 为 CC BY 4.0（须署名）且**不含质粒序列**，
 > 只用它按基因/蛋白名反查核酸交叉引用。因此这些通道只做**低频、单次、人工触发**的读取
 > （进程级限速 + 结果缓存），不批量镜像、不再分发；`ONLINE_IMPORT_ENABLED=false` 可整体

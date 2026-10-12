@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import Depends, HTTPException, status
@@ -22,6 +23,8 @@ from app.auth.jwt_auth import get_current_user
 from app.cache import cache
 from core import online_sources as src
 from core.plasmid_map.parsers import ParsedRecord
+
+logger = logging.getLogger("plasmid_designer.online_import")
 
 # 集合/索引变化很慢，TTL 取 1 小时；预览按「来源 + 标识」的内容哈希缓存
 CACHE_TTL = 3600
@@ -189,3 +192,46 @@ def preview_cache_key(source: str, *parts: str) -> str:
     raw = "|".join([source, *parts])
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
     return f"online:preview:{source}:{digest}"
+
+
+def addgene_shared_session_warning() -> Optional[str]:
+    """`ADDGENE_SESSION_COOKIE` 只适合单用户自托管：多用户部署时返回告警文案（否则 None）。
+
+    审查 M2：多用户实例里，一个人的 Addgene 会话被全站间接使用（等同共享账号，
+    Addgene ToS 要求账号持有人对其下全部活动负责），导入的序列也会进共享载体库。
+    「多用户」的判据（任一即成立）：站点设置开放注册，或库里已有 1 个以上启用的账号。
+    只读、不改任何状态；读库失败时不告警（不阻断启动）。
+    """
+    if not src.addgene_has_session():
+        return None
+    reasons = []
+    try:
+        from app import site_settings
+        if site_settings.get_settings().get("registration_open"):
+            reasons.append("开放注册")
+    except Exception:  # noqa: BLE001 - 设置不可读不影响启动
+        pass
+    try:
+        from app.database import SessionLocal, UserDB
+        db = SessionLocal()
+        try:
+            n = db.query(UserDB).filter(UserDB.is_active.is_(True)).count()
+        finally:
+            db.close()
+        if n > 1:
+            reasons.append(f"已有 {n} 个启用账号")
+    except Exception:  # noqa: BLE001
+        pass
+    if not reasons:
+        return None
+    return ("ADDGENE_SESSION_COOKIE 已配置，但本实例看起来是多用户部署（"
+            + "、".join(reasons) + "）：该 Cookie 是一个人的 Addgene 登录态，只适合单用户"
+            "自托管；多用户下等同共享账号，导入的序列也会对全站可见。建议清空该变量，"
+            "改为在浏览器用自己的账号下载序列文件后走「上传文件」导入。")
+
+
+def log_addgene_shared_session_warning() -> None:
+    """启动时调用：满足多用户判据就记一条 WARNING（不回显 Cookie 内容）。"""
+    msg = addgene_shared_session_warning()
+    if msg:
+        logger.warning(msg)
