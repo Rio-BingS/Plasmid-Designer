@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, formatApiError } from '@/api'
 import type { MapDocument } from '@/map/types'
 import { getDesignMap } from '@/map/api'
-import MapViewer from '@/map/components/MapViewer.vue'
+// 图谱查看器只在点"查看质粒图谱"后才需要：单独拆包
+const MapViewer = defineAsyncComponent(() => import('@/map/components/MapViewer.vue'))
 
 const props = defineProps<{
   designId: string
