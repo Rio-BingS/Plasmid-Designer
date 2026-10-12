@@ -52,8 +52,13 @@ services:
       # NCBI accession 导入（可选）
       - NCBI_EMAIL=${NCBI_EMAIL:-}
       - NCBI_API_KEY=${NCBI_API_KEY:-}
-      # 在线序列来源导入（SnapGene 在线库 / Ensembl / Addgene）：设 false 可整体关闭外呼
+      # 在线序列来源导入（SnapGene 在线库 / Ensembl / UniProt / Addgene）：设 false 可整体关闭外呼
       - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
+      - ONLINE_TIMEOUT=${ONLINE_TIMEOUT:-25}
+      - ONLINE_MAX_BYTES=${ONLINE_MAX_BYTES:-8388608}
+      # Addgene 用户自备会话 Cookie（可选）：只发给 addgene.org，不落盘、不回显。
+      # 留空 = 不代登录、不绕登录墙（相关端点 403 + 指引）
+      - ADDGENE_SESSION_COOKIE=${ADDGENE_SESSION_COOKIE:-}
       # 可信反向代理：只信前端 nginx 容器的固定地址（FRONTEND_IPV4，见下方 networks），
       # 不再信整个 172.16.0.0/12——同网段其它容器/主机可伪造 X-Real-IP 换限流桶。
       # 改 PLASMID_SUBNET / FRONTEND_IPV4 时同步修改

@@ -42,14 +42,30 @@
 - 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
   读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
   `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。
-  Addgene 全长序列 2026-08 起需登录，`addgene_sequence_bytes` **必须**抛
-  `AddgeneLoginRequired`（403 + 指引），任何情况下不得绕过登录墙。
+  Addgene 全长序列 2026-08 起需登录：无凭据时 `addgene_sequence_bytes` **必须**抛
+  `AddgeneLoginRequired`（403 + 指引），任何情况下不得代登录/绕登录墙；有
+  `ADDGENE_SESSION_COOKIE`（用户自备）时也只把凭据发给 `addgene.org`
+  （`_addgene_session_headers` 做主机白名单，元数据给的直链指向别处就不带），
+  且不得写入响应/日志/磁盘。
+- UniProt 是**蛋白库**：`core/online_sources.py` 只允许用它反查 Entrez/EMBL/RefSeq/
+  Ensembl 交叉引用（`nucleotide_candidates`）再把用户引到核酸来源；不要把蛋白序列
+  当质粒/图谱序列导入（`ENSEMBL_SEQ_TYPES` 拒绝 protein 是同一原则）。
+- 导入载体的出处一律写结构化 `data_provenance`（`app/vector_import.provenance_block`，
+  形状与内置载体 YAML 一致：source/url/fetched_at/license + 来源特有字段），描述里那句
+  可读标注**不能替代**它；新增导入通道时同步写。
+- 载体拓扑按真实值落盘（`topology: circular|linear`）：线性片段（PCR 产物、Ensembl 片段、
+  线性 GenBank 记录）不要再用「一律环状」画图谱（`app/map_documents._vector_topology`）。
 - 载体 YAML 的 `features[]` **必须带 `name`**（缺省回退到 type）：解析入口用
   `core/plasmid_map/parsers`，落盘入口用 `app/vector_import.py`；不要再用
   `external_vector_importer.GenBankImporter` 那种正则解析（.dna 会变空序列）。
 - 路由模块里取配置一律写 `config.settings.X`（调用时解析），不要
   `from app.config import settings`——`tests/test_config_cors.py` 会 `reload(app.config)`
   换掉实例，旧引用会让测试打桩失效并写进真实 `data/`。
+- **测试要把载体目录指到 tmp 时必须打两处**：`app.config.settings`（路由用）**和**
+  `app.design_service.settings`（`get_vector_library` 用，module 级 `from app.config
+  import settings` 拿到的是 reload 前的旧对象）；只打前者会出现「刚导入的载体 404」。
+  另外载体响应缓存 `vector:<id>` 会跨用例命中，用例开始/结束都要
+  `cache.backend.clear_pattern("vector:*")`（`tests/test_online_sources.py::vectors_dir`）。
 
 ---
 
@@ -219,3 +235,38 @@ Addgene `244694` 元数据可取、`.gbk` 直链 404 → 按预期 403 指引；
 **已知环境问题（非代码缺陷）**：本机网络下 `rest.ensembl.org` 偶发超时——
 `ensembl ping` 常常失败、`POST /api/map/import/ensembl` 实测出现过 504（映射正确，重试即可），
 而同一时刻 `lookup`/`sequence` 又可能成功；因此不要把 `ensembl_ping` 接成健康检查或门控。
+
+---
+
+### 2026-10-12 在线来源收尾（出处 / 写权限 / 另存为载体 / UniProt / Addgene 凭据）
+
+用户拍板的范围：A 组（在线导入收尾）全做、酶表不动、UniProt 接入、Addgene 允许
+「用自己账号的登录态抓全长序列」但不做 SnapGene 批量镜像。
+
+| 项 | 结果 |
+|---|---|
+| 结构化出处 | 导入载体一律写 `data_provenance`（`provenance_block`：source/url/fetched_at/license + set/plasmid/identifier/filename/origin…），`Vector` 增加 `provenance` 字段、`export_yaml` 回写、`VectorInfo.data_provenance` 下发，载体详情页新增「出处 / 许可」块 |
+| 载体拓扑保真 | `Vector.topology` + YAML `topology` + `VectorInfo.topology`；`map_documents._vector_topology` 让线性片段的缩略图/详情/图谱不再画成环状（此前导入的线性记录一律当环状） |
+| 图谱类型别名 | `vector_library._TYPE_ALIASES`：`rep_origin/mcs/marker/signal_peptide/polyA_signal/protein_bind/rbs` 不再一律掉成 `other`；仍未列出的（insert/primer_bind/misc_rna…）保持回退 other |
+| 写入口按管理员显示 | 载体库的上传/批量导入/编辑/删除、NCBI/SnapGene 预览弹窗的「确认导入」、Addgene 导入按钮都对非管理员隐藏；新增 `composables/useIsAdmin.ts`（无 pinia 宿主如单测降级为非管理员），后端 403 仍是权威 |
+| 图谱页「另存为载体」 | 新增 `POST /api/vectors/import/from-map`（仅管理员）：图谱页把**当前文档**（含编辑器里改过的注释）的序列/特征直接提交，后端不再外呼（避免"保存的"与"看到的"不是一份）；落库走 `record_from_parts` + `save_record`，出处记 `origin=<打开方式>` |
+| UniProt 通道 | `core/online_sources.py` 增加 `uniprot_search/uniprot_entry/uniprot_fasta/nucleotide_candidates`，路由 `GET /api/vectors/import/uniprot/search|{acc}`（只读外呼，限流 `ncbi` 档），前端载体库新增「UniProt」页签：**只反查** Entrez/EMBL/RefSeq/Ensembl 交叉引用并给跳转，蛋白序列不当质粒序列导入 |
+| Addgene 用户凭据 | `ADDGENE_SESSION_COOKIE`（可选，用户自备会话）：`_addgene_session_headers` 只对 `addgene.org`/`*.addgene.org` 附带 Cookie（上游元数据给的直链指向别处绝不带）；成功即可 `POST /api/vectors/import/addgene/{id}?fmt=genbank\|dna` 导入；失败（无凭据或凭据过期）依旧 403 + 指引，**不代登录、不绕登录墙**，凭据不落盘/不回显/不进日志 |
+| 联网冒烟 | 新增 `scripts/smoke_online_sources.py`：默认什么都不做（`--run` 或 `ONLINE_SMOKE=1` 才联网），逐个来源打印 ok/FAIL/info，只读不写；Addgene 匿名项按 info 处理（失败属预期） |
+| 部署与文档 | `deploy/docker/docker-compose.yml` 透传 `ONLINE_TIMEOUT/ONLINE_MAX_BYTES/ADDGENE_SESSION_COOKIE`，两份 `.env.example` 补 `UNIPROT_BASE`、`ADDGENE_SESSION_COOKIE` 说明 |
+
+**实跑验证（本机联网，2026-10-12）**：`scripts/smoke_online_sources.py --run` 全绿——
+SnapGene 19 集合 / `coronavirus_resources` 4 条 / `SARS_Genome.dna` 103,295 字节 → 29,751 bp·49 特征；
+Ensembl `lookup ENSG00000139618` → BRCA2、`ENST00000288602` cds 2,421 bp；
+UniProt `TP53` 检索命中 P04637（p53/Homo sapiens/141 条核酸交叉引用：EMBL X02469、RefSeq NM_000546.6、Ensembl ENST00000269305…）；
+Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），未配会话时按预期跳过序列获取。
+
+**踩到的两个坑（已修，勿回退）**
+
+1. **测试里只打 `app.config.settings.VECTORS_DIR` 不够**：`app.design_service` 是
+   module 级 `from app.config import settings`，`tests/test_config_cors.py` reload 过
+   `app.config` 后它拿的是旧对象 → 路由把载体写进 tmp、`GET /api/vectors/{id}` 却从
+   真实 `data/vectors` 加载，表现为「刚导入的载体 404」（单独跑该文件时是绿的，全量才红）。
+   同时载体响应缓存 `vector:<id>` 跨用例命中会让断言读到别的用例的载体。
+2. **冒烟脚本不要打印 `↳` 之类字符**：Windows 控制台默认 GBK，`print` 直接
+   `UnicodeEncodeError` 让冒烟整体判失败；`_report` 现按 GBK 编码兜底。
