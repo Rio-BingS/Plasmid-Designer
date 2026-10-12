@@ -15,7 +15,7 @@ app/
 │   ├── design_routes.py     # 设计任务 API
 │   ├── batch_routes.py      # 批量设计 API
 │   ├── vector_routes.py     # 载体库 API
-│   ├── online_source_routes.py  # 载体库在线导入（SnapGene 在线库/Ensembl/Addgene）
+│   ├── online_source_routes.py  # 载体库在线导入（SnapGene 在线库/Ensembl/UniProt/Addgene）
 │   ├── map_online_routes.py # 图谱页在线导入（SnapGene 在线库/Ensembl）
 │   ├── codon_routes.py      # 密码子表 API
 │   ├── sequencing_routes.py # Sanger 测序分析 API
