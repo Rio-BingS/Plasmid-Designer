@@ -203,3 +203,64 @@ def test_vector_list_items_carry_map_preview(client):
         [(f["name"], f["type"], f["start"], f["end"], f["strand"]) for f in puc["features"]]
     # 第二次走缓存，形状不变
     assert c.get("/api/vectors").json() == r.json()
+
+
+def test_large_documents_not_cached_and_total_bytes_bounded(client, monkeypatch):
+    """按序列化体积决定是否缓存；本进程缓存总字节超限时淘汰最早写入的"""
+    import app.routes.map_routes as M
+    from app.cache import cache
+
+    c, _ = client
+    monkeypatch.setattr(M, "_cache_sizes", type(M._cache_sizes)())
+    stored = {}
+    monkeypatch.setattr(cache.backend, "set", lambda k, v, ttl=None: stored.__setitem__(k, v) or True)
+    monkeypatch.setattr(cache.backend, "get", lambda k: stored.get(k))
+    monkeypatch.setattr(cache.backend, "delete", lambda k: stored.pop(k, None) is not None)
+
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_DOC_BYTES", 100)
+    r = c.post("/api/map/parse", json={"text": SEQ, "annotate": False})
+    assert r.status_code == 200 and not stored
+
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_DOC_BYTES", 10 ** 7)
+    size = M._doc_bytes(r.json())
+    monkeypatch.setattr(M, "MAP_CACHE_MAX_TOTAL_BYTES", int(size * 2.5))
+    for i in range(4):
+        rr = c.post("/api/map/parse", json={"text": SEQ, "annotate": False, "name": f"n{i}"})
+        assert rr.status_code == 200
+    assert len(stored) == 2 and len(M._cache_sizes) == 2
+    assert all(f'"n{i}"' not in json.dumps(v) for v in stored.values() for i in (0, 1))
+    assert sum(v[0] for v in M._cache_sizes.values()) <= int(size * 2.5) + 200
+
+
+def test_export_linear_wrap_feature_rejected(client):
+    """线性分子上的跨原点特征（start > end）导出 422，不写出无意义的 join(s..L,1..e)"""
+    c, _ = client
+    doc = {"schema": "plasmid-map/1", "name": "lin", "topology": "linear", "length": len(SEQ),
+           "sequence": SEQ, "features": [{"name": "w", "type": "cds", "start": 280, "end": 20,
+                                          "strand": 1}]}
+    r = c.post("/api/map/export/genbank", json=doc)
+    assert r.status_code == 422 and "跨原点" in r.json()["detail"]
+    doc["topology"] = "circular"
+    assert c.post("/api/map/export/genbank", json=doc).status_code == 200
+
+
+def test_vector_map_cache_key_covers_name_and_topology(client, monkeypatch):
+    """只改载体名称 / 拓扑也不能命中旧的图谱缓存"""
+    import copy
+
+    from app.routes import vector_routes
+
+    c, _ = client
+    lib = vector_routes.get_vector_library()
+    orig = lib.get_vector("pET-28a")
+    d1 = c.get("/api/vectors/pET-28a/map").json()
+    renamed = copy.copy(orig)
+    renamed.name = "pET-28a renamed"
+    linear = copy.copy(orig)
+    linear.topology = "linear"
+    for v, check in ((renamed, lambda d: d["name"] == "pET-28a renamed"),
+                     (linear, lambda d: d["topology"] == "linear")):
+        monkeypatch.setattr(type(lib), "get_vector", lambda self, vid, _v=v: _v)
+        d2 = c.get("/api/vectors/pET-28a/map").json()
+        assert check(d2), d2["name"]
+    assert d1["name"] != "pET-28a renamed" and d1["topology"] == "circular"
