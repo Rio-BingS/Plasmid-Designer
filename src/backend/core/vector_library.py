@@ -87,6 +87,8 @@ _TYPE_ALIASES: Dict[str, ElementType] = {
     "rbs": ElementType.REGULATORY,
     "misc_feature": ElementType.OTHER,
 }
+# 查表一律用 raw_type.lower()：键也统一小写，否则 polyA_signal 这类带大写的键永远命不中
+_TYPE_ALIASES = {k.lower(): v for k, v in _TYPE_ALIASES.items()}
 
 
 @dataclass

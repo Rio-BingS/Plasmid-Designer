@@ -31,6 +31,8 @@
 - 载体出处链接只接受 `http(s)://`：`POST /api/vectors/import/from-map` 的 `url` 不合规时
   422，落盘与读取 `data_provenance` 时也会丢弃非 http(s) 的 `url` / `*_url`（此前
   `javascript:` 链接会在载体详情页渲染成可点击链接，形成存储型 XSS）。
+- 导入载体里 `polyA_signal` 类型现在正确归为调控元件（别名表键大小写不一致，此前
+  永远落成 other）。
 - 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
   的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
   排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
