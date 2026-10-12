@@ -75,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 测试基线（本机 Windows，2026-10-12 在线来源导入后）：pytest 1308 passed / 39 skipped
 （另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
 `test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
-的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 413，vue-tsc 0。
+的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 423，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -177,7 +177,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.11.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.11.1；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
