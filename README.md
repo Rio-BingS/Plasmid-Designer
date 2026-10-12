@@ -139,6 +139,7 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | `ONLINE_IMPORT_ENABLED` | 在线来源导入总开关（默认 `true`；`false` 时后端对 SnapGene 在线库/Ensembl/UniProt/Addgene **零外呼**，相关端点返回 503）。商业部署请先确认许可再开启 |
 | `SNAPGENE_ONLINE_ENABLED` | SnapGene 在线质粒库（`/local`）单独开关，**默认 `false`**，与 `ONLINE_IMPORT_ENABLED` 相互独立：关闭时 SnapGene 相关端点一律 404；开启后也只对已登录用户开放（匿名 401），存入载体库仍需管理员。其网站条款禁止存入检索系统、robots.txt `Disallow: /local`，仅建议学术/非营利自用实例在接受该风险后开启（见 `docs/KNOWN_ISSUES.md`「已接受风险」） |
 | `ONLINE_TIMEOUT` / `ONLINE_MAX_BYTES` | 在线来源单次外呼超时（秒，默认 25）与单文件体积上限（字节，默认 8 MB） |
+| `ONLINE_THROTTLE_MAX_WAIT` | 在线来源按站点节流时单个请求最多排队等待的秒数（默认 10），超过直接返回 429 |
 | `ADDGENE_SESSION_COOKIE` | 可选，**仅适合单用户自托管**（部署者即唯一使用者与 Addgene 账号持有人）。你自己在浏览器登录 Addgene 后的会话 Cookie，用于管理员导入**你有权访问**的全长序列；只以 https 发往 `addgene.org`（重定向跨主机即丢弃），不写入应用数据/响应/日志，但它本身保存在 `.env` 与容器/进程环境里。多用户/开放注册实例启动时会告警（等同共享你的 Addgene 账号）。推荐替代：浏览器下载序列文件后走「上传文件」导入。留空时相关端点 403 + 指引（不代登录、不绕登录墙） |
 | `SNAPGENE_BASE` / `ENSEMBL_BASE` / `UNIPROT_BASE` | 仅自建镜像/代理时需要改的基地址（默认各站官方地址） |
 | `NCBI_EMAIL` / `NCBI_API_KEY` | NCBI E-utilities 联系邮箱（建议填）与 API key（可选，限速 3 → 10 次/秒） |
