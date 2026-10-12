@@ -126,50 +126,144 @@ def _throttle(host: str) -> None:
         _last_request[host] = time.monotonic()
 
 
+class UnsafeUrlError(OnlineSourceError):
+    """外呼目标（含重定向的每一跳）不是 https 或主机不在白名单：一律拒绝，不外呼。"""
+
+    def __init__(self, message: str):
+        super().__init__(message, 502)
+
+
+# 重定向最多跟几跳（每一跳都重新校验 scheme + 主机白名单）
+_MAX_REDIRECTS = 3
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+
+def _is_addgene_host(host: str) -> bool:
+    host = (host or "").lower()
+    return host == "addgene.org" or host.endswith(".addgene.org")
+
+
+def _allowed_hosts() -> set:
+    """外呼主机白名单：各来源基地址（含部署方改过的 *_BASE）的主机名。
+
+    Addgene 的 addgene.org 及其子域另由 `_is_addgene_host` 放行。按调用时的
+    模块常量计算，测试/部署改了 *_BASE 也能同步生效。
+    """
+    hosts = set()
+    for base in (SNAPGENE_BASE, ENSEMBL_BASE, UNIPROT_BASE):
+        h = urllib.parse.urlsplit(base).hostname
+        if h:
+            hosts.add(h.lower())
+    return hosts
+
+
+def _checked_host(url: str) -> str:
+    """校验外呼 URL：只允许 https + 白名单主机（按裸主机名比对，不含端口/userinfo）。
+
+    拒绝 file:// / ftp:// / data: / http:// 等一切非 https 链接——此前上游 JSON 给出的
+    直链 scheme 未受限，`urlopen` 会照读本地文件或把凭据明文发出。
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        host = (parts.hostname or "").lower()
+    except ValueError as e:
+        raise UnsafeUrlError("外呼地址无法解析，已拒绝") from e
+    if parts.scheme.lower() != "https":
+        raise UnsafeUrlError(
+            f"只允许 https 外呼，已拒绝 {parts.scheme or '(无 scheme)'}:// 链接")
+    if not host or not (host in _allowed_hosts() or _is_addgene_host(host)):
+        raise UnsafeUrlError(f"外呼主机 {host or '(空)'} 不在白名单内，已拒绝")
+    return host
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """禁止 urllib 自动跟随重定向。
+
+    CPython 的 HTTPRedirectHandler 会把原请求的普通头（含 Cookie）原样复制到
+    新请求，不区分跨主机、也不阻止 https→http 降级。这里返回 None，3xx 以
+    HTTPError 抛给 `_http_get`，由它逐跳校验后决定是否跟随、是否带凭据。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+# 测试可往这里塞自定义 handler（如本地伪 HTTPS 服务），走的仍是真实 OpenerDirector
+_EXTRA_HANDLERS: list = []
+
+
+def _default_open(req, timeout=None):
+    """真实外呼：自建 opener（禁自动重定向），不用全局 urlopen。"""
+    opener = urllib.request.build_opener(_NoRedirectHandler(), *_EXTRA_HANDLERS)
+    return opener.open(req, timeout=timeout)
+
+
+def _translate_http_error(e: "urllib.error.HTTPError") -> OnlineSourceError:
+    if e.code in (400, 403, 404):
+        return OnlineSourceError(f"上游未找到或拒绝访问（HTTP {e.code}）", 404)
+    if e.code == 429:
+        return OnlineSourceError("上游请求过于频繁，请稍后再试", 503)
+    return OnlineSourceError(f"上游服务返回错误（HTTP {e.code}）", 502)
+
+
 def _http_get(url: str, *, max_bytes: int, accept: str = "*/*",
               timeout: Optional[float] = None,
-              headers: Optional[Dict[str, str]] = None,
+              cookie: Optional[str] = None,
               opener: Optional[Callable] = None) -> bytes:
     """带体积上限的外呼；上游错误统一翻译成 OnlineSourceError。
 
-    `headers` 只用于必需场景（如 Addgene 用户自备会话 Cookie），调用方必须保证
-    不把凭据发给不相关的主机（见 `_addgene_session_headers`）。
+    安全约束（v2.12 审查 H1）：
+    * 起始 URL 与**每一跳**重定向目标都必须是 https 且主机在白名单内；
+      最多跟 `_MAX_REDIRECTS` 跳，自动重定向被禁用（见 `_NoRedirectHandler`）。
+    * `cookie`（Addgene 用户自备会话）只用 `add_unredirected_header` 附带，
+      且只发给与起始 URL 相同的 addgene.org 主机；一旦跨主机跳转即永久丢弃。
     """
     _ensure_enabled()
-    host = urllib.parse.urlsplit(url).netloc
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "PlasmidDesigner/online-import (+academic use)",
-        "Accept": accept,
-        **(headers or {}),
-    })
-    open_fn = opener or urllib.request.urlopen
-    _throttle(host)
-    buf = bytearray()
-    try:
-        with open_fn(req, timeout=timeout if timeout is not None else _timeout()) as resp:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                buf.extend(chunk)
-                if len(buf) > max_bytes:
-                    raise OnlineSourceError(
-                        f"上游文件过大（超过 {max_bytes // (1024 * 1024)} MB），已中止下载", 413)
-    except OnlineSourceError:
-        raise
-    except urllib.error.HTTPError as e:
-        if e.code in (400, 403, 404):
-            raise OnlineSourceError(f"上游未找到或拒绝访问（HTTP {e.code}）", 404) from e
-        if e.code == 429:
-            raise OnlineSourceError("上游请求过于频繁，请稍后再试", 503) from e
-        raise OnlineSourceError(f"上游服务返回错误（HTTP {e.code}）", 502) from e
-    except (socket.timeout, TimeoutError) as e:
-        raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
-    except urllib.error.URLError as e:
-        if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
+    origin_host = _checked_host(url)
+    send_cookie = bool(cookie) and _is_addgene_host(origin_host)
+    open_fn = opener or _default_open
+    to = timeout if timeout is not None else _timeout()
+    current = url
+    for _hop in range(_MAX_REDIRECTS + 1):
+        host = _checked_host(current)
+        send_cookie = send_cookie and host == origin_host
+        req = urllib.request.Request(current, headers={
+            "User-Agent": "PlasmidDesigner/online-import (+academic use)",
+            "Accept": accept,
+        })
+        if send_cookie:
+            req.add_unredirected_header("Cookie", cookie)
+        _throttle(host)
+        buf = bytearray()
+        try:
+            with open_fn(req, timeout=to) as resp:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise OnlineSourceError(
+                            f"上游文件过大（超过 {max_bytes // (1024 * 1024)} MB），已中止下载", 413)
+        except OnlineSourceError:
+            raise
+        except urllib.error.HTTPError as e:
+            if e.code in _REDIRECT_CODES:
+                location = e.headers.get("Location") if e.headers is not None else None
+                e.close()
+                if not location:
+                    raise OnlineSourceError("上游重定向缺少目标地址", 502) from e
+                current = urllib.parse.urljoin(current, location)
+                continue
+            raise _translate_http_error(e) from e
+        except (socket.timeout, TimeoutError) as e:
             raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
-        raise OnlineSourceError("无法连接上游数据源，请稍后再试", 502) from e
-    return bytes(buf)
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
+                raise OnlineSourceError("连接上游超时，请稍后再试", 504) from e
+            raise OnlineSourceError("无法连接上游数据源，请稍后再试", 502) from e
+        return bytes(buf)
+    raise OnlineSourceError(f"上游重定向超过 {_MAX_REDIRECTS} 跳，已中止", 502)
 
 
 def _http_get_json(url: str, **kw) -> dict:
@@ -552,15 +646,22 @@ def addgene_has_session() -> bool:
     return bool(addgene_session_cookie())
 
 
-def _addgene_session_headers(url: str) -> Dict[str, str]:
-    """仅对 addgene.org 主机附带会话 Cookie（防止上游给的直链指向别处时泄凭据）"""
+def _addgene_cookie_for(url: str) -> Optional[str]:
+    """仅当 URL 是 https 且主机（裸主机名，不含端口）属 addgene.org 时返回会话 Cookie。
+
+    这只是起点校验；重定向时的逐跳校验与跨主机丢弃由 `_http_get` 负责。
+    """
     cookie = addgene_session_cookie()
-    host = urllib.parse.urlsplit(url).netloc.lower()
     if not cookie:
-        return {}
-    if not (host == "addgene.org" or host.endswith(".addgene.org")):
-        return {}
-    return {"Cookie": cookie}
+        return None
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        host = parts.hostname or ""
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "https" or not _is_addgene_host(host):
+        return None
+    return cookie
 
 
 def addgene_sequence_bytes(object_id: str, *, fmt: str = "genbank",
@@ -579,11 +680,17 @@ def addgene_sequence_bytes(object_id: str, *, fmt: str = "genbank",
     if not direct:
         raise AddgeneLoginRequired(
             f"Addgene 元数据里没有 {key}（该质粒可能未公开序列文件）")
+    # 直链来自上游 JSON：先校验（https + addgene.org），不合格直接拒绝且不带凭据
+    host = _checked_host(direct)
+    if not _is_addgene_host(host):
+        raise UnsafeUrlError(f"Addgene 元数据给出的下载链接不在 addgene.org 下（{host}），已拒绝")
     logged_in = addgene_has_session()
     try:
         return _http_get(direct, max_bytes=DEFAULT_MAX_BYTES, accept="*/*",
-                         timeout=timeout, headers=_addgene_session_headers(direct),
+                         timeout=timeout, cookie=_addgene_cookie_for(direct),
                          opener=opener)
+    except UnsafeUrlError:
+        raise
     except OnlineSourceError as e:
         if logged_in:
             raise AddgeneLoginRequired(
