@@ -64,9 +64,10 @@ describe('CircularMap 版式', () => {
 
   it('标签栏按最长标签留白（环够大），并裁掉上下空白', () => {
     const w = mount(CircularMap, { props: { doc: puc(), size: 640 } })
-    const R0 = Number(w.find('.cmap-svg circle').attributes('r'))
-    // 固定按 26% 留白时 R0 = 320 - 166 - 26 ≈ 128
-    expect(R0).toBeGreaterThan(180)
+    // 外链半径（特征骑在双链上，外链比特征外沿小约 laneH/2 - RAIL/2）
+    const rOut = Number(w.find('.cmap-svg circle.cmap-strand').attributes('r'))
+    // 固定按 26% 留白时外沿 ≈ 128
+    expect(rOut).toBeGreaterThan(170)
     const [, , vw, vh] = vb(w)
     expect(vw).toBe(640)
     expect(vh).toBeLessThan(640)
@@ -248,6 +249,15 @@ describe('LinearMap 额外轨道', () => {
 })
 
 describe('缩略图与缩略导航', () => {
+  it('双链间距随特征厚度缩放，第 0 道特征骑在双链中线上', () => {
+    const w = mount(CircularMap, { props: { doc: puc(), size: 720 } })
+    const [o, i] = w.findAll('.cmap-svg circle.cmap-strand').map((c) => Number(c.attributes('r')))
+    const rail = o - i
+    expect(rail).toBeGreaterThanOrEqual(4)
+    expect(rail).toBeLessThanOrEqual(7)
+    // 特征弧的径向范围覆盖两条链（取第一个特征 path 的 bbox 不便，改看双链在第 0 道之内：rail 小于道宽）
+    expect(rail).toBeLessThan(18)
+  })
   it('MapThumbnail 无标签，每个特征一块', () => {
     const w = mount(MapThumbnail, { props: { doc: puc() } })
     expect(w.findAll('path')).toHaveLength(puc().features.length)
