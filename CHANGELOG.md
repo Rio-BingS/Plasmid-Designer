@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-10-13
+
 ### 新增
 - SnapGene 在线库：集合框里直接输入质粒名（如 `pET-30a`、`pET28`）回车，即可跨全部集合搜索并打开/预览/导入；新增 `GET /api/map/import/snapgene/search`、`GET /api/vectors/import/snapgene/search`（需登录，ncbi 限流档）。首次搜索需逐个读取集合索引（约 20 秒），之后走 1 小时缓存。
 
@@ -824,7 +826,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.0...HEAD
+[2.15.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.1...v2.15.0
 [2.14.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.0...v2.14.1
 [2.14.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...v2.13.0
