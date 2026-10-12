@@ -134,6 +134,6 @@ describe('图谱页「在线导入」：SnapGene 选项', () => {
     await w.find('.map-online-src input[value="snapgene"]').setValue(true)
     await flushPromises()
     expect(mapApi.getOnlineSnapgeneSets).toHaveBeenCalledTimes(1)
-    expect(w.find('select[aria-label="SnapGene 集合"]').exists()).toBe(true)
+    expect(w.find('input[aria-label^="SnapGene 集合"]').exists()).toBe(true)
   })
 })
