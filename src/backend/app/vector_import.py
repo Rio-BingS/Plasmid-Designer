@@ -217,13 +217,13 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
                 description: Optional[str] = None,
                 attribution: Optional[str] = None,
                 provenance: Optional[Dict[str, str]] = None) -> Dict:
-    """解析结果 → 载体库；返回接口回执（id/name/length/features/path/replaced/warnings）"""
+    """解析结果 → 载体库；返回接口回执（id/name/length/features/replaced/warnings）"""
     data = record_to_vector_dict(record, source=source, url=url, vector_id=vector_id,
                                  description=description, attribution=attribution,
                                  provenance=provenance)
     replaced = os.path.exists(vector_yaml_path(data, vectors_dir))
-    path = write_vector_yaml(data, vectors_dir)
-    # 覆盖同 id 载体时明确告知（审查 L2）
+    write_vector_yaml(data, vectors_dir)
+    # 覆盖同 id 载体时明确告知（审查 L2）；回执不带服务器上的绝对路径（审查 L5）
     warnings = list(data.get("_warnings", []))
     if replaced:
         warnings.append(f"已覆盖载体库中同 ID 的载体 {data['id']}")
@@ -235,7 +235,6 @@ def save_record(record: ParsedRecord, *, source: str, vectors_dir: str,
         "features": len(data["features"]),
         "source": source,
         "url": data.get("url", ""),
-        "path": path,
         "replaced": replaced,
         "provenance": data.get("data_provenance", {}),
         "warnings": warnings,
