@@ -4,7 +4,7 @@
 本项目自写（pLannotate 为 GPL-3，未引用其代码）：
 
 1. 长元件（≥ SEED_MIN_LEN bp）：库序列的 k-mer 精确种子 → 按 (元件, 链,
-   对角线) 聚类 → 在候选窗口上用 Bio.Align.PairwiseAligner 做局部比对，
+   对角线) 计票、按对角线分块 → 在定长候选窗口上用 Bio.Align.PairwiseAligner 做局部比对，
    得到 identity（相同列 / 比对列，含 gap）与 coverage（覆盖的元件长度占比）；
 2. 短元件（启动子核心、attB、operator…）：双链精确查找；
 3. 肽标签 / 蛋白酶位点：六框翻译后精确查找肽段；
@@ -15,7 +15,9 @@
 6. 去重：同一元件或同类型/同名元件重叠超过较短者一半时只留最好的
    （完整优先 → identity 高优先 → 比对长优先）。
 
-性能边界：候选比对数封顶 MAX_ALIGNMENTS，单次比对窗口封顶元件长度 + 2×PAD。
+性能边界：单次比对窗口恒为元件长度 + 2×PAD（与序列长度无关）；候选按种子
+覆盖跨度/票数排序后在 MAX_ALIGNMENTS 次、MAX_ALIGN_CELLS 个 DP 单元格的
+预算内比对，超出告警；未显式要求时超过 AUTO_ANNOTATE_MAX_BP 的序列不自动注释。
 """
 
 import hashlib
@@ -36,13 +38,16 @@ SEED_MIN_LEN = 40
 MIN_SEED_VOTES = 3
 # 库内出现次数超过此值的 k-mer 视为低复杂度（重复序列），不作种子
 MAX_KMER_OCCURRENCES = 6
-DIAG_MERGE = 40
 PAD = 30
 MIN_IDENTITY = 0.90
 MIN_COVERAGE = 0.30
 FRAGMENT_COVERAGE = 0.95
 OVERLAP_DEDUP = 0.5
 MAX_ALIGNMENTS = 400
+# 单个请求的比对 DP 单元格总预算（Σ 窗口长 × 元件长）；~6e7 单元格/秒
+MAX_ALIGN_CELLS = int(os.environ.get("MAP_ANNOTATE_MAX_CELLS", str(60_000_000)))
+# 未显式要求时（annotate 缺省）超过此长度的序列不自动注释（见 build_document）
+AUTO_ANNOTATE_MAX_BP = int(os.environ.get("MAP_AUTO_ANNOTATE_MAX_BP", "50000"))
 
 LIBRARY_NAME = "common"
 
@@ -169,64 +174,116 @@ def _to_fwd(strand: int, a: int, b: int, n_ext: int) -> Tuple[int, int]:
     return n_ext - b, n_ext - a
 
 
-def _seed_hits(lib: FeatureLibrary, q: str, strand: int, n_ext: int,
-               seq_len: int, budget: List[int]) -> List[Hit]:
-    votes: Dict[Tuple[int, int], int] = defaultdict(int)
+@dataclass
+class _Candidate:
+    entry: int
+    strand: int
+    anchor: int   # 窗口锚定对角线（查询链坐标 = 元件偏移 + anchor）
+    votes: int
+    span: int     # 种子覆盖的元件偏移跨度（bp）：真命中接近元件长度，串联重复很短
+
+
+def _seed_candidates(lib: FeatureLibrary, q: str, strand: int) -> List[_Candidate]:
+    """k-mer 种子 → 按 (元件, 对角线) 计票 → 每个元件的对角线按跨度不超过
+    2×PAD 分块，每块一个候选窗口（锚在块中点，窗口长度恒为元件长 + 2×PAD）。
+
+    v2.12.0 把相邻对角线差 ≤ 40 的整串链成一个簇、窗口跟着簇无限
+    变长：串联重复的元件片段（每拷贝对角线 +拷贝长）会把整条序列链成
+    一个窗口，单次比对 300 kb × 元件长。现在窗口长度与序列长度无关。"""
+    votes: Dict[Tuple[int, int], List[int]] = {}
     index = lib.index
     for i in range(len(q) - KMER + 1):
         hits = index.get(q[i:i + KMER])
         if hits:
             for eidx, off in hits:
-                votes[(eidx, i - off)] += 1
-    by_entry: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+                key = (eidx, i - off)
+                v = votes.get(key)
+                if v is None:
+                    votes[key] = [1, off, off]
+                else:
+                    v[0] += 1
+                    if off < v[1]:
+                        v[1] = off
+                    elif off > v[2]:
+                        v[2] = off
+    by_entry: Dict[int, List[Tuple[int, List[int]]]] = defaultdict(list)
     for (eidx, diag), v in votes.items():
         by_entry[eidx].append((diag, v))
-    out: List[Hit] = []
-    aligner = _aligner()
+    del votes
+    out: List[_Candidate] = []
     for eidx, diags in by_entry.items():
-        diags.sort()
-        clusters, cur = [], [diags[0]]
+        diags.sort(key=lambda d: d[0])
+        chunk = [diags[0]]
         for d in diags[1:]:
-            if d[0] - cur[-1][0] <= DIAG_MERGE:
-                cur.append(d)
+            if d[0] - chunk[0][0] <= 2 * PAD:
+                chunk.append(d)
             else:
-                clusters.append(cur)
-                cur = [d]
-        clusters.append(cur)
-        entry = lib.entries[eidx]
+                _flush_chunk(out, eidx, strand, chunk)
+                chunk = [d]
+        _flush_chunk(out, eidx, strand, chunk)
+    return out
+
+
+def _flush_chunk(out: List[_Candidate], eidx: int, strand: int, chunk) -> None:
+    n = sum(v[0] for _, v in chunk)
+    if n < MIN_SEED_VOTES:
+        return
+    lo_off = min(v[1] for _, v in chunk)
+    hi_off = max(v[2] for _, v in chunk) + KMER
+    anchor = (chunk[0][0] + chunk[-1][0]) // 2
+    out.append(_Candidate(eidx, strand, anchor, n, hi_off - lo_off))
+
+
+def _align_candidates(lib: FeatureLibrary, qs: Dict[int, str], cands: List[_Candidate],
+                      n_ext: int, seq_len: int, warnings: Optional[List[str]]) -> List[Hit]:
+    """按「种子覆盖跨度、票数」从高到低逐个比对，受比对次数与 DP 单元格总量
+    双重预算约束；预算用尽时剩余候选跳过并告警（两条链共用一个排序，
+    不会出现正链先把预算用完、负链元件被静默漏掉）。"""
+    cands.sort(key=lambda c: (-c.span, -c.votes, c.entry, c.strand, c.anchor))
+    aligner = _aligner()
+    out: List[Hit] = []
+    n_align = 0
+    cells = 0
+    skipped = 0
+    for c in cands:
+        entry = lib.entries[c.entry]
         elen = len(entry.sequence)
-        for cl in clusters:
-            if sum(v for _, v in cl) < MIN_SEED_VOTES:
-                continue
-            if budget[0] <= 0:
-                return out
-            budget[0] -= 1
-            lo = max(0, cl[0][0] - PAD)
-            hi = min(len(q), cl[-1][0] + elen + PAD)
-            window = q[lo:hi]
-            if len(window) < KMER:
-                continue
-            aln = aligner.align(window, entry.sequence)[0]
-            blocks_t, blocks_q = aln.aligned  # target=window, query=entry
-            if len(blocks_t) == 0:
-                continue
-            w_a, w_b = int(blocks_t[0][0]), int(blocks_t[-1][1])
-            e_a, e_b = int(blocks_q[0][0]), int(blocks_q[-1][1])
-            matches = 0
-            for (ta, tb), (qa, _qb) in zip(blocks_t, blocks_q):
-                ta, tb, qa = int(ta), int(tb), int(qa)
-                seg_w = window[ta:tb]
-                seg_e = entry.sequence[qa:qa + (tb - ta)]
-                matches += sum(1 for x, y in zip(seg_w, seg_e) if x == y)
-            columns = (w_b - w_a) + (e_b - e_a) - sum(int(tb) - int(ta) for ta, tb in blocks_t)
-            if columns <= 0:
-                continue
-            identity = matches / columns
-            coverage = (e_b - e_a) / elen
-            a, b = _to_fwd(strand, lo + w_a, lo + w_b, n_ext)
-            if a >= seq_len:
-                continue  # 起点在扩展段：由原序列内的同一命中代表
-            out.append(Hit(eidx, strand, a, b - a, identity, coverage, columns))
+        q = qs[c.strand]
+        lo = max(0, c.anchor - PAD)
+        hi = min(len(q), c.anchor + elen + PAD)
+        if hi - lo < KMER:
+            continue
+        cost = (hi - lo) * elen
+        if n_align >= MAX_ALIGNMENTS or cells + cost > MAX_ALIGN_CELLS:
+            skipped += 1
+            continue
+        n_align += 1
+        cells += cost
+        window = q[lo:hi]
+        aln = aligner.align(window, entry.sequence)[0]
+        blocks_t, blocks_q = aln.aligned  # target=window, query=entry
+        if len(blocks_t) == 0:
+            continue
+        w_a, w_b = int(blocks_t[0][0]), int(blocks_t[-1][1])
+        e_a, e_b = int(blocks_q[0][0]), int(blocks_q[-1][1])
+        matches = 0
+        for (ta, tb), (qa, _qb) in zip(blocks_t, blocks_q):
+            ta, tb, qa = int(ta), int(tb), int(qa)
+            seg_w = window[ta:tb]
+            seg_e = entry.sequence[qa:qa + (tb - ta)]
+            matches += sum(1 for x, y in zip(seg_w, seg_e) if x == y)
+        columns = (w_b - w_a) + (e_b - e_a) - sum(int(tb) - int(ta) for ta, tb in blocks_t)
+        if columns <= 0:
+            continue
+        identity = matches / columns
+        coverage = (e_b - e_a) / elen
+        a, b = _to_fwd(c.strand, lo + w_a, lo + w_b, n_ext)
+        if a >= seq_len:
+            continue  # 起点在扩展段：由原序列内的同一命中代表
+        out.append(Hit(c.entry, c.strand, a, b - a, identity, coverage, columns))
+    if skipped and warnings is not None:
+        warnings.append(f"自动注释比对量超出预算，{skipped} 个低优先级候选未比对，"
+                        "结果可能不完整（多见于含大量重复的长序列）")
     return out
 
 
@@ -286,8 +343,10 @@ def _quality(h: Hit):
     return (not h.fragment, round(h.identity, 3), h.aligned)
 
 
-def annotate(seq: str, circular: bool, lib: Optional[FeatureLibrary] = None) -> List[Dict]:
-    """返回契约 MapFeature（source=auto，尚无 id）列表，按起点排序"""
+def annotate(seq: str, circular: bool, lib: Optional[FeatureLibrary] = None,
+             warnings: Optional[List[str]] = None) -> List[Dict]:
+    """返回契约 MapFeature（source=auto，尚无 id）列表，按起点排序；
+    比对预算用尽等情况追加到 warnings"""
     lib = lib or load_library()
     seq = (seq or "").upper()
     L = len(seq)
@@ -297,10 +356,10 @@ def annotate(seq: str, circular: bool, lib: Optional[FeatureLibrary] = None) -> 
     n_ext = len(ext)
     qs = {1: ext, -1: revcomp(ext)}
 
-    budget = [MAX_ALIGNMENTS]
-    hits: List[Hit] = []
+    cands: List[_Candidate] = []
     for strand, q in qs.items():
-        hits.extend(_seed_hits(lib, q, strand, n_ext, L, budget))
+        cands.extend(_seed_candidates(lib, q, strand))
+    hits: List[Hit] = _align_candidates(lib, qs, cands, n_ext, L, warnings)
     hits.extend(_exact_hits(lib, qs, n_ext, L))
     hits.extend(_peptide_hits(lib, qs, n_ext, L))
 

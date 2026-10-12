@@ -14,11 +14,17 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, Tuple
+import logging
+from typing import Any, Dict, Optional, Tuple
 
+from fastapi import Depends, HTTPException, status
+
+from app.auth.jwt_auth import get_current_user
 from app.cache import cache
 from core import online_sources as src
 from core.plasmid_map.parsers import ParsedRecord
+
+logger = logging.getLogger("plasmid_designer.online_import")
 
 # 集合/索引变化很慢，TTL 取 1 小时；预览按「来源 + 标识」的内容哈希缓存
 CACHE_TTL = 3600
@@ -38,26 +44,61 @@ def cache_set(key: str, value: Any) -> None:
         pass
 
 
-def sources_payload() -> Dict[str, Any]:
-    """在线来源清单：可用性 + 许可摘要 + 导入开关（前端据此渲染页签与提示）"""
+def require_snapgene_enabled() -> None:
+    """SnapGene 在线库开关（SNAPGENE_ONLINE_ENABLED，默认关）：关闭时一律 404 + 说明。
+
+    放在鉴权依赖之前声明，关闭时匿名/登录用户都得到同一个明确的 404。
+    """
+    if not src.snapgene_online_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=src.SNAPGENE_DISABLED_MSG)
+
+
+async def require_snapgene_user(_: None = Depends(require_snapgene_enabled),
+                                user=Depends(get_current_user)):
+    """SnapGene 在线库只读端点（集合/索引/预览/图谱打开）：开关打开 + 已登录。
+
+    匿名访客不能触发服务器去抓 `/local`（v2.12 审查 H2：此前任何访客都能代理外呼）。
+    """
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="SnapGene 在线库仅对已登录用户开放，请先登录",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return user
+
+
+def sources_payload(*, is_admin: bool = False) -> Dict[str, Any]:
+    """在线来源清单：可用性 + 许可摘要 + 导入开关（前端据此渲染页签与提示）
+
+    `snapgene_online_enabled`：SnapGene 在线库开关（默认 false）；前端据此
+    以及是否已登录决定是否显示 SnapGene 页签（后端仍是权威：关 → 404，匿名 → 401）。
+    """
+    snapgene_on = src.snapgene_online_enabled()
+    # Addgene 会话是否配置只告诉管理员（审查 M1：匿名不该知道本实例挂了谁的账号；
+    # 导入也只有管理员能做，对其他人 importable 恒为 False 才诚实）
+    addgene_session = src.addgene_has_session() and is_admin
     return {
         "enabled": src.import_enabled(),
+        "snapgene_online_enabled": snapgene_on,
         "disclaimer": src.DISCLAIMER,
         "sources": [
             {
                 "id": "snapgene",
                 "name": "SnapGene 在线质粒库",
                 "kind": "online_library",
-                "url": src.SNAPGENE_BASE,
+                "url": src.public_base(src.SNAPGENE_BASE),
                 "license": src.SNAPGENE_LICENSE,
-                "importable": True,
-                "note": "19 个集合（基础克隆载体/CRISPR/荧光蛋白/酵母质粒…），含完整图谱与注释",
+                "enabled": snapgene_on,
+                "importable": snapgene_on,
+                "requires_login": True,
+                "note": ("集合含基础克隆载体/CRISPR/荧光蛋白/酵母质粒等，含完整图谱与注释；"
+                         "仅登录用户可用" if snapgene_on else src.SNAPGENE_DISABLED_MSG),
             },
             {
                 "id": "ensembl",
                 "name": "Ensembl REST",
                 "kind": "online_sequence",
-                "url": src.ENSEMBL_BASE,
+                "url": src.public_base(src.ENSEMBL_BASE),
                 "license": src.ENSEMBL_LICENSE,
                 "importable": True,
                 "note": "按 Ensembl ID 取 genomic / cds / cdna 序列（蛋白序列不作为质粒序列导入）",
@@ -68,20 +109,19 @@ def sources_payload() -> Dict[str, Any]:
                 "kind": "online_library",
                 "url": "https://www.addgene.org",
                 "license": src.ADDGENE_LICENSE,
-                "importable": src.addgene_has_session(),
+                "importable": addgene_session,
                 "requires_login": True,
-                "session_configured": src.addgene_has_session(),
+                "session_configured": addgene_session,
                 "note": ("本地索引搜索 + 匿名元数据；全长序列需登录——本工具不代为登录。"
-                         + ("已配置 ADDGENE_SESSION_COOKIE：可用你自己的登录态取序列"
-                            if src.addgene_has_session() else
-                            "如需直接取序列，可把自己浏览器登录后的会话 Cookie 配到 "
-                            "ADDGENE_SESSION_COOKIE（仅本机后端使用，不落盘、不回显）")),
+                         + ("已配置 ADDGENE_SESSION_COOKIE：管理员可用该登录态取序列"
+                            if addgene_session else
+                            "建议用自己的 Addgene 账号在浏览器下载序列文件后走「上传文件」导入")),
             },
             {
                 "id": "uniprot",
                 "name": "UniProt",
                 "kind": "protein_lookup",
-                "url": src.UNIPROT_BASE,
+                "url": src.public_base(src.UNIPROT_BASE),
                 "license": src.UNIPROT_LICENSE,
                 "importable": False,
                 "note": ("蛋白库（CC BY 4.0），不给质粒序列：按基因/蛋白名查条目，"
@@ -136,7 +176,7 @@ def snapgene_plasmid_record(set_id: str, plasmid_id: str,
     sid = src.validate_set_id(set_id)
     pid = src.validate_plasmid_id(plasmid_id)
     data = src.snapgene_plasmid_bytes(sid, pid)
-    url = f"{src.SNAPGENE_BASE}/fetch.php?set={sid}&plasmid={pid}"
+    url = f"{src.public_base(src.SNAPGENE_BASE)}/fetch.php?set={sid}&plasmid={pid}"
     name = pid
     try:
         name = next((str(p.get("filename") or "") for p in snapgene_index_payload(sid)["plasmids"]
@@ -152,3 +192,46 @@ def preview_cache_key(source: str, *parts: str) -> str:
     raw = "|".join([source, *parts])
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
     return f"online:preview:{source}:{digest}"
+
+
+def addgene_shared_session_warning() -> Optional[str]:
+    """`ADDGENE_SESSION_COOKIE` 只适合单用户自托管：多用户部署时返回告警文案（否则 None）。
+
+    审查 M2：多用户实例里，一个人的 Addgene 会话被全站间接使用（等同共享账号，
+    Addgene ToS 要求账号持有人对其下全部活动负责），导入的序列也会进共享载体库。
+    「多用户」的判据（任一即成立）：站点设置开放注册，或库里已有 1 个以上启用的账号。
+    只读、不改任何状态；读库失败时不告警（不阻断启动）。
+    """
+    if not src.addgene_has_session():
+        return None
+    reasons = []
+    try:
+        from app import site_settings
+        if site_settings.get_settings().get("registration_open"):
+            reasons.append("开放注册")
+    except Exception:  # noqa: BLE001 - 设置不可读不影响启动
+        pass
+    try:
+        from app.database import SessionLocal, UserDB
+        db = SessionLocal()
+        try:
+            n = db.query(UserDB).filter(UserDB.is_active.is_(True)).count()
+        finally:
+            db.close()
+        if n > 1:
+            reasons.append(f"已有 {n} 个启用账号")
+    except Exception:  # noqa: BLE001
+        pass
+    if not reasons:
+        return None
+    return ("ADDGENE_SESSION_COOKIE 已配置，但本实例看起来是多用户部署（"
+            + "、".join(reasons) + "）：该 Cookie 是一个人的 Addgene 登录态，只适合单用户"
+            "自托管；多用户下等同共享账号，导入的序列也会对全站可见。建议清空该变量，"
+            "改为在浏览器用自己的账号下载序列文件后走「上传文件」导入。")
+
+
+def log_addgene_shared_session_warning() -> None:
+    """启动时调用：满足多用户判据就记一条 WARNING（不回显 Cookie 内容）。"""
+    msg = addgene_shared_session_warning()
+    if msg:
+        logger.warning(msg)

@@ -181,3 +181,19 @@ export function barArrowPath(x1: number, x2: number, y: number, h: number, stran
 function f(n: number): string {
   return (Math.round(n * 100) / 100).toString()
 }
+
+/**
+ * 多段特征里画箭头（3' 端）的那一段的下标。按坐标定位而非段顺序：正链是终点等于
+ * 整体 end 的段，负链是起点等于整体 start 的段——图谱契约的 segments 按生物学顺序
+ * （负链坐标降序），测序比对的轨道段按坐标升序，两种顺序都适用。找不到时取末段。
+ */
+export function headSegmentIndex(ranges: Range[], whole: Range, strand: number): number {
+  const n = ranges.length
+  if (!n) return -1
+  if (strand === 1) {
+    for (let i = n - 1; i >= 0; i--) if (ranges[i].end === whole.end) return i
+  } else if (strand === -1) {
+    for (let i = 0; i < n; i++) if (ranges[i].start === whole.start) return i
+  }
+  return n - 1
+}

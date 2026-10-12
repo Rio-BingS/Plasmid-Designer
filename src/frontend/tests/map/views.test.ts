@@ -139,7 +139,8 @@ describe('SequenceMap 虚拟滚动', () => {
     }
     const t0 = performance.now()
     const w = mount(SequenceMap, { props: { doc: d, height: 400, width: 900 } })
-    expect(performance.now() - t0).toBeLessThan(3000)
+    // 实测 ~100 ms；1000 ms 足以挡住数量级回退
+    expect(performance.now() - t0).toBeLessThan(1000)
     const rows = w.findAll('svg.smap-row')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.length).toBeLessThan(40)

@@ -16,7 +16,8 @@ import type { OnlineSourceInfo, SnapgenePlasmid, SnapgeneSet } from '@/map/types
 import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
 import { saveMapAsVector } from '@/api'
-import { useIsAdmin } from '@/composables/useIsAdmin'
+import { useIsAdmin, useIsAuthenticated } from '@/composables/useIsAdmin'
+import { onTabKeydown } from '@/utils/tabKeys'
 
 const PAGE_TITLE = '质粒图谱 - Plasmid Designer'
 const EXAMPLE_VECTOR = 'pUC19'
@@ -54,7 +55,12 @@ const accession = ref('')
 const accessionValid = computed(() => NCBI_ACCESSION_RE.test(normalizeAccession(accession.value)))
 
 // 在线导入（SnapGene 在线库 / Ensembl）：与载体库页共用后端缓存与许可文案
-const onlineSource = ref<'snapgene' | 'ensembl'>('snapgene')
+// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// 两者都满足才出现该选项；否则只给 Ensembl（后端仍是权威：关 → 404，匿名 → 401）
+const loggedIn = useIsAuthenticated()
+const snapgeneEnabled = ref(false)
+const snapgeneAvailable = computed(() => snapgeneEnabled.value && loggedIn.value)
+const onlineSource = ref<'snapgene' | 'ensembl'>('ensembl')
 const sgSets = ref<SnapgeneSet[]>([])
 const sgSetId = ref('')
 const sgRows = ref<SnapgenePlasmid[]>([])
@@ -71,11 +77,23 @@ const ensemblValid = computed(() => ENSEMBL_ID_RE.test(ensemblId.value.trim()))
 async function ensureOnlineMeta() {
   if (onlineSources.value.length === 0) {
     try {
-      onlineSources.value = (await getOnlineSources()).sources || []
+      const res = await getOnlineSources()
+      onlineSources.value = res.sources || []
+      snapgeneEnabled.value = res.snapgene_online_enabled === true
     } catch { /* 许可提示拿不到不阻断导入 */ }
   }
-  if (sgSets.value.length === 0 && !sgLoading.value) await loadSnapgeneSets()
+  if (snapgeneAvailable.value && onlineSource.value === 'snapgene'
+      && sgSets.value.length === 0 && !sgLoading.value) await loadSnapgeneSets()
 }
+
+// 选中 SnapGene 时才去取集合（关闭/未登录时根本不发请求）
+watch(onlineSource, (v) => {
+  if (v === 'snapgene' && snapgeneAvailable.value && sgSets.value.length === 0 && !sgLoading.value) {
+    loadSnapgeneSets()
+  }
+})
+// 登出或开关不可用时退回 Ensembl，避免停留在不可用的来源上
+watch(snapgeneAvailable, (ok) => { if (!ok && onlineSource.value === 'snapgene') onlineSource.value = 'ensembl' })
 
 async function loadSnapgeneSets() {
   sgLoading.value = true
@@ -92,17 +110,21 @@ async function loadSnapgeneSets() {
   }
 }
 
+// 集合索引请求号：快速切换集合时只认最后一次请求，乱序返回的旧集合不覆盖列表
+let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
   sgRows.value = []
   try {
-    sgRows.value = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    const rows = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    if (gen === sgIndexGen) sgRows.value = rows
   } catch (e) {
-    sgError.value = describeMapError(e)
+    if (gen === sgIndexGen) sgError.value = describeMapError(e)
   } finally {
-    sgLoading.value = false
+    if (gen === sgIndexGen) sgLoading.value = false
   }
 }
 
@@ -145,15 +167,19 @@ function setDoc(d: MapDocument) {
   error.value = ''
 }
 
+// 解析请求号：解析中又拖入/选择了另一个文件时，只采用最后一次的结果（先发后到的不覆盖）
+let runGen = 0
 async function run(task: () => Promise<MapDocument>) {
+  const gen = ++runGen
   loading.value = true
   error.value = ''
   try {
-    setDoc(await task())
+    const d = await task()
+    if (gen === runGen) setDoc(d)
   } catch (e) {
-    error.value = describeMapError(e)
+    if (gen === runGen) error.value = describeMapError(e)
   } finally {
-    loading.value = false
+    if (gen === runGen) loading.value = false
   }
 }
 
@@ -293,7 +319,7 @@ async function doSaveAsVector() {
     <p v-if="saveMsg" :class="['map-saveas-msg', saveFailed ? 'map-error' : 'map-muted']" role="status">{{ saveMsg }}</p>
 
     <section v-if="showInput" class="card map-input">
-      <div class="map-tabs" role="tablist">
+      <div class="map-tabs" role="tablist" @keydown="onTabKeydown">
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'file' }]" :aria-selected="mode === 'file'" @click="mode = 'file'">上传文件</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'paste' }]" :aria-selected="mode === 'paste'" @click="mode = 'paste'">粘贴序列</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'ncbi' }]" :aria-selected="mode === 'ncbi'" @click="mode = 'ncbi'">NCBI 导入</button>
@@ -321,11 +347,11 @@ async function doSaveAsVector() {
 
       <div v-else-if="mode === 'online'" class="map-online">
         <div class="map-online-src" role="radiogroup" aria-label="在线来源">
-          <label><input v-model="onlineSource" type="radio" value="snapgene" /> SnapGene 在线库</label>
+          <label v-if="snapgeneAvailable"><input v-model="onlineSource" type="radio" value="snapgene" /> SnapGene 在线库</label>
           <label><input v-model="onlineSource" type="radio" value="ensembl" /> Ensembl</label>
         </div>
 
-        <template v-if="onlineSource === 'snapgene'">
+        <template v-if="onlineSource === 'snapgene' && snapgeneAvailable">
           <div class="map-row">
             <select v-model="sgSetId" class="form-input map-online-set" aria-label="SnapGene 集合" @change="loadSnapgeneIndex">
               <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }}（{{ s.set_id }}）</option>

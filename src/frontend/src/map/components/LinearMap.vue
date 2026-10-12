@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
-import { barArrowPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
+import { barArrowPath, headSegmentIndex, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
 import { cutStyle, overviewCuts } from '../core/enzymes'
@@ -155,7 +155,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const ranges = it.segments?.length ? it.segments : [{ start: it.start, end: it.end }]
     const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ x1: v.x1, x2: v.x2, i })))
     if (!segs.length) continue
-    const headIdx = it.strand === -1 ? 0 : ranges.length - 1
+    const headIdx = headSegmentIndex(ranges, it, it.strand ?? 0)
     const geomSegs = segs.map((s) => ({ x1: s.x1, x2: s.x2, head: s.i === headIdx }))
     const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
     const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
@@ -241,7 +241,7 @@ const featGeoms = computed(() => store.features.value.flatMap((f) => {
   const lane = featLanes.value.lanes.get(f.id)
   if (lane === undefined) return []
   const ranges = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
-  const headIdx = f.strand === -1 ? 0 : ranges.length - 1
+  const headIdx = headSegmentIndex(ranges, f, f.strand)
   const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ ...v, i })))
   if (!segs.length) return []
   const y = lower.value.featTop + lane * FEAT_LANE
@@ -334,9 +334,9 @@ const caretX = computed(() => {
 const searchRects = computed(() => store.search.hits.slice(0, 1000).flatMap((h, i) => visSegs(h).map((v, j) => ({
   key: `s:${i}`, k: `${i}-${j}`, x: v.x1, w: Math.max(2, v.x2 - v.x1), current: i === store.search.index,
 }))))
-const hoverKey = computed(() => store.hover.value?.id ?? null)
+const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
 const hoverRects = computed(() => {
-  const h = store.hover.value
+  const h = store.hoverTarget.value
   if (!h?.range || h.id.startsWith('t:')) return []
   return visSegs(h.range).map((v, i) => ({ k: i, x: v.x1, w: Math.max(1.5, v.x2 - v.x1) }))
 })
@@ -452,6 +452,14 @@ function onWheel(e: WheelEvent) {
 }
 
 function onLeave() { if (mode === 'none') store.hover.value = null }
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel() {
+  if (mode === 'none') return
+  mode = 'none'
+  moved = false
+  downKey = null
+  store.hover.value = null
+}
 
 defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
 </script>
@@ -469,6 +477,7 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
       :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H" role="img" :aria-label="`${store.doc.value.name} 线性图谱`"
       :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel"
       @pointerleave="onLeave" @wheel="onWheel"
     >
       <rect v-for="r in hoverRects" :key="'h' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#f59e0b" fill-opacity="0.1" />

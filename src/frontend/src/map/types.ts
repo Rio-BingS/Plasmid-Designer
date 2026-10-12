@@ -55,6 +55,8 @@ export interface MapEnzyme {
   overhang: string | null
   cut_count: number
   sites: MapEnzymeSite[]
+  /** 位点过多时 sites 只含部分明细（cut_count 仍为完整计数）；后端仅在截断时给出 true */
+  sites_truncated?: boolean
   /** 酶级甲基化敏感性（如 ["dam"]），来自 REBASE（后端可能省略） */
   methylation?: MethylationKind[]
 }
@@ -128,6 +130,8 @@ export interface EnzymeDetail {
   /** 可商购新切酶（识别序列相同、切点不同） */
   neoschizomers: string[]
   methylation?: MethylationKind[]
+  /** 修饰依赖型酶（只切甲基化等修饰过的 DNA，如 MspJI/AbaSI）；这类酶不进图谱酶组 */
+  modification_dependent?: boolean
 }
 
 /** GET /api/map/suppliers：REBASE 厂商及其可供的酶 */
@@ -155,6 +159,8 @@ export interface OnlineSourceInfo {
 
 export interface OnlineSourcesPayload {
   enabled: boolean
+  /** SnapGene 在线库开关（默认 false）；开启后也只对已登录用户开放 */
+  snapgene_online_enabled?: boolean
   disclaimer: string
   sources: OnlineSourceInfo[]
 }

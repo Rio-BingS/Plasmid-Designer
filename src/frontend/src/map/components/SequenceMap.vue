@@ -197,8 +197,40 @@ function rowSegs(r: Range, row: number): RowSeg[] {
   return out
 }
 
+/** 区间 r 是否与 [lo, hi]（1-based 闭区间）相交 */
+function touchesWindow(r: Range, lo: number, hi: number): boolean {
+  const parts = store.circular.value ? splitRange(r, L.value) : [{ start: Math.min(r.start, r.end), end: Math.max(r.start, r.end) }]
+  return parts.some((p) => p.start <= hi && p.end >= lo)
+}
+/** 可见窗口内的特征 / 引物：每次滚动只全量筛一遍，而不是每行各扫一遍 */
+const visibleItems = computed(() => {
+  const [a, b] = rowRange.value
+  const lo = a * perRow.value + 1
+  const hi = Math.min(L.value, b * perRow.value)
+  const features = store.features.value.filter((f) => (f.segments?.length ? f.segments : [f]).some((r) => touchesWindow(r, lo, hi)))
+  const primers = store.primers.value.filter((p) => touchesWindow(p, lo, hi))
+  return { features, primers }
+})
+/** 搜索命中按行分桶（最多 2000 条），每行只取自己的命中 */
+const hitsByRow = computed(() => {
+  const by = new Map<number, number[]>()
+  const pr = perRow.value
+  store.search.hits.forEach((h, i) => {
+    const parts = store.circular.value ? splitRange(h, L.value) : [{ start: Math.min(h.start, h.end), end: Math.max(h.start, h.end) }]
+    for (const p of parts) {
+      for (let row = Math.floor((p.start - 1) / pr); row <= Math.floor((p.end - 1) / pr); row++) {
+        const arr = by.get(row)
+        if (arr) { if (arr[arr.length - 1] !== i) arr.push(i) } else by.set(row, [i])
+      }
+    }
+  })
+  return by
+})
+
+/** 每行的静态内容（序列、特征条、酶切、翻译）：不依赖悬停 / 选区 / 搜索，指针移动不重算 */
 const rows = computed(() => {
   const [a, b] = rowRange.value
+  const { features: visFeatures, primers: visPrimers } = visibleItems.value
   const out = []
   const off = offsets.value
   for (let row = a; row < b; row++) {
@@ -210,7 +242,7 @@ const rows = computed(() => {
     const laneY = (lane: number) => g.laneTop + compactLane(g.mask, lane) * LANE_H
     // 特征/引物条
     const bars = []
-    for (const f of store.features.value) {
+    for (const f of visFeatures) {
       const lane = lanes.value.lanes.get(`f:${f.id}`)
       if (lane === undefined) continue
       const ranges = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
@@ -226,7 +258,7 @@ const rows = computed(() => {
         }
       }
     }
-    for (const p of store.primers.value) {
+    for (const p of visPrimers) {
       const lane = lanes.value.lanes.get(`p:${p.id}`)
       if (lane === undefined) continue
       for (const s of rowSegs(p, row)) {
@@ -253,13 +285,50 @@ const rows = computed(() => {
       const mid = l.x + l.w / 2
       return { id: l.id, text: l.text, x: l.x, y, color: c?.color, weight: c?.weight, leader: Math.abs(mid - l.cx) > 3 ? { x1: l.cx, x2: mid, y1: g.seqY, y2: y + 2 } : null }
     })
-    const sel = store.selection.value ? rowSegs(store.selection.value, row) : []
-    const hits = store.search.hits.flatMap((h, i) => rowSegs(h, row).map((s) => ({ ...s, key: `s:${i}`, current: i === store.search.index })))
-    const hv = store.hover.value?.range && !store.hover.value.id.startsWith('t:') ? rowSegs(store.hover.value.range, row) : []
-    const caret = !store.selection.value && store.caret.value !== null && store.caret.value >= rs - 1 && store.caret.value <= re
-      ? colX(store.caret.value - (rs - 1)) : null
     const aa = translation.value?.byRow.get(row) ?? []
-    out.push({ row, top: off[row], g, rs, re, n, text, comp: store.show.complement ? complement(text) : '', bars, cuts, enzLabels, sel, hits, hv, caret, aa })
+    out.push({ row, top: off[row], g, rs, re, n, text, comp: store.show.complement ? complement(text) : '', bars, cuts, enzLabels, aa })
+  }
+  return out
+})
+
+type Seg = RowSeg & { key?: string; current?: boolean }
+interface Overlay { sel: Seg[]; caret: number | null }
+const NO_SEGS: Seg[] = []
+/** 选区 / 光标叠加层（只算可见行） */
+const selRows = computed(() => {
+  const [a, b] = rowRange.value
+  const out = new Map<number, Overlay>()
+  const s = store.selection.value
+  const c = store.caret.value
+  for (let row = a; row < b; row++) {
+    const rs = row * perRow.value + 1
+    const re = Math.min(L.value, rs + perRow.value - 1)
+    const sel = s ? rowSegs(s, row) : NO_SEGS
+    const caret = !s && c !== null && c >= rs - 1 && c <= re ? colX(c - (rs - 1)) : null
+    if (sel.length || caret !== null) out.set(row, { sel, caret })
+  }
+  return out
+})
+/** 搜索命中叠加层（按行分桶后只取可见行） */
+const hitRows = computed(() => {
+  const [a, b] = rowRange.value
+  const out = new Map<number, Seg[]>()
+  for (let row = a; row < b; row++) {
+    const idx = hitsByRow.value.get(row)
+    if (!idx) continue
+    out.set(row, idx.flatMap((i) => rowSegs(store.search.hits[i], row).map((sg) => ({ ...sg, key: `s:${i}`, current: i === store.search.index }))))
+  }
+  return out
+})
+/** 悬停底色（只随悬停元件变化） */
+const hoverRows = computed(() => {
+  const h = store.hoverTarget.value
+  const out = new Map<number, Seg[]>()
+  if (!h?.range || h.id.startsWith('t:')) return out
+  const [a, b] = rowRange.value
+  for (let row = a; row < b; row++) {
+    const segs = rowSegs(h.range, row)
+    if (segs.length) out.set(row, segs)
   }
   return out
 })
@@ -314,22 +383,31 @@ function onPointerUp(e: PointerEvent) {
   dragging = false
 }
 function onLeave() { if (!dragging) store.hover.value = null }
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel() {
+  if (!dragging) return
+  dragging = false
+  moved = false
+  downKey = null
+  store.hover.value = null
+}
 
-defineExpose({ scroller, perRow, offsets, totalHeight })
+defineExpose({ scroller, perRow, offsets, totalHeight, rows })
 </script>
 
 <template>
   <div class="smap">
     <div ref="scroller" class="smap-scroll" :style="{ height: `${height}px` }" @scroll.passive="onScroll">
       <div ref="inner" class="smap-inner" :style="{ height: `${totalHeight}px` }"
-           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointerleave="onLeave">
+           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointerleave="onLeave"
+           @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel">
         <svg v-for="r in rows" :key="r.row" class="smap-row" :width="W" :height="r.g.rowH"
              :style="{ top: `${r.top}px` }" xmlns="http://www.w3.org/2000/svg">
           <!-- 底色：悬停 / 搜索命中 / 选区 -->
-          <rect v-for="(s, i) in r.hv" :key="'h' + i" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY" fill="#f59e0b" fill-opacity="0.15" />
-          <rect v-for="(s, i) in r.hits" :key="'s' + i" :data-hit="s.key" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY"
+          <rect v-for="(s, i) in hoverRows.get(r.row) ?? NO_SEGS" :key="'h' + i" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY" fill="#f59e0b" fill-opacity="0.15" />
+          <rect v-for="(s, i) in hitRows.get(r.row) ?? NO_SEGS" :key="'s' + i" :data-hit="s.key" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY"
                 :fill="s.current ? '#f97316' : '#facc15'" fill-opacity="0.45" class="smap-search" />
-          <rect v-for="(s, i) in r.sel" :key="'sel' + i" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY + 2"
+          <rect v-for="(s, i) in selRows.get(r.row)?.sel ?? NO_SEGS" :key="'sel' + i" :x="s.x1" :y="r.g.seqY" :width="s.x2 - s.x1" :height="r.g.rulerY - r.g.seqY + 2"
                 fill="#4f46e5" fill-opacity="0.2" class="smap-selection" />
 
           <text :x="gutter - 8" :y="r.g.seqY + 12" text-anchor="end" font-size="11" fill="#9ca3af" class="smap-num">{{ r.rs.toLocaleString('en-US') }}</text>
@@ -376,7 +454,7 @@ defineExpose({ scroller, perRow, offsets, totalHeight })
           <text v-for="a in r.aa" :key="'aa' + a.i" :x="gutter + (a.col + 0.5) * CHAR_W" :y="r.g.transY + 11" text-anchor="middle"
                 font-size="11" font-family="Consolas, Menlo, monospace" :fill="a.aa === '*' ? '#dc2626' : '#7c3aed'" class="smap-aa">{{ a.aa }}</text>
 
-          <line v-if="r.caret !== null" :x1="r.caret" :x2="r.caret" :y1="r.g.seqY - 1" :y2="r.g.rulerY + 2" stroke="#4f46e5" stroke-width="1.5" class="smap-caret" />
+          <line v-if="selRows.get(r.row)?.caret != null" :x1="selRows.get(r.row)!.caret!" :x2="selRows.get(r.row)!.caret!" :y1="r.g.seqY - 1" :y2="r.g.rulerY + 2" stroke="#4f46e5" stroke-width="1.5" class="smap-caret" />
         </svg>
       </div>
     </div>

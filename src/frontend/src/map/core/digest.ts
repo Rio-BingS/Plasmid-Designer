@@ -101,6 +101,14 @@ export function digest(
   return { cuts, fragments, uncut: false, skippedBlocked }
 }
 
+/**
+ * 位点明细不完整的酶（后端 sites_truncated，或 sites 少于 cut_count）：
+ * 用它模拟消化会少算切口、得出错误片段，消化面板禁用这类酶。
+ */
+export function sitesIncomplete(e: Pick<MapEnzyme, 'sites' | 'cut_count' | 'sites_truncated'>): boolean {
+  return e.sites_truncated === true || e.sites.length < e.cut_count
+}
+
 /** 片段按长度从大到小（凝胶阅读顺序） */
 export function sortBySize(fragments: DigestFragment[]): DigestFragment[] {
   return [...fragments].sort((a, b) => b.length - a.length || a.start - b.start)

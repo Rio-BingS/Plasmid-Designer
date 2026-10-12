@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
-import { useIsAdmin } from '@/composables/useIsAdmin'
+import { useIsAdmin, useIsAuthenticated } from '@/composables/useIsAdmin'
 import {
   getVectors,
   deleteVector,
@@ -28,12 +28,14 @@ import {
 } from '@/api'
 import type { OnlinePreview, OnlineSourceInfo, UniProtNucleotide } from '@/api'
 import { downloadTextFile } from '@/utils/download'
+import { safeHttpUrl } from '@/utils/safeUrl'
 import MapThumbnail from '@/map/components/MapThumbnail.vue'
 import { previewToThumb } from '@/map/preview'
 
 const router = useRouter()
 // 载体库是共享库但写入需管理员：非管理员不显示导入/上传入口（点了也只会 403）
 const canImport = useIsAdmin()
+const loggedIn = useIsAuthenticated()
 const vectors = ref<VectorInfo[]>([])
 // 列表缩略图：来自 GET /api/vectors 的 map_preview，缺省时不画
 const thumbs = computed(() => new Map(vectors.value.map((v) => [v.id, previewToThumb(v.map_preview, v.name)])))
@@ -84,6 +86,10 @@ const sgSetId = ref('')
 const sgRows = ref<any[]>([])
 const sgLoading = ref(false)
 const sgError = ref('')
+// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// 两者都满足才显示页签（后端仍是权威：关 → 404，匿名 → 401）
+const snapgeneEnabled = ref(false)
+const snapgeneAvailable = computed(() => snapgeneEnabled.value && loggedIn.value)
 // Ensembl
 const ensemblId = ref('')
 const ensemblType = ref('cds')
@@ -96,6 +102,8 @@ const addgeneError = ref('')
 const addgeneLoading = ref(false)
 // Addgene 全长序列导入（需管理员 + 后端已配置用户自备会话）
 const addgeneImporting = ref(false)
+/** SnapGene / Ensembl 在线导入在途锁：防双击重复导入（或第二次得到 409） */
+const onlineImporting = ref(false)
 // UniProt（蛋白库反查：条目 → 核酸交叉引用 → 去 NCBI/Ensembl 取 DNA）
 const uniprotQuery = ref('')
 const uniprotReviewed = ref(false)
@@ -292,12 +300,14 @@ async function ensureOnlineSources() {
     const res = await getOnlineSources()
     onlineSources.value = res.sources || []
     onlineNotice.value = res.disclaimer || ''
+    snapgeneEnabled.value = res.snapgene_online_enabled === true
   } catch {
     // 未登录/未开放功能时静默：各面板自己的错误位会显示具体原因
   }
 }
 
 function switchTab(tab: 'local' | 'ncbi' | 'snapgene' | 'ensembl' | 'addgene' | 'uniprot') {
+  if (tab === 'snapgene' && !snapgeneAvailable.value) return
   activeTab.value = tab
   onlineMsg.value = ''
   ensureOnlineSources()
@@ -319,18 +329,21 @@ async function loadSnapgeneSets() {
   }
 }
 
+// 集合索引请求号：快速切换集合时只认最后一次请求，乱序返回的旧集合不覆盖列表
+let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
   sgRows.value = []
   try {
     const res = await getSnapgeneSetIndex(sgSetId.value)
-    sgRows.value = res.plasmids || []
+    if (gen === sgIndexGen) sgRows.value = res.plasmids || []
   } catch (e: any) {
-    sgError.value = errText(e, '集合索引加载失败')
+    if (gen === sgIndexGen) sgError.value = errText(e, '集合索引加载失败')
   } finally {
-    sgLoading.value = false
+    if (gen === sgIndexGen) sgLoading.value = false
   }
 }
 
@@ -346,6 +359,8 @@ async function openSnapgenePreview(row: any) {
 
 /** 列表里直接导入（省去预览一步） */
 async function importSnapgeneRow(row: any) {
+  if (onlineImporting.value) return
+  onlineImporting.value = true
   onlineMsg.value = ''
   try {
     const res = await importFromSnapgene(sgSetId.value, row.plasmid_id)
@@ -353,6 +368,8 @@ async function importSnapgeneRow(row: any) {
     await loadVectors()
   } catch (e: any) {
     onlineMsg.value = `导入失败: ${errText(e, '')}`
+  } finally {
+    onlineImporting.value = false
   }
 }
 
@@ -373,7 +390,8 @@ async function openEnsemblPreview() {
 /** 预览弹窗里的"确认导入"：只对可导入来源生效（Addgene 不在此列） */
 async function confirmOnlineImport() {
   const p = onlinePreview.value
-  if (!p) return
+  if (!p || onlineImporting.value) return
+  onlineImporting.value = true
   onlineMsg.value = ''
   try {
     if (p.source.startsWith('ensembl')) {
@@ -387,6 +405,8 @@ async function confirmOnlineImport() {
     await loadVectors()
   } catch (e: any) {
     onlineMsg.value = `导入失败: ${errText(e, '')}`
+  } finally {
+    onlineImporting.value = false
   }
 }
 
@@ -423,7 +443,7 @@ async function doAddgeneMetadata(id: string) {
 /** 用部署方配置的（用户自备）Addgene 会话把全长序列导入载体库 */
 async function doAddgeneImport(id: string) {
   const pid = String(id || '').replace('#', '').trim()
-  if (!pid) return
+  if (!pid || addgeneImporting.value) return
   addgeneImporting.value = true
   onlineMsg.value = ''
   addgeneError.value = ''
@@ -498,7 +518,7 @@ async function openUniprotEntry(accession: string) {
     <div class="source-tabs">
       <button class="source-tab" :class="{ active: activeTab === 'local' }" @click="switchTab('local')">本地载体</button>
       <button class="source-tab" :class="{ active: activeTab === 'ncbi' }" @click="switchTab('ncbi')">NCBI 搜索</button>
-      <button class="source-tab" :class="{ active: activeTab === 'snapgene' }" @click="switchTab('snapgene')">SnapGene 在线库</button>
+      <button v-if="snapgeneAvailable" class="source-tab" :class="{ active: activeTab === 'snapgene' }" @click="switchTab('snapgene')">SnapGene 在线库</button>
       <button class="source-tab" :class="{ active: activeTab === 'ensembl' }" @click="switchTab('ensembl')">Ensembl</button>
       <button class="source-tab" :class="{ active: activeTab === 'addgene' }" @click="switchTab('addgene')">Addgene</button>
       <button class="source-tab" :class="{ active: activeTab === 'uniprot' }" @click="switchTab('uniprot')">UniProt</button>
@@ -625,7 +645,7 @@ async function openUniprotEntry(accession: string) {
       <div v-for="item in ncbiResults" :key="item.id" class="ncbi-result-item">
         <div class="ncbi-result-info">
           <span class="ncbi-id">{{ item.id }}</span>
-          <a :href="item.url" target="_blank" class="ncbi-link">NCBI 链接 ↗</a>
+          <a v-if="safeHttpUrl(item.url)" :href="safeHttpUrl(item.url)!" target="_blank" rel="noopener" class="ncbi-link">NCBI 链接 ↗</a>
         </div>
         <div class="ncbi-result-actions">
           <button class="btn btn-small btn-secondary" @click="openPreview(item.id)">👁️ 预览</button>
@@ -639,7 +659,7 @@ async function openUniprotEntry(accession: string) {
   </div>
 
   <!-- SnapGene 在线库 Tab -->
-  <div v-if="activeTab === 'snapgene'" class="online-section">
+  <div v-if="activeTab === 'snapgene' && snapgeneAvailable" class="online-section">
     <p class="online-license">{{ snapgeneLicense }}</p>
     <div class="online-row">
       <select v-model="sgSetId" class="form-select" @change="loadSnapgeneIndex">
@@ -661,7 +681,7 @@ async function openUniprotEntry(accession: string) {
         </div>
         <div class="online-item-actions">
           <button class="btn btn-small btn-secondary" @click="openSnapgenePreview(row)">👁️ 预览</button>
-          <button v-if="canImport" class="btn btn-small btn-primary" @click="importSnapgeneRow(row)">📥 导入</button>
+          <button v-if="canImport" class="btn btn-small btn-primary" :disabled="onlineImporting" @click="importSnapgeneRow(row)">📥 导入</button>
         </div>
       </div>
     </div>
@@ -704,7 +724,7 @@ async function openUniprotEntry(accession: string) {
           <span class="online-name">{{ row.name }}</span>
         </div>
         <div class="online-item-actions">
-          <a class="ncbi-link" :href="`https://www.addgene.org/${row.id}/`" target="_blank" rel="noopener">页面 ↗</a>
+          <a class="ncbi-link" :href="`https://www.addgene.org/${encodeURIComponent(String(row.id))}/`" target="_blank" rel="noopener">页面 ↗</a>
           <button class="btn btn-small btn-secondary" @click="doAddgeneMetadata(String(row.id))">元数据</button>
         </div>
       </div>
@@ -713,8 +733,8 @@ async function openUniprotEntry(accession: string) {
       <p><strong>#{{ addgeneMeta.plasmid_id }}</strong> — 序列文件需登录，本工具不代为登录。</p>
       <p class="online-hint">{{ addgeneMeta.note }}</p>
       <p class="online-hint">可用直链：
-        <a v-if="addgeneMeta.metadata?.mapPngUrl" :href="addgeneMeta.metadata.mapPngUrl" target="_blank" rel="noopener">map.png ↗</a>
-        <a v-if="addgeneMeta.metadata?.genbankUrl" :href="addgeneMeta.metadata.genbankUrl" target="_blank" rel="noopener">.gbk（需登录）↗</a>
+        <a v-if="safeHttpUrl(addgeneMeta.metadata?.mapPngUrl)" :href="safeHttpUrl(addgeneMeta.metadata?.mapPngUrl)!" target="_blank" rel="noopener">map.png ↗</a>
+        <a v-if="safeHttpUrl(addgeneMeta.metadata?.genbankUrl)" :href="safeHttpUrl(addgeneMeta.metadata?.genbankUrl)!" target="_blank" rel="noopener">.gbk（需登录）↗</a>
       </p>
     </div>
     <div class="online-row">
@@ -761,7 +781,7 @@ async function openUniprotEntry(accession: string) {
     </div>
     <div v-if="uniprotEntry" class="addgene-meta">
       <p><strong>{{ uniprotEntry.accession }}</strong> — {{ uniprotEntry.name }}（{{ uniprotEntry.organism }}）
-        <a :href="`https://www.uniprot.org/uniprotkb/${uniprotEntry.accession}/entry`" target="_blank" rel="noopener" class="ncbi-link">UniProt ↗</a>
+        <a :href="`https://www.uniprot.org/uniprotkb/${encodeURIComponent(uniprotEntry.accession)}/entry`" target="_blank" rel="noopener" class="ncbi-link">UniProt ↗</a>
       </p>
       <p class="online-hint">UniProt 不含质粒序列；下面是该蛋白对应的核酸记录，可去对应站点取 DNA 后再导入：</p>
       <ul v-if="uniprotNucleotide.length" class="online-list">
@@ -771,7 +791,7 @@ async function openUniprotEntry(accession: string) {
             <span class="online-name">{{ c.label }}</span>
           </div>
           <div class="online-item-actions">
-            <a class="ncbi-link" :href="c.url" target="_blank" rel="noopener">打开 ↗</a>
+            <a v-if="safeHttpUrl(c.url)" class="ncbi-link" :href="safeHttpUrl(c.url)!" target="_blank" rel="noopener">打开 ↗</a>
             <button class="btn btn-small btn-secondary" @click="ncbiQuery = c.accession; switchTab('ncbi'); handleSearchNcbi()">
               去 NCBI 标签页
             </button>
@@ -830,8 +850,8 @@ async function openUniprotEntry(accession: string) {
             来源：{{ onlinePreview.source }}（{{ onlinePreview.topology === 'circular' ? '环状' : '线性' }}）
           </p>
           <p class="online-hint">{{ onlinePreview.license }}</p>
-          <p v-if="onlinePreview.url" class="online-hint">
-            <a :href="onlinePreview.url" target="_blank" rel="noopener">原始来源 ↗</a>
+          <p v-if="safeHttpUrl(onlinePreview.url)" class="online-hint">
+            <a :href="safeHttpUrl(onlinePreview.url)!" target="_blank" rel="noopener">原始来源 ↗</a>
           </p>
           <div v-if="onlinePreview.features.length" class="feature-preview">
             <span v-for="(f, i) in onlinePreview.features.slice(0, 12)" :key="`${f.name || f.type}-${i}`" class="feature-chip">
@@ -848,7 +868,9 @@ async function openUniprotEntry(accession: string) {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" @click="showOnlinePreview = false">取消</button>
-        <button v-if="canImport" class="btn btn-primary" @click="confirmOnlineImport">📥 导入到载体库</button>
+        <button v-if="canImport" class="btn btn-primary" :disabled="onlineImporting" @click="confirmOnlineImport">
+          {{ onlineImporting ? '导入中...' : '📥 导入到载体库' }}
+        </button>
         <span v-else class="online-hint">导入需管理员权限</span>
       </div>
     </div>

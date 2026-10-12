@@ -95,7 +95,7 @@ def test_fetch_builds_efetch_request(monkeypatch):
                                    timeout=7, opener=_capture_opener(_gb().encode(), seen))
     assert text.startswith("LOCUS")
     req, timeout = seen[0]
-    assert timeout == 7
+    assert 6 < timeout <= 7  # 总时长上限的剩余时间
     url = urllib.parse.urlsplit(req.full_url)
     assert url.netloc == "eutils.ncbi.nlm.nih.gov" and url.path.endswith("/efetch.fcgi")
     q = dict(urllib.parse.parse_qsl(url.query))
@@ -234,3 +234,83 @@ def test_deploy_passes_ncbi_env(var):
     assert f"{var}=${{{var}:-}}" in (root / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
     for p in ("bare", "docker"):
         assert f"{var}=" in (root / p / ".env.example").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- 并发与总时长（v2.12.0 审查 M1）
+
+def test_throttle_reserves_slots_without_sleeping_under_lock(monkeypatch):
+    """锁内只预约时间点：连续预约立即返回、等待时间按间隔递增；sleep 在锁外"""
+    import time
+
+    monkeypatch.setattr(ncbi, "_min_interval", lambda key: 0.2)
+    monkeypatch.setattr(ncbi, "_last_request", 0.0)
+    t = time.monotonic()
+    waits = [ncbi._reserve_slot(None) for _ in range(3)]
+    assert time.monotonic() - t < 0.05
+    assert waits[0] < 0.01 and abs(waits[1] - 0.2) < 0.03 and abs(waits[2] - 0.4) < 0.03
+    assert ncbi._throttle_lock.acquire(blocking=False)
+    ncbi._throttle_lock.release()
+
+
+def test_throttle_queue_beyond_deadline_is_503(monkeypatch):
+    import time
+
+    monkeypatch.setattr(ncbi, "_min_interval", lambda key: 5.0)
+    monkeypatch.setattr(ncbi, "_last_request", time.monotonic())
+    with pytest.raises(MapParseError) as e:
+        ncbi._throttle(None, deadline=time.monotonic() + 1.0)
+    assert e.value.status == 503
+
+
+class _SlowResp:
+    """每次 read 都睡一会儿、吐一点数据、永不结束：只有总时长上限能截住"""
+
+    def __init__(self):
+        self.first = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n):
+        import time
+        time.sleep(0.05)
+        if self.first:
+            self.first = False
+            return b"LOCUS       X 300 bp    DNA     circular SYN 01-JAN-2026\n"
+        return b"x" * 10
+
+
+def test_fetch_total_deadline_stops_slow_drip():
+    import time
+
+    t = time.monotonic()
+    with pytest.raises(MapParseError) as e:
+        ncbi.fetch_genbank_text("L09137", max_bytes=10 ** 7, max_length=10 ** 6, timeout=0.4,
+                                opener=lambda req, timeout=None: _SlowResp())
+    assert e.value.status == 504
+    assert time.monotonic() - t < 1.5
+
+
+def test_import_runs_on_dedicated_ncbi_limiter(client, fake_fetch, monkeypatch):
+    """NCBI 导入在独立 CapacityLimiter 上跑，不占全局线程池令牌"""
+    import anyio.to_thread
+
+    from app.routes import map_routes
+
+    seen = []
+    real = anyio.to_thread.run_sync
+
+    async def spy(fn, *a, limiter=None, **k):
+        seen.append(limiter)
+        return await real(fn, *a, limiter=limiter, **k)
+
+    monkeypatch.setattr(map_routes.anyio.to_thread, "run_sync", spy)
+    c, _ = client
+    r = c.post("/api/map/import/ncbi", json={"accession": "M77789"})
+    assert r.status_code == 200, r.text
+    lim = map_routes._ncbi_limiter()
+    assert any(x is lim for x in seen)
+    assert lim.total_tokens == map_routes.NCBI_MAX_CONCURRENCY

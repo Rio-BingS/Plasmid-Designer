@@ -4,6 +4,7 @@
 写操作（删除/更新/上传/导入）后统一失效缓存。
 """
 
+import logging
 import os
 import re
 import yaml
@@ -26,6 +27,8 @@ from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
     BatchImportRequest, MapDocument, SaveMapAsVectorRequest, MAP_MAX_LENGTH
 )
+
+logger = logging.getLogger("plasmid_designer.vector_routes")
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
 
@@ -258,7 +261,7 @@ async def get_vector_map_data(
     """载体图谱（契约 plasmid-map/1，特征 source=vector）"""
     import hashlib
 
-    from app.map_documents import vector_map_document
+    from app.map_documents import _vector_topology, vector_map_document
     from app.routes.map_routes import cached_document
 
     library = get_vector_library()
@@ -271,6 +274,9 @@ async def get_vector_map_data(
         "features": [(e.name, e.element_type.value, e.start, e.end, e.strand, e.description)
                      for e in vector.elements],
         "mcs": [vector.mcs.start, vector.mcs.end] if vector.mcs else None,
+        # 名称 / 拓扑 / MCS 名也进键：管理员只改这些时不再返回 1 小时内的旧文档
+        "name": vector.name, "topology": _vector_topology(vector),
+        "mcs_name": getattr(vector.mcs, "name", None) if vector.mcs else None,
         "enzyme_set": enzyme_set, "orf_min_aa": orf_min_aa,
     }
     return await cached_document("vector", key, vector_map_document, vector,
@@ -402,22 +408,33 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
     try:
         with open(tmp_path, "rb") as fh:
             data = fh.read()
-        # 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）
+        # 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）；序列长度与图谱同一上限
+        # （审查 L5：此前不限长，20 MB 文件可让 20 Mbp 序列入库，后续图谱/设计都会爆）
         try:
-            record = await run_in_threadpool(parse_file, file.filename or "upload.gb", data)
+            record = await run_in_threadpool(parse_file, file.filename or "upload.gb", data,
+                                             max_length=MAP_MAX_LENGTH)
         except MapParseError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - 解析器意外异常按坏文件处理，不回显内部信息
+            logger.warning("载体文件解析异常：%s", type(exc).__name__, exc_info=True)
+            raise HTTPException(status_code=400, detail="文件解析失败，请确认格式正确") from exc
 
         source = "snapgene" if record.source_format == "snapgene" else "genbank"
-        result = await run_in_threadpool(
-            save_record, record,
-            source=source,
-            vectors_dir=config.settings.VECTORS_DIR,
-            attribution="来源：本地上传文件",
-            provenance=provenance_block(
-                "本地上传文件", filename=file.filename or "",
-                format=record.source_format, license="用户自备文件，版权归原出处"),
-        )
+        try:
+            result = await run_in_threadpool(
+                save_record, record,
+                source=source,
+                vectors_dir=config.settings.VECTORS_DIR,
+                attribution="来源：本地上传文件",
+                provenance=provenance_block(
+                    "本地上传文件", filename=file.filename or "",
+                    format=record.source_format, license="用户自备文件，版权归原出处"),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 落盘失败记日志，返回通用文案（不含路径）
+            logger.error("载体文件保存失败：%s", type(exc).__name__, exc_info=True)
+            raise HTTPException(status_code=500, detail="载体保存失败，请稍后重试") from exc
         invalidate_vector_library_cache()
         _invalidate_vector_cache(result["id"])
         return {
@@ -428,6 +445,7 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
                 "length": result["length"],
                 "features": result["features"],
             },
+            "replaced": result.get("replaced", False),
             "warnings": result["warnings"],
         }
     finally:

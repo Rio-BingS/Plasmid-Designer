@@ -135,3 +135,44 @@ def test_analysis_enzymes_lists_golden_gate_candidates():
     assert {"name": "PaqCI", "recognition_sequence": "CACCTGC"} in gg
     assert data["enzymes"]["BsaI"]["is_type_iis"] is True
     assert data["enzymes"]["EcoRI"]["is_type_iis"] is False
+
+
+# ==================== 扩增子级位点检查（v2.12.0 审查 L4） ====================
+
+def test_spacer_avoids_junction_site_formed_with_a_run():
+    """BfuAI（ACCTGC(4/8)）：固定 A 间隔 + overhang CCTG + 插入片段首碱基 C
+    会拼出第二个 ACCTGC；改挑间隔碱基后扩增子里只剩两端引物尾的两个位点"""
+    from core.primer_designer import _gg_site_count, gg_junction_extra_sites
+
+    insert = "C" + INSERT[1:]
+    assert not _gg_site_count(insert, "BfuAI")
+    pair = PrimerDesigner().design_golden_gate_primers(insert, "BfuAI", "CCTG", "GCTT")
+    assert "ACCTGCAAAACCTG" not in pair.forward.overhang
+    amp = pair.forward.overhang + insert + revcomp(pair.reverse.overhang)
+    assert _gg_site_count(amp, "BfuAI") == 2
+    assert gg_junction_extra_sites(insert, "BfuAI", pair.forward.overhang,
+                                   pair.reverse.overhang) == 0
+    assert "拼接处" not in pair.forward.notes
+
+
+def test_unavoidable_junction_site_is_warned():
+    """overhang + 插入片段自身拼出位点（与间隔无关）：引物备注与设计结果告警"""
+    from app.design_service import _golden_gate_junction_warning, _primer_to_info
+    from core.primer_designer import gg_junction_extra_sites
+
+    insert = "CC" + INSERT[2:]  # overhang GAGA + 插入片段 CC → GAGACC（BsaI 反向位点）
+    pair = PrimerDesigner().design_golden_gate_primers(insert, "BsaI", "GAGA", "GCTT", "gg")
+    assert gg_junction_extra_sites(insert, "BsaI", pair.forward.overhang,
+                                   pair.reverse.overhang) == 1
+    assert "拼接处" in pair.forward.notes
+    infos = [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
+    w = _golden_gate_junction_warning(infos, insert, "BsaI")
+    assert w and "拼接处" in w
+
+
+def test_internal_site_near_insert_end_is_warned():
+    """切点落在插入片段之外的末端位点（BsaI 正向位点贴着 3' 端）也要告警"""
+    from app.design_service import _golden_gate_site_warning
+
+    seq = "A" * 40 + "GGTCTC" + "A"
+    assert "BsaI" in (_golden_gate_site_warning(seq, "BsaI") or "")
