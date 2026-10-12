@@ -325,22 +325,38 @@ const labelLayout = computed<CircularLabelLayout>(() => {
   return { placed: tall.placed, hidden: inputs.filter((i) => tallHidden.has(i.id) || !kept.has(i)).map((i) => i.id) }
 })
 
-// 无法显示项上报（标签放不下 + 超出分道上限）
+// 无法显示项上报（标签放不下 + 超出分道上限）。旋转时每帧都会重排，但隐藏集合通常不变：
+// 集合没变就不重报，免得每帧重建列表、触发查看器重渲染
+let lastUnshown = ''
+let lastDoc: unknown = null
+const titleCache = new Map<string, string>()
+const NUM = new Intl.NumberFormat('en-US')
 watch([labelLayout, featLanes], () => {
+  const sig = labelLayout.value.hidden.join('|') + '#' + featLanes.value.overflow.join('|') + '#' + overview.value.dropped.length
+    + '#' + labelLayout.value.placed.filter((l) => (labelData.value.info.get(l.id)?.members.length ?? 0) > GROUP_MAX).map((l) => l.id).join('|')
+  if (sig === lastUnshown && lastDoc === store.doc.value) return
+  if (lastDoc !== store.doc.value) titleCache.clear()
+  lastUnshown = sig
+  lastDoc = store.doc.value
   const cutAt = new Map(cutGeoms.value.map((c) => [c.key, c.cut]))
   const info = labelData.value.info
-  const items = labelLayout.value.hidden.flatMap((id) => info.get(id)?.members ?? [id]).map((k) => {
-    const title = resolveHit(store, k)?.title ?? k
+  // 旋转时隐藏集合会随角度变，这里每帧可能跑：标题按键缓存，数字用复用的格式器（toLocaleString 很慢）
+  const nameOf = (k: string) => {
+    let t = titleCache.get(k)
+    if (t === undefined) {
+      t = resolveHit(store, k)?.title ?? k
+      titleCache.set(k, t)
+    }
     const at = cutAt.get(k)
-    return { id: k, name: at === undefined ? title : `${title} @${at.toLocaleString('en-US')}`, reason: '标签空间不足' }
-  })
+    return at === undefined ? t : `${t} @${NUM.format(at)}`
+  }
+  const items = labelLayout.value.hidden.flatMap((id) => info.get(id)?.members ?? [id])
+    .map((k) => ({ id: k, name: nameOf(k), reason: '标签空间不足' }))
   // 合并标签里写成 +N 的酶也算"未在图上标出"
   for (const l of labelLayout.value.placed) {
     const inf = info.get(l.id)
     if (inf?.kind !== 'enzyme') continue
-    for (const k of inf.members.slice(GROUP_MAX)) {
-      items.push({ id: k, name: `${resolveHit(store, k)?.title ?? k} @${(cutAt.get(k) ?? 0).toLocaleString('en-US')}`, reason: '同一切点酶过多，合并为 +N' })
-    }
+    for (const k of inf.members.slice(GROUP_MAX)) items.push({ id: k, name: nameOf(k), reason: '同一切点酶过多，合并为 +N' })
   }
   for (const id of featLanes.value.overflow) {
     const f = store.doc.value.features.find((x) => x.id === id)
@@ -390,7 +406,8 @@ const tickGeoms = computed(() => {
       minor.push({ p, x1, y1, x2, y2 })
     }
   }
-  return { major, minor }
+  const seg = (t: { x1: number; y1: number; x2: number; y2: number }) => `M${r2(t.x1)} ${r2(t.y1)}L${r2(t.x2)} ${r2(t.y2)}`
+  return { major, majorPath: major.map(seg).join(''), minorPath: minor.map(seg).join('') }
 })
 const originMark = computed(() => {
   const a = ang(0)
@@ -595,11 +612,12 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <circle :cx="cx" :cy="cy" :r="R0 - RAIL" fill="none" stroke="#2b3038" stroke-width="1.5" />
       <line :x1="originMark.x1" :y1="originMark.y1" :x2="originMark.x2" :y2="originMark.y2" stroke="#2b3038" stroke-width="1.8" stroke-linecap="round" />
       <g class="cmap-ticks">
-        <line v-for="t in tickGeoms.minor" :key="`m${t.p}`" :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#8b929b" stroke-width="0.6" />
-        <g v-for="t in tickGeoms.major" :key="t.p">
-          <line :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#2b3038" stroke-width="1" />
+        <!-- 刻度线合成两条 path（几百个 line 元素在旋转时逐个打补丁太慢） -->
+        <path v-if="tickGeoms.minorPath" :d="tickGeoms.minorPath" stroke="#8b929b" stroke-width="0.6" fill="none" />
+        <path :d="tickGeoms.majorPath" stroke="#2b3038" stroke-width="1" fill="none" />
+        <template v-for="t in tickGeoms.major" :key="t.p">
           <text v-if="t.label" :x="t.tx" :y="t.ty" :font-size="compact ? 8.5 : 9.5" fill="#8b929b" text-anchor="middle" dominant-baseline="central">{{ t.label }}</text>
-        </g>
+        </template>
       </g>
 
       <!-- 搜索命中 -->
@@ -634,7 +652,7 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
             stroke="#4f46e5" stroke-width="1.5" class="cmap-caret" />
 
-      <!-- 外置标签 + 引线（SnapGene 式扇形，左右两列） -->
+      <!-- 外置标签 + 引线（SnapGene 式扇形，左右两列）。布局保证引线不压字，文字不需要白边 -->
       <g v-for="l in labelViews" :key="l.id" :data-hit="l.id"
          :class="['cmap-label', `cmap-label-${l.inf.kind}`, { 'is-hover': l.hot }]">
         <polyline :points="l.leaderPts" fill="none" :stroke="l.hot ? '#4f46e5' : '#b4bac2'"
@@ -645,9 +663,12 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
           <text :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
                 :fill="l.inf.ink" font-weight="500" class="cmap-label-text">{{ l.text }}</text>
         </template>
+        <!-- 单个酶：名字直接写在 text 上（少一层 tspan，300 kb 旋转时补丁更少）；data-hit 在外层 g -->
+        <text v-else-if="l.inf.kind === 'enzyme' && l.inf.parts.length === 1 && !l.inf.extra" :x="l.tx" :y="l.y" :font-size="FONT"
+              dominant-baseline="central" :text-anchor="l.anchor" class="cmap-label-text"
+              :fill="l.inf.parts[0].color" :font-weight="l.inf.parts[0].bold ? 700 : 400"><tspan v-if="l.side === -1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400">({{ l.inf.pos }}) </tspan>{{ l.inf.parts[0].text }}<tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan></text>
         <text v-else-if="l.inf.kind === 'enzyme'" :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central"
-              :text-anchor="l.anchor" class="cmap-label-text"
-              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">
+              :text-anchor="l.anchor" class="cmap-label-text">
           <tspan v-if="l.side === -1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400">({{ l.inf.pos }}) </tspan>
           <tspan v-for="p in l.inf.parts" :key="p.key" :data-hit="p.key" :fill="p.color"
                  :font-weight="p.bold ? 700 : 400">{{ p.text }}</tspan>
@@ -655,8 +676,7 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
           <tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan>
         </text>
         <text v-else :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
-              :fill="l.inf.color" class="cmap-label-text"
-              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">{{ l.text }}</text>
+              :fill="l.inf.color" class="cmap-label-text">{{ l.text }}</text>
       </g>
 
       <!-- 中心名称与长度 -->
