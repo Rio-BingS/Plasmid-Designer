@@ -195,3 +195,75 @@ def test_puc19_ori_is_exact_full_length():
     o = ori[0]
     assert (o["start"], o["end"], o["strand"]) == (867, 1455, -1)
     assert o["auto"]["identity"] == 1.0 and o["auto"]["coverage"] == 1.0
+
+
+# ==================== 对抗性输入：串联重复（v2.12.0 审查 H2） ====================
+
+def _tandem(n: int, unit: int = 40) -> str:
+    lib = load_library()
+    e = next(x for x in lib.entries if x.name == "TcR")
+    chunk = e.sequence[100:100 + unit]
+    return (chunk * (n // unit + 1))[:n]
+
+
+def test_tandem_repeat_alignment_windows_and_cells_bounded(monkeypatch):
+    """元件片段串联重复到 300 kb：旧实现把所有种子链成一个簇、单次比对
+    300 kb × 元件长（~7 s / ~750 MB）。现在每个窗口 ≤ 元件长 + 2×PAD，
+    DP 单元格总量受 MAX_ALIGN_CELLS 约束，超出写告警。"""
+    import core.plasmid_map.annotate as A
+
+    seen = []
+    real = A._aligner()
+
+    class Spy:
+        def align(self, w, e):
+            seen.append((len(w), len(e)))
+            return real.align(w, e)
+
+    monkeypatch.setattr(A, "_aligner", lambda: Spy())
+    seq = _tandem(300_000)
+    warns = []
+    t = time.time()
+    feats = annotate(seq, True, warnings=warns)
+    elapsed = time.time() - t
+    assert seen and all(w <= e + 2 * A.PAD for w, e in seen)
+    assert sum(w * e for w, e in seen) <= A.MAX_ALIGN_CELLS
+    assert len(seen) <= A.MAX_ALIGNMENTS
+    assert any("预算" in w for w in warns)
+    assert all(f["auto"]["coverage"] >= A.MIN_COVERAGE for f in feats)
+    assert elapsed < 8, elapsed
+
+
+def test_budget_prefers_real_elements_over_repeat_noise(monkeypatch):
+    """预算很紧时真实全长元件（种子覆盖跨度大）先比对，不被串联重复噪声挤掉；
+    负链元件同样参与排序（旧实现正链先用完共享预算）"""
+    import core.plasmid_map.annotate as A
+
+    lib = load_library()
+    tcr = next(x for x in lib.entries if x.name == "TcR")
+    monkeypatch.setattr(A, "MAX_ALIGN_CELLS", 3 * (len(tcr.sequence) + 2 * A.PAD) * len(tcr.sequence))
+    noise = _tandem(20_000)
+    seq = noise + revcomp(tcr.sequence) + noise
+    warns = []
+    feats = annotate(seq, False, warnings=warns)
+    hit = [f for f in feats if f["name"] == "TcR"]
+    assert hit and hit[0]["strand"] == -1 and not hit[0]["auto"]["fragment"]
+    assert any("预算" in w for w in warns)
+
+
+def test_large_sequence_not_auto_annotated_unless_requested(monkeypatch):
+    import core.plasmid_map.annotate as A
+    from core.plasmid_map.document import build_document
+
+    monkeypatch.setattr(A, "AUTO_ANNOTATE_MAX_BP", 5000)
+    lib = load_library()
+    tcr = next(x for x in lib.entries if x.name == "TcR")
+    rnd = random.Random(7)
+    seq = "".join(rnd.choice("ACGT") for _ in range(3000)) + tcr.sequence + \
+        "".join(rnd.choice("ACGT") for _ in range(3000))
+    doc = build_document(name="x", sequence=seq, topology="circular", source_format="raw")
+    assert not doc["features"]
+    assert any("未自动注释" in w for w in doc["meta"]["warnings"])
+    doc = build_document(name="x", sequence=seq, topology="circular", source_format="raw",
+                         annotate=True)
+    assert any(f["name"] == "TcR" for f in doc["features"])

@@ -81,7 +81,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 [data/features/README.md](../data/features/README.md)）。比对流程：
 
 1. ≥40 bp 的元件：库序列 14-mer 精确种子（库内出现 >6 次的低复杂度 k-mer 不用）
-   → 按（元件, 链, 对角线）聚类 → 候选窗口上 `PairwiseAligner` 局部比对，
+   → 按（元件, 链, 对角线）计票、对角线按 ≤60 bp 分块 → 每块一个定长窗口
+   （元件长 + 2×30 bp）上 `PairwiseAligner` 局部比对，
    得 identity（相同列 / 比对列，含 gap）与 coverage（覆盖元件长度占比）；
 2. 更短的元件双链精确查找；肽标签 / 蛋白酶位点六框翻译后查找肽段；
 3. 环状分子在序列末尾接上开头再比，跨原点命中输出 `start > end`、只报一次；
@@ -89,7 +90,12 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 5. 同一元件、或同类型 / 同名元件重叠超过较短者一半时只留最好的（完整优先 →
    identity 高 → 比对长）；与文件已有特征（同类型或同名、重叠 ≥80%）重复的命中丢弃。
 
-候选比对数封顶 400；10 kb 典型质粒 <0.2 s，300 kb 随机序列约 0.4 s。
+性能边界：单次比对窗口恒为元件长 + 60 bp，与序列长度无关；候选按「种子覆盖的元件跨度、
+票数」从高到低比对（两条链统一排序），每个请求最多 400 次比对、DP 单元格总量不超过
+`MAP_ANNOTATE_MAX_CELLS`（默认 6×10⁷，约 1 s），预算用尽时余下候选跳过并在
+`meta.warnings` 提示。`annotate` 缺省时超过 `MAP_AUTO_ANNOTATE_MAX_BP`（默认 50 000 bp）
+的序列不自动注释（告警提示），显式 `annotate=true` 仍会注释。参考耗时：10 kb 典型质粒
+<0.2 s，300 kb 随机序列约 0.5 s，300 kb 元件片段串联重复（对抗输入）约 1.7 s / 30 MB。
 
 ## 限制、缓存与限流
 
@@ -98,6 +104,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 | `MAP_MAX_LENGTH` | 300000 | 单条序列长度上限（bp） |
 | `MAP_MAX_UPLOAD_MB` | 5 | 上传文件 / JSON 文本体积上限 |
 | `MAP_CACHE_MAX_BP` | 50000 | 只缓存不超过该长度的结果（防内存缓存被大文档撑满） |
+| `MAP_AUTO_ANNOTATE_MAX_BP` | 50000 | `annotate` 缺省时只对不超过该长度的序列自动注释 |
+| `MAP_ANNOTATE_MAX_CELLS` | 60000000 | 单次请求自动注释比对的 DP 单元格总预算 |
 | `MAP_FEATURE_LIBRARY` | — | 可选：元件库 JSON 路径（默认 `$DATA_DIR/features/` 或仓库 `data/features/`） |
 | `NCBI_EMAIL` | — | 建议设置：NCBI E-utilities 要求的联系邮箱（随请求发送） |
 | `NCBI_API_KEY` | — | 可选：NCBI API key，速率上限由 3 次/秒提高到 10 次/秒 |
