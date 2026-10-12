@@ -313,8 +313,18 @@ export interface EnzymeInfo {
   is_type_iis: boolean
 }
 
+/** Golden Gate 候选酶（REBASE：可商购、切出 4 nt 5' 突出端的 Type IIS 酶；BsaI/BsmBI/BbsI 在前） */
+export interface GoldenGateEnzyme {
+  name: string
+  recognition_sequence: string
+}
+
 // 获取可用酶列表
-export async function getEnzymes(): Promise<{ total: number; enzymes: Record<string, EnzymeInfo> }> {
+export async function getEnzymes(): Promise<{
+  total: number
+  enzymes: Record<string, EnzymeInfo>
+  golden_gate_enzymes?: GoldenGateEnzyme[]
+}> {
   const response = await api.get('/analysis/enzymes')
   return response.data
 }
