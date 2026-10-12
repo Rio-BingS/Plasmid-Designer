@@ -86,7 +86,7 @@ def sources_payload(*, is_admin: bool = False) -> Dict[str, Any]:
                 "id": "snapgene",
                 "name": "SnapGene 在线质粒库",
                 "kind": "online_library",
-                "url": src.SNAPGENE_BASE,
+                "url": src.public_base(src.SNAPGENE_BASE),
                 "license": src.SNAPGENE_LICENSE,
                 "enabled": snapgene_on,
                 "importable": snapgene_on,
@@ -98,7 +98,7 @@ def sources_payload(*, is_admin: bool = False) -> Dict[str, Any]:
                 "id": "ensembl",
                 "name": "Ensembl REST",
                 "kind": "online_sequence",
-                "url": src.ENSEMBL_BASE,
+                "url": src.public_base(src.ENSEMBL_BASE),
                 "license": src.ENSEMBL_LICENSE,
                 "importable": True,
                 "note": "按 Ensembl ID 取 genomic / cds / cdna 序列（蛋白序列不作为质粒序列导入）",
@@ -121,7 +121,7 @@ def sources_payload(*, is_admin: bool = False) -> Dict[str, Any]:
                 "id": "uniprot",
                 "name": "UniProt",
                 "kind": "protein_lookup",
-                "url": src.UNIPROT_BASE,
+                "url": src.public_base(src.UNIPROT_BASE),
                 "license": src.UNIPROT_LICENSE,
                 "importable": False,
                 "note": ("蛋白库（CC BY 4.0），不给质粒序列：按基因/蛋白名查条目，"
@@ -176,7 +176,7 @@ def snapgene_plasmid_record(set_id: str, plasmid_id: str,
     sid = src.validate_set_id(set_id)
     pid = src.validate_plasmid_id(plasmid_id)
     data = src.snapgene_plasmid_bytes(sid, pid)
-    url = f"{src.SNAPGENE_BASE}/fetch.php?set={sid}&plasmid={pid}"
+    url = f"{src.public_base(src.SNAPGENE_BASE)}/fetch.php?set={sid}&plasmid={pid}"
     name = pid
     try:
         name = next((str(p.get("filename") or "") for p in snapgene_index_payload(sid)["plasmids"]
