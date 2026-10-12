@@ -230,3 +230,15 @@ def test_large_documents_not_cached_and_total_bytes_bounded(client, monkeypatch)
     assert len(stored) == 2 and len(M._cache_sizes) == 2
     assert all(f'"n{i}"' not in json.dumps(v) for v in stored.values() for i in (0, 1))
     assert sum(v[0] for v in M._cache_sizes.values()) <= int(size * 2.5) + 200
+
+
+def test_export_linear_wrap_feature_rejected(client):
+    """线性分子上的跨原点特征（start > end）导出 422，不写出无意义的 join(s..L,1..e)"""
+    c, _ = client
+    doc = {"schema": "plasmid-map/1", "name": "lin", "topology": "linear", "length": len(SEQ),
+           "sequence": SEQ, "features": [{"name": "w", "type": "cds", "start": 280, "end": 20,
+                                          "strand": 1}]}
+    r = c.post("/api/map/export/genbank", json=doc)
+    assert r.status_code == 422 and "跨原点" in r.json()["detail"]
+    doc["topology"] = "circular"
+    assert c.post("/api/map/export/genbank", json=doc).status_code == 200

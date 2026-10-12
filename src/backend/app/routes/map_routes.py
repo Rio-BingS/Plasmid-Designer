@@ -424,11 +424,17 @@ async def export_genbank(doc: MapDocument):
         raise _http_error(e)
     data = doc.model_dump(by_alias=True, exclude_none=True)
     data["sequence"] = seq
+    linear = data.get("topology") != "circular"
     for f in (data.get("features") or []) + (data.get("primers") or []):
         for s in [f] + list(f.get("segments") or []):
             if s["start"] > len(seq) or s["end"] > len(seq):
                 raise HTTPException(status_code=422,
                                     detail=f"「{f.get('name')}」坐标超出序列长度")
+            if linear and s["start"] > s["end"]:
+                # 线性分子没有原点可跨：join(s..L,1..e) 在线性记录里无意义
+                raise HTTPException(status_code=422,
+                                    detail=f"「{f.get('name')}」跨原点（start > end），"
+                                           "线性分子不能导出跨原点特征")
     text = await run_in_threadpool(document_to_genbank, data)
     fname = (_FILENAME_SAFE.sub("_", doc.name).strip("_") or "sequence")[:80] + ".gb"
     return Response(
