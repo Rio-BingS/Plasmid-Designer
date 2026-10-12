@@ -10,7 +10,8 @@ POST /api/map/import/ncbi      NCBI accession → efetch GenBank → MapDocument
 
 整个路由挂 `map` 功能开关（main.py）。解析/比对/扫描是 CPU 计算，一律移交
 线程池；结果按「输入摘要 + 选项 + 元件库版本 + 算法版本」缓存（只缓存
-不超过 MAP_CACHE_MAX_BP 的序列，避免内存缓存被大文档撑满）。
+不超过 MAP_CACHE_MAX_BP、序列化不超过 MAP_CACHE_MAX_DOC_BYTES 的文档，本进程
+写入总量不超过 MAP_CACHE_MAX_TOTAL_BYTES，避免内存缓存被大文档撑满）。
 限流沿用中间件 default 档（与 /api/analysis 相同）；NCBI 导入走 ncbi 档
 （外呼代理，rate_limit._WRITE_EXACT_RULES）。
 """
@@ -19,8 +20,13 @@ import hashlib
 import json
 import os
 import re
-from typing import Any, Dict, List, Literal, Optional
+import threading
+import time
+from collections import OrderedDict
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
+import anyio
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
@@ -46,11 +52,20 @@ router = APIRouter(prefix="/api/map", tags=["map"])
 
 MAP_MAX_UPLOAD_MB = float(os.environ.get("MAP_MAX_UPLOAD_MB", "5"))
 MAP_MAX_UPLOAD_BYTES = int(MAP_MAX_UPLOAD_MB * 1024 * 1024)
+# 其余 /api/map/* 写请求的请求体上限（导出请求体是整份 MapDocument）；
+# 由 app/map_body_limit.py 在读取时流式执行
+MAP_MAX_JSON_MB = float(os.environ.get("MAP_MAX_JSON_MB", "16"))
+MAP_MAX_JSON_BYTES = int(MAP_MAX_JSON_MB * 1024 * 1024)
 MAP_CACHE_MAX_BP = int(os.environ.get("MAP_CACHE_MAX_BP", "50000"))
+# 体积门槛：序列化后超过此字节数的文档不缓存（commercial 酶组的高频切酶位点
+# 会让 50 kb 文档膨胀到数 MB，内存缓存里驻留约 4 倍）；同时限制本进程写入
+# 缓存的图谱文档总字节数，超出按写入先后淘汰（MemoryCache 只按条数封顶）
+MAP_CACHE_MAX_DOC_BYTES = int(os.environ.get("MAP_CACHE_MAX_DOC_BYTES", str(1024 * 1024)))
+MAP_CACHE_MAX_TOTAL_BYTES = int(os.environ.get("MAP_CACHE_MAX_TOTAL_BYTES", str(64 * 1024 * 1024)))
 MAP_CACHE_TTL = 3600
 # 产出口径版本：改变 MapDocument 内容的代码改动须递增（元件库变化已由
 # library_version 自动进键）
-MAP_ALGO_VERSION = "3"
+MAP_ALGO_VERSION = "4"
 
 # NCBI 原始 GenBank 文本缓存：与产出口径无关（不进 MAP_ALGO_VERSION），
 # 只缓存不超过上限的文本；不带版本号的 accession 可能被 NCBI 更新，TTL 取 1 天
@@ -74,9 +89,39 @@ def _cache_get(key: str):
         return None
 
 
-def _cache_put(key: str, doc: Dict) -> None:
+_cache_sizes: "OrderedDict[str, Tuple[int, float]]" = OrderedDict()  # key → (字节, 到期)
+_cache_sizes_lock = threading.Lock()
+
+
+def _doc_bytes(doc: Dict) -> int:
+    return len(json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _cache_put(key: str, doc: Dict, size: Optional[int] = None) -> None:
+    """按长度与序列化体积决定是否缓存；size 为调用方已算好的体积（线程池里）"""
     if doc.get("length", 0) > MAP_CACHE_MAX_BP:
         return
+    if size is None:
+        size = _doc_bytes(doc)
+    if size > MAP_CACHE_MAX_DOC_BYTES:
+        return
+    evict = []
+    now = time.monotonic()
+    with _cache_sizes_lock:
+        for k in [k for k, (_, exp) in _cache_sizes.items() if exp <= now]:
+            del _cache_sizes[k]
+        _cache_sizes.pop(key, None)
+        _cache_sizes[key] = (size, now + MAP_CACHE_TTL)
+        total = sum(v[0] for v in _cache_sizes.values())
+        while total > MAP_CACHE_MAX_TOTAL_BYTES and len(_cache_sizes) > 1:
+            k, (sz, _) = _cache_sizes.popitem(last=False)
+            total -= sz
+            evict.append(k)
+    for k in evict:
+        try:
+            cache.backend.delete(k)
+        except Exception:
+            pass
     try:
         cache.backend.set(key, doc, MAP_CACHE_TTL)
     except Exception:
@@ -89,15 +134,31 @@ def _http_error(e: MapParseError) -> HTTPException:
 
 async def cached_document(kind: str, key_payload: Any, fn, *args, **kwargs) -> Dict:
     """线程池里算 MapDocument，带缓存；MapParseError → HTTP 错误"""
+    return await _cached_document(kind, key_payload, None, fn, args, kwargs)
+
+
+async def _cached_document(kind: str, key_payload: Any, limiter, fn, args, kwargs) -> Dict:
+    """limiter 为 None 时用全局线程池；给定 anyio CapacityLimiter 时在其独立
+    的令牌里跑（外呼类任务不占全局 40 个令牌）"""
     key = _cache_key(kind, key_payload)
     hit = _cache_get(key)
     if hit is not None:
         return hit
+
+    def run():
+        doc = fn(*args, **kwargs)
+        size = _doc_bytes(doc) if doc.get("length", 0) <= MAP_CACHE_MAX_BP else None
+        return doc, size
+
     try:
-        doc = await run_in_threadpool(fn, *args, **kwargs)
+        if limiter is None:
+            doc, size = await run_in_threadpool(run)
+        else:
+            doc, size = await anyio.to_thread.run_sync(run, limiter=limiter)
     except MapParseError as e:
         raise _http_error(e)
-    _cache_put(key, doc)
+    if size is not None:
+        _cache_put(key, doc, size)
     return doc
 
 
@@ -302,6 +363,18 @@ async def get_suppliers() -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+NCBI_MAX_CONCURRENCY = max(1, int(os.environ.get("NCBI_MAX_CONCURRENCY", "4")))
+_ncbi_limiter_obj: Optional[anyio.CapacityLimiter] = None
+
+
+def _ncbi_limiter() -> anyio.CapacityLimiter:
+    """NCBI 导入专用的线程令牌（惰性创建：CapacityLimiter 须在事件循环里构造）"""
+    global _ncbi_limiter_obj
+    if _ncbi_limiter_obj is None:
+        _ncbi_limiter_obj = anyio.CapacityLimiter(NCBI_MAX_CONCURRENCY)
+    return _ncbi_limiter_obj
+
+
 def _ncbi_text(acc: str) -> str:
     """NCBI GenBank 文本：先查缓存，未命中再 efetch（阻塞，线程池里调用）"""
     key = f"map:ncbi-text:{acc}"
@@ -334,7 +407,8 @@ async def import_ncbi(req: MapNcbiRequest):
     except MapParseError as e:
         raise _http_error(e)
     opts = {"annotate": req.annotate, "enzyme_set": req.enzyme_set, "orf_min_aa": req.orf_min_aa}
-    return await cached_document("ncbi", {"acc": acc, "opts": opts}, _ncbi_build, acc, opts)
+    return await _cached_document("ncbi", {"acc": acc, "opts": opts}, _ncbi_limiter(),
+                                  _ncbi_build, (acc, opts), {})
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -350,11 +424,17 @@ async def export_genbank(doc: MapDocument):
         raise _http_error(e)
     data = doc.model_dump(by_alias=True, exclude_none=True)
     data["sequence"] = seq
+    linear = data.get("topology") != "circular"
     for f in (data.get("features") or []) + (data.get("primers") or []):
         for s in [f] + list(f.get("segments") or []):
             if s["start"] > len(seq) or s["end"] > len(seq):
                 raise HTTPException(status_code=422,
                                     detail=f"「{f.get('name')}」坐标超出序列长度")
+            if linear and s["start"] > s["end"]:
+                # 线性分子没有原点可跨：join(s..L,1..e) 在线性记录里无意义
+                raise HTTPException(status_code=422,
+                                    detail=f"「{f.get('name')}」跨原点（start > end），"
+                                           "线性分子不能导出跨原点特征")
     text = await run_in_threadpool(document_to_genbank, data)
     fname = (_FILENAME_SAFE.sub("_", doc.name).strip("_") or "sequence")[:80] + ".gb"
     return Response(

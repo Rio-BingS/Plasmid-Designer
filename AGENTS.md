@@ -79,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 测试基线（本机 Windows，2026-10-12 在线来源收尾后）：pytest 1327 passed / 39 skipped
 （另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
 `test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
-的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 439，vue-tsc 0。
+的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 516，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -131,8 +131,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   **许可边界**：SnapGene 库学术/非营利/政府可用但须引用 `www.snapgene.com/resources`，
   商业用途须 GraphPad 书面许可、其 robots.txt `Disallow: /local`；Addgene 全长序列
   2026-08 起需登录——无凭据时代码**不绕登录**（403 + 指引）；配置了用户自备的
-  `ADDGENE_SESSION_COOKIE` 时才带凭据取序列，且只发给 addgene.org（主机白名单）、
-  不落盘/不回显/不记日志。故只做低频单次读取（进程级限速 + 结果缓存），
+  `ADDGENE_SESSION_COOKIE` 时才带凭据取序列（仅管理员触发、仅单用户自托管适用），
+  且只以 https 发往 addgene.org：`_http_get` 禁自动重定向、逐跳校验 https + 主机白名单，
+  Cookie 用 unredirected 头且跨主机即丢弃；不写入响应/日志。故只做低频单次读取（进程级限速 + 结果缓存），
   `ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼；不要给它加定时同步/批量镜像。
   **UniProt 是蛋白库**：只用于反查 Entrez/EMBL/RefSeq/Ensembl 交叉引用，蛋白序列不导入
 - 导入载体的出处与拓扑必须结构化落盘：`data_provenance`（`provenance_block`：
@@ -195,7 +196,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.12.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.13.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」

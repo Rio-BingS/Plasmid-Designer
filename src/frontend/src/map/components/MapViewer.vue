@@ -19,12 +19,14 @@ import { resolveHit } from '../hits'
 import { downloadPng, downloadSvg, safeFilename } from '../export'
 import { downloadBlob } from '@/utils/download'
 import { formatApiError } from '@/api'
+import { onTabKeydown } from '@/utils/tabKeys'
 import CircularMap from './CircularMap.vue'
 import LinearMap from './LinearMap.vue'
 import SequenceMap from './SequenceMap.vue'
 import Minimap from './Minimap.vue'
 import MapTooltip from './MapTooltip.vue'
 import DigestPanel from './DigestPanel.vue'
+import { sitesIncomplete } from '../core/digest'
 
 const props = withDefaults(defineProps<{
   doc: MapDocument
@@ -42,10 +44,19 @@ const emit = defineEmits<{ (e: 'doc-change', doc: MapDocument): void }>()
 const docRef = ref(props.doc) as Ref<MapDocument>
 /** 编辑撤销栈（editable） */
 const history = ref<MapDocument[]>([])
+/**
+ * 文档代次：父组件换了另一份文档时 +1。异步分析（切换酶组 / 重新分析）发出时记下代次，
+ * 返回时代次变了就整体丢弃，不覆盖新文档、不发 doc-change。
+ */
+let docGen = 0
 watch(() => props.doc, (d) => {
   if (d === docRef.value) return // 父组件回传本查看器刚发出的编辑结果
+  docGen++
   docRef.value = d
   history.value = []
+  enzymeSet.value = d.meta.enzyme_set || 'common'
+  analyzing.value = false
+  reanalyzing.value = false
 })
 const store = provideMapStore(createMapStore(docRef))
 const doc = computed(() => docRef.value)
@@ -91,25 +102,40 @@ onMounted(async () => {
   } catch { /* 保留内置列表 */ }
 })
 
+/** 请求发出后序列是否仍是同一条（编辑只改特征/引物，不改序列；换文档或序列变了就不能合并） */
+function sameMolecule(a: MapDocument, b: MapDocument) {
+  return a.sequence === b.sequence && a.topology === b.topology && a.length === b.length
+}
+/** 各类异步分析的最新请求号：只有最后一次请求的结果生效 */
+let enzymeSetToken = 0
+let reanalyzeToken = 0
+
 async function changeEnzymeSet() {
   const id = enzymeSet.value
   if (id === 'unique6') store.enzymeFilter.maxCuts = 1
   if (id === doc.value.meta.enzyme_set) return
+  const token = ++enzymeSetToken
+  const gen = docGen
+  const isCurrent = () => token === enzymeSetToken && gen === docGen
   analyzing.value = true
   analyzeError.value = ''
+  const d = doc.value
   try {
-    const d = doc.value
     const res = await analyzeMap({
       sequence: d.sequence, topology: d.topology, name: d.name, features: d.features, annotate: false, enzyme_set: id,
     })
-    docRef.value = { ...d, enzymes: res.enzymes, orfs: res.orfs ?? d.orfs, meta: { ...d.meta, enzyme_set: id } }
+    const cur = docRef.value
+    if (!isCurrent() || !sameMolecule(cur, d)) return // 已换文档：丢弃过期结果
+    // 只合并分析字段，请求期间的特征编辑保留
+    docRef.value = { ...cur, enzymes: res.enzymes, orfs: res.orfs ?? cur.orfs, meta: { ...cur.meta, enzyme_set: id } }
     store.enzymeFilter.hidden = []
     emit('doc-change', docRef.value)
   } catch (e) {
+    if (!isCurrent()) return
     analyzeError.value = `切换酶组失败：${formatApiError(e, '请求失败')}`
     enzymeSet.value = d0Set()
   } finally {
-    analyzing.value = false
+    if (isCurrent()) analyzing.value = false
   }
 }
 function d0Set() { return doc.value.meta.enzyme_set || 'common' }
@@ -237,19 +263,48 @@ function addFromSelection() {
 }
 
 async function reanalyze() {
+  const token = ++reanalyzeToken
+  const gen = docGen
+  const isCurrent = () => token === reanalyzeToken && gen === docGen
   reanalyzing.value = true
   editError.value = ''
+  const d = docRef.value
+  const annotate = reannotate.value
   try {
-    const d = docRef.value
     const res = await analyzeMap({
       sequence: d.sequence, topology: d.topology, name: d.name, features: d.features, primers: d.primers,
-      annotate: reannotate.value, enzyme_set: d.meta.enzyme_set || 'common',
+      annotate, enzyme_set: d.meta.enzyme_set || 'common',
     })
-    apply({ ...res, primers: res.primers?.length ? res.primers : d.primers, meta: { ...res.meta, source_format: d.meta.source_format } })
+    const cur = docRef.value
+    if (!isCurrent() || !sameMolecule(cur, d)) return // 已换文档：丢弃过期结果
+    if (cur === d) {
+      // 请求期间没有编辑：按原逻辑整篇采用分析结果
+      apply({ ...res, primers: res.primers?.length ? res.primers : d.primers, meta: { ...res.meta, source_format: d.meta.source_format } })
+      return
+    }
+    // 请求期间有编辑：以当前文档为底，只合并分析字段（酶切、ORF、新识别的自动特征）
+    const key = (f: MapDocument['features'][number]) => `${f.type}|${f.start}|${f.end}|${f.strand}|${f.name}`
+    const known = new Set([...d.features, ...cur.features].map(key))
+    const newAuto = annotate ? res.features.filter((f) => f.source === 'auto' && !known.has(key(f))) : []
+    const usedIds = new Set(cur.features.map((f) => f.id))
+    const added = newAuto.map((f) => {
+      let id = f.id
+      for (let i = 2; usedIds.has(id); i++) id = `${f.id}_${i}`
+      usedIds.add(id)
+      return id === f.id ? f : { ...f, id }
+    })
+    apply({
+      ...cur,
+      enzymes: res.enzymes,
+      orfs: res.orfs ?? cur.orfs,
+      features: added.length ? [...cur.features, ...added] : cur.features,
+      meta: { ...cur.meta, warnings: res.meta?.warnings ?? cur.meta.warnings },
+    })
   } catch (e) {
+    if (!isCurrent()) return
     editError.value = `重新分析失败：${formatApiError(e, '请求失败')}`
   } finally {
-    reanalyzing.value = false
+    if (isCurrent()) reanalyzing.value = false
   }
 }
 
@@ -263,7 +318,8 @@ const featureRows = computed(() => [...doc.value.features]
   .map((f) => ({ f, color: featureColor(f), len: rangeLength(f, doc.value.length, isCircular.value), hidden: store.hiddenFeatures.value.includes(f.id) })))
 const enzymeRows = computed(() => store.enzymeList.value.map((e) => ({
   e, style: enzymeStyle(e), hidden: store.enzymeFilter.hidden.includes(e.name), blocked: blockedSiteCount(e),
-  sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 ? ' …' : ''),
+  sites: e.sites.slice(0, 4).map((s) => s.cut_top).join(', ') + (e.sites.length > 4 || sitesIncomplete(e) ? ' …' : ''),
+  truncated: sitesIncomplete(e),
 })))
 function selectEnzyme(name: string) {
   resolveHit(store, `e:${name}#0`)?.select()
@@ -428,7 +484,7 @@ defineExpose({ store, view, undo })
       </div>
 
       <aside class="mv-side">
-        <div class="mv-tabs" role="tablist">
+        <div class="mv-tabs" role="tablist" @keydown="onTabKeydown">
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'features' }]" :aria-selected="sideTab === 'features'"
                   @click="sideTab = 'features'">特征 ({{ doc.features.length }})</button>
           <button type="button" role="tab" :class="['mv-tab', { active: sideTab === 'enzymes' }]" :aria-selected="sideTab === 'enzymes'"
@@ -498,7 +554,7 @@ defineExpose({ store, view, undo })
             <li v-if="!enzymeRows.length" class="mv-muted mv-empty">没有符合条件的酶<template v-if="supplierEmptyHint">（所选厂商在当前酶组中没有切点；可换「全部商品酶」酶组）</template></li>
             <li v-for="r in enzymeRows" :key="r.e.name" :class="['mv-row', { hidden: r.hidden }]" @click="selectEnzyme(r.e.name)">
               <span class="mv-name" :style="{ color: r.style.color, fontWeight: r.style.weight }">{{ r.e.name }}</span>
-              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b></span>
+              <span class="mv-meta">{{ r.e.recognition }} · {{ r.e.cut_count }} 切点 · {{ r.sites }}<b v-if="r.blocked" class="mv-blocked-badge" :title="`${r.blocked} 个位点被 dam/dcm 甲基化阻断`"> · {{ r.blocked }} 阻断</b><b v-if="r.truncated" class="mv-truncated-badge" :title="`切点过多，只返回了 ${r.e.sites.length} 个位点明细（图上只画这些），不能用于消化模拟`"> · 明细不全</b></span>
               <button type="button" class="mv-eye" :title="r.hidden ? '显示' : '隐藏'" :aria-label="r.hidden ? `显示 ${r.e.name}` : `隐藏 ${r.e.name}`"
                       @click.stop="store.toggleEnzymeHidden(r.e.name)">{{ r.hidden ? '○' : '●' }}</button>
             </li>
@@ -512,10 +568,11 @@ defineExpose({ store, view, undo })
             <p v-else-if="detailError" class="mv-error">{{ detailError }}</p>
             <template v-else-if="detail">
               <div class="mv-enz-detail-line">{{ detail.recognition }} · {{ detailEnds }}</div>
-              <div v-if="detail.type_iis || detail.golden_gate || detail.methylation?.length" class="mv-badges">
+              <div v-if="detail.type_iis || detail.golden_gate || detail.methylation?.length || detail.modification_dependent" class="mv-badges">
                 <span v-if="detail.type_iis" class="mv-badge">Type IIS</span>
                 <span v-if="detail.golden_gate" class="mv-badge">可用于 Golden Gate</span>
                 <span v-if="detail.methylation?.length" class="mv-badge mv-badge-warn">甲基化敏感：{{ detail.methylation.join('/') }}</span>
+                <span v-if="detail.modification_dependent" class="mv-badge mv-badge-warn" title="只切含甲基化等修饰的 DNA，不进图谱酶组">修饰依赖型</span>
               </div>
               <dl class="mv-enz-dl">
                 <dt>厂商</dt>
@@ -607,6 +664,7 @@ defineExpose({ store, view, undo })
 .mv-color { width: 32px; height: 26px; padding: 0 2px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-primary); }
 .mv-danger { color: var(--error-color); border-color: var(--error-color); }
 .mv-blocked-badge { color: #6b7280; font-weight: 500; }
+.mv-truncated-badge { color: #92400e; font-weight: 500; }
 .mv-legend { padding: 6px 8px; border-top: 1px solid var(--border-color); }
 .mv-status { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; margin-top: 0.5rem; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .mv-selection-text { color: var(--primary-color); }

@@ -8,6 +8,167 @@
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-12
+
+### 升级注意
+
+- **SnapGene 在线库默认关闭**：新增独立开关 `SNAPGENE_ONLINE_ENABLED`（默认
+  `false`，与 `ONLINE_IMPORT_ENABLED` 无关）。升级后载体库与图谱页的「SnapGene 在线库」
+  页签消失，相关端点（`/api/vectors/import/snapgene*`、`/api/map/import/snapgene*`）返回
+  404 + 说明。需要该功能的部署方须显式设为 `true`，并知悉其网站条款禁止存入检索系统、
+  robots.txt 禁止 `/local`（仅建议学术/非营利自用实例开启，见 `docs/KNOWN_ISSUES.md`
+  「已接受风险」）。开启后这些只读端点也**需要登录**（匿名 401），存入载体库仍需管理员。
+  Docker 部署需同步 `docker-compose.yml`（新增该变量透传）；已导入的 SnapGene 载体不受影响。
+- `ADDGENE_SESSION_COOKIE` 明确为**仅适合单用户自托管**：配置了它且站点开放注册或已有
+  1 个以上启用账号时，后端启动会记一条告警（多用户下等同共享你的 Addgene 账号）。此前
+  文档称其「不落盘」不准确——它就在 `.env` 与容器环境里；多用户实例请清空该变量，改为
+  浏览器下载序列文件后「上传文件」导入。
+- 导入/上传/另存为载体不再静默覆盖**另一条**载体：目标 YAML 已被不同 ID 的载体占用时
+  返回 409（此前名称含空格、超长截断等情况会让不同载体撞到同一文件互相覆盖）；同一 ID
+  再次导入仍会覆盖，回执新增 `replaced` 并在 `warnings` 中写明。新导入载体的 ID 与文件名
+  使用同一套字符归一（空格、冒号等变成下划线，如 `snapgene_SARS Genome` →
+  `snapgene_SARS_Genome`），已有载体不受影响。
+- 图谱缓存口径版本 `MAP_ALGO_VERSION` 递增，旧缓存自然失效，无需手动清除。
+- 图谱行为变化：`annotate` 缺省时超过 50 kb 的序列不再自动注释常见元件（`meta.warnings`
+  提示，显式 `annotate=true` 仍注释）；新增可选环境变量 `MAP_AUTO_ANNOTATE_MAX_BP`、
+  `MAP_ANNOTATE_MAX_CELLS`（见 docs/MAP.md）。
+- 图谱酶组变化：`commercial` / `unique6` / `type_iis` 与厂商表不再包含修饰依赖型酶
+  （AbaSI、MspJI、FspEI、SgeI、LpnPI 及 SibEnzyme 的 9 把 5mC 依赖酶）；`MapEnzyme` 新增
+  可选字段 `sites_truncated`（位点明细被截断时为 true，`cut_count` 仍是完整计数），
+  酶详情新增 `modification_dependent`。新增可选环境变量 `MAP_MAX_SITES_PER_ENZYME`、
+  `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`。
+- `NCBI_TIMEOUT` 语义改为单次 NCBI 导入的总时长上限（默认由 20 改为 30 秒；此前只是单次
+  socket 读超时）；新增可选 `NCBI_MAX_CONCURRENCY`（默认 4）。
+- **nginx 配置更新**：两份 `deploy/*/nginx.conf` 新增 `location ^~ /api/map/`
+  （`client_max_body_size 17m`）。裸机部署须把新的 nginx.conf 复制到位并 `nginx -s reload`；
+  Docker 部署重建前端镜像。新增可选环境变量 `MAP_MAX_JSON_MB`（默认 16，`/api/map/*` 除
+  `/parse` 外写请求的体积上限）；调大它或 `MAP_MAX_UPLOAD_MB` 时同步调大 nginx 这一项。
+- Docker 部署需同步 `docker-compose.yml`：新增透传 `MAP_MAX_JSON_MB`、
+  `MAP_AUTO_ANNOTATE_MAX_BP`、`MAP_ANNOTATE_MAX_CELLS`、`MAP_MAX_SITES_PER_ENZYME`、
+  `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`、
+  `NCBI_TIMEOUT`、`NCBI_MAX_CONCURRENCY`（缺省值与代码默认一致；两份 `.env.example`
+  已补说明），否则在 `.env` 里调整这些值对容器不生效。
+- 前端改为按路由拆包：`dist/assets/` 里会多出一批分包文件（`MapView-*.js`、
+  `MapViewer-*.js` 等），部署时请整体替换 `dist/`（裸机/Docker 现有流程本来就是
+  整目录复制，无需改动）。`index.html` 不应被长缓存；还开着旧版本页面的标签页在
+  重新部署后首次切页若加载分包失败，会自动整页刷新一次拿到新版本
+
+### 新增
+
+- 图谱酶详情对修饰依赖型酶（如 MspJI、AbaSI，只切甲基化等修饰过的 DNA）显示
+  “修饰依赖型”标记。
+
+### 变更
+
+- 环形图谱在手机上不再压住页面滚动：未放大时单指在图上滑动照常滚动页面，
+  **长按约 0.35 秒后**拖动才是选区/旋转，轻点仍选中特征或落光标；支持双指捏合
+  缩放。放大后与桌面一致（单指平移/选区）。鼠标操作不变
+- 首屏变小：除首页与 403 页外的页面改为路由级动态导入，结果页的图谱查看器在点
+  "查看质粒图谱"后才加载。主 JS 包 481.7 kB → 约 192 kB（gzip 166.0 → 约 71 kB），
+  主 CSS 79.9 kB → 11.4 kB
+- 图谱查看器侧栏（特征 / 酶切 / 消化）与 /map 页来源标签支持键盘 ←/→/Home/End 切换
+
+### 修复
+
+- `GET /api/vectors/import/addgene/{质粒号}?try_sequence=true` 改为仅管理员（匿名 401、
+  普通用户 403）：配置了 `ADDGENE_SESSION_COOKIE` 时该分支会以部署方的 Addgene 账号
+  下载全长序列，此前任何访客都能驱动；来源清单与该端点的 `session_configured` 也只对
+  管理员如实下发。
+- 载体出处链接只接受 `http(s)://`：`POST /api/vectors/import/from-map` 的 `url` 不合规时
+  422，落盘与读取 `data_provenance` 时也会丢弃非 http(s) 的 `url` / `*_url`（此前
+  `javascript:` 链接会在载体详情页渲染成可点击链接，形成存储型 XSS）。
+- 导入载体里 `polyA_signal` 类型现在正确归为调控元件（别名表键大小写不一致，此前
+  永远落成 other）。
+- NCBI 导入（`/api/vectors/import/ncbi`、`ncbi-id`、批量导入）写出 LOCUS 行的真实拓扑：
+  此前这条路径不写 `topology`，线性 GenBank 记录仍被画成环状（2.12.0 的「按真实拓扑
+  显示」只覆盖了上传/在线来源/另存为）。已导入的旧载体需重新导入才会更新。
+- Addgene 本地索引搜索把解析结果缓存在进程内（按文件修改时间与大小失效），不再每次
+  请求整读约 7 MB 的 JSON。
+- 载体文件上传按图谱同一序列上限（`MAP_MAX_LENGTH`，默认 300 kb）解析，超长 413；
+  解析器意外异常返回 400、落盘失败返回 500 通用文案（不含内部信息）。各导入端点的回执
+  不再包含服务器上的绝对路径 `path` 字段。
+- 在线来源的错误信息不再回显上游响应的前若干字节（可能是登录页 HTML）；来源清单与
+  出处链接里的 `*_BASE` 会去掉 `user:pass@` 凭据部分再展示。
+- 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
+  的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
+  排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
+- 载体库侧会外呼的只读代理（SnapGene 集合 / 索引 / 预览、Ensembl lookup / 预览）改走
+  `ncbi` 限流档，与图谱侧和文档描述一致（此前落在 100 次/分钟的 default 档）。
+- 在线来源外呼不再自动跟随重定向：每一跳都重新校验 https + 主机白名单（按裸主机名，
+  最多 3 跳），Addgene 会话 Cookie 改为不随重定向转发、跨主机即丢弃；上游给出的
+  `file://`、`http://` 等非 https 直链一律拒绝。此前一次 302 就能把 Cookie 发到任意
+  主机（含 http 明文降级），SnapGene/Ensembl/UniProt 外呼也可被 302 到内网地址。
+- 图谱：负链跨原点特征导出 GenBank 时片段顺序反了（写成
+  `complement(join(1..e,s..L))`），SnapGene `.dna` 中的负链跨原点特征解析出的段
+  顺序也一样，在 SnapGene/Benchling 里打开序列与翻译都错。现在导出写
+  `complement(join(s..L,1..e))`，`segments` 统一为生物学顺序（负链坐标降序）。
+  v2.12.0 导出的含负链跨原点特征的 .gb 需重新导出。
+- 图谱自动注释：串联重复的元件片段会把整条序列链成一个比对窗口（300 kb 单个请求
+  ~8 s / ~750 MB，匿名可触发）。现在单次比对窗口恒为元件长 + 60 bp，候选按种子
+  覆盖跨度排序并受比对次数与 DP 单元格总量预算约束（超出告警），同样输入约 1.7 s /
+  30 MB；正负链共用排序，负链元件不再因正链先用完预算被静默漏掉。
+- 图谱 `commercial` 酶组：修饰依赖型酶让位点数爆炸（300 kb 响应 45 MB，50 kb 文档
+  在内存缓存里常驻约 35 MB/条），且 MspJI/LpnPI/SgeI 计数与 Biopython 不一致。现在排除
+  这类酶，位点明细按酶/按文档封顶，序列化超过 1 MB 的文档不进缓存、缓存总字节封顶；
+  300 kb commercial 响应约 6 MB。
+- NCBI 导入：节流锁里 sleep 使并发导入串行排队、各自占着全局线程池令牌，慢速响应还能
+  把线程占任意久。现在锁内只预约时间点、锁外等待，导入跑在独立的小线程令牌池上，并有
+  整次取数的总时长上限。
+- 图谱 `/parse`：产出的文档可能违反 `MapDocument` 自身约束（segments >200、qualifiers >100、
+  primers 无上限、长 primer_bind 的序列 >1000），再提交给 `/analyze` / `/export/genbank` 会
+  422；超长 `join()` 解析要 5 s 以上。现在解析与组装按同一份常量截断并告警，分段超过
+  1000 的位置串在进入 Biopython 前直接 422。
+- 图谱请求体：此前先整体读入（JSON `request.body()`、multipart spool、`/analyze` / `/export`
+  由 pydantic 全量解析）才比较大小，chunked 传输还能绕过 Content-Length 预检，实际上限是
+  nginx 的 100 MB。现在 `/api/map/*` 由 ASGI 中间件边收边计数、超限即 413，nginx 也单独收紧。
+- Golden Gate：只检查插入片段内部（且按切点过滤，贴着末端、切点落在片段外的位点漏报）；
+  引物尾（位点 + 间隔 + overhang）与插入片段拼接处新生的位点不报。现在按识别序列计数，
+  对完整扩增子数位点、多出的写进设计告警与引物备注；间隔碱基不再固定为 A，按拼接上下文
+  挑一个不形成额外位点的组合（例如 BfuAI 系 + overhang CCTG）。
+- 图谱导出：线性分子上 `start > end` 的特征此前照样写成跨原点 `join(s..L,1..e)`（线性记录里
+  无意义），现在 `/export/genbank` 返回 422。
+- 图谱解析：分段跨正负两条链的 `join()` 与 `order()` 在契约里存不下（按无方向 / `join()`
+  处理，导出时丢失），此前静默，现在写入 `meta.warnings`。
+- SnapGene `.dna` 特征颜色改按特征名对齐：此前按序号对齐，Features 包里的 `primer_bind`
+  特征不消耗序号，其后所有特征的颜色整体错位。
+- 载体图谱缓存键补上载体名称、拓扑与 MCS 名：管理员只改这些字段时不再最多 1 小时内返回旧图谱。
+- 图谱查看器：切换酶组 / 重新分析的请求在途时换了文档，旧结果不再覆盖新文档
+  （也不再发出 doc-change 写回 /map 页）；请求期间对特征的编辑保留，返回的酶切、
+  ORF 与新识别的自动特征合并进当前文档
+- /map 页：文档过大、暂存 sessionStorage 失败时删掉旧暂存，刷新后不再静默恢复
+  上一份序列（与"刷新后需重新打开"的提示一致）
+- 图谱触屏交互：环形 / 线性 / 序列视图与缩略导航条处理 `pointercancel` 与
+  `lostpointercapture`，浏览器接管滚动或系统手势后拖拽状态复位，不再出现
+  "手指已离开、选区还跟着动 / 悬停提示失效"
+- 图谱悬停性能：指针在同一元件上移动只更新提示框坐标，不再重算各视图高亮与
+  环形图标签；序列视图的行内容不再随悬停 / 选区 / 搜索重建，特征按可见窗口筛选、
+  搜索命中按行分桶。300 kb、3000 个特征、2000 条命中时 200 次悬停由约 11 s 降到
+  约 0.4 s（测试环境）
+- 载体详情页：在页内快速从载体 A 切到 B 时，A 较慢的图谱 / 出处响应不再覆盖 B
+  （标题与下载按钮不再错位）；切换时先清空出处，B 的出处加载失败时不再残留 A 的
+- /map 页与载体库页的 SnapGene 在线库：快速切换集合时只认最后一次请求，乱序
+  返回的旧集合不再覆盖列表（避免用当前集合号去开另一个集合的条目），"加载中"
+  也不会被先结束的旧请求提前收起
+- 外链协议白名单（纵深防御）：载体详情页的出处链接（含"从图谱另存"写入的 URL）、
+  载体库页的 Addgene 元数据直链、UniProt 交叉引用、在线预览的原始来源与 NCBI 链接
+  只在 `http(s)://` 时渲染为链接，`javascript:` 等按纯文本显示；Addgene 质粒号与
+  UniProt 登录号拼进链接前做 URL 编码
+- 酶选择框（单条/批量设计的 Golden Gate 酶、限制酶）：下拉候选不再用 `v-html`
+  拼酶名，后端返回的名字里即使含 HTML 也只按文本显示
+- 载体库页在线导入（SnapGene 列表导入、预览弹窗"导入到载体库"、Addgene 导入）
+  加在途锁，连点不再重复导入或得到一次 409；/map 页解析中再拖入 / 选择文件时
+  只采用最后一次的结果
+- 图谱序列视图的 CDS 翻译：后端改为按生物学顺序给出 `segments`（负链坐标降序）后，
+  前端仍把各段按顺序拼接再整体倒序，负链多段 / 跨原点拆段特征（如
+  `complement(join(1..100,900..1000))`）的翻译与密码子对位错乱。现在逐段取正向位置、
+  负链段内倒序后按段顺序拼接，与后端 `extract_feature` 逐字一致。
+- 图谱环形 / 线性视图：负链多段特征的箭头按坐标定位到 3' 端（整体起点）所在段，
+  不再依赖段顺序（`segments` 改为生物学顺序后会画到错误的一段上）。
+- 图谱消化面板：位点明细被截断的酶（`sites_truncated`，或总量封顶时明细被清空）此前
+  会按残缺的位点算出错误片段，甚至显示“未切开”。现在这类酶在消化面板中禁用并说明
+  原因，酶切列表标注“明细不全”。
+
+
 ## [2.12.0] - 2026-10-12
 
 ### 升级注意
@@ -640,7 +801,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...v2.11.0

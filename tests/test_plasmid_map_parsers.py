@@ -147,3 +147,40 @@ def test_normalize_color():
     assert normalize_color("#AbC") == "#aabbcc"
     assert normalize_color("color: #12ab34") == "#12ab34"
     assert normalize_color("red") is None
+
+
+def test_mixed_strand_join_and_order_warn():
+    """混合链 join 与 order() 的语义契约里存不下：解析时告警，不再静默丢失"""
+    feats = (
+        "     misc_feature    join(10..20,complement(30..40))\n"
+        "                     /label=\"mixed\"\n"
+        "     misc_feature    order(50..60,70..80)\n"
+        "                     /label=\"ord\"\n"
+    )
+    rec = parse_text(_gb(SEQ300, feats))
+    by = {f["name"]: f for f in rec.features}
+    assert by["mixed"]["strand"] == 0
+    w = " ".join(rec.warnings)
+    assert "跨正负两条链" in w and "order()" in w
+
+
+def test_snapgene_colors_matched_by_name_not_position():
+    """Features 包里的 primer_bind 特征此前不消耗颜色序号，后面的特征整体错位"""
+    def packet(t, data):
+        return struct.pack(">BI", t, len(data)) + data
+    xml = (
+        '<?xml version="1.0"?><Features>'
+        '<Feature name="pb" directionality="1" type="primer_bind">'
+        '<Segment range="1-20" color="#111111"/></Feature>'
+        '<Feature name="cdsA" directionality="1" type="CDS">'
+        '<Segment range="30-90" color="#aa0000"/></Feature>'
+        '<Feature name="promB" directionality="2" type="promoter">'
+        '<Segment range="100-150" color="#00bb00"/></Feature>'
+        '</Features>'
+    ).encode()
+    data = (packet(0x09, struct.pack(">8sHHH", b"SnapGene", 1, 15, 19))
+            + packet(0x00, bytes([1]) + SEQ300.encode()) + packet(0x0A, xml))
+    rec = parse_file("c.dna", data)
+    by = {f["name"]: f for f in rec.features}
+    assert by["cdsA"]["color"] == "#aa0000"
+    assert by["promB"]["color"] == "#00bb00"

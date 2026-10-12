@@ -40,6 +40,13 @@ _LOCUS_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 def _location(start: int, end: int, strand: int, length: int,
               segments: Optional[List[Dict]]):
+    """契约坐标 → Biopython 位置。
+
+    segments 按生物学顺序（负链即沿负链 5'→3'，坐标降序）；跨原点的段在
+    正链拆成 [s..L, 1..e]，负链拆成 [1..e, s..L]（负链先读到 1..e 的反向
+    互补）。Biopython 把全负链复合位置的 parts 当生物学顺序，写出
+    complement(join(s..L,1..e))，重新读入后 extract 与契约 extract_feature 一致。
+    """
     from Bio.SeqFeature import CompoundLocation, SimpleLocation
 
     st = strand if strand in (1, -1) else None
@@ -48,6 +55,9 @@ def _location(start: int, end: int, strand: int, length: int,
     for s, e in spans:
         if s <= e:
             parts.append(SimpleLocation(s - 1, e, strand=st))
+        elif st == -1:  # 负链跨原点：生物学顺序先 1..e 再 s..L
+            parts.append(SimpleLocation(0, e, strand=st))
+            parts.append(SimpleLocation(s - 1, length, strand=st))
         else:  # 跨原点 → join(s..L, 1..e)
             parts.append(SimpleLocation(s - 1, length, strand=st))
             parts.append(SimpleLocation(0, e, strand=st))

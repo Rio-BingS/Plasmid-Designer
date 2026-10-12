@@ -13,12 +13,19 @@
 - `sequence` 恒为大写 IUPAC DNA（U→T），长度上限 `MAP_MAX_LENGTH`。
 - `features[]`：`type` 已归一为契约 FeatureType（GenBank `CDS` → `cds`，抗性 CDS →
   `marker`，`regulatory` 按 `/regulatory_class` 归类，misc_feature 按名称推断
-  promoter / polyA_signal / ltr / mcs…）；`join()` 保留为 `segments`（单段省略）；
+  promoter / polyA_signal / ltr / mcs…）；`join()` 保留为 `segments`（单段省略），
+  **按生物学顺序**排列：负链特征沿负链 5'→3'，即坐标降序（`complement(join(10..50,100..200))`
+  → `[{100,200},{10,50}]`；负链跨原点 `complement(join(900..1000,1..100))` → `[{1,100},{900,1000}]`）。
+  特征序列 = 各段依次取（负链取反向互补）后拼接（`parsers.extract_feature`），GenBank 导出
+  按同一顺序写出，Biopython / SnapGene 读回后序列一致；
   `color` 只在文件给出时出现（`/ApEinfo_fwdcolor|revcolor`、`/note="color: #…"`、
   SnapGene 特征颜色）；`source` 为 `file | auto | design | vector`；`id` 在文档内稳定
   （调用方给的合法唯一 id 原样保留，其余按 `来源-序号` 补齐）。
   GenBank 的 `gene` 与同跨度 `CDS` 成对出现时只保留 CDS；`primer_bind` 进 `primers[]`。
-- `enzymes[]`：只含至少切一次的酶。`sites[].position` 为识别序列在正向链上的
+- `enzymes[]`：只含至少切一次的酶。`cut_count` 恒为完整位点数；位点明细有上限：
+  单把酶最多 `MAP_MAX_SITES_PER_ENZYME`（默认 500）个（按位置保留最前面的），整份文档
+  最多 `MAP_MAX_TOTAL_SITES`（默认 60 000）个（超出时从切点最多的酶起清空明细）；
+  被截断的酶带 `sites_truncated: true`，`meta.warnings` 列出酶名。`sites[].position` 为识别序列在正向链上的
   最左碱基；`cut_top` / `cut_bottom` 为该链在「第几位碱基**之后**」被切（正向链坐标）。
   5' 突出端恒有 `cut_bottom > cut_top`，3' 突出端相反，平末端相等。环状分子切点
   取模到 `1..length`（跨原点的位点与切点都会报出）；线性分子上切点落在分子外或
@@ -46,8 +53,8 @@
 |------|------|
 | `POST /parse` | multipart `file`（.gb/.gbk/.genbank、.fa/.fasta/.fas、.dna）或 JSON `{text, name?, topology?}`；参数 `annotate`（缺省：没有特征才注释）、`enzyme_set`（默认 `common`）、`orf_min_aa`（默认 100），可放查询串或表单 / JSON 字段 |
 | `POST /analyze` | JSON `{sequence, topology, name?, features?, primers?, annotate?, enzyme_set?, enzymes?, orf_min_aa?}`：编辑后重算。`annotate=true` 时丢弃传入的 `source=auto` 特征重新注释 |
-| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI）/ `type_iis`（全部可商购 Type IIS 酶，判定规则见下） |
-| `GET /enzymes/{name}` | 酶详情 `{name, site, recognition, ends, overhang, type_iis, golden_gate, suppliers:[{code,name}], isoschizomers, neoschizomers, methylation?}`；同切酶 = 识别序列与切点都相同，新切酶 = 识别序列相同、切点不同，均只列可商购的。未知酶 404 |
+| `GET /enzyme-sets` | `common`（默认 51 种）/ `unique6`（可商购、≥6 个确定碱基）/ `commercial`（全部可商购单切割对酶，**不含修饰依赖型酶**，见下）/ `golden_gate`（BsaI、BsmBI、BbsI、SapI、Esp3I、PaqCI）/ `type_iis`（全部可商购 Type IIS 酶，判定规则见下） |
+| `GET /enzymes/{name}` | 酶详情 `{name, site, recognition, ends, overhang, type_iis, modification_dependent, golden_gate, suppliers:[{code,name}], isoschizomers, neoschizomers, methylation?}`；同切酶 = 识别序列与切点都相同，新切酶 = 识别序列相同、切点不同，均只列可商购的。未知酶 404 |
 | `GET /suppliers` | `[{code, name, enzymes}]`：REBASE 厂商代码 / 名称及其可供的酶，按酶数降序；前端据此做显示层的厂商筛选 |
 | `POST /import/ncbi` | JSON `{accession, annotate?, enzyme_set?, orf_min_aa?}` → MapDocument（`source_format=genbank`）。accession 校验（GenBank / WGS / RefSeq，版本号可选）→ E-utilities efetch `db=nuccore&rettype=gbwithparts&retmode=text`（带 `tool`、`email`、`api_key`）→ 现有 GenBank 解析。错误：422 格式无效、404 未找到、413 超限、502 NCBI 异常、503 NCBI 限流、504 超时 |
 | `POST /export/genbank` | 请求体 MapDocument → `.gb` 下载；颜色写 `/ApEinfo_fwdcolor` + `/ApEinfo_revcolor`，自动注释特征附 `/note` 说明来源库与 identity/coverage |
@@ -62,11 +69,32 @@ type, start, end, strand}]}`（类型已归一，与 `/api/vectors/{id}/map` 的
 
 错误一律中文 `detail`：413 超长 / 超体积，415 不支持的格式，422 非法序列或参数。
 
+**条数上限**（`core/plasmid_map/types.py`，`MapDocument` 校验与解析/组装共用同一份常量，
+`/parse` 的产出总能原样提交给 `/analyze`、`/export/genbank`）：features ≤ 5000、primers ≤ 5000、
+每个特征 segments ≤ 200、qualifiers ≤ 100、`primers[].sequence` ≤ 1000、orfs ≤ 20000、
+`meta.warnings` ≤ 200。解析时超出的部分丢弃 / 截断并写 `meta.warnings`（分段超 200 的特征
+整条忽略；长于 1000 bp 的 `primer_bind` 作为 `primer_bind` 类型特征保留）。位置串分段超过
+1000 段的 GenBank `join()/order()` 或 SnapGene 特征在交给 Biopython 之前直接 422。
+
 **Type IIS 判定**（`core.enzyme_sites.is_type_iis`，图谱 `type_iis` 酶组、酶详情与 Golden Gate
 共用）：识别序列非回文（按 IUPAC 反向互补比较）、确定碱基（ACGT）≥ 4 个（排除 MspJI / FspEI /
 LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列同一侧之外（全部 ≥ 末端且至少一个
 严格在外，或全部 ≤ 起点且至少一个严格在外）。BssSI 这类非回文但一条链切在位点内的酶不算；
 两侧双切的 Type IIB 不在可扫描酶之列。Golden Gate 候选另要求识别序列纯 ACGT、切出 4 nt 5' 突出端。
+候选只按几何条件筛（`core.enzyme_sites.golden_gate_enzymes()`，31 把），并不都适合实际组装：
+AarI 需要额外加寡核苷酸辅因子才能有效切割；FokI、BbvI、SfaNI 等常见但识别序列短、位点频繁，
+也少有配套的 Golden Gate 试剂盒。推荐优先用 `GOLDEN_GATE_PREFERRED`（BsaI / BsmBI / BbsI）及
+Esp3I、PaqCI 等专为 Golden Gate 设计的酶。
+
+**修饰依赖型酶**（`core.enzyme_sites.is_modification_dependent`）：只切 5mC / 5hmC 等修饰过的 DNA，
+对普通质粒图谱没有意义，且位点数爆炸（AbaSI 的「位点」是单个 C）。规则：识别序列确定碱基 ≤3 个且
+两条链切点都在识别序列之外（REBASE 把 AbaSI `C`、FspEI `CC`、MspJI `CNNR`、SgeI `CNNG`、LpnPI
+`CCDG` 记作在位点外 12–16 nt 切割；Bio.Restriction 没有专门标记），另加规则抓不到的 SibEnzyme
+9 把 5mC 依赖 MD 酶（AoxI、BisI、BlsI、GlaI、GluI、KroI、MteI、PcsI、PkrI）。`commercial`、
+`unique6`、`type_iis`、`/suppliers` 都排除它们；显式点名 `enzymes` 仍可扫描（受位点上限约束），
+酶详情带 `modification_dependent: true`。Dam 依赖的 DpnI / MalI 不排除（dam⁺ 菌株抽提的质粒
+确实带 GATC 甲基化）。显式点名 MspJI / LpnPI / SgeI 时，位点按识别序列的全部（含自重叠）实例计数，
+与 Biopython `search()` 的计数不一致（实测 pET-28a 上 MspJI 1242 vs 912），仅供参考。
 
 酶的最适 / 失活温度不提供：Biopython 1.88 的 `opt_temp` / `inact_temp` 对全部酶都是 37 / 65 °C
 的占位值（TaqI 也是），作为数据展示会误导。
@@ -77,7 +105,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 [data/features/README.md](../data/features/README.md)）。比对流程：
 
 1. ≥40 bp 的元件：库序列 14-mer 精确种子（库内出现 >6 次的低复杂度 k-mer 不用）
-   → 按（元件, 链, 对角线）聚类 → 候选窗口上 `PairwiseAligner` 局部比对，
+   → 按（元件, 链, 对角线）计票、对角线按 ≤60 bp 分块 → 每块一个定长窗口
+   （元件长 + 2×30 bp）上 `PairwiseAligner` 局部比对，
    得 identity（相同列 / 比对列，含 gap）与 coverage（覆盖元件长度占比）；
 2. 更短的元件双链精确查找；肽标签 / 蛋白酶位点六框翻译后查找肽段；
 3. 环状分子在序列末尾接上开头再比，跨原点命中输出 `start > end`、只报一次；
@@ -85,27 +114,47 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 5. 同一元件、或同类型 / 同名元件重叠超过较短者一半时只留最好的（完整优先 →
    identity 高 → 比对长）；与文件已有特征（同类型或同名、重叠 ≥80%）重复的命中丢弃。
 
-候选比对数封顶 400；10 kb 典型质粒 <0.2 s，300 kb 随机序列约 0.4 s。
+性能边界：单次比对窗口恒为元件长 + 60 bp，与序列长度无关；候选按「种子覆盖的元件跨度、
+票数」从高到低比对（两条链统一排序），每个请求最多 400 次比对、DP 单元格总量不超过
+`MAP_ANNOTATE_MAX_CELLS`（默认 6×10⁷，约 1 s），预算用尽时余下候选跳过并在
+`meta.warnings` 提示。`annotate` 缺省时超过 `MAP_AUTO_ANNOTATE_MAX_BP`（默认 50 000 bp）
+的序列不自动注释（告警提示），显式 `annotate=true` 仍会注释。参考耗时：10 kb 典型质粒
+<0.2 s，300 kb 随机序列约 0.5 s，300 kb 元件片段串联重复（对抗输入）约 1.7 s / 30 MB。
 
 ## 限制、缓存与限流
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `MAP_MAX_LENGTH` | 300000 | 单条序列长度上限（bp） |
-| `MAP_MAX_UPLOAD_MB` | 5 | 上传文件 / JSON 文本体积上限 |
+| `MAP_MAX_UPLOAD_MB` | 5 | `/parse` 上传文件 / JSON 文本体积上限（请求体另加 64 KB multipart 开销） |
+| `MAP_MAX_JSON_MB` | 16 | 其余 `/api/map/*` 写请求（analyze、export、import）的请求体上限 |
 | `MAP_CACHE_MAX_BP` | 50000 | 只缓存不超过该长度的结果（防内存缓存被大文档撑满） |
+| `MAP_AUTO_ANNOTATE_MAX_BP` | 50000 | `annotate` 缺省时只对不超过该长度的序列自动注释 |
+| `MAP_ANNOTATE_MAX_CELLS` | 60000000 | 单次请求自动注释比对的 DP 单元格总预算 |
+| `MAP_MAX_SITES_PER_ENZYME` | 500 | 单把酶返回的位点明细上限（`cut_count` 不受影响） |
+| `MAP_MAX_TOTAL_SITES` | 60000 | 单份文档的位点明细总上限 |
+| `MAP_CACHE_MAX_DOC_BYTES` | 1048576 | 序列化超过该字节数的文档不缓存 |
+| `MAP_CACHE_MAX_TOTAL_BYTES` | 67108864 | 本进程写入缓存的图谱文档总字节上限（超出按写入先后淘汰） |
 | `MAP_FEATURE_LIBRARY` | — | 可选：元件库 JSON 路径（默认 `$DATA_DIR/features/` 或仓库 `data/features/`） |
 | `NCBI_EMAIL` | — | 建议设置：NCBI E-utilities 要求的联系邮箱（随请求发送） |
 | `NCBI_API_KEY` | — | 可选：NCBI API key，速率上限由 3 次/秒提高到 10 次/秒 |
 | `NCBI_TOOL` | `PlasmidDesigner` | E-utilities `tool` 参数 |
-| `NCBI_TIMEOUT` | 20 | 单次 efetch 超时（秒） |
+| `NCBI_TIMEOUT` | 30 | 单次导入的**总时长**上限（秒）：节流排队 + 连接 + 全部读取，超时 504（排队就超时 503） |
+| `NCBI_MAX_CONCURRENCY` | 4 | 同时进行的 NCBI 导入数（独立线程令牌，不占全局线程池） |
 | `NCBI_TEXT_CACHE_MAX_BYTES` | 2097152 | 只缓存不超过该体积的 NCBI GenBank 文本（缓存 24 小时） |
 
-解析、比对、酶切扫描都在线程池执行。结果缓存 1 小时，键含输入摘要、选项、
+请求体上限在读取时流式执行（`app/map_body_limit.py`，ASGI 中间件，位于 CORS 之内）：
+边收边计数，超限立即 413、不进入路由，chunked 传输也一样；未超限的请求体原样交给路由。
+nginx 两份配置为 `location ^~ /api/map/` 单独设 `client_max_body_size 17m`（须不小于
+`MAP_MAX_UPLOAD_MB` + 64 KB 与 `MAP_MAX_JSON_MB` 的较大值，调大变量时同步调整）。
+
+解析、比对、酶切扫描都在线程池执行（`/export/genbank` 的序列清洗与 pydantic 校验在事件
+循环里，规模受上面的请求体上限约束）。结果缓存 1 小时，键含输入摘要、选项、
 元件库版本（库文件 sha256）与 `MAP_ALGO_VERSION`（`map_routes.py`；改变结果口径的
 代码改动须递增）。限流沿用中间件 default 档，与 `/api/analysis` 相同。
 
 NCBI 导入：下载体积上限沿用 `MAP_MAX_UPLOAD_MB`，序列长度上限沿用 `MAP_MAX_LENGTH`（读到 LOCUS
-行即判断，超长记录不必下载完）；efetch 在线程池执行，进程内相邻请求间隔 ≥0.34 s（有 API key
-时 0.11 s），按客户端走限流 `ncbi` 档（匿名 10 次/分钟、登录用户 30 次/分钟）；GenBank 文本缓存
+行即判断，超长记录不必下载完）；efetch 在独立的 anyio CapacityLimiter（`NCBI_MAX_CONCURRENCY`）
+上执行，不占 `/parse`、`/analyze` 等共用的全局线程池；进程内相邻请求间隔 ≥0.34 s（有 API key
+时 0.11 s，锁内只预约时间点、锁外等待），按客户端走限流 `ncbi` 档（匿名 10 次/分钟、登录用户 30 次/分钟）；GenBank 文本缓存
 24 小时，生成的 MapDocument 走上面的常规缓存。
