@@ -1543,3 +1543,18 @@ def test_save_record_drops_non_http_urls(tmp_path):
     assert res["provenance"]["page_url"] == "https://ok.example/p"
     text = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
     assert "javascript" not in text
+
+
+# ================================================================ 低优先级修复（审查 L1–L7）
+
+@pytest.mark.parametrize("raw,expected", [
+    ("polyA_signal", "regulatory"), ("polya_signal", "regulatory"), ("POLYA_SIGNAL", "regulatory"),
+    ("rep_origin", "origin"), ("Rep_Origin", "origin"), ("mcs", "multiple_cloning_site"),
+])
+def test_type_aliases_case_insensitive(raw, expected):
+    """L1：别名表键大写时 .lower() 查表永远命不中（polyA_signal 落成 other）"""
+    from core.vector_library import VectorLibrary
+    v = VectorLibrary()._parse_vector_dict({
+        "id": "t", "name": "t", "sequence": "ACGT" * 10,
+        "features": [{"name": "f", "type": raw, "start": 1, "end": 4}]})
+    assert v.elements[0].element_type.value == expected
