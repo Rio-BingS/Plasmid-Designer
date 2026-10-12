@@ -60,6 +60,22 @@ function zoomBy(k: number, centerB = (vp.value.from + vp.value.to) / 2) {
   const t = (centerB - vp.value.from) / span.value
   setViewport(centerB - t * ns, centerB - t * ns + ns)
 }
+/**
+ * 按钮缩放：有选区（不跨原点）放大/缩小时以选区中点为中心，只有光标时以光标为中心
+ * （SnapGene 式，选区不会被挤出视野）；都没有时以视口中心缩放。
+ */
+function zoomStep(k: number) {
+  const s = store.selection.value
+  const caret = store.caret.value
+  let c: number | null = null
+  if (s) {
+    const segs = splitRange(s, L.value)
+    if (segs.length === 1) c = (segs[0].start - 1 + segs[0].end) / 2
+  } else if (caret !== null) c = caret
+  if (c === null) return zoomBy(k)
+  const ns = span.value / k
+  setViewport(c - ns / 2, c + ns / 2)
+}
 function fitAll() { setViewport(0, L.value) }
 const zoomed = computed(() => span.value < L.value - 0.5)
 
@@ -437,14 +453,14 @@ function onWheel(e: WheelEvent) {
 
 function onLeave() { if (mode === 'none') store.hover.value = null }
 
-defineExpose({ svgEl, zoomBy, fitAll, setViewport })
+defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
 </script>
 
 <template>
   <div ref="wrap" class="lmap">
     <div v-if="interactive" class="lmap-controls">
-      <button type="button" title="缩小" @click="zoomBy(1 / 1.6)">−</button>
-      <button type="button" title="放大（Ctrl+滚轮）" @click="zoomBy(1.6)">+</button>
+      <button type="button" title="缩小" @click="zoomStep(1 / 1.6)">−</button>
+      <button type="button" title="放大（以选区为中心；Ctrl+滚轮以指针为中心）" class="lmap-zoom-in" @click="zoomStep(1.6)">+</button>
       <button type="button" title="显示全长" :disabled="!zoomed" @click="fitAll">全长</button>
       <span class="lmap-range">{{ Math.round(vp.from + 1).toLocaleString() }}–{{ Math.round(vp.to).toLocaleString() }} / {{ L.toLocaleString() }} bp</span>
     </div>
