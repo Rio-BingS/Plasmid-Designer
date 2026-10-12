@@ -58,7 +58,7 @@ function up() { dragging = false }
 </script>
 
 <template>
-  <div ref="box" class="minimap" title="缩略导航：点击或拖动跳转" @pointerdown="down" @pointermove="move" @pointerup="up">
+  <div ref="box" class="minimap" title="缩略导航：点击或拖动跳转" @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up">
     <svg :width="W" :height="H" :viewBox="`0 0 ${W} ${H}`" xmlns="http://www.w3.org/2000/svg" class="minimap-svg">
       <rect x="0" :y="H / 2 - 1" :width="W" height="2" fill="#9ca3af" />
       <rect v-for="b in blocks" :key="b.k" :x="b.x" y="6" :width="b.w" :height="H - 12" :fill="b.color" fill-opacity="0.85" />
