@@ -96,8 +96,15 @@ class DesignOptions(BaseModel):
             self.insert_source = "gene_synthesis"
             self.cloning_method = CloningMethod.RESTRICTION
         # 克隆酶必填（不再默认 BsaI）
-        if self.cloning_method == CloningMethod.GOLDEN_GATE and not self.enzyme:
-            raise ValueError("Golden Gate 需指定 Type IIS 酶（enzyme），如 BsaI/BsmBI/BbsI")
+        if self.cloning_method == CloningMethod.GOLDEN_GATE:
+            if not self.enzyme:
+                raise ValueError("Golden Gate 需指定 Type IIS 酶（enzyme），如 BsaI/BsmBI/BbsI")
+            from core.enzyme_sites import golden_gate_geometry
+            if golden_gate_geometry(self.enzyme) is None:
+                raise ValueError(
+                    f"不支持的 Golden Gate 酶 {self.enzyme}：需为可商购、切出 4 nt 5' 突出端的 "
+                    "Type IIS 酶（如 BsaI/BsmBI/BbsI/Esp3I/PaqCI）"
+                )
         if self.cloning_method == CloningMethod.RESTRICTION and not (
             (self.enzyme_5 and self.enzyme_3) or self.enzyme
         ):

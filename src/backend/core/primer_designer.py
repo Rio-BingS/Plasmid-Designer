@@ -361,26 +361,28 @@ class PrimerDesigner:
         Returns:
             PrimerPair Golden Gate引物对
         """
-        # 酶切位点序列
-        enzyme_sites = {
-            'BsaI': 'GGTCTC',
-            'BsmBI': 'CGTCTC',
-            'BbsI': 'GAAGAC',
-        }
+        # 酶参数取自 REBASE（core.enzyme_sites.golden_gate_geometry）：任何
+        # 可商购、切出 4 nt 5' 突出端的 Type IIS 酶都可用。识别序列与切点
+        # 之间的间隔碱基数按酶的切割偏移给出——此前一律写 1 个 A，只对
+        # BsaI/BsmBI（N1/N5）正确，BbsI（N2/N6）切下的 overhang 会错位一位
+        from core.enzyme_sites import golden_gate_enzymes, golden_gate_geometry
 
-        if enzyme_name not in enzyme_sites:
+        geo = golden_gate_geometry(enzyme_name)
+        if geo is None:
             # 不静默回退 BsaI：传错酶名会得到完全错误的引物而不被察觉
+            head = ", ".join(golden_gate_enzymes()[:6])
             raise ValueError(
-                f"不支持的 Golden Gate 酶: {enzyme_name}，"
-                f"可选: {', '.join(sorted(enzyme_sites))}"
+                f"不支持的 Golden Gate 酶: {enzyme_name}（需可商购、切出 4 nt 5' 突出端的 "
+                f"Type IIS 酶），可选如: {head} 等"
             )
-        enzyme_site = enzyme_sites[enzyme_name]
-        
-        # 正向引物结构：酶切位点(1N) + overhang + 插入片段
-        # 5' - [酶切位点] - N - [overhang] - [插入片段] - 3'
+        enzyme_site = geo["site"]
+        spacer = "A" * geo["spacer"]
+
+        # 正向引物结构：保护碱基 + 酶切位点 + 间隔 + overhang + 插入片段
+        # 5' - GG - [酶切位点] - [间隔] - [overhang] - [插入片段] - 3'
         # 退火区锚定插入片段两端（A-07）
         forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
-        forward_overhang = f"GG{enzyme_site}A{overhang_seq_5}"  # A是spacer
+        forward_overhang = f"GG{enzyme_site}{spacer}{overhang_seq_5}"
 
         forward = Primer(
             name=f"{primer_name}_F",
@@ -401,7 +403,7 @@ class PrimerDesigner:
         # 写成识别序列的反向互补会让位点朝外，overhang 永远切不下来
         reverse_annealing = self._design_reverse_primer(insert_seq, len(insert_seq), "temp", anchor=True)
         overhang_3_rc = self._reverse_complement(overhang_seq_3)
-        reverse_overhang = f"GG{enzyme_site}A{overhang_3_rc}"
+        reverse_overhang = f"GG{enzyme_site}{spacer}{overhang_3_rc}"
 
         reverse = Primer(
             name=f"{primer_name}_R",
@@ -439,7 +441,9 @@ class PrimerDesigner:
     PROTECTIVE_SPACER = "TTTT"
 
     # Type IIS（切割位点在识别序列之外）不适用经典双酶切克隆：
-    # 它不在识别序列内切，产物末端不含酶位点，按双酶切流程做会得到错误构建
+    # 它不在识别序列内切，产物末端不含酶位点，按双酶切流程做会得到错误构建。
+    # 判定以 REBASE 数据（core.enzyme_sites.is_type_iis）为准，这里的名单
+    # 只作兜底（含非商品化/别名写法）
     TYPE_IIS_ENZYMES = ("BsaI", "BsmBI", "BbsI", "BsmAI", "BspQI", "SapI",
                         "AarI", "Esp3I", "BtgZI", "BspMI", "PaqCI")
 
@@ -473,9 +477,11 @@ class PrimerDesigner:
         """
         from core.sequence_analysis import RESTRICTION_ENZYMES
 
+        from core.enzyme_sites import get_enzyme, is_type_iis
+
         seq = sequence.upper()
         for enz in (enzyme_5, enzyme_3):
-            if enz in self.TYPE_IIS_ENZYMES:
+            if enz in self.TYPE_IIS_ENZYMES or is_type_iis(get_enzyme(enz)):
                 raise ValueError(
                     f"{enz} 是 Type IIS 酶（在识别序列之外切割），"
                     f"不能用于经典双酶切克隆；请改用 Golden Gate，"
