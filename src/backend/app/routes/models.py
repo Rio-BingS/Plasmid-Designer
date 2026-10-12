@@ -228,7 +228,13 @@ class VectorInfo(BaseModel):
 # ==================== 批量设计 ====================
 
 class BatchDesignRequest(DesignOptions):
-    """批量设计请求"""
+    """批量设计请求
+
+    克隆酶与单条设计同一套校验（继承 DesignOptions）：Golden Gate 缺 enzyme 或
+    酶不在 golden_gate_enzymes 候选内时，整个批量请求在提交时即 422，不建任务。
+    刻意不在服务端回落 BsaI：v2.6.0 已为单条设计移除默认酶（静默套酶会产出
+    错误引物而无人察觉），批量与单条保持同一契约，调用方须显式传 enzyme。
+    """
     sequences: List[str] = Field(..., min_length=1, max_length=100)
     sequence_names: Optional[List[str]] = None
 
