@@ -36,6 +36,18 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   const caret = ref<number | null>(null)
   const selectedFeatureId = ref<string | null>(null)
   const hover = shallowRef<HoverInfo | null>(null)
+  /**
+   * 悬停的元件（id + 区间），只在悬停对象变化时才变：各视图的高亮读它，
+   * 指针在同一元件上移动（只改 x/y）不触发高亮/标签重算；提示框定位仍读 hover。
+   */
+  const hoverTarget = computed<{ id: string; range: Range | null } | null>((prev) => {
+    const h = hover.value
+    if (!h) return null
+    const range = h.range ?? null
+    if (prev && prev.id === h.id && (prev.range === range
+      || (!!prev.range && !!range && prev.range.start === range.start && prev.range.end === range.end))) return prev
+    return { id: h.id, range }
+  })
 
   const show = reactive({
     features: true, enzymes: true, orfs: false, primers: true, labels: true,
@@ -162,7 +174,7 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   }
 
   return {
-    doc, L, circular, selection, caret, selectedFeatureId, selectedFeature, hover, show, hiddenFeatures,
+    doc, L, circular, selection, caret, selectedFeatureId, selectedFeature, hover, hoverTarget, show, hiddenFeatures,
     enzymeFilter, search, rotation, viewport, seqVisible, navigate, unshown,
     features, enzymeList, enzymes, cuts, orfs, primers, stats,
     select, setCaret, selectFeature, navigateTo, toggleFeatureHidden, toggleEnzymeHidden,

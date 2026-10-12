@@ -11,7 +11,7 @@ let instanceCounter = 0
  * 按钮 / 滑块缩放以选区（无选区时以环上一点）为锚，见 zoomStep；
  * 放大后拖拽环带以外的任意空白（或中键拖拽）= 平移，平移范围受 clampCenter 限制。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
@@ -522,16 +522,20 @@ const searchGeoms = computed(() => store.search.hits.slice(0, 500).map((h, i) =>
   const pad = L.value / 1500
   return { key: `s:${i}`, current: i === store.search.index, d: arcBandPath(cx.value, cy.value, R0.value + 1, R0.value + 6, ang(u.from - pad), ang(u.to + pad)) }
 }))
-const hoverKey = computed(() => store.hover.value?.id ?? null)
+const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
 const hoverPath = computed(() => {
-  const h = store.hover.value
+  const h = store.hoverTarget.value
   if (!h?.range || h.id.startsWith('f:')) return ''
   const u = unroll(h.range, L.value)
   return arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)))
 })
 
 // ---------------- 指针交互 ----------------
-type Mode = 'none' | 'select' | 'rotate' | 'pan'
+/**
+ * touch-wait：触屏未放大时按下后先等长按，期间手指一动就交给浏览器滚动页面；
+ * pinch：双指缩放。
+ */
+type Mode = 'none' | 'select' | 'rotate' | 'pan' | 'touch-wait' | 'pinch'
 let mode: Mode = 'none'
 let anchorX = 0
 let prevX = 0
@@ -562,7 +566,51 @@ function svgPoint(e: { clientX: number; clientY: number }): [number, number] {
     vcy.value + pan.value.y - h / 2 + ((e.clientY - rect.top) / rect.height) * h]
 }
 
+// ---------------- 触屏（手机） ----------------
+// 未放大时 svg 用 touch-action: pan-y，单指在图上滑动照常滚动页面；
+// 长按（LONG_PRESS_MS 内移动不超过 TOUCH_SLOP）后才进入选区/旋转；轻点仍是选中/落光标；
+// 双指捏合缩放。放大后（zoom>1）touch-action: none，单指即平移/选区（与桌面一致）。
+const LONG_PRESS_MS = 350
+const TOUCH_SLOP = 8
+const touchPts = new Map<number, { x: number; y: number }>()
+let waitMode: Mode = 'none'
+let waitStart = { x: 0, y: 0 }
+let longPressTimer: ReturnType<typeof setTimeout> | undefined
+let pinchStart = { d: 1, z: 1 }
+const touchAction = computed(() => (props.interactive && zoom.value > 1 ? 'none' : 'pan-y'))
+
+function clearLongPress() {
+  if (longPressTimer !== undefined) clearTimeout(longPressTimer)
+  longPressTimer = undefined
+}
+function pinchDistance(): number {
+  const [a, b] = [...touchPts.values()]
+  return Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))
+}
+/** 手势进行中（长按后选区/旋转、放大后平移、双指缩放）阻止浏览器滚动；等待长按期间放行 */
+function onTouchMove(e: TouchEvent) {
+  if (!e.cancelable) return
+  if (e.touches.length >= 2 || (mode !== 'none' && mode !== 'touch-wait')) e.preventDefault()
+}
+onMounted(() => svgEl.value?.addEventListener('touchmove', onTouchMove, { passive: false }))
+onBeforeUnmount(() => {
+  clearLongPress()
+  svgEl.value?.removeEventListener('touchmove', onTouchMove)
+})
+
 function onPointerDown(e: PointerEvent) {
+  if (props.interactive && e.pointerType === 'touch') {
+    touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (touchPts.size === 2) {
+      // 第二根手指：放弃单指手势，改为捏合缩放
+      clearLongPress()
+      mode = 'pinch'
+      pinchStart = { d: pinchDistance(), z: zoom.value }
+      ;(e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId)
+      return
+    }
+    if (touchPts.size > 2) return
+  }
   // 左键；放大后中键拖拽 = 平移
   const middle = e.button === 1 && zoom.value > 1
   if (!props.interactive || (e.button > 0 && !middle)) return
@@ -587,10 +635,37 @@ function onPointerDown(e: PointerEvent) {
     anchorX = angleToX(a, L.value, store.rotation.value)
     prevX = anchorX
   }
+  if (e.pointerType === 'touch' && zoom.value <= 1) {
+    // 未放大的触屏：先不接管，等长按；页面滚动不受图谱影响
+    waitMode = mode
+    mode = 'touch-wait'
+    waitStart = { x: e.clientX, y: e.clientY }
+    clearLongPress()
+    longPressTimer = setTimeout(() => {
+      longPressTimer = undefined
+      if (mode === 'touch-wait') mode = waitMode
+    }, LONG_PRESS_MS)
+  }
   ;(e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId)
 }
 
 function onPointerMove(e: PointerEvent) {
+  if (e.pointerType === 'touch' && touchPts.has(e.pointerId)) touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  if (mode === 'pinch') {
+    if (touchPts.size >= 2) {
+      const [a, b] = [...touchPts.values()]
+      setZoom(pinchStart.z * (pinchDistance() / pinchStart.d), svgPoint({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 }))
+    }
+    return
+  }
+  if (mode === 'touch-wait') {
+    // 长按前手指移动：这是滚动，交给浏览器（随后通常会收到 pointercancel）
+    if (Math.hypot(e.clientX - waitStart.x, e.clientY - waitStart.y) > TOUCH_SLOP) {
+      clearLongPress()
+      mode = 'none'
+    }
+    return
+  }
   if (mode === 'none') {
     setHoverFromEvent(store, e)
     return
@@ -615,6 +690,17 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
+  touchPts.delete(e.pointerId)
+  if (mode === 'pinch') {
+    // 抬起一根手指即结束捏合；剩下的手指不再触发选区
+    if (touchPts.size === 0) mode = 'none'
+    return
+  }
+  if (mode === 'touch-wait') {
+    // 长按前抬起 = 轻点：按原手势的"未移动"分支处理（选中特征 / 落光标）
+    clearLongPress()
+    mode = waitMode
+  }
   if (mode === 'select' && !moved) {
     const info = resolveHit(store, downKey ?? hitKeyOf(e.target))
     if (info) info.select()
@@ -624,6 +710,19 @@ function onPointerUp(e: PointerEvent) {
     store.navigateTo(store.selection.value)
   }
   mode = 'none'
+}
+
+/** 浏览器接管手势（触屏滚动/系统手势）或丢失捕获：放弃本次拖拽，不触发选择/光标 */
+function onPointerCancel(e?: PointerEvent) {
+  // 捏合时先抬起的手指也会丢失捕获，另一根手指还在：不算取消
+  if (e?.type === 'lostpointercapture' && mode === 'pinch' && touchPts.size) return
+  touchPts.clear()
+  clearLongPress()
+  if (mode === 'none') return
+  mode = 'none'
+  moved = false
+  downKey = null
+  store.hover.value = null
 }
 
 function onWheel(e: WheelEvent) {
@@ -685,7 +784,9 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
       ref="svgEl" :class="['cmap-svg', { 'has-feat-hover': hoverKey?.startsWith('f:') }]" data-map-export="circular" xmlns="http://www.w3.org/2000/svg"
       :viewBox="viewBox" :width="svgW" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
       :font-family="MAP_FONT"
+      :style="{ touchAction }"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel"
       @pointerleave="onLeave" @wheel="onWheel"
     >
       <defs>
@@ -795,7 +896,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
 
 <style scoped>
 .cmap { position: relative; width: 100%; display: flex; flex-direction: column; align-items: center; }
-.cmap-svg { display: block; max-width: 100%; height: auto; touch-action: none; user-select: none; cursor: crosshair; }
+.cmap-svg { display: block; max-width: 100%; height: auto; user-select: none; cursor: crosshair; }
 .cmap-feat, .cmap-cut, .cmap-orf, .cmap-primer, .cmap-label, .cmap-search { cursor: pointer; }
 .cmap-feat { transition: opacity 0.15s; }
 .cmap-feat:hover path { filter: brightness(1.05); }
