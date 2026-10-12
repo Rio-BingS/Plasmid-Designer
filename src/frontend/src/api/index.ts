@@ -234,6 +234,92 @@ export async function batchImportVectors(ncbiIds: string[], filePaths: string[] 
   return response.data
 }
 
+// ==================== 在线序列来源（SnapGene 在线库 / Ensembl / Addgene） ====================
+// 许可提示随数据一起下发（见后端 /api/vectors/import/sources）：SnapGene 库学术/非营利/
+// 政府可无条件使用但须引用来源、商业用途须获 GraphPad 许可；Addgene 全长序列需登录，
+// 后端不代为登录——前端只做展示与提示，不做任何绕过。
+
+export interface OnlineSourceInfo {
+  id: string
+  name: string
+  kind: string
+  url: string
+  license: string
+  importable: boolean
+  note: string
+}
+
+export interface OnlinePreview {
+  source: string
+  id: string
+  name: string
+  url: string
+  length: number
+  topology: string
+  gc_content: number
+  features: { name?: string; type?: string; start?: number; end?: number; strand?: number }[]
+  warnings: string[]
+  license: string
+}
+
+export async function getOnlineSources(): Promise<{ enabled: boolean; disclaimer: string; sources: OnlineSourceInfo[] }> {
+  const response = await api.get('/vectors/import/sources')
+  return response.data
+}
+
+export async function getSnapgeneSets(): Promise<{ count: number; sets: { set_id: string; name: string }[]; license: string }> {
+  const response = await api.get('/vectors/import/snapgene/sets')
+  return response.data
+}
+
+export async function getSnapgeneSetIndex(setId: string): Promise<{ set_id: string; count: number; plasmids: any[] }> {
+  const response = await api.get(`/vectors/import/snapgene/sets/${encodeURIComponent(setId)}`)
+  return response.data
+}
+
+export async function previewSnapgene(setId: string, plasmidId: string): Promise<OnlinePreview> {
+  const response = await api.get('/vectors/import/snapgene/preview', {
+    params: { set_id: setId, plasmid_id: plasmidId }
+  })
+  return response.data
+}
+
+export async function importFromSnapgene(setId: string, plasmidId: string): Promise<any> {
+  const response = await api.post('/vectors/import/snapgene', { set_id: setId, plasmid_id: plasmidId })
+  return response.data
+}
+
+export async function lookupEnsembl(identifier: string, expand: boolean = false): Promise<any> {
+  const response = await api.get(`/vectors/import/ensembl/lookup/${encodeURIComponent(identifier)}`, {
+    params: { expand }
+  })
+  return response.data
+}
+
+export async function previewEnsembl(identifier: string, seqType: string = 'cds'): Promise<OnlinePreview> {
+  const response = await api.get('/vectors/import/ensembl/preview', {
+    params: { identifier, seq_type: seqType }
+  })
+  return response.data
+}
+
+export async function importFromEnsembl(identifier: string, seqType: string = 'cds', name?: string): Promise<any> {
+  const response = await api.post('/vectors/import/ensembl', { identifier, seq_type: seqType, name })
+  return response.data
+}
+
+export async function searchAddgeneIndex(term: string, limit: number = 20): Promise<any> {
+  const response = await api.get('/vectors/import/addgene/search', { params: { term, limit } })
+  return response.data
+}
+
+export async function getAddgeneMetadata(plasmidId: string, trySequence: boolean = false): Promise<any> {
+  const response = await api.get(`/vectors/import/addgene/${encodeURIComponent(plasmidId)}`, {
+    params: { try_sequence: trySequence }
+  })
+  return response.data
+}
+
 // 获取缓存信息
 export async function getCacheInfo(): Promise<any> {
   const response = await api.get('/cache/stats')

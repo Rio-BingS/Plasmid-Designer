@@ -11,8 +11,18 @@ import {
   getVectorSequence,
   searchNcbi,
   previewNcbi,
-  importFromNcbiId
+  importFromNcbiId,
+  getOnlineSources,
+  getSnapgeneSets,
+  getSnapgeneSetIndex,
+  previewSnapgene,
+  importFromSnapgene,
+  previewEnsembl,
+  importFromEnsembl,
+  searchAddgeneIndex,
+  getAddgeneMetadata
 } from '@/api'
+import type { OnlinePreview, OnlineSourceInfo } from '@/api'
 import { downloadTextFile } from '@/utils/download'
 import MapThumbnail from '@/map/components/MapThumbnail.vue'
 import { previewToThumb } from '@/map/preview'
@@ -47,13 +57,44 @@ const editSaving = ref(false)
 const downloadingId = ref('')
 
 // NCBI 搜索
-const activeTab = ref<'local' | 'ncbi'>('local')
+const activeTab = ref<'local' | 'ncbi' | 'snapgene' | 'ensembl' | 'addgene'>('local')
 const ncbiQuery = ref('')
 const ncbiResults = ref<any[]>([])
 const ncbiSearching = ref(false)
 const previewData = ref<any>(null)
 const showPreviewModal = ref(false)
 const importingId = ref('')
+
+// 在线序列来源（SnapGene 在线库 / Ensembl / Addgene）
+// 许可提示随 /vectors/import/sources 下发；Addgene 后端明确不绕登录，前端只做引导
+const onlineSources = ref<OnlineSourceInfo[]>([])
+const onlineNotice = ref('')
+const onlineMsg = ref('')
+const onlinePreview = ref<OnlinePreview | null>(null)
+const showOnlinePreview = ref(false)
+// SnapGene 在线库
+const sgSets = ref<{ set_id: string; name: string }[]>([])
+const sgSetId = ref('')
+const sgRows = ref<any[]>([])
+const sgLoading = ref(false)
+const sgError = ref('')
+// Ensembl
+const ensemblId = ref('')
+const ensemblType = ref('cds')
+const ensemblLoading = ref(false)
+// Addgene
+const addgeneTerm = ref('')
+const addgeneRows = ref<any[]>([])
+const addgeneMeta = ref<any>(null)
+const addgeneError = ref('')
+const addgeneLoading = ref(false)
+
+const snapgeneLicense = computed(
+  () => onlineSources.value.find(s => s.id === 'snapgene')?.license || '')
+const ensemblLicense = computed(
+  () => onlineSources.value.find(s => s.id === 'ensembl')?.license || '')
+const addgeneLicense = computed(
+  () => onlineSources.value.find(s => s.id === 'addgene')?.license || '')
 
 async function loadVectors() {
   try {
@@ -215,7 +256,136 @@ async function confirmImport(seqId: string) {
 
 onMounted(() => {
   loadVectors()
+  ensureOnlineSources()
 })
+
+// ==================== 在线来源（SnapGene 在线库 / Ensembl / Addgene） ====================
+
+function errText(e: any, fallback: string): string {
+  return e?.response?.data?.detail || e?.message || fallback
+}
+
+async function ensureOnlineSources() {
+  if (onlineSources.value.length) return
+  try {
+    const res = await getOnlineSources()
+    onlineSources.value = res.sources || []
+    onlineNotice.value = res.disclaimer || ''
+  } catch {
+    // 未登录/未开放功能时静默：各面板自己的错误位会显示具体原因
+  }
+}
+
+function switchTab(tab: 'local' | 'ncbi' | 'snapgene' | 'ensembl' | 'addgene') {
+  activeTab.value = tab
+  onlineMsg.value = ''
+  ensureOnlineSources()
+  if (tab === 'snapgene' && sgSets.value.length === 0 && !sgLoading.value) loadSnapgeneSets()
+}
+
+async function loadSnapgeneSets() {
+  sgLoading.value = true
+  sgError.value = ''
+  try {
+    const res = await getSnapgeneSets()
+    sgSets.value = res.sets || []
+    if (!sgSetId.value && sgSets.value.length) sgSetId.value = sgSets.value[0].set_id
+    if (sgSetId.value) await loadSnapgeneIndex()
+  } catch (e: any) {
+    sgError.value = errText(e, '在线库集合加载失败')
+  } finally {
+    sgLoading.value = false
+  }
+}
+
+async function loadSnapgeneIndex() {
+  if (!sgSetId.value) return
+  sgLoading.value = true
+  sgError.value = ''
+  sgRows.value = []
+  try {
+    const res = await getSnapgeneSetIndex(sgSetId.value)
+    sgRows.value = res.plasmids || []
+  } catch (e: any) {
+    sgError.value = errText(e, '集合索引加载失败')
+  } finally {
+    sgLoading.value = false
+  }
+}
+
+async function openSnapgenePreview(row: any) {
+  onlineMsg.value = ''
+  try {
+    onlinePreview.value = await previewSnapgene(sgSetId.value, row.plasmid_id)
+    showOnlinePreview.value = true
+  } catch (e: any) {
+    onlineMsg.value = `预览失败: ${errText(e, '')}`
+  }
+}
+
+async function openEnsemblPreview() {
+  if (!ensemblId.value.trim()) return
+  ensemblLoading.value = true
+  onlineMsg.value = ''
+  try {
+    onlinePreview.value = await previewEnsembl(ensemblId.value.trim(), ensemblType.value)
+    showOnlinePreview.value = true
+  } catch (e: any) {
+    onlineMsg.value = `预览失败: ${errText(e, '')}`
+  } finally {
+    ensemblLoading.value = false
+  }
+}
+
+/** 预览弹窗里的"确认导入"：只对可导入来源生效（Addgene 不在此列） */
+async function confirmOnlineImport() {
+  const p = onlinePreview.value
+  if (!p) return
+  onlineMsg.value = ''
+  try {
+    if (p.source.startsWith('ensembl')) {
+      const res = await importFromEnsembl(p.id, ensemblType.value)
+      onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
+    } else {
+      const res = await importFromSnapgene(sgSetId.value, p.id)
+      onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
+    }
+    showOnlinePreview.value = false
+    await loadVectors()
+  } catch (e: any) {
+    onlineMsg.value = `导入失败: ${errText(e, '')}`
+  }
+}
+
+async function doSearchAddgene() {
+  if (!addgeneTerm.value.trim()) return
+  addgeneLoading.value = true
+  addgeneError.value = ''
+  addgeneRows.value = []
+  addgeneMeta.value = null
+  try {
+    const res = await searchAddgeneIndex(addgeneTerm.value.trim())
+    addgeneRows.value = res.results || []
+    if (addgeneRows.value.length === 0) addgeneError.value = res.note || '本地索引无命中'
+  } catch (e: any) {
+    addgeneError.value = errText(e, 'Addgene 搜索失败')
+  } finally {
+    addgeneLoading.value = false
+  }
+}
+
+async function doAddgeneMetadata(id: string) {
+  addgeneLoading.value = true
+  addgeneError.value = ''
+  addgeneMeta.value = null
+  try {
+    addgeneMeta.value = await getAddgeneMetadata(id)
+  } catch (e: any) {
+    addgeneError.value = errText(e, 'Addgene 元数据查询失败')
+  } finally {
+    addgeneLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -232,8 +402,11 @@ onMounted(() => {
     </div>
 
     <div class="source-tabs">
-      <button class="source-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地载体</button>
-      <button class="source-tab" :class="{ active: activeTab === 'ncbi' }" @click="activeTab = 'ncbi'">NCBI 搜索</button>
+      <button class="source-tab" :class="{ active: activeTab === 'local' }" @click="switchTab('local')">本地载体</button>
+      <button class="source-tab" :class="{ active: activeTab === 'ncbi' }" @click="switchTab('ncbi')">NCBI 搜索</button>
+      <button class="source-tab" :class="{ active: activeTab === 'snapgene' }" @click="switchTab('snapgene')">SnapGene 在线库</button>
+      <button class="source-tab" :class="{ active: activeTab === 'ensembl' }" @click="switchTab('ensembl')">Ensembl</button>
+      <button class="source-tab" :class="{ active: activeTab === 'addgene' }" @click="switchTab('addgene')">Addgene</button>
     </div>
 
     <div v-if="activeTab === 'local'">
@@ -370,6 +543,86 @@ onMounted(() => {
     <div v-else-if="ncbiQuery && !ncbiSearching" class="empty-text">输入关键词后点击搜索</div>
   </div>
 
+  <!-- SnapGene 在线库 Tab -->
+  <div v-if="activeTab === 'snapgene'" class="online-section">
+    <p class="online-license">{{ snapgeneLicense }}</p>
+    <div class="online-row">
+      <select v-model="sgSetId" class="form-select" @change="loadSnapgeneIndex">
+        <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id">{{ s.name }} ({{ s.set_id }})</option>
+      </select>
+      <button class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
+        {{ sgLoading ? '加载中...' : '🔄 刷新' }}
+      </button>
+    </div>
+    <div v-if="sgError" class="result-msg error">{{ sgError }}</div>
+    <div v-else-if="sgLoading" class="loading"><div class="spinner"></div></div>
+    <div v-else-if="sgRows.length === 0" class="empty-text">该集合没有条目</div>
+    <div v-else class="online-list">
+      <div v-for="row in sgRows" :key="row.plasmid_id" class="online-list-item">
+        <div class="online-item-info">
+          <span class="online-id">{{ row.plasmid_id }}</span>
+          <span class="online-name">{{ row.name }}</span>
+          <span class="online-file">{{ row.filename }}</span>
+        </div>
+        <div class="online-item-actions">
+          <button class="btn btn-small btn-secondary" @click="openSnapgenePreview(row)">👁️ 预览</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ensembl Tab -->
+  <div v-if="activeTab === 'ensembl'" class="online-section">
+    <p class="online-license">{{ ensemblLicense }}</p>
+    <div class="online-row">
+      <input v-model="ensemblId" class="form-input" placeholder="Ensembl ID，如 ENSG00000139618 / ENST00000288602" @keyup.enter="openEnsemblPreview" />
+      <select v-model="ensemblType" class="form-select">
+        <option value="cds">CDS（编码序列）</option>
+        <option value="cdna">cDNA</option>
+        <option value="genomic">基因组</option>
+      </select>
+      <button class="btn btn-primary" :disabled="ensemblLoading || !ensemblId.trim()" @click="openEnsemblPreview">
+        {{ ensemblLoading ? '获取中...' : '🔍 预览' }}
+      </button>
+    </div>
+    <p class="online-hint">导入的是线性片段（非质粒）；蛋白序列不能作为图谱序列导入。</p>
+  </div>
+
+  <!-- Addgene Tab（只做索引检索与元数据，不绕登录） -->
+  <div v-if="activeTab === 'addgene'" class="online-section">
+    <p class="online-license">{{ addgeneLicense }}</p>
+    <div class="online-row">
+      <input v-model="addgeneTerm" class="form-input" placeholder="搜索质粒名或质粒号（本地索引，不联网）" @keyup.enter="doSearchAddgene" />
+      <button class="btn btn-primary" :disabled="addgeneLoading || !addgeneTerm.trim()" @click="doSearchAddgene">
+        {{ addgeneLoading ? '搜索中...' : '🔍 搜索' }}
+      </button>
+    </div>
+    <div v-if="addgeneError" class="result-msg error">{{ addgeneError }}</div>
+    <div v-if="addgeneRows.length > 0" class="online-list">
+      <div v-for="row in addgeneRows" :key="row.id" class="online-list-item">
+        <div class="online-item-info">
+          <span class="online-id">#{{ row.id }}</span>
+          <span class="online-name">{{ row.name }}</span>
+        </div>
+        <div class="online-item-actions">
+          <a class="ncbi-link" :href="`https://www.addgene.org/${row.id}/`" target="_blank" rel="noopener">页面 ↗</a>
+          <button class="btn btn-small btn-secondary" @click="doAddgeneMetadata(String(row.id))">元数据</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="addgeneMeta" class="addgene-meta">
+      <p><strong>#{{ addgeneMeta.plasmid_id }}</strong> — 序列文件需登录，本工具不代为登录。</p>
+      <p class="online-hint">{{ addgeneMeta.note }}</p>
+      <p class="online-hint">可用直链：
+        <a v-if="addgeneMeta.metadata?.mapPngUrl" :href="addgeneMeta.metadata.mapPngUrl" target="_blank" rel="noopener">map.png ↗</a>
+        <a v-if="addgeneMeta.metadata?.genbankUrl" :href="addgeneMeta.metadata.genbankUrl" target="_blank" rel="noopener">.gbk（需登录）↗</a>
+      </p>
+    </div>
+    <p class="online-hint">也可直接输入质粒号查元数据：
+      <button class="btn btn-small btn-secondary" @click="doAddgeneMetadata(addgeneTerm.replace('#','').trim())">查 #{{ addgeneTerm.replace('#','').trim() || '…' }}</button>
+    </p>
+  </div>
+
   <!-- NCBI 预览弹窗 -->
   <div v-if="showPreviewModal" class="modal-overlay" @click.self="showPreviewModal = false">
     <div class="modal">
@@ -394,6 +647,48 @@ onMounted(() => {
       <div class="modal-footer">
         <button class="btn btn-secondary" @click="showPreviewModal = false">取消</button>
         <button class="btn btn-primary" :disabled="!!importingId" @click="confirmImport(String(previewData.id))">📥 确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 在线来源预览弹窗（SnapGene 在线库 / Ensembl；Addgene 不进这里） -->
+  <div v-if="showOnlinePreview" class="modal-overlay" @click.self="showOnlinePreview = false">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>在线序列预览</h2>
+        <button class="btn-close" @click="showOnlinePreview = false">✕</button>
+      </div>
+      <div class="modal-body" v-if="onlinePreview">
+        <div class="preview-info">
+          <h3>{{ onlinePreview.name }}</h3>
+          <div class="info-cards">
+            <div class="info-card"><span class="info-value">{{ onlinePreview.length.toLocaleString() }}</span><span class="info-label">长度 (bp)</span></div>
+            <div class="info-card"><span class="info-value">{{ onlinePreview.gc_content.toFixed(1) }}%</span><span class="info-label">GC 含量</span></div>
+            <div class="info-card"><span class="info-value">{{ onlinePreview.features.length }}</span><span class="info-label">特征数</span></div>
+          </div>
+          <p class="preview-desc">
+            来源：{{ onlinePreview.source }}（{{ onlinePreview.topology === 'circular' ? '环状' : '线性' }}）
+          </p>
+          <p class="online-hint">{{ onlinePreview.license }}</p>
+          <p v-if="onlinePreview.url" class="online-hint">
+            <a :href="onlinePreview.url" target="_blank" rel="noopener">原始来源 ↗</a>
+          </p>
+          <div v-if="onlinePreview.features.length" class="feature-preview">
+            <span v-for="(f, i) in onlinePreview.features.slice(0, 12)" :key="`${f.name || f.type}-${i}`" class="feature-chip">
+              {{ f.name || f.type }} <em>{{ f.start }}–{{ f.end }}</em>
+            </span>
+          </div>
+          <div v-if="onlinePreview.warnings?.length" class="preview-warnings">
+            <p v-for="w in onlinePreview.warnings" :key="w" class="warning-item">⚠️ {{ w }}</p>
+          </div>
+          <div v-if="onlineMsg" :class="['result-msg', onlineMsg.includes('失败') ? 'error' : 'success']">
+            {{ onlineMsg }}
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" @click="showOnlinePreview = false">取消</button>
+        <button class="btn btn-primary" @click="confirmOnlineImport">📥 导入到载体库</button>
       </div>
     </div>
   </div>
@@ -688,6 +983,44 @@ h1 {
 .ncbi-link { font-size: 0.75rem; color: var(--text-secondary); text-decoration: none; }
 .ncbi-link:hover { color: var(--primary-color); }
 .ncbi-result-actions { display: flex; gap: 0.5rem; }
+
+/* 在线序列来源（SnapGene 在线库 / Ensembl / Addgene） */
+.online-section { background: white; padding: 1.5rem; border-radius: 0.75rem; box-shadow: var(--shadow); }
+.online-license {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary, #f7f7f8);
+  border-left: 3px solid var(--primary-color);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+.online-row { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.online-row .form-input { flex: 1; min-width: 220px; }
+.online-row .form-select { min-width: 200px; }
+.online-hint { font-size: 0.8rem; color: var(--text-secondary); margin: 0.35rem 0; line-height: 1.5; }
+.online-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 26rem; overflow-y: auto; }
+.online-list-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.6rem 0.75rem; border: 1px solid var(--border-color); border-radius: 0.5rem;
+}
+.online-item-info { display: flex; align-items: baseline; gap: 0.6rem; min-width: 0; }
+.online-id { font-family: monospace; font-size: 0.85rem; color: var(--primary-color); }
+.online-name { font-weight: 500; }
+.online-file { font-size: 0.75rem; color: var(--text-secondary); }
+.online-item-actions { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; }
+.addgene-meta {
+  margin-top: 1rem; padding: 0.75rem; border-radius: 0.5rem;
+  background: var(--bg-secondary, #f7f7f8); font-size: 0.85rem; line-height: 1.6;
+}
+.addgene-meta a { margin-left: 0.4rem; }
+.feature-preview { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+.feature-chip {
+  font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 999px;
+  background: var(--bg-secondary, #f0f0f2); border: 1px solid var(--border-color);
+}
+.feature-chip em { color: var(--text-secondary); font-style: normal; margin-left: 0.25rem; }
 .btn-small { padding: 0.25rem 0.75rem; font-size: 0.75rem; }
 .preview-info h3 { font-size: 1.25rem; margin-bottom: 1rem; }
 .preview-info .info-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem; }

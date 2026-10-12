@@ -311,6 +311,40 @@ class BatchImportRequest(BaseModel):
     file_paths: List[str] = []
 
 
+# ==================== 在线序列来源导入 ====================
+# 契约与 core/online_sources.py 对齐：这里是请求体与预览响应，落库形状见
+# app/vector_import.py。许可文案随 /api/vectors/import/sources 一起下发。
+
+class SnapGeneImportRequest(BaseModel):
+    """SnapGene 在线库导入请求"""
+    set_id: str = Field(..., min_length=1, max_length=64,
+                        description="集合 ID，如 yeast_plasmids")
+    plasmid_id: str = Field(..., min_length=1, max_length=120,
+                            description="序列 ID（索引里的 url 字段），如 pYES2")
+
+
+class EnsemblImportRequest(BaseModel):
+    """Ensembl 导入请求"""
+    identifier: str = Field(..., min_length=1, max_length=64,
+                            description="Ensembl ID，如 ENSG00000139618 / ENST00000288602")
+    seq_type: Literal["genomic", "cds", "cdna"] = "cds"
+    name: Optional[str] = Field(default=None, max_length=80)
+
+
+class OnlinePreviewResponse(BaseModel):
+    """在线来源预览（不落库）"""
+    source: str
+    id: str
+    name: str
+    url: str = ""
+    length: int
+    topology: str
+    gc_content: float
+    features: List[Dict] = []
+    warnings: List[str] = []
+    license: str = ""
+
+
 # ==================== 质粒图谱（契约 plasmid-map/1，docs/MAP.md） ====================
 # 路由直接返回 core.plasmid_map 组装的字典（可选字段缺省即省略，符合契约）；
 # 这些模型用于请求体校验（编辑后重算、导出）与 OpenAPI 文档。

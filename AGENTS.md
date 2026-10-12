@@ -16,7 +16,8 @@ Plasmid Designer：自动化质粒构建设计平台。输入氨基酸/DNA 序�
 ```
 src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-reader，tracy 可选）
   app/main.py               入口（仅组装：CORS/中间件/路由/生命周期）
-  app/routes/               design|batch|vector|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
+  app/routes/               design|batch|vector|online_source|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
+  app/vector_import.py      ★ 外部/在线序列 → 载体库 YAML（形状与 data/vectors/*.yaml 一致，导入统一入口）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
   app/auth/                 JWT 会话：httpOnly Cookie（pd_session）+ CsrfMiddleware（X-Requested-With）
                             + 登出吊销（jti）；middleware.py 写 request.state.user 供限流
@@ -71,7 +72,10 @@ cd src/frontend && npm run dev        # 或 test:run / type-check / build
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
-测试基线（截至 v2.9.0）：pytest 898 passed / 6 skipped，vitest 208，vue-tsc 0。
+测试基线（本机 Windows，2026-10-12 在线来源导入后）：pytest 1308 passed / 39 skipped
+（另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
+`test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
+的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 413，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -115,6 +119,17 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   sessionStorage 自动带头），无令牌的遗留匿名测序记录仅管理员可读/删、列表不展示；
   载体库是共享库，刻意无属主
 - 限流按（方法 + 路由模板）分类：只读请求一律 default 档，轮询不吃业务配额
+- 在线序列来源（`core/online_sources.py` + `app/routes/online_source_routes.py`）：
+  SnapGene 在线库（`/local`，19 集合）/ Ensembl REST / Addgene 三个通道；落库统一走
+  `app/vector_import.save_record`（形状 = `data/vectors/*.yaml`），导入的载体描述里
+  写入出处。**许可边界**：SnapGene 库学术/非营利/政府可用但须引用
+  `www.snapgene.com/resources`，商业用途须 GraphPad 书面许可、其 robots.txt
+  `Disallow: /local`；Addgene 全长序列 2026-08 起需登录——代码**不绕登录**（返回
+  403 + 指引）。故只做低频单次读取（进程级限速 + 结果缓存），`ONLINE_IMPORT_ENABLED=false`
+  可整体关闭外呼；不要给它加定时同步/批量镜像
+- 载体导入落盘形状由 `app/vector_import.py` 统一：features 必须带 `name`（缺省回退到
+  type），否则 `VectorLibrary._parse_vector_dict` 抛 KeyError、整份载体被
+  `load_from_directory` 的兜底 except 吞掉而静默消失（历史 bug）
 - 测序管线口径（`core/sanger/`）：
   - 参考拓扑：文件明确标 linear 才线性比对，否则按环状——比对「参考 + 参考头部」后折回
     1..L，跨原点 read 整条比对，原点两侧覆盖缺口合并后再过滤
@@ -146,6 +161,10 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   （conftest.py 会重新注入正确路径）
 - **测试里改 site_settings 必须用真实 `app.database.SessionLocal`**，结束时恢复默认并
   `invalidate_cache()`，否则污染后续模块（设计端点 403）
+- **`tests/test_config_cors.py` 会 `reload(app.config)`**（生成新的 settings 实例）：
+  模块里 `from app.config import settings` 拿到的是旧对象，之后用例打桩
+  `settings.VECTORS_DIR` 之类对那个模块不生效——路由里一律用 `config.settings.X`
+  在调用时解析（曾导致测试把载体写进真实 `data/vectors/`）
 - **PowerShell 数组切片改文件会把整个文件清空**：结构化编辑一律用小步 edit 锚点
 - **从父组件拆子组件时，模板用到的 scoped CSS 必须随迁**：父级 `<style scoped>` 只作用到
   子组件根节点；共享状态用 defineModel，不要在子组件里另起孤立 ref
@@ -158,7 +177,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.9.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.11.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」

@@ -39,6 +39,17 @@
   不要回退到 `L-1-qi` 镜像式。
 - 真实 .ab1 回归集（`tests/test_real_data_regression.py`，skip-if-missing）
   中 MX 批次的「疑似混合样品」是该批数据的真实判定，不是误报，勿按理想断言改。
+- 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
+  读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
+  `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。
+  Addgene 全长序列 2026-08 起需登录，`addgene_sequence_bytes` **必须**抛
+  `AddgeneLoginRequired`（403 + 指引），任何情况下不得绕过登录墙。
+- 载体 YAML 的 `features[]` **必须带 `name`**（缺省回退到 type）：解析入口用
+  `core/plasmid_map/parsers`，落盘入口用 `app/vector_import.py`；不要再用
+  `external_vector_importer.GenBankImporter` 那种正则解析（.dna 会变空序列）。
+- 路由模块里取配置一律写 `config.settings.X`（调用时解析），不要
+  `from app.config import settings`——`tests/test_config_cors.py` 会 `reload(app.config)`
+  换掉实例，旧引用会让测试打桩失效并写进真实 `data/`。
 
 ---
 
@@ -160,3 +171,37 @@ Marmur-Doty）系统性高约 7°C，且相同长度与 GC 的不同序列不再
 - GenBank `join()` 特征逐段解析，跨原点 CDS 按拼接序列判读。
 - 密码子优化滑窗精修只查改动窗口附近，残留 motif 时不再整体失效。
 - 删除三个零引用模块（enhanced/advanced primer、enhanced codon）。
+
+### 2026-10-12 在线序列来源导入（SnapGene 在线库 / Ensembl / Addgene）
+
+背景：项目此前只有「本地文件上传 + NCBI 导入」两条外部序列通道，参考取证报告
+（SnapGene 6.0.2 逆向 + 官网/Ensembl/Addgene 实测 + 逐条许可核对）里另外三条通道缺失。
+
+| 项 | 结果 |
+|---|---|
+| 新增 `core/online_sources.py` | SnapGene 在线库（`sets.php` / `fetch.php?set=` / `fetch.php?set=&plasmid=` / `&zip`）、Ensembl REST（`lookup/id`、`sequence/id` 的 genomic/cds/cdna）、Addgene 匿名元数据；统一「取字节」层：进程级限速、体积上限、响应嗅探、`MapParseError.status` 映射 HTTP、`opener` 注入点供测试打桩 |
+| 新增 `app/routes/online_source_routes.py` | 来源清单 + 集合/索引/预览（只读，缓存）+ 三个导入端点（管理员、走 `/api/vectors/import` 的 upload 限流档）；Addgene 只给索引检索与元数据，`addgene_sequence_bytes` 一律 403 + 指引，**不绕登录** |
+| 新增 `app/vector_import.py` | 导入落盘形状唯一入口（= `data/vectors/*.yaml`），并把出处/引用要求写进载体描述 |
+| 前端 | `VectorsView` 新增「SnapGene 在线库 / Ensembl / Addgene」三个页签与在线预览弹窗；`api/index.ts` 同步契约；许可文案随来源下发 |
+| 开关与部署 | `ONLINE_IMPORT_ENABLED`（默认 true，false 则零外呼）、`ONLINE_TIMEOUT`、`ONLINE_MAX_BYTES`；docker-compose 透传 + 两份 `.env.example` 说明 |
+
+**顺带修掉的两个真 bug（都有回归锁）**
+
+1. **`.dna` 上传产出空序列**：`/api/vectors/import/upload` 声明支持 `.dna`，却用正则版
+   `GenBankImporter` 当文本解析 → 序列为空、`features` 恒空；GenBank 上传同样丢光注释。
+   现统一走 `core/plasmid_map/parsers.parse_file`（Biopython，含 SnapGene 特征与颜色），
+   并接受 `.fa/.fasta/.fna`。
+2. **导入的载体静默消失**：导入写出的 YAML 里 `features` 只有 `{type,start,end}`，而
+   `VectorLibrary._parse_vector_dict` 要求 `name` → 整份文件加载抛 KeyError，被
+   `load_from_directory` 的兜底 `except` 吞掉（NCBI 与批量导入路径同病）。
+   现 `_parse_vector_dict` 对缺 `name` 回退到类型名、`external_vector_importer.export_to_yaml`
+   补齐 `name/strand`，新导入一律经 `app/vector_import.py`。
+
+**同批顺带**：路由改用 `config.settings.X` 调用时解析——`tests/test_config_cors.py` 会
+`reload(app.config)`，旧引用会让测试打桩失效，实测把载体写进了真实 `data/vectors/`。
+
+**实跑验证（本机联网，2026-10-12）**：SnapGene 19 个集合；`coronavirus_resources` 索引 4 条；
+`SARS_Genome.dna` 103,295 字节（与取证报告一致）→ 解析 29,751 bp / 49 特征；
+Ensembl `lookup ENSG00000139618` → BRCA2/GRCh38，`ENST00000288602` cds → 2,421 bp 线性；
+Addgene `244694` 元数据可取、`.gbk` 直链 404 → 按预期 403 指引；本机 Addgene 索引 169,016 条可离线搜索。
+`ensembl_ping` 在本机网络下超时（lookup/sequence 正常），故只作诊断用、不要接成健康检查。
