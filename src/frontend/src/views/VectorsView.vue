@@ -17,6 +17,8 @@ import {
   getOnlineSources,
   getSnapgeneSets,
   getSnapgeneSetIndex,
+  searchSnapgene,
+  gatewayErrorText,
   previewSnapgene,
   importFromSnapgene,
   previewEnsembl,
@@ -87,6 +89,10 @@ const sgSetId = ref('')
 const sgRows = ref<any[]>([])
 const sgLoading = ref(false)
 const sgError = ref('')
+/** 非空 = 正在显示跨集合搜索结果（集合框里输入的是质粒名） */
+const sgSearch = ref('')
+/** 预览弹窗对应的集合（搜索结果来自不同集合，不能用当前集合） */
+const sgPreviewSetId = ref('')
 // SnapGene 在线库默认开启（SNAPGENE_ONLINE_ENABLED=false 可关）且只对登录用户开放：
 // 两者都满足才显示页签（后端仍是权威：关 → 404，匿名 → 401）
 const snapgeneEnabled = ref(false)
@@ -292,7 +298,7 @@ onMounted(() => {
 // ==================== 在线来源（SnapGene 在线库 / Ensembl / Addgene） ====================
 
 function errText(e: any, fallback: string): string {
-  return e?.response?.data?.detail || e?.message || fallback
+  return gatewayErrorText(e) || e?.response?.data?.detail || e?.message || fallback
 }
 
 async function ensureOnlineSources() {
@@ -334,6 +340,7 @@ async function loadSnapgeneSets() {
 let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  sgSearch.value = ''
   const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
@@ -348,10 +355,32 @@ async function loadSnapgeneIndex() {
   }
 }
 
+/** 集合框输入的不是集合：按质粒名跨集合搜索（如 pET-30a） */
+async function searchSnapgeneByName(q: string) {
+  const gen = ++sgIndexGen
+  sgSearch.value = q
+  sgLoading.value = true
+  sgError.value = ''
+  sgRows.value = []
+  try {
+    const res = await searchSnapgene(q)
+    if (gen === sgIndexGen) sgRows.value = res.plasmids || []
+  } catch (e: any) {
+    if (gen === sgIndexGen) sgError.value = errText(e, '搜索失败')
+  } finally {
+    if (gen === sgIndexGen) sgLoading.value = false
+  }
+}
+
+function rowSetId(row: any): string {
+  return row?.set_id || sgSetId.value
+}
+
 async function openSnapgenePreview(row: any) {
   onlineMsg.value = ''
   try {
-    onlinePreview.value = await previewSnapgene(sgSetId.value, row.plasmid_id)
+    sgPreviewSetId.value = rowSetId(row)
+    onlinePreview.value = await previewSnapgene(sgPreviewSetId.value, row.plasmid_id)
     showOnlinePreview.value = true
   } catch (e: any) {
     onlineMsg.value = `预览失败: ${errText(e, '')}`
@@ -364,7 +393,7 @@ async function importSnapgeneRow(row: any) {
   onlineImporting.value = true
   onlineMsg.value = ''
   try {
-    const res = await importFromSnapgene(sgSetId.value, row.plasmid_id)
+    const res = await importFromSnapgene(rowSetId(row), row.plasmid_id)
     onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
     await loadVectors()
   } catch (e: any) {
@@ -399,7 +428,7 @@ async function confirmOnlineImport() {
       const res = await importFromEnsembl(p.id, ensemblType.value)
       onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
     } else {
-      const res = await importFromSnapgene(sgSetId.value, p.id)
+      const res = await importFromSnapgene(sgPreviewSetId.value || sgSetId.value, p.id)
       onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
     }
     showOnlinePreview.value = false
@@ -663,20 +692,23 @@ async function openUniprotEntry(accession: string) {
   <div v-if="activeTab === 'snapgene' && snapgeneAvailable" class="online-section">
     <p class="online-license">{{ snapgeneLicense }}</p>
     <div class="online-row">
-      <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input" @change="loadSnapgeneIndex" />
+      <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input"
+                         @change="loadSnapgeneIndex" @search="searchSnapgeneByName" />
       <button class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
         {{ sgLoading ? '加载中...' : '🔄 刷新' }}
       </button>
     </div>
     <div v-if="sgError" class="result-msg error">{{ sgError }}</div>
-    <div v-else-if="sgLoading" class="loading"><div class="spinner"></div></div>
-    <div v-else-if="sgRows.length === 0" class="empty-text">该集合没有条目</div>
+    <div v-else-if="sgLoading" class="loading"><div class="spinner"></div>
+      <span v-if="sgSearch" class="empty-text">正在全部集合中搜索「{{ sgSearch }}」，首次约 20 秒…</span></div>
+    <div v-else-if="sgRows.length === 0" class="empty-text">
+      {{ sgSearch ? `没有找到「${sgSearch}」，换个写法试试（如 pET-30a、pET28）` : '该集合没有条目' }}</div>
     <div v-else class="online-list">
-      <div v-for="row in sgRows" :key="row.plasmid_id" class="online-list-item">
+      <div v-for="row in sgRows" :key="(row.set_id || '') + '/' + row.plasmid_id" class="online-list-item">
         <div class="online-item-info">
           <span class="online-id">{{ row.plasmid_id }}</span>
           <span class="online-name">{{ row.name }}</span>
-          <span class="online-file">{{ row.filename }}</span>
+          <span class="online-file">{{ row.set_name ? `集合：${row.set_name}` : row.filename }}</span>
         </div>
         <div class="online-item-actions">
           <button class="btn btn-small btn-secondary" @click="openSnapgenePreview(row)">👁️ 预览</button>

@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Dict, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Depends, HTTPException, status
 
@@ -163,6 +164,52 @@ def snapgene_index_payload(set_id: str) -> Dict[str, Any]:
     payload = {"set_id": sid, "count": len(rows), "plasmids": rows}
     cache_set(key, payload)
     return payload
+
+
+_SEARCH_NORM_RE = re.compile(r"[^0-9a-z]+")
+
+
+def _search_norm(text: str) -> str:
+    """搜索用归一化：小写、去掉空格/连字符/斜杠等，pET-30a == pet30a == PET 30A"""
+    return _SEARCH_NORM_RE.sub("", (text or "").lower())
+
+
+def snapgene_search_payload(query: str, limit: int = 50) -> Dict[str, Any]:
+    """按质粒名跨集合搜索 SnapGene 在线库。
+
+    逐个读取集合索引（与集合页共用 1 小时缓存）；冷缓存时要按站点节流逐个外呼，
+    19 个集合约 20 秒，之后命中缓存即时返回。单个集合失败只跳过并计入 `failed_sets`。
+    排序：名称完全一致 → 前缀一致 → 包含；同档短名在前（pet28 → pET-28a(+) 先于 pET28a/Cas9-Cys）。
+    """
+    q = _search_norm(query)
+    if len(q) < 2:
+        raise src.OnlineSourceError("请输入至少 2 个字母或数字的质粒名，如 pET-30a", 422)
+    limit = max(1, min(int(limit or 50), 200))
+    sets = snapgene_sets_payload()["sets"]
+    hits: List[Tuple[int, int, Dict[str, Any]]] = []
+    failed: List[str] = []
+    for set_order, s in enumerate(sets):
+        sid = str(s.get("set_id") or "")
+        try:
+            rows = snapgene_index_payload(sid)["plasmids"]
+        except Exception:  # noqa: BLE001 - 单个集合不可用不影响其余集合
+            failed.append(sid)
+            continue
+        for row in rows:
+            keys = [_search_norm(str(row.get("name") or "")),
+                    _search_norm(str(row.get("plasmid_id") or ""))]
+            if any(k == q for k in keys):
+                rank = 0
+            elif any(k.startswith(q) for k in keys):
+                rank = 1
+            elif any(q in k for k in keys):
+                rank = 2
+            else:
+                continue
+            hits.append((rank, set_order, {**row, "set_id": sid, "set_name": s.get("name", "")}))
+    hits.sort(key=lambda h: (h[0], len(str(h[2].get("name") or "")), h[1]))
+    return {"query": query, "count": len(hits), "truncated": len(hits) > limit,
+            "plasmids": [h[2] for h in hits[:limit]], "failed_sets": failed}
 
 
 def snapgene_plasmid_record(set_id: str, plasmid_id: str,

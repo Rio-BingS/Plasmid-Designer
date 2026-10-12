@@ -16,10 +16,15 @@ describe('resolveSnapgeneSet', () => {
     expect(resolveSnapgeneSet('Yeast_Plasmids', sets)).toBe('yeast_plasmids')
     expect(resolveSnapgeneSet('yeast', sets)).toBe('yeast_plasmids')
   })
-  it('列表外但形似 ID 的原样交给后端；乱码返回空', () => {
-    expect(resolveSnapgeneSet('crispr plasmids', sets)).toBe('crispr_plasmids')
+  it('列表已加载时，不是任何集合（如质粒名 pet-30a）返回空串', () => {
+    expect(resolveSnapgeneSet('pet-30a', sets)).toBe('')
+    expect(resolveSnapgeneSet('crispr plasmids', sets)).toBe('')
     expect(resolveSnapgeneSet('<script>', sets)).toBe('')
     expect(resolveSnapgeneSet('', sets)).toBe('')
+  })
+  it('列表没拿到时，形似 ID 的原样交给后端', () => {
+    expect(resolveSnapgeneSet('crispr plasmids', [])).toBe('crispr_plasmids')
+    expect(resolveSnapgeneSet('<script>', [])).toBe('')
   })
 })
 
@@ -44,10 +49,19 @@ describe('SnapgeneSetPicker', () => {
     await w.get('input').setValue('Yeast Plasmids')
     expect(w.emitted('change')?.[0]).toEqual(['yeast_plasmids'])
   })
+  it('输入质粒名（不是集合）发出 search，保留原文，同一文字只搜一次', async () => {
+    const w = mount(SnapgeneSetPicker, { props: { modelValue: 'basic_cloning_vectors', sets } })
+    const input = w.get('input')
+    await input.setValue('pet-30a')
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(w.emitted('search')).toEqual([['pet-30a']])
+    expect(w.emitted('change')).toBeUndefined()
+    expect((input.element as HTMLInputElement).value).toBe('pet-30a')
+  })
   it('无法解析的输入恢复为当前集合', async () => {
     const w = mount(SnapgeneSetPicker, { props: { modelValue: 'basic_cloning_vectors', sets } })
     const input = w.get('input')
-    await input.setValue('<script>')
+    await input.setValue('<>')
     await input.trigger('change')
     expect(w.emitted('change')).toBeUndefined()
     expect((input.element as HTMLInputElement).value).toBe('Basic Cloning Vectors')

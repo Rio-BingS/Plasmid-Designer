@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+### 新增
+- SnapGene 在线库：集合框里直接输入质粒名（如 `pET-30a`、`pET28`）回车，即可跨全部集合搜索并打开/预览/导入；新增 `GET /api/map/import/snapgene/search`、`GET /api/vectors/import/snapgene/search`（需登录，ncbi 限流档）。首次搜索需逐个读取集合索引（约 20 秒），之后走 1 小时缓存。
+
+### 修复
+- 集合框输入不存在的集合（常见是把质粒名当集合）时，此前上游返回空包、后端报 502，经 Cloudflare 变成英文 "origin web server returned an invalid or incomplete response"；现在不再把未知名称当集合 ID 发出，后端对不存在的集合返回 404 中文提示。
+- Cloudflare 网关错误（520–527 等）统一显示为中文说明，不再透出英文原文。
+
 ## [2.14.1] - 2026-10-13
 
 ### 升级注意
