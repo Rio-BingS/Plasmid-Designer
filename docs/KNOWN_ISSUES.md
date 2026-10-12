@@ -42,6 +42,9 @@
 - 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
   读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
   `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。
+  SnapGene 在线库受独立开关 `SNAPGENE_ONLINE_ENABLED` 约束（**默认 false**，关 → 404），
+  开启后只读端点也须登录（`app/online_import.require_snapgene_user`，匿名 401），落库仍
+  管理员；不要把它并回 `ONLINE_IMPORT_ENABLED`、不要放开匿名（见下「已接受风险」）。
   Addgene 全长序列 2026-08 起需登录：无凭据时 `addgene_sequence_bytes` **必须**抛
   `AddgeneLoginRequired`（403 + 指引），任何情况下不得代登录/绕登录墙；有
   `ADDGENE_SESSION_COOKIE`（用户自备）时也只把凭据发给 `addgene.org`
@@ -270,3 +273,27 @@ Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），�
    同时载体响应缓存 `vector:<id>` 跨用例命中会让断言读到别的用例的载体。
 2. **冒烟脚本不要打印 `↳` 之类字符**：Windows 控制台默认 GBK，`print` 直接
    `UnicodeEncodeError` 让冒烟整体判失败；`_report` 现按 GBK 编码兜底。
+
+---
+
+### 2026-10-12 v2.12.0 审查修复：在线来源（`fix/rv12-online`）
+
+审查报告：v2.12.0 代码审查 01（在线序列来源导入）。
+
+**已接受风险（决策记录，避免下次审查重复争论）——SnapGene 在线库**
+
+- 事实：SnapGene 网站条款 (a) 禁止 "reproduce or store material from this website in any
+  public or private electronic retrieval system"；`snapgene.com/robots.txt` 仍有
+  `Disallow: /local`（2026-10-12 复核）；`/local/sets.php`、`/local/fetch.php` 来自对
+  SnapGene 客户端的逆向，客户端 EULA 禁止 reverse engineer。v2.12.0 把它做成了「存入
+  本地载体库」+ 匿名可触发的代理，且默认开启。
+- 用户决定（2026-10-12）：**保留功能，但默认关闭、仅登录用户可用**。新增独立开关
+  `SNAPGENE_ONLINE_ENABLED`（默认 false，与 `ONLINE_IMPORT_ENABLED` 无关）；关闭时
+  载体库侧集合/索引/预览/导入与图谱页集合/索引/打开全部 404（核心层 `_ensure_snapgene_enabled`
+  兜底，零外呼）；开启后只读端点需登录（匿名 401），存入载体库仍需管理员；前端在开关
+  关闭或未登录时隐藏 SnapGene 页签。
+- 风险归属：开启即视为部署方知悉并接受上述条款冲突；仅建议学术/非营利/政府的自用实例
+  开启，须引用 `www.snapgene.com/resources`，商业用途须先获 GraphPad 书面许可。中长期
+  方案仍是向 GraphPad 申请接口授权或改用 NCBI 对应记录。
+- `scripts/smoke_online_sources.py` 默认不再跑 SnapGene（需 `--only snapgene` 且开关为 true）。
+

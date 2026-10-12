@@ -109,6 +109,28 @@ def _ensure_enabled() -> None:
         raise OnlineSourceError("在线导入已被部署方关闭（ONLINE_IMPORT_ENABLED=false）", 503)
 
 
+SNAPGENE_DISABLED_MSG = (
+    "SnapGene 在线库未启用：部署方需显式设置 SNAPGENE_ONLINE_ENABLED=true"
+    "（默认关闭；其网站条款禁止存入检索系统、robots.txt 禁止 /local，仅限学术/非营利自用实例）")
+
+
+def snapgene_online_enabled() -> bool:
+    """SNAPGENE_ONLINE_ENABLED 开关（默认 **关闭**，与 ONLINE_IMPORT_ENABLED 相互独立）。
+
+    v2.12 审查 H2：SnapGene `/local` 在线库属合规高风险来源（网站条款 (a) 禁止
+    "reproduce or store … in any … electronic retrieval system"、robots.txt
+    `Disallow: /local`、端点来自客户端逆向），用户决定默认关闭、仅登录用户可用，
+    由部署方自行接受风险后显式开启。Ensembl/UniProt/Addgene/NCBI 不受影响。
+    """
+    raw = os.environ.get("SNAPGENE_ONLINE_ENABLED", "false").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _ensure_snapgene_enabled() -> None:
+    if not snapgene_online_enabled():
+        raise OnlineSourceError(SNAPGENE_DISABLED_MSG, 404)
+
+
 def _timeout() -> float:
     try:
         return float(os.environ.get("ONLINE_TIMEOUT", "25"))
@@ -304,6 +326,7 @@ def validate_plasmid_id(raw: str) -> str:
 def snapgene_sets(*, timeout: Optional[float] = None,
                   opener: Optional[Callable] = None) -> List[Dict[str, str]]:
     """列出在线序列集合（GET /local/sets.php?xml）"""
+    _ensure_snapgene_enabled()
     url = f"{SNAPGENE_BASE}/sets.php?xml"
     raw = _http_get(url, max_bytes=2 * 1024 * 1024, accept="application/xml",
                     timeout=timeout, opener=opener)
@@ -318,6 +341,7 @@ def snapgene_sets(*, timeout: Optional[float] = None,
 def snapgene_set_index(set_id: str, *, timeout: Optional[float] = None,
                        opener: Optional[Callable] = None) -> List[Dict[str, object]]:
     """取集合内全部序列的索引（GET /local/fetch.php?set=<id>）"""
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     url = f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}"
     raw = _http_get(url, max_bytes=16 * 1024 * 1024, accept="application/xml",
@@ -351,6 +375,7 @@ def snapgene_plasmid_bytes(set_id: str, plasmid_id: str, *, max_bytes: Optional[
                            timeout: Optional[float] = None,
                            opener: Optional[Callable] = None) -> bytes:
     """下载单个 .dna（GET /local/fetch.php?set=&plasmid=），并校验 SnapGene 魔法串"""
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     pid = validate_plasmid_id(plasmid_id)
     url = (f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}"
@@ -368,6 +393,7 @@ def snapgene_set_zip_bytes(set_id: str, *, max_bytes: Optional[int] = None,
 
     体积上限单独放宽到 ONLINE_ZIP_MAX_BYTES；调用方应提醒用户整包可达数 MB。
     """
+    _ensure_snapgene_enabled()
     sid = validate_set_id(set_id)
     url = f"{SNAPGENE_BASE}/fetch.php?set={urllib.parse.quote(sid, safe='')}&zip"
     data = _http_get(url, max_bytes=max_bytes or ZIP_MAX_BYTES,

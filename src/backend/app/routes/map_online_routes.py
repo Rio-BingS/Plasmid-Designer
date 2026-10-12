@@ -12,15 +12,18 @@
 `www.snapgene.com/resources`），**商业用途须先获 GraphPad Software, LLC 许可**，
 其 robots.txt 明确 `Disallow: /local` → 只做低频单次、人工触发的读取；
 `ONLINE_IMPORT_ENABLED=false` 时全部端点返回 503（零外呼）。
+SnapGene 端点另受 `SNAPGENE_ONLINE_ENABLED`（默认 false → 404）约束，开启后也只对
+已登录用户开放（匿名 401），见 `app/online_import.require_snapgene_user`。
 """
 
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import online_import as oi
+from app.online_import import require_snapgene_user
 from app.routes.map_routes import cached_document
 from app.routes.models import MAP_MAX_LENGTH, MapDocument
 from core import online_sources as src
@@ -77,13 +80,14 @@ async def map_online_sources() -> Dict[str, Any]:
 
 
 @router.get("/import/snapgene/sets")
-async def map_snapgene_sets() -> Dict[str, Any]:
-    """SnapGene 在线库的 19 个集合（与载体库侧共用 1 小时缓存）"""
+async def map_snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
+    """SnapGene 在线库的集合列表（与载体库侧共用 1 小时缓存；开关 + 需登录）"""
     return await _online_call(oi.snapgene_sets_payload)
 
 
 @router.get("/import/snapgene/sets/{set_id}")
-async def map_snapgene_index(set_id: str) -> Dict[str, Any]:
+async def map_snapgene_index(set_id: str,
+                             _: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
     """集合索引：id / 显示名 / 文件名（与载体库侧共用缓存）"""
     return await _online_call(oi.snapgene_index_payload, set_id)
 
@@ -100,7 +104,8 @@ def _ensembl_build(identifier: str, seq_type: str, opts: Dict[str, Any]) -> Dict
 
 
 @router.post("/import/snapgene", responses={200: {"model": MapDocument}})
-async def import_map_snapgene(req: MapSnapgeneRequest):
+async def import_map_snapgene(req: MapSnapgeneRequest,
+                              _: object = Depends(require_snapgene_user)):
     """从 SnapGene 在线库下载 .dna（含完整图谱注释）并解析成 MapDocument。
 
     下载 + 解析都在线程池执行，且**只在 MapDocument 缓存未命中时**发生

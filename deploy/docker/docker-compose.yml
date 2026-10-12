@@ -54,6 +54,8 @@ services:
       - NCBI_API_KEY=${NCBI_API_KEY:-}
       # 在线序列来源导入（SnapGene 在线库 / Ensembl / UniProt / Addgene）：设 false 可整体关闭外呼
       - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
+      # SnapGene 在线库单独开关（默认关；开启须自行接受其网站条款风险，见 .env.example）
+      - SNAPGENE_ONLINE_ENABLED=${SNAPGENE_ONLINE_ENABLED:-false}
       - ONLINE_TIMEOUT=${ONLINE_TIMEOUT:-25}
       - ONLINE_MAX_BYTES=${ONLINE_MAX_BYTES:-8388608}
       # Addgene 用户自备会话 Cookie（可选）：只发给 addgene.org，不落盘、不回显。
