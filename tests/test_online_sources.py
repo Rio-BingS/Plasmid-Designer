@@ -94,6 +94,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(src, "_default_open", _boom)  # 自建 opener 同样禁网
     monkeypatch.setattr(src, "_MIN_INTERVAL", {})  # 免等待
     monkeypatch.setattr(src, "_next_slot", {})     # 节流时间槽不跨用例
+    monkeypatch.setattr(src, "_addgene_index_cache", {})
     for k in ("ONLINE_IMPORT_ENABLED", "ONLINE_TIMEOUT", "SNAPGENE_BASE", "ENSEMBL_BASE",
               "UNIPROT_BASE", "ADDGENE_SESSION_COOKIE"):
         monkeypatch.delenv(k, raising=False)
@@ -1620,3 +1621,33 @@ def test_ncbi_and_batch_import_paths_write_topology(tmp_path):
     assert manager.export_to_yaml(str(tmp_path)) == 2
     assert _load_vector(tmp_path, "ncbi_AB000001").topology == "linear"
     assert _load_vector(tmp_path, "genbank_CIRCP").topology == "circular"
+
+
+def test_addgene_local_index_cached_until_file_changes(tmp_path, monkeypatch):
+    """L4：17 万条索引不再每次请求整读，按 mtime/大小失效"""
+    import os
+    monkeypatch.setattr(src, "_addgene_index_cache", {})
+    reads = []
+    real = src._read_addgene_index
+
+    def _counting(path):
+        reads.append(path)
+        return real(path)
+    monkeypatch.setattr(src, "_read_addgene_index", _counting)
+
+    idx = tmp_path / "addgeneProcessed.json"
+    idx.write_text(json.dumps([{"id": 52961, "name": "lentiCRISPR v2"}, "junk"]), encoding="utf-8")
+    p = str(idx)
+    assert [e["id"] for e in src.addgene_local_index("lenti", index_path=p)] == [52961]
+    assert [e["id"] for e in src.addgene_local_index("52961", index_path=p)] == [52961]
+    assert len(reads) == 1
+
+    idx.write_text(json.dumps([{"id": 1, "name": "pNEW lenti"}]), encoding="utf-8")
+    st = os.stat(p)
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert [e["id"] for e in src.addgene_local_index("lenti", index_path=p)] == [1]
+    assert len(reads) == 2
+
+    idx.write_text("{ broken", encoding="utf-8")
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 9_000_000_000))
+    assert src.addgene_local_index("lenti", index_path=p) == []
