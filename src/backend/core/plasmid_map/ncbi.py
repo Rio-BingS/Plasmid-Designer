@@ -9,7 +9,9 @@ NCBI 使用规范（https://www.ncbi.nlm.nih.gov/books/NBK25497/）：请求须�
 进程做最小间隔节流（与按客户端的限流中间件互补）。
 
 环境变量：NCBI_API_KEY、NCBI_EMAIL（均可选）、NCBI_TOOL（默认
-PlasmidDesigner）、NCBI_TIMEOUT（秒，默认 20）。
+PlasmidDesigner）、NCBI_TIMEOUT（秒，默认 30：单次导入从排队到读完的总时长上限）。
+并发：路由层用独立的 anyio CapacityLimiter（NCBI_MAX_CONCURRENCY，默认 4）跑
+NCBI 导入，不占全局线程池。
 """
 
 import os
@@ -51,13 +53,32 @@ def _min_interval(api_key: Optional[str]) -> float:
     return 0.11 if api_key else 0.34
 
 
-def _throttle(api_key: Optional[str]) -> None:
+def _reserve_slot(api_key: Optional[str]) -> float:
+    """锁内只预约下一个发请求的时间点（相邻请求间隔 ≥ _min_interval），返回
+    还需等待的秒数；sleep 在锁外进行，排队的请求不再串行持锁睡眠"""
     global _last_request
     with _throttle_lock:
-        wait = _last_request + _min_interval(api_key) - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_request = time.monotonic()
+        now = time.monotonic()
+        slot = max(now, _last_request + _min_interval(api_key))
+        _last_request = slot
+    return slot - now
+
+
+def _throttle(api_key: Optional[str], deadline: Optional[float] = None) -> None:
+    wait = _reserve_slot(api_key)
+    if deadline is not None and time.monotonic() + wait > deadline:
+        raise MapParseError("NCBI 请求排队过久，请稍后再试", 503)
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _set_read_timeout(resp, seconds: float) -> None:
+    """把响应底层 socket 的单次读超时收紧到剩余时间（拿不到 socket 时忽略）"""
+    try:
+        sock = resp.fp.raw._sock  # http.client.HTTPResponse → SocketIO → socket
+        sock.settimeout(max(0.05, seconds))
+    except Exception:
+        pass
 
 
 def efetch_params(accession: str) -> dict:
@@ -97,15 +118,22 @@ def fetch_genbank_text(
         "Accept": "text/plain",
     })
     if timeout is None:
-        timeout = float(os.environ.get("NCBI_TIMEOUT", "20"))
-    _throttle(params.get("api_key"))
+        timeout = float(os.environ.get("NCBI_TIMEOUT", "30"))
+    # timeout 是整次取数（排队节流 + 连接 + 全部读取）的总时长上限；urlopen 的
+    # timeout 只管单次 socket 操作，慢速吐数据的服务器能把线程占任意久
+    deadline = time.monotonic() + timeout
+    _throttle(params.get("api_key"), deadline)
     open_fn = opener or urllib.request.urlopen
     try:
-        with open_fn(req, timeout=timeout) as resp:
+        with open_fn(req, timeout=max(0.05, deadline - time.monotonic())) as resp:
             buf = bytearray()
             locus_checked = False
             while True:
-                chunk = resp.read(256 * 1024)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MapParseError("从 NCBI 下载超时，请稍后再试", 504)
+                _set_read_timeout(resp, remaining)
+                chunk = resp.read(64 * 1024)
                 if not chunk:
                     break
                 buf.extend(chunk)
