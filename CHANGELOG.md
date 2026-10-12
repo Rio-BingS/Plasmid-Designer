@@ -26,6 +26,21 @@
   再次导入仍会覆盖，回执新增 `replaced` 并在 `warnings` 中写明。新导入载体的 ID 与文件名
   使用同一套字符归一（空格、冒号等变成下划线，如 `snapgene_SARS Genome` →
   `snapgene_SARS_Genome`），已有载体不受影响。
+- 图谱缓存口径版本 `MAP_ALGO_VERSION` 递增，旧缓存自然失效，无需手动清除。
+- 图谱行为变化：`annotate` 缺省时超过 50 kb 的序列不再自动注释常见元件（`meta.warnings`
+  提示，显式 `annotate=true` 仍注释）；新增可选环境变量 `MAP_AUTO_ANNOTATE_MAX_BP`、
+  `MAP_ANNOTATE_MAX_CELLS`（见 docs/MAP.md）。
+- 图谱酶组变化：`commercial` / `unique6` / `type_iis` 与厂商表不再包含修饰依赖型酶
+  （AbaSI、MspJI、FspEI、SgeI、LpnPI 及 SibEnzyme 的 9 把 5mC 依赖酶）；`MapEnzyme` 新增
+  可选字段 `sites_truncated`（位点明细被截断时为 true，`cut_count` 仍是完整计数），
+  酶详情新增 `modification_dependent`。新增可选环境变量 `MAP_MAX_SITES_PER_ENZYME`、
+  `MAP_MAX_TOTAL_SITES`、`MAP_CACHE_MAX_DOC_BYTES`、`MAP_CACHE_MAX_TOTAL_BYTES`。
+- `NCBI_TIMEOUT` 语义改为单次 NCBI 导入的总时长上限（默认由 20 改为 30 秒；此前只是单次
+  socket 读超时）；新增可选 `NCBI_MAX_CONCURRENCY`（默认 4）。
+- **nginx 配置更新**：两份 `deploy/*/nginx.conf` 新增 `location ^~ /api/map/`
+  （`client_max_body_size 17m`）。裸机部署须把新的 nginx.conf 复制到位并 `nginx -s reload`；
+  Docker 部署重建前端镜像。新增可选环境变量 `MAP_MAX_JSON_MB`（默认 16，`/api/map/*` 除
+  `/parse` 外写请求的体积上限）；调大它或 `MAP_MAX_UPLOAD_MB` 时同步调大 nginx 这一项。
 
 ### 修复
 
@@ -57,6 +72,40 @@
   最多 3 跳），Addgene 会话 Cookie 改为不随重定向转发、跨主机即丢弃；上游给出的
   `file://`、`http://` 等非 https 直链一律拒绝。此前一次 302 就能把 Cookie 发到任意
   主机（含 http 明文降级），SnapGene/Ensembl/UniProt 外呼也可被 302 到内网地址。
+- 图谱：负链跨原点特征导出 GenBank 时片段顺序反了（写成
+  `complement(join(1..e,s..L))`），SnapGene `.dna` 中的负链跨原点特征解析出的段
+  顺序也一样，在 SnapGene/Benchling 里打开序列与翻译都错。现在导出写
+  `complement(join(s..L,1..e))`，`segments` 统一为生物学顺序（负链坐标降序）。
+  v2.12.0 导出的含负链跨原点特征的 .gb 需重新导出。
+- 图谱自动注释：串联重复的元件片段会把整条序列链成一个比对窗口（300 kb 单个请求
+  ~8 s / ~750 MB，匿名可触发）。现在单次比对窗口恒为元件长 + 60 bp，候选按种子
+  覆盖跨度排序并受比对次数与 DP 单元格总量预算约束（超出告警），同样输入约 1.7 s /
+  30 MB；正负链共用排序，负链元件不再因正链先用完预算被静默漏掉。
+- 图谱 `commercial` 酶组：修饰依赖型酶让位点数爆炸（300 kb 响应 45 MB，50 kb 文档
+  在内存缓存里常驻约 35 MB/条），且 MspJI/LpnPI/SgeI 计数与 Biopython 不一致。现在排除
+  这类酶，位点明细按酶/按文档封顶，序列化超过 1 MB 的文档不进缓存、缓存总字节封顶；
+  300 kb commercial 响应约 6 MB。
+- NCBI 导入：节流锁里 sleep 使并发导入串行排队、各自占着全局线程池令牌，慢速响应还能
+  把线程占任意久。现在锁内只预约时间点、锁外等待，导入跑在独立的小线程令牌池上，并有
+  整次取数的总时长上限。
+- 图谱 `/parse`：产出的文档可能违反 `MapDocument` 自身约束（segments >200、qualifiers >100、
+  primers 无上限、长 primer_bind 的序列 >1000），再提交给 `/analyze` / `/export/genbank` 会
+  422；超长 `join()` 解析要 5 s 以上。现在解析与组装按同一份常量截断并告警，分段超过
+  1000 的位置串在进入 Biopython 前直接 422。
+- 图谱请求体：此前先整体读入（JSON `request.body()`、multipart spool、`/analyze` / `/export`
+  由 pydantic 全量解析）才比较大小，chunked 传输还能绕过 Content-Length 预检，实际上限是
+  nginx 的 100 MB。现在 `/api/map/*` 由 ASGI 中间件边收边计数、超限即 413，nginx 也单独收紧。
+- Golden Gate：只检查插入片段内部（且按切点过滤，贴着末端、切点落在片段外的位点漏报）；
+  引物尾（位点 + 间隔 + overhang）与插入片段拼接处新生的位点不报。现在按识别序列计数，
+  对完整扩增子数位点、多出的写进设计告警与引物备注；间隔碱基不再固定为 A，按拼接上下文
+  挑一个不形成额外位点的组合（例如 BfuAI 系 + overhang CCTG）。
+- 图谱导出：线性分子上 `start > end` 的特征此前照样写成跨原点 `join(s..L,1..e)`（线性记录里
+  无意义），现在 `/export/genbank` 返回 422。
+- 图谱解析：分段跨正负两条链的 `join()` 与 `order()` 在契约里存不下（按无方向 / `join()`
+  处理，导出时丢失），此前静默，现在写入 `meta.warnings`。
+- SnapGene `.dna` 特征颜色改按特征名对齐：此前按序号对齐，Features 包里的 `primer_bind`
+  特征不消耗序号，其后所有特征的颜色整体错位。
+- 载体图谱缓存键补上载体名称、拓扑与 MCS 名：管理员只改这些字段时不再最多 1 小时内返回旧图谱。
 
 ## [2.12.0] - 2026-10-12
 

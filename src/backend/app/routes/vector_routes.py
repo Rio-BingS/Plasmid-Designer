@@ -261,7 +261,7 @@ async def get_vector_map_data(
     """载体图谱（契约 plasmid-map/1，特征 source=vector）"""
     import hashlib
 
-    from app.map_documents import vector_map_document
+    from app.map_documents import _vector_topology, vector_map_document
     from app.routes.map_routes import cached_document
 
     library = get_vector_library()
@@ -274,6 +274,9 @@ async def get_vector_map_data(
         "features": [(e.name, e.element_type.value, e.start, e.end, e.strand, e.description)
                      for e in vector.elements],
         "mcs": [vector.mcs.start, vector.mcs.end] if vector.mcs else None,
+        # 名称 / 拓扑 / MCS 名也进键：管理员只改这些时不再返回 1 小时内的旧文档
+        "name": vector.name, "topology": _vector_topology(vector),
+        "mcs_name": getattr(vector.mcs, "name", None) if vector.mcs else None,
         "enzyme_set": enzyme_set, "orf_min_aa": orf_min_aa,
     }
     return await cached_document("vector", key, vector_map_document, vector,

@@ -354,8 +354,10 @@ class OnlinePreviewResponse(BaseModel):
 # 路由直接返回 core.plasmid_map 组装的字典（可选字段缺省即省略，符合契约）；
 # 这些模型用于请求体校验（编辑后重算、导出）与 OpenAPI 文档。
 
+from core.plasmid_map import types as _map_limits  # noqa: E402  契约条数上限的唯一来源
+
 MAP_MAX_LENGTH = int(os.environ.get("MAP_MAX_LENGTH", "300000"))
-MAP_MAX_FEATURES = 5000
+MAP_MAX_FEATURES = _map_limits.MAX_FEATURES
 MAP_MAX_ENZYMES = 1000
 
 MapFeatureType = Literal[
@@ -385,11 +387,11 @@ class MapFeature(BaseModel):
     start: int = Field(..., ge=1)
     end: int = Field(..., ge=1)
     strand: Literal[1, -1, 0] = 0
-    segments: Optional[List[MapSegment]] = Field(default=None, max_length=200)
+    segments: Optional[List[MapSegment]] = Field(default=None, max_length=_map_limits.MAX_SEGMENTS)
     color: Optional[str] = Field(default=None, max_length=32)
     source: Literal["file", "auto", "design", "vector"] = "file"
     notes: Optional[str] = Field(default=None, max_length=2000)
-    qualifiers: Optional[Dict[str, str]] = Field(default=None, max_length=100)
+    qualifiers: Optional[Dict[str, str]] = Field(default=None, max_length=_map_limits.MAX_QUALIFIERS)
     auto: Optional[MapAutoInfo] = None
 
 
@@ -409,6 +411,8 @@ class MapEnzyme(BaseModel):
     overhang: Optional[str] = None
     cut_count: int
     sites: List[MapEnzymeSite] = Field(default_factory=list)
+    # 位点过多时 sites 只含部分明细（cut_count 仍为完整计数）
+    sites_truncated: Optional[bool] = None
     methylation: Optional[List[str]] = None
 
 
@@ -426,13 +430,13 @@ class MapPrimer(BaseModel):
     start: int = Field(..., ge=1)
     end: int = Field(..., ge=1)
     strand: Literal[1, -1] = 1
-    sequence: Optional[str] = Field(default=None, max_length=1000)
+    sequence: Optional[str] = Field(default=None, max_length=_map_limits.MAX_PRIMER_SEQ)
 
 
 class MapMeta(BaseModel):
     source_format: Literal["genbank", "fasta", "snapgene", "raw", "design", "vector"]
     enzyme_set: str = Field(default="common", max_length=40)
-    warnings: List[str] = Field(default_factory=list, max_length=200)
+    warnings: List[str] = Field(default_factory=list, max_length=_map_limits.MAX_WARNINGS)
 
 
 class MapDocument(BaseModel):
@@ -443,8 +447,8 @@ class MapDocument(BaseModel):
     sequence: str = Field(..., min_length=1, max_length=MAP_MAX_LENGTH)
     features: List[MapFeature] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
     enzymes: List[MapEnzyme] = Field(default_factory=list, max_length=MAP_MAX_ENZYMES)
-    orfs: List[MapOrf] = Field(default_factory=list, max_length=20000)
-    primers: List[MapPrimer] = Field(default_factory=list, max_length=MAP_MAX_FEATURES)
+    orfs: List[MapOrf] = Field(default_factory=list, max_length=_map_limits.MAX_ORFS)
+    primers: List[MapPrimer] = Field(default_factory=list, max_length=_map_limits.MAX_PRIMERS)
     meta: Optional[MapMeta] = None
 
     model_config = {"populate_by_name": True}
@@ -465,7 +469,7 @@ class MapSaveFeature(BaseModel):
     strand: Literal[1, -1, 0] = 0
     notes: Optional[str] = Field(default=None, max_length=2000)
     description: Optional[str] = Field(default=None, max_length=300)
-    segments: Optional[List[MapSegment]] = Field(default=None, max_length=200)
+    segments: Optional[List[MapSegment]] = Field(default=None, max_length=_map_limits.MAX_SEGMENTS)
     color: Optional[str] = Field(default=None, max_length=32)
 
 

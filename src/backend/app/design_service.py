@@ -426,18 +426,37 @@ def _golden_gate_site_warning(sequence: str, enzyme_name: str) -> Optional[str]:
 
     酶参数走 REBASE（get_enzyme），任何 Golden Gate 候选酶都能检查，
     不再只认默认菜单里的 BsaI/BsmBI/BbsI。"""
-    from core.enzyme_sites import find_enzyme_sites, get_enzyme
+    from core.enzyme_sites import get_enzyme
+    from core.primer_designer import _gg_site_count
 
     spec = get_enzyme(enzyme_name)
     if spec is None:
         return f"未知 Golden Gate 酶 {enzyme_name}，无法检查内部识别位点"
-    sites = find_enzyme_sites(sequence, [enzyme_name], circular=False)
-    if not sites:
+    # 按识别序列计数：靠近插入片段末端、切点落在片段外的位点 find_enzyme_sites
+    # 会丢掉，但接上引物尾后切点就在扩增子内，照样会切
+    n = _gg_site_count(sequence, enzyme_name)
+    if not n:
         return None
     return (
-        f"插入序列内部含 {len(sites)} 个 {enzyme_name} 识别位点 {spec['site']}，"
+        f"插入序列内部含 {n} 个 {enzyme_name} 识别位点 {spec['site']}，"
         "Golden Gate 可能切碎"
     )
+
+
+def _golden_gate_junction_warning(primers: List[PrimerInfo], insert: str,
+                                  enzyme_name: str) -> Optional[str]:
+    """克隆引物对（最后一对带尾的 _F/_R）组成的扩增子里，拼接处额外形成的位点"""
+    from core.primer_designer import gg_junction_extra_sites
+
+    fwd = [p for p in primers if p.overhang and p.name.endswith("_F")]
+    rev = [p for p in primers if p.overhang and p.name.endswith("_R")]
+    if not fwd or not rev:
+        return None
+    extra = gg_junction_extra_sites(insert, enzyme_name, fwd[-1].overhang, rev[-1].overhang)
+    if not extra:
+        return None
+    return (f"警告：Golden Gate 引物尾部与插入片段拼接处另形成 {extra} 个 {enzyme_name} "
+            "识别位点，酶切会多切；建议更换 overhang 或酶")
 
 
 def run_design(
@@ -543,6 +562,13 @@ def run_design(
 
         # 4. 引物
         result.primers = design_primers_for_method(request, optimized_dna, vector, backbone)
+
+        # 4.0 Golden Gate：按完整扩增子数位点，引物尾与插入片段拼接处新生的位点也会多切
+        if request.cloning_method == CloningMethod.GOLDEN_GATE and result.primers:
+            gg_warning = _golden_gate_junction_warning(result.primers, optimized_dna,
+                                                       request.enzyme)
+            if gg_warning:
+                result.warnings.append(gg_warning)
 
         # 4.0 Gibson：骨架含 N 占位时同源臂不可信，明确告警
         if request.cloning_method == CloningMethod.GIBSON and "N" in backbone:

@@ -20,25 +20,38 @@ IUPAC 正则、环状跨原点扫描）。这里只做：
   （TaqI 也是 37 °C），不作为数据暴露
 """
 
+import os
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from core.enzyme_sites import (
-    DEFAULT_ENZYMES, get_enzyme, golden_gate_geometry, is_type_iis, scan_sites,
-    type_iis_enzymes,
+    DEFAULT_ENZYMES, get_enzyme, golden_gate_geometry, is_modification_dependent, is_type_iis,
+    scan_sites, type_iis_enzymes,
 )
 from core.plasmid_map.methylation import methylation_kinds, site_blocked_by
 
 GOLDEN_GATE_CANDIDATES = ("BsaI", "BsmBI", "BbsI", "SapI", "Esp3I", "PaqCI")
 
+# 位点明细上限：cut_count 仍是全部位点数，超出的 sites 截断并标 sites_truncated。
+# 单把酶超过 MAX_SITES_PER_ENZYME 只留前若干个；整份文档位点明细超过
+# MAX_TOTAL_SITES 时，从切点最多的酶起清空其明细（高频切酶在图上本就不画）
+MAX_SITES_PER_ENZYME = int(os.environ.get("MAP_MAX_SITES_PER_ENZYME", "500"))
+MAX_TOTAL_SITES = int(os.environ.get("MAP_MAX_TOTAL_SITES", "60000"))
+
 
 @lru_cache(maxsize=1)
 def _commercial_names() -> Tuple[str, ...]:
-    """REBASE 中有商业来源、单切割对、切点已知的全部酶（get_enzyme 认可）"""
+    """REBASE 中有商业来源、单切割对、切点已知的全部酶（get_enzyme 认可），
+    排除修饰依赖型酶（AbaSI / MspJI / FspEI 等，见 is_modification_dependent）"""
     from Bio import Restriction as _R
 
     names = sorted({e.__name__ for e in _R.CommOnly})
-    return tuple(n for n in names if get_enzyme(n) is not None)
+    out = []
+    for n in names:
+        spec = get_enzyme(n)
+        if spec is not None and not is_modification_dependent(spec):
+            out.append(n)
+    return tuple(out)
 
 
 def _specific_bases(site: str) -> int:
@@ -60,7 +73,8 @@ def enzyme_sets() -> Tuple[Dict, ...]:
          "description": "全部可商购、识别 ≥6 个确定碱基的酶；前端按 cut_count==1 筛选单切位点",
          "enzymes": list(unique6)},
         {"id": "commercial", "name": "全部商品酶",
-         "description": "REBASE（Bio.Restriction）中全部可商购、切点已知的单切割对酶",
+         "description": "REBASE（Bio.Restriction）中全部可商购、切点已知的单切割对酶"
+                        "（不含只切修饰 DNA 的修饰依赖型酶）",
          "enzymes": list(commercial)},
         {"id": "golden_gate", "name": "Golden Gate（Type IIS）",
          "description": "Golden Gate 组装常用 Type IIS 酶",
@@ -163,6 +177,7 @@ def enzyme_detail(name: str) -> Optional[Dict]:
         "ends": info["ends"],
         "overhang": info["overhang"],
         "type_iis": is_type_iis(spec),
+        "modification_dependent": is_modification_dependent(spec),
         "golden_gate": golden_gate_geometry(name) is not None,
         "suppliers": [{"code": c, "name": table.get(c, c)} for c in codes],
         # 同切酶：识别序列与切点都相同；新切酶：识别序列相同、切点不同
@@ -186,16 +201,19 @@ def _recognition(site: str, c1: int, c2: int) -> str:
     return f"{site}({c1 - size}/{c2 - size})"
 
 
-def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
+def scan_enzyme(seq: str, name: str, circular: bool,
+                max_sites: Optional[int] = None) -> Optional[Dict]:
     """单把酶 → MapEnzyme（不切返回带空 sites 的条目；未知酶返回 None）。
 
-    cut_count 统计全部识别位点，包括被甲基化阻断的（blocked_by 只是提示）"""
+    cut_count 统计全部识别位点，包括被甲基化阻断的（blocked_by 只是提示）；
+    max_sites 给定时 sites 只保留前 max_sites 个（按扫描顺序 = 位置），
+    截断时带 sites_truncated=true"""
     info = enzyme_info(name)
     if info is None:
         return None
     spec = info["spec"]
     length = len(seq)
-    sites = []
+    raw = []
     seen = set()
     for a, strand, cut_fwd, cut_rev in scan_sites(seq, spec, circular,
                                                   palindrome_both_strands=False):
@@ -212,7 +230,12 @@ def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
         if key in seen:
             continue
         seen.add(key)
-        sign = 1 if strand == "+" else -1
+        raw.append((a, 1 if strand == "+" else -1, top, bottom, raw_top, raw_bottom))
+    raw.sort(key=lambda r: (r[0], r[1]))
+    keep = raw if max_sites is None else raw[:max_sites]
+    sites = []
+    # 明细（突出端、甲基化阻断）只为保留的位点生成
+    for a, sign, top, bottom, raw_top, raw_bottom in keep:
         site = {
             "position": a + 1,
             "cut_top": top,
@@ -225,15 +248,16 @@ def scan_enzyme(seq: str, name: str, circular: bool) -> Optional[Dict]:
         if blocked:
             site["blocked_by"] = blocked
         sites.append(site)
-    sites.sort(key=lambda s: (s["position"], s["strand"]))
     out = {
         "name": name,
         "recognition": info["recognition"],
         "ends": info["ends"],
         "overhang": info["overhang"],
-        "cut_count": len(sites),
+        "cut_count": len(raw),
         "sites": sites,
     }
+    if len(sites) < len(raw):
+        out["sites_truncated"] = True
     if info["methylation"]:
         out["methylation"] = list(info["methylation"])
     return out
@@ -267,12 +291,28 @@ def resolve_enzymes(enzyme_set: str = "common",
     return names, warnings
 
 
-def find_map_enzymes(seq: str, names: Iterable[str], circular: bool) -> List[Dict]:
-    """扫描一组酶，只返回至少切一次的（契约：cut_count >= 1），按名称排序"""
+def find_map_enzymes(seq: str, names: Iterable[str], circular: bool,
+                     warnings: Optional[List[str]] = None) -> List[Dict]:
+    """扫描一组酶，只返回至少切一次的（契约：cut_count >= 1），按名称排序。
+
+    位点明细受 MAX_SITES_PER_ENZYME / MAX_TOTAL_SITES 约束（cut_count 不受影响），
+    截断的酶带 sites_truncated=true，并在 warnings 里列出"""
     out = []
     for n in names:
-        e = scan_enzyme(seq, n, circular)
+        e = scan_enzyme(seq, n, circular, max_sites=MAX_SITES_PER_ENZYME)
         if e and e["cut_count"] >= 1:
             out.append(e)
+    total = sum(len(e["sites"]) for e in out)
+    if total > MAX_TOTAL_SITES:
+        for e in sorted(out, key=lambda e: (-e["cut_count"], e["name"])):
+            if total <= MAX_TOTAL_SITES:
+                break
+            total -= len(e["sites"])
+            e["sites"] = []
+            e["sites_truncated"] = True
+    truncated = [e["name"] for e in out if e.get("sites_truncated")]
+    if truncated and warnings is not None:
+        shown = "、".join(truncated[:10]) + (f" 等 {len(truncated)} 种" if len(truncated) > 10 else "")
+        warnings.append(f"{shown}酶切位点过多，只返回部分位点明细（cut_count 为完整计数）")
     out.sort(key=lambda e: e["name"].lower())
     return out
