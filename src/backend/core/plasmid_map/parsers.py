@@ -305,12 +305,13 @@ def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> Pa
                            warns, snapgene_colors=colors)
 
 
-def _snapgene_feature_colors(data: bytes) -> List[Optional[str]]:
+def _snapgene_feature_colors(data: bytes) -> List[Tuple[str, Optional[str]]]:
     """SnapGene 特征颜色存在 Segment 的 color 属性里，Bio.SeqIO 不读：
-    这里按文件中特征出现顺序取第一段颜色（与 SeqIO 的非引物特征顺序一致）"""
+    这里按文件中特征出现顺序取 (特征名, 第一段颜色)，由 _take_snapgene_color
+    按名称与 SeqIO 特征对齐（不再单纯按序号，避免中途错位后整体张冠李戴）"""
     from xml.dom.minidom import parseString
 
-    colors: List[Optional[str]] = []
+    colors: List[Tuple[str, Optional[str]]] = []
     pos = 0
     try:
         while pos + 5 <= len(data):
@@ -328,15 +329,34 @@ def _snapgene_feature_colors(data: bytes) -> List[Optional[str]]:
                         continue
                     color = normalize_color(seg.getAttribute("color"))
                     break
-                colors.append(color)
+                colors.append((feat.getAttribute("name") or "", color))
     except Exception:
         return []
     return colors
 
 
+_SG_COLOR_LOOKAHEAD = 4
+
+
+def _take_snapgene_color(queue: List[Tuple[str, Optional[str]]], pos: List[int],
+                         sf) -> Optional[str]:
+    """按 SnapGene 特征名把 XML 里的颜色对到 SeqIO 特征上（Bio 把 SnapGene 名
+    写进 label，label 另有时写进 name）。允许跳过少量未对上的 XML 条目；
+    对不上就不给颜色，也不消耗队列"""
+    q = sf.qualifiers or {}
+    names = {str(v) for key in ("name", "label") for v in (q.get(key) or [])}
+    i = pos[0]
+    for j in range(i, min(len(queue), i + _SG_COLOR_LOOKAHEAD)):
+        if queue[j][0] in names:
+            pos[0] = j + 1
+            return queue[j][1]
+    return None
+
+
 def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
                     topology, warns: List[str],
-                    snapgene_colors: Optional[List[Optional[str]]] = None) -> ParsedRecord:
+                    snapgene_colors: Optional[List[Tuple[str, Optional[str]]]] = None
+                    ) -> ParsedRecord:
     try:
         raw_seq = str(record.seq)
     except Exception as e:  # 未定义序列（Bio UndefinedSequenceError）
@@ -350,7 +370,8 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
 
     length = len(seq)
     circular = rec.topology == "circular"
-    color_iter = iter(snapgene_colors or [])
+    color_queue = list(snapgene_colors or [])
+    color_pos = [0]
     cds_spans = set()
     pending_genes: List[Tuple[Dict, Tuple]] = []
     dropped = 0
@@ -362,7 +383,7 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
     for sf in record.features:
         if sf.type == "source":
             continue
-        sg_color = next(color_iter, None) if sf.type != "primer_bind" else None
+        sg_color = _take_snapgene_color(color_queue, color_pos, sf) if color_queue else None
         try:
             built = _feature_from_seqfeature(sf, length, circular, sg_color)
         except Exception:
