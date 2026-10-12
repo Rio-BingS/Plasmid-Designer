@@ -100,6 +100,15 @@
 
 ### 修复
 
+- 批量设计页选 Golden Gate 时从不发送 `enzyme`，而 Golden Gate 缺酶的设计请求
+  自 v2.6.0 起直接 422，整批提交必然失败。批量页新增 Type IIS 酶选择器（候选来自
+  `GET /api/analysis/enzymes` 的 `golden_gate_enzymes`，默认 BsaI）并随请求下发。
+  服务端维持原契约、**不**为批量接口回落默认 BsaI：静默套酶会产出错误引物，
+  批量与单条保持同一校验（整批请求在提交时 422，不创建任务）；逐条失败原因
+  改为只给业务消息，不再夹带 pydantic 样板文字。
+- 单条设计页在后端酶表不含 BsaI 时，会把 Golden Gate 的酶回退成全酶表首项
+  （可能是 EcoRI 这类非 Type IIS 酶），提交即 422；改为只在 Golden Gate 候选内回退。
+  两个设计页的提交错误改用统一格式化，422 的数组 `detail` 不再显示为 `[object Object]`。
 - Golden Gate 引物对 BbsI 的间隔碱基数错误（一律写 1 个，BbsI 需 2 个），切下的
   overhang 错位一位；现按各酶切割偏移计算，并以「引物装回扩增产物再酶切」的测试守护。
 - 经典双酶切拒绝 Type IIS 酶改按 REBASE 判定：手写名单之外的 Type IIS 酶（如 FokI）
