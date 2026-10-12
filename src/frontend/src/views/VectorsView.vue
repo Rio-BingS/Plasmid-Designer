@@ -87,7 +87,7 @@ const sgSetId = ref('')
 const sgRows = ref<any[]>([])
 const sgLoading = ref(false)
 const sgError = ref('')
-// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// SnapGene 在线库默认开启（SNAPGENE_ONLINE_ENABLED=false 可关）且只对登录用户开放：
 // 两者都满足才显示页签（后端仍是权威：关 → 404，匿名 → 401）
 const snapgeneEnabled = ref(false)
 const snapgeneAvailable = computed(() => snapgeneEnabled.value && loggedIn.value)

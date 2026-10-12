@@ -251,7 +251,7 @@ export interface OnlineSourceInfo {
   requires_login?: boolean
   /** 部署方是否配置了用户自备凭据（Addgene 会话 Cookie） */
   session_configured?: boolean
-  /** 该来源是否已由部署方开启（SnapGene 在线库默认关闭：SNAPGENE_ONLINE_ENABLED） */
+  /** 该来源是否已由部署方开启（SnapGene 在线库默认开启，部署方可用 SNAPGENE_ONLINE_ENABLED=false 关闭） */
   enabled?: boolean
 }
 
