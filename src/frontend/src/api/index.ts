@@ -251,6 +251,8 @@ export interface OnlineSourceInfo {
   requires_login?: boolean
   /** 部署方是否配置了用户自备凭据（Addgene 会话 Cookie） */
   session_configured?: boolean
+  /** 该来源是否已由部署方开启（SnapGene 在线库默认关闭：SNAPGENE_ONLINE_ENABLED） */
+  enabled?: boolean
 }
 
 export interface OnlinePreview {
@@ -266,7 +268,13 @@ export interface OnlinePreview {
   license: string
 }
 
-export async function getOnlineSources(): Promise<{ enabled: boolean; disclaimer: string; sources: OnlineSourceInfo[] }> {
+export async function getOnlineSources(): Promise<{
+  enabled: boolean
+  /** SnapGene 在线库开关（默认 false）；开启后也只对已登录用户开放 */
+  snapgene_online_enabled?: boolean
+  disclaimer: string
+  sources: OnlineSourceInfo[]
+}> {
   const response = await api.get('/vectors/import/sources')
   return response.data
 }

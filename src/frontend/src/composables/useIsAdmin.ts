@@ -15,3 +15,10 @@ export function useIsAdmin(): ComputedRef<boolean> {
   const auth = useAuthStore()
   return computed(() => auth.isAdmin)
 }
+
+/** 是否已登录（同样在无 pinia 时降级为 false）——SnapGene 在线库只对登录用户开放 */
+export function useIsAuthenticated(): ComputedRef<boolean> {
+  if (!getActivePinia()) return computed(() => false)
+  const auth = useAuthStore()
+  return computed(() => auth.isAuthenticated)
+}
