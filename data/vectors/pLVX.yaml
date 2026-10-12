@@ -20,90 +20,90 @@ features:
   description: 5' long terminal repeat (LTR) from HIV-1
 - name: HIV-1 ψ
   type: other
-  start: 680
+  start: 681
   end: 806
   strand: +
   description: packaging signal of human immunodeficiency virus type 1
 - name: RRE
   type: other
-  start: 1302
+  start: 1303
   end: 1536
   strand: +
   description: The Rev response element (RRE) of HIV-1 allows for Rev-dependent
     mRNA export from the nucleus to the cytoplasm.
 - name: cPPT/CTS
   type: other
-  start: 2027
+  start: 2028
   end: 2144
   strand: +
   description: central polypurine tract and central termination sequence
     of HIV-1 (lacking the first T)
 - name: CMV enhancer
   type: other
-  start: 2200
+  start: 2201
   end: 2504
   strand: +
   description: human cytomegalovirus immediate early enhancer
 - name: CMV promoter
   type: promoter
-  start: 2504
+  start: 2505
   end: 2708
   strand: +
   description: human cytomegalovirus (CMV) immediate early promoter
 - name: MCS
   type: multiple_cloning_site
-  start: 2802
+  start: 2803
   end: 2840
   strand: +
   description: multiple cloning site
 - name: IRES
   type: other
-  start: 2842
+  start: 2843
   end: 3416
   strand: +
   description: internal ribosome entry site (IRES) of the encephalomyocarditis
     virus (EMCV)
 - name: PuroR
   type: resistance
-  start: 3448
+  start: 3449
   end: 4048
   strand: +
   description: confers resistance to puromycin
 - name: WPRE
   type: other
-  start: 4061
+  start: 4062
   end: 4650
   strand: +
   description: woodchuck hepatitis virus posttranscriptional regulatory
     element
 - name: 3' LTR
   type: other
-  start: 4856
+  start: 4857
   end: 5490
   strand: +
   description: 3' long terminal repeat (LTR) from HIV-1
 - name: ori
   type: origin
-  start: 6019
+  start: 6020
   end: 6608
   strand: '-'
   description: high-copy-number ColE1/pMB1/pBR322/pUC origin of replication
 - name: AmpR
   type: resistance
-  start: 6778
+  start: 6779
   end: 7639
   strand: '-'
   description: confers resistance to ampicillin, carbenicillin, and related
     antibiotics
 - name: AmpR promoter
   type: promoter
-  start: 7639
+  start: 7640
   end: 7744
   strand: '-'
   description: 'color: #ffffff'
 mcs:
   name: MCS
-  start: 665
+  start: 2803
   end: 2840
   frame: 1
   sites:
@@ -126,11 +126,6 @@ mcs:
     sequence: GCGGCCGC
     position: 2827
     overhang: GGCCGC
-    unique: true
-  - enzyme: AgeI
-    sequence: ACCGGT
-    position: 665
-    overhang: CCGG
     unique: true
 data_provenance:
   source: SnapGene Plasmid Library

@@ -15,7 +15,8 @@ const FEATURE_LABELS: Record<string, string> = {
   sequencing: '测序分析',
   sequencing_batch: '批量测序分析',
   analysis: '序列工具',
-  codon: '密码子表'
+  codon: '密码子表',
+  map: '质粒图谱'
 }
 
 const label = computed(() => FEATURE_LABELS[String(route.query.feature)] || '该功能')

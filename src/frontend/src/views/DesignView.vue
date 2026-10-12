@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignRequest, VectorInfo, CodonTable } from '@/types'
-import { submitDesign, getVectors, getCodonTables, getEnzymes } from '@/api'
+import { submitDesign, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 
 const router = useRouter()
@@ -68,9 +68,13 @@ const enzymeMap = computed(() =>
   Object.keys(availableEnzymeMap.value).length ? availableEnzymeMap.value : FALLBACK_ENZYME_MAP
 )
 
-// Golden Gate：仅 Type IIS 酶
+// Golden Gate：后端给出的候选酶（REBASE 数据驱动，BsaI/BsmBI/BbsI 在前）；
+// 旧后端没有该字段时回退到酶表里标了 is_type_iis 的酶
+const goldenGateEnzymes = ref<{ name: string; recognition_sequence: string }[]>([])
 const ggEnzymeMap = computed(() => {
   const out: Record<string, { recognition_sequence: string }> = {}
+  for (const e of goldenGateEnzymes.value) out[e.name] = { recognition_sequence: e.recognition_sequence }
+  if (Object.keys(out).length) return out
   for (const [name, meta] of Object.entries(enzymeMap.value)) {
     if (meta.is_type_iis) out[name] = { recognition_sequence: meta.recognition_sequence || '' }
   }
@@ -141,7 +145,7 @@ async function handleSubmit() {
     router.push(`/result/${result.design_id}`)
 
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message || '提交失败，请重试'
+    error.value = formatApiError(e, '提交失败，请重试')
   } finally {
     isSubmitting.value = false
   }
@@ -175,9 +179,13 @@ onMounted(async () => {
   try {
     const enzymeData = await getEnzymes()
     availableEnzymeMap.value = enzymeData.enzymes || {}
+    goldenGateEnzymes.value = Array.isArray(enzymeData.golden_gate_enzymes) ? enzymeData.golden_gate_enzymes : []
     availableEnzymes.value = Object.keys(enzymeData.enzymes || {})
-    if (availableEnzymes.value.length && !availableEnzymes.value.includes(enzyme.value)) {
-      enzyme.value = availableEnzymes.value[0]
+    // enzyme 只用于 Golden Gate：回退须落在 Type IIS 候选内，
+    // 退到全酶表首项（如 EcoRI）会让 Golden Gate 提交直接 422
+    const ggNames = Object.keys(ggEnzymeMap.value)
+    if (ggNames.length && !ggNames.includes(enzyme.value)) {
+      enzyme.value = ggNames[0]
     }
   } catch (e) { console.warn('Failed to load enzymes:', e) }
 })

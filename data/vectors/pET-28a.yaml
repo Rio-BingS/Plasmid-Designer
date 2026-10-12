@@ -23,93 +23,93 @@ tags:
 features:
 - name: T7 terminator
   type: terminator
-  start: 25
+  start: 26
   end: 73
   strand: +
   description: transcription terminator for bacteriophage T7 RNA polymerase
 - name: 6xHis
   type: tag
-  start: 139
+  start: 140
   end: 157
   strand: '-'
   description: 'color: #cc99b2'
 - name: MCS
   type: multiple_cloning_site
-  start: 157
+  start: 158
   end: 203
   strand: +
   description: multiple cloning site
 - name: T7 tag
   type: tag
-  start: 206
+  start: 207
   end: 239
   strand: '-'
   description: 'color: #cc99b2'
 - name: thrombin site
   type: CDS
-  start: 242
+  start: 243
   end: 260
   strand: '-'
   description: 'color: #cc99b2'
 - name: 6xHis
   type: tag
-  start: 269
+  start: 270
   end: 287
   strand: '-'
   description: 'color: #cc99b2'
 - name: RBS
   type: regulatory
-  start: 306
+  start: 307
   end: 312
   strand: +
   description: ribosome binding site
 - name: lac operator
   type: regulatory
-  start: 342
+  start: 343
   end: 367
   strand: +
   description: The lac repressor binds to the lac operator to inhibit transcription
     in E. coli. This inhibition can be relieved by addi
 - name: T7 promoter
   type: promoter
-  start: 367
+  start: 368
   end: 386
   strand: '-'
   description: promoter for bacteriophage T7 RNA polymerase
 - name: lacI promoter
   type: promoter
-  start: 694
+  start: 695
   end: 772
   strand: +
   description: lacI promoter
 - name: lacI
   type: CDS
-  start: 772
+  start: 773
   end: 1855
   strand: +
   description: The lac repressor binds to the lac operator to inhibit transcription
     in E. coli. This inhibition can be relieved by addi
 - name: rop
   type: CDS
-  start: 2663
+  start: 2664
   end: 2855
   strand: +
   description: 'color: #993366'
 - name: ori
   type: origin
-  start: 3284
+  start: 3285
   end: 3873
   strand: '-'
   description: high-copy-number ColE1/pMB1/pBR322/pUC origin of replication
 - name: KanR
   type: resistance
-  start: 3994
+  start: 3995
   end: 4810
   strand: +
   description: confers resistance to kanamycin
 - name: f1 ori
   type: origin
-  start: 4902
+  start: 4903
   end: 5358
   strand: '-'
   description: f1 bacteriophage origin of replication; arrow indicates direction

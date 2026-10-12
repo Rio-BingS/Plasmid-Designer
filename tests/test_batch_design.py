@@ -208,5 +208,110 @@ class TestBatchHelpers:
         assert chunks[-1] == ["E"]
 
 
+# ==================== Golden Gate 酶校验回归 ====================
+
+class TestBatchGoldenGateEnzyme:
+    """回归：批量 Golden Gate 必须显式指定 Type IIS 酶，与单条设计同一口径
+
+    bug：批量设计页从不发送 enzyme，而 Golden Gate 缺酶时请求 422，
+    整批提交直接失败。服务端刻意不回落 BsaI（静默套酶会产出错误引物）。
+    """
+
+    def test_golden_gate_without_enzyme_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="Golden Gate 需指定 Type IIS 酶"):
+            BatchDesignRequest(sequences=["ATGAAA"], cloning_method="golden_gate")
+
+    def test_golden_gate_unsupported_enzyme_rejected(self):
+        from pydantic import ValidationError
+
+        # EcoRI 不是 Type IIS，不能用于 Golden Gate
+        with pytest.raises(ValidationError, match="不支持的 Golden Gate 酶"):
+            BatchDesignRequest(
+                sequences=["ATGAAA"], cloning_method="golden_gate", enzyme="EcoRI"
+            )
+
+    def test_golden_gate_with_enzyme_accepted(self):
+        request = BatchDesignRequest(
+            sequences=["ATGAAA"], cloning_method="golden_gate", enzyme="BsaI"
+        )
+        assert request.enzyme == "BsaI"
+
+    def test_no_server_side_default_enzyme(self):
+        """批量 API 不替调用方兜底默认酶：未指定方法时 enzyme 保持 None"""
+        request = BatchDesignRequest(sequences=["ATGAAA"])
+        assert request.enzyme is None
+
+    def test_batch_endpoint_422_lists_candidate_enzymes(self):
+        """端点层：缺酶/错酶的 Golden Gate 批量请求返回 422，且不创建任务"""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.routes import batch_routes
+
+        client = TestClient(app)
+        body = {
+            "sequences": ["MKVLWAALLTFLGCAATSG"],
+            "sequence_type": "amino_acid",
+            "cloning_method": "golden_gate",
+        }
+        before = len(batch_routes.batch_jobs)
+
+        resp = client.post("/api/design/batch", json=body)
+        assert resp.status_code == 422
+        assert "Golden Gate" in str(resp.json()["detail"])
+
+        resp = client.post("/api/design/batch", json={**body, "enzyme": "EcoRI"})
+        assert resp.status_code == 422
+        assert "BsaI" in str(resp.json()["detail"])
+
+        assert len(batch_routes.batch_jobs) == before
+
+    def test_batch_task_forwards_enzyme_to_each_row(self, monkeypatch):
+        """后台任务逐条构造 DesignRequest 时把批量的 enzyme 原样带下去"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        seen = []
+
+        def fake_run_design(design_id, single):
+            seen.append((single.cloning_method.value, single.enzyme))
+            return DesignResult(
+                design_id=design_id, status=DesignStatus.COMPLETED,
+                input_sequence=single.sequence, optimized_sequence="ATG",
+                construct_sequence="ATG", vector_id=single.vector_id,
+                cloning_method=single.cloning_method.value, created_at=datetime.now(),
+            )
+
+        monkeypatch.setattr(batch_routes, "run_design", fake_run_design)
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], cloning_method="golden_gate", enzyme="BsmBI"
+        )
+        job = BatchDesignStatus(batch_id="batch_ggfwd0001", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+
+        assert seen == [("golden_gate", "BsmBI"), ("golden_gate", "BsmBI")]
+        done = batch_routes._load_batch(job.batch_id)
+        assert done.completed == 2 and done.failed == 0
+
+    def test_batch_row_error_message_is_readable(self):
+        """逐条失败原因不带 pydantic 样板，直接给业务消息"""
+        from pydantic import ValidationError
+        from app.routes.batch_routes import _format_row_error
+        from app.routes.models import DesignRequest
+
+        try:
+            DesignRequest(sequence="ATGAAA", cloning_method="golden_gate")
+        except ValidationError as exc:
+            text = _format_row_error(exc)
+        assert "Golden Gate 需指定 Type IIS 酶" in text
+        assert "validation error" not in text
+        assert "value_error" not in text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

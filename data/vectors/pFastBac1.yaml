@@ -27,62 +27,62 @@ features:
     of (+) strand synthesis
 - name: AmpR promoter
   type: promoter
-  start: 483
+  start: 484
   end: 588
   strand: +
   description: 'color: #ffffff'
 - name: AmpR
   type: resistance
-  start: 588
+  start: 589
   end: 1449
   strand: +
   description: confers resistance to ampicillin, carbenicillin, and related
     antibiotics
 - name: ori
   type: origin
-  start: 1619
+  start: 1620
   end: 2208
   strand: +
   description: high-copy-number ColE1/pMB1/pBR322/pUC origin of replication
 - name: Tn7R
   type: other
-  start: 2510
+  start: 2511
   end: 2735
   strand: +
   description: mini-Tn7 element (right end of the Tn7 transposon)
 - name: GmR
   type: CDS
-  start: 2801
+  start: 2802
   end: 3335
   strand: '-'
   description: confers resistance to gentamycin
 - name: Pc promoter
   type: promoter
-  start: 3523
+  start: 3524
   end: 3552
   strand: '-'
   description: class 1 integron promoter
 - name: polyhedrin promoter
   type: promoter
-  start: 3903
+  start: 3904
   end: 3995
   strand: +
   description: promoter for the baculovirus polyhedrin gene
 - name: MCS
   type: multiple_cloning_site
-  start: 4031
+  start: 4032
   end: 4142
   strand: +
   description: multiple cloning site
 - name: SV40 poly(A) signal
   type: other
-  start: 4265
+  start: 4266
   end: 4400
   strand: +
   description: SV40 polyadenylation signal
 - name: Tn7L
   type: other
-  start: 4428
+  start: 4429
   end: 4594
   strand: +
   description: mini-Tn7 element (left end of the Tn7 transposon)

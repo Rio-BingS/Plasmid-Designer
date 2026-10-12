@@ -41,6 +41,13 @@ defineExpose({ open: () => { visible.value = true } })
               <li>内置载体数据来自 <a href="https://www.snapgene.com/plasmids" target="_blank" rel="noopener">SnapGene</a>、
                 <a href="https://www.ncbi.nlm.nih.gov/" target="_blank" rel="noopener">NCBI</a> 等公开来源并记录出处，
                 但<strong>未经独立实验验证</strong>，使用前请自行核对；</li>
+              <li class="disclaimer-sources">限制性内切酶数据（识别序列、切点、厂商、同切酶）来自
+                <a href="http://rebase.neb.com/rebase/rebase.html" target="_blank" rel="noopener">REBASE</a>（经 Biopython Bio.Restriction）：
+                Roberts R.J., Vincze T., Posfai J., Macelis D. REBASE: a database for DNA restriction and modification:
+                enzymes, genes and genomes. <em>Nucleic Acids Res.</em> 51:D629-D630 (2023),
+                <a href="https://doi.org/10.1093/nar/gkac975" target="_blank" rel="noopener">doi:10.1093/nar/gkac975</a>；
+                图谱页的 accession 导入经 <a href="https://www.ncbi.nlm.nih.gov/books/NBK25501/" target="_blank" rel="noopener">NCBI E-utilities</a>
+                获取 GenBank 记录，感谢 NCBI 提供公开数据；</li>
               <li>任何实际实验（含克隆、测序、合成）请由具备资质的专业人员<strong>复核确认</strong>后进行，使用本站结果产生的一切后果由使用者自行承担。</li>
             </ul>
           </div>

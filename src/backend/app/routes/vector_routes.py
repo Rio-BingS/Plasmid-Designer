@@ -11,22 +11,26 @@ import tempfile
 import shutil
 from typing import List, Optional, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.cache import cache
 from app.config import settings
 from app.design_service import get_vector_library, invalidate_vector_library_cache
+from app.map_documents import vector_map_preview
 from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import format_locus_line
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
-    BatchImportRequest, PlasmidMapData
+    BatchImportRequest, MapDocument
 )
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
+
+# 列表响应形状版本，进缓存键：形状变化（如新增 map_preview）后不读旧缓存
+VECTOR_LIST_SHAPE = 2
 
 
 def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
@@ -57,8 +61,8 @@ async def list_vectors(
     vector_type: Optional[str] = None,
     host: Optional[str] = None
 ):
-    """列出所有可用载体"""
-    filters = {"vector_type": vector_type, "host": host}
+    """列出所有可用载体（每项附 map_preview 供列表缩略图）"""
+    filters = {"vector_type": vector_type, "host": host, "shape": VECTOR_LIST_SHAPE}
 
     cached_list = cache.get_vector_list(filters)
     if cached_list is not None:
@@ -86,7 +90,8 @@ async def list_vectors(
             copy_number=v.copy_number,
             description=v.description,
             features=[{"name": e.name, "type": e.element_type.value} for e in v.elements],
-            mcs_enzymes=mcs_enzymes
+            mcs_enzymes=mcs_enzymes,
+            map_preview=vector_map_preview(v),
         ))
 
     try:
@@ -240,47 +245,32 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
     )
 
 
-@router.get("/{vector_id}/map", response_model=PlasmidMapData)
-async def get_vector_map_data(vector_id: str):
-    """获取载体图谱数据"""
+@router.get("/{vector_id}/map", responses={200: {"model": MapDocument}})
+async def get_vector_map_data(
+    vector_id: str,
+    enzyme_set: str = Query(default="common", max_length=40),
+    orf_min_aa: int = Query(default=100, ge=10, le=5000),
+):
+    """载体图谱（契约 plasmid-map/1，特征 source=vector）"""
+    import hashlib
+
+    from app.map_documents import vector_map_document
+    from app.routes.map_routes import cached_document
+
     library = get_vector_library()
     vector = library.get_vector(vector_id)
-
     if not vector:
         raise HTTPException(status_code=404, detail="Vector not found")
-
-    features = []
-    for elem in vector.elements:
-        features.append({
-            "name": elem.name,
-            "type": elem.element_type.value,
-            "start": elem.start,
-            "end": elem.end,
-            "strand": elem.strand,
-            "description": elem.description
-        })
-
-    # 如果没有定义特征，添加基本注释
-    if not features and vector.mcs:
-        features.append({
-            "name": vector.mcs.name,
-            "type": "multiple_cloning_site",
-            "start": vector.mcs.start,
-            "end": vector.mcs.end,
-            "strand": "+",
-            "description": "Multiple Cloning Site"
-        })
-
-    from core.enzyme_sites import find_enzyme_sites
-
-    return PlasmidMapData(
-        name=vector.name,
-        length=vector.length,
-        # 序列视图需要完整序列（量级 ~10kb，无需截断）
-        sequence=vector.sequence,
-        features=features,
-        enzyme_sites=find_enzyme_sites(vector.sequence),
-    )
+    key = {
+        "vector": vector_id,
+        "seq": hashlib.sha256(vector.sequence.encode("utf-8")).hexdigest(),
+        "features": [(e.name, e.element_type.value, e.start, e.end, e.strand, e.description)
+                     for e in vector.elements],
+        "mcs": [vector.mcs.start, vector.mcs.end] if vector.mcs else None,
+        "enzyme_set": enzyme_set, "orf_min_aa": orf_min_aa,
+    }
+    return await cached_document("vector", key, vector_map_document, vector,
+                                 enzyme_set=enzyme_set, orf_min_aa=orf_min_aa)
 
 
 # ==================== NCBI 导入路由 ====================
