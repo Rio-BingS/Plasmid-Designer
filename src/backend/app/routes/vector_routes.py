@@ -24,13 +24,13 @@ from core.genbank_format import format_locus_line
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
-    BatchImportRequest, MapDocument
+    BatchImportRequest, MapDocument, SaveMapAsVectorRequest, MAP_MAX_LENGTH
 )
 
 router = APIRouter(prefix="/api/vectors", tags=["vectors"])
 
-# 列表响应形状版本，进缓存键：形状变化（如新增 map_preview）后不读旧缓存
-VECTOR_LIST_SHAPE = 2
+# 列表响应形状版本，进缓存键：形状变化（如新增 map_preview / data_provenance / topology）后不读旧缓存
+VECTOR_LIST_SHAPE = 4
 
 
 def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
@@ -91,7 +91,9 @@ async def list_vectors(
             description=v.description,
             features=[{"name": e.name, "type": e.element_type.value} for e in v.elements],
             mcs_enzymes=mcs_enzymes,
+            topology="linear" if v.topology == "linear" else "circular",
             map_preview=vector_map_preview(v),
+            data_provenance=dict(v.provenance),
         ))
 
     try:
@@ -126,7 +128,9 @@ async def get_vector(vector_id: str):
         copy_number=vector.copy_number,
         description=vector.description,
         features=[{"name": e.name, "type": e.element_type.value} for e in vector.elements],
-        mcs_enzymes=mcs_enzymes
+        mcs_enzymes=mcs_enzymes,
+        topology="linear" if vector.topology == "linear" else "circular",
+        data_provenance=dict(vector.provenance),
     )
 
     try:
@@ -371,7 +375,7 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
     GenBankImporter，.dna 二进制被当文本读 → 序列为空、特征全丢。
     """
     from core.plasmid_map.parsers import MapParseError, parse_file
-    from app.vector_import import save_record
+    from app.vector_import import provenance_block, save_record
 
     filename = (file.filename or "").lower()
     if not filename.endswith(('.gb', '.gbk', '.genbank', '.gbff', '.fa', '.fasta', '.fna', '.dna')):
@@ -410,6 +414,9 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
             source=source,
             vectors_dir=config.settings.VECTORS_DIR,
             attribution="来源：本地上传文件",
+            provenance=provenance_block(
+                "本地上传文件", filename=file.filename or "",
+                format=record.source_format, license="用户自备文件，版权归原出处"),
         )
         invalidate_vector_library_cache()
         _invalidate_vector_cache(result["id"])
@@ -425,6 +432,38 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
         }
     finally:
         os.unlink(tmp_path)
+
+
+@router.post("/import/from-map")
+async def save_map_as_vector(request: SaveMapAsVectorRequest, _: object = Depends(get_admin_user)):
+    """图谱页当前（可编辑）序列与注释 → 载体库（需管理员）
+
+    序列与特征由图谱页直接提交，后端不再外呼：与用户眼前那份图谱是同一份数据，
+    避免重新下载导致「保存的」与「看到的」不是一条序列。
+    """
+    from core.plasmid_map.parsers import MapParseError
+    from app.vector_import import provenance_block, record_from_parts, save_record
+
+    try:
+        record = record_from_parts(
+            name=request.name, sequence=request.sequence, topology=request.topology,
+            features=[f.model_dump() for f in request.features], max_length=MAP_MAX_LENGTH)
+    except MapParseError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    source = request.source or "map"
+    result = await run_in_threadpool(
+        save_record, record,
+        source=source,
+        vectors_dir=config.settings.VECTORS_DIR,
+        url=request.url,
+        description=request.description,
+        provenance=provenance_block("图谱页保存", url=request.url, origin=source,
+                                    license="由图谱页保存，序列与注释版权归原出处"),
+    )
+    invalidate_vector_library_cache()
+    _invalidate_vector_cache(result["id"])
+    return {"success": True, "vector": result}
 
 
 def _run_batch_import(request: BatchImportRequest) -> Dict:

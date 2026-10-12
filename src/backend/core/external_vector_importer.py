@@ -322,7 +322,15 @@ class VectorLibraryManager:
                 'sequence': vector.sequence,
                 'description': vector.description,
                 'features': features,
-                'url': vector.url
+                'url': vector.url,
+                # 结构化出处（与内置载体/在线导入同形状）：NCBI 来源可追溯到 accession
+                'data_provenance': {
+                    k: v for k, v in {
+                        'source': vector.source or 'NCBI',
+                        'url': vector.url or '',
+                        'fetched_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                    }.items() if v
+                },
             }
             with open(filepath, 'w', encoding='utf-8') as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)

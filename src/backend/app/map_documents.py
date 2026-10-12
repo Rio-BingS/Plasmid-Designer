@@ -80,6 +80,11 @@ def _vector_features(vector) -> List[Dict]:
     return feats
 
 
+def _vector_topology(vector) -> str:
+    """载体拓扑（linear/circular）：导入的线性片段不能被当环状画（默认环状）"""
+    return "linear" if str(getattr(vector, "topology", "") or "").lower() == "linear" else "circular"
+
+
 def vector_map_preview(vector) -> Optional[Dict]:
     """载体列表缩略图用的轻量图谱（GET /api/vectors 的 map_preview）：
     与 /api/vectors/{id}/map 同一套类型归一，但不带序列、酶切与 ORF。
@@ -92,14 +97,14 @@ def vector_map_preview(vector) -> Optional[Dict]:
         if not (1 <= f["start"] <= length and 1 <= f["end"] <= length):
             continue
         feats.append({k: f[k] for k in ("name", "type", "start", "end", "strand")})
-    return {"length": length, "topology": "circular", "features": feats}
+    return {"length": length, "topology": _vector_topology(vector), "features": feats}
 
 
 def vector_map_document(vector, enzyme_set: str = "common", orf_min_aa: int = 100) -> Dict:
     seq = clean_sequence(vector.sequence)
     feats = _vector_features(vector)
     return build_document(
-        name=vector.name, sequence=seq, topology="circular", source_format="vector",
+        name=vector.name, sequence=seq, topology=_vector_topology(vector), source_format="vector",
         features=feats, warnings=[], annotate=None if not feats else False,
         enzyme_set=enzyme_set, orf_min_aa=orf_min_aa,
     )
