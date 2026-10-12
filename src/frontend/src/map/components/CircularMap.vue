@@ -19,12 +19,13 @@ import {
 } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import {
-  enzymePriority, featurePriority, fitsInside, layoutCircularLabels, type CircularLabelInput,
+  enzymePriority, featurePriority, internalArcLabel, layoutCircularLabels, type CircularLabelInput,
+  type CircularLabelLayout,
 } from '../core/labels'
 import { cutStyle, overviewCuts } from '../core/enzymes'
-import { darken, featureColor, textOn } from '../core/palette'
+import { darken, featureColor, textOn, tint } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
-import { textWidth, truncateText } from '../core/text'
+import { MAP_FONT, textWidth, truncateText } from '../core/text'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
 
@@ -52,9 +53,49 @@ const cy = computed(() => S.value / 2)
 /** 窄屏（手机）：小一号字、更窄的标签栏，把空间让给环 */
 const compact = computed(() => S.value < 440)
 const FONT = computed(() => (compact.value ? 10 : 11))
+/** 酶标签里切点位置的字号（小一号、灰色） */
+const POS_FONT = computed(() => FONT.value - 1.5)
+const showPos = computed(() => !compact.value)
+/** 纯文字标签行高 / 色块标签（环外特征名）行高与左右内边距 */
+const ROW_H = computed(() => FONT.value + 3)
+const CHIP_H = computed(() => FONT.value + 6)
+const CHIP_PAD = 5
+/** 同一切点合并成一行时最多列出几个酶名，其余写 +N */
+const GROUP_MAX = 3
 /** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
 const MAX_OVERVIEW_CUTS = 360
 const overview = computed(() => overviewCuts(store.cuts.value, MAX_OVERVIEW_CUTS))
+const hasPrimers = computed(() => store.primers.value.length > 0)
+
+/** 同一切点的酶合并为一个标签（SnapGene：`EagI - NotI (423)`） */
+interface CutGroup { key: string; cut: number; members: CutGeom[] }
+const cutGroups = computed<CutGroup[]>(() => {
+  const m = new Map<number, CutGeom[]>()
+  for (const c of cutGeoms.value) {
+    const g = m.get(c.cut)
+    if (g) g.push(c)
+    else m.set(c.cut, [c])
+  }
+  return [...m.entries()].map(([cut, members]) => {
+    members.sort((a, b) => a.enzyme.cut_count - b.enzyme.cut_count || a.name.localeCompare(b.name))
+    return { key: members[0].key, cut, members }
+  })
+})
+/** 酶标签各段（名字可单独悬停）及总宽 */
+function groupParts(g: CutGroup) {
+  const shown = g.members.slice(0, GROUP_MAX)
+  const parts = shown.map((c, i) => ({
+    key: c.key, text: (i ? ' - ' : '') + c.name, name: c.name, bold: c.weight > 400, color: c.color,
+  }))
+  const more = g.members.length - shown.length
+  const extra = more > 0 ? ` +${more}` : ''
+  // 窄屏不写切点位置（省出标签栏宽度给环；位置在悬停提示里）
+  const pos = showPos.value ? ` (${g.cut})` : ''
+  let w = 0
+  for (const p of parts) w += textWidth(p.text, FONT.value, p.bold)
+  w += textWidth(extra, FONT.value) + textWidth(pos, POS_FONT.value)
+  return { parts, extra, pos: String(g.cut), w }
+}
 /**
  * 标签栏宽度按实际最长标签取（上限为边长的 26%/22%，更长的截断）：
  * 固定按 26% 留白会让短标签的质粒环缩到很小（pET-28a 在 640 px 里半径仅 ~130）。
@@ -63,14 +104,22 @@ const labelMargin = computed(() => {
   const cap = S.value * (compact.value ? 0.22 : 0.26)
   if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
   let maxW = 0
-  for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value))
+  for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value) + 2 * CHIP_PAD)
   for (const p of store.primers.value) maxW = Math.max(maxW, textWidth(p.name, FONT.value))
-  for (const c of overview.value.shown) maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1))
-  return Math.min(cap, Math.max(compact.value ? 44 : 56, maxW + 16))
+  for (const c of overview.value.shown) {
+    maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1) + (showPos.value ? textWidth(` (${c.cut})`, POS_FONT.value) : 0))
+  }
+  return Math.min(cap, Math.max(compact.value ? 44 : 56, maxW + 12))
 })
+/** 标签曲线半径（不拥挤时标签落在这个圆上） */
 const labelR = computed(() => S.value / 2 - labelMargin.value)
-const R0 = computed(() => labelR.value - (compact.value ? 20 : 26))
-const laneH = computed(() => Math.min(14, Math.max(9, S.value * 0.02)))
+/** 主链半径：标签圆向内留出 切线(10) + 引物环 + 引线外伸(6) + 半行高 + 间隙 */
+const R0 = computed(() => labelR.value - (compact.value ? 24 : 28) - (hasPrimers.value ? 12 : 0))
+/** 环上所有图元的最外半径：引线从这里折向标签，且不再回到圈内 */
+const fanR = computed(() => R0.value + 12 + (hasPrimers.value ? 12 : 0))
+/** 主链两条线的间距（刻度画在两线之间） */
+const RAIL = 4
+const laneH = computed(() => Math.min(18, Math.max(10, S.value * 0.027)))
 const laneGap = 2
 const L = computed(() => store.L.value)
 
@@ -122,7 +171,7 @@ const featLanes = computed(() => stackLanes(
   { circular: true, gap: Math.ceil((L.value * 3) / (TAU * R0.value)), maxLanes: maxLanes.value },
 ))
 function laneRadii(lane: number): [number, number] {
-  const outer = R0.value - 6 - lane * (laneH.value + laneGap)
+  const outer = R0.value - RAIL - 3 - lane * (laneH.value + laneGap)
   return [outer - laneH.value, outer]
 }
 const featInner = computed(() => laneRadii(Math.max(0, featLanes.value.laneCount - 1))[0])
@@ -133,13 +182,14 @@ interface FeatGeom {
 }
 const featGeoms = computed<FeatGeom[]>(() => {
   const out: FeatGeom[] = []
+  const headLen = laneH.value * 0.9
   for (const f of store.features.value) {
     const lane = featLanes.value.lanes.get(f.id)
     if (lane === undefined) continue
     const [r1, rr2] = laneRadii(lane)
     const rm = (r1 + rr2) / 2
     const color = featureColor(f)
-    const headA = (laneH.value * 0.8) / rm
+    const headA = headLen / rm
     const segs: Range[] = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
     // 箭头只画在 3' 端所在段
     const headSeg = f.strand === -1 ? 0 : segs.length - 1
@@ -160,15 +210,9 @@ const featGeoms = computed<FeatGeom[]>(() => {
     const a2 = ang(u.to)
     const mid = (a1 + a2) / 2
     let internal: FeatGeom['internal'] = null
-    const size = Math.max(8, laneH.value - 3)
-    const arcLen = (a2 - a1) * rm - laneH.value * 0.8
-    if (store.show.labels && fitsInside(f.name, size, arcLen)) {
-      // 下半圈文字反向走，避免倒置
-      const m = ((mid % TAU) + TAU) % TAU
-      const flip = m > Math.PI / 2 && m < (3 * Math.PI) / 2
-      const rText = flip ? rm + size * 0.35 : rm - size * 0.35
-      internal = { path: arcPath(cx.value, cy.value, rText, a1, a2, flip), text: f.name, color: textOn(color), size }
-    }
+    const size = Math.max(8, Math.min(FONT.value, laneH.value - 5))
+    const fit = store.show.labels ? internalArcLabel(f.name, size, a1, a2, r1, rr2, f.strand ? headLen : 0) : null
+    if (fit) internal = { path: arcPath(cx.value, cy.value, fit.r, a1, a2, fit.flip), text: f.name, color: textOn(color), size }
     out.push({ id: f.id, key: `f:${f.id}`, name: f.name, color, stroke: darken(color), paths, connector, r1, r2: rr2, mid, internal })
   }
   return out
@@ -196,58 +240,108 @@ const primerGeoms = computed(() => {
   return store.primers.value.flatMap((p) => {
     const lane = lanes.lanes.get(p.id)
     if (lane === undefined) return []
-    const r1 = R0.value + 13 + lane * 6
+    const r1 = R0.value + 14 + lane * 6
     const u = unroll(p, L.value)
     return [{ id: p.id, name: p.name, key: `p:${p.id}`, mid: (ang(u.from) + ang(u.to)) / 2, r: r1 + 4, d: arcBandPath(cx.value, cy.value, r1, r1 + 4, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)), p.strand === 1 ? 1 : -1, 5 / r1) }]
   })
 })
 
 // ---------------- 酶切 ----------------
-const cutGeoms = computed(() => overview.value.shown.map((c) => {
+type CutGeom = ReturnType<typeof cutGeomOf>
+function cutGeomOf(c: (typeof overview.value.shown)[number]) {
   const st = cutStyle(c)
   const a = ang(c.cut)
   const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
   const [x2, y2] = polar(cx.value, cy.value, R0.value + 10, a)
   return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2, color: st.color, weight: st.weight, dash: st.dash }
-}))
-
+}
+const cutGeoms = computed(() => overview.value.shown.map(cutGeomOf))
 // ---------------- 外置标签 ----------------
-const labelLayout = computed(() => {
-  if (!store.show.labels) return { placed: [], hidden: [] as string[] }
-  const maxW = labelMargin.value - 14
-  const font = FONT.value
+/** 渲染用：每个外置标签的种类与内容（布局引擎只关心宽高与角度） */
+type LabelInfo =
+  | { kind: 'chip'; fill: string; stroke: string; ink: string; members: string[] }
+  | { kind: 'enzyme'; parts: ReturnType<typeof groupParts>['parts']; extra: string; pos: string; members: string[] }
+  | { kind: 'text'; color: string; members: string[] }
+const labelData = computed(() => {
+  const info = new Map<string, LabelInfo>()
   const inputs: CircularLabelInput[] = []
+  if (!store.show.labels) return { info, inputs }
+  const maxW = labelMargin.value - 10
+  const font = FONT.value
   for (const g of featGeoms.value) {
     if (g.internal) continue
     const f = store.doc.value.features.find((x) => x.id === g.id)!
-    inputs.push({ id: g.key, text: truncateText(g.name, maxW, font), angle: g.mid, radius: g.r2, priority: featurePriority(f.type, rangeLength(f, L.value)) })
+    const text = truncateText(g.name, maxW - 2 * CHIP_PAD, font)
+    if (!text) continue
+    inputs.push({
+      id: g.key, text, width: textWidth(text, font) + 2 * CHIP_PAD, height: CHIP_H.value,
+      angle: g.mid, radius: g.r2, priority: featurePriority(f.type, rangeLength(f, L.value)),
+    })
+    info.set(g.key, { kind: 'chip', fill: tint(g.color, 0.8), stroke: g.color, ink: darken(g.color, 0.62), members: [g.key] })
   }
-  for (const c of cutGeoms.value) {
-    inputs.push({ id: c.key, text: c.name, bold: c.weight > 400, angle: c.a, radius: R0.value + 10, priority: enzymePriority(c.enzyme.cut_count) })
+  for (const g of cutGroups.value) {
+    const gp = groupParts(g)
+    const c0 = g.members[0]
+    inputs.push({
+      id: g.key, text: gp.parts.map((p) => p.text).join('') + gp.extra, width: gp.w, height: ROW_H.value,
+      angle: c0.a, radius: R0.value + 10, priority: Math.max(...g.members.map((c) => enzymePriority(c.enzyme.cut_count))),
+    })
+    info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
   for (const p of primerGeoms.value) {
-    inputs.push({ id: p.key, text: truncateText(p.name, maxW, font), angle: p.mid, radius: p.r, priority: 5e7 })
+    const text = truncateText(p.name, maxW, font)
+    if (!text) continue
+    inputs.push({ id: p.key, text, height: ROW_H.value, angle: p.mid, radius: p.r, priority: 5e7 })
+    info.set(p.key, { kind: 'text', color: '#2f6aa8', members: [p.key] })
   }
-  return layoutCircularLabels(inputs.filter((i) => i.text), {
-    cx: cx.value, cy: cy.value, labelRadius: labelR.value, fontSize: font, lineHeight: font + 3, halfHeight: S.value / 2 - 6,
-    // 标签离锚点太远时宁可隐藏（列入"无法显示"），也不画横穿全图的长引线
-    maxShift: Math.max(60, labelR.value * 0.55),
-  })
+  return { info, inputs }
 })
-const labelStyle = computed(() => {
-  const m = new Map<string, { color: string; weight: number }>()
-  for (const c of cutGeoms.value) m.set(c.key, { color: c.color, weight: c.weight })
-  return m
+/** "重要"标签的优先级下限：双切点酶及以上（特征、引物、单切点酶） */
+const IMPORTANT = enzymePriority(2)
+/** 拥挤时允许画布在竖直方向比宽度高出这么多（标签堆向上/下延伸） */
+const extraHalf = computed(() => S.value * (compact.value ? 0.1 : 0.18))
+const labelLayout = computed<CircularLabelLayout>(() => {
+  const { inputs } = labelData.value
+  if (!inputs.length) return { placed: [], hidden: [] }
+  const base = {
+    cx: cx.value, cy: cy.value, labelRadius: labelR.value, fontSize: FONT.value, lineHeight: ROW_H.value,
+    fanRadius: fanR.value, stretch: true, xMin: 2, xMax: S.value - 2, fanSlope: compact.value ? 0.15 : 0.3,
+    // 标签离锚点太远时宁可隐藏（列入"无法显示"），也不画横穿全图的长引线
+    maxShift: Math.max(80, labelR.value * 0.85),
+  }
+  const flat = layoutCircularLabels(inputs, { ...base, halfHeight: S.value / 2 - 4 })
+  // 只有重要标签（特征、引物、单/双切点酶）放不下时才把画布拉高；拉高后多切点酶只保留
+  // 原本就放得下的那些——否则多出的空间会被大量多切点酶填满，图反而更乱
+  const prio = new Map(inputs.map((i) => [i.id, i.priority]))
+  const important = (id: string) => (prio.get(id) ?? 0) >= IMPORTANT
+  const flatHidden = new Set(flat.hidden)
+  if (!flat.hidden.some(important)) return flat
+  const keep = inputs.filter((i) => i.priority >= IMPORTANT || !flatHidden.has(i.id))
+  const tall = layoutCircularLabels(keep, { ...base, halfHeight: S.value / 2 - 4 + extraHalf.value })
+  const tallHidden = new Set(tall.hidden)
+  const hiddenImportant = (h: Set<string>) => inputs.filter((i) => i.priority >= IMPORTANT && h.has(i.id)).length
+  if (hiddenImportant(tallHidden) >= hiddenImportant(flatHidden)) return flat
+  const kept = new Set(keep)
+  return { placed: tall.placed, hidden: inputs.filter((i) => tallHidden.has(i.id) || !kept.has(i)).map((i) => i.id) }
 })
 
 // 无法显示项上报（标签放不下 + 超出分道上限）
 watch([labelLayout, featLanes], () => {
   const cutAt = new Map(cutGeoms.value.map((c) => [c.key, c.cut]))
-  const items = labelLayout.value.hidden.map((k) => {
+  const info = labelData.value.info
+  const items = labelLayout.value.hidden.flatMap((id) => info.get(id)?.members ?? [id]).map((k) => {
     const title = resolveHit(store, k)?.title ?? k
     const at = cutAt.get(k)
     return { id: k, name: at === undefined ? title : `${title} @${at.toLocaleString('en-US')}`, reason: '标签空间不足' }
   })
+  // 合并标签里写成 +N 的酶也算"未在图上标出"
+  for (const l of labelLayout.value.placed) {
+    const inf = info.get(l.id)
+    if (inf?.kind !== 'enzyme') continue
+    for (const k of inf.members.slice(GROUP_MAX)) {
+      items.push({ id: k, name: `${resolveHit(store, k)?.title ?? k} @${(cutAt.get(k) ?? 0).toLocaleString('en-US')}`, reason: '同一切点酶过多，合并为 +N' })
+    }
+  }
   for (const id of featLanes.value.overflow) {
     const f = store.doc.value.features.find((x) => x.id === id)
     items.push({ id: `f:${id}`, name: f?.name ?? id, reason: '特征分道已满' })
@@ -259,25 +353,49 @@ watch([labelLayout, featLanes], () => {
 }, { immediate: true })
 onBeforeUnmount(() => store.setUnshown('circular', []))
 
+/** 渲染用的外置标签：布局结果 + 内容 */
+const labelViews = computed(() => labelLayout.value.placed.map((l) => {
+  const inf = labelData.value.info.get(l.id)!
+  const hot = hoverKey.value !== null && inf.members.includes(hoverKey.value)
+  const leader = l.leader.map((p) => p.map(r2).join(',')).join(' ')
+  // 文字起点：色块标签留内边距；右列 start、左列 end
+  const tx = inf.kind === 'chip' ? l.x + l.side * CHIP_PAD : l.x
+  return { ...l, inf, hot, leaderPts: leader, tx, anchor: l.side === 1 ? 'start' : 'end' }
+}))
+
 // ---------------- 刻度 ----------------
+/** 主刻度（带数字）画在主链两线之间并向内伸出一点；次刻度只在两线之间 */
 const tickGeoms = computed(() => {
-  const rNum = Math.min(orfInner.value, featInner.value) - 12
+  const rNum = Math.min(orfInner.value, featInner.value) - 11
   // 刻度数随数字所在圆周长走；圈太小时只画刻度不写数字（否则数字挤在中心、压住名称）
   const showNum = rNum >= 42
   const target = Math.max(4, Math.min(Math.round(S.value / 70), Math.round((TAU * Math.max(rNum, 20)) / 60)))
   const t = ticks(1, L.value, target)
-  return t.positions.filter((p) => p < L.value - t.step * 0.3).map((p) => {
+  const major = t.positions.filter((p) => p < L.value - t.step * 0.3).map((p) => {
     const a = ang(p)
-    const [x1, y1] = polar(cx.value, cy.value, R0.value - 1, a)
-    const [x2, y2] = polar(cx.value, cy.value, R0.value - 5, a)
+    const [x1, y1] = polar(cx.value, cy.value, R0.value, a)
+    const [x2, y2] = polar(cx.value, cy.value, R0.value - RAIL - 2.5, a)
     const [tx, ty] = polar(cx.value, cy.value, rNum, a)
     return { p, x1, y1, x2, y2, tx, ty, label: showNum ? formatBp(p) : '' }
   })
+  // 次刻度：主步长的 1/5（或 1/2），圈上间隔至少 5 px 才画
+  const sub = t.step % 5 === 0 ? t.step / 5 : t.step / 2
+  const minor: { p: number; x1: number; y1: number; x2: number; y2: number }[] = []
+  if (sub >= 1 && (TAU * R0.value * sub) / L.value >= 5) {
+    for (let p = sub; p < L.value; p += sub) {
+      if (p % t.step === 0) continue
+      const a = ang(p)
+      const [x1, y1] = polar(cx.value, cy.value, R0.value - 0.5, a)
+      const [x2, y2] = polar(cx.value, cy.value, R0.value - RAIL + 0.5, a)
+      minor.push({ p, x1, y1, x2, y2 })
+    }
+  }
+  return { major, minor }
 })
 const originMark = computed(() => {
   const a = ang(0)
-  const [x1, y1] = polar(cx.value, cy.value, R0.value - 6, a)
-  const [x2, y2] = polar(cx.value, cy.value, R0.value + 6, a)
+  const [x1, y1] = polar(cx.value, cy.value, R0.value - RAIL - 4, a)
+  const [x2, y2] = polar(cx.value, cy.value, R0.value + 5, a)
   return { x1, y1, x2, y2 }
 })
 
@@ -411,14 +529,15 @@ function onLeave() {
   if (mode === 'none') store.hover.value = null
 }
 
-const centerName = computed(() => truncateText(store.doc.value.name, Math.max(60, selInner.value * 1.6), 15))
-const nameFits = computed(() => selInner.value >= 40 && textWidth(centerName.value, 15) < selInner.value * 2)
+const NAME_FONT = computed(() => (compact.value ? 14 : 16))
+const centerName = computed(() => truncateText(store.doc.value.name, Math.max(60, selInner.value * 1.6), NAME_FONT.value, true))
+const nameFits = computed(() => selInner.value >= 40 && textWidth(centerName.value, NAME_FONT.value, true) < selInner.value * 2)
 const lengthFits = computed(() => selInner.value >= 26)
 
 // ---------------- 竖直裁切 ----------------
 /** 内容（环 + 外圈刻度/引物 + 标签框）的竖直范围 */
 const contentBounds = computed<[number, number]>(() => {
-  const ring = R0.value + 14 + (primerGeoms.value.length ? 12 : 0)
+  const ring = fanR.value + 2
   let top = cy.value - ring
   let bottom = cy.value + ring
   for (const l of labelLayout.value.placed) {
@@ -426,7 +545,9 @@ const contentBounds = computed<[number, number]>(() => {
     bottom = Math.max(bottom, l.box.y + l.box.h)
   }
   const pad = 8
-  return [Math.max(0, top - pad), Math.min(S.value, bottom + pad)]
+  // 拥挤时标签可以堆到方形画布之外（画布变高），见 extraHalf
+  const lim = extraHalf.value
+  return [Math.max(-lim, top - pad), Math.min(S.value + lim, bottom + pad)]
 })
 // 旋转进行中只扩不缩（标签随角度变化，若跟着收缩，下面的内容会上下跳）
 let rotTimer: ReturnType<typeof setTimeout> | undefined
@@ -449,24 +570,35 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 <template>
   <div ref="wrap" class="cmap">
     <svg
-      ref="svgEl" class="cmap-svg" data-map-export="circular" xmlns="http://www.w3.org/2000/svg"
+      ref="svgEl" :class="['cmap-svg', { 'has-feat-hover': hoverKey?.startsWith('f:') }]" data-map-export="circular" xmlns="http://www.w3.org/2000/svg"
       :viewBox="viewBox" :width="S" :height="svgH" role="img" :aria-label="`${store.doc.value.name} 环形图谱`"
-      font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif"
+      :font-family="MAP_FONT"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
       @pointerleave="onLeave" @wheel="onWheel"
     >
+      <defs>
+        <!-- 悬停/选中特征的柔和外发光（内联在 SVG 里，导出不依赖页面样式） -->
+        <filter :id="`${uid}-glow`" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="2.2" result="b" />
+          <feFlood flood-color="#4f46e5" flood-opacity="0.35" />
+          <feComposite in2="b" operator="in" />
+          <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
       <!-- 选区与悬停底色（画在最下层） -->
       <path v-if="hoverPath" :d="hoverPath" fill="#f59e0b" fill-opacity="0.12" class="cmap-hover" />
-      <path v-if="selectionPath" :d="selectionPath" fill="#4f46e5" fill-opacity="0.16" stroke="#4f46e5" stroke-opacity="0.5" class="cmap-selection" />
+      <path v-if="selectionPath" :d="selectionPath" fill="#4f46e5" fill-opacity="0.12" stroke="#4f46e5" stroke-opacity="0.45" stroke-width="0.8" class="cmap-selection" />
 
-      <!-- 主链：SnapGene 式双线 -->
-      <circle :cx="cx" :cy="cy" :r="R0" fill="none" stroke="#3a3f45" stroke-width="1.4" />
-      <circle :cx="cx" :cy="cy" :r="R0 - 3" fill="none" stroke="#3a3f45" stroke-width="0.7" />
-      <line :x1="originMark.x1" :y1="originMark.y1" :x2="originMark.x2" :y2="originMark.y2" stroke="#3a3f45" stroke-width="1.6" />
+      <!-- 主链：SnapGene 式双线，刻度画在两线之间 -->
+      <circle :cx="cx" :cy="cy" :r="R0" fill="none" stroke="#2b3038" stroke-width="1.5" />
+      <circle :cx="cx" :cy="cy" :r="R0 - RAIL" fill="none" stroke="#2b3038" stroke-width="1.5" />
+      <line :x1="originMark.x1" :y1="originMark.y1" :x2="originMark.x2" :y2="originMark.y2" stroke="#2b3038" stroke-width="1.8" stroke-linecap="round" />
       <g class="cmap-ticks">
-        <g v-for="t in tickGeoms" :key="t.p">
-          <line :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#6b7280" stroke-width="1" />
-          <text v-if="t.label" :x="t.tx" :y="t.ty" font-size="9.5" fill="#6b7280" text-anchor="middle" dominant-baseline="central">{{ t.label }}</text>
+        <line v-for="t in tickGeoms.minor" :key="`m${t.p}`" :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#8b929b" stroke-width="0.6" />
+        <g v-for="t in tickGeoms.major" :key="t.p">
+          <line :x1="t.x1" :y1="t.y1" :x2="t.x2" :y2="t.y2" stroke="#2b3038" stroke-width="1" />
+          <text v-if="t.label" :x="t.tx" :y="t.ty" :font-size="compact ? 8.5 : 9.5" fill="#8b929b" text-anchor="middle" dominant-baseline="central">{{ t.label }}</text>
         </g>
       </g>
 
@@ -476,13 +608,14 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 
       <!-- 特征 -->
       <g v-for="g in featGeoms" :key="g.key" :data-hit="g.key"
-         :class="['cmap-feat', { 'is-hover': hoverKey === g.key, 'is-selected': store.selectedFeatureId.value === g.id }]">
+         :class="['cmap-feat', { 'is-hover': hoverKey === g.key, 'is-selected': store.selectedFeatureId.value === g.id }]"
+         :filter="hoverKey === g.key || store.selectedFeatureId.value === g.id ? `url(#${uid}-glow)` : undefined">
         <path v-if="g.connector" :d="g.connector" fill="none" :stroke="g.stroke" stroke-width="1" stroke-dasharray="2 2" />
-        <path v-for="(d, i) in g.paths" :key="i" :d="d" :fill="g.color" :stroke="g.stroke"
-              :stroke-width="hoverKey === g.key || store.selectedFeatureId.value === g.id ? 2 : 0.8" />
+        <path v-for="(d, i) in g.paths" :key="i" :d="d" :fill="g.color" :stroke="g.stroke" stroke-linejoin="round"
+              :stroke-width="hoverKey === g.key || store.selectedFeatureId.value === g.id ? 1.6 : 0.8" />
         <template v-if="g.internal">
           <path :id="`${uid}-tp-${g.id}`" :d="g.internal.path" fill="none" stroke="none" />
-          <text :font-size="g.internal.size" :fill="g.internal.color" class="cmap-int-label" pointer-events="none">
+          <text :font-size="g.internal.size" :fill="g.internal.color" font-weight="600" letter-spacing="0.2" class="cmap-int-label" pointer-events="none">
             <textPath :href="`#${uid}-tp-${g.id}`" startOffset="50%" text-anchor="middle" dominant-baseline="central">{{ g.internal.text }}</textPath>
           </text>
         </template>
@@ -490,32 +623,45 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 
       <!-- ORF / 引物 -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
-      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#5aa0e0" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
+      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#68ace4" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
 
       <!-- 酶切刻度 -->
       <line v-for="c in cutGeoms" :key="c.key" :data-hit="c.key" :x1="c.x1" :y1="c.y1" :x2="c.x2" :y2="c.y2"
-            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.6 : 1" :stroke-dasharray="c.dash"
+            :stroke="c.color" :stroke-width="c.weight > 400 ? 1.4 : 0.9" :stroke-dasharray="c.dash" stroke-linecap="round"
             :class="['cmap-cut', { 'is-blocked': c.blocked.length }]" />
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
             stroke="#4f46e5" stroke-width="1.5" class="cmap-caret" />
 
-      <!-- 外置标签 + 引线 -->
-      <g v-for="l in labelLayout.placed" :key="l.id" :data-hit="l.id"
-         :class="['cmap-label', { 'is-hover': hoverKey === l.id }]">
-        <polyline :points="l.leader.map((p) => p.map(r2).join(',')).join(' ')" fill="none"
-                  :stroke="hoverKey === l.id ? '#4f46e5' : '#a5a9ae'" stroke-width="0.8" />
-        <text :x="l.x" :y="l.y" :font-size="FONT" dominant-baseline="central" class="cmap-label-text"
-              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke"
-              :text-anchor="l.side === 1 ? 'start' : 'end'"
-              :fill="labelStyle.get(l.id)?.color ?? '#1f2937'"
-              :font-weight="labelStyle.get(l.id)?.weight ?? 400">{{ l.text }}</text>
+      <!-- 外置标签 + 引线（SnapGene 式扇形，左右两列） -->
+      <g v-for="l in labelViews" :key="l.id" :data-hit="l.id"
+         :class="['cmap-label', `cmap-label-${l.inf.kind}`, { 'is-hover': l.hot }]">
+        <polyline :points="l.leaderPts" fill="none" :stroke="l.hot ? '#4f46e5' : '#b4bac2'"
+                  :stroke-width="l.hot ? 1 : 0.75" stroke-linejoin="round" />
+        <template v-if="l.inf.kind === 'chip'">
+          <rect :x="l.box.x" :y="l.box.y + 1" :width="l.box.w" :height="l.box.h - 2" rx="3"
+                :fill="l.inf.fill" :stroke="l.hot ? '#4f46e5' : l.inf.stroke" :stroke-width="l.hot ? 1.2 : 0.8" />
+          <text :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
+                :fill="l.inf.ink" font-weight="500" class="cmap-label-text">{{ l.text }}</text>
+        </template>
+        <text v-else-if="l.inf.kind === 'enzyme'" :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central"
+              :text-anchor="l.anchor" class="cmap-label-text"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">
+          <tspan v-if="l.side === -1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400">({{ l.inf.pos }}) </tspan>
+          <tspan v-for="p in l.inf.parts" :key="p.key" :data-hit="p.key" :fill="p.color"
+                 :font-weight="p.bold ? 700 : 400">{{ p.text }}</tspan>
+          <tspan v-if="l.inf.extra" fill="#8b929b" font-weight="400">{{ l.inf.extra }}</tspan>
+          <tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan>
+        </text>
+        <text v-else :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
+              :fill="l.inf.color" class="cmap-label-text"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">{{ l.text }}</text>
       </g>
 
       <!-- 中心名称与长度 -->
-      <text v-if="nameFits" :x="cx" :y="cy - 6" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2937" class="cmap-name">{{ centerName }}</text>
-      <text v-if="lengthFits" :x="cx" :y="cy + (nameFits ? 14 : 4)" text-anchor="middle" :font-size="compact ? 11 : 12" fill="#6b7280" class="cmap-length">{{ L.toLocaleString('en-US') }} bp</text>
+      <text v-if="nameFits" :x="cx" :y="cy - 7" text-anchor="middle" :font-size="NAME_FONT" font-weight="700" fill="#1f2937" class="cmap-name">{{ centerName }}</text>
+      <text v-if="lengthFits" :x="cx" :y="cy + (nameFits ? 13 : 4)" text-anchor="middle" :font-size="compact ? 11 : 12" fill="#6b7280" class="cmap-length">{{ L.toLocaleString('en-US') }} bp</text>
     </svg>
 
     <div v-if="interactive" class="cmap-controls">
@@ -534,8 +680,11 @@ defineExpose({ svgEl, resetView, setZoom, zoom })
 .cmap { position: relative; width: 100%; display: flex; flex-direction: column; align-items: center; }
 .cmap-svg { display: block; max-width: 100%; height: auto; touch-action: none; user-select: none; cursor: crosshair; }
 .cmap-feat, .cmap-cut, .cmap-orf, .cmap-primer, .cmap-label, .cmap-search { cursor: pointer; }
-.cmap-feat:hover path { filter: brightness(1.06); }
-.cmap-label:hover text { text-decoration: underline; }
+.cmap-feat { transition: opacity 0.15s; }
+.cmap-feat:hover path { filter: brightness(1.05); }
+/* 悬停某个特征时其余特征略微变淡（只在页面上，导出的 SVG 不含这条样式） */
+.cmap-svg.has-feat-hover .cmap-feat:not(.is-hover) { opacity: 0.55; }
+.cmap-label-text tspan[data-hit]:hover, .cmap-label-text:hover { text-decoration: underline; }
 .cmap-controls { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .cmap-controls button {
   min-width: 28px; padding: 2px 8px; border: 1px solid var(--border-color); border-radius: 4px;
