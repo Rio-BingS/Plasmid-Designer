@@ -42,7 +42,7 @@
 - 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
   读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
   `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。
-  SnapGene 在线库受独立开关 `SNAPGENE_ONLINE_ENABLED` 约束（**默认 false**，关 → 404），
+  SnapGene 在线库受独立开关 `SNAPGENE_ONLINE_ENABLED` 约束（**默认 true**，设 false → 404），
   开启后只读端点也须登录（`app/online_import.require_snapgene_user`，匿名 401），落库仍
   管理员；不要把它并回 `ONLINE_IMPORT_ENABLED`、不要放开匿名（见下「已接受风险」）。
   Addgene 全长序列 2026-08 起需登录：无凭据时 `addgene_sequence_bytes` **必须**抛
@@ -307,6 +307,8 @@ Addgene `52961` 匿名元数据可取（genbankUrl/snapgeneUrl/mapPngUrl），�
 - 风险归属：开启即视为部署方知悉并接受上述条款冲突；仅建议学术/非营利/政府的自用实例
   开启，须引用 `www.snapgene.com/resources`，商业用途须先获 GraphPad 书面许可。中长期
   方案仍是向 GraphPad 申请接口授权或改用 NCBI 对应记录。
+- 用户再决定（2026-10-12 23:56，v2.14.1）：**改回默认开启，仍仅登录用户可用**（匿名 401、
+  落库管理员不变）；需要关闭的部署设 `SNAPGENE_ONLINE_ENABLED=false`。
 - `scripts/smoke_online_sources.py` 默认不再跑 SnapGene（需 `--only snapgene` 且开关为 true）。
 
 **Addgene 会话 Cookie 模式的定位（审查 M2）**：只适合**单用户自托管**（部署者 = 唯一使用者 =

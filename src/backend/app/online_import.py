@@ -45,7 +45,7 @@ def cache_set(key: str, value: Any) -> None:
 
 
 def require_snapgene_enabled() -> None:
-    """SnapGene 在线库开关（SNAPGENE_ONLINE_ENABLED，默认关）：关闭时一律 404 + 说明。
+    """SnapGene 在线库开关（SNAPGENE_ONLINE_ENABLED，默认开）：关闭时一律 404 + 说明。
 
     放在鉴权依赖之前声明，关闭时匿名/登录用户都得到同一个明确的 404。
     """

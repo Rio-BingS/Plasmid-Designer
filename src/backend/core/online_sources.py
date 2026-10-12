@@ -128,20 +128,20 @@ def _ensure_enabled() -> None:
 
 
 SNAPGENE_DISABLED_MSG = (
-    "SnapGene 在线库未启用：部署方需显式设置 SNAPGENE_ONLINE_ENABLED=true"
-    "（默认关闭；其网站条款禁止存入检索系统、robots.txt 禁止 /local，仅限学术/非营利自用实例）")
+    "SnapGene 在线库已被部署方关闭（SNAPGENE_ONLINE_ENABLED=false）"
+    "（其网站条款禁止存入检索系统、robots.txt 禁止 /local，仅限学术/非营利自用实例）")
 
 
 def snapgene_online_enabled() -> bool:
-    """SNAPGENE_ONLINE_ENABLED 开关（默认 **关闭**，与 ONLINE_IMPORT_ENABLED 相互独立）。
+    """SNAPGENE_ONLINE_ENABLED 开关（默认 **开启**，与 ONLINE_IMPORT_ENABLED 相互独立）。
 
     v2.12 审查 H2：SnapGene `/local` 在线库属合规高风险来源（网站条款 (a) 禁止
     "reproduce or store … in any … electronic retrieval system"、robots.txt
     `Disallow: /local`、端点来自客户端逆向），用户决定默认关闭、仅登录用户可用，
-    由部署方自行接受风险后显式开启。Ensembl/UniProt/Addgene/NCBI 不受影响。
+    v2.14.1 起用户改为默认开启、仍仅登录用户可用；部署方可设 false 关闭。Ensembl/UniProt/Addgene/NCBI 不受影响。
     """
-    raw = os.environ.get("SNAPGENE_ONLINE_ENABLED", "false").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    raw = os.environ.get("SNAPGENE_ONLINE_ENABLED", "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _ensure_snapgene_enabled() -> None:

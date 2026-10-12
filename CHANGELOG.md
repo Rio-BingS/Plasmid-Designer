@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+### 升级注意
+- SnapGene 在线库改回**默认开启**（`SNAPGENE_ONLINE_ENABLED` 默认 `true`），仍只对已登录用户显示，存入载体库仍需管理员；不需要的部署设为 `false`。Docker 需更新 compose。
+
+### 变更
+- `SNAPGENE_ONLINE_ENABLED` 只有显式设为 `false`/`0`/`no`/`off` 才关闭。
+
 ## [2.14.0] - 2026-10-12
 
 ### 新增

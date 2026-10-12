@@ -102,7 +102,7 @@ async def list_online_sources(user=Depends(get_current_user)) -> Dict[str, Any]:
 
 # ==================== SnapGene 在线库 ====================
 
-# 开关（SNAPGENE_ONLINE_ENABLED，默认关）+ 需登录；落库另需管理员（见 import_snapgene）
+# 开关（SNAPGENE_ONLINE_ENABLED，默认开）+ 需登录；落库另需管理员（见 import_snapgene）
 
 @router.get("/import/snapgene/sets")
 async def snapgene_sets(_: object = Depends(require_snapgene_user)) -> Dict[str, Any]:
