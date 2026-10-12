@@ -771,6 +771,38 @@ def addgene_record(object_id: str, *, fmt: str = "genbank", name: Optional[str] 
     return rec
 
 
+# Addgene 本地索引（约 7 MB / 17 万条）解析结果的进程内缓存：
+# {路径: (mtime_ns, size, 列表)}；文件变了（mtime/大小）才重读（审查 L4：此前每次请求整读）
+_addgene_index_cache: Dict[str, tuple] = {}
+_addgene_index_lock = threading.Lock()
+
+
+def _read_addgene_index(path: str) -> list:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        data = json.load(fh)
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+
+def _addgene_index_rows(path: str) -> list:
+    """按 (mtime, size) 校验的缓存读取；读失败返回空列表（不缓存失败结果）"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    with _addgene_index_lock:
+        hit = _addgene_index_cache.get(path)
+        if hit is not None and hit[:2] == key:
+            return hit[2]
+        try:
+            rows = _read_addgene_index(path)
+        except (OSError, ValueError):
+            _addgene_index_cache.pop(path, None)
+            return []
+        _addgene_index_cache[path] = (key[0], key[1], rows)
+        return rows
+
+
 def addgene_local_index(term: str, limit: int = 20,
                         index_path: Optional[str] = None) -> List[Dict[str, object]]:
     """在 SnapGene 客户端自带的 Addgene 全量索引里离线搜索（不联网）。
@@ -785,12 +817,8 @@ def addgene_local_index(term: str, limit: int = 20,
     if not os.path.isfile(path):
         return []
     term = str(term or "").strip()
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
+    data = _addgene_index_rows(path)
+    if not data:
         return []
     if term.isdigit():
         return [e for e in data if str(e.get("id")) == term][:limit]

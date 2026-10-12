@@ -41,6 +41,8 @@
 - NCBI 导入（`/api/vectors/import/ncbi`、`ncbi-id`、批量导入）写出 LOCUS 行的真实拓扑：
   此前这条路径不写 `topology`，线性 GenBank 记录仍被画成环状（2.12.0 的「按真实拓扑
   显示」只覆盖了上传/在线来源/另存为）。已导入的旧载体需重新导入才会更新。
+- Addgene 本地索引搜索把解析结果缓存在进程内（按文件修改时间与大小失效），不再每次
+  请求整读约 7 MB 的 JSON。
 - 在线来源的进程级节流改为按站点预占时间槽、锁外等待：此前全局锁内 sleep，SnapGene
   的 1 秒间隔会阻塞 Ensembl/UniProt/Addgene，并发请求排成长队占满线程池。现在同站点
   排队超过 `ONLINE_THROTTLE_MAX_WAIT`（默认 10 秒）直接返回 429。
