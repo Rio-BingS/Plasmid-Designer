@@ -8,6 +8,19 @@
 
 ## [Unreleased]
 
+## [2.11.1] - 2026-10-12
+
+### 修复
+
+- 环形图谱用 −/+ 按钮放大时以圆心为中心，视野里只剩中间的名称、长度和刻度数字，
+  特征环与标签被推出边缘，按钮缩放形同虚设。现在按钮（及新增的缩放滑块）放大时
+  以选区中点为锚（只有光标时取光标处；都没有时取 12 点钟或离视野中心最近的环上点），
+  环始终留在视野里；Ctrl+滚轮仍以指针为中心。放大后在环带以外的任意空白处（含中心区）
+  拖拽或用中键拖拽即可平移，平移范围受限，环不会被整个拖出视野。放大时图谱铺满面板
+  整宽，不再在比图宽的面板里被硬裁在左右两侧。线性图的按钮缩放同样以选区为中心。
+- 环形图坐标换算在 SVGPoint 不提供 `matrixTransform` 的环境（CI 的 happy-dom 20）里
+  抛 TypeError，v2.11.0 的前端 CI 因此失败；现回落到包围盒换算，浏览器行为不变。
+
 ## [2.11.0] - 2026-10-12
 
 ### 升级注意
@@ -582,7 +595,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...HEAD
+[2.11.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.1...v2.10.0
 [2.9.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.9.0...v2.9.1
