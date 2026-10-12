@@ -9,6 +9,18 @@ from typing import Dict, Optional
 
 SCHEMA = "plasmid-map/1"
 
+# 契约条数上限：app/routes/models.py 的 MapDocument 校验与 core 的解析/组装共用
+# 同一份常量，保证 /parse 产出的文档能原样提交给 /analyze、/export/genbank
+MAX_FEATURES = 5000
+MAX_PRIMERS = 5000
+MAX_SEGMENTS = 200          # 每个特征的 segments
+MAX_QUALIFIERS = 100        # 每个特征的 qualifiers 条数
+MAX_PRIMER_SEQ = 1000       # MapPrimer.sequence 长度
+MAX_ORFS = 20000
+MAX_WARNINGS = 200
+# 解析前预检：位置串分段数超过此值的文件直接 422（Biopython 解析超长 join() 很慢）
+MAX_LOCATION_PARTS = 1000
+
 FEATURE_TYPES = (
     "cds", "promoter", "terminator", "rep_origin", "rbs", "marker", "tag",
     "signal_peptide", "polyA_signal", "enhancer", "ltr", "primer_bind",
