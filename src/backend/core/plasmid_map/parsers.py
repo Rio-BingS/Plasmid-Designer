@@ -210,9 +210,38 @@ def _parse_fasta_text(text: str, fallback_name: str, max_length, topology) -> Pa
     return rec
 
 
+def _snapgene_location(rangespec, strand, record, is_primer=False):
+    """Bio.SeqIO.SnapGeneIO._parse_location 的修正版（Biopython 1.8x）。
+
+    原实现把跨原点的段一律拆成 [s..L, 1..e]；负链特征的多段顺序它会整体
+    倒排成生物学顺序，唯独单段内的这两截没倒，于是负链跨原点特征的
+    parts 不是生物学顺序（extract 得到 rc(s..L)+rc(1..e)，应为
+    rc(1..e)+rc(s..L)）。这里负链跨原点时直接给出 [1..e, s..L]。"""
+    from Bio.SeqFeature import SimpleLocation
+
+    start, end = (int(x) for x in rangespec.split("-"))
+    start -= 1  # SnapGene 1-based
+    if is_primer:  # 引物坐标在 SnapGene 文件里整体偏 -1（与上游实现一致）
+        start += 1
+        end += 1
+    if start >= end:
+        l1 = SimpleLocation(start, len(record), strand=strand)
+        l2 = SimpleLocation(0, end, strand=strand)
+        return l2 + l1 if strand == -1 else l1 + l2
+    return SimpleLocation(start, end, strand=strand)
+
+
+def _install_snapgene_location_fix() -> None:
+    from Bio.SeqIO import SnapGeneIO
+
+    if getattr(SnapGeneIO, "_parse_location", None) is not _snapgene_location:
+        SnapGeneIO._parse_location = _snapgene_location
+
+
 def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> ParsedRecord:
     from Bio import SeqIO
 
+    _install_snapgene_location_fix()
     warns: List[str] = []
     try:
         records = list(SeqIO.parse(io.BytesIO(data), "snapgene"))
@@ -356,8 +385,11 @@ def _feature_color(q: Dict, strand: int, sg_color: Optional[str]) -> Optional[st
 def location_to_span(location, length: int, circular: bool) -> Tuple[int, int, int, Optional[List[Dict]]]:
     """Biopython 位置 → (start, end, strand, segments)，1-based 闭区间。
 
-    跨原点的复合位置（环状）整体跨度 start > end；segments 按文件中的
-    生物学顺序给出，单段时为 None。坐标越界抛 ValueError。
+    跨原点的复合位置（环状）整体跨度 start > end；segments 按生物学顺序
+    给出（GenBank 的 complement(join(..)) 由 Biopython 倒排成生物学顺序，
+    SnapGene 负链跨原点段经 _snapgene_location 修正），单段时为 None。
+    契约约定：负链 segments 沿负链 5'→3'，见 extract_feature。
+    坐标越界抛 ValueError。
     """
     parts = list(getattr(location, "parts", None) or [location])
     segs = []
@@ -437,6 +469,16 @@ def extract_span(seq: str, start: int, end: int, strand: int = 1) -> str:
     else:
         sub = seq[start - 1:] + seq[:end]
     return revcomp(sub) if strand == -1 else sub
+
+
+def extract_feature(seq: str, feat: Dict) -> str:
+    """特征的契约序列（沿特征自身方向 5'→3'）：segments 按生物学顺序逐段
+    extract_span 后拼接（负链每段取反向互补，段顺序即负链上的阅读顺序）；
+    无 segments 时就是整体跨度。GenBank 导出 → 重新读入后 Biopython
+    SeqFeature.extract 应与此一致。"""
+    strand = feat.get("strand") or 0
+    segs = feat.get("segments") or [{"start": feat["start"], "end": feat["end"]}]
+    return "".join(extract_span(seq, int(s["start"]), int(s["end"]), strand) for s in segs)
 
 
 def _primer_from_feature(feat: Dict, seq: str) -> Dict:

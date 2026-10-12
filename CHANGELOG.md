@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+### 升级注意
+
+- 图谱缓存口径版本 `MAP_ALGO_VERSION` 递增，旧缓存自然失效，无需手动清除。
+
+### 修复
+
+- 图谱：负链跨原点特征导出 GenBank 时片段顺序反了（写成
+  `complement(join(1..e,s..L))`），SnapGene `.dna` 中的负链跨原点特征解析出的段
+  顺序也一样，在 SnapGene/Benchling 里打开序列与翻译都错。现在导出写
+  `complement(join(s..L,1..e))`，`segments` 统一为生物学顺序（负链坐标降序）。
+  v2.12.0 导出的含负链跨原点特征的 .gb 需重新导出。
+
 ## [2.12.0] - 2026-10-12
 
 ### 升级注意
