@@ -16,8 +16,8 @@ import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
 import {
-  TAU, angleToX, arcBandPath, arcPath, pointAngle, polar, rangeFromBoundaries, rangeLength,
-  unroll, unwrapNear, xToAngle,
+  TAU, angleToX, arcBandPath, arcPath, headSegmentIndex, pointAngle, polar, rangeFromBoundaries,
+  rangeLength, unroll, unwrapNear, xToAngle,
 } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import {
@@ -276,7 +276,7 @@ const featGeoms = computed<FeatGeom[]>(() => {
     const headA = headLen / rm
     const segs: Range[] = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
     // 箭头只画在 3' 端所在段
-    const headSeg = f.strand === -1 ? 0 : segs.length - 1
+    const headSeg = headSegmentIndex(segs, f, f.strand)
     const paths = segs.map((s, i) => {
       const u = unroll(s, L.value)
       const arrow = i === headSeg ? (f.strand === 1 ? 1 : f.strand === -1 ? -1 : 0) : 0

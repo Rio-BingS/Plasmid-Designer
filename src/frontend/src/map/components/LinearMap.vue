@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
-import { barArrowPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
+import { barArrowPath, headSegmentIndex, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
 import { cutStyle, overviewCuts } from '../core/enzymes'
@@ -155,7 +155,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const ranges = it.segments?.length ? it.segments : [{ start: it.start, end: it.end }]
     const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ x1: v.x1, x2: v.x2, i })))
     if (!segs.length) continue
-    const headIdx = it.strand === -1 ? 0 : ranges.length - 1
+    const headIdx = headSegmentIndex(ranges, it, it.strand ?? 0)
     const geomSegs = segs.map((s) => ({ x1: s.x1, x2: s.x2, head: s.i === headIdx }))
     const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
     const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
@@ -241,7 +241,7 @@ const featGeoms = computed(() => store.features.value.flatMap((f) => {
   const lane = featLanes.value.lanes.get(f.id)
   if (lane === undefined) return []
   const ranges = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
-  const headIdx = f.strand === -1 ? 0 : ranges.length - 1
+  const headIdx = headSegmentIndex(ranges, f, f.strand)
   const segs = ranges.flatMap((r, i) => visSegs(r).map((v) => ({ ...v, i })))
   if (!segs.length) return []
   const y = lower.value.featTop + lane * FEAT_LANE
