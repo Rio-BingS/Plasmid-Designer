@@ -43,17 +43,35 @@ export interface FeatureTranslation {
   codonCenters: number[]
 }
 
-/** CDS 翻译（join 段、跨原点、反链均支持） */
-export function translateFeature(f: MapFeature, seq: string): FeatureTranslation {
-  const L = seq.length
+/**
+ * 特征沿自身方向 5'→3' 的序列位置（1-based）。契约 segments 按生物学顺序
+ * （负链即沿负链 5'→3'，坐标降序）：逐段取正向位置（跨原点段先 s..L 再 1..e），
+ * 负链在段内倒序后按段顺序拼接——与后端 parsers.extract_feature 一致。
+ */
+export function featurePositions(f: MapFeature, L: number): number[] {
   const segs: Range[] = f.segments?.length ? f.segments : [{ start: f.start, end: f.end }]
   const positions: number[] = []
   for (const s of segs) {
+    const fwd: number[] = []
     for (const part of splitRange(s, L)) {
-      for (let p = part.start; p <= part.end; p++) positions.push(p)
+      for (let p = part.start; p <= part.end; p++) fwd.push(p)
     }
+    if (f.strand === -1) fwd.reverse()
+    for (const p of fwd) positions.push(p)
   }
-  if (f.strand === -1) positions.reverse()
+  return positions
+}
+
+/** 特征序列（沿特征自身方向 5'→3'，负链已取互补） */
+export function extractFeature(f: MapFeature, seq: string): string {
+  let dna = ''
+  for (const p of featurePositions(f, seq.length)) dna += seq[p - 1] ?? 'N'
+  return f.strand === -1 ? complement(dna) : dna
+}
+
+/** CDS 翻译（join 段、跨原点、反链均支持；segments 按生物学顺序） */
+export function translateFeature(f: MapFeature, seq: string): FeatureTranslation {
+  const positions = featurePositions(f, seq.length)
   let dna = ''
   for (const p of positions) dna += seq[p - 1] ?? 'N'
   if (f.strand === -1) dna = complement(dna)
