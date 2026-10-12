@@ -25,7 +25,7 @@ from app import config
 from app import online_import as oi
 from app.online_import import require_snapgene_enabled, require_snapgene_user
 from app.cache import cache
-from app.auth.jwt_auth import get_admin_user
+from app.auth.jwt_auth import get_admin_user, get_current_user
 from app.design_service import invalidate_vector_library_cache
 from app.routes.models import (
     MAP_MAX_LENGTH,
@@ -92,9 +92,9 @@ def _preview(record, *, source: str, url: str, license_text: str) -> OnlinePrevi
 # ==================== 来源清单 ====================
 
 @router.get("/import/sources")
-async def list_online_sources() -> Dict[str, Any]:
+async def list_online_sources(user=Depends(get_current_user)) -> Dict[str, Any]:
     """可用在线来源与许可摘要（前端据此渲染页签与提示；与图谱页同一份数据）"""
-    return oi.sources_payload()
+    return oi.sources_payload(is_admin=bool(user is not None and user.is_admin))
 
 
 # ==================== SnapGene 在线库 ====================
@@ -236,12 +236,23 @@ async def addgene_search(term: str = Query(..., min_length=1, max_length=60),
 
 @router.get("/import/addgene/{plasmid_id}")
 async def addgene_metadata(plasmid_id: str,
-                           try_sequence: bool = Query(default=False)) -> Dict[str, Any]:
+                           try_sequence: bool = Query(default=False),
+                           user=Depends(get_current_user)) -> Dict[str, Any]:
     """Addgene 匿名元数据（各文件 URL）；try_sequence=true 时尝试取全长序列
 
     实测（2026-08 起）：匿名只能拿到 map 图，`.gbk`/`.dna` 直链 404 → 本端点一律
     返回 403 + 合法路径指引，**不代为登录、不绕登录墙**（Addgene ToS 明文禁止）。
+
+    `try_sequence` 分支**仅管理员**（审查 M1）：配置了 `ADDGENE_SESSION_COOKIE` 时它会以
+    部署方的 Addgene 账号身份下载，不能让匿名/普通用户驱动；`session_configured`
+    同样只对管理员下发。
     """
+    is_admin = bool(user is not None and user.is_admin)
+    if try_sequence and not is_admin:
+        if user is None:
+            raise HTTPException(status_code=401, detail="取 Addgene 全长序列需管理员登录",
+                                headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(status_code=403, detail="取 Addgene 全长序列需要管理员权限")
     oid = _check(src.validate_addgene_id, plasmid_id)
     meta = await _call(src.addgene_metadata, oid)
     out: Dict[str, Any] = {
@@ -263,7 +274,7 @@ async def addgene_metadata(plasmid_id: str,
                        "可点「导入为本地载体」落库（序列与注释版权归 Addgene/原作者）"
                        if src.addgene_has_session() else
                        "上游允许匿名取序列（接口有变），请改用返回的直链自行核对后导入")
-    out["session_configured"] = src.addgene_has_session()
+    out["session_configured"] = src.addgene_has_session() if is_admin else False
     return out
 
 
