@@ -121,7 +121,8 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `MAP_MAX_LENGTH` | 300000 | 单条序列长度上限（bp） |
-| `MAP_MAX_UPLOAD_MB` | 5 | 上传文件 / JSON 文本体积上限 |
+| `MAP_MAX_UPLOAD_MB` | 5 | `/parse` 上传文件 / JSON 文本体积上限（请求体另加 64 KB multipart 开销） |
+| `MAP_MAX_JSON_MB` | 16 | 其余 `/api/map/*` 写请求（analyze、export、import）的请求体上限 |
 | `MAP_CACHE_MAX_BP` | 50000 | 只缓存不超过该长度的结果（防内存缓存被大文档撑满） |
 | `MAP_AUTO_ANNOTATE_MAX_BP` | 50000 | `annotate` 缺省时只对不超过该长度的序列自动注释 |
 | `MAP_ANNOTATE_MAX_CELLS` | 60000000 | 单次请求自动注释比对的 DP 单元格总预算 |
@@ -137,7 +138,13 @@ LpnPI / AbaSI 等修饰依赖型酶），且两条链的切点都在识别序列
 | `NCBI_MAX_CONCURRENCY` | 4 | 同时进行的 NCBI 导入数（独立线程令牌，不占全局线程池） |
 | `NCBI_TEXT_CACHE_MAX_BYTES` | 2097152 | 只缓存不超过该体积的 NCBI GenBank 文本（缓存 24 小时） |
 
-解析、比对、酶切扫描都在线程池执行。结果缓存 1 小时，键含输入摘要、选项、
+请求体上限在读取时流式执行（`app/map_body_limit.py`，ASGI 中间件，位于 CORS 之内）：
+边收边计数，超限立即 413、不进入路由，chunked 传输也一样；未超限的请求体原样交给路由。
+nginx 两份配置为 `location ^~ /api/map/` 单独设 `client_max_body_size 17m`（须不小于
+`MAP_MAX_UPLOAD_MB` + 64 KB 与 `MAP_MAX_JSON_MB` 的较大值，调大变量时同步调整）。
+
+解析、比对、酶切扫描都在线程池执行（`/export/genbank` 的序列清洗与 pydantic 校验在事件
+循环里，规模受上面的请求体上限约束）。结果缓存 1 小时，键含输入摘要、选项、
 元件库版本（库文件 sha256）与 `MAP_ALGO_VERSION`（`map_routes.py`；改变结果口径的
 代码改动须递增）。限流沿用中间件 default 档，与 `/api/analysis` 相同。
 

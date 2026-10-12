@@ -218,6 +218,11 @@ app.add_middleware(CsrfMiddleware)
 from app.middleware import setup_middleware
 setup_middleware(app)
 
+# /api/map/* 请求体流式体积上限：边收边计数，超限直接 413（不进下游、不整体读入）；
+# 位于 CORS 之内，413 也带 CORS 头
+from app.map_body_limit import MapBodyLimitMiddleware
+app.add_middleware(MapBodyLimitMiddleware)
+
 # CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
 # 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。
 # 来源接线 settings.cors_origins_list（.env / 环境变量，支持 "*"、逗号分隔或

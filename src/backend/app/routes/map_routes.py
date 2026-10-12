@@ -52,6 +52,10 @@ router = APIRouter(prefix="/api/map", tags=["map"])
 
 MAP_MAX_UPLOAD_MB = float(os.environ.get("MAP_MAX_UPLOAD_MB", "5"))
 MAP_MAX_UPLOAD_BYTES = int(MAP_MAX_UPLOAD_MB * 1024 * 1024)
+# 其余 /api/map/* 写请求的请求体上限（导出请求体是整份 MapDocument）；
+# 由 app/map_body_limit.py 在读取时流式执行
+MAP_MAX_JSON_MB = float(os.environ.get("MAP_MAX_JSON_MB", "16"))
+MAP_MAX_JSON_BYTES = int(MAP_MAX_JSON_MB * 1024 * 1024)
 MAP_CACHE_MAX_BP = int(os.environ.get("MAP_CACHE_MAX_BP", "50000"))
 # 体积门槛：序列化后超过此字节数的文档不缓存（commercial 酶组的高频切酶位点
 # 会让 50 kb 文档膨胀到数 MB，内存缓存里驻留约 4 倍）；同时限制本进程写入
