@@ -4,7 +4,8 @@
  */
 import { formatApiError, http } from '@/api'
 import type {
-  AnalyzeRequest, EnzymeDetail, EnzymeSet, EnzymeSupplier, MapDocument, NcbiImportRequest, ParseOptions, Topology,
+  AnalyzeRequest, EnsemblImportRequest, EnzymeDetail, EnzymeSet, EnzymeSupplier, MapDocument, NcbiImportRequest,
+  OnlineSourcesPayload, ParseOptions, SnapgeneImportRequest, SnapgenePlasmid, SnapgeneSet, Topology,
 } from './types'
 import { clearEnzymeDetails, rememberEnzymeDetail } from './enzymeMeta'
 
@@ -50,6 +51,43 @@ export async function importNcbi(req: NcbiImportRequest): Promise<MapDocument> {
   const r = await http.post('/map/import/ncbi', req)
   return r.data
 }
+
+// ---------------------------------------------------------------- 在线序列来源
+
+/** 在线来源清单与许可摘要（与载体库页同一份数据） */
+export async function getOnlineSources(): Promise<OnlineSourcesPayload> {
+  const r = await http.get('/map/import/sources')
+  return r.data
+}
+
+/** SnapGene 在线库：19 个集合（后端与载体库侧共用 1 小时缓存） */
+export async function getOnlineSnapgeneSets(): Promise<{ count: number; sets: SnapgeneSet[]; license: string }> {
+  const r = await http.get('/map/import/snapgene/sets')
+  return r.data
+}
+
+/** SnapGene 在线库：集合内全部序列 */
+export async function getOnlineSnapgeneIndex(
+  setId: string,
+): Promise<{ set_id: string; count: number; plasmids: SnapgenePlasmid[] }> {
+  const r = await http.get(`/map/import/snapgene/sets/${encodeURIComponent(setId)}`)
+  return r.data
+}
+
+/** SnapGene 在线库：下载 .dna 并打开成图谱（同参数重复打开走服务端缓存） */
+export async function importOnlineSnapgene(req: SnapgeneImportRequest): Promise<MapDocument> {
+  const r = await http.post('/map/import/snapgene', req)
+  return r.data
+}
+
+/** Ensembl：取 DNA 序列（genomic/cds/cdna）并打开成图谱（线性片段） */
+export async function importOnlineEnsembl(req: EnsemblImportRequest): Promise<MapDocument> {
+  const r = await http.post('/map/import/ensembl', req)
+  return r.data
+}
+
+/** 前端粗校验 Ensembl ID：ENSG/ENST/ENS… + 数字（后端再严格校验） */
+export const ENSEMBL_ID_RE = /^[A-Za-z]{3,6}[A-Za-z0-9_.:-]{0,58}$/
 
 /** 前端粗校验 NCBI 核酸 accession（后端再严格校验）：GenBank / WGS / RefSeq，版本号可选 */
 export const NCBI_ACCESSION_RE = /^(?:[A-Z]{1,2}\d{5,8}|[A-Z]{4,6}\d{8,10}|[A-Z]{2}_(?:[A-Z]{2,4})?\d{6,11})(?:\.\d{1,3})?$/

@@ -23,6 +23,7 @@ import urllib.parse
 import pytest
 from fastapi.testclient import TestClient
 
+from app import online_import as oi
 from app import site_settings
 from app.cache import cache
 from app.features import ALL_FEATURES
@@ -366,8 +367,10 @@ def test_snapgene_sets_cached(client, vectors_dir, monkeypatch):
 
 def test_snapgene_preview_and_import(client, vectors_dir, monkeypatch):
     record = src.snapgene_record(_snapgene_bytes(), name="pYES2")
-    monkeypatch.setattr(osr, "_snapgene_fetch",
-                        lambda set_id, plasmid_id: (record, "https://www.snapgene.com/local/x"))
+
+    async def _fetch(set_id, plasmid_id):
+        return record, "https://www.snapgene.com/local/x"
+    monkeypatch.setattr(osr, "_snapgene_fetch", _fetch)
 
     c, _ = client
     prev = c.get("/api/vectors/import/snapgene/preview",
@@ -508,6 +511,126 @@ def test_legacy_export_writes_feature_names(tmp_path):
     lib = VectorLibrary()
     assert lib.load_from_directory(str(tmp_path)) == 1
     assert lib.get_vector("ncbi_X1").elements[0].name == "CDS"
+
+
+# ---------------------------------------------------------------- 图谱页在线导入
+
+def test_online_sources_shared_between_map_and_vectors(client, monkeypatch):
+    """集合/索引在载体库与图谱页之间共用缓存：同一进程只外呼一次"""
+    calls = []
+
+    def _sets():
+        calls.append(1)
+        return [{"set_id": "yeast_plasmids", "name": "Yeast Plasmids"}]
+    monkeypatch.setattr(oi.src, "snapgene_sets", _sets)
+    monkeypatch.setattr(oi.src, "snapgene_set_index",
+                        lambda set_id, **kw: [{"plasmid_id": "pYES2", "name": "pYES2",
+                                               "filename": "pYES2.dna", "index": 0}])
+
+    c, _ = client
+    a = c.get("/api/vectors/import/snapgene/sets")
+    b = c.get("/api/map/import/snapgene/sets")
+    assert a.status_code == b.status_code == 200
+    assert b.json() == a.json() and len(calls) == 1
+
+    ia = c.get("/api/vectors/import/snapgene/sets/yeast_plasmids")
+    ib = c.get("/api/map/import/snapgene/sets/yeast_plasmids")
+    assert ia.json() == ib.json() and ib.json()["count"] == 1
+
+
+def test_map_sources_payload_matches_vectors(client, vectors_dir):
+    c, _ = client
+    a = c.get("/api/vectors/import/sources").json()
+    b = c.get("/api/map/import/sources").json()
+    assert a == b and {s["id"] for s in b["sources"]} >= {"snapgene", "ensembl", "addgene", "ncbi"}
+
+
+def test_map_import_snapgene_builds_document_once(client, vectors_dir, monkeypatch):
+    """图谱页从 SnapGene 在线库打开：一次下载 → MapDocument，同参数第二次走缓存"""
+    record = src.snapgene_record(_snapgene_bytes(), name="pYES2")
+    calls = []
+
+    def _record(set_id, plasmid_id, max_length=None):
+        calls.append((set_id, plasmid_id, max_length))
+        return record, "https://www.snapgene.com/local/fetch.php?set=x", "pYES2"
+    monkeypatch.setattr(oi, "snapgene_plasmid_record", _record)
+
+    c, _ = client
+    r = c.post("/api/map/import/snapgene",
+               json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["schema"] == "plasmid-map/1" and d["name"] == "pYES2"
+    assert d["length"] == 300 and d["topology"] == "circular"
+    assert any(f["name"] == "myCDS" for f in d["features"])
+    from app.routes.models import MAP_MAX_LENGTH
+    assert calls == [("yeast_plasmids", "pYES2", MAP_MAX_LENGTH)]
+
+    r2 = c.post("/api/map/import/snapgene",
+                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2"})
+    assert r2.json() == d and len(calls) == 1        # MapDocument 缓存命中，不重复下载
+    # 换酶组：按选项分键 → 重新构建（但不再下载集合索引）
+    r3 = c.post("/api/map/import/snapgene",
+                json={"set_id": "yeast_plasmids", "plasmid_id": "pYES2",
+                      "enzyme_set": "golden_gate"})
+    assert r3.status_code == 200 and r3.json()["meta"]["enzyme_set"] == "golden_gate"
+    assert len(calls) == 2
+
+
+def test_map_import_snapgene_errors_and_gating(client, vectors_dir, monkeypatch):
+    def _boom(set_id, plasmid_id, max_length=None):
+        raise MapParseError("上游未找到或拒绝访问（HTTP 404）", 404)
+    monkeypatch.setattr(oi, "snapgene_plasmid_record", _boom)
+
+    c, s = client
+    r = c.post("/api/map/import/snapgene", json={"set_id": "s", "plasmid_id": "p"})
+    assert r.status_code == 404 and "404" in r.json()["detail"]
+    assert c.post("/api/map/import/snapgene", json={}).status_code == 422
+
+    s["anonymous_features"] = [f for f in ALL_FEATURES if f != "map"]
+    assert c.get("/api/map/import/sources").status_code == 403
+    assert c.post("/api/map/import/snapgene",
+                  json={"set_id": "s", "plasmid_id": "p"}).status_code == 403
+
+
+def test_map_import_ensembl_linear_fragment(client, vectors_dir, monkeypatch):
+    fasta = f">ENST00000288602 cds\n{SEQ300}\n".encode()
+    seen = []
+    real_record = src.ensembl_record  # 先取原函数，避免自递归
+
+    def _record(identifier, seq_type="cds", name=None, max_length=None, **kw):
+        seen.append((identifier, seq_type, max_length))
+        return real_record(identifier, seq_type, name=name,
+                           max_length=max_length, opener=_opener(fasta))
+    monkeypatch.setattr(oi.src, "ensembl_record", _record)
+
+    c, _ = client
+    r = c.post("/api/map/import/ensembl",
+               json={"identifier": "ENST00000288602", "seq_type": "cds"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["length"] == 300 and d["topology"] == "linear"
+    from app.routes.models import MAP_MAX_LENGTH
+    assert seen == [("ENST00000288602", "cds", MAP_MAX_LENGTH)]
+    assert c.post("/api/map/import/ensembl",
+                  json={"identifier": "ENST00000288602", "seq_type": "protein"}
+                  ).status_code == 422
+
+
+def test_snapgene_record_enforces_max_length():
+    """图谱上限（MAP_MAX_LENGTH）在解析阶段就生效，超长 413"""
+    with pytest.raises(MapParseError) as ei:
+        src.snapgene_record(_snapgene_bytes(), name="pYES2", max_length=299)
+    assert ei.value.status == 413
+
+
+def test_online_map_rate_limit_bucket():
+    from app.rate_limit import classify_endpoint
+    assert classify_endpoint("POST", "/api/map/import/snapgene") == "ncbi"
+    assert classify_endpoint("POST", "/api/map/import/ensembl") == "ncbi"
+    assert classify_endpoint("GET", "/api/map/import/snapgene/sets") == "ncbi"
+    assert classify_endpoint("GET", "/api/map/import/sources") == "default"
+    assert classify_endpoint("POST", "/api/map/import/ncbi") == "ncbi"
 
 
 def _admin():

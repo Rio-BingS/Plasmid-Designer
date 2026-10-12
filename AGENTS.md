@@ -18,6 +18,7 @@ src/backend/                FastAPI（Sanger 分析依赖 biopython + snapgene-r
   app/main.py               入口（仅组装：CORS/中间件/路由/生命周期）
   app/routes/               design|batch|vector|online_source|codon|sequencing 路由 + models.py（共享 Pydantic 契约）
   app/vector_import.py      ★ 外部/在线序列 → 载体库 YAML（形状与 data/vectors/*.yaml 一致，导入统一入口）
+  app/online_import.py      ★ 在线来源共享装配层（来源清单/许可、SnapGene 集合索引缓存、单序列下载+命名）
   app/design_service.py     ★ 单任务与批量共用的设计流水线（核心业务）
   app/auth/                 JWT 会话：httpOnly Cookie（pd_session）+ CsrfMiddleware（X-Requested-With）
                             + 登出吊销（jti）；middleware.py 写 request.state.user 供限流
@@ -72,10 +73,10 @@ cd src/frontend && npm run dev        # 或 test:run / type-check / build
 powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
-测试基线（本机 Windows，2026-10-12 在线来源导入后）：pytest 1308 passed / 39 skipped
+测试基线（本机 Windows，2026-10-12 在线来源导入后）：pytest 1315 passed / 39 skipped
 （另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
 `test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
-的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 423，vue-tsc 0。
+的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 427，vue-tsc 0。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -119,14 +120,15 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   sessionStorage 自动带头），无令牌的遗留匿名测序记录仅管理员可读/删、列表不展示；
   载体库是共享库，刻意无属主
 - 限流按（方法 + 路由模板）分类：只读请求一律 default 档，轮询不吃业务配额
-- 在线序列来源（`core/online_sources.py` + `app/routes/online_source_routes.py`）：
-  SnapGene 在线库（`/local`，19 集合）/ Ensembl REST / Addgene 三个通道；落库统一走
-  `app/vector_import.save_record`（形状 = `data/vectors/*.yaml`），导入的载体描述里
-  写入出处。**许可边界**：SnapGene 库学术/非营利/政府可用但须引用
-  `www.snapgene.com/resources`，商业用途须 GraphPad 书面许可、其 robots.txt
-  `Disallow: /local`；Addgene 全长序列 2026-08 起需登录——代码**不绕登录**（返回
-  403 + 指引）。故只做低频单次读取（进程级限速 + 结果缓存），`ONLINE_IMPORT_ENABLED=false`
-  可整体关闭外呼；不要给它加定时同步/批量镜像
+- 在线序列来源（`core/online_sources.py` + `app/online_import.py` + 两个路由模块）：
+  载体库侧 `/api/vectors/import/*`（`online_source_routes.py`，写端点需管理员、走 upload 档）
+  与图谱页 `/api/map/import/*`（`map_online_routes.py`，挂 map 开关、写端点走 ncbi 档）
+  共用同一套取字节层与**同一批集合/索引缓存**（`online:snapgene:*`）；图谱页的
+  MapDocument 缓存按「输入摘要 + 选项 + 元件库/算法版本」分键，命中时不重复下载。
+  **许可边界**：SnapGene 库学术/非营利/政府可用但须引用 `www.snapgene.com/resources`，
+  商业用途须 GraphPad 书面许可、其 robots.txt `Disallow: /local`；Addgene 全长序列
+  2026-08 起需登录——代码**不绕登录**（返回 403 + 指引）。故只做低频单次读取（进程级
+  限速 + 结果缓存），`ONLINE_IMPORT_ENABLED=false` 可整体关闭外呼；不要给它加定时同步/批量镜像
 - 载体导入落盘形状由 `app/vector_import.py` 统一：features 必须带 `name`（缺省回退到
   type），否则 `VectorLibrary._parse_vector_dict` 抛 KeyError、整份载体被
   `load_from_directory` 的兜底 except 吞掉而静默消失（历史 bug）

@@ -439,6 +439,10 @@ _WRITE_EXACT_RULES: List[Tuple[str, str, str]] = [
     ("DELETE", "/api/sequencing/batch-sessions/{id}", "default"),
     # 图谱页按 accession 从 NCBI 导入：外呼代理，与 /api/vectors/search/ncbi 同档
     ("POST", "/api/map/import/ncbi", "ncbi"),
+    # 图谱页从在线序列来源导入（SnapGene 在线库 / Ensembl，在线来源导入批次）：
+    # 同属外呼代理，与 NCBI 导入同档
+    ("POST", "/api/map/import/snapgene", "ncbi"),
+    ("POST", "/api/map/import/ensembl", "ncbi"),
 ]
 
 
@@ -476,6 +480,9 @@ _READ_RULES: List[Tuple[str, str]] = [
     ("/api/sequencing/analyses/{id}/consensus/export", "export"),
     ("/api/vectors/search/ncbi", "ncbi"),
     ("/api/vectors/preview/ncbi/{id}", "ncbi"),
+    # 在线来源的集合/索引列举同样是外呼代理（与载体库侧共用缓存）
+    ("/api/map/import/snapgene/sets", "ncbi"),
+    ("/api/map/import/snapgene/sets/{id}", "ncbi"),
 ]
 
 
