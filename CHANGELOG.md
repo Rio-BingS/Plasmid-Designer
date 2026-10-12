@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+## [2.14.1] - 2026-10-13
+
+### 升级注意
+- SnapGene 在线库改回**默认开启**（`SNAPGENE_ONLINE_ENABLED` 默认 `true`），仍只对已登录用户显示，存入载体库仍需管理员；不需要的部署设为 `false`。Docker 需更新 compose。
+
+### 变更
+- `SNAPGENE_ONLINE_ENABLED` 只有显式设为 `false`/`0`/`no`/`off` 才关闭。
+
 ## [2.14.0] - 2026-10-12
 
 ### 新增
@@ -809,7 +817,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.1...HEAD
+[2.14.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.0...v2.14.1
 [2.14.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.11.1...v2.12.0

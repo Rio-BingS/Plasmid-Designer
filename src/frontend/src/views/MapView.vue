@@ -56,7 +56,7 @@ const accession = ref('')
 const accessionValid = computed(() => NCBI_ACCESSION_RE.test(normalizeAccession(accession.value)))
 
 // 在线导入（SnapGene 在线库 / Ensembl）：与载体库页共用后端缓存与许可文案
-// SnapGene 在线库默认关闭（SNAPGENE_ONLINE_ENABLED）且只对登录用户开放：
+// SnapGene 在线库默认开启（SNAPGENE_ONLINE_ENABLED=false 可关）且只对登录用户开放：
 // 两者都满足才出现该选项；否则只给 Ensembl（后端仍是权威：关 → 404，匿名 → 401）
 const loggedIn = useIsAuthenticated()
 const snapgeneEnabled = ref(false)
