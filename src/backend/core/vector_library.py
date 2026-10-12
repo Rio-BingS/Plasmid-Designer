@@ -16,6 +16,13 @@ from pathlib import Path
 import yaml
 
 
+def _parse_provenance(raw) -> Dict[str, str]:
+    """data_provenance → {键: 字符串}（脏数据不让整份载体被兜底 except 吞掉）"""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if v not in (None, "")}
+
+
 class ElementType(Enum):
     """载体元件类型"""
     PROMOTER = "promoter"
@@ -30,6 +37,26 @@ class ElementType(Enum):
     REGULATORY = "regulatory"  # 调控区（如 lac operator）
     SIGNALLING_PEPTIDE = "signalling_peptide"
     OTHER = "other"
+
+
+# 图谱契约（plasmid-map/1）的元件类型 → 载体库 ElementType 的别名。
+# 导入的 GenBank/SnapGene 记录用的是图谱那套类型名（rep_origin/mcs/marker…），
+# 不别名就会一律落到 other：YAML 里类型正确、界面与再导出却变成 other。
+# 仍未列出的类型（insert/primer_bind/misc_rna…）保持回退到 other（见 KNOWN_ISSUES）。
+_TYPE_ALIASES: Dict[str, ElementType] = {
+    "origin": ElementType.ORIGIN,
+    "rep_origin": ElementType.ORIGIN,
+    "mcs": ElementType.MCS,
+    "multiple_cloning_site": ElementType.MCS,
+    "marker": ElementType.RESISTANCE,
+    "resistance": ElementType.RESISTANCE,
+    "signal_peptide": ElementType.SIGNALLING_PEPTIDE,
+    "signalling_peptide": ElementType.SIGNALLING_PEPTIDE,
+    "polyA_signal": ElementType.REGULATORY,
+    "protein_bind": ElementType.REGULATORY,
+    "rbs": ElementType.REGULATORY,
+    "misc_feature": ElementType.OTHER,
+}
 
 
 @dataclass
@@ -88,7 +115,13 @@ class Vector:
     copy_number: str = "medium"  # low, medium, high
     description: str = ""
     tags: List[str] = field(default_factory=list)  # N-His, C-Flag, etc.
-    
+    # 拓扑：内置载体都是环状质粒；导入的线性片段（PCR 产物/Ensembl 片段/线性
+    # GenBank 记录）此前一律被当环状画图谱，这里记录真实拓扑
+    topology: str = "circular"
+    # 出处记录（YAML 的 data_provenance）：内置载体记来源库/集合/日期，
+    # 导入载体记来源站 + URL + 许可 + 抓取时间，供界面展示与日后重取
+    provenance: Dict[str, str] = field(default_factory=dict)
+
     @property
     def length(self) -> int:
         return len(self.sequence)
@@ -170,11 +203,12 @@ class VectorLibrary:
             try:
                 element_type = ElementType(raw_type)
             except ValueError:
-                # 大小写归一后重试；仍未知则降级为 other，避免单条脏数据拒载整个文件
+                # 大小写归一后重试；再查图谱类型别名表；仍未知则降级为 other，
+                # 避免单条脏数据拒载整个文件
                 try:
                     element_type = ElementType(raw_type.lower())
                 except ValueError:
-                    element_type = ElementType.OTHER
+                    element_type = _TYPE_ALIASES.get(raw_type.lower(), ElementType.OTHER)
             # name 缺省时回退到类型名：NCBI/批量导入的历史 YAML 只写了
             # {type,start,end}，此前 elem_data['name'] 抛 KeyError，整份载体
             # 被 load_from_directory 的兜底 except 吞掉、静默消失
@@ -225,7 +259,9 @@ class VectorLibrary:
             antibiotic_resistance=data.get('antibiotic', []),
             copy_number=data.get('copy_number', 'medium'),
             description=data.get('description', ''),
-            tags=data.get('tags', [])
+            tags=data.get('tags', []),
+            topology="linear" if str(data.get('topology') or '').lower() == 'linear' else 'circular',
+            provenance=_parse_provenance(data.get('data_provenance'))
         )
     
     def export_yaml(self, vector_id: str, output_path: str) -> None:
@@ -244,6 +280,7 @@ class VectorLibrary:
             'copy_number': vector.copy_number,
             'description': vector.description,
             'tags': vector.tags,
+            'topology': vector.topology,
             'features': [
                 {
                     'name': e.name,
@@ -258,6 +295,9 @@ class VectorLibrary:
             ]
         }
         
+        if vector.provenance:
+            data['data_provenance'] = dict(vector.provenance)
+
         if vector.mcs:
             data['mcs'] = {
                 'name': vector.mcs.name,
