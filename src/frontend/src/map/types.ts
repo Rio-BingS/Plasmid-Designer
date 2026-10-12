@@ -133,3 +133,9 @@ export interface EnzymeDetail {
 /** GET /api/map/suppliers：REBASE 厂商及其可供的酶 */
 export interface EnzymeSupplier { code: string; name: string; enzymes: string[] }
 
+export interface NcbiImportRequest {
+  accession: string
+  annotate?: boolean
+  enzyme_set?: string
+  orf_min_aa?: number
+}

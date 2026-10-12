@@ -1,13 +1,14 @@
 <script setup lang="ts">
 /**
- * 独立图谱页 /map：拖放/选择文件或粘贴序列 → POST /api/map/parse → 可编辑的 MapViewer。
+ * 独立图谱页 /map：拖放/选择文件、粘贴序列 → POST /api/map/parse，或输入 NCBI
+ * accession → POST /api/map/import/ncbi → 可编辑的 MapViewer。
  * 文档放 sessionStorage，刷新不丢；示例按钮载入内置载体 pUC19。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EnzymeSet, MapDocument, ParseOptions, Topology } from '@/map/types'
 import {
-  checkMapFile, describeMapError, fileExt, getEnzymeSets, getVectorMap, MAP_ACCEPT, MAP_TEXT_EXTS,
-  MAP_UPLOAD_LIMIT_MB, parseMapFile, parseMapText,
+  checkMapFile, describeMapError, fileExt, getEnzymeSets, getVectorMap, importNcbi, MAP_ACCEPT, MAP_TEXT_EXTS,
+  MAP_UPLOAD_LIMIT_MB, NCBI_ACCESSION_RE, normalizeAccession, parseMapFile, parseMapText,
 } from '@/map/api'
 import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
@@ -17,7 +18,7 @@ const EXAMPLE_VECTOR = 'pUC19'
 
 const doc = ref<MapDocument | null>(loadMapSession())
 const showInput = ref(!doc.value)
-const mode = ref<'file' | 'paste'>('file')
+const mode = ref<'file' | 'paste' | 'ncbi'>('file')
 const loading = ref(false)
 const error = ref('')
 const notSaved = ref(false)
@@ -42,6 +43,10 @@ const pasteName = ref('')
 const pasteTopology = ref<Topology>('circular')
 const pasteText = ref('')
 const pasteLooksGenbank = computed(() => /^\s*LOCUS\b/.test(pasteText.value))
+
+// NCBI accession
+const accession = ref('')
+const accessionValid = computed(() => NCBI_ACCESSION_RE.test(normalizeAccession(accession.value)))
 
 // 拖放
 const dragging = ref(false)
@@ -110,6 +115,17 @@ async function openPaste() {
   await run(() => parseMapText(text, extra, options()))
 }
 
+async function openNcbi() {
+  const acc = normalizeAccession(accession.value)
+  if (!acc) { error.value = '请输入 NCBI accession，如 L09137 或 M77789.1'; return }
+  if (!NCBI_ACCESSION_RE.test(acc)) {
+    error.value = `accession 格式无效：${acc}（示例：L09137、M77789.1、NC_005213.1）`
+    return
+  }
+  const o = options()
+  await run(() => importNcbi({ accession: acc, ...o }))
+}
+
 async function openExample() {
   await run(() => getVectorMap(EXAMPLE_VECTOR, { enzyme_set: enzymeSet.value }))
 }
@@ -140,6 +156,7 @@ function closeDoc() {
       <div class="map-tabs" role="tablist">
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'file' }]" :aria-selected="mode === 'file'" @click="mode = 'file'">上传文件</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'paste' }]" :aria-selected="mode === 'paste'" @click="mode = 'paste'">粘贴序列</button>
+        <button type="button" role="tab" :class="['map-tab', { active: mode === 'ncbi' }]" :aria-selected="mode === 'ncbi'" @click="mode = 'ncbi'">NCBI 导入</button>
       </div>
 
       <div v-if="mode === 'file'"
@@ -149,6 +166,16 @@ function closeDoc() {
         <input ref="fileInput" class="map-file" type="file" :accept="MAP_ACCEPT" @change="onPick" />
         <p class="map-drop-main">将文件拖到这里，或<span class="map-link">点击选择</span></p>
         <p class="map-drop-sub">GenBank（.gb/.gbk/.genbank）、FASTA（.fa/.fasta）、SnapGene（.dna）、纯文本（.txt）· 不超过 {{ MAP_UPLOAD_LIMIT_MB }} MB</p>
+      </div>
+
+      <div v-else-if="mode === 'ncbi'" class="map-ncbi">
+        <div class="map-row">
+          <input v-model="accession" class="form-input map-accession" type="text" placeholder="GenBank / RefSeq accession，如 L09137、M77789.1"
+                 maxlength="40" spellcheck="false" aria-label="NCBI accession" @keydown.enter.prevent="openNcbi" />
+          <button type="button" class="btn btn-primary map-ncbi-open" :disabled="loading || !accession.trim()" @click="openNcbi">从 NCBI 打开</button>
+        </div>
+        <p class="map-drop-sub">经 NCBI E-utilities 获取完整 GenBank 记录（含注释）；序列不超过 300 kb。
+          <span v-if="accession.trim() && !accessionValid" class="map-ncbi-hint">格式看起来不对：应为字母 + 数字，可带版本号（.1）</span></p>
       </div>
 
       <div v-else class="map-paste">
@@ -218,6 +245,9 @@ h1 { font-size: 2rem; margin-bottom: 0.25rem; }
 .map-topology label { display: inline-flex; gap: 0.25rem; align-items: center; }
 .map-text { font-family: Consolas, Menlo, 'Courier New', monospace; font-size: 0.85rem; resize: vertical; }
 .map-open { align-self: flex-start; }
+.map-ncbi { display: flex; flex-direction: column; gap: 0.4rem; }
+.map-accession { flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; font-family: Consolas, Menlo, 'Courier New', monospace; }
+.map-ncbi-hint { color: var(--warning-color); margin-left: 0.4rem; }
 .map-options { display: flex; gap: 0.6rem 1.2rem; align-items: center; flex-wrap: wrap; font-size: 0.9rem; }
 .map-options label { display: inline-flex; gap: 0.4rem; align-items: center; }
 .map-select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); }
