@@ -160,6 +160,7 @@ from fastapi import Depends
 from app.routes.design_routes import router as design_router
 from app.routes.batch_routes import router as batch_router
 from app.routes.vector_routes import router as vector_router
+from app.routes.online_source_routes import router as online_source_router
 from app.routes.codon_routes import router as codon_router
 from app.auth.routes import router as auth_router
 from app.cache_routes import router as cache_router
@@ -175,6 +176,9 @@ from app.gating import require_feature, require_any_feature
 # 前端导航/路由已按 site-config 隐藏，此处兜底防绕过前端直连
 app.include_router(design_router, dependencies=[Depends(require_feature("design"))])
 app.include_router(batch_router, dependencies=[Depends(require_feature("batch"))])
+# 在线来源导入（SnapGene 在线库 / Ensembl / Addgene）：注册在 vector_router 之前，
+# 避免 /api/vectors/{vector_id} 这类单段模板在匹配顺序上先截获子路径
+app.include_router(online_source_router, dependencies=[Depends(require_feature("vectors"))])
 app.include_router(vector_router, dependencies=[Depends(require_feature("vectors"))])
 app.include_router(codon_router, dependencies=[Depends(require_feature("codon"))])
 app.include_router(auth_router)

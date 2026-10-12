@@ -52,6 +52,8 @@ services:
       # NCBI accession 导入（可选）
       - NCBI_EMAIL=${NCBI_EMAIL:-}
       - NCBI_API_KEY=${NCBI_API_KEY:-}
+      # 在线序列来源导入（SnapGene 在线库 / Ensembl / Addgene）：设 false 可整体关闭外呼
+      - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
       # 可信反向代理：只信前端 nginx 容器的固定地址（FRONTEND_IPV4，见下方 networks），
       # 不再信整个 172.16.0.0/12——同网段其它容器/主机可伪造 X-Real-IP 换限流桶。
       # 改 PLASMID_SUBNET / FRONTEND_IPV4 时同步修改

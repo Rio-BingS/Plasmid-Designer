@@ -9,10 +9,12 @@ app/
 ├── main.py                  # 入口（仅组装：CORS/中间件/路由/生命周期）
 ├── config.py                # 配置（环境变量 / .env）+ sys.path
 ├── design_service.py        # 单任务与批量共用的设计流水线
+├── vector_import.py         # 外部/在线序列 → 载体库 YAML（导入落盘形状唯一入口）
 ├── routes/                  # 路由模块
 │   ├── design_routes.py     # 设计任务 API
 │   ├── batch_routes.py      # 批量设计 API
 │   ├── vector_routes.py     # 载体库 API
+│   ├── online_source_routes.py  # 在线来源导入（SnapGene 在线库/Ensembl/Addgene）
 │   ├── codon_routes.py      # 密码子表 API
 │   ├── sequencing_routes.py # Sanger 测序分析 API
 │   └── models.py            # 共享 Pydantic 模型
