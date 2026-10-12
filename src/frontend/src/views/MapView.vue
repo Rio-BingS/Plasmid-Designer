@@ -4,6 +4,7 @@
  * accession → POST /api/map/import/ncbi → 可编辑的 MapViewer。
  * 文档放 sessionStorage，刷新不丢；示例按钮载入内置载体 pUC19。
  */
+import SnapgeneSetPicker from '../components/SnapgeneSetPicker.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EnzymeSet, MapDocument, ParseOptions, Topology } from '@/map/types'
 import {
@@ -353,9 +354,7 @@ async function doSaveAsVector() {
 
         <template v-if="onlineSource === 'snapgene' && snapgeneAvailable">
           <div class="map-row">
-            <select v-model="sgSetId" class="form-input map-online-set" aria-label="SnapGene 集合" @change="loadSnapgeneIndex">
-              <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id" :title="s.set_id">{{ s.name }}</option>
-            </select>
+            <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input map-online-set" @change="loadSnapgeneIndex" />
             <button type="button" class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
               {{ sgLoading ? '加载中…' : '刷新' }}
             </button>

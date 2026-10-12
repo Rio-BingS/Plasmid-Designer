@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SnapgeneSetPicker from '../components/SnapgeneSetPicker.vue'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo } from '@/types'
@@ -662,9 +663,7 @@ async function openUniprotEntry(accession: string) {
   <div v-if="activeTab === 'snapgene' && snapgeneAvailable" class="online-section">
     <p class="online-license">{{ snapgeneLicense }}</p>
     <div class="online-row">
-      <select v-model="sgSetId" class="form-select" @change="loadSnapgeneIndex">
-        <option v-for="s in sgSets" :key="s.set_id" :value="s.set_id" :title="s.set_id">{{ s.name }}</option>
-      </select>
+      <SnapgeneSetPicker v-model="sgSetId" :sets="sgSets" input-class="form-input" @change="loadSnapgeneIndex" />
       <button class="btn btn-secondary" :disabled="sgLoading" @click="loadSnapgeneSets">
         {{ sgLoading ? '加载中...' : '🔄 刷新' }}
       </button>
