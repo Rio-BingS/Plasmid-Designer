@@ -112,12 +112,12 @@ function onClickOutside(e: MouseEvent) {
 onMounted(() => document.addEventListener('click', onClickOutside))
 onBeforeUnmount(() => document.removeEventListener('click', onClickOutside))
 
-function highlightMatch(name: string): string {
+/** 把酶名按查询词切成三段，模板里用文本插值渲染（不用 v-html：酶名来自后端，可能含 HTML） */
+function highlightMatch(name: string): { pre: string; hit: string; post: string } {
   const q = query.value.trim()
-  if (!q) return name
-  const idx = name.toLowerCase().indexOf(q.toLowerCase())
-  if (idx < 0) return name
-  return `${name.slice(0, idx)}<u>${name.slice(idx, idx + q.length)}</u>${name.slice(idx + q.length)}`
+  const idx = q ? name.toLowerCase().indexOf(q.toLowerCase()) : -1
+  if (idx < 0) return { pre: name, hit: '', post: '' }
+  return { pre: name.slice(0, idx), hit: name.slice(idx, idx + q.length), post: name.slice(idx + q.length) }
 }
 </script>
 
@@ -154,7 +154,7 @@ function highlightMatch(name: string): string {
         @mousedown.prevent="choose(n)"
         @mouseenter="highlight = i"
       >
-        <span class="es-name" v-html="highlightMatch(n)"></span>
+        <span class="es-name">{{ highlightMatch(n).pre }}<u v-if="highlightMatch(n).hit">{{ highlightMatch(n).hit }}</u>{{ highlightMatch(n).post }}</span>
         <span v-if="recogOf(n)" class="es-site">[{{ recogOf(n) }}]</span>
       </li>
     </ul>

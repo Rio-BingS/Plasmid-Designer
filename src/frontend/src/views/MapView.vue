@@ -17,6 +17,7 @@ import { loadMapSession, saveMapSession } from '@/map/session'
 import MapViewer from '@/map/components/MapViewer.vue'
 import { saveMapAsVector } from '@/api'
 import { useIsAdmin, useIsAuthenticated } from '@/composables/useIsAdmin'
+import { onTabKeydown } from '@/utils/tabKeys'
 
 const PAGE_TITLE = '质粒图谱 - Plasmid Designer'
 const EXAMPLE_VECTOR = 'pUC19'
@@ -109,17 +110,21 @@ async function loadSnapgeneSets() {
   }
 }
 
+// 集合索引请求号：快速切换集合时只认最后一次请求，乱序返回的旧集合不覆盖列表
+let sgIndexGen = 0
 async function loadSnapgeneIndex() {
   if (!sgSetId.value) return
+  const gen = ++sgIndexGen
   sgLoading.value = true
   sgError.value = ''
   sgRows.value = []
   try {
-    sgRows.value = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    const rows = (await getOnlineSnapgeneIndex(sgSetId.value)).plasmids || []
+    if (gen === sgIndexGen) sgRows.value = rows
   } catch (e) {
-    sgError.value = describeMapError(e)
+    if (gen === sgIndexGen) sgError.value = describeMapError(e)
   } finally {
-    sgLoading.value = false
+    if (gen === sgIndexGen) sgLoading.value = false
   }
 }
 
@@ -162,15 +167,19 @@ function setDoc(d: MapDocument) {
   error.value = ''
 }
 
+// 解析请求号：解析中又拖入/选择了另一个文件时，只采用最后一次的结果（先发后到的不覆盖）
+let runGen = 0
 async function run(task: () => Promise<MapDocument>) {
+  const gen = ++runGen
   loading.value = true
   error.value = ''
   try {
-    setDoc(await task())
+    const d = await task()
+    if (gen === runGen) setDoc(d)
   } catch (e) {
-    error.value = describeMapError(e)
+    if (gen === runGen) error.value = describeMapError(e)
   } finally {
-    loading.value = false
+    if (gen === runGen) loading.value = false
   }
 }
 
@@ -310,7 +319,7 @@ async function doSaveAsVector() {
     <p v-if="saveMsg" :class="['map-saveas-msg', saveFailed ? 'map-error' : 'map-muted']" role="status">{{ saveMsg }}</p>
 
     <section v-if="showInput" class="card map-input">
-      <div class="map-tabs" role="tablist">
+      <div class="map-tabs" role="tablist" @keydown="onTabKeydown">
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'file' }]" :aria-selected="mode === 'file'" @click="mode = 'file'">上传文件</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'paste' }]" :aria-selected="mode === 'paste'" @click="mode = 'paste'">粘贴序列</button>
         <button type="button" role="tab" :class="['map-tab', { active: mode === 'ncbi' }]" :aria-selected="mode === 'ncbi'" @click="mode = 'ncbi'">NCBI 导入</button>
