@@ -376,13 +376,20 @@ class PrimerDesigner:
                 f"Type IIS 酶），可选如: {head} 等"
             )
         enzyme_site = geo["site"]
-        spacer = "A" * geo["spacer"]
+        # 间隔碱基按两端各自的拼接上下文挑选：固定 A*n 时 spacer/overhang/
+        # 插入片段的拼接处可能新生出同一把酶的位点（BbvI、BcoDI 等随机
+        # overhang 下出现第 3 个切点），挑一个不形成额外位点的组合
+        spacer_f = _gg_spacer(enzyme_name, enzyme_site, geo["spacer"], overhang_seq_5,
+                              insert_seq)
+        spacer_r = _gg_spacer(enzyme_name, enzyme_site, geo["spacer"],
+                              self._reverse_complement(overhang_seq_3),
+                              self._reverse_complement(insert_seq))
 
         # 正向引物结构：保护碱基 + 酶切位点 + 间隔 + overhang + 插入片段
         # 5' - GG - [酶切位点] - [间隔] - [overhang] - [插入片段] - 3'
         # 退火区锚定插入片段两端（A-07）
         forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
-        forward_overhang = f"GG{enzyme_site}{spacer}{overhang_seq_5}"
+        forward_overhang = f"GG{enzyme_site}{spacer_f}{overhang_seq_5}"
 
         forward = Primer(
             name=f"{primer_name}_F",
@@ -403,7 +410,7 @@ class PrimerDesigner:
         # 写成识别序列的反向互补会让位点朝外，overhang 永远切不下来
         reverse_annealing = self._design_reverse_primer(insert_seq, len(insert_seq), "temp", anchor=True)
         overhang_3_rc = self._reverse_complement(overhang_seq_3)
-        reverse_overhang = f"GG{enzyme_site}{spacer}{overhang_3_rc}"
+        reverse_overhang = f"GG{enzyme_site}{spacer_r}{overhang_3_rc}"
 
         reverse = Primer(
             name=f"{primer_name}_R",
@@ -419,6 +426,14 @@ class PrimerDesigner:
             notes=f"Golden Gate reverse, {enzyme_name}, overhang: {overhang_seq_3}"
         )
         
+        extra = gg_junction_extra_sites(insert_seq, enzyme_name, forward_overhang,
+                                        reverse_overhang)
+        if extra:
+            warn = (f"；警告：引物尾部与插入片段拼接处另形成 {extra} 个 {enzyme_name} "
+                    "识别位点（换间隔碱基也避不开），酶切会多切")
+            forward.notes += warn
+            reverse.notes += warn
+
         # overhang 连接保真度筛查：不通过只告警，不拒绝设计
         gg_issues = screen_gg_overhang_pair(overhang_seq_5, overhang_seq_3)
         if gg_issues:
@@ -1100,3 +1115,57 @@ def export_primers_to_excel(primer_pairs: List[PrimerPair], output_path: str) ->
                 d['product_size'],
                 d['recommended_ta']
             ])
+
+
+# ==================== Golden Gate 拼接处位点检查 ====================
+
+def _gg_site_count(seq: str, enzyme_name: str) -> int:
+    """识别序列出现次数（双链）。按识别序列计而不是按切点：线性片段末端的
+    位点切点可能落在片段外而被 find_enzyme_sites 丢掉，拼在扩增子里却会切"""
+    from core.enzyme_sites import _site_regex, get_enzyme
+
+    spec = get_enzyme(enzyme_name)
+    if spec is None:
+        return 0
+    site = spec["site"]
+    rx = _site_regex(site)
+    n = sum(1 for _ in rx.finditer(seq))
+    if revcomp(site) != site:
+        n += sum(1 for _ in rx.finditer(revcomp(seq)))
+    return n
+
+
+def _gg_spacer(enzyme_name: str, site: str, n: int, overhang: str, downstream: str) -> str:
+    """挑选 n 个间隔碱基，使「GG + 位点 + 间隔 + overhang + 下游（插入片段一端）」
+    的拼接区只含引物尾里那一个识别位点。优先 A*n（保持既有引物不变），
+    其次其他均聚物与少量确定性组合；都不行退回 A*n（由调用方告警）。"""
+    if n <= 0:
+        return ""
+    head = downstream[:max(0, len(site) - 1)]
+    tried = set()
+
+    def candidates():
+        for b in "ATCG":
+            yield b * n
+        import itertools
+        for k, combo in enumerate(itertools.product("ATCG", repeat=min(n, 4))):
+            if k >= 256:
+                break
+            yield ("".join(combo) * (n // len(combo) + 1))[:n]
+
+    for sp in candidates():
+        if sp in tried:
+            continue
+        tried.add(sp)
+        if _gg_site_count(f"GG{site}{sp}{overhang}{head}", enzyme_name) == 1:
+            return sp
+    return "A" * n
+
+
+def gg_junction_extra_sites(insert_seq: str, enzyme_name: str, forward_tail: str,
+                            reverse_tail: str) -> int:
+    """完整扩增子（F 尾 + 插入片段 + rc(R 尾)）里，除两端引物尾各一个与插入片段
+    内部原有的位点之外，拼接处另外形成的识别位点数"""
+    amplicon = forward_tail + insert_seq + revcomp(reverse_tail)
+    return max(0, _gg_site_count(amplicon, enzyme_name) - 2
+               - _gg_site_count(insert_seq, enzyme_name))

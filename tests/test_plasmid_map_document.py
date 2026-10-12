@@ -88,3 +88,93 @@ def test_document_drops_auto_duplicates_of_existing_features():
     doc2 = build_document(name="p", sequence=seq, topology="circular", source_format="genbank",
                           features=existing)
     assert [f["source"] for f in doc2["features"]] == ["file"]
+
+
+# ==================== /parse 产出符合 MapDocument 约束（v2.12.0 审查 M2） ====================
+
+def _join(n, step=3):
+    return "join(" + ",".join(f"{step * i + 1}..{step * i + 1}" for i in range(n)) + ")"
+
+
+def _wrap_loc(loc: str) -> str:
+    out, cur = [], loc
+    while cur:
+        out.append(cur[:58])
+        cur = cur[58:]
+    return "     CDS             " + out[0] + "\n" + "".join(" " * 21 + x + "\n" for x in out[1:])
+
+
+def test_parsed_document_validates_against_contract_limits():
+    import random
+
+    from app.routes.models import MapDocument
+
+    rng = random.Random(2)
+    seq = "".join(rng.choice("ACGT") for _ in range(3000))
+    many_q = "".join(f"                     /q{i}=\"v{i}\"\n" for i in range(150))
+    feats = (
+        _wrap_loc(_join(250))                                   # 250 段 > 200 → 丢弃告警
+        + "     misc_feature    100..200\n" + many_q              # 150 条限定符 → 截到 100
+        + "     primer_bind     1..1500\n                     /label=\"longprimer\"\n"
+        + "     primer_bind     complement(2000..2020)\n                     /label=\"p1\"\n"
+    )
+    doc = document_from_record(parse_file("x.gb", _gb(seq, feats).encode()), annotate=False)
+    MapDocument.model_validate(doc)  # 不抛 = 能原样提交给 /analyze、/export/genbank
+    warns = " ".join(doc["meta"]["warnings"])
+    assert "分段超过 200" in warns and "限定符超过 100" in warns
+    mf = next(f for f in doc["features"] if f["type"] == "misc_feature")
+    assert len(mf["qualifiers"]) == 100
+    # 过长的 primer_bind 作为特征保留，不进 primers（MapPrimer.sequence ≤ 1000）
+    assert [p["name"] for p in doc["primers"]] == ["p1"]
+    assert any(f["name"] == "longprimer" and f["type"] == "primer_bind" for f in doc["features"])
+
+
+def test_huge_join_rejected_before_biopython():
+    import time
+
+    import pytest
+
+    from core.plasmid_map import MapParseError
+
+    seq = "ACGT" * 75_000
+    gb = _gb(seq, _wrap_loc(_join(80_000)))
+    t = time.time()
+    with pytest.raises(MapParseError) as e:
+        parse_file("x.gb", gb.encode())
+    assert e.value.status == 422 and "分段过多" in str(e.value)
+    assert time.time() - t < 1.0
+
+
+def test_snapgene_huge_segment_count_rejected():
+    import struct
+
+    import pytest
+
+    from core.plasmid_map import MapParseError
+
+    def packet(t, data):
+        return struct.pack(">BI", t, len(data)) + data
+    seq = "ACGT" * 1000
+    segs = "".join(f'<Segment range="{2 * i + 1}-{2 * i + 1}"/>' for i in range(1500))
+    xml = f'<?xml version="1.0"?><Features><Feature name="f" type="CDS">{segs}</Feature></Features>'
+    data = (packet(0x09, struct.pack(">8sHHH", b"SnapGene", 1, 15, 19))
+            + packet(0x00, bytes([1]) + seq.encode()) + packet(0x0A, xml.encode()))
+    with pytest.raises(MapParseError) as e:
+        parse_file("x.dna", data)
+    assert e.value.status == 422
+
+
+def test_build_document_caps_orfs_primers_and_segments(monkeypatch):
+    import core.plasmid_map.document as D
+
+    monkeypatch.setattr(D, "MAX_ORFS", 3)
+    monkeypatch.setattr(D, "MAX_PRIMERS", 2)
+    seq = ("ATG" + "GCT" * 12 + "TAA") * 10
+    feats = [{"name": "s", "type": "cds", "start": 1, "end": 300, "strand": 1,
+              "segments": [{"start": i + 1, "end": i + 1} for i in range(D.MAX_SEGMENTS + 1)]}]
+    prims = [{"name": f"p{i}", "start": 1, "end": 10, "strand": 1} for i in range(4)]
+    doc = build_document(name="x", sequence=seq, topology="linear", source_format="raw",
+                         features=feats, primers=prims, annotate=False, orf_min_aa=10)
+    assert len(doc["orfs"]) == 3 and len(doc["primers"]) == 2 and doc["features"] == []
+    w = " ".join(doc["meta"]["warnings"])
+    assert "ORF 超过 3" in w and "引物超过 2" in w

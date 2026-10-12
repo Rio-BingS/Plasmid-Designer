@@ -7,16 +7,19 @@ ORF → 分配稳定 id。纯函数，重计算由路由层放进线程池并缓
 
 from typing import Dict, Iterable, List, Optional
 
+import core.plasmid_map.annotate as annotate_mod
 from core.plasmid_map.annotate import annotate as run_annotate
 from core.plasmid_map.annotate import circular_overlap
 from core.plasmid_map.enzymes import find_map_enzymes, resolve_enzymes
 from core.plasmid_map.orfs import DEFAULT_MIN_AA, find_orfs
 from core.plasmid_map.parsers import ParsedRecord, extract_span
-from core.plasmid_map.types import FEATURE_TYPE_SET, SCHEMA, normalize_color
+from core.plasmid_map.types import (
+    FEATURE_TYPE_SET, MAX_FEATURES, MAX_ORFS, MAX_PRIMER_SEQ, MAX_PRIMERS, MAX_QUALIFIERS,
+    MAX_SEGMENTS, MAX_WARNINGS, SCHEMA, normalize_color,
+)
 
 # 自动注释命中与已有特征（同类型或同名）重叠超过较短者此比例时视为重复
 EXISTING_DUP_OVERLAP = 0.8
-MAX_FEATURES = 5000
 
 
 def _span_len(start: int, end: int, length: int) -> int:
@@ -46,6 +49,9 @@ def sanitize_features(features: Iterable[Dict], length: int, circular: bool,
             if not ok:
                 bad += 1
                 continue
+            if len(segs) > MAX_SEGMENTS:
+                bad += 1
+                continue
             segs = [{"start": int(s["start"]), "end": int(s["end"])} for s in segs]
             if len(segs) == 1:
                 segs = None
@@ -65,6 +71,9 @@ def sanitize_features(features: Iterable[Dict], length: int, circular: bool,
             g["color"] = color
         else:
             g.pop("color", None)
+        quals = g.get("qualifiers")
+        if isinstance(quals, dict) and len(quals) > MAX_QUALIFIERS:
+            g["qualifiers"] = dict(list(quals.items())[:MAX_QUALIFIERS])
         for k in ("notes", "qualifiers", "auto", "id"):
             if g.get(k) in (None, "", {}):
                 g.pop(k, None)
@@ -135,7 +144,8 @@ def build_document(
     enzymes: Optional[List[str]] = None,
     orf_min_aa: int = DEFAULT_MIN_AA,
 ) -> Dict:
-    """sequence 须已清洗（大写 IUPAC）；annotate=None 时「无特征才注释」"""
+    """sequence 须已清洗（大写 IUPAC）；annotate=None 时「无特征且不超过
+    AUTO_ANNOTATE_MAX_BP 才注释」，显式 True 总是注释（受比对预算约束）"""
     warns = list(warnings or [])
     length = len(sequence)
     circular = topology == "circular"
@@ -143,21 +153,32 @@ def build_document(
 
     if annotate is None:
         annotate = not any(f["source"] != "auto" for f in feats)
+        if annotate and length > annotate_mod.AUTO_ANNOTATE_MAX_BP:
+            annotate = False
+            warns.append(f"序列超过 {annotate_mod.AUTO_ANNOTATE_MAX_BP:,} bp，未自动注释常见元件"
+                         "（可显式开启 annotate）")
     if annotate:
         base = [f for f in feats if f["source"] != "auto"]
-        auto = run_annotate(sequence, circular)
+        auto = run_annotate(sequence, circular, warnings=warns)
         feats = base + _drop_duplicate_auto(auto, base, length, circular)
 
     names, ewarns = resolve_enzymes(enzyme_set, enzymes)
     warns.extend(ewarns)
-    enz = find_map_enzymes(sequence, names, circular)
+    enz = find_map_enzymes(sequence, names, circular, warnings=warns)
     orfs = find_orfs(sequence, circular, orf_min_aa)
+    if len(orfs) > MAX_ORFS:
+        warns.append(f"ORF 超过 {MAX_ORFS} 个（最短 {orf_min_aa} aa），只返回前 {MAX_ORFS} 个；"
+                     "可调高最短长度")
+        del orfs[MAX_ORFS:]
 
     feats.sort(key=lambda f: (f["start"], -_span_len(f["start"], f["end"], length)))
     _assign_ids(feats)
 
     prims = []
     for i, p in enumerate(primers or [], 1):
+        if len(prims) >= MAX_PRIMERS:
+            warns.append(f"引物超过 {MAX_PRIMERS} 条，其余已忽略")
+            break
         try:
             start, end = int(p["start"]), int(p["end"])
         except (KeyError, TypeError, ValueError):
@@ -165,6 +186,8 @@ def build_document(
         if not (1 <= start <= length and 1 <= end <= length) or (start > end and not circular):
             continue
         strand = -1 if int(p.get("strand") or 1) == -1 else 1
+        if _span_len(start, end, length) > MAX_PRIMER_SEQ:
+            continue
         prims.append({
             "id": str(p.get("id") or f"primer-{i}")[:64],
             "name": str(p.get("name") or f"primer {i}")[:80],
@@ -185,7 +208,7 @@ def build_document(
         "meta": {
             "source_format": source_format,
             "enzyme_set": "custom" if enzymes else enzyme_set,
-            "warnings": warns,
+            "warnings": warns[:MAX_WARNINGS],
         },
     }
 
