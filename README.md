@@ -198,7 +198,10 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 |------|------|------|
 | POST | `/api/map/parse` | 解析 GenBank / FASTA / SnapGene `.dna` 上传或粘贴文本 → MapDocument（可自动注释） |
 | POST | `/api/map/analyze` | 编辑后的序列 / 特征重算酶切、ORF、自动注释 |
-| GET | `/api/map/enzyme-sets` | 酶集合（common / unique6 / commercial / golden_gate） |
+| GET | `/api/map/enzyme-sets` | 酶集合（common / unique6 / commercial / golden_gate / type_iis） |
+| GET | `/api/map/enzymes/{name}` | 单把酶详情：REBASE 厂商、可商购同切酶/新切酶、Type IIS、Golden Gate 适用、甲基化 |
+| GET | `/api/map/suppliers` | REBASE 厂商代码/名称及各自可供的酶（图谱页按厂商筛选） |
+| POST | `/api/map/import/ncbi` | 按 NCBI accession（如 `L09137`、`M77789.1`）取 GenBank 记录 → MapDocument（限流档 `ncbi`） |
 | POST | `/api/map/export/genbank` | MapDocument → GenBank 下载 |
 
 ### 密码子表
@@ -341,7 +344,9 @@ python scripts/batch_sequencing_report.py --data-dir "<测序结果文件夹>" \
 组合环形 / 线性 / 序列 / 分屏视图，共享选区与悬停；特征自动分道，标签内置或外置引线
 且保证不重叠（放不下的计数并列出）；酶切按酶组、切点数、名称过滤；Ctrl+F 错配搜索；
 选区长度/GC%/Tm；导出 SVG、PNG 2x、GenBank。纯算法在 `src/map/core/`（带单测）。
-MapDocument 的 `enzymes[]` 按酶分组列出位点（双链切点 `cut_top`/`cut_bottom`、每个位点的实际突出端、Dam/Dcm 甲基化阻断提示），默认用 `common` 集合（`core/enzyme_sites.py` 默认菜单 51 种常用酶，酶参数取自 Biopython 自带的 REBASE 数据），也可选 `unique6` / `commercial` / `golden_gate`；字段口径见 [docs/MAP.md](docs/MAP.md)。
+MapDocument 的 `enzymes[]` 按酶分组列出位点（双链切点 `cut_top`/`cut_bottom`、每个位点的实际突出端、Dam/Dcm 甲基化阻断提示），默认用 `common` 集合（`core/enzyme_sites.py` 默认菜单 51 种常用酶，酶参数取自 Biopython 自带的 REBASE 数据），也可选 `unique6` / `commercial` / `golden_gate` / `type_iis`；字段口径见 [docs/MAP.md](docs/MAP.md)。
+Golden Gate 设计的可选酶由 REBASE 数据给出（可商购、切出 4 nt 5' 突出端的 Type IIS 酶，BsaI / BsmBI / BbsI 在前），
+引物中识别序列与 overhang 之间的间隔按各酶切割偏移计算。
 
 **载体库数据准确性**：`data/vectors/*.yaml` 内置 9 个常用载体均为真实序列 + 完整注释，
 每个文件含 `data_provenance` 血统块（来源/地址/抓取日期）。数据来源：
@@ -478,6 +483,19 @@ skip-if-missing 用例），前端 vitest 208 passed。CI（`.github/workflows/c
 | 生物信息 | Biopython（Sanger ab1 解析 + 序列比对）、snapgene-reader（SnapGene .dna 参考）、openpyxl（批量测序信息表）；[tracy](https://github.com/gear-genomics/tracy) 为可选外部二进制（解卷积 / 重新 basecall，缺失自动降级） |
 | 认证 | JWT（PyJWT）存于 httpOnly 会话 Cookie + CSRF 头 + 服务端吊销；密码 bcrypt |
 | 部署 | Docker Compose / bare systemd |
+
+## 数据来源与致谢
+
+- **REBASE**：限制性内切酶的识别序列、切点、商业来源与同切酶数据来自 REBASE
+  （New England Biolabs 维护，经 Biopython `Bio.Restriction` 内置副本使用）。请引用：
+  Roberts, R.J., Vincze, T., Posfai, J., Macelis, D. REBASE: a database for DNA restriction
+  and modification: enzymes, genes and genomes. *Nucleic Acids Res.* 51: D629-D630 (2023),
+  [doi:10.1093/nar/gkac975](https://doi.org/10.1093/nar/gkac975)。REBASE 要求基于其数据的
+  改编与分发同样保持开放。
+- **NCBI**：内置载体中的 GenBank 记录与图谱页 accession 导入经 NCBI E-utilities 获取，
+  感谢 NCBI 提供公开数据。部署者可设置 `NCBI_EMAIL`（建议）与 `NCBI_API_KEY`（可选，
+  提高 NCBI 速率上限），见 [docs/MAP.md](docs/MAP.md)。
+- 本项目不调用 SnapGene 在线库、Addgene 网页或 NEB 在线工具的接口（许可 / robots / 服务条款不允许程序化使用）。
 
 ## License
 
