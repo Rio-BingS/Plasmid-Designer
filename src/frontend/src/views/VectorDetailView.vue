@@ -7,6 +7,7 @@ import { getVectorMap } from '@/map/api'
 import MapViewer from '@/map/components/MapViewer.vue'
 import { getVectorSequence, getVector, formatApiError } from '@/api'
 import { downloadTextFile } from '@/utils/download'
+import { safeHttpUrl } from '@/utils/safeUrl'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,7 +30,8 @@ const provenanceRows = computed(() => {
   const prov = vectorInfo.value?.data_provenance || {}
   return Object.entries(prov)
     .filter(([, v]) => !!v)
-    .map(([k, v]) => ({ key: k, label: PROV_LABELS[k] || k, value: v }))
+    // url 只有 http(s) 才渲染成链接，其余（如 javascript:）按纯文本显示
+    .map(([k, v]) => ({ key: k, label: PROV_LABELS[k] || k, value: v, href: k === 'url' ? safeHttpUrl(v) : null }))
 })
 
 function goToSequencing() {
@@ -127,7 +129,7 @@ async function downloadSeq(format: string) {
           <ul class="provenance-list">
             <li v-for="row in provenanceRows" :key="row.key">
               <span class="provenance-key">{{ row.label }}</span>
-              <a v-if="row.key === 'url'" :href="row.value" target="_blank" rel="noopener" class="provenance-value">{{ row.value }} ↗</a>
+              <a v-if="row.href" :href="row.href" target="_blank" rel="noopener" class="provenance-value">{{ row.value }} ↗</a>
               <span v-else class="provenance-value">{{ row.value }}</span>
             </li>
           </ul>
