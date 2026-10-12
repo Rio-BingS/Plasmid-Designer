@@ -109,6 +109,12 @@ export function setHoverFromEvent(store: MapStore, e: PointerEvent | MouseEvent)
     if (store.hover.value) store.hover.value = null
     return
   }
+  const prev = store.hover.value
+  if (prev && prev.id === key) {
+    // 同一元件：只更新提示框坐标，不重新解析（高亮读 hoverTarget，不会因此重算）
+    if (prev.x !== e.clientX || prev.y !== e.clientY) store.hover.value = { ...prev, x: e.clientX, y: e.clientY }
+    return
+  }
   const info = resolveHit(store, key)
   if (!info) return
   store.hover.value = {
