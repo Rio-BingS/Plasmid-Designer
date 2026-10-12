@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.cache import cache
-from app.config import settings
+from app import config
 from app.design_service import get_vector_library, invalidate_vector_library_cache
 from app.map_documents import vector_map_preview
 from app.auth.jwt_auth import get_admin_user
@@ -140,7 +140,7 @@ async def get_vector(vector_id: str):
 @router.delete("/{vector_id}")
 async def delete_vector(vector_id: str, _: object = Depends(get_admin_user)):
     """删除本地载体"""
-    vectors_dir = settings.VECTORS_DIR
+    vectors_dir = config.settings.VECTORS_DIR
 
     for file in os.listdir(vectors_dir):
         if file.endswith('.yaml'):
@@ -159,7 +159,7 @@ async def delete_vector(vector_id: str, _: object = Depends(get_admin_user)):
 @router.put("/{vector_id}")
 async def update_vector(vector_id: str, request: VectorUpdateRequest, _: object = Depends(get_admin_user)):
     """更新载体信息"""
-    vectors_dir = settings.VECTORS_DIR
+    vectors_dir = config.settings.VECTORS_DIR
     vector_file = None
 
     # 查找载体文件
@@ -287,7 +287,7 @@ async def import_vector_from_ncbi(query: str, limit: int = 5, _: object = Depend
     def _import() -> int:
         manager = VectorLibraryManager()
         count = manager.import_from_ncbi(query, limit=limit)
-        manager.export_to_yaml(settings.VECTORS_DIR)
+        manager.export_to_yaml(config.settings.VECTORS_DIR)
         return count
 
     count = await run_in_threadpool(_import)
@@ -306,7 +306,7 @@ async def import_vector_by_ncbi_id(seq_id: str, _: object = Depends(get_admin_us
         manager = VectorLibraryManager()
         success = manager.import_from_ncbi_id(seq_id)
         if success:
-            manager.export_to_yaml(settings.VECTORS_DIR)
+            manager.export_to_yaml(config.settings.VECTORS_DIR)
         return success
 
     success = await run_in_threadpool(_import)
@@ -365,13 +365,19 @@ async def preview_ncbi_vector(seq_id: str):
 
 @router.post("/import/upload")
 async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(get_admin_user)):
-    """上传并导入载体文件（GenBank/SnapGene）"""
-    from core.external_vector_importer import GenBankImporter
+    """上传并导入载体文件（GenBank / FASTA / SnapGene .dna）
 
-    # 检查文件类型
+    解析统一走 core.plasmid_map.parsers（含 SnapGene .dna）：此前用正则版
+    GenBankImporter，.dna 二进制被当文本读 → 序列为空、特征全丢。
+    """
+    from core.plasmid_map.parsers import MapParseError, parse_file
+    from app.vector_import import save_record
+
     filename = (file.filename or "").lower()
-    if not (filename.endswith('.gb') or filename.endswith('.gbk') or filename.endswith('.dna')):
-        raise HTTPException(status_code=400, detail="Unsupported file format. Use .gb, .gbk, or .dna")
+    if not filename.endswith(('.gb', '.gbk', '.genbank', '.gbff', '.fa', '.fasta', '.fna', '.dna')):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format. Use .gb, .gbk, .fasta or .dna")
 
     # 保存临时文件：边写边计数，超限即中断（此前无大小限制，可被写满磁盘）
     max_upload = 20 * 1024 * 1024
@@ -390,40 +396,33 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
         tmp_path = tmp.name
 
     try:
-        importer = GenBankImporter()
-        # GenBank 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）
-        vector = await run_in_threadpool(importer.import_file, tmp_path)
+        with open(tmp_path, "rb") as fh:
+            data = fh.read()
+        # 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）
+        try:
+            record = await run_in_threadpool(parse_file, file.filename or "upload.gb", data)
+        except MapParseError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
-        # 保存到载体库——文件名经白名单过滤，防止 vector.name 携带
-        # 路径分隔符（此前仅过滤 `/`，Windows 下 `\` 未过滤）构成写入路径注入
-        output_dir = settings.VECTORS_DIR
-        os.makedirs(output_dir, exist_ok=True)
-
-        output_file = os.path.join(output_dir, f"{_safe_filename(vector.name)}.yaml")
-        data = {
-            'id': vector.id,
-            'name': vector.name,
-            'source': 'upload',
-            'sequence': vector.sequence,
-            'description': vector.description,
-            'features': vector.features
-        }
-        with open(output_file, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-
+        source = "snapgene" if record.source_format == "snapgene" else "genbank"
+        result = await run_in_threadpool(
+            save_record, record,
+            source=source,
+            vectors_dir=config.settings.VECTORS_DIR,
+            attribution="来源：本地上传文件",
+        )
         invalidate_vector_library_cache()
-        _invalidate_vector_cache(vector.id)
+        _invalidate_vector_cache(result["id"])
         return {
             "success": True,
             "vector": {
-                "id": vector.id,
-                "name": vector.name,
-                "length": len(vector.sequence),
-                "features": len(vector.features)
-            }
+                "id": result["id"],
+                "name": result["name"],
+                "length": result["length"],
+                "features": result["features"],
+            },
+            "warnings": result["warnings"],
         }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
     finally:
         os.unlink(tmp_path)
 
@@ -448,7 +447,7 @@ def _run_batch_import(request: BatchImportRequest) -> Dict:
             results["errors"].append(f"NCBI {seq_id}: {str(e)}")
 
     # 导入文件（仅限 DATA_DIR 内的路径）
-    allowed_root = os.path.abspath(settings.DATA_DIR)
+    allowed_root = os.path.abspath(config.settings.DATA_DIR)
     for file_path in request.file_paths:
         try:
             abs_path = os.path.abspath(file_path)
@@ -467,7 +466,7 @@ def _run_batch_import(request: BatchImportRequest) -> Dict:
 
     # 导出
     if results["ncbi"] or results["files"]:
-        manager.export_to_yaml(settings.VECTORS_DIR)
+        manager.export_to_yaml(config.settings.VECTORS_DIR)
 
     return results
 

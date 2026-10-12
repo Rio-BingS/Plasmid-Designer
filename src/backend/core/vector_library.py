@@ -175,8 +175,11 @@ class VectorLibrary:
                     element_type = ElementType(raw_type.lower())
                 except ValueError:
                     element_type = ElementType.OTHER
+            # name 缺省时回退到类型名：NCBI/批量导入的历史 YAML 只写了
+            # {type,start,end}，此前 elem_data['name'] 抛 KeyError，整份载体
+            # 被 load_from_directory 的兜底 except 吞掉、静默消失
             elem = VectorElement(
-                name=elem_data['name'],
+                name=str(elem_data.get('name') or raw_type or 'feature')[:80],
                 element_type=element_type,
                 start=elem_data['start'],
                 end=elem_data['end'],
