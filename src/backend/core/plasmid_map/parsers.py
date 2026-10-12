@@ -356,6 +356,8 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
     dropped = 0
     too_many_segments = 0
     quals_trimmed = 0
+    mixed_strand = 0
+    order_ops = 0
     primers_over = 0
     for sf in record.features:
         if sf.type == "source":
@@ -374,6 +376,12 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
             continue
         if built.pop("_qualifiers_trimmed", False):
             quals_trimmed += 1
+        loc_parts = list(getattr(sf.location, "parts", None) or [])
+        if len(loc_parts) > 1:
+            if len({p.strand for p in loc_parts}) > 1:
+                mixed_strand += 1
+            if getattr(sf.location, "operator", "join") == "order":
+                order_ops += 1
         if sf.type == "primer_bind" and \
                 len(extract_span(seq, built["start"], built["end"], 1)) <= MAX_PRIMER_SEQ:
             if len(rec.primers) >= MAX_PRIMERS:
@@ -398,6 +406,12 @@ def _from_seqrecord(record, source_format: str, fallback_name: str, max_length,
         rec.warnings.append(f"{too_many_segments} 个特征分段超过 {MAX_SEGMENTS} 段，已忽略")
     if quals_trimmed:
         rec.warnings.append(f"{quals_trimmed} 个特征的限定符超过 {MAX_QUALIFIERS} 条，多余的已忽略")
+    if mixed_strand:
+        rec.warnings.append(f"{mixed_strand} 个特征的分段跨正负两条链，已按无方向处理"
+                            "（各段的链信息不保留，导出时会丢失）")
+    if order_ops:
+        rec.warnings.append(f"{order_ops} 个特征使用 order()（段间顺序不确定），已按 join() 处理，"
+                            "导出时写作 join()")
     if primers_over:
         rec.warnings.append(f"引物超过 {MAX_PRIMERS} 条，其余 {primers_over} 条已忽略")
     if len(rec.features) > MAX_FEATURES:
