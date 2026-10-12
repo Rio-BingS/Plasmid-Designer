@@ -8,6 +8,7 @@ import type { MapStore } from './store'
 import { normPos, rangeLength } from './core/coords'
 import { FEATURE_TYPE_LABELS } from './core/palette'
 import { blockedText } from './core/enzymes'
+import { cachedEnzymeDetail, enzymeDetailLines } from './enzymeMeta'
 
 export interface HitInfo {
   kind: 'feature' | 'enzyme' | 'orf' | 'primer' | 'search'
@@ -54,6 +55,9 @@ export function resolveHit(store: MapStore, key: string | null | undefined): Hit
     if (site.overhang && site.overhang !== e.overhang) lines.push(`本位点突出端 ${site.overhang}`)
     if (site.blocked_by?.length) lines.push(`⚠ ${blockedText(site.blocked_by)}（dam+/dcm+ 菌株中不切）`)
     if (e.methylation?.length) lines.push(`甲基化敏感：${e.methylation.join(', ')}`)
+    // 酶详情（厂商、Type IIS）只在用户在酶切面板里打开过该酶后才有
+    const meta = cachedEnzymeDetail(e.name)
+    if (meta) lines.push(...enzymeDetailLines(meta))
     return {
       kind: 'enzyme', title: e.name, lines, range,
       select: () => { store.select(range, { navigate: true }); store.caret.value = site.cut_top },

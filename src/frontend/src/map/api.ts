@@ -3,7 +3,10 @@
  * 复用全站 axios 实例（会话 Cookie + CSRF 头 + 401 处理）。
  */
 import { formatApiError, http } from '@/api'
-import type { AnalyzeRequest, EnzymeSet, MapDocument, ParseOptions, Topology } from './types'
+import type {
+  AnalyzeRequest, EnzymeDetail, EnzymeSet, EnzymeSupplier, MapDocument, ParseOptions, Topology,
+} from './types'
+import { clearEnzymeDetails, rememberEnzymeDetail } from './enzymeMeta'
 
 function parseParams(opts: ParseOptions): Record<string, string | number | boolean> {
   const p: Record<string, string | number | boolean> = {}
@@ -40,6 +43,38 @@ export async function analyzeMap(req: AnalyzeRequest): Promise<MapDocument> {
 export async function getEnzymeSets(): Promise<EnzymeSet[]> {
   const r = await http.get('/map/enzyme-sets')
   return r.data
+}
+
+// 酶详情 / 厂商表是静态数据：会话内缓存，同一请求并发只发一次
+const enzymeDetailCache = new Map<string, Promise<EnzymeDetail>>()
+
+export function getEnzymeDetail(name: string): Promise<EnzymeDetail> {
+  let p = enzymeDetailCache.get(name)
+  if (!p) {
+    p = http.get(`/map/enzymes/${encodeURIComponent(name)}`).then((r) => {
+      rememberEnzymeDetail(r.data)
+      return r.data as EnzymeDetail
+    })
+    p.catch(() => enzymeDetailCache.delete(name))
+    enzymeDetailCache.set(name, p)
+  }
+  return p
+}
+
+let suppliersPromise: Promise<EnzymeSupplier[]> | null = null
+export function getSuppliers(): Promise<EnzymeSupplier[]> {
+  if (!suppliersPromise) {
+    suppliersPromise = http.get('/map/suppliers').then((r) => r.data as EnzymeSupplier[])
+    suppliersPromise.catch(() => { suppliersPromise = null })
+  }
+  return suppliersPromise
+}
+
+/** 测试用：清空会话缓存 */
+export function _resetEnzymeMetaCache(): void {
+  enzymeDetailCache.clear()
+  clearEnzymeDetails()
+  suppliersPromise = null
 }
 
 /** MapDocument → GenBank 文本（Blob） */
