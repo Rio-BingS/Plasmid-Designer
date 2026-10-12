@@ -242,3 +242,25 @@ def test_export_linear_wrap_feature_rejected(client):
     assert r.status_code == 422 and "跨原点" in r.json()["detail"]
     doc["topology"] = "circular"
     assert c.post("/api/map/export/genbank", json=doc).status_code == 200
+
+
+def test_vector_map_cache_key_covers_name_and_topology(client, monkeypatch):
+    """只改载体名称 / 拓扑也不能命中旧的图谱缓存"""
+    import copy
+
+    from app.routes import vector_routes
+
+    c, _ = client
+    lib = vector_routes.get_vector_library()
+    orig = lib.get_vector("pET-28a")
+    d1 = c.get("/api/vectors/pET-28a/map").json()
+    renamed = copy.copy(orig)
+    renamed.name = "pET-28a renamed"
+    linear = copy.copy(orig)
+    linear.topology = "linear"
+    for v, check in ((renamed, lambda d: d["name"] == "pET-28a renamed"),
+                     (linear, lambda d: d["topology"] == "linear")):
+        monkeypatch.setattr(type(lib), "get_vector", lambda self, vid, _v=v: _v)
+        d2 = c.get("/api/vectors/pET-28a/map").json()
+        assert check(d2), d2["name"]
+    assert d1["name"] != "pET-28a renamed" and d1["topology"] == "circular"
