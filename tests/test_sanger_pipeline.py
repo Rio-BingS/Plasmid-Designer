@@ -2746,8 +2746,8 @@ def test_fully_aligned_read_has_no_partial_flag():
 
 
 def test_cross_check_requires_high_region_quality_not_single_base():
-    """用户反馈 #5：用另一条引物验证时看该区域整体质量，不只看单碱基 Q——
-    验证 read 在该位点单碱基 Q40、但两侧 ±5bp 信号塌陷（Q15）→ 不足以互检，
+    """用户反馈 #5/#6：用另一条引物验证时看该区域整体质量，不只看单碱基 Q——
+    验证 read 在该位点 ±2bp Q40、但 ±25bp 区域信号塌陷（Q15）→ 不足以互检，
     差异保留为低置信，并写清具体原因与验证 read 的区域质量"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
     seg = ref[50:150]
@@ -2756,8 +2756,9 @@ def test_cross_check_requires_high_region_quality_not_single_base():
     q = [40] * len(fwd)
     q[i] = 12
     qr = [40] * len(seg)
-    for p in range(116, 127):                # ref 116-126 → 反向 read 坐标
-        qr[len(seg) - 1 - (p - 51)] = 40 if p == 121 else 15
+    # ref 96-146（位点 ±25bp）整体偏弱（Q22），只有位点及紧邻 ±2bp 为 Q40
+    for p in range(96, 147):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 119 <= p <= 123 else 22
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
@@ -2767,7 +2768,8 @@ def test_cross_check_requires_high_region_quality_not_single_base():
     v = sub[0]
     assert "cross_read_resolved" not in v and v["confidence"] == "low"
     assert v["cross_read_weak"][0]["read"] == "rev.ab1"
-    assert v["cross_read_weak"][0]["region_min_q"] == 15
+    assert v["cross_read_weak"][0]["region_min_q"] == 22
+    assert v["cross_read_weak"][0]["core_min_q"] == 40     # 单碱基/核心区都很好
     assert "质量不足以互检" in v["low_reason"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "替换" in cds["verdict"] and "Q12" in cds["verdict"]
@@ -2788,7 +2790,27 @@ def test_resolved_lines_spell_out_error_type_and_verifier_quality():
     lines = result["conclusion"].splitlines()
     det = [x for x in lines if x.strip().startswith("↳ 位置 121")]
     assert det and f"替换 {seg[i]}>{alt}" in det[0]
-    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0]
+    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0] \
+        and "≥Q20 占 100%" in det[0]
+
+
+def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
+    """窗口放宽到 ±25bp 后，验证 read 区域里个别低 Q 碱基不该一票否决"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    qr[len(seg) - 1 - (110 - 51)] = 12        # ref 110 单个低 Q
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, [])
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert sub and sub[0].get("cross_read_resolved") is True
+    ev = sub[0]["cross_read_conflict"]["evidence"][0]
+    assert ev["region_cols"] >= 30 and ev["region_min_q"] == 12
 
 
 def test_low_confidence_reason_names_concrete_error_type():
@@ -2804,3 +2826,25 @@ def test_low_confidence_reason_names_concrete_error_type():
         {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, read_len=500)
     assert "信噪比" in _low_confidence_reason(
         {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, read_len=500)
+
+
+def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
+    """验证 read 读出设计序列、但 ±25bp 区域质量不够定案：不排除，但单 read
+    indel 也不得独自改写蛋白结论——保持低置信并写明验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    qr = [40] * len(seg)
+    for p in range(81, 132):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 104 <= p <= 111 else 22
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert "cross_read_resolved" not in ins[0]
+    assert ins[0]["confidence"] == "low"
+    assert "质量不足以互检" in ins[0]["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"] and "插入 1bp" in cds["verdict"]

@@ -191,7 +191,9 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
     for v in variants:
         loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
         if v.get("frameshift"):
-            note = f"位置 {v['ref_pos']} {v['type']}（{loc}）导致移码"
+            kind = {"insertion": "插入", "deletion": "缺失"}.get(v["type"], v["type"])
+            n = int(v.get("length") or 1)
+            note = f"位置 {v['ref_pos']} {kind} {n}bp（{loc}）导致移码"
         elif v.get("aa_change"):
             bc = (f"{v['ref_base']}>{v['alt_base']} " if v.get("type") == "substitution"
                   else "")
