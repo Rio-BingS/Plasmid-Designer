@@ -802,6 +802,8 @@ export interface SequencingVariant {
   confidence?: string
   /** 跨 read 反证：仅单 read 报告该 indel，列出的 read 干净跨过同一位点未见差异 */
   cross_read_conflict?: { reads: string[] }
+  /** 互检定案：其他引物在可靠区读出设计碱基，判为源 read 测序误差（不进结论） */
+  cross_read_resolved?: boolean
   /** 独立 basecaller（tracy）重 basecall 后报出同一变体：跨 caller 印证 */
   corroborated_by_basecall?: boolean
   /** 峰级证据：替换为突变峰占比/信噪比，插入为插入峰强度比（相对邻峰） */

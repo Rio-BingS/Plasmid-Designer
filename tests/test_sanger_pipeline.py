@@ -2392,9 +2392,14 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     assert ins[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" not in cds["verdict"]
-    assert "互检矛盾" in cds["verdict"] and "rev.ab1" in cds["verdict"]
-    # 顶层变体摘要同口径：点名反证原因而非笼统"疑似测序噪声"
-    assert any("互检矛盾" in x for x in result["conclusion"].splitlines())
+    # 互检已定案：不再作为"互检矛盾/待核对"塞进 CDS 结论
+    assert ins[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
+    # 顶层结论只一句话交代互检排除，总结为确定的 ✓
+    lines = result["conclusion"].splitlines()
+    assert lines[0].startswith("✓ 结论：构建与设计一致")
+    assert sum("互检排除" in x for x in lines) == 2  # 总结行 + 明细一句
+    assert not any("低置信度（" in x for x in lines)
     # 低置信不进共识：构建体序列回到参考
     assert result["consensus"]["sequence"] == ref.upper()
 
@@ -2415,7 +2420,49 @@ def test_single_read_deletion_vetoed_by_clean_other_read():
     assert dele[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" not in cds["verdict"]
-    assert "互检矛盾" in cds["verdict"]
+    assert dele[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"]
+
+
+def test_single_read_low_q_substitution_resolved_by_clean_other_read():
+    """用户反馈 #4：不同引物交叉验证无问题时应给出确定答案——单 read 低 Q
+    替换、另一条引物在可靠区读出设计碱基 → 互检排除，结论不再罗列为低置信"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["ref_pos"] == 121
+    assert sub[0]["cross_read_resolved"] is True
+    assert sub[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert cds["pending_low_confidence"] == 0
+    assert "低置信" not in cds["verdict"]
+    lines = result["conclusion"].splitlines()
+    assert lines[0] == "✓ 结论：构建与设计一致（1 处单条 read 差异已被其他引物互检排除）"
+    assert not any("低置信度（" in x for x in lines)
+
+
+def test_single_read_substitution_without_cross_cover_stays_pending():
+    """无其他引物覆盖时互检无从谈起：低 Q 替换仍按低置信待核对"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze([("fwd.ab1", make_ab1(fwd, q))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["confidence"] == "low"
+    assert "cross_read_resolved" not in sub[0]
+    assert "互检排除" not in result["conclusion"]
 
 
 def test_indel_backed_by_both_reads_stays_confirmed():
