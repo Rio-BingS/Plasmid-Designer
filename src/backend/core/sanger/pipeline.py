@@ -55,6 +55,20 @@ POLY_MIN_UNITS = 4       # 二/三核苷酸重复：≥4 个重复单元入报�
 POLY_COMPRESSION_RATIO = 0.5  # poly 区峰幅 / 局部主峰幅 低于此值视为峰压缩
 POLY_PEAK_HEIGHT_RATIO = 0.3  # 峰图计数：低于窗口中位峰高 30% 的波动视为噪声
 CROSS_CHECK_MIN_Q = 20   # 跨 read 反证：junction 处 Q 低于此值时"未报"不构成反证
+# 跨 read 反证看的是验证 read 在该位点周边一段区域的整体质量，不只是单个
+# 碱基的 Q：单碱基 Q 高但周围信号塌陷（峰压缩、拖尾、信号衰减段）时，
+# 这条 read 在此处同样不可靠。区域 = 位点两侧各 CROSS_REGION_HALF bp
+# （±5bp 太窄，反映不出该引物这一段的测序质量；取 ±25bp 约 50bp 窗口，
+# 与 Phred 质量窗口/修剪窗口同量级），截掉 read 首尾不可信区后至少要有
+# CROSS_REGION_MIN_COLS 列。窗口宽了，单个低 Q 碱基不该一票否决，改用
+# "≥Q20 的碱基占比"衡量整体；位点本身 ±CROSS_CORE_HALF 的核心区仍要求每个碱基 ≥Q20
+CROSS_REGION_HALF = 25
+CROSS_REGION_MIN_COLS = 30
+CROSS_REGION_MEAN_Q = 30   # 区域平均 Q 下限
+CROSS_REGION_HQ_FRAC = 0.9  # 区域内 ≥Q20 碱基占比下限
+CROSS_CORE_HALF = 2
+CROSS_CLEAN_HALF = 5       # 验证 read 自身在位点 ±5bp 内报了差异 → 不作反证
+
 
 
 def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float, int]:
@@ -222,6 +236,69 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     return "high" if support >= 2 else "medium"
 
 
+def variant_type_text(v: Dict) -> str:
+    """差异类型的明确文字（人工核对用）：替换 C>A / 插入 1bp（G）/ 缺失 2bp（AT）"""
+    t = v.get("type")
+    if t == "insertion":
+        n = int(v.get("length") or len((v.get("alt_base") or "").strip("-")) or 1)
+        seq = (v.get("alt_base") or "").strip("-")
+        return f"插入 {n}bp" + (f"（{seq}）" if seq and len(seq) <= 6 else "")
+    if t == "deletion":
+        n = int(v.get("length") or 1)
+        seq = (v.get("ref_base") or "").strip("-")
+        return f"缺失 {n}bp" + (f"（{seq}）" if seq and len(seq) <= 6 else "")
+    return f"替换 {v.get('ref_base', '')}>{v.get('alt_base', '')}"
+
+
+def _low_confidence_reason(v: Dict, mixed_positions: set,
+                           evidence: Optional[Dict] = None,
+                           read_len: Optional[int] = None) -> str:
+    """低置信的具体原因（与 _variant_confidence 的判定分支一一对应），
+    把"疑似测序噪声"这种笼统说法换成人工核对时能直接对照峰图的错误类型"""
+    q = int(v.get("read_q") or 0)
+    rp = v.get("read_pos")
+    support = v.get("support_reads") or 1
+    if v.get("cross_read_conflict") and not v.get("cross_read_resolved"):
+        rd = "、".join(v["cross_read_conflict"].get("reads", [])[:2])
+        return f"互检矛盾：{rd} 在同一位点读出设计碱基"
+    if v.get("merged_zone_artifact"):
+        return "落在同聚物峰合并压缩区，该 read 此处无可分辨峰"
+    if v.get("slippage_artifact"):
+        return "poly 下游滑移伪影（同聚物后信号错位）"
+    alt_up = (v.get("alt_base") or "").upper()
+    if v.get("type") in ("substitution", "insertion") and any(
+            c not in "ACGT-" for c in alt_up):
+        return "碱基判读为 N/模糊碱基（basecaller 未能解析）"
+    if (read_len and rp and support < 2
+            and (rp <= END_MARGIN or rp > read_len - END_MARGIN)):
+        end = "首端" if rp <= END_MARGIN else "尾端"
+        return f"位于 read {end} {END_MARGIN}bp 信号{'爬升' if end == '首端' else '衰减'}区"
+    ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
+    if rp and rp in mixed_positions and (ins_ratio is None or ins_ratio < 0.6):
+        return "该位点双峰（次级峰占比 >30%，疑似混合样品或杂峰）"
+    hp = v.get("homopolymer")
+    if (hp and v.get("type") in ("insertion", "deletion")
+            and hp.get("peak_amplitude_ratio") is not None
+            and hp["peak_amplitude_ratio"] < POLY_COMPRESSION_RATIO):
+        return f"同聚物峰压缩（峰幅为局部主峰的 {round(hp['peak_amplitude_ratio'] * 100)}%），重复数计数不可靠"
+    if evidence is not None:
+        if ins_ratio is not None:
+            pct = round(ins_ratio * 100)
+            if ins_ratio < 0.3:
+                return f"插入位置几乎无独立峰（插入峰为邻峰的 {pct}%），疑似 basecaller 伪影"
+            if ins_ratio >= 0.6:
+                return f"插入峰可见（为邻峰的 {pct}%），但仅单条 read 支持（Q{q}）"
+            return f"插入峰偏弱（为邻峰的 {pct}%）且 Q 值低，Q{q}"
+        mp, snr = evidence.get("mutant_pct"), evidence.get("snr")
+        if mp is not None and mp < 30:
+            return f"突变峰明显弱于参考峰（突变峰占比 {mp}%），疑似误读"
+        if mp is not None and mp < 70:
+            return f"突变峰与参考峰高度相当（突变峰占比 {mp}%），双峰/混合"
+        if snr is not None and snr < 5:
+            return f"突变峰信噪比低（SNR {snr}），接近本底"
+    return f"Q 值偏低，Q{q}" + ("，仅单条 read 支持" if support < 2 else "")
+
+
 def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
                    min_len: int = 100, cap: int = 10,
                    circular: bool = False) -> List[Dict]:
@@ -276,7 +353,8 @@ def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
 
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
-                        has_mixed: bool, partial_reads: int = 0) -> str:
+                        has_mixed: bool, partial_reads: int = 0,
+                        resolved: int = 0) -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
     优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致。
     partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
@@ -306,6 +384,10 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     if variants:
         return (f"✓ 结论：构建与设计一致"
                 f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）")
+    if resolved:
+        # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
+        return (f"✓ 结论：构建与设计一致（{resolved} 处单条 read 差异"
+                "已被其他引物互检排除）")
     return "✓ 结论：构建与设计一致，未检出差异"
 
 
@@ -984,9 +1066,56 @@ def _read_ref_maps(r: Dict, fold: bool = True) -> Tuple[Dict[int, int], Dict[int
     return read2ref, ref2call
 
 
+def _cross_region_quality(r2c: Dict[int, Dict], lo: int, hi: int, L: int,
+                          n_trim: int) -> Optional[Dict]:
+    """验证 read 在参考区间 [lo-HALF, hi+HALF] 的区域质量。
+
+    区域截掉 read 首尾 END_MARGIN 不可信区与未覆盖列后统计：平均 Q、
+    最低 Q、≥Q20 占比、列数；核心区（位点 ±CROSS_CORE_HALF）任一列缺失或
+    落进不可信区返回 None——位点本身都测不好，谈不上反证。"""
+    def call(p: int) -> Optional[Dict]:
+        c = r2c.get(fold_pos(p, L) if L else p)
+        if not c or not END_MARGIN < c["read_pos"] <= n_trim - END_MARGIN:
+            return None
+        return c
+    core: List[int] = []
+    for p in range(lo - CROSS_CORE_HALF, hi + CROSS_CORE_HALF + 1):
+        c = call(p)
+        if c is None:
+            return None
+        core.append(int(c["q"] or 0))
+    qs: List[int] = []
+    for p in range(lo - CROSS_REGION_HALF, hi + CROSS_REGION_HALF + 1):
+        c = call(p)
+        if c is not None:
+            qs.append(int(c["q"] or 0))
+    return {
+        "region_mean_q": round(sum(qs) / len(qs), 1),
+        "region_min_q": min(qs),
+        "region_hq_frac": round(sum(1 for q in qs if q >= CROSS_CHECK_MIN_Q) / len(qs), 3),
+        "region_cols": len(qs),
+        "core_min_q": min(core),
+    }
+
+
+def _region_ok(rq: Optional[Dict]) -> bool:
+    return (rq is not None
+            and rq["region_cols"] >= CROSS_REGION_MIN_COLS
+            and rq["region_mean_q"] >= CROSS_REGION_MEAN_Q
+            and rq["region_hq_frac"] >= CROSS_REGION_HQ_FRAC
+            and rq["core_min_q"] >= CROSS_CHECK_MIN_Q)
+
+
+def region_quality_text(ev: Dict) -> str:
+    """验证 read 区域质量的文字（结论/悬停共用）"""
+    return (f"该区 {ev.get('region_cols', '?')}bp 平均 Q{ev['region_mean_q']:g}、"
+            f"≥Q20 占 {round(ev.get('region_hq_frac', 0) * 100)}%")
+
+
 def _clean_cover_reads(v: Dict, read_results: List[Dict],
                        ref2call_by_read: Dict[str, Dict[int, Dict]],
-                       keys_by_read: Dict[str, set]) -> List[str]:
+                       keys_by_read: Dict[str, set],
+                       weak: Optional[List[Dict]] = None) -> List[Dict]:
     """跨 read 干净覆盖反证：哪些其他 read 完整跨过该 indel 的 junction
     （且在质量可靠区内）却未报该 indel。
 
@@ -1015,11 +1144,12 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
     if L:
         # 环状参考：原点两侧（L 与 1）相邻，junction 坐标按环折回
         junctions = [(fold_pos(a, L), fold_pos(b, L)) for a, b in junctions]
-    hits: List[str] = []
+    hits: List[Dict] = []
     for fname, r2c in ref2call_by_read.items():
         if fname == v.get("read"):
             continue
-        if any(win[0] <= k[0] <= win[1] and k[1] in ("insertion", "deletion")
+        # 验证 read 自己在该区域报了任何差异：区域不干净，不作反证
+        if any(win[0] - CROSS_CLEAN_HALF <= k[0] <= win[1] + CROSS_CLEAN_HALF
                for k in keys_by_read.get(fname, ())):
             continue
         n_trim = by_name[fname].get("trimmed_length") or 0
@@ -1027,13 +1157,64 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
             c0, c1 = r2c.get(a), r2c.get(b)
             if not c0 or not c1 or abs(c0["read_pos"] - c1["read_pos"]) != 1:
                 continue
-            if not all(END_MARGIN < c["read_pos"] <= n_trim - END_MARGIN
-                       for c in (c0, c1)):
+            rq = _cross_region_quality(r2c, min(win), max(win), L, n_trim)
+            if not _region_ok(rq):
+                if rq is not None and weak is not None:
+                    weak.append({"read": fname, **rq})
                 continue
-            if min(c0["q"], c1["q"]) < CROSS_CHECK_MIN_Q:
-                continue
-            hits.append(fname)
+            hits.append({"read": fname, **rq})
             break
+    hits.sort(key=lambda h: -h["region_mean_q"])
+    return hits
+
+
+def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
+                           ref2call_by_read: Dict[str, Dict[int, Dict]],
+                           keys_by_read: Dict[str, set],
+                           mixed_by_read: Dict[str, set],
+                           weak: Optional[List[Dict]] = None) -> List[Dict]:
+    """替换的跨 read 反证：哪些其他 read 在该位点（多碱基替换为整段）
+    以可靠质量判读出参考碱基、峰形单一且自身未报差异。
+
+    与 indel 反证同口径：克隆样品中真实的替换会被每条覆盖该位的 read
+    独立读出；另一条引物在信号可靠区干净地读出参考碱基，说明这处差异
+    是源 read 自己的判读误差。该 read 在此位点报了其他差异、落在首尾
+    END_MARGIN 区、Q 不足或本身双峰时不构成反证。"""
+    pos0 = int(v["ref_pos"])
+    ref_b = (v.get("ref_base") or "").upper()
+    if not ref_b or any(c not in "ACGT" for c in ref_b):
+        return []
+    by_name = {r["filename"]: r for r in read_results}
+    src = by_name.get(v.get("read", ""))
+    L = _circ_len(src["alignment"]) if src is not None else 0
+    positions = [pos0 + k for k in range(len(ref_b))]
+    if L:
+        positions = [fold_pos(p, L) for p in positions]
+    hits: List[Dict] = []
+    lo, hi = pos0, pos0 + len(ref_b) - 1
+    for fname, r2c in ref2call_by_read.items():
+        if fname == v.get("read"):
+            continue
+        if any(lo - CROSS_CLEAN_HALF <= k[0] <= hi + CROSS_CLEAN_HALF
+               for k in keys_by_read.get(fname, ())):
+            continue
+        n_trim = by_name[fname].get("trimmed_length") or 0
+        mixed = mixed_by_read.get(fname, set())
+        ok = True
+        for p, rb in zip(positions, ref_b):
+            c = r2c.get(p)
+            if (not c or (c.get("base") or "").upper() != rb
+                    or c["read_pos"] in mixed):
+                ok = False
+                break
+        if not ok:
+            continue
+        rq = _cross_region_quality(r2c, lo, hi, L, n_trim)
+        if not _region_ok(rq) and rq is not None and weak is not None:
+            weak.append({"read": fname, **rq})
+        if _region_ok(rq):
+            hits.append({"read": fname, **rq})
+    hits.sort(key=lambda h: -h["region_mean_q"])
     return hits
 
 
@@ -1629,23 +1810,35 @@ def _build_consensus(reference: str, read_results: List[Dict],
                     obs_q[idx] = q
                 elif idx == L:
                     end_insert_votes[key] = end_insert_votes.get(key, 0.0) + _phred_weight(q)
+        # read 在参考列上调用为 N/IUPAC 的位点：投它自己的调用，而不是默认投参考碱基——
+        # 否则只有 N 覆盖的位点会被参考碱基悄悄填上，拼接结果看起来就是参考序列
+        ambig = _ambiguous_columns(aln, L, circular)
         for pos in range(aln["ref_start"], aln["ref_end"] + 1):
             if circular:
                 pos = fold_pos(pos, L)
             if 1 <= pos <= L:
                 i = pos - 1
-                key = observed.get(i, reference[i].upper())
+                key = observed.get(i) or ambig.get(i) or reference[i].upper()
                 q = obs_q.get(i, base_q.get(i, mean_q))
                 votes[i][key] = votes[i].get(key, 0.0) + _phred_weight(q)
                 voters[i].append(key)
 
     consensus_chars: List[str] = []
+    char_ref: List[int] = []      # 每个共识字符对应的参考位点（插入碱基记插入点右侧位点）
+    char_cov: List[bool] = []     # 该字符是否来自 read 实测（False = 未测位置的参考填充）
     diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
     covered: List[bool] = []
+
+    def _emit(chars, pos: int, cov: bool) -> None:
+        for ch in chars:
+            consensus_chars.append(ch)
+            char_ref.append(pos)
+            char_cov.append(cov)
+
     for pos in range(1, L + 1):
         cell = votes[pos - 1]
         if not cell:
-            consensus_chars.append(reference[pos - 1].upper())
+            _emit(reference[pos - 1].upper(), pos, False)
             covered.append(False)
             continue
         covered.append(True)
@@ -1656,10 +1849,10 @@ def _build_consensus(reference: str, read_results: List[Dict],
         if best_key.startswith("+"):
             alt = best_key[1:]
             cons_index = len(consensus_chars)
-            consensus_chars.extend(list(alt))
+            _emit(alt, pos, True)
             # 插入只新增碱基，紧跟其后的参考碱基必须保留，
             # 否则共识序列会悄悄吞掉插入位点右侧的参考碱基
-            consensus_chars.append(reference[pos - 1].upper())
+            _emit(reference[pos - 1].upper(), pos, True)
             diffs.append({
                 "ref_pos": pos, "ref_base": "-", "cons_base": alt, "cons_index": cons_index,
             })
@@ -1668,7 +1861,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
                 "ref_pos": pos, "ref_base": reference[pos - 1].upper(), "cons_base": "-",
             })
         else:
-            consensus_chars.append(best_key)
+            _emit(best_key, pos, True)
             if best_key != reference[pos - 1].upper():
                 diffs.append({
                     "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
@@ -1679,19 +1872,68 @@ def _build_consensus(reference: str, read_results: List[Dict],
         best_key = max(end_insert_votes.items(), key=lambda kv: kv[1])[0]
         alt = best_key[1:]
         cons_index = len(consensus_chars)
-        consensus_chars.extend(list(alt))
+        _emit(alt, L, True)
         diffs.append({"ref_pos": L, "ref_base": "-", "cons_base": alt, "cons_index": cons_index})
 
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
     )
     coverage = sum(1 for c in covered if c) / L if L else 0.0
+    sequence = "".join(consensus_chars)
+    segments = _read_segments(sequence, char_ref, char_cov)
     return {
-        "sequence": "".join(consensus_chars),
+        "sequence": sequence,
         "covered_ranges": covered_ranges,
         "coverage_percent": round(coverage * 100, 2),
         "diffs": diffs,
+        # 由 read 实测拼接出的连续片段（不含未测位置的参考填充）；
+        # cons_start/cons_end 为 sequence 内 1 起始闭区间，ref_start/ref_end 为参考坐标
+        "segments": segments,
+        "assembled_length": sum(len(g["sequence"]) for g in segments),
     }
+
+
+def _read_segments(sequence: str, char_ref: List[int], char_cov: List[bool]) -> List[Dict]:
+    """把共识序列中 read 实测的字符切成连续片段。
+
+    共识序列为了坐标对齐用参考碱基填充了未测位置；用户要的「拼接结果」是
+    测序结果本身拼出来的序列，因此单独给出实测片段。片段按共识下标切分，
+    有插入/缺失时与参考坐标不再一一对应，下游一律用 cons_start/cons_end 切。"""
+    out: List[Dict] = []
+    i, n = 0, len(sequence)
+    while i < n:
+        if not char_cov[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and char_cov[j + 1]:
+            j += 1
+        out.append({
+            "cons_start": i + 1, "cons_end": j + 1,
+            "ref_start": char_ref[i], "ref_end": char_ref[j],
+            "sequence": sequence[i:j + 1],
+        })
+        i = j + 1
+    return out
+
+
+def _ambiguous_columns(aln: Dict, L: int, circular: bool) -> Dict[int, str]:
+    """read 在参考列上的 N/IUPAC 调用：{0-based 投票下标: 调用字符}"""
+    av = aln.get("aligned") or {}
+    ref_al = av.get("ref_aligned") or ""
+    read_al = av.get("read_aligned") or ""
+    if not ref_al or len(read_al) != len(ref_al):
+        return {}
+    out: Dict[int, str] = {}
+    pos = int(av.get("ref_start") or aln.get("ref_start") or 1)
+    for rc, qc in zip(ref_al, read_al):
+        if rc == "-":
+            continue
+        q = qc.upper()
+        if q not in ("A", "C", "G", "T", "-"):
+            out[(fold_pos(pos, L) - 1) if circular else pos - 1] = q
+        pos += 1
+    return out
 
 
 _ALT_STARTS = ("ATG", "GTG", "TTG", "ATT", "CTG", "ATC", "ATA")  # 细菌起始密码子
@@ -2090,18 +2332,22 @@ def _build_cds_reports(
             plain = [v for v in pending if not v.get("cross_read_conflict")]
             would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
             if plain:
-                worst_q = max(int(v.get("read_q") or 0) for v in plain)
+                detail = "；".join(
+                    f"{_rp(v['ref_pos'])} {variant_type_text(v)}"
+                    + (f"（{v['low_reason']}）" if v.get("low_reason") else "")
+                    for v in plain[:3]) + ("等" if len(plain) > 3 else "")
                 if would_change:
                     main += (
-                        f"。另有 {len(plain)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声）未计入判定"
+                        f"。另有 {len(plain)} 处低置信差异未计入判定：{detail}"
                         "——若为真蛋白还会改变，建议核对峰图"
                     )
                 else:
-                    main += f"。另有 {len(plain)} 处低置信差异（最高 Q {worst_q}，疑似测序噪声），不影响以上判定"
+                    main += f"。另有 {len(plain)} 处低置信差异，不影响以上判定：{detail}"
             if conflicted:
                 parts = []
                 for v in conflicted[:2]:
-                    kind = "插入" if v.get("type") == "insertion" else "缺失"
+                    kind = {"insertion": "插入", "deletion": "缺失"}.get(
+                        v.get("type"), "替换")
                     rd = (v.get("cross_read_conflict") or {}).get("reads") or []
                     reads = "、".join(rd[:2]) + ("等" if len(rd) > 2 else "")
                     parts.append(f"{_rp(v['ref_pos'])} 处的{kind}（{reads} 跨过同一位点未见差异）")
@@ -2569,16 +2815,37 @@ def analyze(
         # 支持、另一条 read 完整跨过同一 junction 却未报 → 互检矛盾。
         # 真实变异（clonal）必然被覆盖该位的每条 read 独立报出，单 read
         # 独有的 indel 是伪影高发形态，不能单独驱动"蛋白与设计不一致"
-        if (v.get("type") in ("insertion", "deletion")
-                and (v.get("support_reads") or 1) == 1):
-            contradicts = _clean_cover_reads(
-                v, read_results, ref2call_by_read, keys_by_read)
+        contradicts: List[Dict] = []
+        weak_cover: List[Dict] = []
+        if (v.get("support_reads") or 1) == 1:
+            if v.get("type") in ("insertion", "deletion"):
+                contradicts = _clean_cover_reads(
+                    v, read_results, ref2call_by_read, keys_by_read, weak_cover)
+            elif v.get("type") == "substitution":
+                contradicts = _clean_cover_reads_sub(
+                    v, read_results, ref2call_by_read, keys_by_read,
+                    mixed_by_read, weak_cover)
+            if weak_cover and not contradicts:
+                # 有其他引物读出设计碱基但该区质量不够：明确告诉用户为什么没能互检
+                v["cross_read_weak"] = sorted(
+                    weak_cover, key=lambda h: -h["region_mean_q"])
             if contradicts:
-                v["cross_read_conflict"] = {"reads": contradicts}
+                # 按验证区域平均 Q 从高到低排序，首条即质量最高的验证 read
+                v["cross_read_conflict"] = {
+                    "reads": [h["read"] for h in contradicts],
+                    "evidence": contradicts,
+                }
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             read_len=src["trimmed_length"] if src is not None else None,
         )
+        # 互检定案：单 read 差异被其他引物在可靠区干净读出参考碱基——
+        # 判为源 read 的测序误差，直接排除，不再作为"不确定"写进结论。
+        # indel 是伪影高发形态，一律定案；替换只有源 read 自身证据不强
+        # （非高置信）时定案——强峰对强峰才是真正需要人工看的互检矛盾
+        if contradicts and (v.get("type") != "substitution"
+                            or v["confidence"] != "high"):
+            v["cross_read_resolved"] = True
         # Step A 抑制：变异位点落在源 read 的合并压缩 run 窗内 → 该 read 在
         # 此处根本没有可分辨证据，逐位判定（含 indel 锚点）不可信，强制降级
         # （跨 read 互证一致的变异不受单 read 降级影响——support_reads 聚合
@@ -2593,6 +2860,22 @@ def analyze(
         # 与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识
         if v.get("cross_read_conflict") and v.get("confidence") != "low":
             v["confidence"] = "low"
+        # 单 read indel 遇到"读出设计序列但区域质量不够定案"的验证 read：
+        # 不足以排除，但也不能让单条 read 的 indel 独自改写蛋白结论（与此前
+        # junction 反证同口径），降为低置信、写明原因待人工核对
+        if (v.get("cross_read_weak") and v.get("type") in ("insertion", "deletion")
+                and v.get("confidence") != "low"
+                and v["cross_read_weak"][0].get("core_min_q", 0) >= CROSS_CHECK_MIN_Q):
+            v["confidence"] = "low"
+        if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
+            v["low_reason"] = _low_confidence_reason(
+                v, mixed_by_read.get(v.get("read", ""), set()), evidence,
+                read_len=src["trimmed_length"] if src is not None else None)
+            wk = (v.get("cross_read_weak") or [None])[0]
+            if wk:
+                v["low_reason"] += (
+                    f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
+                    f"质量不足以互检")
 
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
@@ -2882,10 +3165,15 @@ def analyze(
         entry["run_covered"] = len(cov_pos)
         homopolymer_report.append(entry)
 
+    # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
+    # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
+    shown_variants = [v for v in variants if not v.get("cross_read_resolved")]
+    resolved_variants = [v for v in variants if v.get("cross_read_resolved")]
+
     # 终审 C-08：CDS 判读的意外异常降级为单条失败报告，不得让一条
     # 畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析
     try:
-        cds_reports = _build_cds_reports(ref, features, variants, consensus)
+        cds_reports = _build_cds_reports(ref, features, shown_variants, consensus)
     except Exception as e:
         logger.exception("CDS 判读整体失败，降级为占位报告")
         cds_reports = [{
@@ -3052,13 +3340,34 @@ def analyze(
 
     # read 末端不可信区显式提示：首尾 END_MARGIN bp 是信号爬升/下降段，
     # 该区差异仅低置信处理还不够——用户常把 read 首尾当可靠证据核对
+    # 精简为一句：互检已自动执行并定案，不再给用户布置"自己去看另一条
+    # 引物"的核对作业（此前一大段，把确定的结论淹没在提示里）
     end_note = (
-        f"注意：每条 read 首尾约 {END_MARGIN}bp 为信号爬升/下降区，碱基判读"
-        f"可信度低（该区差异已按低置信处理，各 read 的具体不可信区见报告"
-        f"「read 概况」表；信号不稳区通常以引物首端最为明显）；该区如需确认，"
-        f"看另一条引物是否测过同一段——互检覆盖且峰形单一即可直接采信判读"
-        f"（双峰位点已按此思路跨引物互检并汇入结论）"
+        f"注意：read 首尾约 {END_MARGIN}bp 为信号爬升/下降区，该区差异按低置信处理"
+        f"{'，有其他引物覆盖的位点已自动互检' if len(read_results) >= 2 else ''}"
+        f"（各 read 不可信区见报告「read 概况」表）"
     )
+
+    # 互检定案一句话：多引物交叉验证已给出确定答案，不再逐条罗列为
+    # "低置信/待核对"（逐条明细仍在变体表，标注为互检排除）
+    resolved_line = ""
+    if resolved_variants:
+        rows = []
+        for v in resolved_variants[:8]:
+            ev = ((v.get("cross_read_conflict") or {}).get("evidence") or [{}])[0]
+            q = v.get("read_q")
+            rows.append(
+                f"  ↳ 位置 {v['ref_pos']} {variant_type_text(v)}：{v.get('read', '')}"
+                + (f" 该位 Q{q}" if q is not None else "")
+                + (f"；{ev['read']} 读出设计碱基（{region_quality_text(ev)}）"
+                   if ev.get("read") else ""))
+        if len(resolved_variants) > 8:
+            rows.append(f"  ↳ 另有 {len(resolved_variants) - 8} 处，见差异明细表")
+        resolved_line = "\n".join(
+            [f"互检排除 {len(resolved_variants)} 处单条 read 差异：其他引物在该区域"
+             f"高质量覆盖（位点 ±{CROSS_REGION_HALF}bp 平均 Q≥{CROSS_REGION_MEAN_Q}、"
+             f"≥Q20 占 {round(CROSS_REGION_HQ_FRAC * 100)}% 以上）并读出设计碱基，"
+             "判为该 read 测序误差，不计入判定"] + rows)
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
     cds_lines = [
@@ -3067,9 +3376,10 @@ def analyze(
     ]
     if not read_results:
         conclusion = "没有可分析的测序文件"
-    elif not variants:
+    elif not shown_variants:
         conclusion = (
-            f"构建序列与设计一致：{len(read_results)} 条 read 全部匹配，"
+            f"构建序列与设计一致：{len(read_results)} 条 read "
+            f"{'交叉验证无差异' if resolved_variants else '全部匹配'}，"
             f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
             f"{_coverage_ranges_text(coverage_ranges)}"
         )
@@ -3106,14 +3416,16 @@ def analyze(
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
         poly_warnings.extend(_poly_anchor_notes(homopolymer_report))
         # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
-        all_lines = ([conclusion] + mixed_lines + cds_lines + poly_warnings
+        all_lines = ([conclusion, resolved_line] + mixed_lines + cds_lines + poly_warnings
                      + dropout_notes + [end_note])
         conclusion = "\n".join(x for x in all_lines if x)
     else:
-        lines = [f"共检出 {len(variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
+        lines = [f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
                  f"{_coverage_ranges_text(coverage_ranges)}）："]
         lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
-        lines.extend(summarize_severity(variants))
+        lines.extend(summarize_severity(shown_variants))
+        if resolved_line:
+            lines.append(resolved_line)
         # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）
         lines.extend(cds_lines)
         # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
@@ -3135,7 +3447,7 @@ def analyze(
 
         # poly 判读：计数可靠的重复区 indel 单列重复数变化（实验员关心的
         # “多了/少了几个”）；峰图矛盾的结构由下面的峰图判读行统一覆盖
-        for v in variants:
+        for v in shown_variants:
             hp = v.get("homopolymer")
             if not (hp and v.get("type") in ("insertion", "deletion")):
                 continue
@@ -3226,8 +3538,9 @@ def analyze(
                             for r in partial_reads])
     if read_results:
         has_mixed = any("疑似混合样品" in x for x in mixed_lines)
-        conclusion = (_conclusion_summary(variants, cds_reports, has_mixed,
-                                          partial_reads=len(partial_reads))
+        conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
+                                          partial_reads=len(partial_reads),
+                                          resolved=len(resolved_variants))
                       + "\n\n\n" + conclusion)
 
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积

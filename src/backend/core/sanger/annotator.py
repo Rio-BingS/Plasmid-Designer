@@ -191,9 +191,13 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
     for v in variants:
         loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
         if v.get("frameshift"):
-            note = f"位置 {v['ref_pos']} {v['type']}（{loc}）导致移码"
+            kind = {"insertion": "插入", "deletion": "缺失"}.get(v["type"], v["type"])
+            n = int(v.get("length") or 1)
+            note = f"位置 {v['ref_pos']} {kind} {n}bp（{loc}）导致移码"
         elif v.get("aa_change"):
-            note = f"位置 {v['ref_pos']} 氨基酸改变 {v['aa_change']}（{loc}）"
+            bc = (f"{v['ref_base']}>{v['alt_base']} " if v.get("type") == "substitution"
+                  else "")
+            note = f"位置 {v['ref_pos']} {bc}氨基酸改变 {v['aa_change']}（{loc}）"
         elif v.get("synonymous"):
             note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）同义突变（蛋白不变）"
         elif v["type"] == "substitution":
@@ -204,10 +208,15 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
         if v.get("confidence") == "low":
             # 低置信文案分三支（A4 + 互检反证）：poly 下游滑移 echo 与跨 read
             # 互检矛盾各有明确原因点名，其余维持原口径
-            if v.get("cross_read_conflict"):
+            if v.get("cross_read_resolved"):
+                rd = "、".join(((v.get("cross_read_conflict") or {}).get("reads") or [])[:2])
+                note += f"，已被 {rd} 互检排除（该处读出设计碱基，判为测序误差）"
+            elif v.get("cross_read_conflict"):
                 note += "，低置信度（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，疑似伪影）"
             elif v.get("slippage_artifact"):
                 note += "，低置信度（poly 下游疑似滑移伪影，建议人工核对峰图）"
+            elif v.get("low_reason"):
+                note += f"，低置信度（{v['low_reason']}，建议人工核对峰图）"
             else:
                 note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
         notes.append(note)
