@@ -185,3 +185,32 @@ describe('CircularMap 放大后平移', () => {
     expect(ringVisibleFraction(w)).toBeGreaterThan(0)
   })
 })
+
+describe('CircularMap 放大后 svg 高度', () => {
+  it('放大后 svg 随缩放长高（不超过窗口 75%），可视区不再只剩一条矮横带', async () => {
+    const old = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1000 })
+    const w = mount(CircularMap, { props: { doc: puc(), maxSize: 640 } })
+    const h0 = Number(w.find('.cmap-svg').attributes('height'))
+    await clickZoomIn(w, 3) // ≈ 2.7×
+    const h1 = Number(w.find('.cmap-svg').attributes('height'))
+    expect(h1).toBeGreaterThan(h0)
+    expect(h1).toBeLessThanOrEqual(Math.max(h0, 750))
+    // 可视区高度 = 像素高 / 缩放，而不是裁切高 / 缩放
+    const v = view(w)
+    expect(v.h).toBeGreaterThan(h0 / 2.744 + 1)
+    // 复位后回到原高
+    await w.find('.cmap-controls button[title="复位"]').trigger('click')
+    await nextTick()
+    expect(Number(w.find('.cmap-svg').attributes('height'))).toBe(h0)
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: old })
+    w.unmount()
+  })
+
+  it('指定 size（导出/缩略图）时高度不变', async () => {
+    const w = mount(CircularMap, { props: { doc: puc(), size: 400 } })
+    const h0 = Number(w.find('.cmap-svg').attributes('height'))
+    await clickZoomIn(w, 3)
+    expect(Number(w.find('.cmap-svg').attributes('height'))).toBe(h0)
+  })
+})
