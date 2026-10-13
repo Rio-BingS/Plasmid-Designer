@@ -58,8 +58,16 @@ CROSS_CHECK_MIN_Q = 20   # 跨 read 反证：junction 处 Q 低于此值时"未�
 # 跨 read 反证看的是验证 read 在该位点周边一段区域的整体质量，不只是单个
 # 碱基的 Q：单碱基 Q 高但周围信号塌陷（峰压缩、拖尾、信号衰减段）时，
 # 这条 read 在此处同样不可靠。区域 = 位点两侧各 CROSS_REGION_HALF bp
-CROSS_REGION_HALF = 5
-CROSS_REGION_MEAN_Q = 30  # 区域平均 Q 下限
+# （±5bp 太窄，反映不出该引物这一段的测序质量；取 ±25bp 约 50bp 窗口，
+# 与 Phred 质量窗口/修剪窗口同量级），截掉 read 首尾不可信区后至少要有
+# CROSS_REGION_MIN_COLS 列。窗口宽了，单个低 Q 碱基不该一票否决，改用
+# "≥Q20 的碱基占比"衡量整体；位点本身 ±CROSS_CORE_HALF 的核心区仍要求每个碱基 ≥Q20
+CROSS_REGION_HALF = 25
+CROSS_REGION_MIN_COLS = 30
+CROSS_REGION_MEAN_Q = 30   # 区域平均 Q 下限
+CROSS_REGION_HQ_FRAC = 0.9  # 区域内 ≥Q20 碱基占比下限
+CROSS_CORE_HALF = 2
+CROSS_CLEAN_HALF = 5       # 验证 read 自身在位点 ±5bp 内报了差异 → 不作反证
 
 
 
@@ -278,7 +286,9 @@ def _low_confidence_reason(v: Dict, mixed_positions: set,
             pct = round(ins_ratio * 100)
             if ins_ratio < 0.3:
                 return f"插入位置几乎无独立峰（插入峰为邻峰的 {pct}%），疑似 basecaller 伪影"
-            return f"插入峰偏弱（为邻峰的 {pct}%）且 Q 值低（Q{q}）"
+            if ins_ratio >= 0.6:
+                return f"插入峰可见（为邻峰的 {pct}%），但仅单条 read 支持（Q{q}）"
+            return f"插入峰偏弱（为邻峰的 {pct}%）且 Q 值低，Q{q}"
         mp, snr = evidence.get("mutant_pct"), evidence.get("snr")
         if mp is not None and mp < 30:
             return f"突变峰明显弱于参考峰（突变峰占比 {mp}%），疑似误读"
@@ -1057,26 +1067,49 @@ def _read_ref_maps(r: Dict, fold: bool = True) -> Tuple[Dict[int, int], Dict[int
 
 
 def _cross_region_quality(r2c: Dict[int, Dict], lo: int, hi: int, L: int,
-                          n_trim: int) -> Optional[Tuple[float, int]]:
-    """验证 read 在参考区间 [lo-HALF, hi+HALF] 的区域质量 (平均 Q, 最低 Q)。
+                          n_trim: int) -> Optional[Dict]:
+    """验证 read 在参考区间 [lo-HALF, hi+HALF] 的区域质量。
 
-    区域内任何一列缺失（read 在此有缺口/未覆盖）或落进 read 首尾
-    END_MARGIN 区，返回 None——区域不完整就不能当作可靠的反证区。"""
-    qs: List[int] = []
-    for p in range(lo - CROSS_REGION_HALF, hi + CROSS_REGION_HALF + 1):
-        pp = fold_pos(p, L) if L else p
-        c = r2c.get(pp)
+    区域截掉 read 首尾 END_MARGIN 不可信区与未覆盖列后统计：平均 Q、
+    最低 Q、≥Q20 占比、列数；核心区（位点 ±CROSS_CORE_HALF）任一列缺失或
+    落进不可信区返回 None——位点本身都测不好，谈不上反证。"""
+    def call(p: int) -> Optional[Dict]:
+        c = r2c.get(fold_pos(p, L) if L else p)
         if not c or not END_MARGIN < c["read_pos"] <= n_trim - END_MARGIN:
             return None
-        qs.append(int(c["q"] or 0))
-    if not qs:
-        return None
-    return sum(qs) / len(qs), min(qs)
+        return c
+    core: List[int] = []
+    for p in range(lo - CROSS_CORE_HALF, hi + CROSS_CORE_HALF + 1):
+        c = call(p)
+        if c is None:
+            return None
+        core.append(int(c["q"] or 0))
+    qs: List[int] = []
+    for p in range(lo - CROSS_REGION_HALF, hi + CROSS_REGION_HALF + 1):
+        c = call(p)
+        if c is not None:
+            qs.append(int(c["q"] or 0))
+    return {
+        "region_mean_q": round(sum(qs) / len(qs), 1),
+        "region_min_q": min(qs),
+        "region_hq_frac": round(sum(1 for q in qs if q >= CROSS_CHECK_MIN_Q) / len(qs), 3),
+        "region_cols": len(qs),
+        "core_min_q": min(core),
+    }
 
 
-def _region_ok(rq: Optional[Tuple[float, int]]) -> bool:
-    return (rq is not None and rq[0] >= CROSS_REGION_MEAN_Q
-            and rq[1] >= CROSS_CHECK_MIN_Q)
+def _region_ok(rq: Optional[Dict]) -> bool:
+    return (rq is not None
+            and rq["region_cols"] >= CROSS_REGION_MIN_COLS
+            and rq["region_mean_q"] >= CROSS_REGION_MEAN_Q
+            and rq["region_hq_frac"] >= CROSS_REGION_HQ_FRAC
+            and rq["core_min_q"] >= CROSS_CHECK_MIN_Q)
+
+
+def region_quality_text(ev: Dict) -> str:
+    """验证 read 区域质量的文字（结论/悬停共用）"""
+    return (f"该区 {ev.get('region_cols', '?')}bp 平均 Q{ev['region_mean_q']:g}、"
+            f"≥Q20 占 {round(ev.get('region_hq_frac', 0) * 100)}%")
 
 
 def _clean_cover_reads(v: Dict, read_results: List[Dict],
@@ -1116,7 +1149,7 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
         if fname == v.get("read"):
             continue
         # 验证 read 自己在该区域报了任何差异：区域不干净，不作反证
-        if any(win[0] - CROSS_REGION_HALF <= k[0] <= win[1] + CROSS_REGION_HALF
+        if any(win[0] - CROSS_CLEAN_HALF <= k[0] <= win[1] + CROSS_CLEAN_HALF
                for k in keys_by_read.get(fname, ())):
             continue
         n_trim = by_name[fname].get("trimmed_length") or 0
@@ -1127,11 +1160,9 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
             rq = _cross_region_quality(r2c, min(win), max(win), L, n_trim)
             if not _region_ok(rq):
                 if rq is not None and weak is not None:
-                    weak.append({"read": fname, "region_mean_q": round(rq[0], 1),
-                                 "region_min_q": rq[1]})
+                    weak.append({"read": fname, **rq})
                 continue
-            hits.append({"read": fname, "region_mean_q": round(rq[0], 1),
-                         "region_min_q": rq[1]})
+            hits.append({"read": fname, **rq})
             break
     hits.sort(key=lambda h: -h["region_mean_q"])
     return hits
@@ -1164,7 +1195,7 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
     for fname, r2c in ref2call_by_read.items():
         if fname == v.get("read"):
             continue
-        if any(lo - CROSS_REGION_HALF <= k[0] <= hi + CROSS_REGION_HALF
+        if any(lo - CROSS_CLEAN_HALF <= k[0] <= hi + CROSS_CLEAN_HALF
                for k in keys_by_read.get(fname, ())):
             continue
         n_trim = by_name[fname].get("trimmed_length") or 0
@@ -1180,11 +1211,9 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
             continue
         rq = _cross_region_quality(r2c, lo, hi, L, n_trim)
         if not _region_ok(rq) and rq is not None and weak is not None:
-            weak.append({"read": fname, "region_mean_q": round(rq[0], 1),
-                         "region_min_q": rq[1]})
+            weak.append({"read": fname, **rq})
         if _region_ok(rq):
-            hits.append({"read": fname, "region_mean_q": round(rq[0], 1),
-                         "region_min_q": rq[1]})
+            hits.append({"read": fname, **rq})
     hits.sort(key=lambda h: -h["region_mean_q"])
     return hits
 
@@ -2831,6 +2860,13 @@ def analyze(
         # 与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识
         if v.get("cross_read_conflict") and v.get("confidence") != "low":
             v["confidence"] = "low"
+        # 单 read indel 遇到"读出设计序列但区域质量不够定案"的验证 read：
+        # 不足以排除，但也不能让单条 read 的 indel 独自改写蛋白结论（与此前
+        # junction 反证同口径），降为低置信、写明原因待人工核对
+        if (v.get("cross_read_weak") and v.get("type") in ("insertion", "deletion")
+                and v.get("confidence") != "low"
+                and v["cross_read_weak"][0].get("core_min_q", 0) >= CROSS_CHECK_MIN_Q):
+            v["confidence"] = "low"
         if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
             v["low_reason"] = _low_confidence_reason(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
@@ -2838,8 +2874,8 @@ def analyze(
             wk = (v.get("cross_read_weak") or [None])[0]
             if wk:
                 v["low_reason"] += (
-                    f"；{wk['read']} 读出设计碱基，但该区 ±{CROSS_REGION_HALF}bp 平均 Q"
-                    f"{wk['region_mean_q']:g}、最低 Q{wk['region_min_q']}，质量不足以互检")
+                    f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
+                    f"质量不足以互检")
 
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
@@ -3323,13 +3359,14 @@ def analyze(
             rows.append(
                 f"  ↳ 位置 {v['ref_pos']} {variant_type_text(v)}：{v.get('read', '')}"
                 + (f" 该位 Q{q}" if q is not None else "")
-                + (f"；{ev['read']} 读出设计碱基（该区 ±{CROSS_REGION_HALF}bp 平均 Q"
-                   f"{ev['region_mean_q']:g}、最低 Q{ev['region_min_q']}）" if ev.get("read") else ""))
+                + (f"；{ev['read']} 读出设计碱基（{region_quality_text(ev)}）"
+                   if ev.get("read") else ""))
         if len(resolved_variants) > 8:
             rows.append(f"  ↳ 另有 {len(resolved_variants) - 8} 处，见差异明细表")
         resolved_line = "\n".join(
             [f"互检排除 {len(resolved_variants)} 处单条 read 差异：其他引物在该区域"
-             f"高质量覆盖（±{CROSS_REGION_HALF}bp 平均 Q≥{CROSS_REGION_MEAN_Q}）并读出设计碱基，"
+             f"高质量覆盖（位点 ±{CROSS_REGION_HALF}bp 平均 Q≥{CROSS_REGION_MEAN_Q}、"
+             f"≥Q20 占 {round(CROSS_REGION_HQ_FRAC * 100)}% 以上）并读出设计碱基，"
              "判为该 read 测序误差，不计入判定"] + rows)
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
