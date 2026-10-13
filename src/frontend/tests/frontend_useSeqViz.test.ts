@@ -257,6 +257,8 @@ describe('useSeqViz composable', () => {
     const L0 = viz.rowLayouts()[0]
     expect(L0.stripH).toBe(62 + 14)
     expect(L0.stripTop).toBe(L0.rowY + 16)
+    // 名字单独一行在字母行上方，不与碱基重叠
+    expect(L0.rowY).toBe(L0.nameY + 13)
     expect(L0.baseline).toBe(L0.stripTop + L0.stripH - 10)
   })
 
@@ -491,14 +493,14 @@ describe('useSeqViz composable', () => {
     const { analysis, viz } = mountWithAligned()
     // 2 泳道简图 64 + 尺14 + 参考行16 + 间隔4 + 底8 + 滚动条18 = 124
     expect(viz.seqWrapH.value).toBe(124)
-    // 勾选 1 条：+ 字母行16 + 条带62
+    // 勾选 1 条：+ 名字行13 + 字母行16 + 条带62
     viz.visibleReads.value = [0]
     await nextTick()
-    expect(viz.seqWrapH.value).toBe(124 + 16 + 62)
+    expect(viz.seqWrapH.value).toBe(124 + 13 + 16 + 62)
     // 选中加高 14
     viz.selectedReadIdx.value = 0
     await nextTick()
-    expect(viz.seqWrapH.value).toBe(124 + 16 + 62 + 14)
+    expect(viz.seqWrapH.value).toBe(124 + 13 + 16 + 62 + 14)
   })
 })
 
