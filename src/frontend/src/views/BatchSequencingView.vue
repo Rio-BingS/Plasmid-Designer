@@ -10,6 +10,8 @@ import { useRouter } from 'vue-router'
 import { analyzeSequencingBatchChunked, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
 import { UploadCancelledError, type ChunkedProgress } from '@/utils/chunkedUpload'
 import { useAuthStore } from '@/stores/auth'
+import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
+import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -127,6 +129,8 @@ function onExcelPick(e: Event) {
 
 // ==================== 分析 ====================
 const minQ = ref(20)
+// read 可信区边界（首端硬区/灰区、尾端灰区/硬区），高级参数里可调
+const reliableZone = ref<ReliableZone>({ ...DEFAULT_RELIABLE_ZONE })
 const analyzing = ref(false)
 const result = ref<SequencingBatchResult | null>(null)
 
@@ -135,7 +139,8 @@ function normalizeMinQ() {
   minQ.value = Math.max(0, Math.min(60, Math.round(minQ.value)))
 }
 
-const canAnalyze = computed(() => files.value.length > 0 && !analyzing.value)
+const canAnalyze = computed(() => files.value.length > 0 && !analyzing.value
+  && !validateReliableZone(reliableZone.value))
 
 // Cloudflare 免费版有 100MB 请求体硬上限：文件按 ≤90 MB / ≤200 个自动切成
 // 多个请求依次上传，服务器拼成一个批次再分析（整批体积上限见 site-config）
@@ -201,6 +206,7 @@ async function runBatch() {
     progress.value = null
     result.value = await analyzeSequencingBatchChunked(files.value, excelFile.value, minQ.value, {
       signal: controller.signal,
+      reliableZone: reliableZoneFormValue(reliableZone.value),
       onProgress: (p) => { progress.value = p }
     })
   } catch (e: any) {
@@ -326,6 +332,7 @@ async function downloadReport() {
       <details class="advanced">
         <summary>高级参数</summary>
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
+        <ReliableZoneInputs v-model="reliableZone" />
       </details>
       <button class="analyze-btn" :disabled="!canAnalyze" @click="runBatch">
         {{ analyzing ? (progressText || '准备上传…') : '开始批量分析' }}
