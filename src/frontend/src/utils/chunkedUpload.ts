@@ -56,7 +56,7 @@ export interface FinalizeResponse<R> {
 export interface ChunkedTransport<R> {
   create(manifest: { name: string; size: number }[], excel: File | null): Promise<SessionCreated>
   upload(sessionId: string, files: File[], index: number, token?: string, signal?: AbortSignal): Promise<unknown>
-  finalize(sessionId: string, minQ: number, token?: string): Promise<FinalizeResponse<R>>
+  finalize(sessionId: string, minQ: number, token?: string, reliableZone?: string): Promise<FinalizeResponse<R>>
   status(sessionId: string, token?: string): Promise<SessionStatus<R>>
   abort(sessionId: string, token?: string): Promise<unknown>
 }
@@ -77,6 +77,8 @@ export interface ChunkedOptions {
   pollIntervalMs?: number
   /** 轮询分析结果的最长时间 */
   pollTimeoutMs?: number
+  /** read 可信区边界 "30,60,700,900"（提交分析时随表单发送；空用后端默认） */
+  reliableZone?: string
 }
 
 /** 用户取消上传 */
@@ -168,15 +170,19 @@ export async function runChunkedBatch<R>(
     onProgress?.({ phase: 'analyzing', done: chunks.length, total: chunks.length })
     submitted = true
     let resp: FinalizeResponse<R> | null = null
+    // 可信区参数仅在用户改过时随提交发送（未设置时调用签名与此前一致）
+    const finalizeOnce = () => (opts.reliableZone
+      ? transport.finalize(sid, minQ, token, opts.reliableZone)
+      : transport.finalize(sid, minQ, token))
     try {
-      resp = await transport.finalize(sid, minQ, token)
+      resp = await finalizeOnce()
     } catch (e: any) {
       // 确定性拒绝（413 read 超限等）直接抛出；网络中断时提交可能已到达
       // 服务器，转为轮询会话状态，而不是盲目重复提交
       if (e?.response?.status && !isRetryable(e)) throw e
       const st = await transport.status(sid, token).catch(() => null)
       if (st && st.state === 'open') {
-        resp = await transport.finalize(sid, minQ, token)
+        resp = await finalizeOnce()
       }
     }
     if (resp && resp.status === 200) return resp.data as R

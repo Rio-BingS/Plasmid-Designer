@@ -132,6 +132,7 @@ def run_batch_groups(
     max_ref_bp: Optional[int] = None,
     ref_cache: Optional[Dict[str, object]] = None,
     soft_timeout: Optional[float] = None,
+    zone=None,
 ) -> Tuple[List[Dict], Dict[str, Dict]]:
     """逐组跑管线并给出一句话结论，返回 (items, records_by_id)
 
@@ -195,7 +196,8 @@ def run_batch_groups(
             ref_seq, features, circular = ref_entry
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
-                res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular)
+                res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular,
+                              zone_params=zone)
                 aid, rec = register(label, ref_seq, features, res)
                 item["analysis_id"] = aid
                 # 终审 C-07：打包用的记录快照随批次产出，避免事后回查全局
