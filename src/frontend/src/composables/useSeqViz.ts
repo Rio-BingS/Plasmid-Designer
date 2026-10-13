@@ -67,6 +67,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
   const SEQ_STRIP_H = 62   // 每条 read 的峰图条带高（直接交接在各自字母行下方）
   const SEL_STRIP_EXTRA = 14  // 选中 read 的条带加高量（着重显示）
   const SEQ_ROW_H = 16     // 碱基字母行高
+  const NAME_ROW_H = 13    // read 名字行高：名字单独一行放在字母行上方，不再压在碱基上
   const OV_ARROW_H = 18    // 覆盖简图每条引物箭头高
   const OV_LANE_GAP = 4    // 覆盖简图泳道间隔
   /** 覆盖简图布局（简图固定整参考宽度，不随横向滚动移动；seqWrapH 与 drawSeq 共用一套数字） */
@@ -96,7 +97,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
     // 行集合随横向滚动增减（rowLayouts 读 seqScrollX），高度跟着变
     seqLayoutTick.value   // 挂载/resize 后 clientWidth 变化时强制重算
     const { ovH } = ovLayoutFor(ovLaneCount.value)
-    const strips = rowLayouts().reduce((s, L) => s + SEQ_ROW_H + L.stripH, 0)
+    const strips = rowLayouts().reduce((s, L) => s + NAME_ROW_H + SEQ_ROW_H + L.stripH, 0)
     return ovH + 14 + 16 + 4 + strips + 8 + 18
   })
   const seqSpacerW = computed(() => (analysis.value?.reference_length ?? 0) * seqColW.value)
@@ -323,12 +324,13 @@ export function useSeqViz(options: UseSeqVizOptions) {
         return r && r.ref_end > 0 && readOverlaps(r, uLeft - 2, uRight + 2)
       })
       .sort((x, y) => a.reads[x].ref_start - a.reads[y].ref_start)
-    const layouts: { ri: number; rowY: number; stripTop: number; stripH: number; baseline: number }[] = []
+    const layouts: { ri: number; nameY: number; rowY: number; stripTop: number; stripH: number; baseline: number }[] = []
     let y0 = ovLayoutFor(ovLaneCount.value).ovH + 14 + 2 + SEQ_ROW_H + 4
     for (const ri of eligible) {
       const stripH = SEQ_STRIP_H + (selectedReadIdx.value === ri ? SEL_STRIP_EXTRA : 0)
-      layouts.push({ ri, rowY: y0, stripTop: y0 + SEQ_ROW_H, stripH, baseline: y0 + SEQ_ROW_H + stripH - 10 })
-      y0 += SEQ_ROW_H + stripH
+      const rowY = y0 + NAME_ROW_H
+      layouts.push({ ri, nameY: y0, rowY, stripTop: rowY + SEQ_ROW_H, stripH, baseline: rowY + SEQ_ROW_H + stripH - 10 })
+      y0 = rowY + SEQ_ROW_H + stripH
     }
     return layouts
   }
@@ -430,7 +432,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
 
     // 主区：点在字母行或其峰图条带上 → 选中该 read；列点选证据逻辑不变
     for (const L of rowLayouts()) {
-      if (y >= L.rowY && y < L.stripTop + L.stripH) {
+      if (y >= L.nameY && y < L.stripTop + L.stripH) {
         if (selectedReadIdx.value !== L.ri) selectedReadIdx.value = L.ri
         break
       }
@@ -751,15 +753,13 @@ export function useSeqViz(options: UseSeqVizOptions) {
       const rowY = L.rowY
       const cols = seqColsFor(ri)
       const isSel = sel === ri
-      // 行左侧固定名字芯片（滚动时也知道每行是谁）
+      // 行左侧固定名字（滚动时也知道每行是谁）：单独占字母行上方一行，
+      // 此前画在字母行里，与左端碱基重叠成一团
       const chip = `${read.direction === '-' ? '←' : '→'} ${shortName(read.filename)}${cols ? '' : '（无对齐）'}`
       ctx.font = isSel ? 'bold 10px Arial' : '10px Arial'
       ctx.textAlign = 'left'
-      const chipW = Math.min(ctx.measureText(chip).width + 8, w - 4)
-      ctx.fillStyle = 'rgba(255,255,255,0.92)'
-      ctx.fillRect(0, rowY, chipW, SEQ_ROW_H - 1)
       ctx.fillStyle = !cols ? '#BBB' : hexA(readColor(ri), isSel ? 1 : 0.85)
-      ctx.fillText(chip, 4, rowY + 11)
+      ctx.fillText(chip, 4, L.nameY + 10, w - 8)
 
       if (!cols) continue
       const mixedMap = new Map<number, { ratio: number; secondary_base: string }>()
