@@ -193,7 +193,9 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
         if v.get("frameshift"):
             note = f"位置 {v['ref_pos']} {v['type']}（{loc}）导致移码"
         elif v.get("aa_change"):
-            note = f"位置 {v['ref_pos']} 氨基酸改变 {v['aa_change']}（{loc}）"
+            bc = (f"{v['ref_base']}>{v['alt_base']} " if v.get("type") == "substitution"
+                  else "")
+            note = f"位置 {v['ref_pos']} {bc}氨基酸改变 {v['aa_change']}（{loc}）"
         elif v.get("synonymous"):
             note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）同义突变（蛋白不变）"
         elif v["type"] == "substitution":
@@ -211,6 +213,8 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
                 note += "，低置信度（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，疑似伪影）"
             elif v.get("slippage_artifact"):
                 note += "，低置信度（poly 下游疑似滑移伪影，建议人工核对峰图）"
+            elif v.get("low_reason"):
+                note += f"，低置信度（{v['low_reason']}，建议人工核对峰图）"
             else:
                 note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
         notes.append(note)

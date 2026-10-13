@@ -804,6 +804,8 @@ export interface SequencingVariant {
   cross_read_conflict?: { reads: string[] }
   /** 互检定案：其他引物在可靠区读出设计碱基，判为源 read 测序误差（不进结论） */
   cross_read_resolved?: boolean
+  /** 低置信的具体错误类型/原因（人工核对用） */
+  low_reason?: string
   /** 独立 basecaller（tracy）重 basecall 后报出同一变体：跨 caller 印证 */
   corroborated_by_basecall?: boolean
   /** 峰级证据：替换为突变峰占比/信噪比，插入为插入峰强度比（相对邻峰） */
