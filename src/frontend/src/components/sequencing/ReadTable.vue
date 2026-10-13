@@ -17,6 +17,18 @@ defineProps<{
   errors: { filename: string; error: string }[]
 }>()
 
+/** 可信区（原始 read 坐标）；旧记录无此字段时显示 - */
+function zoneText(r: ReadRow): string {
+  const z = r.reliable_zone
+  if (!z) return '-'
+  return z.start > z.end ? '无' : `${z.raw_start}–${z.raw_end}`
+}
+function zoneTitle(r: ReadRow): string | undefined {
+  const z = r.reliable_zone
+  if (!z) return undefined
+  return [z.front_reason, z.tail_reason].filter(Boolean).join('；') || undefined
+}
+
 const emit = defineEmits<{
   (e: 'view', index: number): void
 }>()
@@ -26,7 +38,7 @@ const emit = defineEmits<{
   <div>
     <table class="seq-table" v-if="reads.length">
       <thead>
-        <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>平均Q</th><th>质量</th><th>一致性</th><th>证据查看</th></tr>
+        <tr><th>文件</th><th>方向</th><th>比对区间</th><th>修剪后</th><th>可信区</th><th>平均Q</th><th>质量</th><th>一致性</th><th>证据查看</th></tr>
       </thead>
       <tbody>
         <tr v-for="r in reads" :key="r.index">
@@ -34,6 +46,7 @@ const emit = defineEmits<{
           <td>{{ r.direction === '+' ? '正向' : '反向' }}</td>
           <td :title="r.wraps_origin ? '跨越环状参考原点' : undefined">{{ readSpanText(r, ' - ') }}</td>
           <td>{{ r.trimmed_length }} bp</td>
+          <td :title="zoneTitle(r)" data-testid="read-zone">{{ zoneText(r) }}</td>
           <td>{{ r.mean_q }}</td>
           <td>
             <span v-if="r.grade" class="grade-chip" :class="'grade-' + r.grade"

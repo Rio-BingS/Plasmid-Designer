@@ -19,6 +19,8 @@ import VariantTable from '@/components/sequencing/VariantTable.vue'
 import AlleleCard from '@/components/sequencing/AlleleCard.vue'
 import ConsensusCard from '@/components/sequencing/ConsensusCard.vue'
 import MatchMap from '@/components/sequencing/MatchMap.vue'
+import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
+import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -152,6 +154,8 @@ function clearReference() { referenceFile.value = null; autoFilledRef.value = fa
 // ==================== 分析 ====================
 const minQ = ref(20)
 const allowDecompose = ref(true)
+// read 可信区边界（首端硬区/灰区、尾端灰区/硬区），高级参数里可调
+const reliableZone = ref<ReliableZone>({ ...DEFAULT_RELIABLE_ZONE })
 const analyzing = ref(false)
 const analysis = ref<SequencingAnalysis | null>(null)
 const errorMsg = ref('')
@@ -162,7 +166,8 @@ function normalizeMinQ() {
   minQ.value = Math.max(0, Math.min(60, Math.round(minQ.value)))
 }
 
-const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0)
+const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0
+  && !validateReliableZone(reliableZone.value))
 
 async function runAnalysis() {
   if (!referenceFile.value || !reads.value.length) return
@@ -171,7 +176,8 @@ async function runAnalysis() {
   analysis.value = null
   try {
     analysis.value = await analyzeSequencingFiles(
-      referenceFile.value, reads.value, minQ.value, allowDecompose.value
+      referenceFile.value, reads.value, minQ.value, allowDecompose.value,
+      reliableZoneFormValue(reliableZone.value)
     )
     resetSeqViz()
     if (analysis.value.reads.length) {
@@ -324,6 +330,7 @@ async function downloadConsensus(format: string) {
         <summary>高级参数</summary>
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
         <label><input type="checkbox" v-model="allowDecompose" /> 混合样品自动解卷积（需 tracy）</label>
+        <ReliableZoneInputs v-model="reliableZone" />
       </details>
       <button class="analyze-btn" :disabled="!canAnalyze || analyzing" @click="runAnalysis">
         {{ analyzing ? '分析中…' : '开始自动分析' }}
