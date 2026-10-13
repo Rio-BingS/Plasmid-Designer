@@ -2392,9 +2392,14 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     assert ins[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" not in cds["verdict"]
-    assert "互检矛盾" in cds["verdict"] and "rev.ab1" in cds["verdict"]
-    # 顶层变体摘要同口径：点名反证原因而非笼统"疑似测序噪声"
-    assert any("互检矛盾" in x for x in result["conclusion"].splitlines())
+    # 互检已定案：不再作为"互检矛盾/待核对"塞进 CDS 结论
+    assert ins[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
+    # 顶层结论只一句话交代互检排除，总结为确定的 ✓
+    lines = result["conclusion"].splitlines()
+    assert lines[0].startswith("✓ 结论：构建与设计一致")
+    assert sum("互检排除" in x for x in lines) == 2  # 总结行 + 明细一句
+    assert not any("低置信度（" in x for x in lines)
     # 低置信不进共识：构建体序列回到参考
     assert result["consensus"]["sequence"] == ref.upper()
 
@@ -2415,7 +2420,49 @@ def test_single_read_deletion_vetoed_by_clean_other_read():
     assert dele[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" not in cds["verdict"]
-    assert "互检矛盾" in cds["verdict"]
+    assert dele[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"]
+
+
+def test_single_read_low_q_substitution_resolved_by_clean_other_read():
+    """用户反馈 #4：不同引物交叉验证无问题时应给出确定答案——单 read 低 Q
+    替换、另一条引物在可靠区读出设计碱基 → 互检排除，结论不再罗列为低置信"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["ref_pos"] == 121
+    assert sub[0]["cross_read_resolved"] is True
+    assert sub[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert cds["pending_low_confidence"] == 0
+    assert "低置信" not in cds["verdict"]
+    lines = result["conclusion"].splitlines()
+    assert lines[0] == "✓ 结论：构建与设计一致（1 处单条 read 差异已被其他引物互检排除）"
+    assert not any("低置信度（" in x for x in lines)
+
+
+def test_single_read_substitution_without_cross_cover_stays_pending():
+    """无其他引物覆盖时互检无从谈起：低 Q 替换仍按低置信待核对"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze([("fwd.ab1", make_ab1(fwd, q))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["confidence"] == "low"
+    assert "cross_read_resolved" not in sub[0]
+    assert "互检排除" not in result["conclusion"]
 
 
 def test_indel_backed_by_both_reads_stays_confirmed():
@@ -2696,3 +2743,108 @@ def test_fully_aligned_read_has_no_partial_flag():
         logging.disable(logging.NOTSET)
     assert r["reads"][0]["partial_alignment"] is None
     assert r["conclusion"].startswith("✓")
+
+
+def test_cross_check_requires_high_region_quality_not_single_base():
+    """用户反馈 #5/#6：用另一条引物验证时看该区域整体质量，不只看单碱基 Q——
+    验证 read 在该位点 ±2bp Q40、但 ±25bp 区域信号塌陷（Q15）→ 不足以互检，
+    差异保留为低置信，并写清具体原因与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    # ref 96-146（位点 ±25bp）整体偏弱（Q22），只有位点及紧邻 ±2bp 为 Q40
+    for p in range(96, 147):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 119 <= p <= 123 else 22
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1
+    v = sub[0]
+    assert "cross_read_resolved" not in v and v["confidence"] == "low"
+    assert v["cross_read_weak"][0]["read"] == "rev.ab1"
+    assert v["cross_read_weak"][0]["region_min_q"] == 22
+    assert v["cross_read_weak"][0]["core_min_q"] == 40     # 单碱基/核心区都很好
+    assert "质量不足以互检" in v["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "替换" in cds["verdict"] and "Q12" in cds["verdict"]
+
+
+def test_resolved_lines_spell_out_error_type_and_verifier_quality():
+    """互检排除明细逐条写清错误类型（替换 X>Y / 插入 / 缺失）与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    alt = "A" if seg[i] != "A" else "C"
+    fwd = seg[:i] + alt + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [])
+    lines = result["conclusion"].splitlines()
+    det = [x for x in lines if x.strip().startswith("↳ 位置 121")]
+    assert det and f"替换 {seg[i]}>{alt}" in det[0]
+    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0] \
+        and "≥Q20 占 100%" in det[0]
+
+
+def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
+    """窗口放宽到 ±25bp 后，验证 read 区域里个别低 Q 碱基不该一票否决"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    qr[len(seg) - 1 - (110 - 51)] = 12        # ref 110 单个低 Q
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, [])
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert sub and sub[0].get("cross_read_resolved") is True
+    ev = sub[0]["cross_read_conflict"]["evidence"][0]
+    assert ev["region_cols"] >= 30 and ev["region_min_q"] == 12
+
+
+def test_low_confidence_reason_names_concrete_error_type():
+    from core.sanger.pipeline import _low_confidence_reason, variant_type_text
+    assert variant_type_text({"type": "substitution", "ref_base": "C", "alt_base": "A"}) == "替换 C>A"
+    assert variant_type_text({"type": "insertion", "alt_base": "G", "length": 1}) == "插入 1bp（G）"
+    assert variant_type_text({"type": "deletion", "ref_base": "AT", "length": 2}) == "缺失 2bp（AT）"
+    base = {"type": "substitution", "ref_base": "C", "read_q": 30, "read_pos": 100}
+    assert "N/模糊" in _low_confidence_reason({**base, "alt_base": "N"}, set())
+    assert "首端" in _low_confidence_reason({**base, "alt_base": "A", "read_pos": 5}, set(), read_len=500)
+    assert "双峰" in _low_confidence_reason({**base, "alt_base": "A"}, {100}, read_len=500)
+    assert "占比 50" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, read_len=500)
+    assert "信噪比" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, read_len=500)
+
+
+def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
+    """验证 read 读出设计序列、但 ±25bp 区域质量不够定案：不排除，但单 read
+    indel 也不得独自改写蛋白结论——保持低置信并写明验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    qr = [40] * len(seg)
+    for p in range(81, 132):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 104 <= p <= 111 else 22
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert "cross_read_resolved" not in ins[0]
+    assert ins[0]["confidence"] == "low"
+    assert "质量不足以互检" in ins[0]["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"] and "插入 1bp" in cds["verdict"]

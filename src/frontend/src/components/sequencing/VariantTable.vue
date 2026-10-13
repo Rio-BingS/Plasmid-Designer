@@ -37,6 +37,11 @@ function confTitle(v: SequencingVariant): string {
   if (v.corroborated_by_basecall) {
     peak += (peak ? '；' : '') + 'tracy 重 basecall 也报出此变异（同一测序信号的两个读出，仅供参考）'
   }
+  if (v.cross_read_resolved) {
+    const rd = (v.cross_read_conflict?.reads || []).join('、')
+    return `已互检排除：${rd || '其他引物'}在可靠区读出设计碱基，判为该 read 测序误差，不计入结论`
+  }
+  if (v.confidence === 'low' && v.low_reason) return `低置信：${v.low_reason}${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
   return `高置信${peak ? '：' + peak : ''}`
@@ -47,7 +52,7 @@ function confTitle(v: SequencingVariant): string {
   <div v-if="variants.length">
     <h4 class="section-title">差异明细（点击行查看峰图）
       <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-        {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
+        {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信/互检排除已折叠（展开逐条查看）` }}
       </button>
     </h4>
     <table class="seq-table clickable">
@@ -72,7 +77,7 @@ function confTitle(v: SequencingVariant): string {
           <td>
             <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
                   :title="confTitle(v)">
-              {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
+              {{ v.cross_read_resolved ? '排除' : v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
             </span>
             <span v-else>-</span>
           </td>

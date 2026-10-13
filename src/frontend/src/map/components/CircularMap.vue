@@ -151,9 +151,24 @@ function svgWidthAt(z: number) {
   return z > 1 && props.size === undefined ? Math.max(S.value, Math.floor(wrapW.value || 0)) : S.value
 }
 const svgW = computed(() => svgWidthAt(zoom.value))
+// 窗口高度（不用 vueuse 的 useWindowSize：测试里常整体 mock @vueuse/core）
+const winH = ref(typeof window !== 'undefined' ? window.innerHeight : 0)
+function onWinResize() { winH.value = window.innerHeight }
+onMounted(() => window.addEventListener('resize', onWinResize))
+onBeforeUnmount(() => window.removeEventListener('resize', onWinResize))
+/**
+ * svg 的像素高度。未放大时等于裁切后的内容高 cropH；放大后随缩放一起长高（最多到窗口高度的 75%），
+ * 否则高度锁在 cropH，放大后可视区只剩一条矮横带（分屏 640 px 时尤其明显），环的上下都被裁掉。
+ */
+function svgHeightAt(z: number) {
+  const base = cropH.value
+  if (z <= 1 || props.size !== undefined) return base
+  const cap = Math.max(base, Math.floor((winH.value || 0) * 0.75))
+  return Math.min(base * z, cap)
+}
 /** 可视区宽高（用户坐标）：1 个用户单位在缩放 z 时约等于 z 像素 */
 const viewW = computed(() => svgW.value / zoom.value)
-const viewH = computed(() => cropH.value / zoom.value)
+const viewH = computed(() => svgHeightAt(zoom.value) / zoom.value)
 const viewBox = computed(() => {
   const x = vcx.value + pan.value.x - viewW.value / 2
   const y = vcy.value + pan.value.y - viewH.value / 2
@@ -172,7 +187,7 @@ function viewCenter(): [number, number] {
 function clampCenter(c: [number, number], z: number): [number, number] {
   if (z <= 1) return [vcx.value, vcy.value]
   const w = svgWidthAt(z) / z
-  const h = cropH.value / z
+  const h = svgHeightAt(z) / z
   let [x, y] = c
   const dmax = fanR.value + 0.45 * Math.min(w, h)
   const dx = x - cx.value
@@ -773,7 +788,7 @@ watch([contentBounds, rotating], ([[t, b]]) => {
   const [ot, ob] = crop.value
   crop.value = rotating.value && ob > ot ? [Math.min(ot, t), Math.max(ob, b)] : [t, b]
 }, { immediate: true })
-const svgH = computed(() => Math.round(cropH.value))
+const svgH = computed(() => Math.round(svgHeightAt(zoom.value)))
 
 defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
 </script>
