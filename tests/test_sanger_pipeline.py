@@ -2743,3 +2743,64 @@ def test_fully_aligned_read_has_no_partial_flag():
         logging.disable(logging.NOTSET)
     assert r["reads"][0]["partial_alignment"] is None
     assert r["conclusion"].startswith("✓")
+
+
+def test_cross_check_requires_high_region_quality_not_single_base():
+    """用户反馈 #5：用另一条引物验证时看该区域整体质量，不只看单碱基 Q——
+    验证 read 在该位点单碱基 Q40、但两侧 ±5bp 信号塌陷（Q15）→ 不足以互检，
+    差异保留为低置信，并写清具体原因与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    for p in range(116, 127):                # ref 116-126 → 反向 read 坐标
+        qr[len(seg) - 1 - (p - 51)] = 40 if p == 121 else 15
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1
+    v = sub[0]
+    assert "cross_read_resolved" not in v and v["confidence"] == "low"
+    assert v["cross_read_weak"][0]["read"] == "rev.ab1"
+    assert v["cross_read_weak"][0]["region_min_q"] == 15
+    assert "质量不足以互检" in v["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "替换" in cds["verdict"] and "Q12" in cds["verdict"]
+
+
+def test_resolved_lines_spell_out_error_type_and_verifier_quality():
+    """互检排除明细逐条写清错误类型（替换 X>Y / 插入 / 缺失）与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    alt = "A" if seg[i] != "A" else "C"
+    fwd = seg[:i] + alt + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [])
+    lines = result["conclusion"].splitlines()
+    det = [x for x in lines if x.strip().startswith("↳ 位置 121")]
+    assert det and f"替换 {seg[i]}>{alt}" in det[0]
+    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0]
+
+
+def test_low_confidence_reason_names_concrete_error_type():
+    from core.sanger.pipeline import _low_confidence_reason, variant_type_text
+    assert variant_type_text({"type": "substitution", "ref_base": "C", "alt_base": "A"}) == "替换 C>A"
+    assert variant_type_text({"type": "insertion", "alt_base": "G", "length": 1}) == "插入 1bp（G）"
+    assert variant_type_text({"type": "deletion", "ref_base": "AT", "length": 2}) == "缺失 2bp（AT）"
+    base = {"type": "substitution", "ref_base": "C", "read_q": 30, "read_pos": 100}
+    assert "N/模糊" in _low_confidence_reason({**base, "alt_base": "N"}, set())
+    assert "首端" in _low_confidence_reason({**base, "alt_base": "A", "read_pos": 5}, set(), read_len=500)
+    assert "双峰" in _low_confidence_reason({**base, "alt_base": "A"}, {100}, read_len=500)
+    assert "占比 50" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, read_len=500)
+    assert "信噪比" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, read_len=500)

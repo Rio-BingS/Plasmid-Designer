@@ -41,6 +41,7 @@ function confTitle(v: SequencingVariant): string {
     const rd = (v.cross_read_conflict?.reads || []).join('、')
     return `已互检排除：${rd || '其他引物'}在可靠区读出设计碱基，判为该 read 测序误差，不计入结论`
   }
+  if (v.confidence === 'low' && v.low_reason) return `低置信：${v.low_reason}${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
   return `高置信${peak ? '：' + peak : ''}`
