@@ -851,6 +851,15 @@ export interface SequencingAnalysis {
     alignment_view?: AlignmentView | null
     grade?: string
     q20_ratio?: number
+    /** read 可信区（原始 read 坐标 raw_start–raw_end；start/end 为修剪后坐标），旧记录缺省 */
+    reliable_zone?: {
+      start: number
+      end: number
+      raw_start: number
+      raw_end: number
+      front_reason?: string
+      tail_reason?: string
+    }
     /** 合并压缩区：该 read 对此段无可分辨证据（峰图条带画灰罩） */
     poly_merged_zones?: {
       base: string
@@ -950,13 +959,16 @@ export async function analyzeSequencingFiles(
   reference: File,
   reads: File[],
   minQ = 20,
-  allowDecompose = true
+  allowDecompose = true,
+  /** read 可信区边界 "30,60,700,900"；空串用后端默认 */
+  reliableZone = ''
 ): Promise<SequencingAnalysis> {
   const form = new FormData()
   form.append('reference', reference, reference.name)
   reads.forEach((f) => form.append('reads', f))
   form.append('min_q', String(minQ))
   form.append('allow_decompose', String(allowDecompose))
+  if (reliableZone) form.append('reliable_zone', reliableZone)
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   const data = response.data as SequencingAnalysis
   // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
@@ -1104,12 +1116,14 @@ export interface SequencingBatchResult {
 export async function analyzeSequencingBatch(
   files: File[],
   excel: File | null,
-  minQ = 20
+  minQ = 20,
+  reliableZone = ''
 ): Promise<SequencingBatchResult> {
   const form = new FormData()
   files.forEach((f) => form.append('files', f))
   if (excel) form.append('excel', excel, excel.name)
   form.append('min_q', String(minQ))
+  if (reliableZone) form.append('reliable_zone', reliableZone)
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
   return rememberBatchTokens(response.data as SequencingBatchResult)
 }
@@ -1151,9 +1165,10 @@ export const batchSessionTransport: ChunkedTransport<SequencingBatchResult> = {
     })
     return response.data
   },
-  async finalize(sessionId, minQ, token) {
+  async finalize(sessionId, minQ, token, reliableZone) {
     const form = new FormData()
     form.append('min_q', String(minQ))
+    if (reliableZone) form.append('reliable_zone', reliableZone)
     // 服务器最多等 60 秒，仍未完成返回 202 转轮询（Cloudflare 源站超时 100 秒）
     const response = await api.post(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}/finalize`, form, {
       timeout: 95000,
