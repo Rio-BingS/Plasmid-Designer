@@ -1629,23 +1629,35 @@ def _build_consensus(reference: str, read_results: List[Dict],
                     obs_q[idx] = q
                 elif idx == L:
                     end_insert_votes[key] = end_insert_votes.get(key, 0.0) + _phred_weight(q)
+        # read 在参考列上调用为 N/IUPAC 的位点：投它自己的调用，而不是默认投参考碱基——
+        # 否则只有 N 覆盖的位点会被参考碱基悄悄填上，拼接结果看起来就是参考序列
+        ambig = _ambiguous_columns(aln, L, circular)
         for pos in range(aln["ref_start"], aln["ref_end"] + 1):
             if circular:
                 pos = fold_pos(pos, L)
             if 1 <= pos <= L:
                 i = pos - 1
-                key = observed.get(i, reference[i].upper())
+                key = observed.get(i) or ambig.get(i) or reference[i].upper()
                 q = obs_q.get(i, base_q.get(i, mean_q))
                 votes[i][key] = votes[i].get(key, 0.0) + _phred_weight(q)
                 voters[i].append(key)
 
     consensus_chars: List[str] = []
+    char_ref: List[int] = []      # 每个共识字符对应的参考位点（插入碱基记插入点右侧位点）
+    char_cov: List[bool] = []     # 该字符是否来自 read 实测（False = 未测位置的参考填充）
     diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
     covered: List[bool] = []
+
+    def _emit(chars, pos: int, cov: bool) -> None:
+        for ch in chars:
+            consensus_chars.append(ch)
+            char_ref.append(pos)
+            char_cov.append(cov)
+
     for pos in range(1, L + 1):
         cell = votes[pos - 1]
         if not cell:
-            consensus_chars.append(reference[pos - 1].upper())
+            _emit(reference[pos - 1].upper(), pos, False)
             covered.append(False)
             continue
         covered.append(True)
@@ -1656,10 +1668,10 @@ def _build_consensus(reference: str, read_results: List[Dict],
         if best_key.startswith("+"):
             alt = best_key[1:]
             cons_index = len(consensus_chars)
-            consensus_chars.extend(list(alt))
+            _emit(alt, pos, True)
             # 插入只新增碱基，紧跟其后的参考碱基必须保留，
             # 否则共识序列会悄悄吞掉插入位点右侧的参考碱基
-            consensus_chars.append(reference[pos - 1].upper())
+            _emit(reference[pos - 1].upper(), pos, True)
             diffs.append({
                 "ref_pos": pos, "ref_base": "-", "cons_base": alt, "cons_index": cons_index,
             })
@@ -1668,7 +1680,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
                 "ref_pos": pos, "ref_base": reference[pos - 1].upper(), "cons_base": "-",
             })
         else:
-            consensus_chars.append(best_key)
+            _emit(best_key, pos, True)
             if best_key != reference[pos - 1].upper():
                 diffs.append({
                     "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
@@ -1679,19 +1691,68 @@ def _build_consensus(reference: str, read_results: List[Dict],
         best_key = max(end_insert_votes.items(), key=lambda kv: kv[1])[0]
         alt = best_key[1:]
         cons_index = len(consensus_chars)
-        consensus_chars.extend(list(alt))
+        _emit(alt, L, True)
         diffs.append({"ref_pos": L, "ref_base": "-", "cons_base": alt, "cons_index": cons_index})
 
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
     )
     coverage = sum(1 for c in covered if c) / L if L else 0.0
+    sequence = "".join(consensus_chars)
+    segments = _read_segments(sequence, char_ref, char_cov)
     return {
-        "sequence": "".join(consensus_chars),
+        "sequence": sequence,
         "covered_ranges": covered_ranges,
         "coverage_percent": round(coverage * 100, 2),
         "diffs": diffs,
+        # 由 read 实测拼接出的连续片段（不含未测位置的参考填充）；
+        # cons_start/cons_end 为 sequence 内 1 起始闭区间，ref_start/ref_end 为参考坐标
+        "segments": segments,
+        "assembled_length": sum(len(g["sequence"]) for g in segments),
     }
+
+
+def _read_segments(sequence: str, char_ref: List[int], char_cov: List[bool]) -> List[Dict]:
+    """把共识序列中 read 实测的字符切成连续片段。
+
+    共识序列为了坐标对齐用参考碱基填充了未测位置；用户要的「拼接结果」是
+    测序结果本身拼出来的序列，因此单独给出实测片段。片段按共识下标切分，
+    有插入/缺失时与参考坐标不再一一对应，下游一律用 cons_start/cons_end 切。"""
+    out: List[Dict] = []
+    i, n = 0, len(sequence)
+    while i < n:
+        if not char_cov[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and char_cov[j + 1]:
+            j += 1
+        out.append({
+            "cons_start": i + 1, "cons_end": j + 1,
+            "ref_start": char_ref[i], "ref_end": char_ref[j],
+            "sequence": sequence[i:j + 1],
+        })
+        i = j + 1
+    return out
+
+
+def _ambiguous_columns(aln: Dict, L: int, circular: bool) -> Dict[int, str]:
+    """read 在参考列上的 N/IUPAC 调用：{0-based 投票下标: 调用字符}"""
+    av = aln.get("aligned") or {}
+    ref_al = av.get("ref_aligned") or ""
+    read_al = av.get("read_aligned") or ""
+    if not ref_al or len(read_al) != len(ref_al):
+        return {}
+    out: Dict[int, str] = {}
+    pos = int(av.get("ref_start") or aln.get("ref_start") or 1)
+    for rc, qc in zip(ref_al, read_al):
+        if rc == "-":
+            continue
+        q = qc.upper()
+        if q not in ("A", "C", "G", "T", "-"):
+            out[(fold_pos(pos, L) - 1) if circular else pos - 1] = q
+        pos += 1
+    return out
 
 
 _ALT_STARTS = ("ATG", "GTG", "TTG", "ATT", "CTG", "ATC", "ATA")  # 细菌起始密码子

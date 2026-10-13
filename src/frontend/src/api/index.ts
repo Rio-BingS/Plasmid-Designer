@@ -812,6 +812,14 @@ export interface SequencingVariant {
   }
 }
 
+export interface ConsensusSegment {
+  cons_start: number
+  cons_end: number
+  ref_start: number
+  ref_end: number
+  sequence: string
+}
+
 export interface SequencingAnalysis {
   analysis_id: string
   sample_name: string
@@ -853,6 +861,10 @@ export interface SequencingAnalysis {
     covered_ranges: [number, number][]
     coverage_percent: number
     diffs?: ConsensusDiff[]
+    /** 由 read 实测拼出的连续片段（不含未测位置的参考填充；旧记录无此字段）。
+     *  cons_start/cons_end 为 sequence 内 1 起始闭区间，ref_start/ref_end 为参考坐标 */
+    segments?: ConsensusSegment[]
+    assembled_length?: number
   }
   coverage_ranges: [number, number][]
   /** 覆盖缺口；环状参考跨原点的缺口 start > end（折回坐标），带

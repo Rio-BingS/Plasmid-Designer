@@ -1051,8 +1051,16 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
     # Content-Disposition 响应头（引号/CR/LF）
     safe_name = re.sub(r"[^A-Za-z0-9._\-一-鿿]+", "_",
                        f"{record['sample_name']}-consensus").strip("._") or "consensus"
-    segs = ([(int(s), int(e)) for s, e in (record.get("coverage_ranges") or [])]
-            if covered_only else [])
+    # 实测片段：新记录带 consensus.segments（共识下标，插入/缺失后仍对得上）；
+    # 旧记录退回参考坐标的 coverage_ranges（无插入缺失时两者一致）
+    read_segs = (record["consensus"].get("segments") or []) if covered_only else []
+    if read_segs:
+        segs = [(int(g["cons_start"]), int(g["cons_end"])) for g in read_segs]
+        ref_spans = [(int(g["ref_start"]), int(g["ref_end"])) for g in read_segs]
+    else:
+        segs = ([(int(s), int(e)) for s, e in (record.get("coverage_ranges") or [])]
+                if covered_only else [])
+        ref_spans = list(segs)
 
     if format.lower() == "genbank":
         # poly run 判读注释（Step B verdict）：确证的重复区写入确认注释，
@@ -1081,8 +1089,10 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
             seq = _mask_uncovered(seq, segs)
             feats = [
                 f"     misc_feature    {s}..{e}\n"
-                f"                     /note=\"实测覆盖区 {s}-{e}（未测位置已按 N 屏蔽）\""
-                for s, e in segs
+                f"                     /note=\"实测覆盖区 {s}-{e}"
+                + ("" if (s, e) == (rs, re_) else f"，参考 {rs}-{re_}")
+                + "（未测位置已按 N 屏蔽）\""
+                for (s, e), (rs, re_) in zip(segs, ref_spans)
             ] + feats
             definition = "Sanger consensus (unverified positions N-masked)"
         lines = [
@@ -1115,9 +1125,9 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
         if segs:
             # 每段连续覆盖区间一条记录——不携带未测的参考填充序列
             records = []
-            for i, (s, e) in enumerate(segs, 1):
+            for i, ((s, e), (rs, re_)) in enumerate(zip(segs, ref_spans), 1):
                 records.append(
-                    f">{safe_name}_verified_{s}-{e} ref_pos={s}-{e}"
+                    f">{safe_name}_verified_{rs}-{re_} ref_pos={rs}-{re_}"
                     f" region={i}/{len(segs)}{flag}\n{seq[s - 1:e]}")
             content = "\n".join(records)
         else:
