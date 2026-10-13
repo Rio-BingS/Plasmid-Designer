@@ -72,7 +72,18 @@ from core.sanger.batch import (
     parse_excel, rows_have_clones,
 )
 from core.sanger.pipeline import analyze, _try_tracy_decompose
+from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
+
+
+def parse_zone_form(text: Optional[str]) -> Optional[ZoneParams]:
+    """表单 reliable_zone（"30,60,700,900"）→ ZoneParams；非法值 422"""
+    if text is None or not str(text).strip():
+        return None
+    try:
+        return ZoneParams.parse(text)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"可信区参数无效：{e}")
 
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
@@ -351,11 +362,13 @@ def _run_full_analysis(
     min_q: int,
     allow_decompose: bool,
     circular: bool = True,
+    zone: Optional[ZoneParams] = None,
 ) -> Dict:
     """同步执行全自动分析（调用方负责移交线程池）
 
     circular：参考是否按环状比对（跨原点 read 整条比对、坐标折回）。"""
-    result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular)
+    result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular,
+                     zone_params=zone)
 
     # 混合样品解卷积（tracy 可用时）：只对 read 级判为「疑似混合样品」
     # （widespread）的 read 执行——个别双峰位点（scattered）多为噪声，
@@ -440,10 +453,11 @@ def _analyze_and_register(
     reference: str, sample_name: str, features: List[Dict],
     ab1_blobs: List[Tuple[str, bytes]], min_q: int, allow_decompose: bool,
     circular: bool, owner_id: Optional[str],
+    zone: Optional[ZoneParams] = None,
 ) -> Tuple[Dict, Optional[str]]:
     """同步：全自动分析 + 登记落库 + 摘要（调用方负责并发闸与线程池）"""
     result = _run_full_analysis(reference, sample_name, features, ab1_blobs,
-                                min_q, allow_decompose, circular)
+                                min_q, allow_decompose, circular, zone)
     _aid, access_token, record = _register_analysis(
         sample_name, reference, features, result, owner_id=owner_id)
     return _summary(record), access_token
@@ -458,6 +472,7 @@ async def _analyze_endpoint(
     allow_decompose: bool,
     user: Optional[User] = None,
     circular: bool = True,
+    zone: Optional[ZoneParams] = None,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
@@ -477,7 +492,7 @@ async def _analyze_endpoint(
         ab1_blobs = await _read_ab1_files(files)
         summary, access_token = await run_in_threadpool(
             _analyze_and_register, reference, sample_name, features, ab1_blobs,
-            min_q, allow_decompose, circular, user.id if user else None)
+            min_q, allow_decompose, circular, user.id if user else None, zone)
     if access_token:
         # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
         summary["access_token"] = access_token
@@ -493,6 +508,7 @@ async def analyze_sequencing_upload(
     reads: List[UploadFile] = File(..., description="一个或多个 .ab1 测序文件"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
+    reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
@@ -501,6 +517,7 @@ async def analyze_sequencing_upload(
     """
     from core.sanger.reference_parser import ReferenceParseError
 
+    zone = parse_zone_form(reliable_zone)
     ref_name = reference.filename or "reference.gb"
     ref_bytes = await _read_limited(reference)
     if not ref_bytes:
@@ -521,7 +538,7 @@ async def analyze_sequencing_upload(
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
                                    allow_decompose, user=user,
-                                   circular=_reference_circular(topology))
+                                   circular=_reference_circular(topology), zone=zone)
 
 
 # 参考拓扑判定与批量归组/逐组分析与离线脚本共用 app.sequencing_batch
@@ -540,7 +557,7 @@ def _run_batch(
     reads: List[Dict], refs: List[Dict], rows: Optional[List[Dict]],
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
     access_token: Optional[str] = None, read_limits: Optional[Dict] = None,
-    max_files=_DEFAULT_MAX_FILES,
+    max_files=_DEFAULT_MAX_FILES, zone: Optional[ZoneParams] = None,
 ) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -571,7 +588,7 @@ def _run_batch(
     _check_batch_compute_budget(estimate_batch_cost(groups, ref_cache))
     items, records_by_id = run_batch_groups(
         groups, min_q, _register, max_ref_bp=MAX_REF_BP, ref_cache=ref_cache,
-        soft_timeout=BATCH_SOFT_TIMEOUT or None)
+        soft_timeout=BATCH_SOFT_TIMEOUT or None, zone=zone)
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
@@ -665,6 +682,7 @@ async def analyze_sequencing_batch(
     files: List[UploadFile] = File(..., description="测序结果文件：.ab1 与参考图谱（.dna/.gb/.fasta 等），可多质粒混在一起"),
     excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果，可含克隆号列）；缺省时按图谱文件名包含关系归组"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
+    reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
@@ -679,6 +697,7 @@ async def analyze_sequencing_batch(
     信息表）缓存 15 分钟，经 GET /sequencing/batches/{batch_id}/report 下载；
     响应 report_ready=False 表示本次体积超上限未打包。
     """
+    zone = parse_zone_form(reliable_zone)
     if not files:
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
     # 文件数上限在读取任何字节之前生效：否则超限请求会把全部文件读进内存
@@ -698,7 +717,8 @@ async def analyze_sequencing_batch(
         return await run_in_threadpool(
             _batch_pipeline, reads, refs, ignored, min_q,
             (excel.filename or "信息表.xlsx") if excel is not None else None,
-            excel_bytes, user.id if user else None, batch_token, read_limits)
+            excel_bytes, user.id if user else None, batch_token, read_limits,
+            zone=zone)
 
 
 async def _read_batch_uploads(files: List[UploadFile], excel: Optional[UploadFile]):
@@ -804,6 +824,7 @@ def _batch_pipeline(
     excel_name: Optional[str], excel_bytes: Optional[bytes],
     owner_id: Optional[str], batch_token: Optional[str],
     read_limits: Optional[Dict] = None, max_files=_DEFAULT_MAX_FILES,
+    zone: Optional[ZoneParams] = None,
 ) -> Dict:
     """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
     excel_pack = None
@@ -815,7 +836,7 @@ def _batch_pipeline(
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
         owner_id=owner_id, access_token=batch_token, read_limits=read_limits,
-        max_files=max_files)
+        max_files=max_files, zone=zone)
     if batch_token:
         payload["access_token"] = batch_token
 
@@ -918,12 +939,14 @@ async def analyze_design_sequencing(
     files: List[UploadFile] = File(..., description="一个或多个 .ab1 文件"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
+    reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对设计结果（构建体序列）做全自动测序验证"""
     from app.routes.design_routes import _ensure_design_access, _load
     from app.routes.models import DesignStatus
 
+    zone = parse_zone_form(reliable_zone)
     result = _ensure_design_access(_load(design_id), user)
 
     if result.status != DesignStatus.COMPLETED:
@@ -934,7 +957,7 @@ async def analyze_design_sequencing(
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,
-        circular=bool(result.construct_sequence),
+        circular=bool(result.construct_sequence), zone=zone,
     )
 
 
@@ -947,9 +970,11 @@ async def analyze_vector_sequencing(
     files: List[UploadFile] = File(...),
     min_q: int = Form(default=20, ge=0, le=60),
     allow_decompose: bool = Form(default=True),
+    reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对载体库中有序列的载体做全自动测序验证"""
+    zone = parse_zone_form(reliable_zone)
     library = get_vector_library()
     vector = library.get_vector(vector_id)
     if not vector:
@@ -963,7 +988,7 @@ async def analyze_vector_sequencing(
     # 载体库条目均为环状质粒
     return await _analyze_endpoint(
         vector.sequence, vector.name, features, files, min_q, allow_decompose, user=user,
-        circular=True,
+        circular=True, zone=zone,
     )
 
 
@@ -1186,6 +1211,10 @@ def _summary(record: Dict) -> Dict:
             "mean_q": r["mean_q"],
             "grade": r.get("grade"),
             "q20_ratio": r.get("q20_ratio"),
+            # read 可信区（位置先验 + Q 值与峰型逐条判定）；旧记录缺省
+            **({"reliable_zone": {k: r["reliable_zone"].get(k) for k in (
+                "start", "end", "raw_start", "raw_end", "front_reason", "tail_reason")}}
+               if r.get("reliable_zone") else {}),
             "direction": r["alignment"]["direction"],
             "ref_start": r["alignment"]["ref_start"],
             # 环状参考跨原点的 read：ref_end 为展开坐标（> reference_length，

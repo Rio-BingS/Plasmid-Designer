@@ -399,3 +399,24 @@ def test_export_consensus_covered_only(client):
         f"/api/sequencing/analyses/{aid}/consensus/export?format=fasta", headers=tok)
     assert "ref_pos=" not in fa_full.text  # 默认全量口径不变
     client.delete(f"/api/sequencing/analyses/{aid}", headers=tok)
+
+
+def test_analyze_reliable_zone_param_applied_and_validated(client):
+    """高级参数 reliable_zone 随表单生效：read 概况返回逐 read 可信区；非法值 422"""
+    import random as _r
+    _r.seed(3)
+    seq = "".join(_r.choice("ACGT") for _ in range(400))
+    ref = ">ref\n" + seq
+    blob = make_ab1(seq[:300], [40] * 300)
+    files = {"reference": ("ref.fasta", ref, "text/plain"),
+             "reads": ("r1.ab1", blob, "application/octet-stream")}
+    r = client.post("/api/sequencing/analyze", files=files,
+                    data={"reliable_zone": "10,20,200,250"})
+    assert r.status_code == 200, r.text
+    z = r.json()["reads"][0]["reliable_zone"]
+    assert (z["raw_start"], z["raw_end"]) == (11, 200)
+    r2 = client.post("/api/sequencing/analyze", files=files)
+    assert r2.json()["reads"][0]["reliable_zone"]["raw_start"] == 31
+    bad = client.post("/api/sequencing/analyze", files=files,
+                      data={"reliable_zone": "60,30,700,900"})
+    assert bad.status_code == 422 and "可信区参数无效" in bad.text

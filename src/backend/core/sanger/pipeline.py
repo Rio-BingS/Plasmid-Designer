@@ -35,6 +35,9 @@ from core.sanger.signal import (
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
     DROPOUT_WINDOW_BASES,
 )
+from core.sanger.reliable_zone import (
+    DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
+)
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
@@ -48,7 +51,9 @@ PULLUP_HEIGHT_FACTOR = 3.0  # 主峰高 ≥ 全 read 峰高中位 × 此倍数�
 PULLUP_MAX_RATIO = 0.5      # 饱和峰位次级峰占比 ≤ 此值且与主峰同期 → 按染料拖影（pull-up）抑制
 MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
 MIN_WINDOW = 50          # 修剪后最短保留长度
-END_MARGIN = 20          # read 首尾不可靠区宽度（信号爬升/下降段）
+# poly 下游骤降判定的 read 末端豁免宽度（END_MARGIN×2）。read 首尾不可信区
+# 已改为逐条 read 判定（reliable_zone：位置先验 + Q 值与峰型），不再固定扣 20bp
+END_MARGIN = 20
 HOMOPOLYMER_MIN = 20     # poly 结构判定：≥20bp 连续同一碱基视为 poly 结构（如 polyA）
 POLY_OBSERVE_MIN = 8     # 观察级：8-19bp 同聚物入报告（不触发结论告警）
 POLY_MIN_UNITS = 4       # 二/三核苷酸重复：≥4 个重复单元入报告
@@ -170,7 +175,7 @@ def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
 
 def _variant_confidence(v: Dict, mixed_positions: set,
                         evidence: Optional[Dict] = None,
-                        read_len: Optional[int] = None) -> str:
+                        zone: Optional[Dict] = None) -> str:
     """变异置信度分级（Mutation Surveyor 评分要素：峰强比 + 信噪比 + Q 值 + 多 read 支持）
 
     - 混合峰信号（次级峰占比 >30%，或峰级突变占比落在 30-70%）→ 低：疑似混合/杂合
@@ -178,8 +183,9 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     - 突变峰占比 ≥80% 且信号强，Q≥40（或多 read 支持 Q≥30）→ 高
     - 无峰证据（indel / trace 缺失）时退回 Q + 支持数口径；indel 假阳性率远高于
       替换（同聚物滑移、错配区比对补偿），单 read 低质量 indel 的门槛为 Q30
-    - read 首尾 END_MARGIN bp 是信号爬升/下降区，basecaller 错误率天然偏高
-      （与修剪阈值无关），落在该区的单 read 差异直接判低，多 read 支持才升级
+    - read 可信区（reliable_zone：首端硬区/灰区判定、尾端灰区与硬区、中段
+      提前衰减）之外 basecaller 错误率天然偏高（与修剪阈值无关），落在该区的
+      单 read 差异直接判低，多 read 支持才升级
     """
     support = v.get("support_reads") or 1
     rp = v.get("read_pos")
@@ -189,8 +195,7 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT" for c in alt_up):
         return "low"
-    if (read_len and rp and support < 2
-            and (rp <= END_MARGIN or rp > read_len - END_MARGIN)):
+    if zone and rp and support < 2 and not in_zone(zone, rp):
         return "low"
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
@@ -252,7 +257,7 @@ def variant_type_text(v: Dict) -> str:
 
 def _low_confidence_reason(v: Dict, mixed_positions: set,
                            evidence: Optional[Dict] = None,
-                           read_len: Optional[int] = None) -> str:
+                           zone: Optional[Dict] = None) -> str:
     """低置信的具体原因（与 _variant_confidence 的判定分支一一对应），
     把"疑似测序噪声"这种笼统说法换成人工核对时能直接对照峰图的错误类型"""
     q = int(v.get("read_q") or 0)
@@ -269,10 +274,8 @@ def _low_confidence_reason(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT-" for c in alt_up):
         return "碱基判读为 N/模糊碱基（basecaller 未能解析）"
-    if (read_len and rp and support < 2
-            and (rp <= END_MARGIN or rp > read_len - END_MARGIN)):
-        end = "首端" if rp <= END_MARGIN else "尾端"
-        return f"位于 read {end} {END_MARGIN}bp 信号{'爬升' if end == '首端' else '衰减'}区"
+    if zone and rp and support < 2 and not in_zone(zone, rp):
+        return zone_reason(zone, rp)
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if rp and rp in mixed_positions and (ins_ratio is None or ins_ratio < 0.6):
         return "该位点双峰（次级峰占比 >30%，疑似混合样品或杂峰）"
@@ -550,7 +553,8 @@ def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
 
 
 def _tracy_mixed_corroboration(entries: List[Dict], peaks: List[int],
-                               tracy_calls: Dict) -> Dict:
+                               tracy_calls: Dict,
+                               zone: Optional[Dict] = None) -> Dict:
     """tracy 次级 basecall 对院内逐位双峰的独立印证（审计 #8）
 
     tracy 与 ABI caller 的碱基序列不一一对应，按峰在 trace 上的采样坐标
@@ -605,9 +609,12 @@ def _tracy_mixed_corroboration(entries: List[Dict], peaks: List[int],
         else:
             e["tracy"] = "disagree"
             out["disagree"] += 1
-    # 院内可判读区间（去首尾 END_MARGIN）内 tracy 独报的双峰
+    # 院内可判读区间（read 可信区）内 tracy 独报的双峰
     n = len(peaks)
-    lo_i, hi_i = END_MARGIN, n - END_MARGIN - 1
+    if zone:
+        lo_i, hi_i = zone["start"] - 1, zone["end"] - 1
+    else:
+        lo_i, hi_i = END_MARGIN, n - END_MARGIN - 1
     if 0 <= lo_i <= hi_i < n and peaks[lo_i] is not None and peaks[hi_i] is not None:
         lo, hi = peaks[lo_i], peaks[hi_i]
         out["tracy_only"] = sum(
@@ -627,7 +634,8 @@ _IUPAC_EXPAND = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "AG", "Y": "CT",
 
 def _classify_mixed(entries: List[Dict], read_len: int,
                     tracy_calls: Optional[Dict] = None,
-                    peaks: Optional[List[int]] = None) -> Dict:
+                    peaks: Optional[List[int]] = None,
+                    zone: Optional[Dict] = None) -> Dict:
     """把逐位双峰聚合成 read 级混合分级（双峰准确性的关键一层）
 
     - widespread（疑似混合样品）：位点数 ≥ MIXED_WIDESPREAD_MIN，或存在
@@ -657,7 +665,7 @@ def _classify_mixed(entries: List[Dict], read_len: int,
         "class": "none",
         # tracy 次级 basecall 的独立印证；tracy 未运行为 None。分级仍按院内口径
         "tracy_corroboration": (
-            _tracy_mixed_corroboration(entries, peaks or [], tracy_calls)
+            _tracy_mixed_corroboration(entries, peaks or [], tracy_calls, zone)
             if tracy_calls is not None else None),
     }
     if not kept:
@@ -1067,15 +1075,15 @@ def _read_ref_maps(r: Dict, fold: bool = True) -> Tuple[Dict[int, int], Dict[int
 
 
 def _cross_region_quality(r2c: Dict[int, Dict], lo: int, hi: int, L: int,
-                          n_trim: int) -> Optional[Dict]:
+                          zone: Optional[Dict]) -> Optional[Dict]:
     """验证 read 在参考区间 [lo-HALF, hi+HALF] 的区域质量。
 
-    区域截掉 read 首尾 END_MARGIN 不可信区与未覆盖列后统计：平均 Q、
+    区域截掉验证 read 可信区之外的部分与未覆盖列后统计：平均 Q、
     最低 Q、≥Q20 占比、列数；核心区（位点 ±CROSS_CORE_HALF）任一列缺失或
     落进不可信区返回 None——位点本身都测不好，谈不上反证。"""
     def call(p: int) -> Optional[Dict]:
         c = r2c.get(fold_pos(p, L) if L else p)
-        if not c or not END_MARGIN < c["read_pos"] <= n_trim - END_MARGIN:
+        if not c or not in_zone(zone, c["read_pos"]):
             return None
         return c
     core: List[int] = []
@@ -1122,8 +1130,8 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
     clonal 样品中真实存在的变异会被每条覆盖该位的 read 独立报出；仅单
     read 报告、而另一条 read 干净跨过同一位点，是滑移/比对补偿伪影的
     高发形态（短同聚物边缘的 1bp 插入尤其常见，poly 机制只覆盖 ≥20bp
-    的 run，更短的 run 落在空白区）。junction 落在 read 首/尾 END_MARGIN
-    区或 Q 过低时，"未报"不构成反证；该 read 自己在此区域报了其他 indel
+    的 run，更短的 run 落在空白区）。junction 落在验证 read 可信区之外
+    或 Q 过低时，"未报"不构成反证；该 read 自己在此区域报了其他 indel
     时既不算支持也不算干净（它反对这个 call，但同样不支持参考序列）。
     """
     anchor = int(v["ref_pos"])
@@ -1152,12 +1160,12 @@ def _clean_cover_reads(v: Dict, read_results: List[Dict],
         if any(win[0] - CROSS_CLEAN_HALF <= k[0] <= win[1] + CROSS_CLEAN_HALF
                for k in keys_by_read.get(fname, ())):
             continue
-        n_trim = by_name[fname].get("trimmed_length") or 0
+        vzone = by_name[fname].get("reliable_zone")
         for a, b in junctions:
             c0, c1 = r2c.get(a), r2c.get(b)
             if not c0 or not c1 or abs(c0["read_pos"] - c1["read_pos"]) != 1:
                 continue
-            rq = _cross_region_quality(r2c, min(win), max(win), L, n_trim)
+            rq = _cross_region_quality(r2c, min(win), max(win), L, vzone)
             if not _region_ok(rq):
                 if rq is not None and weak is not None:
                     weak.append({"read": fname, **rq})
@@ -1178,8 +1186,8 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
 
     与 indel 反证同口径：克隆样品中真实的替换会被每条覆盖该位的 read
     独立读出；另一条引物在信号可靠区干净地读出参考碱基，说明这处差异
-    是源 read 自己的判读误差。该 read 在此位点报了其他差异、落在首尾
-    END_MARGIN 区、Q 不足或本身双峰时不构成反证。"""
+    是源 read 自己的判读误差。该 read 在此位点报了其他差异、落在其
+    可信区之外、Q 不足或本身双峰时不构成反证。"""
     pos0 = int(v["ref_pos"])
     ref_b = (v.get("ref_base") or "").upper()
     if not ref_b or any(c not in "ACGT" for c in ref_b):
@@ -1198,7 +1206,7 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
         if any(lo - CROSS_CLEAN_HALF <= k[0] <= hi + CROSS_CLEAN_HALF
                for k in keys_by_read.get(fname, ())):
             continue
-        n_trim = by_name[fname].get("trimmed_length") or 0
+        vzone = by_name[fname].get("reliable_zone")
         mixed = mixed_by_read.get(fname, set())
         ok = True
         for p, rb in zip(positions, ref_b):
@@ -1209,7 +1217,7 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
                 break
         if not ok:
             continue
-        rq = _cross_region_quality(r2c, lo, hi, L, n_trim)
+        rq = _cross_region_quality(r2c, lo, hi, L, vzone)
         if not _region_ok(rq) and rq is not None and weak is not None:
             weak.append({"read": fname, **rq})
         if _region_ok(rq):
@@ -1396,7 +1404,7 @@ def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
     pos 为 1-based 原始 read 碱基序号（路标在 poly run 外侧紧邻处）。风险
     逐项检查（用户点出的关键：锚可靠性「借自」路标碱基质量，路标本身落在
     信号异常区时整段定位悄悄出错）：
-    - read 首尾 END_MARGIN bp 信号爬升/下降区 → 边缘
+    - read 可信区之外（首尾信号爬升/衰减区）→ 边缘
     - QV 修剪边界外（basecaller 低置信）→ 边缘
     - 路标落在另一 poly/重复结构内部（撞上第三种歧义）→ 边缘
     - poly 下游 DROPOUT_WINDOW_BASES 窗内且骤降未恢复 → 不可靠
@@ -1411,8 +1419,8 @@ def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:
     trim_start = r.get("trim_start") or 0
     n_trim = len(r["trimmed_bases"])
     ti = off - trim_start              # 0-based 修剪后坐标（与 mixed/dropout 同系）
-    if off <= END_MARGIN or off > len(r.get("raw_bases") or "") - END_MARGIN:
-        marginal.append("read 边缘信号爬升/下降区")
+    if r.get("reliable_zone") and not in_zone(r["reliable_zone"], ti + 1):
+        marginal.append("read 可信区之外（首尾信号爬升/衰减区）")
     if ti < 0 or ti >= n_trim:
         marginal.append("QV 修剪边界外")
     if any(e["pos"] == pos for e in r.get("mixed_detail") or []):
@@ -2479,6 +2487,7 @@ def analyze(
     signal_correct: bool = True,
     poly_local_ratio: bool = True,
     circular: bool = False,
+    zone_params: Optional[ZoneParams] = None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2492,8 +2501,11 @@ def analyze(
     显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
     poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
     中位数——信号沿 read 衰减时后段正常 poly 会被误判压缩）。
+    zone_params: read 可信区边界（首端硬区/灰区、尾端灰区/硬区，read 坐标 bp），
+    缺省 30/60/700/900，见 reliable_zone。
     """
     features = features or []
+    zone_params = zone_params or DEFAULT_ZONE
     ref = reference.upper().replace("U", "T")
     if not ref:
         raise ValueError("参考序列为空，无法进行比对分析")
@@ -2610,7 +2622,20 @@ def analyze(
             "cross_variants": cross_variants if used_tracy else None,
             "tracy_calls": tracy_calls,
             "partial_alignment": partial,
+            # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
+            "reliable_zone": compute_reliable_zone(
+                len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
         })
+
+    # 可信区折算到参考坐标（展开坐标，与 alignment.ref_start/ref_end 同系）：
+    # 报告「read 概况」按参考坐标列出每条 read 的不可信区段
+    for r in read_results:
+        zone = r.get("reliable_zone")
+        if not zone:
+            continue
+        r2ref, _ = _read_ref_maps(r, fold=False)
+        inside = [rf for rp, rf in r2ref.items() if in_zone(zone, rp)]
+        zone["ref_trusted"] = [min(inside), max(inside)] if inside else None
 
     # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
     all_variants: List[Dict] = []
@@ -2718,10 +2743,10 @@ def analyze(
             e for e in _detect_mixed_detail(
                 r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
             if e["pos"] not in slip
-            # read 首尾 END_MARGIN bp 是信号爬升/下降区，次级峰不可信——
-            # 与变体置信度同一条边界（末端差异本就需多 read 支持才升级），
+            # read 可信区之外是信号爬升/衰减区，次级峰不可信——
+            # 与变体置信度同一条边界（区外差异本就需多 read 支持才升级），
             # 否则末端拖尾会凭空触发"连续双峰段"误报
-            and END_MARGIN < e["pos"] <= n_trim - END_MARGIN
+            and in_zone(r.get("reliable_zone"), e["pos"])
             # Step A 抑制：合并压缩的 run 窗内次级峰结构不可分辨，
             # 强行判读会把压缩段切成一串伪双峰（反向压缩山丘难例）
             and e["pos"] not in merged_span
@@ -2742,7 +2767,8 @@ def analyze(
             e["called_base"] = r["trimmed_bases"][i] if i < n_trim else None
         r["mixed_profile"] = _classify_mixed(
             mixed_detail, len(r["trimmed_bases"]),
-            tracy_calls=r.get("tracy_calls"), peaks=r["trimmed_peaks"])
+            tracy_calls=r.get("tracy_calls"), peaks=r["trimmed_peaks"],
+            zone=r.get("reliable_zone"))
         if r.get("tracy_calls") is not None:
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
             for d in r["mixed_detail"]:
@@ -2837,7 +2863,7 @@ def analyze(
                 }
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
-            read_len=src["trimmed_length"] if src is not None else None,
+            zone=src.get("reliable_zone") if src is not None else None,
         )
         # 互检定案：单 read 差异被其他引物在可靠区干净读出参考碱基——
         # 判为源 read 的测序误差，直接排除，不再作为"不确定"写进结论。
@@ -2870,7 +2896,7 @@ def analyze(
         if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
             v["low_reason"] = _low_confidence_reason(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
-                read_len=src["trimmed_length"] if src is not None else None)
+                zone=src.get("reliable_zone") if src is not None else None)
             wk = (v.get("cross_read_weak") or [None])[0]
             if wk:
                 v["low_reason"] += (
@@ -3285,7 +3311,8 @@ def analyze(
         note = _mixed_check_phrase(chk) if crossable else ""
         base = (f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
                 f"{_pos_ranges_str(p['positions'])}"
-                f"（read 坐标；首尾 {END_MARGIN}bp 信号爬升/下降区未计入）")
+                f"（read 坐标；可信区 {r['reliable_zone']['start']}–"
+                f"{r['reliable_zone']['end']} 以外未计入）")
         mixed_lines.append(base + (f"；{note}" if note else ""))
     scat = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "scattered"]
@@ -3338,15 +3365,21 @@ def analyze(
         if parts:
             mixed_lines.append("  ↳ 双峰位点跨引物互检：" + "；".join(parts))
 
-    # read 末端不可信区显式提示：首尾 END_MARGIN bp 是信号爬升/下降段，
-    # 该区差异仅低置信处理还不够——用户常把 read 首尾当可靠证据核对
-    # 精简为一句：互检已自动执行并定案，不再给用户布置"自己去看另一条
-    # 引物"的核对作业（此前一大段，把确定的结论淹没在提示里）
+    # read 可信区显式提示：逐条 read 按位置先验 + Q 值与峰型判定，区外差异
+    # 按低置信处理；有其他引物覆盖的位点已自动互检定案，不再给用户布置
+    # "自己去看另一条引物"的核对作业。逐 read 可信区写成 ↳ 详情行
+    zp = ((read_results[0].get("reliable_zone") or {}).get("params")
+          if read_results else None) or DEFAULT_ZONE.as_dict()
     end_note = (
-        f"注意：read 首尾约 {END_MARGIN}bp 为信号爬升/下降区，该区差异按低置信处理"
+        f"注意：read 首 {zp['front_hard']}bp 与 {zp['tail_gray']}bp 之后为不可信区"
+        f"（{zp['front_hard'] + 1}–{zp['front_gray']}bp 按 Q 值与峰型逐条判定，"
+        f"{zp['tail_hard']}bp 之后一律不可信），该区差异按低置信处理"
         f"{'，有其他引物覆盖的位点已自动互检' if len(read_results) >= 2 else ''}"
-        f"（各 read 不可信区见报告「read 概况」表）"
     )
+    zone_rows = [f"  ↳ {r['filename']}：{zone_text(r['reliable_zone'])}"
+                 for r in read_results if r.get("reliable_zone")]
+    if zone_rows:
+        end_note = "\n".join([end_note] + zone_rows)
 
     # 互检定案一句话：多引物交叉验证已给出确定答案，不再逐条罗列为
     # "低置信/待核对"（逐条明细仍在变体表，标注为互检排除）

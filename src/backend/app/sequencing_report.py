@@ -353,15 +353,34 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             # 跨原点的区段拆成两段（线性即原样「s–e」）
             def span(x: int, y: int) -> str:
                 return alignment_span_text({**a, "ref_start": x, "ref_end": y})
-            if e - s + 1 <= 2 * END_MARGIN:
+            zone = r.get("reliable_zone")
+            if zone is not None and "ref_trusted" in zone:
+                # 逐条 read 判定的可信区（位置先验 + Q 值与峰型）折算到参考坐标
+                t = zone["ref_trusted"]
+                if not t:
+                    zones = f"{span(s, e)}（整段）"
+                else:
+                    parts = [span(x, y) for x, y in ((s, t[0] - 1), (t[1] + 1, e)) if x <= y]
+                    zones = "、".join(parts) if parts else "无"
+            elif e - s + 1 <= 2 * END_MARGIN:
+                # 旧记录（无逐 read 可信区）：沿用首尾各 END_MARGIN bp 口径
                 zones = f"{span(s, e)}（整段）"
             else:
                 zones = f"{span(s, s + END_MARGIN - 1)}、{span(e - END_MARGIN + 1, e)}"
             lines.append(_md_row(r['filename'], r['grade'], r['mean_q'],
                                  r['trimmed_length'], alignment_span_text(a), zones))
-        lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
-                  "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
-                  "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
+        zp = next((r["reliable_zone"]["params"] for r in record["reads"]
+                   if (r.get("reliable_zone") or {}).get("params")), None)
+        if zp:
+            lines += ["", f"末端不可信区 = 每条 read 首 {zp['front_hard']}bp、"
+                      f"{zp['tail_gray']}bp 之后，以及 {zp['front_hard'] + 1}–{zp['front_gray']}bp "
+                      "中按 Q 值与峰型判定为信号未稳定、或中段提前衰减的部分（折算为参考坐标）；"
+                      "该区间碱基判读可信度低，其中的差异已按低置信处理，"
+                      "有其他引物覆盖时已自动互检。", ""]
+        else:
+            lines += ["", f"末端不可信区 = 每条 read 首尾约 {END_MARGIN}bp 的信号爬升/下降段"
+                      "（折算为参考坐标，与覆盖方向无关）；该区间碱基判读可信度低，"
+                      "其中的差异已按低置信处理，如需确认末端请换引物从对侧覆盖。", ""]
     if regular_variants:
         lines += ["## 变异明细", "",
                   "| 位置 | 类型 | 变化 | 置信度 | 测序Q | 支持read数 | 峰级证据 | 所在特征 | 氨基酸变化 |",
