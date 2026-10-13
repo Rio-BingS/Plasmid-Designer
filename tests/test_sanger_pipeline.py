@@ -42,6 +42,12 @@ def reference() -> str:
     return "".join(random.choice("ACGT") for _ in range(2000))
 
 
+def _flat_zone(n: int):
+    """全 Q40、无 trace 的 read 的可信区（默认 30/60/700/900 参数）"""
+    from core.sanger.reliable_zone import compute_reliable_zone
+    return compute_reliable_zone(n, 0, [40] * n)
+
+
 def test_find_homopolymers():
     runs = find_homopolymers("AAAAACGTTTTTTACGT", 5)
     assert runs == [
@@ -101,11 +107,11 @@ def test_poly_indel_compression_caps_confidence():
     v = {"ref_pos": 10, "type": "deletion", "length": 1, "read_q": 40,
          "support_reads": 1,
          "homopolymer": {"base": "A", "peak_amplitude_ratio": 0.3}}
-    assert _variant_confidence(v, set(), None, read_len=800) == "medium"
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "medium"
     v["homopolymer"]["peak_amplitude_ratio"] = 0.9
-    assert _variant_confidence(v, set(), None, read_len=800) == "high"
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "high"
     v["read_q"] = 15
-    assert _variant_confidence(v, set(), None, read_len=800) == "low"
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "low"
 
 
 def test_homopolymer_poly_count_and_conclusion():
@@ -653,8 +659,9 @@ def test_cds_report_identical(reference):
 def test_cds_report_frameshift(reference):
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
-    seg = ref[40:190]
-    mutated = seg[:29] + seg[30:]  # 删 CDS 内 1bp（ref pos 70）→ 移码
+    # 缺失放在 read 第 40 位：read 首 30bp 为硬不可信区
+    seg = ref[30:190]
+    mutated = seg[:39] + seg[40:]  # 删 CDS 内 1bp（ref pos 70）→ 移码
     result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is False
@@ -1812,7 +1819,7 @@ def test_mixed_sample_widespread_end_to_end():
     # 逐 read 位点范围子行（前端默认折叠）：给具体范围供核对首尾；
     # 孤立位点超过 6 段时截断并注明总段数
     assert ("↳ m.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段"
-            "（read 坐标；首尾 20bp 信号爬升/下降区未计入）") in result["conclusion"]
+            "（read 坐标；可信区 31–600 以外未计入）") in result["conclusion"]
     assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
     # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
     from core.sanger.batch import excel_conclusion
@@ -1990,16 +1997,16 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     comp = str.maketrans("ACGT", "TGCA")
     read_bases = junk_head + ref[149:500].translate(comp)[::-1]
     sec_of = lambda i: "A" if read_bases[i] != "A" else "G"
-    mix = {29: sec_of(29), 139: sec_of(139)}   # pos30 悬空→外推571；pos140 块内→461
+    mix = {39: sec_of(39), 139: sec_of(139)}   # pos40 悬空→外推561；pos140 块内→461（首 30bp 硬不可信）
     result = analyze([("rev.ab1", _mixed_ab1(read_bases, mix)),
                       ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [])
     chk = result["mixed_corroboration"]["by_read"]["rev.ab1"]
     assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
     assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
-    assert chk["uncovered_ref"] == [571]   # 悬空位点外推到邻居覆盖之外
+    assert chk["uncovered_ref"] == [561]   # 悬空位点外推到邻居覆盖之外
     # 待核短语带参考位置，用户可直接对照图谱核对"这个位置真的没人测过吗"
-    assert "无其他引物覆盖待核（参考位置 571）" in result["conclusion"]
-    assert "无法互检（参考位置 571）" in result["conclusion"]
+    assert "无其他引物覆盖待核（参考位置 561）" in result["conclusion"]
+    assert "无法互检（参考位置 561）" in result["conclusion"]
 
 
 def test_mixed_multi_read_aggregated_conclusion():
@@ -2046,19 +2053,17 @@ def test_mixed_multi_read_aggregated_conclusion():
 
 
 def test_mixed_end_margin_positions_ignored():
-    """read 首尾 END_MARGIN bp 的次级峰是信号爬升/下降噪声：不进双峰分级，
-    否则末端拖尾会凭空触发"疑似混合/连续双峰段"（与变体置信度同一条边界）"""
+    """read 可信区之外的次级峰是信号爬升/衰减噪声：不进双峰分级，否则末端
+    拖尾会凭空触发"疑似混合/连续双峰段"（与变体置信度同一条边界）——
+    首 30bp 硬不可信区与 700bp 之后的尾端区都不计"""
     random.seed(7)
-    ref = "".join(random.choice("ACGT") for _ in range(600))
-    sites = {10: _ALT_OF[ref[10]], 590: _ALT_OF[ref[590]],
-             80: _ALT_OF[ref[80]], 130: _ALT_OF[ref[130]],
-             200: _ALT_OF[ref[200]], 260: _ALT_OF[ref[260]],
-             330: _ALT_OF[ref[330]]}
+    ref = "".join(random.choice("ACGT") for _ in range(800))
+    sites = {p: _ALT_OF[ref[p]] for p in (10, 25, 80, 130, 200, 260, 330, 750)}
     result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
     prof = result["mixed_profiles"]["m.ab1"]
     assert prof["count"] == 5
     assert prof["positions"] == [81, 131, 201, 261, 331]
-    # 逐 read 范围子行同样只含可信区位点（末端 11/591 两处不出现）
+    # 逐 read 范围子行同样只含可信区位点（11/26/751 不出现）
     assert "↳ m.ab1：双峰 5 处，位于 read 81、131、201、261、331" in result["conclusion"]
 
 
@@ -2066,10 +2071,10 @@ def test_n_call_variants_always_low_confidence():
     """N/模糊调用恒低置信：basecaller 拿不准才给 N，Q 再高也不是"与参考不同"的证据"""
     v = {"ref_pos": 100, "type": "substitution", "ref_base": "A", "alt_base": "N",
          "read_q": 50, "support_reads": 1}
-    assert _variant_confidence(v, set(), None, read_len=800) == "low"
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "low"
     v2 = {"ref_pos": 100, "type": "insertion", "ref_base": "-", "alt_base": "AN",
           "read_q": 50, "support_reads": 2}
-    assert _variant_confidence(v2, set(), None, read_len=800) == "low"
+    assert _variant_confidence(v2, set(), None, zone=_flat_zone(800)) == "low"
 
 
 def test_poly_variant_and_peak_conflict_single_conclusion_line():
@@ -2428,7 +2433,7 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     """用户反馈 #4：不同引物交叉验证无问题时应给出确定答案——单 read 低 Q
     替换、另一条引物在可靠区读出设计碱基 → 互检排除，结论不再罗列为低置信"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
-    seg = ref[50:150]
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
     i = 70                                   # ref 121
     fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
     q = [40] * len(fwd)
@@ -2750,7 +2755,7 @@ def test_cross_check_requires_high_region_quality_not_single_base():
     验证 read 在该位点 ±2bp Q40、但 ±25bp 区域信号塌陷（Q15）→ 不足以互检，
     差异保留为低置信，并写清具体原因与验证 read 的区域质量"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
-    seg = ref[50:150]
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
     i = 70                                   # ref 121
     fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
     q = [40] * len(fwd)
@@ -2778,7 +2783,7 @@ def test_cross_check_requires_high_region_quality_not_single_base():
 def test_resolved_lines_spell_out_error_type_and_verifier_quality():
     """互检排除明细逐条写清错误类型（替换 X>Y / 插入 / 缺失）与验证 read 的区域质量"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
-    seg = ref[50:150]
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
     i = 70
     alt = "A" if seg[i] != "A" else "C"
     fwd = seg[:i] + alt + seg[i + 1:]
@@ -2797,7 +2802,7 @@ def test_resolved_lines_spell_out_error_type_and_verifier_quality():
 def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
     """窗口放宽到 ±25bp 后，验证 read 区域里个别低 Q 碱基不该一票否决"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
-    seg = ref[50:150]
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
     i = 70
     fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
     q = [40] * len(fwd)
@@ -2820,12 +2825,12 @@ def test_low_confidence_reason_names_concrete_error_type():
     assert variant_type_text({"type": "deletion", "ref_base": "AT", "length": 2}) == "缺失 2bp（AT）"
     base = {"type": "substitution", "ref_base": "C", "read_q": 30, "read_pos": 100}
     assert "N/模糊" in _low_confidence_reason({**base, "alt_base": "N"}, set())
-    assert "首端" in _low_confidence_reason({**base, "alt_base": "A", "read_pos": 5}, set(), read_len=500)
-    assert "双峰" in _low_confidence_reason({**base, "alt_base": "A"}, {100}, read_len=500)
+    assert "首端" in _low_confidence_reason({**base, "alt_base": "A", "read_pos": 5}, set(), zone=_flat_zone(500))
+    assert "双峰" in _low_confidence_reason({**base, "alt_base": "A"}, {100}, zone=_flat_zone(500))
     assert "占比 50" in _low_confidence_reason(
-        {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, read_len=500)
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, zone=_flat_zone(500))
     assert "信噪比" in _low_confidence_reason(
-        {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, read_len=500)
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, zone=_flat_zone(500))
 
 
 def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
@@ -2848,3 +2853,19 @@ def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
     assert "质量不足以互检" in ins[0]["low_reason"]
     cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
     assert "不一致" not in cds["verdict"] and "插入 1bp" in cds["verdict"]
+
+
+def test_tail_gray_zone_single_read_variant_low_with_reason():
+    """尾端灰区 701–900bp 默认不可信：单 read 差异即使 Q40 也按低置信，原因写明"""
+    random.seed(21)
+    ref = "".join(random.choice("ACGT") for _ in range(1200))
+    seg = list(ref[:1000])
+    for i in (399, 749, 949):                  # read 400 / 750 / 950
+        seg[i] = "A" if seg[i] != "A" else "C"
+    result = analyze([("long.ab1", make_ab1("".join(seg), [40] * 1000))], ref, [])
+    by_pos = {v["ref_pos"]: v for v in result["variants"] if v["type"] == "substitution"}
+    assert by_pos[400]["confidence"] != "low"
+    assert by_pos[750]["confidence"] == "low"
+    assert "尾端灰区 701–900bp" in by_pos[750]["low_reason"]
+    assert "900bp 之后" in by_pos[950]["low_reason"]
+    assert "↳ long.ab1：可信区 31–700bp" in result["conclusion"]
