@@ -1,0 +1,162 @@
+# 交接文档
+
+> **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
+> **更新**：2026-10-17（HEAD `792e83d`，与标签 `v2.16.0` 无代码差异，仅多一个合并提交）。
+>
+> 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
+> [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
+> 约束、挂账与历次审计索引看 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)；
+> 逐版本变化看 [CHANGELOG.md](../CHANGELOG.md)；图谱契约看 [MAP.md](MAP.md)。
+> 下面凡与这些文档冲突处，以代码与实测为准，并顺手修正对应文档。
+
+## 1. 一句话现状
+
+单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.16.0**，
+功能完整可用、有持续的真实数据回归；本机全量测试 **1477 passed / 39 skipped /
+5 failed**（5 项失败都已定性，见 §7，没有「原因不明」的红灯）。
+
+## 2. 事实清单（2026-10-17 本机实测，可直接引用）
+
+| 项 | 值 |
+|---|---|
+| 版本 / 标签 | `v2.16.0`；HEAD `792e83d`（PR #18 合并提交，`git diff v2.16.0 HEAD` 为空） |
+| 后端测试 | **1477 passed / 39 skipped / 5 failed**（Windows 本机；CI 上 2 项真实数据回归被 skip） |
+| 前端测试 | **67 个文件 / 531 passed**；`vue-tsc --noEmit` **0 error** |
+| 运行时 | Python 3.12.5（仓库根 `.venv`）+ Node ≥ 22.12；FastAPI + Vue3/Vite |
+| 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
+| 业务数据 | `data/vectors/`（9 份内置载体 YAML，带 `data_provenance`）、`data/codon_tables/`（4 物种）、`data/features/`（图谱元件库） |
+| 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 回归会跑） |
+| 部署模板 | `deploy/docker`（Compose + nginx）、`deploy/bare`（Ubuntu systemd + nginx）；`deploy/scripts/`（deploy.sh / Makefile） |
+| 线上部署 | 仓库里**没有**主机名/凭据。按 KNOWN_ISSUES「部署备忘」与 v2.15.0 的 Cloudflare 修复推断：1 核 2G VPS、裸机 systemd、前端 `dist/` 本地构建后上传、Cloudflare 前置——**接手须向所有者确认**，不要猜着连 |
+
+## 3. v2.12 之后发生了什么（近一周主线）
+
+| 版本 | 主题 | 关键点 |
+|---|---|---|
+| v2.13.0 | v2.12.0 审查修复 + 能力增强 | 在线来源 Cookie/重定向加固、`SNAPGENE_ONLINE_ENABLED` 独立开关、落盘撞车 409、图谱缓存与限额变量、前端路由级拆包（主包 481→192 kB）、图谱酶详情「修饰依赖型」 |
+| v2.14.0 / 2.14.1 | SnapGene 集合选择体验 | 集合改成可输入组合框；开关**改回默认开启**（仍仅登录可用、落库管理员） |
+| v2.15.0 | 跨集合按质粒名搜索 | `PLASMID_NAME` 跨 19 个集合检索（首查 ~20 s，之后 1 小时缓存）；未知集合名不再打成 502，Cloudflare 520–527 统一中文提示 |
+| v2.15.1 | 测序结论与图谱显示修复 | 结论写清差异类型、互检改看 ±25 bp 区域质量、单 read 差异可判为测序误差直接排除、拼接结果只显示实测片段（参考填充灰显）、环形图谱放大不再被裁 |
+| v2.16.0 | read 首尾可信区逐条判定 | 首 30 bp 恒不可信、31–60 bp 按 Q 值/峰型判定、700 bp 后默认不可信（701–900 灰区）；「高级参数」可调四个边界（`reliable_zone`），read 概况表新增「可信区」列 |
+
+主线规律：**v2.13 之后的工作几乎全是「真实数据驱动的精修」**——测序结论口径、
+图谱边界、SnapGene 用户操作体验。新增功能少，改行为多，因此**每次动口径都要同时
+处理缓存版本与回归断言**（这正是当前 2 项红灯的来源，见 §7）。
+
+## 4. 代码从哪看起（按任务选入口）
+
+1. **设计流水线**：`app/design_service.py`（单条与批量共用；密码子优化 → 引物/oligo → 组装 → 存储）
+2. **密码子与引物算法**：`core/codon_optimizer.py`、`core/primer_designer.py`（口径与暂缓项见 `docs/ALGORITHM_ROADMAP.md`）
+3. **质粒图谱**：后端 `core/plasmid_map/` + `app/routes/map_routes.py`，前端 `src/map/`（契约 `plasmid-map/1`，见 `docs/MAP.md`）
+4. **Sanger 测序**：`core/sanger/`（`pipeline` 主流程、`aligner` 双向判向与环状折回、`annotator`、`batch` 归组与结论），网页端点与离线脚本共用
+5. **载体库与外部导入**：`core/vector_library.py` + `app/vector_import.py`（落盘形状唯一入口）+ `app/online_import.py`（来源清单/许可/缓存）+ 两个路由模块（载体库侧、图谱侧）
+6. **横切**：`app/gating.py`（功能开关）、`app/rate_limit.py`（按「方法 + 路由模板」分档）、`app/cache.py`（内存/Redis 自动降级）、`app/auth/`（httpOnly Cookie + CSRF）
+
+## 5. 怎么跑 / 怎么验 / 怎么发
+
+```bash
+# 后端（仓库根 .venv；改 app/core 代码必须重启，未开 --reload）
+# 需先在 src/backend/.env 或环境变量里设置 SECRET_KEY（openssl rand -hex 32），否则拒绝启动
+cd src/backend && ../../.venv/Scripts/python -m uvicorn app.main:app --port 8000
+
+# 测试
+cd tests && ../.venv/Scripts/python -m pytest -q        # 后端
+cd src/frontend && npx vitest run && npx vue-tsc --noEmit   # 前端
+
+# 冒烟（需后端在跑；20 项，覆盖注册/登录/设计/图谱/测序主链路）
+powershell -ExecutionPolicy Bypass -File smoke_test.ps1
+
+# 联网冒烟（默认不跑；真打 SnapGene/Ensembl/UniProt/Addgene，只读不写）
+.venv/Scripts/python scripts/smoke_online_sources.py --run
+```
+
+**发布**（用户明确说「发版」才做）：改 `src/backend/core/_version.py` + 前端
+`package.json` / `package-lock.json` → 补 `CHANGELOG.md` 的 `[x.y.z]` 与链接引用 →
+`git commit -m "chore: 发布 vX.Y.Z"` → `git tag -a vX.Y.Z -F <说明>` →
+`git push --follow-tags`。`tests/test_version_sync.py` 会校验三处版本号一致。
+
+## 6. 一碰就容易出事的约束（Top 8）
+
+1. **改结果口径必须递增缓存版本**：`ANALYSIS_ENZYMES_VERSION`（酶表/分析）与
+   `MAP_ALGO_VERSION`（图谱），否则用户命中旧缓存、以为改动没生效。
+2. **载体 YAML 契约**：`features[]` 必须带 `name`；出处写结构化 `data_provenance`
+   （描述里那句可读标注不算）；拓扑按真实值落 `topology`；落盘撞车返回 409、同 ID
+   重导入才覆盖并标 `replaced`。形状统一由 `app/vector_import.py` 决定。
+3. **外部数据源的合规边界**：SnapGene 的证据链与「已接受风险」决策（含
+   `SNAPGENE_ONLINE_ENABLED` 默认 true、只读须登录、落库须管理员）、Addgene 凭据
+   （仅单用户自托管、仅 https 发往 addgene.org、禁自动重定向、仅管理员可触发取序列）
+   都写在 KNOWN_ISSUES「已接受风险 / 防回潮约束」。**不要为了"顺手"改成匿名或批量**。
+4. **部署三件事**：前端必须本地 `npm run build` 后整目录替换 `dist/`（VPS 上构建会
+   OOM）；`deploy/*/nginx.conf` 有更新（v2.13 新增 `location ^~ /api/map/`，17 MB
+   上限）；新增的后端变量要同步 `docker-compose.yml` 透传，否则 `.env` 里改了不生效。
+5. **测试隔离**：`tests/test_config_cors.py` 会 `reload(app.config)` —— 打桩配置要
+   同时打 `app.config.settings` 与 `app.design_service.settings`，并清
+   `cache.backend.clear_pattern("vector:*")`；改 `site_settings` 必须用真实
+   `app.database.SessionLocal` 并在结束时恢复。
+6. **测序口径不可随手改**：`END_MARGIN`/可靠区边界、次要克隆 = r/(1+r)、共识只取
+   实测覆盖区、单 read indel 降级、MX 批次「疑似混合样品」是真实判定。改口径必须
+   同时更新 `tests/test_real_data_regression.py` 的断言并递增算法版本。
+7. **匿名测序记录的 `access_token` 契约**：创建响应下发、前端 sessionStorage 带头、
+   列表永不返回匿名 ID、遗留无 token 记录仅管理员可见。不要改回公开。
+8. **前端 API 层即契约**：任何后端字段/路径变化都要同步 `src/frontend/src/api/index.ts`
+   （以及 `src/map/api.ts`），否则表现为「点了没反应」。
+
+## 7. 现在红的 5 项测试（逐项定性，不要当成「反正环境问题」）
+
+**(a) 3 项 Windows 环境性失败**（Linux CI 绿；单独跑同样红）
+
+| 测试 | 现象 | 根因 |
+|---|---|---|
+| `test_batch_report_disk_store::test_report_written_to_private_dir_and_not_kept_in_memory` | `S_IMODE == 0o700` 实际 `511 (0o777)` | Windows 不表达 POSIX 读位，`chmod` 清不掉 |
+| `test_sequencing_upload_sessions::test_private_permissions_and_sequence_disk_names` | 同上 | 同上 |
+| `test_session_finalize_lazy_read::test_later_group_files_not_read_while_first_group_aligns` | `IndexError: list index out of range` | 断言「第一组还在比对」是抢时序；本机第一组先跑完 |
+
+建议修法（用户尚未批准，随时可做）：前两项在 `os.name == "nt"` 时跳过 POSIX 模式位
+断言（Linux 覆盖不减）；第三项用 `threading.Event` 卡住第一组，让「仍在跑」成为确定
+条件而不是抢时序。
+
+**(b) 2 项真实数据回归**（本机有 ab1 数据才跑；CI skip）
+
+| 测试 | 旧断言 | 现状 |
+|---|---|---|
+| `test_real_analysis_mixed_baseline_and_corroboration` | 混合样品双峰位点 `>= 5` | 实际 4 处（`61,62,65,66`） |
+| `test_real_analysis_cross_read_conflicts_and_cds_verdict` | 结论含「互检矛盾」 | 结论改为「疑似混合样品…2 条 read 均疑似混合样品」，不再出现该词 |
+
+两者都落在 v2.15.1 / v2.16.0 主动改过口径的地方（可信区边界上移到 30/60 bp →
+5' 端双峰少判一处；互检改为「被其他 read 在可靠区读出设计碱基就直接排除」→ 不再叫
+互检矛盾）。**判断步骤**：拿 `sequencing results/测序.xlsx` 的交付信息表按位核对这 4 处
+双峰与 2 处差异 → 若新行为与真实峰图一致，按 CHANGELOG 的新口径**更新断言**（并保留
+「疑似混合样品」这条真实结论，不要为了变绿去删断言）；若与峰图矛盾，则当算法回归修。
+**下一步优先做这件事**，因为它决定 v2.15.1/v2.16.0 的测序改动是否可信。
+
+## 8. 建议的下一步（按优先级）
+
+| 优先 | 事项 | 为什么 |
+|---|---|---|
+| P1 | 定性并处理 §7(b) 两项真实数据回归 | 决定最近两版测序改动是否可信；拖越久越难复现当时的峰图判断 |
+| P1 | 修 §7(a) 三项 Windows 测试 | 在 Windows 上开发会一直看到红灯，久了会麻痹对真失败的敏感度 |
+| P2 | 重新构建 `dist/` 并做一次线上验收 | 本机 `dist/` 还是 2026-10-08 的旧构建；v2.13 起前端已拆包，部署要整目录替换 |
+| P2 | 图谱「高级参数」可用性回访 | v2.16.0 新增可调边界，缺真实用户反馈 |
+| P3 | iGEM Registry 通道 / UniProt 蛋白级注释 | 目前 UniProt 只做「反查核酸入口」；iGEM 完全未接（用户未表态，先别自行动手） |
+| P3 | SnapGene 中长期方案 | 现为「默认开启 + 登录可用」的风险接受态；长期应申请 GraphPad 授权或改用 NCBI 对应记录 |
+
+**明确不要主动做的事**（用户已表态或已定案）：扩展酶表（「不需要，已有在线导入」）、
+SnapGene 批量镜像/定时同步、Addgene 代登录、把 `ADDGENE_SESSION_COOKIE` 当多用户特性推广。
+
+**挂账但非 bug**：同聚物内部「缺第几个 A」信息论不可解，维持「计数确证、定位存疑」。
+
+## 9. 接手第一天 checklist
+
+1. 读 `AGENTS.md`（规范与坑）→ 本文 → `KNOWN_ISSUES.md` 的「防回潮约束」与「已接受风险」。
+2. 本地起后端（先配 `SECRET_KEY`）与前端，登录管理员账号，点一遍：设计 → 图谱 → 载体库 → 测序。
+3. 跑三套测试并**记录本机基线**；与 §2 的数字不一致就先查原因，别直接改断言。
+4. 跑 `smoke_test.ps1`（后端需在跑）与（可选）`scripts/smoke_online_sources.py --run`。
+5. 向所有者确认 §2 的「线上部署」与「SnapGene 开关 / Addgene 单用户」两问。
+6. 动手前先看 `git log --oneline -20`：近一周的提交标题基本就是当前工作重心。
+
+## 10. 需要向项目所有者确认的事
+
+- 线上主机、SSH 方式、Cloudflare 配置（仓库里没有，也不该有）。
+- SnapGene 在线库是否保持默认开启（涉及网站条款，见 KNOWN_ISSUES 决策记录）。
+- 线上实例是不是**单用户**自托管（若是多用户，应清空 `ADDGENE_SESSION_COOKIE`）。
+- 是否需要在本次交接后发版（版本号与 tag 由所有者明确发起）。

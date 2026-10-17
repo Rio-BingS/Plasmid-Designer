@@ -76,10 +76,12 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-12 在线来源收尾后）：pytest 1327 passed / 39 skipped
-（另有 3 项**环境性**失败与仓库逻辑无关：`test_batch_report_disk_store` /
-`test_sequencing_upload_sessions` 的私有目录权限断言、`test_session_finalize_lazy_read`
-的线程时序；单独跑同样失败，Linux CI 上为绿），vitest 521，vue-tsc 0。
+测试基线（本机 Windows，2026-10-17 实测，v2.16.0）：pytest **1477 passed / 39 skipped /
+5 failed**，vitest **531**，vue-tsc **0**。5 项失败逐项定性见 `docs/HANDOVER.md` §7：
+3 项**环境性**（`test_batch_report_disk_store` / `test_sequencing_upload_sessions` 的
+POSIX 权限位断言在 Windows 上恒报 0o777；`test_session_finalize_lazy_read` 抢线程时序），
+2 项**真实数据回归待按新口径更新**（`test_real_data_regression` 的混合双峰计数与
+「互检矛盾」措辞随 v2.15.1/v2.16.0 口径变化，本机有 ab1 数据才跑，CI skip）。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
@@ -149,7 +151,11 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 测序管线口径（`core/sanger/`）：
   - 参考拓扑：文件明确标 linear 才线性比对，否则按环状——比对「参考 + 参考头部」后折回
     1..L，跨原点 read 整条比对，原点两侧覆盖缺口合并后再过滤
-  - read 首尾 `END_MARGIN=20`bp 为不可信区，双峰检测与变体置信度共用这条边界
+  - read 可信区**逐条判定**（`core/sanger/reliable_zone.py`，默认边界 30/60/700/900 bp）：
+    首端硬区一律不可信、首端灰区按 Q 值与峰型找起点、中段信号提前衰减即截断、尾端灰区
+    靠其他引物覆盖定案；硬边界不被信号推翻，信号只能把可信区往里收。「高级参数」可用
+    `reliable_zone`（如 `30,60,700,900`）覆盖。**不要退回「固定扣首尾 20 bp」的旧做法**
+    （`END_MARGIN=20` 现仅作 poly 骤降判定的 read 末端豁免宽度 = 2×END_MARGIN）
   - 次要克隆占比 = r/(1+r)（r = 次峰/主峰面积比），勿写成 r/(1-r)
   - 置信分层：只有中/高置信变异进 CDS 判定与共识；N/模糊调用恒 low；单 read 支持的
     indel 若被其他 read 干净跨过则标 cross_read_conflict 并降为 low
@@ -163,6 +169,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 | 文档 | 内容 |
 |---|---|
 | README.md | 功能、API 一览、环境变量、测试命令 |
+| docs/HANDOVER.md | 交接文档：现状事实清单、近一周主线、当前红灯逐项定性、下一步优先级（刚接手先读） |
 | docs/KNOWN_ISSUES.md | 未解决挂账 + 防回潮约束 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处；用户明确要求短期不做） |
 | docs/CACHE.md | 缓存策略与现状 |
@@ -196,8 +203,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.15.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.16.0；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
+- 刚接手先读 docs/HANDOVER.md（现状、红灯定性、下一步优先级）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
