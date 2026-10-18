@@ -3309,10 +3309,15 @@ def analyze(
     for r, p in wide:
         chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
         note = _mixed_check_phrase(chk) if crossable else ""
+        # 双峰位点是修剪后 read 坐标，而 zone_text（read 概况/结论尾部）报原始坐标；
+        # 两者不同时把原始区间一并写出，避免同一份结论里两处"可信区"看起来打架
+        z = r["reliable_zone"]
+        zone_txt = f"{z['start']}–{z['end']}"
+        if (z["raw_start"], z["raw_end"]) != (z["start"], z["end"]):
+            zone_txt += f"（原始 {z['raw_start']}–{z['raw_end']}）"
         base = (f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
                 f"{_pos_ranges_str(p['positions'])}"
-                f"（read 坐标；可信区 {r['reliable_zone']['start']}–"
-                f"{r['reliable_zone']['end']} 以外未计入）")
+                f"（read 坐标；可信区 {zone_txt} 以外未计入）")
         mixed_lines.append(base + (f"；{note}" if note else ""))
     scat = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "scattered"]
