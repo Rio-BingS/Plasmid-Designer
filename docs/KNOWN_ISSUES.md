@@ -54,6 +54,13 @@
 - UniProt 是**蛋白库**：`core/online_sources.py` 只允许用它反查 Entrez/EMBL/RefSeq/
   Ensembl 交叉引用（`nucleotide_candidates`）再把用户引到核酸来源；不要把蛋白序列
   当质粒/图谱序列导入（`ENSEMBL_SEQ_TYPES` 拒绝 protein 是同一原则）。
+- **`validate_set_id` / `validate_plasmid_id` 不要退回字符白名单**：SnapGene 索引里
+  的 `url` 与集合 `path` 实际带 `( ) + ' &`（`pET-28a(+)`、`pcDNA3.1(+)`、
+  `pBluescript_II_KS(-)`、`pCDF-2_Ek_LIC_(linearized)`；19 个集合 2822 行里 488 个
+  ID 如此），这两个值只拼进查询串且一律 `quote(..., safe="")`、主机由 https 白名单
+  钉死，所以只排除 `/ \ ? # %` 与控制字符即可。白名单时代的症状是**搜索能列出、
+  点导入/预览 422「序列 ID 无效」**——搜索不校验 ID、导入才校验，两者口径必须一致。
+  新增/调整校验时，拿真实索引（`src.snapgene_set_index` 全量跑一遍）回归，别只看样例。
 - 导入载体的出处一律写结构化 `data_provenance`（`app/vector_import.provenance_block`，
   形状与内置载体 YAML 一致：source/url/fetched_at/license + 来源特有字段），描述里那句
   可读标注**不能替代**它；新增导入通道时同步写。
@@ -334,3 +341,19 @@ Addgene 账号持有人）。多用户实例里它等同共享一个人的 Addge
 **教训（防回潮）**：Windows 上的红灯先怀疑「测试自己处理了路径/权限位」，而不是产品逻辑；
 真实数据回归必须对照另一套口径跑一遍取证，再决定是改断言还是改算法。
 
+
+### 2026-10-18 SnapGene 在线库「搜得到、导不进」
+
+用户报告：SnapGene 在线库能搜到质粒，点导入失败（图谱页）。
+
+| 项 | 结果 |
+|---|---|
+| 现象 | `POST /api/map/import/snapgene` 返回 422「序列 ID 无效：pET-28a(+)」；载体库侧的预览/导入同样 422 |
+| 根因 | `core/online_sources.validate_plasmid_id` 用字符白名单 `[A-Za-z0-9_.\- ]`，而 SnapGene 索引 `Plasmid@url` 实际带 `( ) + ' &`（`pET-28a(+)`、`pcDNA3.1(+)`、`pBC_KS(-)`、`pCDF-2_Ek_LIC_(linearized)`）。全量扫 19 个集合 2822 行 → 488 个 ID（18.4%）被拒 |
+| 为什么搜索正常 | 搜索/集合索引只校验 `set_id`，从不校验 `plasmid_id`；校验只发生在导入/预览 → 症状恰好是「列表里有，点了就报错」 |
+| 修法 | 改为「排除法」：只拒 `/ \ ? # %` 与控制字符，长度上限不变（集合 64 / 序列 120）；拼 URL 仍一律 `quote(..., safe="")`，主机仍由 https 白名单钉死，不新增外呼面 |
+| 验证 | 上游实测 `fetch.php?set=..&plasmid=pcDNA3.1%28%2B%29` 等 4 个特殊 ID 均 200 + SnapGene 魔法串；本地解析 3400/2961/3956/5428 bp 图谱正常（`(linearized)` 仍判 linear）；真实网络下 `pET-28a(+)` 经完整路由导入成功（5369 bp / 16 特征） |
+| 回归 | 校验参数化用例补 5 个真实 ID + 3 个非法串；新增 `test_snapgene_ids_with_parens_and_plus_import`（搜索 → 图谱页导入 → 载体库预览 → 落库 `snapgene_pET-28a`） |
+
+**教训（防回潮）**：ID 校验要拿真实索引全量回归，不要只按示例写白名单；同一 ID 在
+「列出来」和「打开」两条路径上的校验口径必须一致，否则永远是「搜得到、点不开」。

@@ -76,8 +76,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-18 实测，v2.16.0）：pytest **1482 passed / 39 skipped /
-0 failed**，vitest **531**，vue-tsc **0**。其中 5 项真实数据回归（`test_real_data_regression`）
+测试基线（本机 Windows，2026-10-18 实测，v2.16.1 + SnapGene ID 校验修复）：pytest
+**1491 passed / 39 skipped / 0 failed**，vitest **531**，vue-tsc **0**。其中 5 项真实数据回归
+（`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
 Windows 路径、两处真实数据基线随 v2.15.1/v2.16.0 口径更新）。
@@ -199,6 +200,11 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   reactive 代理，断言用 `toEqual` 不用 `toBe`
 - 自造 ab1 峰形时峰心必须对齐 `make_ab1` 的 PLOC（`i*spb+1`），否则全线误报混合
 - git 全局代理 127.0.0.1:7890 而代理客户端没开时，push 常超时：提交留本地，等代理恢复再推
+- **SnapGene 索引里的 `Plasmid@url` 会带 `( ) + ' &`**（`pET-28a(+)`、`pcDNA3.1(+)`、
+  `pBluescript_II_KS(-)`；19 个集合 2822 行索引里 488 个如此）：集合/序列 ID 校验只做
+  「排除 `/ \ ? # %` 与控制字符 + 限长」，**不要写字符白名单**。搜索不校验 ID、导入/预览
+  才校验，两边口径不一致的症状就是「搜得到、点导入 422」（2026-10-18 修，见
+  KNOWN_ISSUES「SnapGene 在线库搜得到导不进」）
 
 ## 当前状态
 

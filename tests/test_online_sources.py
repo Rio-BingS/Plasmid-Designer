@@ -112,6 +112,13 @@ def no_network(monkeypatch):
     (src.validate_set_id, "pet_and_duet_vectors_(novagen)", "pet_and_duet_vectors_(novagen)"),
     (src.validate_plasmid_id, " pYES2 ", "pYES2"),
     (src.validate_plasmid_id, "SARS Genome", "SARS Genome"),
+    # 索引里的真实 ID 带括号/加号/撇号/&（19 个集合 2822 行里有 488 个）：
+    # 搜索不校验 ID、导入才校验，白名单时代的症状就是「搜得到、导不进」
+    (src.validate_plasmid_id, "pET-28a(+)", "pET-28a(+)"),
+    (src.validate_plasmid_id, "pcDNA3.1(+)", "pcDNA3.1(+)"),
+    (src.validate_plasmid_id, "pBluescript_II_KS(-)", "pBluescript_II_KS(-)"),
+    (src.validate_plasmid_id, "pCDF-2_Ek_LIC_(linearized)", "pCDF-2_Ek_LIC_(linearized)"),
+    (src.validate_plasmid_id, "O'Brien & Sons", "O'Brien & Sons"),
     (src.validate_ensembl_id, "ENST00000288602", "ENST00000288602"),
     (src.validate_addgene_id, "#52961", "52961"),
 ])
@@ -119,7 +126,8 @@ def test_valid_identifiers(fn, raw, expected):
     assert fn(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", "../etc/passwd", "a/b", "x?y=1", "A" * 130, "%2e%2e"])
+@pytest.mark.parametrize("raw", ["", "../etc/passwd", "a/b", "x?y=1", "A" * 130,
+                                 "%2e%2e", "a\\b", "a#b", "a\r\nb"])
 def test_invalid_set_and_plasmid_ids(raw):
     for fn in (src.validate_set_id, src.validate_plasmid_id):
         with pytest.raises(MapParseError) as ei:
@@ -672,6 +680,45 @@ def test_map_import_snapgene_errors_and_gating(client, vectors_dir, monkeypatch)
     assert c.get("/api/map/import/sources").status_code == 403
     assert c.post("/api/map/import/snapgene",
                   json={"set_id": "s", "plasmid_id": "p"}).status_code == 403
+
+
+def test_snapgene_ids_with_parens_and_plus_import(client, vectors_dir, monkeypatch):
+    """索引里的经典载体 ID 带括号/加号（pET-28a(+)）：搜得到就必须导得进。
+
+    2026-10-18 回归：`_PLASMID_ID_RE` 白名单不认 `()+'&`，搜索列表正常（不校验 ID），
+    点导入/预览一律 422「序列 ID 无效」——19 个集合 2822 行索引里 488 个 ID 受影响。
+    """
+    sid, pid = "pet_and_duet_vectors_(novagen)", "pET-28a(+)"
+    row = {"name": "pET-28a(+)", "plasmid_id": pid, "filename": "pET-28a(+).dna", "index": 0}
+    monkeypatch.setattr(oi.src, "snapgene_sets",
+                        lambda **kw: [{"set_id": sid, "name": "pET & Duet"}])
+    monkeypatch.setattr(oi.src, "snapgene_set_index", lambda set_id, **kw: [row])
+    monkeypatch.setattr(oi.src, "snapgene_plasmid_bytes",
+                        lambda *a, **kw: _snapgene_bytes())
+
+    c, _ = client
+    # 搜索：跨集合搜索能列出它（这里顺带确认 set_id 里的括号也不影响）
+    hits = c.get("/api/map/import/snapgene/search", params={"q": "pet-28a"}, headers=_user())
+    assert hits.status_code == 200, hits.text
+    assert [p["plasmid_id"] for p in hits.json()["plasmids"]] == [pid]
+    assert hits.json()["plasmids"][0]["set_id"] == sid
+
+    # 图谱页导入：此前这里是 422
+    r = c.post("/api/map/import/snapgene", json={"set_id": sid, "plasmid_id": pid},
+               headers=_user())
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["length"] == 300 and any(f["name"] == "myCDS" for f in d["features"])
+
+    # 载体库侧预览与落库（同一套校验）
+    prev = c.get("/api/vectors/import/snapgene/preview",
+                 params={"set_id": sid, "plasmid_id": pid}, headers=_user())
+    assert prev.status_code == 200, prev.text
+    saved = c.post("/api/vectors/import/snapgene", json={"set_id": sid, "plasmid_id": pid},
+                   headers=_admin())
+    assert saved.status_code == 200, saved.text
+    # 落库 ID 走 safe_slug：`(+)` 归一成下划线后去掉尾部 `._`
+    assert saved.json()["vector"]["id"] == "snapgene_pET-28a"
 
 
 def test_map_import_ensembl_linear_fragment(client, vectors_dir, monkeypatch):

@@ -336,26 +336,36 @@ def _http_get_json(url: str, **kw) -> dict:
 
 # ================================================================ SnapGene
 
-_SET_ID_RE = re.compile(r"^[A-Za-z0-9_()\-]{1,64}$")
-# 序列 ID（索引里的 url 字段）：通常是下划线形式，但兼容空格；
-# 一律再经 urllib.parse.quote 编码，且落库 ID 会被 safe_slug 清洗
-_PLASMID_ID_RE = re.compile(r"^[A-Za-z0-9_.\-][A-Za-z0-9_.\- ]{0,118}[A-Za-z0-9_.\-]$|^[A-Za-z0-9_.\-]$")
+# 集合 path 与序列 url 的**真实取值**：除字母数字下划线外，还带括号、加号、
+# 撇号、&——如 pET-28a(+)、pcDNA3.1(+)、pBluescript_II_KS(-)、
+# pCDF-2_Ek_LIC_(linearized)、pCR-XL-2-TOPO_(linearized)。
+# 实测 19 个集合共 2822 行索引里有 488 个 ID（18%）含这些字符。
+# 这两个值只会拼进查询串，且一律经 urllib.parse.quote(..., safe="") 编码
+# （见 snapgene_set_index / snapgene_plasmid_bytes），主机名由 _checked_host
+# 白名单钉死，因此**不需要**字符白名单——只要排除会破坏 URL/日志语义的字符。
+# 此前用 `[A-Za-z0-9_.\- ]` / `[A-Za-z0-9_()\-]` 白名单，后果是：
+# 搜索能搜到 pET-28a(+)，点导入必 422「序列 ID 无效」——搜索不校验 ID，
+# 导入才校验，所以症状恰好是「搜得到、导不进」（2026-10-18 修复）。
+_ID_MAX_LEN = {"set": 64, "plasmid": 120}
+_ID_FORBIDDEN = frozenset("/\\?#%") | frozenset(chr(c) for c in range(32)) | {"\x7f"}
+
+
+def _checked_id(raw: str, kind: str, example: str) -> str:
+    """集合/序列 ID 的通用校验：去掉首尾空白，长度受限，禁 URL 破坏字符与控制字符"""
+    v = str(raw or "").strip()
+    if not v or len(v) > _ID_MAX_LEN[kind] or any(ch in _ID_FORBIDDEN for ch in v):
+        label = "集合 ID" if kind == "set" else "序列 ID"
+        raise OnlineSourceError(
+            f"{label}无效：{str(raw or '')[:40]}（示例：{example}）", 422)
+    return v
 
 
 def validate_set_id(raw: str) -> str:
-    v = str(raw or "").strip()
-    if not _SET_ID_RE.match(v):
-        raise OnlineSourceError(
-            f"集合 ID 无效：{str(raw or '')[:40]}（示例：yeast_plasmids、crispr_plasmids）", 422)
-    return v
+    return _checked_id(raw, "set", "yeast_plasmids、pet_and_duet_vectors_(novagen)")
 
 
 def validate_plasmid_id(raw: str) -> str:
-    v = str(raw or "").strip()
-    if not _PLASMID_ID_RE.match(v):
-        raise OnlineSourceError(
-            f"序列 ID 无效：{str(raw or '')[:40]}（示例：SARS_Genome、pYES2）", 422)
-    return v
+    return _checked_id(raw, "plasmid", "pYES2、pET-28a(+)、SARS_Genome")
 
 
 def snapgene_sets(*, timeout: Optional[float] = None,
