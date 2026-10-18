@@ -54,6 +54,17 @@ def _get(bid, token=None):
     return TestClient(app).get(f"/api/sequencing/batches/{bid}/report", headers=h)
 
 
+def _assert_private(path, mode: int) -> None:
+    """断言私有权限位。
+
+    只在 POSIX 上逐位校验：Windows 的文件模式不表达 rwx（目录恒报 0o777、
+    chmod 只切只读位），同样的代码在 Linux 上给出 0o700/0o600。
+    其余（目录/文件确实落在私有数据目录、内容正确）两个平台都照常断言。
+    """
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode, f"{path} 权限位不是 {oct(mode)}"
+
+
 def test_report_written_to_private_dir_and_not_kept_in_memory(env):
     body = _post()
     bid = body["batch_id"]
@@ -61,9 +72,9 @@ def test_report_written_to_private_dir_and_not_kept_in_memory(env):
     assert not hasattr(sr, "_BATCHES")
     zip_path, meta_path = env / f"{bid}.zip", env / f"{bid}.json"
     assert zip_path.is_file() and meta_path.is_file()
-    assert stat.S_IMODE(os.stat(env).st_mode) == 0o700
-    assert stat.S_IMODE(os.stat(zip_path).st_mode) == 0o600
-    assert stat.S_IMODE(os.stat(meta_path).st_mode) == 0o600
+    _assert_private(env, 0o700)
+    _assert_private(zip_path, 0o600)
+    _assert_private(meta_path, 0o600)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert meta["access_token_hash"] and body["access_token"] not in meta_path.read_text()
     r = _get(bid, body["access_token"])
