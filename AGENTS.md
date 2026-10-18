@@ -76,12 +76,11 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-17 实测，v2.16.0）：pytest **1477 passed / 39 skipped /
-5 failed**，vitest **531**，vue-tsc **0**。5 项失败逐项定性见 `docs/HANDOVER.md` §7：
-3 项**环境性**（`test_batch_report_disk_store` / `test_sequencing_upload_sessions` 的
-POSIX 权限位断言在 Windows 上恒报 0o777；`test_session_finalize_lazy_read` 抢线程时序），
-2 项**真实数据回归待按新口径更新**（`test_real_data_regression` 的混合双峰计数与
-「互检矛盾」措辞随 v2.15.1/v2.16.0 口径变化，本机有 ab1 数据才跑，CI skip）。
+测试基线（本机 Windows，2026-10-18 实测，v2.16.0）：pytest **1482 passed / 39 skipped /
+0 failed**，vitest **531**，vue-tsc **0**。其中 5 项真实数据回归（`test_real_data_regression`）
+只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
+病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
+Windows 路径、两处真实数据基线随 v2.15.1/v2.16.0 口径更新）。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
