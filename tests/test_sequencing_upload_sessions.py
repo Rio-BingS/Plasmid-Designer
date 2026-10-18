@@ -154,18 +154,28 @@ def test_chunked_result_equals_single_request(env):
     assert not (env["root"] / sid).exists()
 
 
+def _assert_private(path, mode: int) -> None:
+    """断言私有权限位。
+
+    只在 POSIX 上逐位校验：Windows 的文件模式不表达 rwx（目录恒报 0o777、
+    chmod 只切只读位），同样的代码在 Linux 上给出 0o700/0o600。
+    """
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(path).st_mode) == mode, f"{path} 权限位不是 {oct(mode)}"
+
+
 def test_private_permissions_and_sequence_disk_names(env):
     c = TestClient(app)
     r = _create(c)
     sid, token = r.json()["session_id"], r.json()["access_token"]
     assert _upload(c, sid, [_ref("PA", REF_A)], 0, token).status_code == 200
     d = env["root"] / sid
-    assert stat.S_IMODE(os.stat(env["root"]).st_mode) == 0o700
-    assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
-    assert stat.S_IMODE(os.stat(d / "meta.json").st_mode) == 0o600
+    _assert_private(env["root"], 0o700)
+    _assert_private(d, 0o700)
+    _assert_private(d / "meta.json", 0o600)
     stored = list((d / "f").iterdir())
     assert [p.name for p in stored] == ["000001"]        # 磁盘名与用户输入无关
-    assert stat.S_IMODE(os.stat(stored[0]).st_mode) == 0o600
+    _assert_private(stored[0], 0o600)
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
     assert meta["token_hash"] and token not in json.dumps(meta)   # 只存摘要
 

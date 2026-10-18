@@ -7,6 +7,7 @@ DiskBlob 进入管线，条目内容按需读取：比对第一组时，后续�
 
 import io
 import json
+import os
 import zipfile
 
 import pytest
@@ -87,7 +88,10 @@ def test_later_group_files_not_read_while_first_group_aligns(monkeypatch):
 
     def analyze(*a, **kw):
         if not seen_at_first_analyze:
-            seen_at_first_analyze.append({names[p.rsplit("/", 1)[-1]] for p in reads})
+            # basename 不能用 p.rsplit("/")：Windows 的 DiskBlob.path 用反斜杠，
+            # 拆不出来会把整条路径当文件名 → 下面 names[...] KeyError，异常被
+            # 批次管线记成「分析失败」，本用例就变成「analyze 从没调用」
+            seen_at_first_analyze.append({names[os.path.basename(p)] for p in reads})
         return real_analyze(*a, **kw)
 
     monkeypatch.setattr(sequencing_batch, "analyze", analyze)
@@ -96,7 +100,7 @@ def test_later_group_files_not_read_while_first_group_aligns(monkeypatch):
     first = seen_at_first_analyze[0]
     assert "PA-1.ab1" in first
     assert "PB-1.ab1" not in first and "orphan.ab1" not in first
-    assert "empty.ab1" not in {names[p.rsplit("/", 1)[-1]] for p in reads}
+    assert "empty.ab1" not in {names[os.path.basename(p)] for p in reads}
 
 
 def _zip_files(content):
