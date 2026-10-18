@@ -12,7 +12,7 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.16.1**，
-功能完整可用、有持续的真实数据回归；本机全量测试 **1482 passed / 39 skipped /
+功能完整可用、有持续的真实数据回归；本机全量测试 **1491 passed / 39 skipped /
 0 failed**（2026-10-18 起全绿，此前 5 项红灯的病因见 §7）。
 
 ## 2. 事实清单（2026-10-17 本机实测，可直接引用）
@@ -20,7 +20,7 @@
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | `v2.16.1`（2026-10-18 的补丁版：仅测序结论文案与测试/文档，无 API 变化） |
-| 后端测试 | **1482 passed / 39 skipped / 0 failed**（Windows 本机全绿；CI 上 5 项真实数据回归被 skip） |
+| 后端测试 | **1491 passed / 39 skipped / 0 failed**（Windows 本机全绿；CI 上 5 项真实数据回归被 skip） |
 | 前端测试 | **67 个文件 / 531 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python 3.12.5（仓库根 `.venv`）+ Node ≥ 22.12；FastAPI + Vue3/Vite |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
