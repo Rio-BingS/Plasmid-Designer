@@ -95,34 +95,45 @@ def test_real_analysis_basic_shape():
 
 
 def test_real_analysis_mixed_baseline_and_corroboration():
-    """真实峰型下的混合检测基线（合成数据造不出的形态）：3 条 read 各
-    19-27 处双峰位点（widespread 档）、结论判「疑似混合样品」、且带跨引物
-    互检章节（4 处同报位点 + 倾向噪声/待核分类齐全）。若检测口径变化
-    导致此基线不成立，说明真实数据上的判定改变了——须人工核对后更新"""
+    """真实峰型下的混合检测基线（v2.16.0 可信区口径）：三条 read 都判出双峰，
+    但只有前两条达到 widespread 档（9 / 10 处），第三条 4 处降为「个别位点」。
+    旧口径（只扣首尾 20bp）下三 read 分别是 22 / 31 / 16 处——差值全部落在
+    700bp 之后的尾部噪声上，v2.16.0 起尾部双峰不再计入（有意的口径变化，
+    见 CHANGELOG 2.16.0）；不要为了凑回旧的 19–27 把尾部噪声放回来。
+
+    同时锁住新口径的硬约束：报出的双峰位点必须落在该 read 的可信区内。"""
     ctx = _load_ctx()
     res = ctx["analyses"]["MX"]["result"]
     md = res["mixed_detected"]
     assert len(md) == 3
+    zones = {r["filename"]: r["reliable_zone"] for r in res["reads"]}
+    counts = []
     for _fname, positions in md.items():
-        assert len(positions) >= 5          # widespread 档（≥5 处双峰）
+        z = zones[_fname]
+        assert all(z["start"] <= p <= z["end"] for p in positions), _fname
+        counts.append(len(positions))
+    assert sorted(counts) == [4, 9, 10]
     assert "疑似混合样品" in res["conclusion"]
     assert "跨引物互检" in res["conclusion"]
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
-    """真实数据上的置信分层与互检反证基线：5269 C>T 高置信同义、
-    5076 插入（移码）致 CDS 判「MX 蛋白与设计不一致」；6653/6666 两处
-    缺失仅单 read 报告且被其他 read 干净跨过 → 必须压低置信 + 结论点名
-    互检矛盾且不计入 CDS 判定"""
+    """真实数据上的置信分层与互检反证基线：5269 C>T 高置信同义、5076 插入（移码）
+    致 CDS 判「MX 蛋白与设计不一致」；6653/6666 两处缺失仅单 read 报告（Q17 / Q20），
+    其他引物在 ±25bp 高质量区读出设计碱基 → 保持 low 置信，并按 v2.15.1 口径写成
+    「互检排除 … 判为该 read 测序误差，不计入判定」（不再叫「互检矛盾」，也不再
+    作为低置信待核项）。"""
     ctx = _load_ctx()
     res = ctx["analyses"]["MX"]["result"]
     confs = {v["ref_pos"]: v["confidence"] for v in res["variants"]}
     assert confs[5269] == "high"
     assert confs[5076] in ("medium", "high")
     assert confs[6653] == "low" and confs[6666] == "low"
-    assert "互检矛盾" in res["conclusion"]
-    assert "未计入判定" in res["conclusion"]
-    assert "MX 蛋白与设计不一致" in res["conclusion"]
+    concl = res["conclusion"]
+    assert "互检排除" in concl and "测序误差" in concl and "不计入判定" in concl
+    assert "6653" in concl and "6666" in concl        # 两处必须点名到参考位置
+    assert "互检矛盾" not in concl                     # v2.15.1 起改为直接排除
+    assert "MX 蛋白与设计不一致" in concl
 
 
 def test_real_analysis_poly_verdicts_have_votes():
