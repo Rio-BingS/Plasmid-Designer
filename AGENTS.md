@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-18 实测，v2.16.1 + SnapGene ID 校验修复）：pytest
+测试基线（本机 Windows，2026-10-18 实测，v2.16.2）：pytest
 **1491 passed / 39 skipped / 0 failed**，vitest **531**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
@@ -199,7 +199,11 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   无 `Blob.array()`、FileReader 事件在宏任务触发（试读用 `text()`）；ref 缓存取出的是
   reactive 代理，断言用 `toEqual` 不用 `toBe`
 - 自造 ab1 峰形时峰心必须对齐 `make_ab1` 的 PLOC（`i*spb+1`），否则全线误报混合
-- git 全局代理 127.0.0.1:7890 而代理客户端没开时，push 常超时：提交留本地，等代理恢复再推
+- git 全局代理 127.0.0.1:7890 而代理客户端没开时，push 常超时：提交留本地，等代理恢复再推。
+  **代理开着但 github 节点坏**时症状一样（`schannel: failed to receive handshake`），
+  此时直连反而通，但要绕开两件事：全局代理配置与 schannel 的 CRL 吊销检查（离线取不到 CRL
+  会报 `0x80092013`）——实测可用：
+  `git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push origin main`
 - **SnapGene 索引里的 `Plasmid@url` 会带 `( ) + ' &`**（`pET-28a(+)`、`pcDNA3.1(+)`、
   `pBluescript_II_KS(-)`；19 个集合 2822 行索引里 488 个如此）：集合/序列 ID 校验只做
   「排除 `/ \ ? # %` 与控制字符 + 限长」，**不要写字符白名单**。搜索不校验 ID、导入/预览
@@ -208,7 +212,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.16.1；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.16.2；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 刚接手先读 docs/HANDOVER.md（现状、红灯定性、下一步优先级）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」

@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.16.2] - 2026-10-18
+
 ### 修复
 - SnapGene 在线库「搜得到但导不进」：序列 ID 校验用字符白名单（只认字母数字和
   `._-` 空格），而 SnapGene 索引里的 `url` 字段普遍带括号、加号、撇号、`&`
@@ -861,7 +863,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...HEAD
+[2.16.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...v2.16.2
 [2.16.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.0...v2.16.1
 [2.16.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.1...v2.16.0
 [2.15.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.0...v2.15.1
