@@ -1,7 +1,7 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-17（HEAD `792e83d`，与标签 `v2.16.0` 无代码差异，仅多一个合并提交）。
+> **更新**：2026-10-18（HEAD `acebc0c` 之后的清账批次；版本仍是 `v2.16.0`）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -12,15 +12,15 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.16.0**，
-功能完整可用、有持续的真实数据回归；本机全量测试 **1477 passed / 39 skipped /
-5 failed**（5 项失败都已定性，见 §7，没有「原因不明」的红灯）。
+功能完整可用、有持续的真实数据回归；本机全量测试 **1482 passed / 39 skipped /
+0 failed**（2026-10-18 起全绿，此前 5 项红灯的病因见 §7）。
 
 ## 2. 事实清单（2026-10-17 本机实测，可直接引用）
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.16.0`；HEAD `792e83d`（PR #18 合并提交，`git diff v2.16.0 HEAD` 为空） |
-| 后端测试 | **1477 passed / 39 skipped / 5 failed**（Windows 本机；CI 上 2 项真实数据回归被 skip） |
+| 版本 / 标签 | `v2.16.0`；HEAD 为 `v2.16.0` 之上的清账提交（无功能提交时 `git diff v2.16.0 HEAD` 仅测试/文档） |
+| 后端测试 | **1482 passed / 39 skipped / 0 failed**（Windows 本机全绿；CI 上 5 项真实数据回归被 skip） |
 | 前端测试 | **67 个文件 / 531 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python 3.12.5（仓库根 `.venv`）+ Node ≥ 22.12；FastAPI + Vue3/Vite |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
@@ -41,7 +41,7 @@
 
 主线规律：**v2.13 之后的工作几乎全是「真实数据驱动的精修」**——测序结论口径、
 图谱边界、SnapGene 用户操作体验。新增功能少，改行为多，因此**每次动口径都要同时
-处理缓存版本与回归断言**（这正是当前 2 项红灯的来源，见 §7）。
+处理缓存版本与回归断言**（2026-10-18 之前那 2 项真实数据红灯就是这么来的，见 §7）。
 
 ## 4. 代码从哪看起（按任务选入口）
 
@@ -101,42 +101,47 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 8. **前端 API 层即契约**：任何后端字段/路径变化都要同步 `src/frontend/src/api/index.ts`
    （以及 `src/map/api.ts`），否则表现为「点了没反应」。
 
-## 7. 现在红的 5 项测试（逐项定性，不要当成「反正环境问题」）
+## 7. 测试红灯：2026-10-18 已清账（留档，避免下次按直觉误判）
 
-**(a) 3 项 Windows 环境性失败**（Linux CI 绿；单独跑同样红）
+接手时本机是 `1477 passed / 39 skipped / 5 failed`，现在 `1482 / 39 / 0`。三项 Windows
+红灯里有**一项的真实病因与当时的判断不同**，两项真实数据红灯是 v2.15.1/v2.16.0 改口径后
+没跟上的基线——两类都值得记住，别下次又按直觉改。
 
-| 测试 | 现象 | 根因 |
+**(a) 三项 Windows 红灯**
+
+| 测试 | 真实病因 | 修法 |
 |---|---|---|
-| `test_batch_report_disk_store::test_report_written_to_private_dir_and_not_kept_in_memory` | `S_IMODE == 0o700` 实际 `511 (0o777)` | Windows 不表达 POSIX 读位，`chmod` 清不掉 |
+| `test_batch_report_disk_store::test_report_written_to_private_dir_and_not_kept_in_memory` | POSIX 权限位断言：Windows 不表达 rwx，目录恒报 `0o777`（`511 ≠ 448`），`chmod` 只切只读位 | 新增 `_assert_private()`，只在 `os.name == "posix"` 时逐位校验（Linux 覆盖不减） |
 | `test_sequencing_upload_sessions::test_private_permissions_and_sequence_disk_names` | 同上 | 同上 |
-| `test_session_finalize_lazy_read::test_later_group_files_not_read_while_first_group_aligns` | `IndexError: list index out of range` | 断言「第一组还在比对」是抢时序；本机第一组先跑完 |
+| `test_session_finalize_lazy_read::test_later_group_files_not_read_while_first_group_aligns` | **不是线程时序**（初判错了）：用例自身的 spy 用 `p.rsplit("/", 1)[-1]` 取文件名，而 `DiskBlob.path` 在 Windows 用反斜杠 → 取到整条路径 → `names[path]` 抛 KeyError，异常发生在 `analyze` 里、被批次管线记成「分析失败」→ 断言处看到的是「analyze 从未调用」 | 改用 `os.path.basename(p)` |
 
-建议修法（用户尚未批准，随时可做）：前两项在 `os.name == "nt"` 时跳过 POSIX 模式位
-断言（Linux 覆盖不减）；第三项用 `threading.Event` 卡住第一组，让「仍在跑」成为确定
-条件而不是抢时序。
+**(b) 两项真实数据回归**（本机有 ab1 才跑、CI skip；用旧口径对照跑同一批数据取证）
 
-**(b) 2 项真实数据回归**（本机有 ab1 数据才跑；CI skip）
-
-| 测试 | 旧断言 | 现状 |
+| read | 旧口径（`20/20/5000/5000`，≈只扣首尾 20bp） | 新口径（`30/60/700/900`） |
 |---|---|---|
-| `test_real_analysis_mixed_baseline_and_corroboration` | 混合样品双峰位点 `>= 5` | 实际 4 处（`61,62,65,66`） |
-| `test_real_analysis_cross_read_conflicts_and_cds_verdict` | 结论含「互检矛盾」 | 结论改为「疑似混合样品…2 条 read 均疑似混合样品」，不再出现该词 |
+| `10570-2-seqF` | 22 处，其中尾部 841–957 占 13 | 9 处，全部 ≤63 |
+| `pET-Up` | 31 处，其中尾部 797–1015 占 21 | 10 处，全部 ≤75 |
+| `T7-Term` | 16 处，其中尾部 853–971 占 12 | 4 处（61–66） |
 
-两者都落在 v2.15.1 / v2.16.0 主动改过口径的地方（可信区边界上移到 30/60 bp →
-5' 端双峰少判一处；互检改为「被其他 read 在可靠区读出设计碱基就直接排除」→ 不再叫
-互检矛盾）。**判断步骤**：拿 `sequencing results/测序.xlsx` 的交付信息表按位核对这 4 处
-双峰与 2 处差异 → 若新行为与真实峰图一致，按 CHANGELOG 的新口径**更新断言**（并保留
-「疑似混合样品」这条真实结论，不要为了变绿去删断言）；若与峰图矛盾，则当算法回归修。
-**下一步优先做这件事**，因为它决定 v2.15.1/v2.16.0 的测序改动是否可信。
+→ 差值全部是 **700 bp 之后的尾部噪声**，v2.16.0 有意不再计入（CHANGELOG 2.16.0 明说
+「双峰计数可能与旧版不同」）。所以这是**预期的口径变化**，不是回归。
+
+断言改成锁新口径本身，而不是删断言：三条 read 都判出双峰、**报出的位点必须落在该 read
+可信区内**、计数锁 `[4, 9, 10]`；结论侧改锁「互检排除 … 判为该 read 测序误差，不计入
+判定」，并显式断言 `"互检矛盾" not in conclusion`（把「已改成直接排除」这件事钉住）。
+`5269` high / `5076` medium / `6653`、`6666` low 这几条原断言保持不变、依旧通过。
+
+**顺带的显示修正**：混合双峰详情行给的是修剪后 read 坐标，而结论尾部「可信区 31–700bp」
+是原始坐标——同一条结论里两处「可信区」看起来互相矛盾。现在前者在两者不同时一并写出
+原始区间（`可信区 13–682（原始 31–700）`）。
 
 ## 8. 建议的下一步（按优先级）
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
-| P1 | 定性并处理 §7(b) 两项真实数据回归 | 决定最近两版测序改动是否可信；拖越久越难复现当时的峰图判断 |
-| P1 | 修 §7(a) 三项 Windows 测试 | 在 Windows 上开发会一直看到红灯，久了会麻痹对真失败的敏感度 |
-| P2 | 重新构建 `dist/` 并做一次线上验收 | 本机 `dist/` 还是 2026-10-08 的旧构建；v2.13 起前端已拆包，部署要整目录替换 |
+| P1 | 重新构建 `dist/` 并做一次线上验收 | 本机 `dist/` 还是 2026-10-08 的旧构建；v2.13 起前端已拆包，部署要整目录替换；v2.16.0 的新参数也只在后端 |
 | P2 | 图谱「高级参数」可用性回访 | v2.16.0 新增可调边界，缺真实用户反馈 |
+| P2 | 把跨平台断言收进共享 helper | 目前 `_assert_private` 在两个测试文件各一份，再出现第三处就该提取 |
 | P3 | iGEM Registry 通道 / UniProt 蛋白级注释 | 目前 UniProt 只做「反查核酸入口」；iGEM 完全未接（用户未表态，先别自行动手） |
 | P3 | SnapGene 中长期方案 | 现为「默认开启 + 登录可用」的风险接受态；长期应申请 GraphPad 授权或改用 NCBI 对应记录 |
 
