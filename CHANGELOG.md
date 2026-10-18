@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [2.16.1] - 2026-10-18
+
 ### 修复
 - 测序结论里混合样品的逐 read 详情行与结论尾部用了不同坐标（修剪后 read 坐标 vs 原始
   read 坐标），同一条结论里两处「可信区」看起来互相矛盾、按数字核对峰图会找错位置。
@@ -850,7 +852,10 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...HEAD
+[2.16.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.0...v2.16.1
+[2.16.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.1...v2.16.0
+[2.15.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.0...v2.15.1
 [2.15.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.1...v2.15.0
 [2.14.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.14.0...v2.14.1
 [2.14.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.13.0...v2.14.0
