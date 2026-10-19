@@ -14,9 +14,13 @@
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from core.sanger.batch import excel_conclusion, match_files, norm_stem
+from core.sanger.batch import (
+    READ_EXTS, excel_conclusion, feature_alias_names, match_files,
+    match_reference_aliases, norm_stem,
+)
 from core.sanger.pipeline import analyze
 from core.sanger.reference_parser import parse_reference_topology
 
@@ -81,6 +85,67 @@ def plasmid_groups(ordered: List[str], per_plasmid: Dict[str, Dict]) -> List[Dic
     """质粒模式归组 → 统一的 groups 结构（与克隆模式 match_clone_files 同形）"""
     return [{"plasmid": p, "clone": "", "reference": per_plasmid[p]["reference"],
              "reads": per_plasmid[p]["reads"]} for p in ordered]
+
+
+def _read_ref_bytes(path) -> Optional[bytes]:
+    """离线条目（只有 path）按需读字节；读不到返回 None"""
+    if path is None:
+        return None
+    try:
+        return Path(str(path)).read_bytes()
+    except OSError:
+        return None
+
+
+def rescue_references_by_features(groups: List[Dict], unmatched: List[Dict],
+                                  rows: Optional[List[Dict]]) -> List[Dict]:
+    """图谱文件名对不上时，改用文件内部的 CDS/gene 名称反查质粒名称。
+
+    命名规范允许 .DNA 只写编号（10001.DNA），此时文件名里没有质粒名称，
+    但文件内的 CDS 通常带基因名——按它反查信息表的质粒名称，候选唯一才
+    认领。原地把命中的图谱挂到该质粒的所有缺图谱分组上（克隆模式下同一
+    质粒的多个克隆共用一张图谱）。
+
+    只处理信息表模式与图谱文件；解析失败、候选不唯一、或该质粒已有图谱
+    时保持未匹配。返回更新后的 unmatched。"""
+    if not rows:
+        return unmatched
+    names = {r["name"] for r in rows if r.get("name")}
+    if not names:
+        return unmatched
+    remaining: List[Dict] = []
+    for u in unmatched:
+        ref_file = (u or {}).get("file") or {}
+        if ref_file.get("ext") in READ_EXTS:
+            remaining.append(u)
+            continue
+        data = ref_file.get("bytes")
+        if data is None:  # 离线脚本的条目只带 path，字节按需从磁盘读
+            data = _read_ref_bytes(ref_file.get("path"))
+        if data is None:
+            remaining.append(u)
+            continue
+        try:
+            _seq, features, _topo = parse_reference_topology(
+                ref_file["name"], data)
+        except Exception:  # noqa: BLE001 解析失败保持原说明，不影响归组
+            remaining.append(u)
+            continue
+        plasmid, how = match_reference_aliases(
+            feature_alias_names(features), names)
+        if plasmid is None:
+            # 保留原说明：文件名不匹配 / 同时命中多个质粒这些原因更具体，
+            # 「CDS 名称也没匹配上」不足以替代它
+            remaining.append(u)
+            continue
+        free = [g for g in groups
+                if g.get("plasmid") == plasmid and g.get("reference") is None]
+        if not free:
+            remaining.append(u)  # 已有图谱：原来的说明更准确
+            continue
+        for g in free:
+            g["reference"] = {"file": ref_file, "how": how}
+    return remaining
 
 
 def _parse_group_reference(ref_file: Dict, max_ref_bp: Optional[int]):

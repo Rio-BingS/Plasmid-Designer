@@ -5,7 +5,7 @@ import { analyzeSequence, findRestrictionSites, predictORFs, analyzeGC, exportSe
 
 const OVERHANG_LABELS: Record<string, string> = { '5': "5' 粘性末端", '3': "3' 粘性末端", 'b': '平末端' }
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
-import { cleanSequence } from '@/utils/sequence'
+import { cleanSequence, parseNamedSequence } from '@/utils/sequence'
 
 const route = useRoute()
 const sequence = ref('')
@@ -48,6 +48,9 @@ const digestCircular = ref(false)
 const orfMinLength = ref(100)
 
 const isAminoAcid = computed(() => sequenceType.value === 'amino_acid')
+
+/** 输入带 FASTA 头（>PNPM5）时取到的 CDS 名称，用于展示与导出文件名 */
+const seqName = computed(() => parseNamedSequence(sequence.value).name)
 
 const exportFormat = ref('genbank')
 const exportLoading = ref(false)
@@ -172,7 +175,8 @@ async function handleExport() {
   if (!sequence.value.trim()) return
   try {
     exportLoading.value = true
-    await exportSequence(cleanSequence(sequence.value), [], exportFormat.value, 'analysis_result')
+    await exportSequence(cleanSequence(sequence.value), [], exportFormat.value,
+      seqName.value || 'analysis_result')
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
   } finally {
@@ -192,11 +196,12 @@ async function handleExport() {
           <option value="dna">DNA</option>
           <option value="amino_acid">氨基酸</option>
         </select>
+        <span class="seq-name" v-if="seqName" :title="`序列名称：${seqName}`">🧬 {{ seqName }}</span>
         <span class="seq-length" v-if="sequence">{{ cleanSequence(sequence).length }} bp</span>
       </div>
       <textarea
         v-model="sequence"
-        placeholder="粘贴 DNA 或氨基酸序列..."
+        placeholder="粘贴 DNA 或氨基酸序列（支持 FASTA，头行名称会用作物件名）..."
         rows="6"
         class="form-textarea"
       ></textarea>
@@ -457,6 +462,15 @@ h2 { font-size: 1.25rem; margin-bottom: 1rem; }
 }
 .form-select.small { width: auto; min-width: 120px; }
 .seq-length { font-size: 0.875rem; color: var(--text-secondary); }
+.seq-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .action-buttons { display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; }
 .results-section { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: var(--shadow); margin-bottom: 1.5rem; }
 .result-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }

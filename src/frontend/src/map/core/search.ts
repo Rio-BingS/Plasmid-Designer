@@ -3,11 +3,14 @@
  * 查询可含 IUPAC 模糊码（模糊码匹配其代表的任一碱基不算错配）。
  * 朴素逐位比较 + 超过 k 即提前退出：300 kb × 30 nt × 双链在 10 ms 量级。
  */
-import type { Range } from '../types'
+import type { MapFeature, Range } from '../types'
 import { normPos } from './coords'
 import { reverseComplement } from './seq'
 
 export interface SearchHit extends Range { strand: 1 | -1; mismatches: number }
+
+/** 元件名称命中（CDS 的基因名、启动子名等），用于序列搜索之外的名称搜索 */
+export interface FeatureMatch extends Range { id: string; name: string; type: string }
 
 export interface SearchResult { hits: SearchHit[]; error: string | null; truncated: boolean }
 
@@ -17,6 +20,25 @@ const MASK: Record<string, number> = {
 
 export function normalizeQuery(q: string): string {
   return q.replace(/\s+/g, '').toUpperCase()
+}
+
+/**
+ * 按元件名称搜索：名称大小写不敏感的子串匹配，按文档顺序返回（最多 limit 条）。
+ * 查询不是 DNA 碱基串时（如基因名 "PNPM5"），序列搜索会报「只能包含 DNA
+ * 碱基」——名称搜索就是这类查询的落点。
+ */
+export function searchFeatures(
+  features: readonly MapFeature[], query: string, limit = 200,
+): FeatureMatch[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const out: FeatureMatch[] = []
+  for (const f of features) {
+    if (out.length >= limit) break
+    if (!(f.name ?? '').toLowerCase().includes(q)) continue
+    out.push({ id: f.id, name: f.name, type: f.type, start: f.start, end: f.end })
+  }
+  return out
 }
 
 export function searchSequence(
