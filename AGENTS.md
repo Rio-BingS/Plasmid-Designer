@@ -169,6 +169,16 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   忽略分隔符精确 > 与名称某段一致 > 双向包含」多级匹配，候选不唯一一律不猜。
   **扩展名大小写不敏感**（`.DNA` 与 `.dna` 等价）：各入口按扩展名分派前都已
   `.lower()`，新增入口必须同样归一化，回归锁见 `tests/test_extension_case.py`
+- CDS 名称识别（三处，都以「候选唯一才认」为口径）：
+  - 批量归组：文件名对不上时（`10001.DNA` 只有编号），
+    `app.sequencing_batch.rescue_references_by_features` 解析该图谱，用内部
+    CDS/gene 名称（`core.sanger.batch.feature_alias_names`）反查信息表质粒名；
+    只解析未匹配的图谱，名字与 CDS 都不匹配时**保留原说明**
+    （`tests/test_reference_cds_names.py`）
+  - 图谱页搜索框：序列没命中时按元件名称找（`map/core/search.searchFeatures`），
+    命中即选中并提示「N 个元件」；序列命中优先于名称命中
+  - 序列分析输入：FASTA 头（`>PNPM5`）的名称单独取出，碱基行照常清洗，
+    名称显示在输入区并用作导出文件名（`utils/sequence.parseNamedSequence`）
 
 ## 文档索引（按需加载）
 

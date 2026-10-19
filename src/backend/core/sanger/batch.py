@@ -252,6 +252,47 @@ def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
     return None, "文件名不匹配任何质粒名称（支持全名或两段式名称的任一段）"
 
 
+def feature_alias_names(features: List[Dict]) -> List[str]:
+    """图谱内部可当质粒标识用的名称：CDS/gene 特征的名字。
+
+    只取 CDS/gene——启动子、复制起点之类的名称多是通用元件名
+    （"lac promoter"、"ori"），拿去反查质粒名只会制造歧义。名称按
+    norm_stem 去重，保持特征顺序。"""
+    out: List[str] = []
+    seen = set()
+    for f in features or ():
+        if str(f.get("type") or "").strip().lower() not in ("cds", "gene"):
+            continue
+        name = str(f.get("name") or "").strip()
+        key = norm_stem(name)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def match_reference_aliases(aliases: List[str],
+                            names: set) -> Tuple[Optional[str], str]:
+    """用图谱内部的 CDS/gene 名称反查质粒名称（文件名对不上时的兜底）。
+
+    每个别名走 _match_ref_name 同一套多级口径；多个别名指向不同质粒时
+    不猜。返回 (质粒名 或 None, 说明)。"""
+    hits: Dict[str, str] = {}
+    for alias in aliases or ():
+        plasmid, _how = _match_ref_name(norm_stem(alias), names)
+        if plasmid:
+            hits.setdefault(plasmid, alias)
+    if len(hits) == 1:
+        plasmid, alias = next(iter(hits.items()))
+        return plasmid, f"文件内 CDS 名称匹配质粒名称（{alias}）"
+    if len(hits) > 1:
+        return None, ("文件内 CDS 名称同时匹配多个质粒（"
+                      + "、".join(sorted(hits)[:5]) + "），无法唯一确定")
+    if aliases:
+        return None, "文件名不匹配任何质粒名称，文件内 CDS 名称也不匹配"
+    return None, "文件名不匹配任何质粒名称，文件内没有可用的 CDS 名称"
+
+
 def rows_have_clones(rows: List[Dict]) -> bool:
     """信息表带「克隆号」列且至少一行有值 → 克隆模式（每行一个克隆，独立分析）"""
     return any(r.get("clone") for r in rows)

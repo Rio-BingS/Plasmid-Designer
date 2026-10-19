@@ -7,7 +7,7 @@ import { computed, inject, provide, reactive, ref, shallowRef, watch, type Injec
 import type { MapDocument, MapFeature, Range } from './types'
 import { rangeLength, rangeMid } from './core/coords'
 import { cutMarks, defaultEnzymeFilter, listEnzymes, visibleEnzymes, type EnzymeFilter } from './core/enzymes'
-import { searchSequence, type SearchHit } from './core/search'
+import { searchFeatures, searchSequence, type FeatureMatch, type SearchHit } from './core/search'
 import { selectionStats } from './core/seq'
 
 export type ViewMode = 'circular' | 'linear' | 'sequence' | 'split'
@@ -60,6 +60,10 @@ export function createMapStore(docRef: Ref<MapDocument>) {
 
   const search = reactive({
     query: '', mismatches: 0, hits: [] as SearchHit[], index: -1, error: null as string | null, truncated: false,
+    /** 名称命中的元件（CDS 基因名等）；命中序列时为空 */
+    featureHits: [] as FeatureMatch[], featureIndex: -1,
+    /** 当前结果来自序列搜索还是元件名称搜索 */
+    mode: 'sequence' as 'sequence' | 'name',
   })
 
   /** 环形图旋转（弧度） */
@@ -80,6 +84,8 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     viewport.value = { from: 0, to: d.length }
     search.hits = []
     search.index = -1
+    search.featureHits = []
+    search.featureIndex = -1
   })
 
   const features = computed<MapFeature[]>(() => {
@@ -142,11 +148,28 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     search.query = query
     search.mismatches = mismatches
     const res = searchSequence(doc.value.sequence, query, { maxMismatches: mismatches, circular: circular.value })
+    // 序列一个都没命中（含「查询不是 DNA」的报错）时改按元件名称找：
+    // CDS 的基因名不是碱基串，属于同一搜索框的另一种输入
+    const nameHits = res.hits.length ? [] : searchFeatures(doc.value.features, query)
+    search.mode = nameHits.length ? 'name' : 'sequence'
+    search.featureHits = nameHits
+    search.featureIndex = nameHits.length ? 0 : -1
     search.hits = res.hits
-    search.error = res.error
+    // 没有序列命中时不再回显「只能包含 DNA 碱基」：该查询已按名称找过，
+    // 用户看到「无匹配」比看到碱基语法错误更准确
+    search.error = res.hits.length ? res.error : null
     search.truncated = res.truncated
     search.index = res.hits.length ? 0 : -1
     if (res.hits.length) focusHit(0)
+    else if (nameHits.length) focusFeatureHit(0)
+  }
+
+  function focusFeatureHit(i: number) {
+    const n = search.featureHits.length
+    if (!n) return
+    search.featureIndex = ((i % n) + n) % n
+    const f = search.featureHits[search.featureIndex]
+    select({ start: f.start, end: f.end }, { featureId: f.id, navigate: true })
   }
 
   function focusHit(i: number) {
@@ -161,6 +184,8 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     search.query = ''
     search.hits = []
     search.index = -1
+    search.featureHits = []
+    search.featureIndex = -1
     search.error = null
   }
 
@@ -178,7 +203,7 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     enzymeFilter, search, rotation, viewport, seqVisible, navigate, unshown,
     features, enzymeList, enzymes, cuts, orfs, primers, stats,
     select, setCaret, selectFeature, navigateTo, toggleFeatureHidden, toggleEnzymeHidden,
-    runSearch, focusHit, clearSearch, setUnshown, rangeInfo,
+    runSearch, focusHit, focusFeatureHit, clearSearch, setUnshown, rangeInfo,
   }
 }
 

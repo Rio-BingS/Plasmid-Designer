@@ -168,10 +168,12 @@ describe('MapViewer：搜索与 Ctrl+F', () => {
     await w.find('.mv-search select').findAll('option')[1].setSelected()
     await flushPromises()
     expect(Number(w.find('.mv-hitcount').text().split('/')[1])).toBeGreaterThan(1)
-    // 非法字符报错
+    // 序列搜不到时改按元件名称找，"hello!" 既不是碱基串也没有同名元件：
+    // 显示「无匹配」而不是碱基语法错（搜索框现在同时接受序列与名称）
     await input.setValue('hello!')
     await input.trigger('keydown', { key: 'Enter' })
-    expect(w.find('.mv-search .mv-error').exists()).toBe(true)
+    expect(w.find('.mv-search .mv-error').exists()).toBe(false)
+    expect(w.find('.mv-search').text()).toContain('无匹配')
     w.unmount()
   })
 

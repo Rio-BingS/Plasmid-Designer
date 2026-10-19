@@ -64,6 +64,7 @@ from app.sequencing_batch import (  # noqa: E402
     batch_payload,
     group_batch_uploads,
     plasmid_groups,
+    rescue_references_by_features,
     run_batch_groups,
 )
 from app.sequencing_report import (  # noqa: E402
@@ -219,6 +220,9 @@ class OfflineBatch:
         refs = [f for f in files if f["ext"] not in READ_EXTS]
         ordered, per_plasmid, self.unmatched = group_batch_uploads(reads, refs, rows)
         self.groups = plasmid_groups(ordered, per_plasmid)
+        # 文件名里没有质粒名称时（如 10001.DNA），按图谱内部 CDS 名称再认一次
+        self.unmatched = rescue_references_by_features(
+            self.groups, self.unmatched, rows)
         self.archive = BatchArchive([g["plasmid"] or "" for g in self.groups],
                                     origin="offline", source_paths=True, root="")
         self.items: List[Dict] = []
@@ -758,10 +762,13 @@ def main() -> int:
     if args.dry_run:
         reads = [f for f in files if f["ext"] in READ_EXTS]
         refs = [f for f in files if f["ext"] not in READ_EXTS]
-        _ordered, per_plasmid, unmatched = group_batch_uploads(reads, refs, rows)
-        for name, slot in per_plasmid.items():
-            ref = slot["reference"]["file"]["path"].name if slot["reference"] else "（缺）"
-            print(f"[预览] {name}: 图谱={ref}, reads={[r['file']['path'].name for r in slot['reads']]}")
+        ordered, per_plasmid, unmatched = group_batch_uploads(reads, refs, rows)
+        preview_groups = plasmid_groups(ordered, per_plasmid)
+        unmatched = rescue_references_by_features(preview_groups, unmatched, rows)
+        for g in preview_groups:
+            ref = g["reference"]["file"]["path"].name if g["reference"] else "（缺）"
+            print(f"[预览] {g['plasmid']}: 图谱={ref}, "
+                  f"reads={[r['file']['path'].name for r in g['reads']]}")
         for u in unmatched:
             print(f"[未匹配] {u['file']['path'].name}: {u['reason']}")
         # 输出目录留有上次运行记录时，需要本次结论才能知道哪些旧副本会被

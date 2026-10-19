@@ -63,7 +63,8 @@ from app import batch_report_store, sequencing_store
 from app.sequencing_upload_sessions import DiskBlob, LazyFileEntry
 from app.sequencing_batch import (
     batch_payload, estimate_batch_cost, group_batch_uploads, parse_group_references,
-    plasmid_groups, reference_circular, run_batch_groups,
+    plasmid_groups, reference_circular, rescue_references_by_features,
+    run_batch_groups,
 )
 from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import format_locus_line
@@ -620,6 +621,8 @@ def _group_and_check(
             raise HTTPException(status_code=400, detail=f"质粒数超过上限（{MAX_BATCH_PLASMIDS} 个）")
         groups = plasmid_groups(ordered, per_plasmid)
     _check_batch_read_caps(groups, read_limits)
+    # 文件名对不上的图谱再按文件内 CDS/gene 名称试一次（只读未匹配的那几张）
+    unmatched = rescue_references_by_features(groups, unmatched, rows)
     return groups, unmatched, clone_mode
 
 

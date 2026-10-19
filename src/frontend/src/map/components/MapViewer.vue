@@ -158,8 +158,12 @@ function setInside(v: boolean) { pointerInside = v }
 function runSearch() { store.runSearch(searchText.value, mismatches.value) }
 function onSearchKey(e: KeyboardEvent) {
   if (e.key === 'Enter') {
-    if (store.search.hits.length && store.search.query === searchText.value.replace(/\s+/g, '').toUpperCase()) {
-      store.focusHit(store.search.index + (e.shiftKey ? -1 : 1))
+    const step = e.shiftKey ? -1 : 1
+    if (store.search.mode === 'name' && store.search.query === searchText.value
+        && store.search.featureHits.length) {
+      store.focusFeatureHit(store.search.featureIndex + step)
+    } else if (store.search.hits.length && store.search.query === searchText.value.replace(/\s+/g, '').toUpperCase()) {
+      store.focusHit(store.search.index + step)
     } else {
       runSearch()
     }
@@ -440,8 +444,8 @@ defineExpose({ store, view, undo })
         <span v-if="analyzing" class="mv-muted">计算中…</span>
       </div>
       <div class="mv-group mv-search" role="search">
-        <input ref="searchInput" v-model="searchText" class="mv-input" type="search" placeholder="搜索序列（Ctrl+F）"
-               aria-label="搜索序列" @keydown="onSearchKey" />
+        <input ref="searchInput" v-model="searchText" class="mv-input" type="search" placeholder="搜索序列或元件名称（Ctrl+F）"
+               aria-label="搜索序列或元件名称" @keydown="onSearchKey" />
         <select v-model.number="mismatches" class="mv-select" title="允许错配数">
           <option v-for="k in [0, 1, 2, 3]" :key="k" :value="k">{{ k }} 错配</option>
         </select>
@@ -450,6 +454,13 @@ defineExpose({ store, view, undo })
           <span class="mv-muted mv-hitcount">{{ store.search.index + 1 }}/{{ store.search.hits.length }}{{ store.search.truncated ? '+' : '' }}</span>
           <button type="button" class="mv-btn" title="上一个" @click="store.focusHit(store.search.index - 1)">↑</button>
           <button type="button" class="mv-btn" title="下一个" @click="store.focusHit(store.search.index + 1)">↓</button>
+        </template>
+        <template v-else-if="store.search.featureHits.length">
+          <span class="mv-muted mv-hitcount" :title="store.search.featureHits[store.search.featureIndex]?.name">
+            {{ store.search.featureIndex + 1 }}/{{ store.search.featureHits.length }} 个元件
+          </span>
+          <button type="button" class="mv-btn" title="上一个元件" @click="store.focusFeatureHit(store.search.featureIndex - 1)">↑</button>
+          <button type="button" class="mv-btn" title="下一个元件" @click="store.focusFeatureHit(store.search.featureIndex + 1)">↓</button>
         </template>
         <span v-else-if="store.search.error" class="mv-error">{{ store.search.error }}</span>
         <span v-else-if="store.search.query" class="mv-muted">无匹配</span>
