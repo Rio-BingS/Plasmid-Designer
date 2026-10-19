@@ -651,7 +651,7 @@ class PrimerDesigner:
                 length=len(seq),
                 target_start=start_pos,
                 target_end=start_pos + len(seq),
-                notes="Warning: May not meet all quality criteria"
+                notes=self._fallback_notes(seq)
             )
         
         return best_primer
@@ -736,7 +736,7 @@ class PrimerDesigner:
                 length=len(seq_rc),
                 target_start=fb_start,
                 target_end=fb_end,
-                notes="Warning: May not meet all quality criteria"
+                notes=self._fallback_notes(seq_rc)
             )
         
         return best_primer
@@ -773,7 +773,39 @@ class PrimerDesigner:
             return False
 
         return True
-    
+
+    def _quality_issues(self, seq: str) -> List[str]:
+        """逐项列出不达标的引物质量指标（兜底引物用）。
+
+        兜底路径不走候选筛选，但不该只留一句「可能不符合质量要求」——
+        具体是哪项超标（Tm/GC/poly-X/3' 端 GC/自互补/二聚体）要能让
+        用户直接判断这条引物能不能用。"""
+        issues: List[str] = []
+        gc = self._calculate_gc(seq)
+        if gc < self.gc_min or gc > self.gc_max:
+            issues.append(f"GC {gc:.1f}% 超出 {self.gc_min:g}-{self.gc_max:g}%")
+        tm = self._calculate_tm(seq)
+        if tm < self.tm_min or tm > self.tm_max:
+            issues.append(f"Tm {tm:.1f}℃ 超出 {self.tm_min:g}-{self.tm_max:g}℃")
+        for base in "ATGC":
+            if base * self.max_poly_x in seq:
+                issues.append(f"含 {base * self.max_poly_x} 连续碱基")
+        if sum(1 for b in seq[-5:] if b in "GC") > 4:
+            issues.append("3' 端 5bp 内 GC 过多")
+        if self._max_self_complementarity(seq) > self.max_self_comp:
+            issues.append("自身互补过强")
+        tail = seq[-4:]
+        if len(tail) == 4 and tail == self._reverse_complement(tail):
+            issues.append("末 4bp 自互补（引物二聚体风险）")
+        return issues
+
+    def _fallback_notes(self, seq: str) -> str:
+        """兜底引物的 notes：写明具体不达标项；全部通过则说明它是「合格但非最优」"""
+        issues = self._quality_issues(seq)
+        if not issues:
+            return "兜底引物（候选筛选未命中，按模板直接截取；质量判据本身通过）"
+        return "Warning: 兜底引物未通过质量筛选：" + "；".join(issues)
+
     def _score_primer(self, seq: str) -> float:
         """引物评分（越高越好）"""
         tm = self._calculate_tm(seq)
