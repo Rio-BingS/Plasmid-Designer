@@ -1762,6 +1762,39 @@ def _column_quality(aln: Dict, L: int, circular: bool
     return base_q, ins_q
 
 
+# 模糊调用（N 与 IUPAC 简并码）：它们可以代表"该 read 在这里没读清"，
+# 但不能压过另一条 read 干净读出的具体碱基（见 _pick_base_vote）
+_AMBIGUOUS_BASES = frozenset("NRYSWKMBDHVU")
+
+
+def _pick_base_vote(cell: Dict[str, float]) -> str:
+    """多位点投票的胜出键：明确碱基优先于 N/IUPAC 模糊调用。
+
+    单 read 覆盖时调用方根本不走这里（以该 read 为准，N 如实保留）。
+    多个 read 打平时，只要有一条 read 给出具体碱基（ACGT 或插入/缺失），
+    就选它在权重最高的那个；只有全场都是模糊调用时才让 N 胜出——
+    否则"一条 read 读 N、另一条干净读出参考碱基"会让共识序列出现 N。
+    插入（"+A"）与缺失（"-"）不是模糊调用，照常参与。"""
+    definite = {k: w for k, w in cell.items() if k not in _AMBIGUOUS_BASES}
+    return max((definite or cell).items(), key=lambda kv: kv[1])[0]
+
+
+def _merged_zone_artifact(v: Dict, src: Optional[Dict]) -> bool:
+    """变异是否落在源 read 的合并压缩窗内、且只靠单条 read 支撑。
+
+    read 在那段同聚物区没有可分辨证据（逐位判定含 indel 锚点都不可信），
+    所以单 read 报告一律降级；但跨 read 互证一致（support_reads >= 2）的
+    变异不受影响——各 read 的证据是独立的，合并压缩只削弱其中一条。"""
+    if src is None or v.get("confidence") == "low":
+        return False
+    if (v.get("support_reads") or 1) >= 2:
+        return False
+    positions = set()
+    for zone in src.get("poly_merged_zones") or []:
+        positions.update(zone.get("positions") or ())
+    return v.get("read_pos") in positions
+
+
 def _build_consensus(reference: str, read_results: List[Dict],
                      skip_keys: Optional[set] = None,
                      circular: bool = False) -> Dict:
@@ -1853,7 +1886,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
         if len(voters[pos - 1]) == 1:
             best_key = voters[pos - 1][0]   # 单 read 覆盖：以该 read 为准
         else:
-            best_key = max(cell.items(), key=lambda kv: kv[1])[0]
+            best_key = _pick_base_vote(cell)
         if best_key.startswith("+"):
             alt = best_key[1:]
             cons_index = len(consensus_chars)
@@ -2876,12 +2909,9 @@ def analyze(
         # 此处根本没有可分辨证据，逐位判定（含 indel 锚点）不可信，强制降级
         # （跨 read 互证一致的变异不受单 read 降级影响——support_reads 聚合
         # 来自各 read 独立证据，merged read 的伪差异已被 mixed 抑制挡在门外）
-        if src is not None and v.get("confidence") != "low":
-            for zone in src.get("poly_merged_zones") or []:
-                if v.get("read_pos") in zone["positions"]:
-                    v["confidence"] = "low"
-                    v["merged_zone_artifact"] = True
-                    break
+        if _merged_zone_artifact(v, src):
+            v["confidence"] = "low"
+            v["merged_zone_artifact"] = True
         # 互检矛盾：另一条 read 的干净覆盖压过单 read 的 indel 报告——
         # 与 poly 合并区抑制同口径，矛盾证据不进确证判定与共识
         if v.get("cross_read_conflict") and v.get("confidence") != "low":
