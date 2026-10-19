@@ -163,6 +163,12 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
     accepted / contradictory / undetermined / deficit_observed / caller_only
   - 部分测序是常规策略：结论以引物覆盖区为准，未覆盖区「按设计序列对待」，不建议补测
   - 前端 read↔ref 映射用 `query_start/query_end`（比对块绝对坐标），不要回退到镜像式
+- 交付文件命名规范（.DNA 参考图谱）：优先「编号 + 半角空格 + 质粒名称」，如
+  `10001 PNPM5.DNA`、`10001-1 pET-30a.DNA`；编号或名称全局唯一且可追溯时也可只写
+  其一（`10001.DNA` / `PNPM5.DNA`），三者表示同一质粒。批量归组按「全名精确 >
+  忽略分隔符精确 > 与名称某段一致 > 双向包含」多级匹配，候选不唯一一律不猜。
+  **扩展名大小写不敏感**（`.DNA` 与 `.dna` 等价）：各入口按扩展名分派前都已
+  `.lower()`，新增入口必须同样归一化，回归锁见 `tests/test_extension_case.py`
 
 ## 文档索引（按需加载）
 
