@@ -77,15 +77,29 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   const unshown = reactive<Record<string, UnshownItem[]>>({})
 
   watch(() => doc.value, (d, old) => {
-    if (old && d.length === old.length && d.sequence === old.sequence) return
-    selection.value = null
-    caret.value = null
-    selectedFeatureId.value = null
-    viewport.value = { from: 0, to: d.length }
-    search.hits = []
-    search.index = -1
-    search.featureHits = []
-    search.featureIndex = -1
+    if (!old) return
+    // 任何文档切换都作废一次搜索：结果绑定的是旧文档的坐标与元件引用，
+    // 留着会让「上一个/下一个」跳到旧位置（此前只在序列/长度变化时清）
+    resetSearch()
+    const sameSeq = d.length === old.length && d.sequence === old.sequence
+    if (!sameSeq) {
+      selection.value = null
+      caret.value = null
+      selectedFeatureId.value = null
+      viewport.value = { from: 0, to: d.length }
+    }
+    // 同序列但换了注释（如重新自动注释）：选中项已不存在就放开选区，
+    // 视口保留——用户只是在同一张图上刷新了注释，不该丢视野
+    const ids = new Set(d.features.map((f) => f.id))
+    if (selectedFeatureId.value && !ids.has(selectedFeatureId.value)) {
+      selectedFeatureId.value = null
+      selection.value = null
+    }
+    // 隐藏项按 id 记忆：只留新文档里仍存在的元件，避免旧 id 把新元件静默隐藏
+    const kept = hiddenFeatures.value.filter((id) => ids.has(id))
+    if (kept.length !== hiddenFeatures.value.length) hiddenFeatures.value = kept
+    // 「N 项无法显示」是渲染产物，文档一换就重算
+    for (const k of Object.keys(unshown)) delete unshown[k]
   })
 
   const features = computed<MapFeature[]>(() => {
@@ -180,13 +194,20 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     select({ start: h.start, end: h.end }, { navigate: true })
   }
 
-  function clearSearch() {
+  /** 清空一次搜索的全部结果与状态（清空搜索框与文档切换共用） */
+  function resetSearch() {
     search.query = ''
     search.hits = []
     search.index = -1
     search.featureHits = []
     search.featureIndex = -1
     search.error = null
+    search.truncated = false
+    search.mode = 'sequence'
+  }
+
+  function clearSearch() {
+    resetSearch()
   }
 
   function setUnshown(view: string, items: UnshownItem[]) {
