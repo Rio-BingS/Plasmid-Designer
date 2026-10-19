@@ -125,6 +125,26 @@ def resolve_codon_table_file(species: str) -> Optional[Path]:
     return target
 
 
+def codon_tables_digest() -> str:
+    """codon_tables 目录的内容指纹（文件名 + mtime + 大小）。
+
+    表清单缓存按它分键：新增/删除/改动 YAML 后键随即变化，不会在 7 天 TTL
+    内继续返回旧清单（此前是常量键且无失效入口，改表后前端选不到新表）。"""
+    table_dir = _codon_tables_dir()
+    if not table_dir:
+        return "none"
+    parts = []
+    for path in sorted(list(table_dir.glob("*.yaml")) + list(table_dir.glob("*.yml"))):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.name}:{st.st_mtime_ns}:{st.st_size}")
+    if not parts:
+        return "none"
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 # (路径, mtime_ns, 大小) -> 内容摘要。表文件不变时不重复读盘；改表后
 # mtime/大小变化即重算，缓存键随之变化（审查 10 M6）
 _TABLE_DIGESTS: Dict[Tuple[str, int, int], str] = {}
@@ -444,9 +464,28 @@ class CodonOptimizer:
         gc_part = max(0.0, 1.0 - abs(gc - mid) / mid) if mid > 0 else 0.0
         return local_cai + 0.3 * gc_part
 
+    def _host_class(self) -> str:
+        """目标宿主类别（prokaryote / eukaryote）。
+
+        以实际加载的密码子表名为准，再看物种名：两者都可能是 "E. coli"、
+        "Escherichia coli"、"S. cerevisiae" 这类别名（选表本身走
+        _SPECIES_ALIASES 的模糊匹配），拿原始串直接查 HOST_CLASS 会落空、
+        被默认判成真核——于是漏避让 SD/TATAAT，反去避让 polyA 信号。"""
+        for raw in (self.codon_table_used or "", self.species or ""):
+            key = re.sub(r"[\s._-]+", "", str(raw).lower())
+            if not key:
+                continue
+            for name, cls in HOST_CLASS.items():
+                if name in key:
+                    return cls
+            for name, aliases in _SPECIES_ALIASES.items():
+                if any(re.sub(r"[\s._-]+", "", a) in key for a in aliases):
+                    return HOST_CLASS.get(name, "eukaryote")
+        return "eukaryote"
+
     def _censor_motifs(self) -> List[str]:
         """按目标宿主返回需要审查的隐蔽调控 motif。"""
-        host_class = HOST_CLASS.get((self.species or "").lower(), "eukaryote")
+        host_class = self._host_class()
         return list(CENSOR_MOTIFS.get(host_class, CENSOR_MOTIFS["eukaryote"]))
     
     def _initial_optimization(self, aa_sequence: str, use_ramp: bool = False) -> str:

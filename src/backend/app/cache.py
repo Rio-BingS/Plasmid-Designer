@@ -28,7 +28,7 @@ VECTOR_CACHE_TTL = 604800  # 7 天
 # v2.1：修复反向互补映射错误
 # v2.2：密码子表按 Kazusa 重建、CHO 改回中国仓鼠、迭代循环生效、
 #       motif 避让覆盖反向链、滑窗精修（v2.5.0–v2.8.0）
-CODON_OPT_ALGO = "v2.2"
+CODON_OPT_ALGO = "v2.3"  # v2.3：宿主类别按解析后的表名/别名判定（隐蔽 motif 审查表改变）
 # v2：酶表统一到 Bio.Restriction（REBASE），由 26 种扩为 47 种（v2.8.0）
 # v3：增加 golden_gate_enzymes（REBASE 数据驱动的 Golden Gate 候选酶）
 ANALYSIS_ENZYMES_VERSION = "v3"
@@ -344,13 +344,16 @@ class CacheManager:
     
     # ==================== 密码子表缓存 ====================
     
-    def cache_codon_tables(self, tables: List[Dict]) -> bool:
-        """缓存密码子表列表"""
-        return self.backend.set("codon_tables:list", tables, VECTOR_CACHE_TTL)
+    def cache_codon_tables(self, tables: List[Dict], digest: str = "") -> bool:
+        """缓存密码子表列表。
+
+        digest 为 data/codon_tables 的内容指纹（codon_optimizer.codon_tables_digest）：
+        表文件增删改后键随之变化，不会在 7 天 TTL 内继续返回旧清单。"""
+        return self.backend.set(f"codon_tables:list:{digest}", tables, VECTOR_CACHE_TTL)
     
-    def get_codon_tables(self) -> Optional[List[Dict]]:
-        """获取缓存的密码子表列表"""
-        return self.backend.get("codon_tables:list")
+    def get_codon_tables(self, digest: str = "") -> Optional[List[Dict]]:
+        """获取缓存的密码子表列表（键含目录内容指纹）"""
+        return self.backend.get(f"codon_tables:list:{digest}")
     
     # ==================== 批量任务缓存 ====================
     
