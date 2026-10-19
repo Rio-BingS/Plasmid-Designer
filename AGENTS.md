@@ -169,7 +169,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 | 文档 | 内容 |
 |---|---|
 | README.md | 功能、API 一览、环境变量、测试命令 |
-| docs/HANDOVER.md | 交接文档：现状事实清单、近一周主线、当前红灯逐项定性、下一步优先级（刚接手先读） |
+| docs/HANDOVER.md | 交接文档：现状事实清单、版本主线、入口地图、已修问题留档（根因/验证）、部署缺口与下一步优先级（刚接手先读） |
 | docs/KNOWN_ISSUES.md | 未解决挂账 + 防回潮约束 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处；用户明确要求短期不做） |
 | docs/CACHE.md | 缓存策略与现状 |
@@ -214,7 +214,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 - 当前版本 v2.16.2；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
-- 刚接手先读 docs/HANDOVER.md（现状、红灯定性、下一步优先级）
+- 刚接手先读 docs/HANDOVER.md（现状、已修问题留档、部署缺口与下一步）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
