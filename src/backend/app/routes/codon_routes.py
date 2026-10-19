@@ -14,8 +14,12 @@ async def list_codon_tables():
     """
     列出可用的密码子表
     """
-    # 密码子表为静态数据，列表缓存 7 天（VECTOR_CACHE_TTL）
-    tables = cache.get_codon_tables()
+    # 密码子表基本静态：列表缓存 7 天，但键带上目录内容指纹——
+    # 增删改 data/codon_tables/*.yaml 后立刻换键，不会返回旧清单
+    from core.codon_optimizer import codon_tables_digest
+
+    digest = codon_tables_digest()
+    tables = cache.get_codon_tables(digest)
     if tables is not None:
         return tables
 
@@ -32,7 +36,7 @@ async def list_codon_tables():
             })
 
     try:
-        cache.cache_codon_tables(tables)
+        cache.cache_codon_tables(tables, digest)
     except Exception:
         pass
 
