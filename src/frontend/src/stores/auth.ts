@@ -4,7 +4,7 @@ import {
   login as apiLogin, register as apiRegister, logout as apiLogout, verifyToken,
   getSiteConfig, type SiteConfig
 } from '@/api'
-import { bumpAuthEpoch, currentAuthEpoch, onSessionExpired } from '@/api/session'
+import { bumpAuthEpoch, currentAuthEpoch, onSessionChanged, onSessionExpired } from '@/api/session'
 
 // 旧版本把令牌与用户信息存在 localStorage（XSS 可直接读走）；
 // 现在令牌只在后端下发的 httpOnly Cookie 里，启动时清掉遗留数据
@@ -182,6 +182,13 @@ export const useAuthStore = defineStore('auth', () => {
 
   // 接口返回 401（当前会话已失效）时由 api 拦截器经 session 模块回调清理
   onSessionExpired(expireSession)
+
+  // 其他标签页切换了会话（登录/登出）：Cookie 是共享的，按它核实一次本页
+  // 登录态。只在已登录时核实——已登出时再核实会 clearAuth→bump→对端跟随
+  // →再核实，两页来回递增形成回声；已登录时最多各清一次即收敛。
+  onSessionChanged(() => {
+    if (isAuthenticated.value) void checkAuth()
+  })
 
   return {
     user,
