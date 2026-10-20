@@ -158,6 +158,20 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 | GET | `/api/design/{id}/download/primers` | 下载引物订单 (TSV) |
 | GET | `/api/design/{id}/map` | 构建体图谱（MapDocument，见 [docs/MAP.md](docs/MAP.md)） |
 
+### 设计页一次性载体（本地上传 / 在线导入）
+
+设计页的载体来源有三条：**载体库**（共享库）、**本地上传**、**在线导入**。
+后两条取到的载体**不写载体库、不落盘**：接口只做解析/下载并回执一次性载体载荷
+（含序列、元件、MCS 判定与告警），前端把它随 `POST /api/design` 的 `vector` 字段
+内联提交，设计时现场构造载体。因此普通用户（非管理员）也能用自己手里的载体出方案。
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/design/vector/sources` | 在线来源清单与许可摘要（不出网） |
+| GET | `/api/design/vector/snapgene/search` | SnapGene 在线库按质粒名跨集合搜索（需登录；限流档 `ncbi`） |
+| POST | `/api/design/vector/upload` | 上传 GenBank / FASTA / SnapGene `.dna` → 一次性载体载荷（限流档 `upload`，体积上限同 `/api/map/parse`） |
+| POST | `/api/design/vector/online` | 按来源取序列：`snapgene`（需登录）/ `ncbi` / `ensembl` / `addgene`（仅管理员，需配置会话）→ 一次性载体载荷（限流档 `ncbi`） |
+
 ### 批量设计
 
 | 方法 | 端点 | 说明 |
