@@ -6,11 +6,60 @@ export type CloningMethod = 'gibson' | 'golden_gate' | 'restriction' | 'gene_syn
 export type InsertSource = 'pcr' | 'gene_synthesis'
 export type DesignStatus = 'pending' | 'running' | 'completed' | 'failed'
 
+/** 一次性载体的元件（与载体 YAML / 图谱契约同形，strand 允许 1/-1/0） */
+export interface DesignVectorFeature {
+  name: string
+  type: string
+  start: number
+  end: number
+  strand: '+' | '-' | 1 | -1 | 0
+  description?: string
+}
+
+/** 载体 MCS 判定结果：feature=文件注释给出，inferred=后端按唯一位点推测 */
+export interface DesignVectorMcs {
+  start: number
+  end: number
+  origin: 'feature' | 'inferred'
+  enzymes: string[]
+}
+
+/**
+ * 一次性载体：设计页本地上传 / 在线导入的载体（不写共享载体库）
+ * 后端 /api/design/vector/* 返回它，POST /api/design 的 vector 字段再回传
+ */
+export interface DesignVectorPayload {
+  id: string
+  name: string
+  source: string
+  url?: string
+  license?: string
+  sequence: string
+  topology: 'circular' | 'linear'
+  length: number
+  features: DesignVectorFeature[]
+  mcs?: DesignVectorMcs | null
+  unique_enzymes: string[]
+  warnings: string[]
+}
+
+/** 提交设计时随请求内联的一次性载体（只要设计需要的字段） */
+export interface DesignVectorInput {
+  id?: string
+  name: string
+  sequence: string
+  topology: 'circular' | 'linear'
+  features: DesignVectorFeature[]
+  source?: string
+}
+
 export interface DesignRequest {
   sequence: string
   sequence_type: SequenceType
   sequence_name: string
   vector_id: string
+  /** 一次性载体：给了就忽略载体库（后端不落盘），为空时按 vector_id 查库 */
+  vector?: DesignVectorInput
   cloning_method: CloningMethod
   insert_source?: InsertSource
   optimize_codons: boolean

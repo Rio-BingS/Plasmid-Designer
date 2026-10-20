@@ -153,6 +153,10 @@ class Vector:
     # 出处记录（YAML 的 data_provenance）：内置载体记来源库/集合/日期，
     # 导入载体记来源站 + URL + 许可 + 抓取时间，供界面展示与日后重取
     provenance: Dict[str, str] = field(default_factory=dict)
+    # 唯一位点的切割位置（酶名 → 1-based 正向链切点列表）。只有「一次性载体」
+    # （设计页本地上传 / 在线导入，见 app/adhoc_vector.py）会填：让 Gibson 能在
+    # 载体上任意唯一位点定位线性化点。载体库 YAML 没有这份数据，留空即沿用 MCS 口径
+    unique_site_cuts: Dict[str, List[int]] = field(default_factory=dict)
 
     @property
     def length(self) -> int:
@@ -226,6 +230,15 @@ class VectorLibrary:
                 print(f"Warning: Failed to load {file}: {e}")
         return count
     
+    def parse_dict(self, data: dict) -> Vector:
+        """dict → Vector（公开入口：与 YAML 加载共用同一套归一，一次性载体也走这里）。
+
+        设计页「本地上传 / 在线导入」的载体不进载体库，但必须与库内载体
+        同形状解析（类型别名、name 缺省回退、拓扑、出处），否则两条路径
+        的元件类型/坐标口径会分叉。
+        """
+        return self._parse_vector_dict(data)
+
     def _parse_vector_dict(self, data: dict) -> Vector:
         """解析载体字典"""
         # 解析元件

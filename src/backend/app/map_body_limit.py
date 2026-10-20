@@ -9,6 +9,8 @@ chunked 传输。这里在最外层（CORS 之内）边收边计数：超过上�
 - POST /api/map/parse：MAP_MAX_UPLOAD_MB + 64 KB（multipart 包装开销）；
 - 其余 /api/map/* 写请求（analyze、export/genbank、import/*）：MAP_MAX_JSON_MB
   （默认 16 MB：导出请求体是整份 MapDocument，含位点明细与 ORF）。
+- 设计页一次性载体（/api/design/vector/*）：上传与 /api/map/parse 同一上限，
+  其余按 JSON 上限（内联载体回传可能带整条载体序列）。
 nginx 的 `location ^~ /api/map/` client_max_body_size 须不小于两者中的较大值。
 """
 
@@ -16,6 +18,8 @@ import json
 from typing import Callable, Optional
 
 MAP_PREFIX = "/api/map/"
+# 设计页一次性载体：上传文件与回传内联载体走同一套体积上限
+DESIGN_VECTOR_PREFIX = "/api/design/vector/"
 MULTIPART_OVERHEAD = 64 * 1024
 _WRITE_METHODS = {"POST", "PUT", "PATCH"}
 
@@ -26,6 +30,16 @@ def map_body_limit(path: str) -> int:
 
     if path.rstrip("/") == "/api/map/parse":
         return M.MAP_MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD
+    return M.MAP_MAX_JSON_BYTES
+
+
+def design_vector_body_limit(path: str) -> int:
+    """设计页一次性载体：上传按文件上限，其余（在线导入/内联载体）按 JSON 上限"""
+    from app.routes import map_routes as M  # 复用同一份体积上限常量
+    from app.routes import models as _models
+
+    if path.rstrip("/").endswith("/upload"):
+        return _models.MAP_MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD
     return M.MAP_MAX_JSON_BYTES
 
 

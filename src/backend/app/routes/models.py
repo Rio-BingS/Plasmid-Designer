@@ -17,6 +17,12 @@ MAX_INPUT_DNA = int(os.environ.get("MAX_INPUT_DNA", "20000"))
 # Field 的 max_length 只能给一个绝对值（类型未知），取两者上界兜底；
 # 真正的类型化校验在 model_validator 里做
 MAX_INPUT_SEQ_CHARS = max(MAX_INPUT_AA, MAX_INPUT_DNA) * 3
+# 图谱/载体序列长度上限（bp）：图谱契约与本文件的一次性载体模型共用
+# （此处提前定义：DesignRequest 的内联载体在文件上部就要用到它）
+MAP_MAX_LENGTH = int(os.environ.get("MAP_MAX_LENGTH", "300000"))
+# 上传文件体积上限：图谱页 /api/map/parse 与设计页载体上传（本地上传）共用
+MAP_MAX_UPLOAD_MB = float(os.environ.get("MAP_MAX_UPLOAD_MB", "5"))
+MAP_MAX_UPLOAD_BYTES = int(MAP_MAX_UPLOAD_MB * 1024 * 1024)
 
 
 def _seq_limit_for(sequence_type) -> int:
@@ -114,12 +120,94 @@ class DesignOptions(BaseModel):
         return self
 
 
+# ==================== 一次性载体（设计页本地上传 / 在线导入） ====================
+# 载体库是共享库、写入口只对管理员开放，普通用户手里的 .dna/.gb 或在线来源的
+# 质粒没法进库。设计页的上传/在线导入因此把载体**内联**提交（DesignRequest.vector），
+# 只在本次设计里用，不写载体库（见 app/adhoc_vector.py）。
+
+
+class DesignVectorFeature(BaseModel):
+    """一次性载体的元件（形状与载体 YAML/图谱契约兼容，strand 允许 1/-1/0）"""
+    name: str = Field(default="feature", max_length=80)
+    type: str = Field(default="misc_feature", max_length=40)
+    start: int = Field(..., ge=1)
+    end: int = Field(..., ge=1)
+    strand: Literal["+", "-", 1, -1, 0] = "+"
+    description: str = Field(default="", max_length=300)
+
+
+class DesignVectorMcs(BaseModel):
+    """载体 MCS 判定结果（feature=文件注释给出，inferred=按唯一位点推测）"""
+    start: int
+    end: int
+    origin: Literal["feature", "inferred"] = "inferred"
+    enzymes: List[str] = Field(default_factory=list)
+
+
+class DesignVectorInput(BaseModel):
+    """设计请求内联的一次性载体"""
+    id: Optional[str] = Field(default=None, max_length=120)
+    name: str = Field(default="vector", min_length=1, max_length=80)
+    sequence: str = Field(..., min_length=1, max_length=MAP_MAX_LENGTH)
+    topology: Literal["circular", "linear"] = "circular"
+    features: List[DesignVectorFeature] = Field(default_factory=list, max_length=5000)
+    source: Optional[str] = Field(default=None, max_length=40)
+    url: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("sequence")
+    @classmethod
+    def _clean_sequence(cls, value: str) -> str:
+        # 与图谱/上传入口同一套清洗（空白与数字剔除、U→T、非法碱基拒绝），
+        # 但错误落成 422 的字段校验错误，而不是把设计任务跑成 failed
+        from core.plasmid_map.parsers import MapParseError, clean_sequence
+
+        try:
+            return clean_sequence(value, MAP_MAX_LENGTH)
+        except MapParseError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class DesignVectorOnlineRequest(BaseModel):
+    """在线导入一次性载体：按来源只取需要的参数（缺项由端点按来源校验）"""
+    source: Literal["snapgene", "ensembl", "ncbi", "addgene"]
+    # SnapGene 在线库
+    set_id: Optional[str] = Field(default=None, max_length=64)
+    plasmid_id: Optional[str] = Field(default=None, max_length=120)
+    # Ensembl
+    identifier: Optional[str] = Field(default=None, max_length=64)
+    seq_type: Literal["genomic", "cds", "cdna"] = "cds"
+    # NCBI
+    accession: Optional[str] = Field(default=None, max_length=24)
+    # Addgene（仅管理员，且需部署方配置 ADDGENE_SESSION_COOKIE）
+    addgene_id: Optional[str] = Field(default=None, max_length=10)
+    fmt: Literal["genbank", "dna"] = "genbank"
+
+
+class DesignVectorPayload(BaseModel):
+    """上传/在线导入的回执：可直接作为 DesignRequest.vector 回传"""
+    id: str
+    name: str
+    source: str = ""
+    url: str = Field(default="", max_length=300)
+    license: str = ""
+    sequence: str
+    topology: Literal["circular", "linear"] = "circular"
+    length: int
+    features: List[DesignVectorFeature] = Field(default_factory=list)
+    mcs: Optional[DesignVectorMcs] = None
+    unique_enzymes: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class DesignRequest(DesignOptions):
     """设计请求"""
     sequence: str = Field(..., min_length=1, max_length=MAX_INPUT_SEQ_CHARS,
                           description="输入序列（氨基酸或DNA）")
     sequence_name: str = Field(default="insert", min_length=1, max_length=100, description="序列名称")
     include_report: bool = Field(default=True, description="生成设计报告")
+    # 一次性载体：给了就用它（忽略 vector_id 是否在库里），不写载体库
+    vector: Optional[DesignVectorInput] = Field(
+        default=None, description="内联载体（设计页本地上传/在线导入）；为空时按 vector_id 查载体库")
 
     @model_validator(mode="after")
     def validate_sequence_length(self):
@@ -356,7 +444,7 @@ class OnlinePreviewResponse(BaseModel):
 
 from core.plasmid_map import types as _map_limits  # noqa: E402  契约条数上限的唯一来源
 
-MAP_MAX_LENGTH = int(os.environ.get("MAP_MAX_LENGTH", "300000"))
+# MAP_MAX_LENGTH 定义见文件开头（一次性载体模型先用到它）
 MAP_MAX_FEATURES = _map_limits.MAX_FEATURES
 MAP_MAX_ENZYMES = 1000
 

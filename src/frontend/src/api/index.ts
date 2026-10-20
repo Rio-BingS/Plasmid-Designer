@@ -1,6 +1,8 @@
 import axios from 'axios'
 import { currentAuthEpoch, notifySessionExpired } from './session'
-import type { DesignRequest, DesignResult, VectorInfo, CodonTable } from '@/types'
+import type {
+  DesignRequest, DesignResult, DesignVectorPayload, VectorInfo, CodonTable
+} from '@/types'
 import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
 const API_BASE = '/api'
@@ -268,6 +270,66 @@ export async function uploadVectorFile(file: File): Promise<any> {
   const formData = new FormData()
   formData.append('file', file)
   const response = await api.post('/vectors/import/upload', formData)
+  return response.data
+}
+
+// ==================== 设计页一次性载体（本地上传 / 在线导入） ====================
+// 与 /vectors/import/* 的分工：那条路写**共享**载体库、需管理员；这条路只把
+// 载体取回来随本次设计提交（后端不落盘），普通用户也能用自己手里的载体。
+
+/** 在线来源清单与许可摘要（不出网；与载体库/图谱页同一份数据） */
+export async function getDesignVectorSources(): Promise<{
+  enabled: boolean
+  snapgene_online_enabled?: boolean
+  disclaimer: string
+  sources: OnlineSourceInfo[]
+}> {
+  const response = await api.get('/design/vector/sources')
+  return response.data
+}
+
+/** 上传载体文件（GenBank / FASTA / SnapGene .dna）→ 一次性载体载荷 */
+export async function uploadDesignVector(file: File): Promise<DesignVectorPayload> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await api.post('/design/vector/upload', formData)
+  return response.data
+}
+
+export interface DesignVectorOnlineRequest {
+  source: 'snapgene' | 'ensembl' | 'ncbi' | 'addgene'
+  set_id?: string
+  plasmid_id?: string
+  identifier?: string
+  seq_type?: 'genomic' | 'cds' | 'cdna'
+  accession?: string
+  addgene_id?: string
+  fmt?: 'genbank' | 'dna'
+}
+
+/** 按来源在线取一条序列 → 一次性载体载荷（SnapGene 需登录；Addgene 需管理员） */
+export async function importDesignVectorOnline(
+  payload: DesignVectorOnlineRequest
+): Promise<DesignVectorPayload> {
+  const response = await api.post('/design/vector/online', payload)
+  return response.data
+}
+
+/** SnapGene 在线库按质粒名跨集合搜索（只给候选，选中后再取全长） */
+export async function searchDesignVectorSnapgene(q: string, limit = 20): Promise<{
+  query: string
+  count: number
+  truncated?: boolean
+  plasmids: {
+    plasmid_id: string
+    name: string
+    filename?: string
+    set_id?: string
+    set_name?: string
+  }[]
+  failed_sets?: string[]
+}> {
+  const response = await api.get('/design/vector/snapgene/search', { params: { q, limit } })
   return response.data
 }
 

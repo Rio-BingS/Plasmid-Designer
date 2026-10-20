@@ -165,6 +165,7 @@ async def health_check():
 from fastapi import Depends
 
 from app.routes.design_routes import router as design_router
+from app.routes.design_vector_routes import router as design_vector_router
 from app.routes.batch_routes import router as batch_router
 from app.routes.vector_routes import router as vector_router
 from app.routes.online_source_routes import router as online_source_router
@@ -183,6 +184,9 @@ from app.gating import require_feature, require_any_feature
 # 功能门控：site_settings 中各层级功能开关在此落到 API（管理员不受限）；
 # 前端导航/路由已按 site-config 隐藏，此处兜底防绕过前端直连
 app.include_router(design_router, dependencies=[Depends(require_feature("design"))])
+# 设计页一次性载体（本地上传 / 在线导入，只取不存）：跟设计走同一个开关，
+# 否则关掉载体库时设计页连自己的文件都用不了
+app.include_router(design_vector_router, dependencies=[Depends(require_feature("design"))])
 app.include_router(batch_router, dependencies=[Depends(require_feature("batch"))])
 # 在线来源导入（SnapGene 在线库 / Ensembl / Addgene）：注册在 vector_router 之前，
 # 避免 /api/vectors/{vector_id} 这类单段模板在匹配顺序上先截获子路径
@@ -227,8 +231,13 @@ setup_middleware(app)
 
 # /api/map/* 请求体流式体积上限：边收边计数，超限直接 413（不进下游、不整体读入）；
 # 位于 CORS 之内，413 也带 CORS 头
-from app.map_body_limit import MapBodyLimitMiddleware
+from app.map_body_limit import (
+    DESIGN_VECTOR_PREFIX, MapBodyLimitMiddleware, design_vector_body_limit,
+)
 app.add_middleware(MapBodyLimitMiddleware)
+# 设计页载体上传/在线导入：同一套流式体积上限（上传按文件上限，其余按 JSON 上限）
+app.add_middleware(MapBodyLimitMiddleware, limit_for=design_vector_body_limit,
+                   prefix=DESIGN_VECTOR_PREFIX)
 
 # CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
 # 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。
