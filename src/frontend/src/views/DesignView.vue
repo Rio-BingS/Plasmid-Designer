@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import type { DesignRequest, VectorInfo, CodonTable } from '@/types'
+import type { DesignRequest, DesignVectorPayload, VectorInfo, CodonTable } from '@/types'
 import { submitDesign, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
+import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 
 const router = useRouter()
 
@@ -12,6 +13,13 @@ const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
 const sequence = ref('')
 const sequenceName = ref('insert')
 const vectorId = ref('pET-28a')
+// 载体来源：载体库（共享库）/ 本地上传 / 在线导入。后两者的一次性载体只随
+// 本次设计提交，不写载体库（见 components/DesignVectorPicker.vue）
+const vectorMode = ref<'library' | 'upload' | 'online'>('library')
+const adhocVector = ref<DesignVectorPayload | null>(null)
+const adhocMode = computed<'upload' | 'online'>(() =>
+  vectorMode.value === 'online' ? 'online' : 'upload'
+)
 const cloningMethod = ref<'gibson' | 'golden_gate' | 'restriction'>('gibson')
 // 插入片段来源与克隆方法正交
 const insertSource = ref<'pcr' | 'gene_synthesis'>('pcr')
@@ -37,10 +45,21 @@ const oligoLengthMin = ref(40)
 const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
 
-// 当前载体的 MCS 酶列表（供 Gibson 定位位点选择）
+// 当前载体可供 Gibson 定位的酶：
+// - 载体库载体 = 其 MCS 上的唯一酶位点
+// - 一次性载体 = 全序列的唯一位点（后端按扫描结果给出；没有 MCS 注释时也能定位）
 const currentVectorMcsEnzymes = computed(() =>
-  availableVectors.value.find(v => v.id === vectorId.value)?.mcs_enzymes || []
+  adhocVector.value
+    ? adhocVector.value.unique_enzymes || []
+    : availableVectors.value.find(v => v.id === vectorId.value)?.mcs_enzymes || []
 )
+
+function setVectorMode(mode: 'library' | 'upload' | 'online') {
+  if (mode === vectorMode.value) return
+  vectorMode.value = mode
+  // 换来源一律重选：否则切回载体库后仍会带着上一次的一次性载体提交
+  adhocVector.value = null
+}
 
 // 提交状态
 // 动态选项
@@ -106,6 +125,12 @@ async function handleSubmit() {
     error.value = '双酶切请选择两种不同的限制酶'
     return
   }
+  if (vectorMode.value !== 'library' && !adhocVector.value) {
+    error.value = vectorMode.value === 'upload'
+      ? '请先上传载体文件，或切回「载体库」选择载体'
+      : '请先在线导入载体，或切回「载体库」选择载体'
+    return
+  }
 
   isSubmitting.value = true
   error.value = ''
@@ -139,6 +164,18 @@ async function handleSubmit() {
     }
     if (insertSource.value === 'gene_synthesis' && excludeEnzymes.value.length) {
       request.exclude_enzymes = excludeEnzymes.value
+    }
+    if (adhocVector.value) {
+      // 一次性载体：随请求内联提交，后端现场构造 Vector（不写载体库）
+      request.vector_id = adhocVector.value.id
+      request.vector = {
+        id: adhocVector.value.id,
+        name: adhocVector.value.name,
+        sequence: adhocVector.value.sequence,
+        topology: adhocVector.value.topology,
+        features: adhocVector.value.features,
+        source: adhocVector.value.source
+      }
     }
 
     const result = await submitDesign(request)
@@ -242,7 +279,29 @@ function loadExample() {
         
         <div class="form-group">
           <label class="form-label">目标载体</label>
-          <select v-model="vectorId" class="form-select">
+
+          <div class="vector-source-toggle">
+            <button
+              type="button"
+              class="toggle-btn"
+              :class="{ active: vectorMode === 'library' }"
+              @click="setVectorMode('library')"
+            >载体库</button>
+            <button
+              type="button"
+              class="toggle-btn"
+              :class="{ active: vectorMode === 'upload' }"
+              @click="setVectorMode('upload')"
+            >本地上传</button>
+            <button
+              type="button"
+              class="toggle-btn"
+              :class="{ active: vectorMode === 'online' }"
+              @click="setVectorMode('online')"
+            >在线导入</button>
+          </div>
+
+          <select v-if="vectorMode === 'library'" v-model="vectorId" class="form-select">
             <option v-if="!availableVectors.length" value="pET-28a">pET-28a(+) - E.coli 表达载体</option>
             <option
               v-for="v in availableVectors"
@@ -252,6 +311,15 @@ function loadExample() {
               {{ v.name }}{{ v.host?.length ? ` - ${v.host.join('/')}` : '' }}
             </option>
           </select>
+          <DesignVectorPicker
+            v-else
+            :mode="adhocMode"
+            :model-value="adhocVector"
+            @update:model-value="adhocVector = $event"
+          />
+          <p v-if="vectorMode !== 'library'" class="hint-text">
+            自己上传/导入的载体只在本次设计中使用，不会写进共享载体库。
+          </p>
         </div>
       </div>
       
@@ -577,11 +645,16 @@ h1 {
   font-size: 1.125rem;
 }
 
-.language-toggle {
+.language-toggle,
+.vector-source-toggle {
   display: inline-flex;
   border: 2px solid var(--border-color);
   border-radius: 0.5rem;
   overflow: hidden;
+}
+
+.vector-source-toggle {
+  margin-bottom: 0.6rem;
 }
 
 .hint-text {

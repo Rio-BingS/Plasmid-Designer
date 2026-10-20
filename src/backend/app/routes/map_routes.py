@@ -36,6 +36,7 @@ from starlette.datastructures import UploadFile
 from app.cache import cache
 from app.routes.models import (
     MAP_MAX_ENZYMES, MAP_MAX_FEATURES, MAP_MAX_LENGTH,
+    MAP_MAX_UPLOAD_BYTES, MAP_MAX_UPLOAD_MB,
     MapDocument, MapFeature, MapPrimer,
 )
 from core.plasmid_map import (
@@ -50,8 +51,8 @@ from core.plasmid_map.parsers import clean_sequence
 
 router = APIRouter(prefix="/api/map", tags=["map"])
 
-MAP_MAX_UPLOAD_MB = float(os.environ.get("MAP_MAX_UPLOAD_MB", "5"))
-MAP_MAX_UPLOAD_BYTES = int(MAP_MAX_UPLOAD_MB * 1024 * 1024)
+# MAP_MAX_UPLOAD_MB / MAP_MAX_UPLOAD_BYTES 定义在 app/routes/models.py
+# （设计页的载体上传与图谱页共用同一上限）
 # 其余 /api/map/* 写请求的请求体上限（导出请求体是整份 MapDocument）；
 # 由 app/map_body_limit.py 在读取时流式执行
 MAP_MAX_JSON_MB = float(os.environ.get("MAP_MAX_JSON_MB", "16"))
