@@ -8,6 +8,51 @@
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-10-21
+
+### 升级注意
+- 密码子物种判定改为按实际加载的密码子表名 + 别名归一化判定宿主类别（`E.coli` /
+  `Escherichia coli` 等写法不再落空成真核，从而漏避让 `SD(AGGAGG)` / `-10(TATAAT)`），
+  算法口径 `CODON_OPT_ALGO` v2.2 → v2.3，同一序列的密码子优化结果可能与旧版不同。
+- 密码子表清单缓存键改为带目录内容指纹（文件名 + mtime + 大小），不再是最长 7 天的常量键
+  TTL；增删改 `data/codon_tables/*.yaml` 后前端立即生效。
+- 测序共识口径修正：压缩区降级只对单 read 证据生效（跨 read 互证的 indel 不再被误降为 low）；
+  `N` / IUPAC 不再与明确碱基同权计票，多 read 打平时优先采信明确碱基。同一批数据的共识与
+  差异表可能与旧版不同。
+- 合成 oligo 片数改为真正的「恒偶」：此前按 ceil 步长逐片前进可能少一片（实测 2570bp / 52 片
+  只得 51 片），现在片数恒等于参数、余量落在末片，设计结果条数会变。
+- CSRF 豁免改为 fail-closed：只信原样路径，含 `//`、`.` / `..`、`%2e` 的路径不再豁免，需带
+  `X-Requested-With`（末尾斜杠仍豁免）。
+- 401 是否清会话改为显式白名单：认证类端点的 401 与带 `X-Access-Token` 的请求不清会话。
+
+### 新增
+- 设计页支持自上传与在线导入载体：新增一次性载体通道 `/api/design/vector/{upload,online}`，
+  只解析 / 下载并回执载荷，不写共享载体库、不落盘、不要求管理员，随 `POST /api/design` 的
+  `vector` 字段内联提交。
+- 设计页表单草稿自动保存（`sessionStorage`，400ms 合并写，字段白名单 + 类型校验），离开页面时
+  按当前值补写；新增「清空表单」按钮。
+- 识别带名称的 CDS 序列：文件名无质粒名时用内部 CDS / gene 名称反查信息表质粒名；图谱搜索框
+  序列无命中时改按元件名称查找；序列分析输入支持 FASTA 头并把名称用于展示与导出文件名。
+
+### 变更
+- 序列分析页模板与六个分析入口共用一次清洗后的序列，不再每次渲染重复跑正则。
+- 兜底引物逐项列出超标的 Tm / GC / poly-X / 3' 端 GC / 自互补 / 二聚体，全部通过时说明这是
+  合格但非最优的兜底。
+- 峰图请求失败不再写入永久缓存，下次可见性变化或点选会自动重试；错误提示带上具体 read 名。
+- 反义 oligo 的重叠标注按自身方向（5' 端对右侧、3' 端对左侧）输出。
+- 接口错误在后端未给 `detail` 时按状态码给中文兜底（401 提示重新登录、403 说明可能需要管理员、
+  429 带 `Retry-After` 秒数、5xx 提示稍后重试）。
+
+### 修复
+- 粘贴序列的字符归一：全角星号 `＊`（U+FF0A）、全角字母 / 空格、NBSP、零宽字符统一归一
+  （NFKC），非法字符仍报「哪个字符、第几位」；允许以 `*` 结尾的蛋白序列；`U→T` 只对 DNA 做。
+- 设计页表单切页后不丢失（此前路由切换即销毁组件状态，切走再回来要重新填）。
+- 会话代际跨标签页同步（`BroadcastChannel` + `localStorage`），避免 A 页重新登录后 B 页迟到的
+  401 把 B 清成未登录。
+- `XFF` 解析遇到畸形跳时跳过继续向左查找，不再让单个畸形条目把全部客户端挤进同一限流桶。
+- 文档切换时复位图谱搜索状态，避免「上一个 / 下一个」跳到旧文档坐标或选中不存在的元件。
+- 缓存统计改用 `except Exception`，不再吞掉 `KeyboardInterrupt` / `SystemExit`。
+- 新增用例锁定 `.DNA` 命名规范与扩展名大小写（图谱解析、测序参考解析、批量交付归类三个入口）。
 ## [2.16.2] - 2026-10-18
 
 ### 修复
@@ -863,7 +908,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.0...HEAD
+[2.17.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...v2.17.0
 [2.16.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...v2.16.2
 [2.16.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.0...v2.16.1
 [2.16.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.15.1...v2.16.0
