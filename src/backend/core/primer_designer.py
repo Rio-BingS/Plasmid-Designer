@@ -867,16 +867,24 @@ class PrimerDesigner:
 
     @staticmethod
     def _equal_step_tiles(seq_len: int, n_tiles: int, overlap: int) -> List[List[int]]:
-        """等步长初始分片（均一化前的起点）"""
-        step = max(1, math.ceil((seq_len - overlap) / n_tiles))
+        """等步长初始分片（均一化前的起点）：片数恒等于 n_tiles。
+
+        此前按 ceil 步长逐片前进（step = ceil((len-overlap)/n)），会在第 n
+        片之前就到达末尾——实测 2570bp/52 片只得 51 片，而「片数恒偶」是
+        错位交替（无完全互补对）的前提。改为按比例分配边界：片数由参数
+        决定，取整余量全部落在末片。"""
+        if n_tiles <= 0 or seq_len <= 0:
+            return []
+        if n_tiles == 1:
+            return [[0, seq_len]]
+        span = max(1.0, (seq_len - overlap) / n_tiles)
         tiles: List[List[int]] = []
-        pos = 0
-        while pos < seq_len:
-            end = min(pos + step + overlap, seq_len)
-            tiles.append([pos, end])
-            if end >= seq_len:
-                break
-            pos += step
+        for i in range(n_tiles):
+            start = int(round(i * span))
+            start = max(0, min(start, seq_len - 1))
+            end = seq_len if i == n_tiles - 1 else int(round((i + 1) * span)) + overlap
+            end = min(max(end, start + 1), seq_len)
+            tiles.append([start, end])
         return tiles
 
     def _overlap_tm_spread(self, tiles: List[List[int]], sequence: str) -> float:
