@@ -77,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
 测试基线（本机 Windows，2026-10-20 实测，v2.16.2）：pytest
-**1568 passed / 39 skipped / 0 failed**，vitest **569**，vue-tsc **0**。其中 5 项真实数据回归
+**1592 passed / 39 skipped / 0 failed**，vitest **576**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
@@ -110,6 +110,15 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   不变时不递增）；只改 `data/codon_tables/*.yaml` 时摘要自动变化，无需递增
 - 合成 oligo 设计：错位交替（无完全互补对）、片数恒偶、DNAWorks 式 Tm 均一分片、
   交叉杂交 12mer 检查告警；长度范围 [oligo_length_min, max]（max 硬上限）
+- **粘贴序列的字符归一**（`core/seq_input.py`）：全角字符走 NFKC → 半角、`＊﹡∗٭`
+  等异体星号 → `*`、删各类空白与零宽字符；**U→T 只对 DNA 做**（蛋白里的 U 是
+  硒代半胱氨酸）。归一只放最外层（`DesignRequest`/`BatchDesignRequest` 的 before
+  校验器 + `process_sequence`），非法字符留到校验阶段报「哪个字符、第几位」，
+  不在归一阶段静默丢弃。氨基酸终止符 `*` 是合法输入（`CODON_TABLE` 有对应密码子），
+  `X/B/Z/U/O` 仍报错（没有确定密码子）
+- 设计页表单有 sessionStorage 草稿（`utils/designDraft.ts`）：切页/刷新不丢；
+  **离开页面时必须按当前值补写一次**（`watch` 默认下一帧批处理，「输完立刻切页」
+  靠防抖计时器会丢最后几个字符）
 - 插入片段来源与克隆方法正交（`insert_source` × `cloning_method`）；
   旧值 `cloning_method=gene_synthesis` 由模型校验器归一为 insert_source=gene_synthesis +
   限制性克隆，但仍须给 enzyme_5/enzyme_3（或 enzyme），否则 422——并非完全向后兼容
