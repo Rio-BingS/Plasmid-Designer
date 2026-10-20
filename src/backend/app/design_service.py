@@ -11,6 +11,7 @@ from app.config import settings
 from core.genbank_format import format_locus_line
 from core.primer_designer import screen_gg_overhang_pair
 from app.routes.models import (
+    MAP_MAX_LENGTH,
     CloningMethod,
     DesignRequest,
     DesignResult,
@@ -338,14 +339,27 @@ def process_sequence(
 def resolve_gibson_insert_pos(request: DesignRequest, vector) -> int:
     """解析 Gibson 同源重组位置（0-based）。
 
-    指定 gibson_site 时取该酶切位点在载体上的切割位置（用于定位重组区），
-    缺省为 MCS 起点。
+    优先级：指定的酶切位点（MCS 内 → 该位点切点；一次性载体的唯一位点表 → 该位点切点）
+    > MCS 起点 > 骨架中点。
+    最后一级此前固定 100：对没有 MCS 的载体（上传/在线导入的载体都没有 YAML 的
+    mcs 块）第 100 bp 是与实际线性化点无关的任意位置，同源臂必然错；骨架中点至少
+    与 assemble_construct 的插入点一致。
     """
-    if request.gibson_site and vector and vector.mcs:
-        for site in vector.mcs.sites:
-            if site.enzyme_name == request.gibson_site and site.cut_position_5:
-                return max(0, site.cut_position_5 - 1)  # 1-based → 0-based
-    return vector.mcs.start - 1 if vector and vector.mcs and vector.mcs.start else 100
+    if request.gibson_site and vector:
+        if vector.mcs:
+            for site in vector.mcs.sites:
+                if site.enzyme_name == request.gibson_site and site.cut_position_5:
+                    return max(0, site.cut_position_5 - 1)  # 1-based → 0-based
+        # 一次性载体：唯一位点可能落在推测出来的 MCS 区间之外（用户明确指定了
+        # 那把酶），此时按扫描出的唯一切点定位
+        cuts = getattr(vector, "unique_site_cuts", None) or {}
+        hit = cuts.get(request.gibson_site) or []
+        if len(hit) == 1:
+            return max(0, hit[0] - 1)
+    if vector and vector.mcs and vector.mcs.start:
+        return vector.mcs.start - 1
+    seq_len = len(getattr(vector, "sequence", "") or "")
+    return seq_len // 2 if seq_len >= 2 else 100
 
 
 def design_primers_for_method(
@@ -507,8 +521,17 @@ def run_design(
             return result
 
         # 3. 载体
-        library = get_vector_library()
-        vector = library.get_vector(request.vector_id)
+        # 一次性载体（设计页本地上传/在线导入）优先：它不属于载体库，
+        # 序列与元件都在请求里，不落盘、也不依赖管理员导入权限
+        inline = getattr(request, "vector", None)
+        if inline is not None:
+            from app.adhoc_vector import vector_from_inline
+
+            vector, vec_meta = vector_from_inline(inline, max_length=MAP_MAX_LENGTH)
+            result.vector_id = vector.id
+            result.warnings.extend(vec_meta["warnings"])
+        else:
+            vector = get_vector_library().get_vector(request.vector_id)
         backbone = "N" * 5000
         if not vector:
             result.warnings.append(f"未找到载体 {request.vector_id}，使用空骨架回退")

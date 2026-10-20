@@ -447,6 +447,11 @@ _WRITE_EXACT_RULES: List[Tuple[str, str, str]] = [
     # 同属外呼代理，与 NCBI 导入同档
     ("POST", "/api/map/import/snapgene", "ncbi"),
     ("POST", "/api/map/import/ensembl", "ncbi"),
+    # 设计页一次性载体：上传走 upload 档、在线来源外呼走 ncbi 档——
+    # 与载体库侧同口径（前缀规则 "POST /api/design" 会先命中 design 档，
+    # 所以必须在这里精确匹配）
+    ("POST", "/api/design/vector/upload", "upload"),
+    ("POST", "/api/design/vector/online", "ncbi"),
 ]
 
 
@@ -502,6 +507,8 @@ _READ_RULES: List[Tuple[str, str]] = [
     ("/api/vectors/import/snapgene/preview", "ncbi"),
     ("/api/vectors/import/ensembl/lookup/{id}", "ncbi"),
     ("/api/vectors/import/ensembl/preview", "ncbi"),
+    # 设计页 SnapGene 跨集合搜索（外呼代理，与载体库/图谱页共用缓存）
+    ("/api/design/vector/snapgene/search", "ncbi"),
 ]
 
 
