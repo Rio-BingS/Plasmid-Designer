@@ -90,10 +90,28 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     @staticmethod
+    def _is_exempt_path(raw_path: str) -> bool:
+        """豁免只对「原样就是豁免路径」的请求生效（fail closed）。
+
+        含重复斜杠、反斜杠、"." / ".." 路径段或百分号编码点的路径一律不豁免：
+        这类写法在不同层（代理、Starlette、路由）可能被归一化成另一个路由，
+        一旦先按字符串豁免、再按归一化后的路由执行，就等于在 CSRF 上开了口子。
+        末尾多一个斜杠仍然豁免（前端/网关常这么补），其余必须精确匹配。"""
+        path = raw_path or "/"
+        if "//" in path or "\\" in path:
+            return False
+        low = path.lower()
+        if "%2e" in low or "%2f" in low or "%5c" in low:
+            return False
+        if any(seg in (".", "..") for seg in path.split("/")):
+            return False
+        return (path.rstrip("/") or "/") in _CSRF_EXEMPT_PATHS
+
+    @staticmethod
     def _needs_check(request: Request) -> bool:
         from app.auth.jwt_auth import AUTH_COOKIE_NAME
 
-        if request.url.path.rstrip("/") in _CSRF_EXEMPT_PATHS:
+        if CsrfMiddleware._is_exempt_path(request.url.path):
             return False
         if not request.cookies.get(AUTH_COOKIE_NAME):
             return False
