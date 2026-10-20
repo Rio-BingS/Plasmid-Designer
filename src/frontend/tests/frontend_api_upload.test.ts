@@ -172,4 +172,20 @@ describe('formatApiError', () => {
     expect(api.formatApiError({ message: '超时了' }, '分析失败')).toBe('超时了')
     expect(api.formatApiError({}, '分析失败')).toBe('分析失败')
   })
+
+  it('没有 detail 时按状态码给中文兜底，不露出 axios 英文原文', () => {
+    const mk = (status: number, headers: Record<string, string> = {}) => ({
+      response: { status, headers, data: {} },
+      message: `Request failed with status code ${status}`,
+    })
+    expect(api.formatApiError(mk(401))).toContain('登录状态已失效')
+    expect(api.formatApiError(mk(403))).toContain('没有权限')
+    expect(api.formatApiError(mk(500))).toContain('HTTP 500')
+    expect(api.formatApiError(mk(429))).toBe('请求过于频繁，请稍后重试')
+    expect(api.formatApiError(mk(429, { 'retry-after': '42' }))).toBe('请求过于频繁，请 42 秒后重试')
+    // 后端给了 detail 时仍以 detail 为准
+    expect(api.formatApiError({
+      response: { status: 403, data: { detail: '需要管理员权限' } }, message: 'x',
+    })).toBe('需要管理员权限')
+  })
 })

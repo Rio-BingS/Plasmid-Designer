@@ -88,6 +88,20 @@ export function formatApiError(e: any, fallback = '请求失败'): string {
       })
       .join('；')
   }
+  // 后端没给 detail 时的兜底文案：axios 原文是英文的
+  // "Request failed with status code 429"，对用户没有任何可行动信息
+  const status = Number(e?.response?.status) || 0
+  if (status === 401) return '登录状态已失效，请重新登录'
+  if (status === 403) return '没有权限执行该操作：可能需要管理员身份，或登录状态已变化'
+  if (status === 429) {
+    const retry = Number(e?.response?.headers?.['retry-after'])
+    return retry > 0
+      ? `请求过于频繁，请 ${Math.ceil(retry)} 秒后重试`
+      : '请求过于频繁，请稍后重试'
+  }
+  if (status >= 500) {
+    return `服务器错误（HTTP ${status}）：请稍后重试；持续出现请查看后端日志`
+  }
   // 浏览器 XHR 在发送阶段失败（文件被其他程序占用、连接被掐断）时，axios 只给
   // 一句笼统的 "Network Error"，翻译成可行动的提示
   const msg = typeof e?.message === 'string' ? e.message : ''
