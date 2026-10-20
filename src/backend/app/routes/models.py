@@ -209,6 +209,18 @@ class DesignRequest(DesignOptions):
     vector: Optional[DesignVectorInput] = Field(
         default=None, description="内联载体（设计页本地上传/在线导入）；为空时按 vector_id 查载体库")
 
+    @field_validator("sequence", mode="before")
+    @classmethod
+    def _normalize_sequence(cls, value):
+        """先归一（全角/异体星号/空白）再校验长度与内容
+
+        中文输入法下 Shift+8 打出的是全角＊（U+FF0A），直接进密码子优化会被
+        报成「无效的氨基酸代码」——用户看到的就是「* 无法识别」。
+        """
+        from core.seq_input import normalize_sequence_text
+
+        return normalize_sequence_text(value) if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def validate_sequence_length(self):
         # 终审 C-03：max_length=100_000 不是防护而是 CPU DoS 入口——
@@ -330,6 +342,16 @@ class BatchDesignRequest(DesignOptions):
     """
     sequences: List[str] = Field(..., min_length=1, max_length=100)
     sequence_names: Optional[List[str]] = None
+
+    @field_validator("sequences", mode="before")
+    @classmethod
+    def _normalize_sequences(cls, value):
+        """与单条设计同一套字符归一（全角＊/全角空格/零宽字符）"""
+        from core.seq_input import normalize_sequence_text
+
+        if not isinstance(value, list):
+            return value
+        return [normalize_sequence_text(v) if isinstance(v, str) else v for v in value]
 
     @model_validator(mode="after")
     def validate_batch(self):

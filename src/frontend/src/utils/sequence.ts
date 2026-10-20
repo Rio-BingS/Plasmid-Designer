@@ -37,3 +37,56 @@ export function parseNamedSequence(raw: string): { name: string; sequence: strin
   }
   return { name, sequence: cleanSequence(text) }
 }
+
+/** 异体星号：中文/日文输入法下 Shift+8 打出的是全角＊（U+FF0A），还有﹡∗٭⁎＿ */
+const STAR_VARIANTS = /[\uFF0A\uFE61\u2217\u066D\u204E\uFF3F]/g
+
+/**
+ * 输入字符归一：全角/异体星号 → 半角 '*'，全角字母数字 → 半角。
+ *
+ * 中文输入法下打出来的终止符是 ＊，后端按单字母代码校验一律报「无效的氨基酸
+ * 代码」，用户看到的就是「* 无法识别」。这里在失焦/提交时归一，
+ * 不改变换行与空格（那是排版，不是字符问题）。
+ */
+export function normalizeSequenceInput(raw: string): string {
+  if (!raw) return ''
+  return raw.normalize('NFKC').replace(STAR_VARIANTS, '*')
+}
+
+/** 氨基酸单字母代码 + 终止符（与后端 core.codon_optimizer 的口径一致） */
+export const AMINO_ACID_CHARS = 'ACDEFGHIKLMNPQRSTVWY*'
+
+/** 找出手动输入里不被支持的字符（返回前若干个，附 1-based 位置） */
+export function findUnsupportedChars(
+  seq: string,
+  allowed: string,
+  limit = 3
+): { char: string; index: number }[] {
+  const allowedSet = new Set(allowed)
+  const out: { char: string; index: number }[] = []
+  const text = seq || ''
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    // 空白与零宽字符由后端统一剔除（FASTA 分行、粘贴带的空格），不算非法字符
+    if (/[\s\u200b-\u200d\u2060\ufeff]/.test(ch)) continue
+    if (allowedSet.has(ch)) continue
+    out.push({ char: ch, index: i + 1 })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+/** 不支持字符的提示文案（含位置与合法字母表，用户能直接定位） */
+export function describeUnsupportedChars(
+  bad: { char: string; index: number }[],
+  kind: 'amino_acid' | 'dna'
+): string {
+  const shown = bad.map((b) => b.char === ' ' ? '空格' : b.char === '\n' ? '换行' : b.char)
+    .map((c) => '「' + c + '」')
+    .join('、')
+  const where = bad.map((b) => '第 ' + b.index + ' 位').join('、')
+  const hint = kind === 'amino_acid'
+    ? '氨基酸单字母代码：ACDEFGHIKLMNPQRSTVWY，终止符用 *'
+    : 'DNA 只接受 A/T/G/C（如需模糊碱基请先在序列分析页处理）'
+  return '序列含无法识别的字符 ' + shown + '（' + where + '）；' + hint
+}

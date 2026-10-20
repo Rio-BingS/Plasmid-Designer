@@ -27,6 +27,7 @@ from collections import Counter
 import math
 
 from core.seq_utils import CODON_TABLE, gc_fraction, revcomp as _seq_revcomp
+from core.seq_input import normalize_sequence_text as _normalize_aa
 
 
 @dataclass
@@ -278,12 +279,23 @@ class CodonOptimizer:
 
     def back_translate(self, amino_acid_sequence: str) -> str:
         """不进行迭代优化，仅按频率表选最优密码子反翻译。"""
-        amino_acid_sequence = amino_acid_sequence.upper().strip()
-        valid_aa = set(CODON_TABLE.keys())  # '*' 是终止符，表里有对应终止密码子
-        for aa in amino_acid_sequence:
-            if aa not in valid_aa:
-                raise ValueError(f"无效的氨基酸代码: {aa}")
+        amino_acid_sequence = _normalize_aa(amino_acid_sequence)
+        self._check_aa(amino_acid_sequence)
         return self._initial_optimization(amino_acid_sequence)
+
+    @staticmethod
+    def _check_aa(amino_acid_sequence: str) -> None:
+        """校验单字母代码；报错要指明「哪个字符、第几位」
+
+        此前只在报文里塞一个字符，全角＊这类不可见差异下用户完全看不出问题
+        在哪（「* 无法识别」的实际来源）。
+        """
+        valid_aa = set(CODON_TABLE.keys())  # '*' 是终止符，表里有对应终止密码子
+        for i, aa in enumerate(amino_acid_sequence):
+            if aa not in valid_aa:
+                raise ValueError(
+                    f"无效的氨基酸代码「{aa}」(第 {i + 1} 位)；"
+                    "支持 ACDEFGHIKLMNPQRSTVWY 与终止符 *")
     
     def optimize(
         self,
@@ -307,12 +319,9 @@ class CodonOptimizer:
         if avoid_motifs is None:
             avoid_motifs = []
 
-        # 验证输入
-        amino_acid_sequence = amino_acid_sequence.upper().strip()
-        valid_aa = set(CODON_TABLE.keys())  # '*' 是终止符，表里有对应终止密码子
-        for aa in amino_acid_sequence:
-            if aa not in valid_aa:
-                raise ValueError(f"无效的氨基酸代码: {aa}")
+        # 验证输入（字符归一同 core.seq_input：全角＊/异体星号/各类空白）
+        amino_acid_sequence = _normalize_aa(amino_acid_sequence)
+        self._check_aa(amino_acid_sequence)
 
         # 隐蔽调控 motif 审查：与用户自定义 motif 合并去重。
         # 终审 A-03：motif 匹配此前只扫正链——非回文 Type IIS 位点
