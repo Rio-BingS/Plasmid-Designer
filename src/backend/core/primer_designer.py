@@ -968,6 +968,9 @@ class PrimerDesigner:
 
             is_sense = oligo_num % 2 == 1
             oligo_seq = sense if is_sense else self._reverse_complement(sense)
+            # 反义 oligo 取的是反向互补链：它的 5' 端落在右侧重叠上、3' 端落在
+            # 左侧——重叠标注要按 oligo 自身方向写，不能照抄正链的左右
+            ov5, ov3 = (left_ov, right_ov) if is_sense else (right_ov, left_ov)
 
             oligos.append(Primer(
                 name=f"{primer_name}_{'S' if is_sense else 'AS'}{oligo_num:02d}",
@@ -980,7 +983,7 @@ class PrimerDesigner:
                 target_end=end,
                 notes=f"{'Sense' if is_sense else 'Antisense'} strand oligo, "
                      f"region {pos + 1}-{end}, "
-                     f"overlap: 5'{left_ov}bp/3'{right_ov}bp",
+                     f"overlap: 5'{ov5}bp/3'{ov3}bp",
             ))
             oligo_num += 1
 
