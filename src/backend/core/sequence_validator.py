@@ -72,7 +72,11 @@ class SequenceValidator:
             details={}
         )
         
-        sequence = sequence.upper().replace('U', 'T').replace('\n', '').replace(' ', '')
+        # 归一与 design_service 同一实现（全角/异体星号/各类空白）；U→T 只对 DNA
+        from core.seq_input import normalize_dna_text, normalize_sequence_text
+
+        sequence = (normalize_dna_text(sequence) if sequence_type == "dna"
+                    else normalize_sequence_text(sequence))
         
         # 基本验证
         if sequence_type == "dna":
@@ -106,8 +110,13 @@ class SequenceValidator:
         result.details['sequence_type'] = 'DNA'
     
     def _validate_aa_sequence(self, sequence: str, result: ValidationResult):
-        """验证氨基酸序列"""
-        valid_aa = set('ACDEFGHIKLMNPQRSTVWY')
+        """验证氨基酸序列
+
+        '*'（终止符）是合法输入：CODON_TABLE 里有对应终止密码子，带终止符的
+        蛋白本来就是常见输入。X/B/Z/U/O 仍然报错——它们没有确定的密码子，
+        设计阶段无法反翻译，报错比告警更安全（保留既有契约）。
+        """
+        valid_aa = set('ACDEFGHIKLMNPQRSTVWY') | {'*'}
         
         for i, aa in enumerate(sequence):
             if aa not in valid_aa:

@@ -239,7 +239,12 @@ def process_sequence(
     from core.codon_optimizer import CodonOptimizer
     from core.sequence_analysis import RESTRICTION_ENZYMES
 
-    seq = sequence.upper().replace("\n", "").replace(" ", "")
+    # 字符归一（全角/异体星号/各类空白）：粘贴来的序列常带全角＊、全角空格、
+    # NBSP 与零宽字符，散在各处 .replace(" ", "") 处理不干净
+    from core.seq_input import normalize_dna_text, normalize_sequence_text
+
+    seq = (normalize_dna_text(sequence) if sequence_type == SequenceType.DNA
+           else normalize_sequence_text(sequence))
     warnings: List[str] = []
     exclude_enzymes = [e for e in (exclude_enzymes or []) if e]
 
