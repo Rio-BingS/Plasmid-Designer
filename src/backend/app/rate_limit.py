@@ -293,7 +293,11 @@ def get_client_ip(request: Request) -> str:
     for hop in reversed([h.strip() for h in forwarded.split(",") if h.strip()]):
         ip = _valid_ip(hop)
         if ip is None:
-            break
+            # 跳过无法解析的跳，而不是把整条链判为不可信：一个畸形条目
+            # （客户端自己塞的垃圾、或中间代理写坏）不该让所有请求退化到
+            # 「按代理 IP 计数」的共享桶。仍取最右侧的有效非可信地址，
+            # 也就是自家代理追加的那一跳，伪造左侧内容不影响结果。
+            continue
         if not _is_trusted_proxy(ip):
             return ip
     return client_host
