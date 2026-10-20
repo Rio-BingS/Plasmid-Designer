@@ -35,7 +35,9 @@ describe('auth store 会话', () => {
     await store.login('a@test.com', 'pw')
     expect(store.isAuthenticated).toBe(true)
     expect(store.user).toEqual(alice)
-    expect(localStorage.length).toBe(0)
+    // 令牌不进 localStorage；唯一允许写入的是跨标签页同步代际用的键
+    const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
+    expect(keys.filter((k) => k !== 'pd_auth_epoch')).toEqual([])
     expect('token' in store).toBe(false)
   })
 

@@ -33,12 +33,37 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
+/**
+ * 这些端点的 401 表示「凭据/验证码无效」或「匿名令牌失效」，不是会话失效。
+ * 用显式清单而不是散落的字符串判断：新增业务端点若用 401 表达业务错误，
+ * 往这里加一条即可，不会静默踢掉用户的登录态。
+ */
+const SESSION_401_EXEMPT_PATHS = [
+  '/auth/login',
+  '/auth/register',
+  '/auth/verify',
+  '/auth/verify-email',
+  '/auth/resend-verification',
+]
+
+/** 该请求的 401 是否应清掉本地登录态 */
+export function shouldClearSessionOn401(config: any): boolean {
+  if (!config) return true
+  const url = String(config.url || '')
+  if (SESSION_401_EXEMPT_PATHS.some((p) => url.includes(p))) return false
+  // 带匿名测序访问令牌的请求：401 属于那个令牌，与会话无关
+  const headers = config.headers
+  const token = typeof headers?.get === 'function'
+    ? headers.get('X-Access-Token')
+    : headers?.['X-Access-Token'] ?? headers?.['x-access-token']
+  return !token
+}
+
 // 响应拦截器：处理 401 错误
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
-      // 登录接口本身的 401 是密码错误，不应清除本地会话状态。
+    if (error.response?.status === 401 && shouldClearSessionOn401(error.config)) {
       // 只清理「发出该请求时」的会话：旧会话发出的请求晚到的 401
       // 不能把期间重新登录建立的新会话一并清掉
       const sentEpoch = error.config?.authEpoch
