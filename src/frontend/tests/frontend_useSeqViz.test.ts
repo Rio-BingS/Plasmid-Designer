@@ -165,7 +165,7 @@ describe('useSeqViz composable', () => {
     expect(viz.traceCache.value[0]).toEqual(mockTrace)
   })
 
-  it('loadSeqTrace caches null on failure and writes errorMsg', async () => {
+  it('loadSeqTrace 失败不写缓存：下次调用重试，errorMsg 带 read 名', async () => {
     vi.mocked(getReadTrace).mockRejectedValue({ response: { data: { detail: '峰图过期' } } })
     const { analysis, errorMsg, viz } = mountViz()
     analysis.value = mkAnalysis([mkRead()])
@@ -173,10 +173,31 @@ describe('useSeqViz composable', () => {
     const t = await viz.loadSeqTrace(0)
     expect(t).toBeNull()
     expect(errorMsg.value).toBe('峰图过期')
-    // 失败也进缓存（null）：不再重复拉取
-    expect(viz.traceCache.value[0]).toBeNull()
+    // 失败不写缓存：瞬时失败不该让这条 read 的峰图在本次分析内永不重拉
+    expect(viz.traceCache.value[0]).toBeUndefined()
     await viz.loadSeqTrace(0)
-    expect(getReadTrace).toHaveBeenCalledTimes(1)
+    expect(getReadTrace).toHaveBeenCalledTimes(2)
+
+    // 后端没给 detail 时用 read 名说明是哪一条
+    vi.mocked(getReadTrace).mockRejectedValue({ message: 'boom' })
+    await viz.loadSeqTrace(0)
+    expect(errorMsg.value).toContain('峰图加载失败')
+  })
+
+  it('卸载后迟到的失败不写 errorMsg', async () => {
+    let reject!: (e: unknown) => void
+    vi.mocked(getReadTrace).mockImplementationOnce(() =>
+      new Promise<ReadTrace>((_r, rj) => { reject = rj }))
+    const { analysis, errorMsg, viz } = mountViz()
+    analysis.value = mkAnalysis([mkRead()])
+    const pendingLoad = viz.loadSeqTrace(0)
+
+    wrapper!.unmount()          // 卸载时 traceEpoch++，迟到响应应判为过期
+    wrapper = null
+    reject({ response: { data: { detail: '卸载后到达' } } })
+    expect(await pendingLoad).toBeNull()
+    expect(errorMsg.value).toBe('')
+    expect(viz.traceCache.value[0]).toBeUndefined()
   })
 
   it('toggleRead adds with selection and trace fetch, remove falls selection back', async () => {
