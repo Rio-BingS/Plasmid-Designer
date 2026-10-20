@@ -159,6 +159,10 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   - 次要克隆占比 = r/(1+r)（r = 次峰/主峰面积比），勿写成 r/(1-r)
   - 置信分层：只有中/高置信变异进 CDS 判定与共识；N/模糊调用恒 low；单 read 支持的
     indel 若被其他 read 干净跨过则标 cross_read_conflict 并降为 low
+  - 共识投票（`_build_consensus`）：明确碱基优先于 N/IUPAC——多 read 打平时只要有
+    一条读出具体碱基就取它（`_pick_base_vote`），全场都模糊才保留 N；单 read 覆盖
+    仍如实保留 N（不被参考碱基悄悄填上）。压缩区降级（`_merged_zone_artifact`）只
+    降单 read 证据，`support_reads >= 2` 的互证变异不受影响
   - 同聚物（poly）按「先逐 read 判读，再综合投票」：run_verdict 五态
     accepted / contradictory / undetermined / deficit_observed / caller_only
   - 部分测序是常规策略：结论以引物覆盖区为准，未覆盖区「按设计序列对待」，不建议补测
