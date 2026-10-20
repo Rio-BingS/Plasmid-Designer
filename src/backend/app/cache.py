@@ -396,7 +396,7 @@ class CacheManager:
                         "keys": self.backend.client.dbsize(),
                         "available": True
                     }
-                except:
+                except Exception:  # Redis 异常时统计信息不可用，不影响主流程
                     pass
         return {"type": "unknown", "available": False}
 
