@@ -388,3 +388,26 @@ Addgene 账号持有人）。多用户实例里它等同共享一个人的 Addge
 修复前先补能失败的用例、修复后跑全量。跨标签页的会话状态必须显式同步，
 不能假设「同一浏览器 = 同一份 JS 状态」。
 
+
+### 2026-10-20 设计页只能从载体库选载体（使用中的缺陷）
+
+用户报告：设计页的「目标载体」只有一个下拉框，只能从载体库选——手里的
+`.dna`/`.gb`、或者在线来源（SnapGene 在线库 / NCBI / Ensembl / Addgene）的质粒
+完全没法参与设计。而载体库是**共享库**，写入口（`/api/vectors/import/*`）
+全部要求管理员，普通用户连「临时用一下」都做不到。
+
+| 项 | 结果 |
+|---|---|
+| 根因 | 设计页 UI 只有载体库下拉框；`DesignRequest` 只认 `vector_id`（库内 ID），没有「自带载体」的通道；即便有，库里也没有它的序列 |
+| 为什么不复用 `/api/vectors/import/*` | 那条路把载体**写进共享库**且需管理员：普通用户的设计需求会污染共享库，也不该为此获得库写权限 |
+| 修法 | 新增「一次性载体」通道：`/api/design/vector/{upload,online}` 只解析/下载并回执载荷（序列+元件+MCS 判定+告警，不写 YAML、不落盘），前端把它随 `POST /api/design` 的 `vector` 字段内联提交；`app/adhoc_vector.py` 现场构造 `Vector`（与载体库共用 `VectorLibrary.parse_dict` 的归一口径） |
+| MCS 口径 | 文件标了 MCS 元件 → 按注释区间整段替换（与载体库一致）；没标 → 取「唯一位点最密集段」的切点作**纯插入点**（`start=point, end=point-1`：`assemble_construct` 替换的是空区间，骨架一个碱基都不删）；都没有 → 骨架中点 + 明确告警，绝不静默 |
+| 顺带修正 | ① `resolve_gibson_insert_pos` 无 MCS 时原先固定返回 100 bp（对真实载体是任意位置），改为骨架中点，并支持「唯一位点表」让线性化点可指定；② `CloningSite.overhang` 必须由序列算真实 4 nt 碱基——扫描结果的 `overhang` 是 `"5prime"` 这类类型标记，直接塞进去会让 Golden Gate overhang 变成 `"5PRI"` |
+| 权限与限流 | 上传/在线导入挂 `design` 功能开关（不依赖 `vectors`/`map` 开关）；限流 `upload`/`ncbi` 档（精确规则先于 `POST /api/design` 前缀规则）；SnapGene 需登录、Addgene 仅管理员（沿用载体库侧口径） |
+| 回归 | 后端 `tests/test_design_vector_sources.py`（22 项：上传不写库、越界元件丢弃、非法碱基 422、纯插入语义、overhang 取真碱基、在线四来源、限流档、请求体上限）；前端 `frontend_DesignVectorPicker.test.ts` / `frontend_DesignView_inline_vector.test.ts`（11 项） |
+
+**教训（防回潮）**：共享库与「用户自带数据」必须是两条通道——共享库要有写权限与
+来源管控，「自带」要能匿名、不落盘、不越权；一次性载体的组装语义（MCS 整段替换 vs
+纯插入点）必须写进代码与告警，因为两者对骨架的影响差 100+ bp。
+
+

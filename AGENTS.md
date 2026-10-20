@@ -76,8 +76,8 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-18 实测，v2.16.2）：pytest
-**1491 passed / 39 skipped / 0 failed**，vitest **531**，vue-tsc **0**。其中 5 项真实数据回归
+测试基线（本机 Windows，2026-10-20 实测，v2.16.2）：pytest
+**1568 passed / 39 skipped / 0 failed**，vitest **569**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
@@ -145,6 +145,16 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   `POST /api/vectors/import/from-map`（提交当前文档，后端不再外呼）
 - 载体库写入口（上传/批量导入/编辑/删除/在线导入/另存为载体）界面按 `useIsAdmin()`
   隐藏，后端 403 仍是权威；载体库是共享库、刻意无属主
+- **设计页载体来源有三条**：载体库（共享库）/ 本地上传 / 在线导入。后两条走
+  `/api/design/vector/{upload,online}`（`app/routes/design_vector_routes.py` +
+  `app/adhoc_vector.py`）：**只取不存**——解析/下载后回执一次性载体载荷，前端随
+  `POST /api/design` 的 `vector` 字段内联提交，设计时现场构造 `Vector`。
+  刻意**不写** `data/vectors`、不落盘、不要求管理员：普通用户不该为了用自己手里的
+  载体而获得共享库写权限。组装口径：文件标了 MCS 元件 → 按注释区间整段替换（与载体库
+  一致）；没标 → 取「唯一位点最密集段」的切点作**纯插入点**（`start=point,
+  end=point-1`，`assemble_construct` 只有空区间才不删骨架碱基）；都没有 → 骨架中点
+  + 明确告警。`CloningSite.overhang` 必须由序列算真实 4 nt 碱基——扫描结果的
+  `overhang` 是 `"5prime"` 这类**类型标记**，直接塞进去会得到 `"5PRI"`
 - 载体导入落盘形状由 `app/vector_import.py` 统一：features 必须带 `name`（缺省回退到
   type），否则 `VectorLibrary._parse_vector_dict` 抛 KeyError、整份载体被
   `load_from_directory` 的兜底 except 吞掉而静默消失（历史 bug）
