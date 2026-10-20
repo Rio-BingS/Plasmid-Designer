@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignRequest, DesignVectorPayload, VectorInfo, CodonTable } from '@/types'
 import { submitDesign, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
+import {
+  AMINO_ACID_CHARS, describeUnsupportedChars, findUnsupportedChars, normalizeSequenceInput
+} from '@/utils/sequence'
+import { clearDesignDraft, loadDesignDraft, saveDesignDraft } from '@/utils/designDraft'
 
 const router = useRouter()
 
@@ -59,6 +63,135 @@ function setVectorMode(mode: 'library' | 'upload' | 'online') {
   vectorMode.value = mode
   // 换来源一律重选：否则切回载体库后仍会带着上一次的一次性载体提交
   adhocVector.value = null
+}
+
+
+// ==================== 表单草稿（切页/刷新不丢） ====================
+// 用户报障：切到别的页面再回来，整张表单被清空。草稿存 sessionStorage
+// （同标签页有效、关标签页即清除），读写都做形状校验，旧草稿不会把页面带坏。
+function currentDraft() {
+  return {
+    sequenceType: sequenceType.value,
+    sequence: sequence.value,
+    sequenceName: sequenceName.value,
+    vectorId: vectorId.value,
+    vectorMode: vectorMode.value,
+    adhocVector: adhocVector.value,
+    cloningMethod: cloningMethod.value,
+    insertSource: insertSource.value,
+    protocolLanguage: protocolLanguage.value,
+    optimizeCodons: optimizeCodons.value,
+    targetSpecies: targetSpecies.value,
+    gcMin: gcMin.value,
+    gcMax: gcMax.value,
+    homologyArm: homologyArm.value,
+    enzyme: enzyme.value,
+    enzyme5: enzyme5.value,
+    enzyme3: enzyme3.value,
+    gibsonSite: gibsonSite.value,
+    excludeEnzymes: [...excludeEnzymes.value],
+    oligoLengthMin: oligoLengthMin.value,
+    oligoLengthMax: oligoLengthMax.value,
+    overlapLength: overlapLength.value
+  }
+}
+
+function isAdhocVectorDraft(v: any): v is DesignVectorPayload {
+  return !!v && typeof v === 'object'
+    && typeof v.id === 'string' && typeof v.name === 'string'
+    && typeof v.sequence === 'string' && v.sequence.length > 0
+    && Array.isArray(v.features)
+    && (v.topology === 'circular' || v.topology === 'linear')
+}
+
+function applyDraft(d: Record<string, any>) {
+  const oneOf = <T extends string>(v: any, allowed: readonly T[], fallback: T): T =>
+    allowed.includes(v) ? (v as T) : fallback
+  const num = (v: any, fallback: number) =>
+    (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
+
+  sequenceType.value = oneOf(d.sequenceType, ['amino_acid', 'dna'] as const, 'amino_acid')
+  if (typeof d.sequence === 'string') sequence.value = d.sequence
+  if (typeof d.sequenceName === 'string' && d.sequenceName) sequenceName.value = d.sequenceName
+  if (typeof d.vectorId === 'string' && d.vectorId) vectorId.value = d.vectorId
+  vectorMode.value = oneOf(d.vectorMode, ['library', 'upload', 'online'] as const, 'library')
+  adhocVector.value = isAdhocVectorDraft(d.adhocVector) ? d.adhocVector : null
+  // 恢复的是一次性载体但来源模式丢了：按载体来源兜底，避免「选了载体却当载体库」
+  if (adhocVector.value && vectorMode.value === 'library') vectorMode.value = 'upload'
+  cloningMethod.value = oneOf(d.cloningMethod, ['gibson', 'golden_gate', 'restriction'] as const, 'gibson')
+  insertSource.value = oneOf(d.insertSource, ['pcr', 'gene_synthesis'] as const, 'pcr')
+  protocolLanguage.value = oneOf(d.protocolLanguage, ['zh', 'en'] as const, 'zh')
+  if (typeof d.optimizeCodons === 'boolean') optimizeCodons.value = d.optimizeCodons
+  if (typeof d.targetSpecies === 'string' && d.targetSpecies) targetSpecies.value = d.targetSpecies
+  gcMin.value = num(d.gcMin, gcMin.value)
+  gcMax.value = num(d.gcMax, gcMax.value)
+  homologyArm.value = num(d.homologyArm, homologyArm.value)
+  if (typeof d.enzyme === 'string' && d.enzyme) enzyme.value = d.enzyme
+  if (typeof d.enzyme5 === 'string' && d.enzyme5) enzyme5.value = d.enzyme5
+  if (typeof d.enzyme3 === 'string' && d.enzyme3) enzyme3.value = d.enzyme3
+  if (typeof d.gibsonSite === 'string') gibsonSite.value = d.gibsonSite
+  if (Array.isArray(d.excludeEnzymes)) {
+    excludeEnzymes.value = d.excludeEnzymes.filter((x: any) => typeof x === 'string')
+  }
+  oligoLengthMin.value = num(d.oligoLengthMin, oligoLengthMin.value)
+  oligoLengthMax.value = num(d.oligoLengthMax, oligoLengthMax.value)
+  overlapLength.value = num(d.overlapLength, overlapLength.value)
+}
+
+const restoredDraft = loadDesignDraft()
+if (restoredDraft) applyDraft(restoredDraft as Record<string, any>)
+
+let draftTimer: ReturnType<typeof setTimeout> | null = null
+
+// 输入频繁（粘贴长序列）时不必每次按键都写存储，400ms 合并一次
+watch(currentDraft, (draft) => {
+  if (draftTimer) clearTimeout(draftTimer)
+  draftTimer = setTimeout(() => {
+    draftTimer = null
+    saveDesignDraft(draft)
+  }, 400)
+})
+
+onBeforeUnmount(() => {
+  // 离开页面时按当前值补写一次：Vue 的 watch 默认在下一帧批处理，
+  // 「输完立刻点别的页面」时 watcher 可能还没跑，只靠计时器会丢掉最后几个字符
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  saveDesignDraft(currentDraft())
+})
+
+function clearForm() {
+  clearDesignDraft()
+  sequence.value = ''
+  sequenceName.value = 'insert'
+  sequenceType.value = 'amino_acid'
+  vectorMode.value = 'library'
+  vectorId.value = availableVectors.value[0]?.id || 'pET-28a'
+  adhocVector.value = null
+  cloningMethod.value = 'gibson'
+  insertSource.value = 'pcr'
+  optimizeCodons.value = true
+  targetSpecies.value = 'ecoli'
+  gcMin.value = 40
+  gcMax.value = 60
+  homologyArm.value = 20
+  enzyme5.value = 'BamHI'
+  enzyme3.value = 'EcoRI'
+  gibsonSite.value = ''
+  excludeEnzymes.value = []
+  oligoLengthMin.value = 40
+  oligoLengthMax.value = 80
+  overlapLength.value = 20
+  error.value = ''
+}
+
+// ==================== 序列字符归一与前置校验 ====================
+/** 全角/异体星号 → '*'（中文输入法 Shift+8 打出的是 ＊，后端会当成非法字符） */
+function normalizeSequence() {
+  const fixed = normalizeSequenceInput(sequence.value)
+  if (fixed !== sequence.value) sequence.value = fixed
 }
 
 // 提交状态
@@ -117,8 +250,17 @@ const error = ref('')
 
 // 提交设计
 async function handleSubmit() {
+  // 先做字符归一与前置校验：把「哪个字符、第几位」直接告诉用户，
+  // 而不是让后端在密码子优化阶段抛「无效的氨基酸代码」
+  normalizeSequence()
   if (!sequence.value.trim()) {
     error.value = '请输入序列'
+    return
+  }
+  const isAa = sequenceType.value === 'amino_acid'
+  const bad = findUnsupportedChars(sequence.value, isAa ? AMINO_ACID_CHARS : 'ATGC')
+  if (bad.length) {
+    error.value = describeUnsupportedChars(bad, isAa ? 'amino_acid' : 'dna')
     return
   }
   if (cloningMethod.value === 'restriction' && enzyme5.value === enzyme3.value) {
@@ -259,8 +401,9 @@ function loadExample() {
           <textarea 
             v-model="sequence"
             class="form-input sequence-input"
-            :placeholder="sequenceType === 'amino_acid' ? '请输入氨基酸序列（单字母代码）' : '请输入DNA序列'"
+            :placeholder="sequenceType === 'amino_acid' ? '请输入氨基酸序列（单字母代码，终止符用 *；支持 FASTA 分行粘贴）' : '请输入DNA序列'"
             rows="6"
+            @blur="normalizeSequence"
           ></textarea>
           <button @click="loadExample" class="btn btn-secondary example-btn">
             加载示例序列
@@ -513,6 +656,15 @@ function loadExample() {
         >
           {{ isSubmitting ? '处理中...' : '开始设计' }}
         </button>
+        <button
+          type="button"
+          class="btn btn-secondary clear-btn"
+          :disabled="isSubmitting"
+          @click="clearForm"
+        >
+          清空表单
+        </button>
+        <p class="hint-text">表单会自动保存：切到其他页面或刷新后再回来，输入的内容仍在。</p>
       </div>
     </div>
   </div>
@@ -643,6 +795,12 @@ h1 {
 .submit-btn {
   min-width: 200px;
   font-size: 1.125rem;
+}
+
+.clear-btn {
+  margin-left: 0.75rem;
+  font-size: 0.875rem;
+  padding: 0.6rem 1.2rem;
 }
 
 .language-toggle,
