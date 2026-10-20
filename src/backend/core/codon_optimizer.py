@@ -279,7 +279,7 @@ class CodonOptimizer:
     def back_translate(self, amino_acid_sequence: str) -> str:
         """不进行迭代优化，仅按频率表选最优密码子反翻译。"""
         amino_acid_sequence = amino_acid_sequence.upper().strip()
-        valid_aa = set(CODON_TABLE.keys()) - {'*'}
+        valid_aa = set(CODON_TABLE.keys())  # '*' 是终止符，表里有对应终止密码子
         for aa in amino_acid_sequence:
             if aa not in valid_aa:
                 raise ValueError(f"无效的氨基酸代码: {aa}")
@@ -309,7 +309,7 @@ class CodonOptimizer:
 
         # 验证输入
         amino_acid_sequence = amino_acid_sequence.upper().strip()
-        valid_aa = set(CODON_TABLE.keys()) - {'*'}
+        valid_aa = set(CODON_TABLE.keys())  # '*' 是终止符，表里有对应终止密码子
         for aa in amino_acid_sequence:
             if aa not in valid_aa:
                 raise ValueError(f"无效的氨基酸代码: {aa}")
@@ -586,8 +586,8 @@ class CodonOptimizer:
                     dna_list = list(new_list)
                     improved = True
 
-            # 终审 A-01：连续两轮无进展即收敛退出（原来 improved 恒 False
-            # 使循环第一轮就退出，optimize_level 三档输出完全相同）
+            # 终审 A-01：某一轮四处修正都没有任何改动即收敛退出（原来
+            # improved 恒 False 使循环第一轮就退出，三档输出完全相同）
             if not improved:
                 break
 
