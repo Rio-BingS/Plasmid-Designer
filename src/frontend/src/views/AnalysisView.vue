@@ -52,6 +52,9 @@ const isAminoAcid = computed(() => sequenceType.value === 'amino_acid')
 /** 输入带 FASTA 头（>PNPM5）时取到的 CDS 名称，用于展示与导出文件名 */
 const seqName = computed(() => parseNamedSequence(sequence.value).name)
 
+/** 清洗后的序列：模板长度显示与各分析请求共用，避免每次渲染重跑一遍正则 */
+const cleanSeq = computed(() => cleanSequence(sequence.value))
+
 const exportFormat = ref('genbank')
 const exportLoading = ref(false)
 
@@ -74,7 +77,7 @@ async function runAnalysis() {
   try {
     loading.value = true
     error.value = ''
-    result.value = await analyzeSequence(cleanSequence(sequence.value), sequenceType.value)
+    result.value = await analyzeSequence(cleanSeq.value, sequenceType.value)
     activeSection.value = 'overview'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -88,7 +91,7 @@ async function runRestrictionAnalysis() {
   try {
     loading.value = true
     restrictionResult.value = await findRestrictionSites(
-      cleanSequence(sequence.value),
+      cleanSeq.value,
       selectedRestrictionEnzymes.value.length ? selectedRestrictionEnzymes.value : undefined
     )
     activeSection.value = 'restriction'
@@ -103,7 +106,7 @@ async function runORFPrediction() {
   if (!sequence.value.trim() || isAminoAcid.value) return
   try {
     loading.value = true
-    orfResult.value = await predictORFs(cleanSequence(sequence.value), orfMinLength.value)
+    orfResult.value = await predictORFs(cleanSeq.value, orfMinLength.value)
     activeSection.value = 'orf'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -126,7 +129,7 @@ async function runDigest() {
     digestLoading.value = true
     // 先清掉上一次结果：失败时不应继续展示旧酶组合的片段
     digestResult.value = null
-    digestResult.value = await simulateDigest(cleanSequence(sequence.value), digestEnzymes.value, digestCircular.value)
+    digestResult.value = await simulateDigest(cleanSeq.value, digestEnzymes.value, digestCircular.value)
   } catch (e: any) {
     error.value = errorText(e)
   } finally {
@@ -138,7 +141,7 @@ async function runGCAnalysis() {
   if (!sequence.value.trim()) return
   try {
     loading.value = true
-    gcResult.value = await analyzeGC(cleanSequence(sequence.value))
+    gcResult.value = await analyzeGC(cleanSeq.value)
     activeSection.value = 'gc'
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -175,7 +178,7 @@ async function handleExport() {
   if (!sequence.value.trim()) return
   try {
     exportLoading.value = true
-    await exportSequence(cleanSequence(sequence.value), [], exportFormat.value,
+    await exportSequence(cleanSeq.value, [], exportFormat.value,
       seqName.value || 'analysis_result')
   } catch (e: any) {
     error.value = e.response?.data?.detail || e.message
@@ -197,7 +200,7 @@ async function handleExport() {
           <option value="amino_acid">氨基酸</option>
         </select>
         <span class="seq-name" v-if="seqName" :title="`序列名称：${seqName}`">🧬 {{ seqName }}</span>
-        <span class="seq-length" v-if="sequence">{{ cleanSequence(sequence).length }} bp</span>
+        <span class="seq-length" v-if="sequence">{{ cleanSeq.length }} bp</span>
       </div>
       <textarea
         v-model="sequence"
