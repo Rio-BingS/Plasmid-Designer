@@ -107,15 +107,20 @@ export function useSeqViz(options: UseSeqVizOptions) {
 
   // 逐列列模型与泳道装箱已抽离到 @/utils/seqPanelModel（可独立单测）；
   // 组件只保留缓存壳：alignment_view 是参考方向的逐列对齐（反向 read 已折算）
-  const seqColCache: Record<number, SeqCol[] | null> = {}
+  // 列模型也按「分析 ID + read 序号」缓存：与 traceStore 同一口径，
+  // 切换分析后不会拿旧分析同序号 read 的对齐列去画新分析
+  const seqColCache: Record<string, SeqCol[] | null> = {}
 
   function seqColsFor(readIndex: number): SeqCol[] | null {
-    if (!(readIndex in seqColCache)) {
+    const aid = analysis.value?.analysis_id
+    if (!aid) return null
+    const key = traceKey(aid, readIndex)
+    if (!(key in seqColCache)) {
       const r = analysis.value?.reads[readIndex]
       // 传参考长度：跨原点 read 的列坐标按环折回（线性 read 不受影响）
-      seqColCache[readIndex] = r ? buildSeqCols(r, analysis.value?.reference_length ?? 0) : null
+      seqColCache[key] = r ? buildSeqCols(r, analysis.value?.reference_length ?? 0) : null
     }
-    return seqColCache[readIndex]
+    return seqColCache[key]
   }
 
   function resetSeqViz() {
@@ -131,7 +136,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
     jumpInput.value = ''
     seqColW.value = 12
     seqScrollX.value = 0
-    for (const k of Object.keys(seqColCache)) delete seqColCache[Number(k)]
+    for (const k of Object.keys(seqColCache)) delete seqColCache[k]
   }
 
   // 每条 read 一个固定颜色（简图箭头 / 字母行芯片 / 工具栏复选框同色），
@@ -166,8 +171,11 @@ export function useSeqViz(options: UseSeqVizOptions) {
       return t ?? null
     } catch (e: any) {
       if (stale()) return null
-      traceStore.value = { ...traceStore.value, [key]: null }
-      errorMsg.value = e.response?.data?.detail || '峰图加载失败'
+      // 失败不写缓存：超时/502/429 这类瞬时失败不该让该 read 的峰图
+      // 在本次分析内永不重拉——下次可见性变化或点选时自然重试
+      const read: any = analysis.value?.reads[ri]
+      const label = read?.filename || read?.name || `第 ${ri + 1} 条 read`
+      errorMsg.value = e.response?.data?.detail || `峰图加载失败（${label}）`
       return null
     } finally {
       if (epoch === traceEpoch) {
@@ -935,7 +943,11 @@ export function useSeqViz(options: UseSeqVizOptions) {
   })
   onBeforeUnmount(() => {
     window.removeEventListener('resize', onSeqResize)
-    if (flashTimer) clearTimeout(flashTimer)
+    // 卸载后到达的响应一律丢弃：递增代数让 stale() 恒为真，
+    // 否则迟到的峰图会写父组件持有的 errorMsg 并排一帧无主的绘制
+    traceEpoch++
+    if (seqRaf) { cancelAnimationFrame(seqRaf); seqRaf = 0 }
+    if (flashTimer) { clearTimeout(flashTimer); flashTimer = undefined }
   })
 
   return {
