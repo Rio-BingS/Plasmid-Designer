@@ -233,8 +233,10 @@ def process_sequence(
 ) -> Tuple[str, Optional[float], Optional[float], List[str]]:
     """处理输入序列 → DNA；返回 (dna, cai, gc, warnings)。
 
-    exclude_enzymes: 需要从优化序列中排除的限制酶名称（密码子优化时避让
-    其识别位点）；仅对氨基酸输入有效，DNA 输入只做存在性检查。
+    exclude_enzymes: 需要从优化序列中排除的限制酶名称。**只对「氨基酸输入且
+    启用密码子优化」生效**：DNA 输入、未启用密码子优化的反翻译都原样返回，
+    不校验、不告警、也不做避让。该列表同样从不作用于载体骨架或组装过程
+    （载体序列只参与组装，排除位点只在插入片段的反翻译/优化里使用）。
     """
     from core.codon_optimizer import CodonOptimizer
     from core.sequence_analysis import RESTRICTION_ENZYMES
@@ -246,9 +248,15 @@ def process_sequence(
     seq = (normalize_dna_text(sequence) if sequence_type == SequenceType.DNA
            else normalize_sequence_text(sequence))
     warnings: List[str] = []
-    exclude_enzymes = [e for e in (exclude_enzymes or []) if e]
+    # 排除位点只能靠同义密码子实现：只有「氨基酸输入 + 启用密码子优化」这条
+    # 路径能真正做到。DNA 输入无法沉默突变，未优化路径只是反翻译，都不该让
+    # 用户以为排除已生效——因此直接忽略该参数，连未知酶/位点告警也不产生。
+    applies_exclusion = sequence_type == SequenceType.AMINO_ACID and optimize_codons
+    exclude_enzymes = (
+        [e for e in (exclude_enzymes or []) if e] if applies_exclusion else []
+    )
 
-    # 酶名合法性检查，取识别序列作为避让 motif
+    # 酶名合法性检查，取识别序列作为避让 motif（仅适用时）
     motifs: List[str] = []
     unknown: List[str] = []
     for enzyme in exclude_enzymes:
@@ -261,12 +269,8 @@ def process_sequence(
         warnings.append(f"忽略未知限制酶: {', '.join(unknown)}")
 
     if sequence_type == SequenceType.DNA:
-        if motifs:
-            found = [m for m in motifs if m in seq]
-            if found:
-                warnings.append(
-                    f"警告：DNA 输入无法做沉默突变，仍包含需排除的位点: {', '.join(found)}"
-                )
+        # DNA 输入不做任何排除：序列已是指定碱基，沉默突变不可能，排除参数
+        # 在这里没有可执行的语义（不是「尝试后失败」，而是根本不适用）。
         return seq, None, None, warnings
 
     # 终审 A-05：未知物种在此显式失败（设计结果 FAILED + 错误明细），
@@ -325,17 +329,10 @@ def process_sequence(
             pass
         return result.dna_sequence, result.cai, result.gc_content * 100, list(warnings)
 
-    # 不优化：按物种频率忠实反翻译（最高频密码子，不做 GC 迭代）
+    # 不优化：按物种频率忠实反翻译（最高频密码子，不做 GC 迭代）。
+    # 排除位点参数在上方已按 apply 条件清空，这里不再有任何避让分支。
     dna = optimizer.back_translate(seq)
-    if motifs:
-        # 反翻译同样尝试沉默突变去除位点
-        dna = optimizer.optimize(seq, gc_target=(gc_min / 100, gc_max / 100), avoid_motifs=motifs).dna_sequence
-        warnings.append("未启用密码子优化，已按需做位点避让的最优密码子反翻译")
-        kept = [m for m in motifs if m in dna]
-        if kept:
-            warnings.append(f"警告：仍无法完全排除的位点: {', '.join(kept)}")
-    else:
-        warnings.append("未启用密码子优化，使用物种最优密码子反翻译")
+    warnings.append("未启用密码子优化，使用物种最优密码子反翻译")
     cai = optimizer._calculate_cai(dna, seq)
     gc = optimizer._calculate_gc_content(dna) * 100
     return dna, cai, gc, warnings

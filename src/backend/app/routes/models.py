@@ -79,8 +79,12 @@ class DesignOptions(BaseModel):
     overlap_length: int = Field(default=20, ge=10, le=40, description="相邻寡核苷酸/克隆片段重叠区长度(bp)")
     # Gibson：指定载体上的酶切位点用于定位同源重组位置（缺省为 MCS 起点）
     gibson_site: Optional[str] = Field(default=None, description="定位同源重组位置的酶切位点名称")
-    # 密码子优化时需排除的限制酶位点（优化序列不含这些识别序列）
-    exclude_enzymes: List[str] = Field(default_factory=list, description="需从优化序列排除的限制酶")
+    # 需从优化序列排除的限制酶位点。只在「氨基酸输入 + 启用密码子优化」时生效；
+    # DNA 输入或关闭优化时后端直接忽略（不校验、不告警，也不作用于载体/组装）。
+    exclude_enzymes: List[str] = Field(
+        default_factory=list,
+        description="需从优化序列排除的限制酶（仅氨基酸输入且启用密码子优化时生效）",
+    )
     protocol_language: Literal["zh", "en"] = Field(default="zh", description="实验方案语言")
 
     @model_validator(mode="after")
