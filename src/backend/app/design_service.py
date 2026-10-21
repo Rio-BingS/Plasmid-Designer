@@ -34,6 +34,8 @@ class ConstructAssembly:
     insert_end: int
     features: List[Dict] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # 切点/切除区间的可读说明（如「BamHI 切点 198 / EcoRI 切点 5000，切除 4802 bp」）
+    junction: str = ""
 
 
 _vector_library_cache = None
@@ -91,12 +93,38 @@ def ensure_vector_backbone(vector) -> str:
     return "".join(backbone)
 
 
-def assemble_construct(vector, insert_dna: str, insert_name: str = "insert") -> ConstructAssembly:
-    """在 MCS 处插入片段，生成环状完整构建体序列与注释。"""
-    warnings: List[str] = []
-    backbone = ensure_vector_backbone(vector)
-    insert = insert_dna.upper().replace(" ", "").replace("\n", "")
+def _vector_element_dicts(vector) -> List[Dict]:
+    """载体元件 → 组装用的普通字典（core 层不依赖 Vector 类型）"""
+    return [
+        {"name": el.name, "type": el.element_type.value, "start": el.start,
+         "end": el.end, "strand": el.strand, "description": el.description}
+        for el in (vector.elements or [])
+    ]
 
+
+def _mcs_window(vector) -> Optional[Tuple[int, int]]:
+    """MCS 区间（1-based 闭区间），供「切点是否落在多克隆位点附近」判定
+
+    一次性载体的推测 MCS 是「点插入」写法（start=point, end=point-1），
+    这里折成退化区间 (point, point)，否则会被当成「跨原点的整圈」。
+    """
+    mcs = getattr(vector, "mcs", None)
+    if not mcs or not mcs.start:
+        return None
+    start = int(mcs.start)
+    end = int(mcs.end or 0)
+    if end < start:
+        return (start, start)
+    return (start, end)
+
+
+def _assemble_by_mcs(backbone: str, vector, insert: str, insert_name: str,
+                     warnings: List[str]) -> ConstructAssembly:
+    """回退路径：把 MCS 注释区间整段换成插入片段（旧行为）
+
+    只在「按真实切点建模」做不了时使用（载体上没有所选酶的位点、切点跨原点等），
+    调用方已在 warnings 里说明原因——绝不静默退回。
+    """
     if vector.mcs and vector.mcs.start > 0:
         # YAML 坐标为 1-based inclusive
         cut_start = max(0, vector.mcs.start - 1)
@@ -105,9 +133,6 @@ def assemble_construct(vector, insert_dna: str, insert_name: str = "insert") -> 
         cut_start = len(backbone) // 2
         cut_end = cut_start
         warnings.append("载体缺少 MCS 定义，已在骨架中部插入")
-
-    if not backbone or set(backbone) == {"N"}:
-        warnings.append("载体骨架序列不完整，使用占位骨架组装")
 
     # 替换 MCS 区间为 insert
     full = backbone[:cut_start] + insert + backbone[cut_end:]
@@ -161,6 +186,84 @@ def assemble_construct(vector, insert_dna: str, insert_name: str = "insert") -> 
         features=features,
         warnings=warnings,
     )
+
+
+def assemble_construct(
+    vector,
+    insert_dna: str,
+    insert_name: str = "insert",
+    *,
+    method: str = "mcs",
+    insert_pos: Optional[int] = None,
+    enzyme: Optional[str] = None,
+    enzyme_5: Optional[str] = None,
+    enzyme_3: Optional[str] = None,
+    overhang_5: Optional[str] = None,
+    overhang_3: Optional[str] = None,
+    anchor: Optional[int] = None,
+) -> ConstructAssembly:
+    """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
+
+    method 取 gibson / restriction / golden_gate 时按**真实切点**建模
+    （见 core/construct_assembly.py）：
+
+    * Gibson 只在一位点线性化，不切除载体碱基；
+    * 双酶切切走两个切点之间的片段，基因两端补回位点残留碱基；
+    * Golden Gate 切走两个 Type IIS 切点之间的片段，两端补 4 nt overhang。
+
+    取 mcs（或缺省）时沿用旧的「MCS 区间整段替换」——只在按切点建模做不了时
+    作回退，且由 warnings 说明原因，不静默退回。
+    """
+    from core.construct_assembly import (
+        apply_plan, plan_gibson, plan_golden_gate, plan_restriction,
+    )
+
+    backbone = ensure_vector_backbone(vector)
+    insert = insert_dna.upper().replace(" ", "").replace("\n", "")
+    warnings: List[str] = []
+    if not backbone or set(backbone) == {"N"}:
+        warnings.append("载体骨架序列不完整，使用占位骨架组装")
+
+    plan = None
+    if method in ("gibson", "restriction", "golden_gate") and backbone:
+        circular = str(getattr(vector, "topology", "circular") or "circular").lower() != "linear"
+        window = (anchor, anchor) if anchor is not None else _mcs_window(vector)
+        plan_warnings: List[str] = []   # 单独收集，避免与 apply_plan 的返回重复
+        try:
+            if method == "gibson":
+                pos = insert_pos
+                if pos is None:
+                    pos = (int(vector.mcs.start) - 1) if vector.mcs and vector.mcs.start \
+                        else len(backbone) // 2
+                plan = plan_gibson(backbone, pos)
+            elif method == "restriction":
+                plan = plan_restriction(backbone, enzyme_5 or "", enzyme_3 or "",
+                                        window=window, circular=circular,
+                                        warnings=plan_warnings)
+            else:
+                plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
+                                        overhang_3 or "", window=window,
+                                        circular=circular, warnings=plan_warnings)
+        except ValueError as exc:
+            warnings.extend(plan_warnings)
+            warnings.append(f"{exc}：已按 MCS 区间替换构建体")
+            plan = None
+
+    if plan is not None:
+        try:
+            seq, feats, istart, iend, plan_warnings = apply_plan(
+                backbone, _vector_element_dicts(vector), plan,
+                insert=insert, insert_name=insert_name)
+        except ValueError:
+            warnings.extend(plan_warnings)
+            warnings.append("切点跨越载体原点，已按 MCS 区间替换构建体")
+        else:
+            warnings.extend(plan_warnings)
+            return ConstructAssembly(
+                sequence=seq, insert_start=istart, insert_end=iend,
+                features=feats, warnings=warnings, junction=plan.junction)
+
+    return _assemble_by_mcs(backbone, vector, insert, insert_name, warnings)
 
 
 def derive_gg_overhangs(vector, enzyme_name: str) -> Tuple[str, str, bool]:
@@ -537,6 +640,18 @@ def run_design(
             result.warnings.extend(vec_meta["warnings"])
         else:
             vector = get_vector_library().get_vector(request.vector_id)
+
+        # 组装与方案文本共用的方法参数：切点/overhang 先算一次
+        # （vector 为 None 时 derive_gg_overhangs 返回默认值）
+        gibson_pos: Optional[int] = None
+        gg_oh5: Optional[str] = None
+        gg_oh3: Optional[str] = None
+        gg_derived = False
+        if request.cloning_method == CloningMethod.GIBSON:
+            gibson_pos = resolve_gibson_insert_pos(request, vector)
+        elif request.cloning_method == CloningMethod.GOLDEN_GATE:
+            gg_oh5, gg_oh3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
+
         backbone = "N" * 5000
         if not vector:
             result.warnings.append(f"未找到载体 {request.vector_id}，使用空骨架回退")
@@ -559,7 +674,17 @@ def run_design(
         else:
             result.vector_name = vector.name
             backbone = ensure_vector_backbone(vector)
-            assembly = assemble_construct(vector, optimized_dna, request.sequence_name or "insert")
+            # 按克隆方法建模切点：Gibson 不切除碱基、双酶切/GG 切走两个切点之间的片段
+            assembly = assemble_construct(
+                vector, optimized_dna, request.sequence_name or "insert",
+                method=request.cloning_method.value,
+                insert_pos=gibson_pos,
+                enzyme=request.enzyme,
+                enzyme_5=request.enzyme_5 or request.enzyme,
+                enzyme_3=request.enzyme_3 or request.enzyme,
+                overhang_5=gg_oh5,
+                overhang_3=gg_oh3,
+            )
             result.warnings.extend(assembly.warnings)
 
         if request.cloning_method == CloningMethod.GOLDEN_GATE:
@@ -625,11 +750,13 @@ def run_design(
         strategy_kwargs: Dict = {}
         if request.cloning_method == CloningMethod.GIBSON:
             strategy_kwargs = {
-                "insert_position": resolve_gibson_insert_pos(request, vector),
+                # 与组装用的线性化点一致（此前会重复算一次，两边可能不一致）
+                "insert_position": gibson_pos if gibson_pos is not None else 0,
                 "homology_arm": request.homology_arm,
             }
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:
-            overhang_5, overhang_3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
+            overhang_5 = gg_oh5 if gg_oh5 is not None else "AATG"
+            overhang_3 = gg_oh3 if gg_oh3 is not None else "GCTT"
             if not gg_derived:
                 result.warnings.append(
                     "警告：无法从载体 MCS 推导 Golden Gate overhang，"
@@ -673,6 +800,11 @@ def run_design(
             vector_name=result.vector_name or request.vector_id,
             **strategy_kwargs,
         )
+        # 方案里的产物长度按**实际组装结果**校正：各策略自己估的 MCS 区间可能与
+        # 真实切点不一致（Gibson 不切除、双酶切切走切点之间），协议文本与图谱
+        # 必须同口径
+        if vector and assembly.sequence:
+            strategy.expected_product_size = len(assembly.sequence)
         result.clone_protocol = strategy.to_protocol(language=request.protocol_language)
 
         result.status = DesignStatus.COMPLETED
