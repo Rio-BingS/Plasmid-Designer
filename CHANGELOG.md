@@ -8,6 +8,25 @@
 
 ## [Unreleased]
 
+## [2.17.1] - 2026-10-22
+
+### 升级注意
+- 构建体组装改为按克隆方法建模：Gibson 只线性化（不再整段删掉 MCS），双酶切按真实切点
+  切除并补回位点残留，Golden Gate 按两个切点切除并补 4 nt overhang；元件坐标按切除区间
+  增删移。同一组载体 + 片段的设计结果图谱会与旧版不同。
+- 「排除位点」不再对 DNA 输入或未启用密码子优化的情况生效（此前仍会校验并告警，DNA 输入
+  还会提示仍含需排除的位点）。前端同步隐藏该选择器，不再提交该参数。
+
+### 修复
+- 全基因合成 / PCR 引物设计出的片段与载体组装后，图谱没有准确识别位点、还残留应被限制酶
+  除去的片段：根因是三种克隆方法共用「MCS 注释区间整段替换」。新增
+  `core/construct_assembly.py`，统一按「head + 基因 + tail 替换载体顶链 (left_cut, right_cut]」
+  建模；切点按「落在 MCS 内 → 最短」排序并双向尝试（单向找会把 pET-28a 删成 40 bp），指派与
+  载体位点顺序相反时告警反向插入，载体无对应位点时回退旧口径并明确告警。
+- 「排除位点」参数误以为生效：排除位点只能靠同义密码子实现，DNA 输入无法沉默突变、关闭优化
+  时也只是反翻译，此前两种情况仍校验告警。现在只在氨基酸输入且启用密码子优化时处理，
+  且该参数从不作用于载体骨架或组装结果。
+
 ## [2.17.0] - 2026-10-21
 
 ### 升级注意
@@ -908,7 +927,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.1...HEAD
+[2.17.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.0...v2.17.1
 [2.17.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...v2.17.0
 [2.16.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...v2.16.2
 [2.16.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.0...v2.16.1
