@@ -196,50 +196,111 @@ def test_legacy_gene_synthesis_method_normalized():
 
 
 def test_exclude_enzymes_avoided_in_optimization():
-    """排除限制酶位点：反翻译基线含 BamHI 位点，排除后消失且翻译不变"""
+    """排除限制酶位点：氨基酸 + 密码子优化时，位点经同义替换消失且长度不变"""
     from app.routes.models import SequenceType
     from app.design_service import process_sequence
 
-    # MDP 的最高频密码子 ATG+GAT+CCG 拼出 BamHI 位点 GGATCC
-    aa = "MDP"
-    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60)
-    assert "GGATCC" in dna_raw, "基线应含 BamHI 位点（测试靶点校验）"
+    # 该蛋白的优化基线含 PstI 位点 CTGCAG（随机种子固定，见测试历史）
+    aa = "MFPCDVENWCTHCDQQDIDVQCWEIWCWWPCICVFLQFVEWLVGEWWHNEVDWCYHSVQM"
+    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60)
+    assert "CTGCAG" in dna_raw, "基线应含 PstI 位点（测试靶点校验）"
 
     dna_excl, _, _, warns = process_sequence(
-        aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60, exclude_enzymes=["BamHI"]
+        aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60, exclude_enzymes=["PstI"]
     )
     assert len(dna_excl) == len(aa) * 3          # 沉默突变不改变长度
-    assert "GGATCC" not in dna_excl, "优化序列不应含 BamHI 位点"
+    assert "CTGCAG" not in dna_excl, "优化序列不应含 PstI 位点"
     assert dna_raw != dna_excl                   # 发生了同义替换
     assert not any("无法完全排除" in w for w in warns)
 
 
-def test_exclude_enzymes_dna_input_warns_only():
-    """DNA 输入无法沉默突变：只做存在性检查并告警"""
+def test_exclude_enzymes_ignored_for_dna_input():
+    """DNA 输入根本不适用排除：原样返回，不校验酶名、也不产生位点告警"""
     from app.routes.models import SequenceType
     from app.design_service import process_sequence
 
     dna = "ATG" + "GAATTC" + "TAA"
-    _, _, _, warns = process_sequence(
-        dna, SequenceType.DNA, False, "ecoli", 40, 60, exclude_enzymes=["EcoRI"]
+    for optimize in (False, True):
+        out, cai, gc, warns = process_sequence(
+            dna, SequenceType.DNA, optimize, "ecoli", 40, 60,
+            exclude_enzymes=["EcoRI", "NotAnEnzyme"],
+        )
+        assert out == dna
+        assert cai is None and gc is None
+        # 不应出现「仍包含需排除的位点」或「忽略未知限制酶」这类看似生效的提示
+        assert not any("排除" in w or "限制酶" in w for w in warns), warns
+
+
+def test_exclude_enzymes_ignored_without_codon_optimization():
+    """未启用密码子优化时只是反翻译：排除参数不参与、不产生避让告警"""
+    from app.routes.models import SequenceType
+    from app.design_service import process_sequence
+
+    aa = "MDP"
+    dna_raw, _, _, _ = process_sequence(aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60)
+    dna_excl, _, _, warns = process_sequence(
+        aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60, exclude_enzymes=["BamHI"]
     )
-    assert any("仍包含需排除的位点" in w for w in warns)
+    assert dna_excl == dna_raw
+    assert any("未启用密码子优化" in w for w in warns)
+    assert not any("避让" in w or "排除" in w for w in warns), warns
 
 
-def test_unknown_enzyme_warning_not_dropped():
-    """终审 D-04 回归锁：未知限制酶告警曾被整体丢弃
-    （exclude_enzymes=["NotAnEnzyme"] 返回 warnings=[]，用户以为序列
-    干净直接下单合成）——优化与非优化两条路径都必须透出"""
+def test_exclude_enzymes_do_not_touch_vector_or_assembly():
+    """排除位点只作用于插入片段的密码子优化，不影响载体/组装结果
+
+    DNA 输入 + 全基因合成 + 双酶切：即便请求里带了排除酶（含克隆酶本身），
+    optimized_sequence / construct_sequence / 载体注释都必须与不带排除时完全一致。
+    """
+    from app.routes.models import CloningMethod, DesignRequest, SequenceType
+    from app.design_service import run_design
+
+    insert = "ATG" + "GAATTC" + "GGATCC" + "GCT" * 80 + "TAA"
+    kwargs = dict(
+        sequence=insert,
+        sequence_type=SequenceType.DNA,
+        sequence_name="syn",
+        vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        insert_source="gene_synthesis",
+        enzyme_5="BamHI",
+        enzyme_3="XhoI",
+    )
+    base = run_design("design_excl_base", DesignRequest(**kwargs), store_result=False)
+    excl = run_design(
+        "design_excl_off",
+        DesignRequest(**kwargs, exclude_enzymes=["BamHI", "XhoI", "EcoRI"]),
+        store_result=False,
+    )
+    assert base.status == excl.status
+    assert excl.optimized_sequence == insert
+    assert excl.construct_sequence == base.construct_sequence
+    assert excl.construct_features == base.construct_features
+    assert excl.vector_name == base.vector_name
+    assert not any("排除" in w or "限制酶" in w for w in excl.warnings), excl.warnings
+
+
+def test_unknown_enzyme_warning_only_when_exclusion_applies():
+    """终审 D-04 回归锁：优化路径的未知限制酶告警必须透出
+
+    排除参数只对「氨基酸 + 密码子优化」生效；未优化路径现在直接忽略该参数，
+    不应再出现「忽略未知限制酶」这种让用户以为排除已处理的提示。
+    """
     from app.routes.models import SequenceType
     from app.design_service import process_sequence
 
     aa = "MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR"
-    for optimize in (True, False):
-        _, _, _, warns = process_sequence(
-            aa, SequenceType.AMINO_ACID, optimize, "ecoli", 40, 60,
-            exclude_enzymes=["NotAnEnzyme"],
-        )
-        assert any("忽略未知限制酶" in w for w in warns), (optimize, warns)
+    _, _, _, warns = process_sequence(
+        aa, SequenceType.AMINO_ACID, True, "ecoli", 40, 60,
+        exclude_enzymes=["NotAnEnzyme"],
+    )
+    assert any("忽略未知限制酶" in w for w in warns), warns
+
+    _, _, _, warns_no_opt = process_sequence(
+        aa, SequenceType.AMINO_ACID, False, "ecoli", 40, 60,
+        exclude_enzymes=["NotAnEnzyme"],
+    )
+    assert not any("忽略未知限制酶" in w for w in warns_no_opt), warns_no_opt
 
 
 def test_unknown_enzyme_warning_survives_cache_roundtrip():
