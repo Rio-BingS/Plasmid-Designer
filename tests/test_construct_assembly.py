@@ -17,6 +17,7 @@ from core.construct_assembly import (
     apply_plan, physical_sites, pick_flanking, plan_gibson, plan_golden_gate,
     plan_restriction,
 )
+from core.seq_utils import translate as translate_dna_checked
 
 # 300 bp 的合成环状载体：BamHI(60) 与 XhoI(100) 相隔 40 bp，两端还有 EcoRI(200)
 VECTOR = (
@@ -77,10 +78,33 @@ def test_restriction_construct_removes_stuffer_and_restores_sites():
     assert construct[iend:iend + len(plan.tail)] == plan.tail
 
 
-def test_restriction_warns_when_enzyme_order_is_reversed():
-    """引物端是 e5，但载体上 e3 的切点在前：基因会反向插入，必须告警"""
-    _plan, warns = _plan_restriction("BamHI", "XhoI")
-    assert any("反向插入" in w for w in warns)
+def test_restriction_reverse_assignment_inserts_reverse_complement():
+    """引物端是 e5，但载体上 e3 的切点在前：粘端只能反着配，基因按负链插入
+
+    pET-28a 的表达盒整个在负链上（T7 promoter 368-386 为 '-'），BamHI 5' /
+    XhoI 3' 的基因必须以反向互补进构建体，否则图谱上 CDS/ORF 整个是反的。
+    """
+    plan, warns = _plan_restriction("BamHI", "XhoI")
+    assert plan is not None and plan.insert_reverse is True
+    assert any("负链" in w for w in warns)
+
+    gene = "ATG" + "GAA" * 20 + "TAA"
+    construct, features, istart, iend, _w = apply_plan(VECTOR, [], plan, insert=gene, insert_name="g")
+    from core.seq_utils import revcomp
+
+    assert construct[istart - 1:iend] == revcomp(gene)
+    assert features[0]["strand"] == "-"
+    # 按注释链翻译出来仍是目标蛋白（translate 默认在终止符处截断）
+    assert translate_dna_checked(revcomp(construct[istart - 1:iend])) == "M" + "E" * 20
+
+
+def test_restriction_forward_assignment_keeps_gene_on_plus_strand():
+    plan, _warns = _plan_restriction("XhoI", "BamHI")
+    assert plan is not None and plan.insert_reverse is False
+    gene = "ATG" + "GAA" * 20 + "TAA"
+    construct, features, istart, iend, _w = apply_plan(VECTOR, [], plan, insert=gene)
+    assert construct[istart - 1:iend] == gene
+    assert features[0]["strand"] == "+"
 
 
 def test_restriction_single_site_is_point_insertion():
@@ -245,3 +269,65 @@ def test_run_design_gibson_keeps_backbone_and_mcs_end_to_end():
     p = res.insert_start - 1
     assert res.construct_sequence[:p] + res.construct_sequence[p + len(res.optimized_sequence):] \
         == vector.sequence
+
+# ==================== 插入方向（负链插入） ====================
+
+def test_run_design_pet28a_bamhi_xhoi_gene_on_minus_strand():
+    """pET-28a 的表达盒在负链：BamHI 5' / XhoI 3' 的基因必须反向插入
+
+    载体特征里 T7 promoter(368-386)、RBS、His-tag、T7-tag 全在 '-' 链，
+    MCS 的转录方向是 NcoI(296) → BamHI(198) → XhoI(158)。按正链插入会让
+    图谱上的 CDS/ORF 与启动子反向。
+    """
+    from app.design_service import get_vector_library
+    from app.map_documents import design_map_document
+    from app.routes.models import CloningMethod, DesignStatus
+    from core.seq_utils import revcomp, translate
+
+    res = _run(CloningMethod.RESTRICTION, enzyme_5="BamHI", enzyme_3="XhoI")
+    assert res.status == DesignStatus.COMPLETED, res.errors
+
+    span = res.construct_sequence[res.insert_start - 1:res.insert_end]
+    gene = res.optimized_sequence
+    assert span == revcomp(gene), "基因在正链上应为反向互补"
+    assert translate(span, stop_at_stop=False) != translate(gene, stop_at_stop=False)
+    assert translate(revcomp(span), stop_at_stop=False) == translate(gene, stop_at_stop=False)
+
+    doc = design_map_document(res)
+    insert = next(f for f in doc["features"] if f["source"] == "design")
+    assert insert["strand"] == -1
+
+    # 载体自己的表达盒也在负链，方向一致
+    vector = get_vector_library().get_vector("pET-28a")
+    t7 = next(e for e in vector.elements if e.name == "T7 promoter")
+    assert str(t7.strand).strip() in ("-", "-1")
+
+
+def test_run_design_pet28a_xhoi_bamhi_gene_on_plus_strand():
+    """对调两端酶后基因落在正链（与载体表达盒相反，供用户按需选择）"""
+    from app.design_service import get_vector_library
+    from app.map_documents import design_map_document
+    from app.routes.models import CloningMethod, DesignStatus
+
+    res = _run(CloningMethod.RESTRICTION, enzyme_5="XhoI", enzyme_3="BamHI")
+    assert res.status == DesignStatus.COMPLETED, res.errors
+    span = res.construct_sequence[res.insert_start - 1:res.insert_end]
+    assert span == res.optimized_sequence
+
+    doc = design_map_document(res)
+    insert = next(f for f in doc["features"] if f["source"] == "design")
+    assert insert["strand"] == 1
+
+
+def test_run_design_gibson_insert_stays_on_plus_strand():
+    """Gibson 由同源臂定方向，插入片段在正链"""
+    from app.map_documents import design_map_document
+    from app.routes.models import CloningMethod, DesignStatus
+
+    res = _run(CloningMethod.GIBSON)
+    assert res.status == DesignStatus.COMPLETED, res.errors
+    span = res.construct_sequence[res.insert_start - 1:res.insert_end]
+    assert span == res.optimized_sequence
+    doc = design_map_document(res)
+    insert = next(f for f in doc["features"] if f["source"] == "design")
+    assert insert["strand"] == 1
