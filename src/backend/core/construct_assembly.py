@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from core.enzyme_sites import find_enzyme_sites, get_enzyme, golden_gate_geometry
+from core.seq_utils import revcomp
 
 
 @dataclass
@@ -43,6 +44,11 @@ class AssemblyPlan:
     head: str = ""                      # 基因 5' 侧补的碱基（位点残留/overhang）
     tail: str = ""                      # 基因 3' 侧补的碱基
     junction: str = ""                  # 人类可读的切点说明（写进方案文本）
+    # 插入片段是否反向（负链）插入。不是排布细节而是物理事实：粘端只在同一位点
+    # 之间互补，引物端 e5 的位点在载体上位于 e3 之后时，基因只能反向插进去。
+    # pET-28a 的整个表达盒（T7 promoter / RBS / His-tag）都在负链上，用 BamHI
+    # 做 5'、XhoI 做 3' 克隆出来的基因必须反向才与启动子同向。
+    insert_reverse: bool = False
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -222,21 +228,26 @@ def plan_restriction(
             f"{enzyme_5}/{enzyme_3} 的两个切点都不在 MCS 区间内"
             f"（将切除 {max(0, right - left)} bp），请核对酶切方案")
 
-    # 左切点属于哪把酶：引物把 enzyme_5 的位点放在基因 5' 端，若左切点是
-    # enzyme_3，说明两端酶与载体上的位点顺序相反，构建体上基因会是反向插入
-    if left_enzyme == enzyme_5:
+    # 左切点属于哪把酶：引物把 enzyme_5 的位点放在基因 5' 端。左切点是
+    # enzyme_3 时，两个连接处的粘端是「反着」配的——基因只能以**反向互补**
+    # 的形式插进去（pET-28a 的表达盒在负链上，BamHI 5' / XhoI 3' 的基因
+    # 正是这种情况）。这不是可选的排布，是粘端配对的物理结果。
+    reverse = left_enzyme != enzyme_5
+    if not reverse:
         head, tail = site5[k5:], site3[:k3]
     else:
         head, tail = site3[k3:], site5[:k5]
         warnings.append(
-            f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：按引物端的指派，"
-            "插入片段在构建体上会是反向插入；如需正向表达请把两端酶对调"
-            f"（5' 端用 {enzyme_3}、3' 端用 {enzyme_5}）")
+            f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
+            "负链（-）插入构建体（粘端只在同一位点间互补）；如需插入正链请把"
+            f"两端酶对调（5' 端用 {enzyme_3}、3' 端用 {enzyme_5}）")
 
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
+        insert_reverse=reverse,
         junction=(f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
-                  f"（切除 {max(0, right - left)} bp，位点在连接处复原）"),
+                  f"（切除 {max(0, right - left)} bp，位点在连接处复原"
+                  + ("，插入片段在负链" if reverse else "") + "）"),
         warnings=warnings,
     )
 
@@ -306,7 +317,11 @@ def apply_plan(
     """按方案生成构建体序列与注释 → (序列, 元件, 插入起点, 插入终点, 告警)"""
     length = len(sequence)
     left, right = plan.left_cut, plan.right_cut
-    fragment = plan.fragment(insert)
+    # 反向插入：粘端只在同一位点间互补，指派与载体位点顺序相反时，构建体正链上
+    # 放的是基因的反向互补（注释标负链），否则图谱上的 CDS/ORF 会整个反过来
+    body = revcomp(insert) if plan.insert_reverse else insert
+    fragment = plan.head + body + plan.tail
+    strand = "-" if plan.insert_reverse else "+"
     warnings = list(plan.warnings)
 
     if length <= 0:
@@ -319,7 +334,7 @@ def apply_plan(
     # 插入片段在构建体上的坐标只算**基因本身**：两端的位点残留/overhang 属于
     # 克隆接头，算进 CDS 会让图谱上的编码区从 "GATCC" 开始、ORF 平移
     insert_start = left + 1 + len(plan.head)
-    insert_end = insert_start + len(insert) - 1
+    insert_end = insert_start + len(body) - 1
     delta = len(fragment) - removed
 
     features: List[Dict] = [{
@@ -327,8 +342,9 @@ def apply_plan(
         "type": "CDS",
         "start": insert_start,
         "end": max(insert_start, insert_end),
-        "strand": "+",
-        "description": "Designed insert",
+        "strand": strand,
+        "description": ("Designed insert (reverse complement on the minus strand)"
+                        if plan.insert_reverse else "Designed insert"),
     }]
     for el in elements or []:
         span = clamp_span(el.get("start", 1), el.get("end", 1), length)

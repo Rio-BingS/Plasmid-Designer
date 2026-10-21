@@ -76,8 +76,8 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-22 实测，v2.17.0）：pytest
-**1607 passed / 39 skipped / 0 failed**，vitest **576**，vue-tsc **0**。其中 5 项真实数据回归
+测试基线（本机 Windows，2026-10-22 实测，v2.17.1）：pytest
+**1613 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
@@ -172,7 +172,11 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   切点之间、两端补 4 nt overhang。切点用 `find_enzyme_sites` 真实扫描，挑选按
   「是否落在 MCS 区间内 → 切除长度」排序，**两个方向都要试**（只按 e5→e3 单向找会把
   5.3 kb 主链当废片段，pET-28a 实测删成 40 bp）；左切点属于哪把酶与引物端 5'/3' 不一致
-  时告警「基因会反向插入，请对调两端酶」。载体上没有所选酶位点时**回退**到旧的
+  时**按负链插入**（基因取反向互补、注释 strand = '-'）并告警「如需正链插入请对调
+  两端酶」——粘端只在同一位点间互补，指派反了基因只能反向进构建体（pET-28a 的
+  整个表达盒 T7 promoter/RBS/His-tag 都在负链上，BamHI 5' / XhoI 3' 的基因必须反向
+  才与启动子同向；把基因正着插进去，图谱上的 CDS/ORF 就会整个反过来）。
+  载体上没有所选酶位点时**回退**到旧的
   「MCS 区间整段替换」并明确告警，绝不静默。图谱元件：落在切除区间的移除、跨切点的
   按保留比例截断/移位、纯插入点落在元件内部时元件被撑开；插入片段的图谱坐标只算
   基因本身（不含接头），否则 CDS 会从 `GATCC` 开始、ORF 整体平移
