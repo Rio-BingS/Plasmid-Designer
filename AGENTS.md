@@ -123,7 +123,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   旧值 `cloning_method=gene_synthesis` 由模型校验器归一为 insert_source=gene_synthesis +
   限制性克隆，但仍须给 enzyme_5/enzyme_3（或 enzyme），否则 422——并非完全向后兼容
 - 限制性克隆双酶切 `enzyme_5/enzyme_3`；Gibson `gibson_site` 定位重组点；
-  合成可 `exclude_enzymes` 让优化序列避开酶位点
+  合成可 `exclude_enzymes` 让优化序列避开酶位点——**只对「氨基酸输入 + 启用密码子优化」生效**：
+  DNA 输入、关闭优化时的反翻译都不校验、不告警、不改序列；该参数也从不作用于
+  载体骨架或组装结果
 - 酶选择器统一用 `EnzymeAutocomplete`（可按酶名/识别序列搜索；API 失败回退内置酶表）
 - 认证：浏览器只走 httpOnly 会话 Cookie，前端不持有令牌；Cookie 认证的写请求缺
   `X-Requested-With` 一律 403（登录/注册/验证/重发豁免）；Bearer 头请求不查 CSRF。
