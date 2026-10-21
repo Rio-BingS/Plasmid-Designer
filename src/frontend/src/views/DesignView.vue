@@ -45,6 +45,13 @@ const enzyme3 = ref('EcoRI')
 const gibsonSite = ref('')
 // 全基因合成：需从优化序列排除的限制酶（多选）
 const excludeEnzymes = ref<string[]>([])
+// 排除位点只能靠同义密码子实现：只对「氨基酸输入 + 启用密码子优化」有意义。
+// DNA 输入无法沉默突变，关闭优化时只是反翻译——两种情况都不展示、不提交该参数。
+const excludeEnzymesApplicable = computed(() =>
+  sequenceType.value === 'amino_acid'
+  && optimizeCodons.value
+  && insertSource.value === 'gene_synthesis'
+)
 const oligoLengthMin = ref(40)
 const oligoLengthMax = ref(80)
 const overlapLength = ref(20)
@@ -304,7 +311,7 @@ async function handleSubmit() {
     if (cloningMethod.value === 'gibson' && gibsonSite.value) {
       request.gibson_site = gibsonSite.value
     }
-    if (insertSource.value === 'gene_synthesis' && excludeEnzymes.value.length) {
+    if (excludeEnzymesApplicable.value && excludeEnzymes.value.length) {
       request.exclude_enzymes = excludeEnzymes.value
     }
     if (adhocVector.value) {
@@ -509,10 +516,10 @@ function loadExample() {
             <input v-model.number="overlapLength" type="number" class="form-input" min="10" max="40" />
             <p class="hint-text">相邻寡核苷酸共享的互补重叠区大小，GC 含量高的基因可适当加大</p>
           </div>
-          <div class="form-group">
+          <div v-if="excludeEnzymesApplicable" class="form-group">
             <label class="form-label">排除的限制酶位点（可选）</label>
             <EnzymeAutocomplete v-model="excludeEnzymes" :enzymes="enzymeMap" multiple placeholder="输入以搜索要排除的酶…" />
-            <p class="hint-text">密码子优化将避开这些识别位点，保证优化后的序列不含它们</p>
+            <p class="hint-text">仅对氨基酸输入且启用密码子优化时生效；DNA 输入或关闭优化时会自动忽略</p>
           </div>
         </div>
       </div>
