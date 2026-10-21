@@ -172,7 +172,12 @@ def test_design_uses_inline_vector_sequence(client, isolated_vectors_dir):
     assert any("MCS" in w for w in res["warnings"])
 
 
-def test_design_with_explicit_mcs_feature_replaces_that_region(client, isolated_vectors_dir):
+def test_gibson_design_keeps_mcs_and_does_not_delete_backbone(client, isolated_vectors_dir):
+    """Gibson 是「一位点线性化」，不切掉任何碱基——MCS 必须原样留在构建体里
+
+    旧实现三种克隆方法共用「MCS 区间整段替换」，Gibson 也会删掉整段 MCS
+    （用户反馈的「图谱上残留/误删」同源）。
+    """
     features = [{"name": "MCS", "type": "mcs", "start": 120, "end": 260, "strand": "+"}]
     payload = _insert_payload()
     payload["vector"] = _inline_vector(features=features)
@@ -180,9 +185,13 @@ def test_design_with_explicit_mcs_feature_replaces_that_region(client, isolated_
     design_id = r.json()["design_id"]
     res = client.get(f"/api/design/{design_id}", headers=HEADERS).json()
     assert res["status"] == "completed", res.get("errors")
-    # 注释过的 MCS 按「该段被插入片段替换」处理（与载体库口径一致）
     assert (len(res["construct_sequence"])
-            == len(VECTOR_SEQ) - 141 + len(res["optimized_sequence"]))
+            == len(VECTOR_SEQ) + len(res["optimized_sequence"]))
+    # 载体序列一个碱基都没少
+    seq = res["construct_sequence"]
+    head = VECTOR_SEQ[:int(res["insert_start"]) - 1]
+    tail = VECTOR_SEQ[int(res["insert_start"]) - 1:]
+    assert seq.startswith(head) and seq.endswith(tail)
 
 
 def test_design_without_inline_vector_still_uses_library(client, isolated_vectors_dir):
