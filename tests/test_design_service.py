@@ -99,6 +99,45 @@ def test_assemble_construct_keeps_cut_pair_when_mcs_point_sits_on_a_cut():
     assert sequence[40:46] in asm.sequence and sequence[80:86] in asm.sequence
 
 
+def test_assemble_construct_warns_when_enzyme_ends_are_swapped():
+    """5'/3' 两端酶填反：粘端照样配得上，基因却会反着进质粒 → 必须明确告警
+
+    pET-30a 这类载体的表达盒在负链：T7 promoter 在 NdeI 之后、strand '-'，
+    基因只能 NdeI(5') → XhoI(3')。把 XhoI 填成 5' 端时构建体照样拼得出来，
+    只是 CDS 落在正链上——用户在图谱里看到的箭头就是反的，而结果页原先一声
+    不响。这里要求：装配结果不静默改用户填写，但必须指出「把两端酶对调」。
+    """
+    sequence = "C" * 100 + "CTCGAG" + "A" * 100 + "CATATG" + "G" * 100
+    promoter = VectorElement("T7 promoter", ElementType.PROMOTER, 230, 248, "", "-")
+    vector = Vector(
+        id="adhoc",
+        name="pET-30a",
+        sequence=sequence,
+        mcs=MCS(name="MCS（按唯一位点推测）", start=101, end=100, sites=[]),
+        elements=[promoter],
+    )
+    gene = "ATG" + "GAA" * 20 + "TAA"
+
+    swapped = assemble_construct(vector, gene, "A01", method="restriction",
+                                 enzyme_5="XhoI", enzyme_3="NdeI")
+    assert swapped.features[0]["strand"] == "+"
+    hits = [w for w in swapped.warnings if "插入方向和载体启动子相反" in w]
+    assert hits, swapped.warnings
+    assert "对调" in hits[0]
+
+    correct = assemble_construct(vector, gene, "A01", method="restriction",
+                                 enzyme_5="NdeI", enzyme_3="XhoI")
+    assert correct.features[0]["strand"] == "-"
+    assert not [w for w in correct.warnings if "插入方向和载体启动子相反" in w]
+
+    # 载体没有启动子注释时不猜方向，也不能平白多一条告警
+    bare = Vector(id="adhoc", name="pET-30a", sequence=sequence,
+                  mcs=MCS(name="MCS", start=101, end=100, sites=[]))
+    plain = assemble_construct(bare, gene, "A01", method="restriction",
+                               enzyme_5="XhoI", enzyme_3="NdeI")
+    assert not [w for w in plain.warnings if "插入方向和载体启动子相反" in w]
+
+
 def test_run_design_end_to_end_minimal():
     req = DesignRequest(
         sequence="MKLVWAALLTF",
