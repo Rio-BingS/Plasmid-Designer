@@ -49,12 +49,15 @@ class AssemblyPlan:
     # pET-28a 的整个表达盒（T7 promoter / RBS / His-tag）都在负链上，用 BamHI
     # 做 5'、XhoI 做 3' 克隆出来的基因必须反向才与启动子同向。
     insert_reverse: bool = False
+    # 被切走的载体碱基数。切除区间跨原点时 right_cut - left_cut 是负数，
+    # 不能靠坐标差反推，由规划函数显式给出（left==right 表示纯插入 = 0）
+    removed_bp: int = 0
     warnings: List[str] = field(default_factory=list)
 
     @property
     def removed(self) -> int:
         """被切走的载体碱基数（left==right 表示纯插入）"""
-        return max(0, self.right_cut - self.left_cut)
+        return max(0, self.removed_bp)
 
     def fragment(self, insert: str) -> str:
         return self.head + insert + self.tail
@@ -135,6 +138,47 @@ def _pair_score(a: int, b: int, window: Optional[Tuple[int, int]],
     return (penalty, d)
 
 
+def _candidate_pairs(cuts_a: Sequence[int], cuts_b: Sequence[int],
+                     length: int, circular: bool, allow_long: bool):
+    """枚举候选切点对；allow_long=False 时先排除「切除区间超过半圈」的方向
+
+    环状载体上要切掉的废片段一定比半圈短：反向的那一对切点算出来是
+    `长度 - 废片段`（pET-30a 实测 188 bp 的废片段被算成 5234 bp），按它组装
+    等于把整条主链当废片段扔掉。所以先只看短区间，实在没有短区间才放宽。
+    """
+    for a in cuts_a:
+        for b in cuts_b:
+            d = _forward_dist(a, b, length, circular)
+            if d <= 0:
+                continue
+            if circular and not allow_long and d * 2 > length:
+                continue
+            yield a, b
+
+
+def _best_ordered_pair(
+    groups: Sequence[Tuple[Sequence[int], Sequence[int], str]],
+    window: Optional[Tuple[int, int]], length: int, circular: bool,
+) -> Optional[Tuple[Tuple[int, int], int, int, str]]:
+    """在若干 (cuts_a, cuts_b, tag) 组合里挑最优切点对 → (score, a, b, tag)
+
+    先只考虑不超过半圈的切除区间，挑不出来再放宽到整圈——放宽意味着要把
+    载体大半条链当废片段切掉，调用方应据此告警。
+    """
+    for allow_long in (False, True):
+        best: Optional[Tuple[Tuple[int, int], int, int, str]] = None
+        for cuts_a, cuts_b, tag in groups:
+            for a, b in _candidate_pairs(cuts_a, cuts_b, length, circular, allow_long):
+                score = _pair_score(a, b, window, length, circular)
+                if score is None:
+                    continue
+                if best is None or score < best[0]:
+                    best = (score, a, b, tag)
+        if best is not None:
+            return best
+    return None
+
+
 def pick_flanking(
     cuts_a: Sequence[int], cuts_b: Sequence[int], *,
     window: Optional[Tuple[int, int]] = None, length: int, circular: bool = True,
@@ -146,18 +190,12 @@ def pick_flanking(
 
     排序按 (penalty, 切除长度)：同 penalty 下取最短。**不能只看是不是「包住
     MCS 中点」**——pET-28a 的 MCS 158–301 而 BamHI/XhoI 切点 159/199 并不包含
-    中点 229，只看中点会把 5329 bp 的主链当成要切掉的废片段。
+    中点 229，只看中点会把 5329 bp 的主链当成要切掉的废片段。也**不能奖励
+    「MCS 点落在整圈长区间里」**：那方向正好是反的（见 _candidate_pairs）。
 
     window 为 None（载体没有 MCS 注释）时按最短区间取。
     """
-    best: Optional[Tuple[Tuple[int, int], int, int]] = None
-    for a in cuts_a:
-        for b in cuts_b:
-            score = _pair_score(a, b, window, length, circular)
-            if score is None:
-                continue
-            if best is None or score < best[0]:
-                best = (score, a, b)
+    best = _best_ordered_pair([(cuts_a, cuts_b, '')], window, length, circular)
     if best is not None:
         return best[1], best[2], best[0][0]
 
@@ -199,16 +237,13 @@ def plan_restriction(
     # 两个方向都要试：废片段可能在 e5 之后、e3 之前，也可能反过来。
     # 只按「e5 → e3」单向找，pET-28a 这类位点顺序与引物端指派相反的载体会
     # 把 5.3 kb 主链当成要切掉的废片段（实测会把质粒删成 40 bp）。
-    best: Optional[Tuple[Tuple[int, int], int, int, str]] = None
-    for cuts_a, cuts_b, left_enzyme in ((cuts5, cuts3, enzyme_5),
-                                        (cuts3, cuts5, enzyme_3)):
-        for a in cuts_a:
-            for b in cuts_b:
-                score = _pair_score(a, b, window, length, circular)
-                if score is None:
-                    continue
-                if best is None or score < best[0]:
-                    best = (score, a, b, left_enzyme)
+    # 同一对切点反着算就是「整圈减去废片段」，所以还要先排除超过半圈的方向：
+    # 一次性载体的推测 MCS 是个点，那个点正好落在某个切点上时，旧的 penalty
+    # 会让整圈长区间胜出（pET-30a 实测：188 bp 的废片段被算成 5234 bp，
+    # 再因「切点跨原点」回退成 MCS 整段替换，基因落在位点之外）。
+    best = _best_ordered_pair(
+        ((cuts5, cuts3, enzyme_5), (cuts3, cuts5, enzyme_3)),
+        window, length, circular)
 
     if best is None:
         common = sorted(set(cuts5) & set(cuts3))
@@ -223,10 +258,15 @@ def plan_restriction(
             junction=f"{enzyme_5} 单切点 {point}（纯插入）", warnings=warnings)
 
     score, left, right, left_enzyme = best
+    cut_length = _forward_dist(left, right, length, circular)
     if score[0] == 2:
         warnings.append(
             f"{enzyme_5}/{enzyme_3} 的两个切点都不在 MCS 区间内"
-            f"（将切除 {max(0, right - left)} bp），请核对酶切方案")
+            f"（将切除 {cut_length} bp），请核对酶切方案")
+    if circular and cut_length * 2 > length:
+        warnings.append(
+            f"切除区间 {cut_length} bp 超过载体一半（{length} bp）：只有当两个方向"
+            "都超过半圈时才会这样切，请核对酶切方案")
 
     # 左切点属于哪把酶：引物把 enzyme_5 的位点放在基因 5' 端。左切点是
     # enzyme_3 时，两个连接处的粘端是「反着」配的——基因只能以**反向互补**
@@ -244,9 +284,9 @@ def plan_restriction(
 
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
-        insert_reverse=reverse,
+        insert_reverse=reverse, removed_bp=cut_length,
         junction=(f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
-                  f"（切除 {max(0, right - left)} bp，位点在连接处复原"
+                  f"（切除 {cut_length} bp，位点在连接处复原"
                   + ("，插入片段在负链" if reverse else "") + "）"),
         warnings=warnings,
     )
@@ -276,17 +316,20 @@ def plan_golden_gate(
             warnings.append(f"{enzyme} 的位点排布无法围出可切除区间，已按 MCS 区间替换")
             return None
         left, right, penalty = picked
+        cut_length = _forward_dist(left, right, length, circular)
         if penalty == 2:
             warnings.append(f"{enzyme} 的两个切点都不在 MCS 区间内"
-                            f"（将切除 {max(0, right - left)} bp），请核对酶切方案")
+                            f"（将切除 {cut_length} bp），请核对酶切方案")
     else:
         left = right = cuts[0]
+        cut_length = 0
         warnings.append(f"载体上只有 1 个 {enzyme} 位点，按单切点纯插入组装")
 
     return AssemblyPlan(
         "golden_gate", left, right, head=overhang_5, tail=overhang_3,
+        removed_bp=cut_length,
         junction=(f"{enzyme} 切点 {left}/{right}"
-                  f"（切除 {max(0, right - left)} bp，overhang {overhang_5}/{overhang_3}）"),
+                  f"（切除 {cut_length} bp，overhang {overhang_5}/{overhang_3}）"),
         warnings=warnings,
     )
 
@@ -313,8 +356,15 @@ def apply_plan(
     *,
     insert: str,
     insert_name: str = "insert",
+    circular: bool = True,
 ) -> Tuple[str, List[Dict], int, int, List[str]]:
-    """按方案生成构建体序列与注释 → (序列, 元件, 插入起点, 插入终点, 告警)"""
+    """按方案生成构建体序列与注释 → (序列, 元件, 插入起点, 插入终点, 告警)
+
+    切除区间跨过原点（right < left，载体编号不在 MCS 处起始时很常见）时不再
+    直接放弃：把载体旋转到切除区间不跨原点、走同一套逻辑，构建体按旋转后的
+    坐标输出（旧编号的 1 号碱基本来就在被切走的废片段里，无法保留），元件坐标
+    同步旋转，图谱与序列始终自洽。
+    """
     length = len(sequence)
     left, right = plan.left_cut, plan.right_cut
     # 反向插入：粘端只在同一位点间互补，指派与载体位点顺序相反时，构建体正链上
@@ -327,9 +377,25 @@ def apply_plan(
     if length <= 0:
         return fragment, [], 1, len(fragment), warnings
     if right < left:
-        raise ValueError("cut pair wraps origin")
+        if not circular:
+            raise ValueError("cut pair wraps origin")
+        # 旋转：新坐标 right+1 → 1，切除区间变成 (left-shift, length]
+        shift = right
+        rotated: List[Dict] = []
+        for el in elements or []:
+            start = int(el.get("start", 1))
+            end = int(el.get("end", 1))
+            rotated.append({
+                **el,
+                "start": ((start - shift - 1) % length) + 1,
+                "end": ((end - shift - 1) % length) + 1,
+            })
+        sequence = sequence[shift:] + sequence[:shift]
+        left, right = left - shift, length
+        elements = rotated
 
-    removed = max(0, right - left)
+    # 跨原点时坐标差为负，规划函数已把真实切除长度写进 removed_bp
+    removed = plan.removed or max(0, right - left)
     construct = sequence[:left] + fragment + sequence[right:]
     # 插入片段在构建体上的坐标只算**基因本身**：两端的位点残留/overhang 属于
     # 克隆接头，算进 CDS 会让图谱上的编码区从 "GATCC" 开始、ORF 平移

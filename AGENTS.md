@@ -77,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
 测试基线（本机 Windows，2026-10-22 实测，v2.17.1）：pytest
-**1613 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
+**1616 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
@@ -171,7 +171,13 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   之间的片段、基因两端补回位点残留（连接处位点复原）；Golden Gate 切走两个 Type IIS
   切点之间、两端补 4 nt overhang。切点用 `find_enzyme_sites` 真实扫描，挑选按
   「是否落在 MCS 区间内 → 切除长度」排序，**两个方向都要试**（只按 e5→e3 单向找会把
-  5.3 kb 主链当废片段，pET-28a 实测删成 40 bp）；左切点属于哪把酶与引物端 5'/3' 不一致
+  5.3 kb 主链当废片段，pET-28a 实测删成 40 bp），但**同一对切点反着算就是「整圈减废
+  片段」，超过半圈的方向先排除**（`_candidate_pairs` 两趟：先只要 ≤半圈，挑不出来才
+  放宽并告警）——一次性载体的推测 MCS 是**点**，点正好压在某个切点上时，旧口径会奖励
+  「包含着这个点的整圈区间」（pET-30a 实测：188 bp 废片段被算成 5234 bp），选中后判
+  「切点跨原点」又回退成 MCS 整段替换，表现为废片段没切走、基因落在位点之外；
+  切除区间真跨原点时 `apply_plan` **旋转后照样组装**（旧编号的 1 号碱基本来就在废片段
+  里，构建体与元件坐标一起转到新起点，图谱自洽），不再回退。左切点属于哪把酶与引物端 5'/3' 不一致
   时**按负链插入**（基因取反向互补、注释 strand = '-'）并告警「如需正链插入请对调
   两端酶」——粘端只在同一位点间互补，指派反了基因只能反向进构建体（pET-28a 的
   整个表达盒 T7 promoter/RBS/His-tag 都在负链上，BamHI 5' / XhoI 3' 的基因必须反向
