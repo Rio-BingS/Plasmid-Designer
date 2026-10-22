@@ -137,6 +137,34 @@ def test_run_design_end_to_end_minimal():
     assert (insert[0]["start"], insert[0]["end"]) == (result.insert_start, result.insert_end)
 
 
+def test_genbank_does_not_add_a_second_plus_strand_insert_cds():
+    """负链插入的构建体导出后只能有一条 CDS，且必须带 complement()
+
+    用户给序列起了名（如 A01）时，旧代码按「名字是否叫 insert」判断要不要补
+    兜底 CDS，于是负链插入的构建体里多出一条**没有 complement 的** 164..N
+    CDS——导入 SnapGene 就是两条方向相反的箭头，看起来「方向还是反的」。
+    """
+    req = DesignRequest(
+        sequence="MKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCR",
+        sequence_type=SequenceType.AMINO_ACID,
+        sequence_name="A01",
+        vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="BamHI",
+        enzyme_3="XhoI",
+    )
+    result = run_design("design_test_gb", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert [f["strand"] for f in result.construct_features if f["name"] == "A01"] == ["-"]
+
+    gb = generate_genbank_from_result(result)
+    span = f"{result.insert_start}..{result.insert_end}"
+    # 插入片段那条 CDS 带 complement；不再多出一条同坐标的正链 CDS
+    assert f"CDS             complement({span})" in gb
+    assert f"CDS             {span}\n" not in gb
+    assert '/label="insert"' not in gb
+
+
 def test_run_design_optimize_false():
     req = DesignRequest(
         sequence="MKLV",
