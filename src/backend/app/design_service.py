@@ -253,7 +253,8 @@ def assemble_construct(
         try:
             seq, feats, istart, iend, plan_warnings = apply_plan(
                 backbone, _vector_element_dicts(vector), plan,
-                insert=insert, insert_name=insert_name)
+                insert=insert, insert_name=insert_name,
+                circular=circular)
         except ValueError:
             warnings.extend(plan_warnings)
             warnings.append("切点跨越载体原点，已按 MCS 区间替换构建体")
