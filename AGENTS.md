@@ -77,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
 测试基线（本机 Windows，2026-10-22 实测，v2.17.1）：pytest
-**1616 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
+**1617 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
