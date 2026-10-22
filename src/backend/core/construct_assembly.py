@@ -452,3 +452,72 @@ def apply_plan(
             # 截成 1–2 bp 的碎片只会让图谱更难读
             warnings.append(f"载体元件 {item['name']} 基本落在被切除区间，已从图谱移除")
     return construct, features, insert_start, insert_end, warnings
+
+# ==================== 表达方向自检 ====================
+#
+# 用户把 5'/3' 端的两把酶填反是**最常见**的误操作：两个输入框都叫「限制酶」，
+# 谁也没写清是「基因的 5' 端」还是「载体上左边那个位点」。填反之后粘端照样配得
+# 上、构建体照样拼得出来——只是基因整个反着进质粒，转录出来的是一条反义 RNA。
+# 图谱上 CDS 箭头朝了另一头，用户要打开导出文件才发现。
+#
+# 这里用载体自己的注释做一次自检：启动子紧邻插入区间、且转录方向指向区间时，
+# 基因就只能按那条链插进去（pET-30a 的 T7 promoter 在负链、位于 NdeI 一侧，
+# 所以基因必须 NdeI → XhoI，即负链）。
+
+
+def _is_promoter(element: Dict) -> bool:
+    """元件是不是启动子（GenBank 里可能标成 promoter/regulatory，名字里也常带）"""
+    kind = str(element.get("type") or "").strip().lower()
+    if kind == "promoter":
+        return True
+    name = str(element.get("name") or "").lower()
+    return "promoter" in name or "启动子" in name
+
+
+def cassette_direction(
+    elements: Optional[Sequence[Dict]],
+    left_cut: int,
+    right_cut: int,
+    *,
+    max_gap: int = 1500,
+) -> Tuple[Optional[str], Optional[Dict]]:
+    """载体启动子要求插入片段以哪条链组装 → (strand, 启动子元件)
+
+    插入片段占据被切走的区间 (left_cut, right_cut]。判定口径：
+
+    * 正链启动子在区间**上游**（end <= left_cut，间距 <= max_gap）：转录向
+      正方向读取，基因 5' 端必须贴在 left_cut 上 → "+"；
+    * 负链启动子在区间**下游**（start > right_cut，间距 <= max_gap）：转录向
+      负方向读取，基因 5' 端必须贴在 right_cut 上 → "-"。
+
+    两个方向都有启动子（双向表达盒）、一个都没有、或切点跨原点时返回
+    (None, None)——证据不足就不猜，交给调用方维持原行为。
+    """
+    if not elements or right_cut <= left_cut:
+        return None, None
+    plus: List[Tuple[int, Dict]] = []
+    minus: List[Tuple[int, Dict]] = []
+    for element in elements:
+        if not _is_promoter(element):
+            continue
+        try:
+            start = int(element.get("start") or 0)
+            end = int(element.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if start <= 0 or end <= 0:
+            continue
+        if str(element.get("strand") or "+") == "-":
+            gap = start - right_cut
+            if 0 < gap <= max_gap:
+                minus.append((gap, element))
+        else:
+            gap = left_cut - end
+            if 0 <= gap <= max_gap:
+                plus.append((gap, element))
+    if plus and not minus:
+        return "+", min(plus, key=lambda item: item[0])[1]
+    if minus and not plus:
+        return "-", min(minus, key=lambda item: item[0])[1]
+    return None, None
+

@@ -14,8 +14,8 @@
 import pytest
 
 from core.construct_assembly import (
-    apply_plan, physical_sites, pick_flanking, plan_gibson, plan_golden_gate,
-    plan_restriction,
+    apply_plan, cassette_direction, physical_sites, pick_flanking, plan_gibson,
+    plan_golden_gate, plan_restriction,
 )
 from core.seq_utils import translate as translate_dna_checked
 
@@ -380,3 +380,49 @@ def test_run_design_gibson_insert_stays_on_plus_strand():
     doc = design_map_document(res)
     insert = next(f for f in doc["features"] if f["source"] == "design")
     assert insert["strand"] == 1
+
+# ==================== 表达方向自检（cassette_direction） ====================
+
+def _promoter(name, start, end, strand, kind="promoter"):
+    return {"name": name, "type": kind, "start": start, "end": end,
+            "strand": strand}
+
+
+def test_cassette_direction_plus_promoter_upstream_means_plus_insert():
+    elements = [_promoter("CMV promoter", 100, 118, "+")]
+    strand, promoter = cassette_direction(elements, 160, 220)
+    assert strand == "+"
+    assert promoter["start"] == 100
+
+
+def test_cassette_direction_minus_promoter_downstream_means_minus_insert():
+    elements = [_promoter("T7 promoter", 260, 278, "-")]
+    strand, promoter = cassette_direction(elements, 160, 220)
+    assert strand == "-"
+    assert promoter["end"] == 278
+
+
+def test_cassette_direction_detects_promoter_by_name_even_if_type_differs():
+    elements = [_promoter("T7 promoter", 260, 278, "-", kind="regulatory")]
+    strand, _ = cassette_direction(elements, 160, 220)
+    assert strand == "-"
+
+
+def test_cassette_direction_refuses_bidirectional_cassette():
+    elements = [
+        _promoter("CMV promoter", 100, 118, "+"),
+        _promoter("T7 promoter", 260, 278, "-"),
+    ]
+    assert cassette_direction(elements, 160, 220) == (None, None)
+
+
+def test_cassette_direction_ignores_promoter_out_of_range():
+    elements = [_promoter("T7 promoter", 5000, 5018, "-")]
+    assert cassette_direction(elements, 160, 220) == (None, None)
+
+
+def test_cassette_direction_ignores_wrapped_cut_pair():
+    elements = [_promoter("T7 promoter", 260, 278, "-")]
+    assert cassette_direction(elements, 300, 40) == (None, None)
+
+

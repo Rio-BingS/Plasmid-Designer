@@ -601,13 +601,19 @@ function loadExample() {
         <!-- 限制性酶切参数（双酶切） -->
         <div v-if="cloningMethod === 'restriction'" class="method-params">
           <div class="form-group">
-            <label class="form-label">5' 端限制酶</label>
-            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="搜索 5' 端限制酶…" />
+            <label class="form-label">5′ 端限制酶（基因起始 / ATG 那一端）</label>
+            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI（接基因起始端）" />
           </div>
           <div class="form-group">
-            <label class="form-label">3' 端限制酶</label>
-            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="搜索 3' 端限制酶…" />
+            <label class="form-label">3′ 端限制酶（基因末尾 / 终止密码子那一端）</label>
+            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI（接基因末端）" />
           </div>
+          <p class="hint-text">
+            这两项说的是<strong>插入片段自己的两端</strong>，不是载体上从左到右的顺序：
+            前一项的位点会在基因起始处复原、后一项在基因末尾复原。填反了构建体照样
+            拼得出来，只是基因整个反着插进质粒（pET 系列 T7 启动子在负链，通常是
+            NdeI 填前、XhoI 填后）。
+          </p>
           <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
             ⚠️ 双酶切请选择两种不同的限制酶
           </p>

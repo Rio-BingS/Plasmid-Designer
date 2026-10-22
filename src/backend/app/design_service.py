@@ -215,7 +215,8 @@ def assemble_construct(
     作回退，且由 warnings 说明原因，不静默退回。
     """
     from core.construct_assembly import (
-        apply_plan, plan_gibson, plan_golden_gate, plan_restriction,
+        apply_plan, cassette_direction, plan_gibson, plan_golden_gate,
+        plan_restriction,
     )
 
     backbone = ensure_vector_backbone(vector)
@@ -248,6 +249,24 @@ def assemble_construct(
             warnings.extend(plan_warnings)
             warnings.append(f"{exc}：已按 MCS 区间替换构建体")
             plan = None
+
+    if plan is not None and method == "restriction":
+        # 表达方向自检：5'/3' 两端酶填反时粘端照样配得上、构建体照样拼得出来，
+        # 只是基因整个反着进质粒（转录不出目标蛋白），而图谱上看不出对错。
+        # 载体自己带启动子注释时用它判定基因该往哪条链读，判定结果与本次装配
+        # 相反就明确告警并给出「把两端酶对调」的具体写法——不静默改动用户填写。
+        required, promoter = cassette_direction(
+            _vector_element_dicts(vector), plan.left_cut, plan.right_cut)
+        if required and (required == "-") != bool(plan.insert_reverse):
+            # 写进 plan.warnings（apply_plan 会把它复制进返回的告警列表）
+            plan.warnings.append(
+                f"插入方向和载体启动子相反：{promoter.get('name') or '启动子'}"
+                f"（{promoter.get('start')}..{promoter.get('end')}，"
+                f"{'负' if str(promoter.get('strand') or '+') == '-' else '正'}链）"
+                f"紧邻插入片段的{'下游' if required == '-' else '上游'}一侧，"
+                f"按现在的填写（5′ 端 {enzyme_5 or '-'}、3′ 端 {enzyme_3 or '-'}）"
+                f"基因会反着插进去、转录不出目标蛋白。把两端酶对调后重新设计"
+                f"（5′ 端填 {enzyme_3 or '-'}、3′ 端填 {enzyme_5 or '-'}）。")
 
     if plan is not None:
         try:
