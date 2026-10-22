@@ -864,7 +864,16 @@ def generate_genbank_from_result(result: DesignResult) -> str:
         if feat.get("description"):
             lines.append(f'                     /note="{feat["description"]}"')
 
-    if insert_start and insert_end and not any(f.get("name") == "insert" for f in features):
+    # 补一条兜底 CDS 只在「构建体里根本没有插入片段注释」时才需要。判据是
+    # 坐标是否已经覆盖插入区间，不是名字是否叫 insert——用户给序列起了名
+    # （如 A01）时会走到这里，再补一条**没有 complement 的正链 CDS**，
+    # 负链插入的构建体一导入 SnapGene 就会看到两条方向相反的 CDS/箭头。
+    covered = any(
+        int(f.get("start") or -1) == insert_start
+        and int(f.get("end") or -1) == insert_end
+        for f in features
+    )
+    if insert_start and insert_end and not covered:
         lines.append(f"     CDS             {insert_start}..{insert_end}")
         lines.append('                     /label="insert"')
 

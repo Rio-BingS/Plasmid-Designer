@@ -488,6 +488,12 @@ NFKC + 变体表归一；表单持久化必须覆盖「输完立刻离开」这�
 段扔掉。坐标算术（`right - left`）在环状序列上会失效，切除长度要显式记录；跨原点
 是正常情形（上传载体的 ORIGIN 是任意的），必须旋转后照样组装，不能回退。
 
+同轮附带修掉一个导出缺陷：`generate_genbank_from_result` 的兜底 CDS 判据是
+「有没有一个元件**叫 insert**」，用户给序列起了名（A01）时就补一条**不带
+`complement()` 的正链 CDS**——负链插入的构建体导入 SnapGene 会同时看到两条
+方向相反的 CDS，看起来就是「方向还是反的」。判据改成「有没有元件的坐标正好覆盖
+插入区间」，`tests/test_design_service.py::test_genbank_does_not_add_a_second_plus_strand_insert_cds` 锁住。
+
 
 
 
