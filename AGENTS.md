@@ -267,7 +267,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.17.1；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.17.2；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 刚接手先读 docs/HANDOVER.md（现状、已修问题留档、部署缺口与下一步）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」

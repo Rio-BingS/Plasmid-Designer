@@ -8,6 +8,24 @@
 
 ## [Unreleased]
 
+## [2.17.2] - 2026-10-22
+
+### 升级注意
+- 双酶切组装在「粘端只在同一位点之间互补」时不再只告警：引物把 enzyme_5 的位点放在基因 5' 端、
+  而载体上 enzyme_3 的切点在前时，基因只能以反向互补进构建体。此前只发一条「会反向插入」的
+  告警、序列仍按正链拼，图谱上的 CDS/ORF 整个反过来（pET-28a 的 T7 promoter/RBS/His-tag 全在
+  负链，BamHI 5' / XhoI 3' 必然踩到）。现在会真的按反向互补拼入并把注释标为负链，同一组
+  载体 + 片段的设计结果会与旧版不同。
+
+### 修复
+- 双酶切插入片段的方向：`AssemblyPlan` 增加 `insert_reverse`，`apply_plan` 放入 `revcomp(基因)`
+  并把注释标为负链；Gibson（同源臂定方向）与正链指派保持原样。
+
+### 变更
+- 前端传递依赖 `follow-redirects` 1.16.0 → 1.16.1（`axios` 仍 1.20.0），修复两个 high 级安全
+  通告：array-form headers 绕过跨源凭据剥离、`sensitiveHeaders` 正则转义不当可能暴露凭据头。
+  仅刷新 lock，无 API 变化。
+
 ## [2.17.1] - 2026-10-22
 
 ### 升级注意
@@ -927,7 +945,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.2...HEAD
+[2.17.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.1...v2.17.2
 [2.17.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.0...v2.17.1
 [2.17.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...v2.17.0
 [2.16.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.1...v2.16.2
