@@ -1,7 +1,8 @@
 import axios from 'axios'
 import { currentAuthEpoch, notifySessionExpired } from './session'
 import type {
-  DesignRequest, DesignResult, DesignVectorPayload, VectorInfo, CodonTable
+  DesignRequest, DesignResult, DesignVectorInput, DesignVectorPayload, InsertDirection,
+  RestrictionPreview, VectorInfo, CodonTable
 } from '@/types'
 import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
@@ -161,6 +162,21 @@ async function saveBlobResponse(response: { data: any }, filename: string): Prom
 // 设计任务
 export async function submitDesign(request: DesignRequest): Promise<{ design_id: string; status: string }> {
   const response = await api.post('/design', request)
+  return response.data
+}
+
+/**
+ * 双酶切实时预览：选好两个酶就把成品构建体的布局算出来（不提交任务、不落库）。
+ * 方向由后端按载体表达盒判定，front 只负责把用户的选择传过去。
+ */
+export async function getRestrictionPreview(payload: {
+  enzymes: string[]
+  vector_id?: string
+  vector?: DesignVectorInput
+  insert_length?: number
+  direction?: InsertDirection
+}): Promise<RestrictionPreview> {
+  const response = await api.post('/design/restriction-preview', payload)
   return response.data
 }
 

@@ -21,6 +21,7 @@ from app.routes.models import (
     DesignStatus,
     MapDocument,
     PrimerInfo,
+    RestrictionPreviewRequest,
 )
 from app.storage import get_design_store
 
@@ -96,6 +97,18 @@ async def create_design(request: DesignRequest, background_tasks: BackgroundTask
         "status": "pending",
         "message": "设计任务已提交，请轮询查询结果",
     }
+
+
+@router.post("/restriction-preview", response_model=Dict)
+async def restriction_preview(request: RestrictionPreviewRequest,
+                              user: Optional[User] = Depends(get_current_user)):
+    """双酶切实时预览：选好两个酶就把构建体长什么样算出来（不落库、不出任务）"""
+    from app.design_service import build_restriction_preview
+
+    try:
+        return build_restriction_preview(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/{design_id}", response_model=DesignResult)

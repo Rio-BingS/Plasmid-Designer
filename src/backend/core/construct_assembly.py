@@ -279,8 +279,8 @@ def plan_restriction(
         head, tail = site3[k3:], site5[:k5]
         warnings.append(
             f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
-            "负链（-）插入构建体（粘端只在同一位点间互补）；如需插入正链请把"
-            f"两端酶对调（5' 端用 {enzyme_3}、3' 端用 {enzyme_5}）")
+            "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
+            "请勾选「反向」后重新设计")
 
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
@@ -453,16 +453,15 @@ def apply_plan(
             warnings.append(f"载体元件 {item['name']} 基本落在被切除区间，已从图谱移除")
     return construct, features, insert_start, insert_end, warnings
 
-# ==================== 表达方向自检 ====================
+# ==================== 表达方向判定 ====================
 #
-# 用户把 5'/3' 端的两把酶填反是**最常见**的误操作：两个输入框都叫「限制酶」，
-# 谁也没写清是「基因的 5' 端」还是「载体上左边那个位点」。填反之后粘端照样配得
-# 上、构建体照样拼得出来——只是基因整个反着进质粒，转录出来的是一条反义 RNA。
-# 图谱上 CDS 箭头朝了另一头，用户要打开导出文件才发现。
+# 基因该读哪条链，是载体表达盒的物理事实，不该由用户填的「5'/3' 端」决定：
+# pET-30a 的 T7 promoter 在负链、位于 NdeI 一侧，基因只能 NdeI → XhoI。
+# 两端酶填反了照样拼得出构建体，只是转录出一条反义 RNA——图上箭头反了，
+# 而结果页原先一声不响（用户靠把导出的 .gb 拖进 SnapGene 才发现）。
 #
-# 这里用载体自己的注释做一次自检：启动子紧邻插入区间、且转录方向指向区间时，
-# 基因就只能按那条链插进去（pET-30a 的 T7 promoter 在负链、位于 NdeI 一侧，
-# 所以基因必须 NdeI → XhoI，即负链）。
+# 判定顺序：紧邻插入区间的启动子（首选）→ RBS / 终止子等方向性特征（双向时
+# 用来打破平局）→ 都没有就让用户按预览图自己选。判定只在证据唯一时给结论。
 
 
 def _is_promoter(element: Dict) -> bool:
@@ -474,6 +473,123 @@ def _is_promoter(element: Dict) -> bool:
     return "promoter" in name or "启动子" in name
 
 
+def _is_rbs(element: Dict) -> bool:
+    """核糖体结合位点：紧贴基因起始端的强方向性证据"""
+    kind = str(element.get("type") or "").strip().lower()
+    if kind in ("rbs", "ribosome_binding_site"):
+        return True
+    name = str(element.get("name") or "").lower()
+    return "rbs" in name or "核糖体结合" in name or "shine" in name
+
+
+def _is_terminator(element: Dict) -> bool:
+    """转录终止子：紧贴基因 3' 端，用来确认另一端"""
+    kind = str(element.get("type") or "").strip().lower()
+    if kind in ("terminator", "stop_codon"):
+        return True
+    name = str(element.get("name") or "").lower()
+    return "terminator" in name or "终止" in name
+
+
+def cassette_hint(
+    elements: Optional[Sequence[Dict]],
+    left_cut: int,
+    right_cut: int,
+    *,
+    max_gap: int = 1500,
+    rbs_gap: int = 120,
+    terminator_gap: int = 800,
+) -> Dict:
+    """按载体注释推断基因该读哪条链 → 判定结果
+
+    插入片段占据被切走的区间 (left_cut, right_cut]。正链启动子在区间**上游**
+    （end <= left_cut）时转录向正方向读进区间，基因 5' 端必须贴 left_cut；
+    负链启动子在区间**下游**（start > right_cut）时基因 5' 端必须贴 right_cut。
+    两侧都有启动子（双向表达盒）时用 RBS / 终止子的位置打破平局：
+
+    * RBS 贴在某一侧 → 该侧是表达盒（+2）；
+    * 终止子贴在某一侧 → 转录从该侧读出去，属另一侧（+2）。
+
+    返回 {"strand", "score", "promoter", "evidence", "ambiguous"}。strand 为
+    None 表示证据不唯一或不足——调用方此时应让用户手选，不要瞎猜。
+    """
+    hint: Dict = {"strand": None, "score": {"+": 0, "-": 0}, "promoter": None,
+                  "evidence": [], "ambiguous": False}
+    if not elements or right_cut <= left_cut:
+        return hint
+
+    def _span(element: Dict) -> Optional[Tuple[int, int]]:
+        try:
+            start = int(element.get("start") or 0)
+            end = int(element.get("end") or 0)
+        except (TypeError, ValueError):
+            return None
+        return (start, end) if start > 0 and end > 0 else None
+
+    plus_promoters: List[Tuple[int, Dict]] = []
+    minus_promoters: List[Tuple[int, Dict]] = []
+    for element in elements:
+        span = _span(element)
+        if span is None:
+            continue
+        start, end = span
+        if _is_promoter(element):
+            if str(element.get("strand") or "+") == "-":
+                gap = start - right_cut
+                if 0 < gap <= max_gap:
+                    minus_promoters.append((gap, element))
+            else:
+                gap = left_cut - end
+                if 0 <= gap <= max_gap:
+                    plus_promoters.append((gap, element))
+        elif _is_rbs(element):
+            if min(abs(start - right_cut), abs(end - right_cut)) <= rbs_gap:
+                hint["score"]["-"] += 2
+                hint["evidence"].append({"kind": "rbs", "side": "-",
+                                         "name": element.get("name") or "RBS"})
+            elif min(abs(start - left_cut), abs(end - left_cut)) <= rbs_gap:
+                hint["score"]["+"] += 2
+                hint["evidence"].append({"kind": "rbs", "side": "+",
+                                         "name": element.get("name") or "RBS"})
+        elif _is_terminator(element):
+            # 终止子在基因 3' 端之后：贴在 left 外 → 转录从 left 读出去 → 负链
+            if end <= left_cut and left_cut - end <= terminator_gap:
+                hint["score"]["-"] += 2
+                hint["evidence"].append({"kind": "terminator", "side": "-",
+                                         "name": element.get("name") or "terminator"})
+            elif start >= right_cut and start - right_cut <= terminator_gap:
+                hint["score"]["+"] += 2
+                hint["evidence"].append({"kind": "terminator", "side": "+",
+                                         "name": element.get("name") or "terminator"})
+
+    for gap, element in plus_promoters:
+        hint["score"]["+"] += 3
+        hint["evidence"].append({"kind": "promoter", "side": "+", "gap": gap,
+                                 "name": element.get("name") or "promoter",
+                                 "start": element.get("start"), "end": element.get("end"),
+                                 "strand": str(element.get("strand") or "+")})
+    for gap, element in minus_promoters:
+        hint["score"]["-"] += 3
+        hint["evidence"].append({"kind": "promoter", "side": "-", "gap": gap,
+                                 "name": element.get("name") or "promoter",
+                                 "start": element.get("start"), "end": element.get("end"),
+                                 "strand": str(element.get("strand") or "+")})
+
+    plus, minus = hint["score"]["+"] , hint["score"]["-"]
+    if plus or minus:
+        if plus and minus and abs(plus - minus) < 2:
+            # 两侧证据相当：双向表达盒或注释打架，交给用户判断
+            hint["ambiguous"] = True
+            return hint
+        chosen = "+" if plus > minus else "-"
+        hint["strand"] = chosen
+        if chosen == "+" and plus_promoters:
+            hint["promoter"] = min(plus_promoters, key=lambda item: item[0])[1]
+        elif chosen == "-" and minus_promoters:
+            hint["promoter"] = min(minus_promoters, key=lambda item: item[0])[1]
+    return hint
+
+
 def cassette_direction(
     elements: Optional[Sequence[Dict]],
     left_cut: int,
@@ -481,43 +597,7 @@ def cassette_direction(
     *,
     max_gap: int = 1500,
 ) -> Tuple[Optional[str], Optional[Dict]]:
-    """载体启动子要求插入片段以哪条链组装 → (strand, 启动子元件)
-
-    插入片段占据被切走的区间 (left_cut, right_cut]。判定口径：
-
-    * 正链启动子在区间**上游**（end <= left_cut，间距 <= max_gap）：转录向
-      正方向读取，基因 5' 端必须贴在 left_cut 上 → "+"；
-    * 负链启动子在区间**下游**（start > right_cut，间距 <= max_gap）：转录向
-      负方向读取，基因 5' 端必须贴在 right_cut 上 → "-"。
-
-    两个方向都有启动子（双向表达盒）、一个都没有、或切点跨原点时返回
-    (None, None)——证据不足就不猜，交给调用方维持原行为。
-    """
-    if not elements or right_cut <= left_cut:
-        return None, None
-    plus: List[Tuple[int, Dict]] = []
-    minus: List[Tuple[int, Dict]] = []
-    for element in elements:
-        if not _is_promoter(element):
-            continue
-        try:
-            start = int(element.get("start") or 0)
-            end = int(element.get("end") or 0)
-        except (TypeError, ValueError):
-            continue
-        if start <= 0 or end <= 0:
-            continue
-        if str(element.get("strand") or "+") == "-":
-            gap = start - right_cut
-            if 0 < gap <= max_gap:
-                minus.append((gap, element))
-        else:
-            gap = left_cut - end
-            if 0 <= gap <= max_gap:
-                plus.append((gap, element))
-    if plus and not minus:
-        return "+", min(plus, key=lambda item: item[0])[1]
-    if minus and not plus:
-        return "-", min(minus, key=lambda item: item[0])[1]
-    return None, None
+    """兼容入口：→ (strand, 起决定作用的启动子元件)，口径见 cassette_hint"""
+    hint = cassette_hint(elements, left_cut, right_cut, max_gap=max_gap)
+    return hint["strand"], hint["promoter"]
 

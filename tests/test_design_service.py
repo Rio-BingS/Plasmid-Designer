@@ -99,6 +99,88 @@ def test_assemble_construct_keeps_cut_pair_when_mcs_point_sits_on_a_cut():
     assert sequence[40:46] in asm.sequence and sequence[80:86] in asm.sequence
 
 
+def _two_site_sequence(promoter_motif: str = "") -> str:
+    """XhoI(101) 与 NdeI(208) 之间 100 bp 废片段；promoter_motif 追加在 NdeI 之后"""
+    return ("C" * 100 + "CTCGAG" + "A" * 100 + "CATATG" + "G" * 100
+            + promoter_motif + "C" * 100)
+
+
+def _ends_vector(elements=None, sequence=None):
+    return Vector(id="adhoc", name="pET-like", sequence=sequence or _two_site_sequence(),
+                  mcs=MCS(name="MCS（按唯一位点推测）", start=101, end=100, sites=[]),
+                  elements=elements or [])
+
+
+def test_resolve_restriction_ends_reads_promoter_annotation():
+    """载体有启动子注释：基因 5′ 端接到启动子那一侧（负链启动子 → 5′ 接右切点）"""
+    from app.design_service import resolve_restriction_ends
+
+    vector = _ends_vector(
+        [VectorElement("T7 promoter", ElementType.PROMOTER, 230, 248, "", "-")])
+    ends = resolve_restriction_ends(vector, vector.sequence, "XhoI", "NdeI")
+    assert (ends.enzyme_5, ends.enzyme_3) == ("NdeI", "XhoI")
+    assert ends.strand == "-"
+    assert ends.source == "annotation"
+    assert ends.hint["score"] == {"+": 0, "-": 3}
+
+
+def test_resolve_restriction_ends_detects_promoter_without_annotation():
+    """载体没有启动子注释时自动识别（T7 promoter 在负链）"""
+    from app.design_service import resolve_restriction_ends
+
+    sequence = _two_site_sequence("CCTATAGTGAGTCGTATTA")  # T7 promoter 的负链形式
+    vector = _ends_vector(sequence=sequence)
+    assert not vector.elements
+    ends = resolve_restriction_ends(vector, sequence, "XhoI", "NdeI")
+    assert ends.strand == "-"
+    assert ends.source == "auto_detected"
+    assert [e["name"] for e in ends.detected] == ["T7 promoter"]
+
+
+def test_resolve_restriction_ends_defaults_when_no_evidence():
+    """既没有启动子注释、序列里也识别不出启动子：按默认方向并明确说明"""
+    from app.design_service import resolve_restriction_ends
+
+    vector = _ends_vector()
+    ends = resolve_restriction_ends(vector, vector.sequence, "XhoI", "NdeI")
+    assert ends.strand == "+"
+    assert ends.source == "default"
+    assert any("默认" in w for w in ends.warnings)
+
+
+def test_resolve_restriction_ends_reports_ambiguity():
+    """两侧都有启动子：不猜方向，交用户按预览图手选"""
+    from app.design_service import resolve_restriction_ends
+
+    vector = _ends_vector([
+        VectorElement("CMV promoter", ElementType.PROMOTER, 60, 80, "", "+"),
+        VectorElement("T7 promoter", ElementType.PROMOTER, 240, 258, "", "-"),
+    ])
+    ends = resolve_restriction_ends(vector, vector.sequence, "XhoI", "NdeI")
+    assert ends.hint["ambiguous"] is True
+    assert ends.source == "ambiguous"
+    assert any("无法自动判定" in w for w in ends.warnings)
+
+
+def test_resolve_restriction_ends_user_direction_overrides():
+    """用户显式选方向（反义构建）时覆盖载体判定，并留一条说明"""
+    from app.design_service import resolve_restriction_ends
+
+    vector = _ends_vector(
+        [VectorElement("T7 promoter", ElementType.PROMOTER, 230, 248, "", "-")])
+    plus = resolve_restriction_ends(vector, vector.sequence, "XhoI", "NdeI",
+                                    direction="plus")
+    assert plus.strand == "+"
+    assert (plus.enzyme_5, plus.enzyme_3) == ("XhoI", "NdeI")
+    assert plus.source == "user"
+    assert any("按你的选择" in w for w in plus.warnings)
+
+    reverse = resolve_restriction_ends(vector, vector.sequence, "XhoI", "NdeI",
+                                       direction="reverse")
+    assert reverse.strand == "+"  # 自动判定是负链，反向即正链
+    assert reverse.source == "user"
+
+
 def test_assemble_construct_warns_when_enzyme_ends_are_swapped():
     """5'/3' 两端酶填反：粘端照样配得上，基因却会反着进质粒 → 必须明确告警
 

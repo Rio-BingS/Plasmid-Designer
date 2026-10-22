@@ -376,3 +376,59 @@ def test_rate_limit_buckets_for_design_vector_endpoints():
     assert classify_endpoint("POST", "/api/design/vector/online") == "ncbi"
     assert classify_endpoint("GET", "/api/design/vector/snapgene/search") == "ncbi"
     assert classify_endpoint("GET", "/api/design/vector/sources") == "default"
+
+# ==================== 双酶切实时预览 ====================
+
+_PREVIEW_SEQ = ("C" * 100 + "CTCGAG" + "A" * 100 + "CATATG" + "G" * 100
+                + "C" * 100)
+
+
+def test_design_restriction_preview_returns_construct_layout(client):
+    """预览返回的是**成品构建体**的布局：被切走的片段不在图里"""
+    body = {
+        "enzymes": ["XhoI", "NdeI"],
+        "insert_length": 300,
+        "vector": {
+            "name": "synthetic",
+            "sequence": _PREVIEW_SEQ,
+            "topology": "circular",
+            "features": [
+                {"name": "T7 promoter", "type": "promoter", "start": 230,
+                 "end": 248, "strand": "-"},
+            ],
+        },
+    }
+    r = client.post("/api/design/restriction-preview", headers=HEADERS, json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    # 负链启动子 → 基因 5′ 端接右切点（NdeI），成品里基因占 101+5 … +300
+    assert data["strand"] == "-"
+    assert data["source"] == "annotation"
+    assert data["gene_5prime_enzyme"] == "NdeI"
+    assert data["gene_3prime_enzyme"] == "XhoI"
+    # 切点之间真正被切走的是 107 bp（XhoI 切点 101 → NdeI 切点 208）
+    assert data["removed_bp"] == 107
+    assert data["gene"]["length"] == 300
+    assert {s["role"] for s in data["sites"]} == {"five", "three"}
+    # 启动子出现在成品坐标里（示意图要画它的方向）
+    promoter = next(f for f in data["features"] if f["name"] == "T7 promoter")
+    assert promoter["strand"] == "-"
+    assert promoter["start"] > data["gene"]["end"]
+    # 构建体 = 载体 - 切除 + (XhoI 残留 5 + 基因 300 + NdeI 残留 2)
+    assert data["construct_length"] == len(_PREVIEW_SEQ) - 107 + 300 + 5 + 2
+
+
+def test_design_restriction_preview_rejects_single_enzyme(client):
+    r = client.post("/api/design/restriction-preview", headers=HEADERS, json={
+        "enzymes": ["XhoI", "XhoI"],
+        "vector": {"name": "synthetic", "sequence": _PREVIEW_SEQ,
+                   "topology": "circular", "features": []},
+    })
+    assert r.status_code == 422
+
+
+def test_restriction_preview_rate_limit_bucket():
+    from app.rate_limit import classify_endpoint
+
+    assert classify_endpoint("POST", "/api/design/restriction-preview") == "default"
+

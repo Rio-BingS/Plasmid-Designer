@@ -2,9 +2,13 @@
 import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignRequest, DesignVectorPayload, VectorInfo, CodonTable } from '@/types'
-import { submitDesign, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
+import {
+  submitDesign, getVectors, getCodonTables, getEnzymes, getRestrictionPreview, formatApiError
+} from '@/api'
+import type { InsertDirection, RestrictionPreview } from '@/types'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
+import RestrictionPreviewCard from '@/components/RestrictionPreview.vue'
 import {
   AMINO_ACID_CHARS, describeUnsupportedChars, findUnsupportedChars, normalizeSequenceInput
 } from '@/utils/sequence'
@@ -41,6 +45,78 @@ const enzyme = ref('BsaI')
 // 双酶切：5'/3' 端分别选择限制酶
 const enzyme5 = ref('BamHI')
 const enzyme3 = ref('EcoRI')
+// 插入方向：默认由载体表达盒判定（auto）。用户要反义构建时勾「反向」，
+// 自动判不出来（双向启动子/无注释）时用「正链/负链」手动指定。
+const reverseInsert = ref(false)
+const manualStrand = ref<'' | 'plus' | 'minus'>('')
+const insertDirection = computed<InsertDirection>(() =>
+  manualStrand.value || (reverseInsert.value ? 'reverse' : 'auto')
+)
+// 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
+const preview = ref<RestrictionPreview | null>(null)
+const previewLoading = ref(false)
+const previewError = ref('')
+let previewTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 基因长度估计：氨基酸按 aa×3，DNA 按碱基数（提交后以优化结果为准） */
+const estimatedInsertLength = computed(() => {
+  const raw = sequence.value.replace(/\s+/g, '')
+  if (!raw) return undefined
+  const length = sequenceType.value === 'amino_acid'
+    ? raw.replace(/\*/g, '').length * 3
+    : raw.length
+  return length >= 30 ? length : undefined
+})
+
+const previewApplicable = computed(() =>
+  cloningMethod.value === 'restriction'
+  && !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
+  && (vectorMode.value !== 'library' ? !!adhocVector.value : !!vectorId.value)
+)
+
+async function fetchPreview() {
+  if (!previewApplicable.value) {
+    preview.value = null
+    previewError.value = ''
+    return
+  }
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    preview.value = await getRestrictionPreview({
+      enzymes: [enzyme5.value, enzyme3.value],
+      ...(adhocVector.value
+        ? { vector: {
+            id: adhocVector.value.id,
+            name: adhocVector.value.name,
+            sequence: adhocVector.value.sequence,
+            topology: adhocVector.value.topology,
+            features: adhocVector.value.features,
+            source: adhocVector.value.source,
+          } }
+        : { vector_id: vectorId.value }),
+      insert_length: estimatedInsertLength.value,
+      direction: insertDirection.value,
+    })
+  } catch (e: any) {
+    preview.value = null
+    previewError.value = formatApiError(e, '预览失败，不影响提交')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// 改酶/换载体/改方向/改序列长度都会让图变——250ms 防抖，别每次按键都打后端
+watch(
+  [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength, insertDirection],
+  () => {
+    if (previewTimer) clearTimeout(previewTimer)
+    previewTimer = setTimeout(() => {
+      previewTimer = null
+      fetchPreview()
+    }, 250)
+  },
+)
 // Gibson：定位同源重组位置的酶切位点（缺省 MCS 起点）
 const gibsonSite = ref('')
 // 全基因合成：需从优化序列排除的限制酶（多选）
@@ -95,6 +171,8 @@ function currentDraft() {
     enzyme: enzyme.value,
     enzyme5: enzyme5.value,
     enzyme3: enzyme3.value,
+    reverseInsert: reverseInsert.value,
+    manualStrand: manualStrand.value,
     gibsonSite: gibsonSite.value,
     excludeEnzymes: [...excludeEnzymes.value],
     oligoLengthMin: oligoLengthMin.value,
@@ -136,6 +214,8 @@ function applyDraft(d: Record<string, any>) {
   if (typeof d.enzyme === 'string' && d.enzyme) enzyme.value = d.enzyme
   if (typeof d.enzyme5 === 'string' && d.enzyme5) enzyme5.value = d.enzyme5
   if (typeof d.enzyme3 === 'string' && d.enzyme3) enzyme3.value = d.enzyme3
+  if (typeof d.reverseInsert === 'boolean') reverseInsert.value = d.reverseInsert
+  manualStrand.value = oneOf(d.manualStrand, ['', 'plus', 'minus'] as const, '')
   if (typeof d.gibsonSite === 'string') gibsonSite.value = d.gibsonSite
   if (Array.isArray(d.excludeEnzymes)) {
     excludeEnzymes.value = d.excludeEnzymes.filter((x: any) => typeof x === 'string')
@@ -166,6 +246,10 @@ onBeforeUnmount(() => {
     clearTimeout(draftTimer)
     draftTimer = null
   }
+  if (previewTimer) {
+    clearTimeout(previewTimer)
+    previewTimer = null
+  }
   saveDesignDraft(currentDraft())
 })
 
@@ -186,6 +270,9 @@ function clearForm() {
   homologyArm.value = 20
   enzyme5.value = 'BamHI'
   enzyme3.value = 'EcoRI'
+  reverseInsert.value = false
+  manualStrand.value = ''
+  preview.value = null
   gibsonSite.value = ''
   excludeEnzymes.value = []
   oligoLengthMin.value = 40
@@ -307,6 +394,7 @@ async function handleSubmit() {
     if (cloningMethod.value === 'restriction') {
       request.enzyme_5 = enzyme5.value
       request.enzyme_3 = enzyme3.value
+      request.insert_direction = insertDirection.value
     }
     if (cloningMethod.value === 'gibson' && gibsonSite.value) {
       request.gibson_site = gibsonSite.value
@@ -598,25 +686,45 @@ function loadExample() {
           </div>
         </div>
 
-        <!-- 限制性酶切参数（双酶切） -->
+        <!-- 限制性酶切参数（双酶切）：只选两个位点，方向由载体定 -->
         <div v-if="cloningMethod === 'restriction'" class="method-params">
           <div class="form-group">
-            <label class="form-label">5′ 端限制酶（基因起始 / ATG 那一端）</label>
-            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI（接基因起始端）" />
+            <label class="form-label">酶切位点一</label>
+            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
           </div>
           <div class="form-group">
-            <label class="form-label">3′ 端限制酶（基因末尾 / 终止密码子那一端）</label>
-            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI（接基因末端）" />
+            <label class="form-label">酶切位点二</label>
+            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
           </div>
-          <p class="hint-text">
-            这两项说的是<strong>插入片段自己的两端</strong>，不是载体上从左到右的顺序：
-            前一项的位点会在基因起始处复原、后一项在基因末尾复原。填反了构建体照样
-            拼得出来，只是基因整个反着插进质粒（pET 系列 T7 启动子在负链，通常是
-            NdeI 填前、XhoI 填后）。
-          </p>
           <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
             ⚠️ 双酶切请选择两种不同的限制酶
           </p>
+          <div class="direction-row">
+            <label class="checkbox-label">
+              <input v-model="reverseInsert" type="checkbox" />
+              <span>反向插入（反义构建：基因与载体启动子反向）</span>
+            </label>
+            <label
+              v-if="preview?.ambiguous || preview?.source === 'default'"
+              class="direction-manual"
+            >
+              <span>手动指定方向</span>
+              <select v-model="manualStrand" class="direction-select">
+                <option value="">自动</option>
+                <option value="plus">正链（5′ 端接上游切点）</option>
+                <option value="minus">负链（5′ 端接下游切点）</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint-text">
+            两把酶的先后顺序不影响结果：基因接哪一端由载体自己的启动子/RBS 判定。
+            下面这张图就是提交后拿到的构建体（被切走的片段已经不在里面）。
+          </p>
+          <RestrictionPreviewCard
+            :preview="preview"
+            :loading="previewLoading"
+            :error="previewError"
+          />
         </div>
       </div>
       
@@ -832,6 +940,30 @@ h1 {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 0.35rem;
+}
+
+.direction-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-top: 0.5rem;
+}
+
+.direction-manual {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.direction-select {
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border-color, #d7dbe0);
+  border-radius: 0.375rem;
+  font-size: 0.78rem;
+  background: white;
 }
 
 .warning-text {

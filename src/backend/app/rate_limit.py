@@ -452,6 +452,9 @@ _WRITE_EXACT_RULES: List[Tuple[str, str, str]] = [
     # 所以必须在这里精确匹配）
     ("POST", "/api/design/vector/upload", "upload"),
     ("POST", "/api/design/vector/online", "ncbi"),
+    # 双酶切实时预览：每次改酶名都会调一次，只是读载体算布局不落库，
+    # 吃 design 写配额会让用户连选几次酶就被 429
+    ("POST", "/api/design/restriction-preview", "default"),
 ]
 
 
