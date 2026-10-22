@@ -80,7 +80,60 @@ export interface DesignRequest {
   gibson_site?: string
   /** 基因合成：需从优化序列排除的限制酶 */
   exclude_enzymes?: string[]
+  /** 双酶切插入方向：默认 auto（按载体启动子/RBS 判定） */
+  insert_direction?: InsertDirection
 }
+
+/**
+ * 双酶切实时预览：后端用占位基因跑一遍真实组装，返回**成品构建体**的布局。
+ * 坐标一律是构建体上的 1-based 闭区间（被切走的载体片段不在其中）。
+ */
+export interface RestrictionPreviewSite {
+  role: 'five' | 'three'
+  enzyme: string
+  position: number
+  cut: number
+  end: number
+}
+
+export interface RestrictionPreviewFeature {
+  name: string
+  type: string
+  start: number
+  end: number
+  strand: '+' | '-'
+}
+
+export interface RestrictionPreviewEvidence {
+  kind: 'promoter' | 'rbs' | 'terminator'
+  side: '+' | '-'
+  name: string
+  gap?: number
+  start?: number
+  end?: number
+  strand?: string
+}
+
+export interface RestrictionPreview {
+  vector: { name: string; length: number; topology: 'circular' | 'linear' }
+  sites: RestrictionPreviewSite[]
+  gene: { start: number; end: number; length: number; estimated: boolean }
+  removed_bp: number
+  construct_length: number
+  strand: '+' | '-'
+  source: 'annotation' | 'auto_detected' | 'ambiguous' | 'default' | 'user'
+  ambiguous: boolean
+  gene_5prime_enzyme: string
+  gene_3prime_enzyme: string
+  evidence: RestrictionPreviewEvidence[]
+  features: RestrictionPreviewFeature[]
+  junctions: { five: string; three: string }
+  warnings: string[]
+}
+
+/** 插入方向：auto=按载体表达盒；reverse=反义构建；plus/minus=用户手动指定 */
+export type InsertDirection = 'auto' | 'reverse' | 'plus' | 'minus'
+
 
 export interface PrimerInfo {
   name: string

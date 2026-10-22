@@ -17,6 +17,7 @@ vi.mock('@/api', async (importOriginal) => ({
   getVectors: vi.fn(),
   getCodonTables: vi.fn(),
   getEnzymes: vi.fn(),
+  getRestrictionPreview: vi.fn(),
   uploadDesignVector: vi.fn(),
   importDesignVectorOnline: vi.fn(),
   searchDesignVectorSnapgene: vi.fn(),

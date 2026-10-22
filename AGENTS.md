@@ -77,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 ```
 
 测试基线（本机 Windows，2026-10-22 实测，v2.17.1）：pytest
-**1624 passed / 39 skipped / 0 failed**，vitest **580**，vue-tsc **0**。其中 5 项真实数据回归
+**1633 passed / 39 skipped / 0 failed**，vitest **590**，vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
@@ -182,15 +182,20 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   两端酶」——粘端只在同一位点间互补，指派反了基因只能反向进构建体（pET-28a 的
   整个表达盒 T7 promoter/RBS/His-tag 都在负链上，BamHI 5' / XhoI 3' 的基因必须反向
   才与启动子同向；把基因正着插进去，图谱上的 CDS/ORF 就会整个反过来）。
-  **表达方向自检**（core 的 cassette_direction）：两端酶填反是最常见的误操作——粘端
-  照样配得上、构建体照样拼得出来，只是基因反着进质粒、转录出反义 RNA，而结果页一声
-  不响。装配后用载体自己的启动子注释判定基因该读哪条链（正链启动子在切除区间上游 →
-  基因 5' 端贴左切点；负链启动子在区间下游 → 5' 端贴右切点），与本次装配相反就告警并
-  给出「5′ 端填 X、3′ 端填 Y」的具体改法；**不静默改动用户填写**。判定只在证据唯一时
-  成立（双向启动子 / 无注释 / 切点跨原点一律不猜）；pET-30a 的 T7 promoter 在负链、
-  位于 NdeI 一侧，所以基因必须 NdeI→XhoI（负链）。设计页两个输入框已改写成「插入片段
-  自己的 5′/3′ 端（基因起始 / 末尾）」，结果页有「插入方向」指标与置顶的方向告警横幅——
-  此前用户只能靠把导出文件拖进 SnapGene 看箭头才发现填反了。
+  **插入方向由载体判定，不进表单**（`resolve_restriction_ends` + `core.cassette_hint`）：
+  设计页只让用户选两个位点，谁接基因 5′ 端由程序定——那是载体表达盒的物理事实，
+  不是用户偏好。判定顺序：① 载体自己的启动子注释（紧邻插入区间、唯一）→ 定方向；
+  ② 没有启动子注释就对骨架跑一次元件库自动识别（`core.plasmid_map.annotate`，5 kb
+  约 130–230 ms，按序列摘要缓存）；③ 两侧都有启动子（双向表达盒）时用 RBS / 终止子
+  的位置打破平局（启动子 +3、RBS/终止子 +2，差 <2 视为平局）；④ 仍判不出就让用户
+  按预览图手选。`insert_direction` 取 auto / reverse / plus / minus：auto 听载体的，
+  reverse=与判定相反（反义构建，表单上不折叠的复选框），plus/minus 是手动指定。
+  解析出的指派**同时喂给组装与引物**（正向引物带接基因 5′ 端那把酶），所以「引物说
+  NdeI、构建体贴 XhoI」不会再出现。预览接口 `POST /api/design/restriction-preview`
+  用占位基因跑一遍真实组装再回坐标，所以设计页的示意图就是成品构建体（被切走的片段
+  不在图上，真实质粒上也没有），前端 `components/RestrictionPreview.vue` 只负责画：
+  基因箭头=链方向、启动子箭头=自身 strand；该接口走 default 限流档（每次改酶都会调，
+  吃 design 写配额会被 429）。
   载体上没有所选酶位点时**回退**到旧的
   「MCS 区间整段替换」并明确告警，绝不静默。图谱元件：落在切除区间的移除、跨切点的
   按保留比例截断/移位、纯插入点落在元件内部时元件被撑开；插入片段的图谱坐标只算
