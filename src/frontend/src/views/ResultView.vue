@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, formatApiError } from '@/api'
@@ -20,6 +20,26 @@ const mapLoading = ref(false)
 const mapError = ref('')
 const loading = ref(true)
 const error = ref('')
+
+/**
+ * 插入片段落在哪条链：后端按酶切粘端算出来的物理结果，不是排布偏好。
+ * 反向插入（负链）在图上就是箭头朝左；用户填反 5'/3' 两端酶时这里会显示正链。
+ */
+const insertStrand = computed(() => {
+  const r = result.value
+  if (!r) return ''
+  const hit = (r.construct_features ?? []).find(
+    (f) => f.start === r.insert_start && f.end === r.insert_end,
+  )
+  if (hit?.strand === '-') return '负链（-）'
+  if (hit?.strand === '+') return '正链（+）'
+  return ''
+})
+
+/** 「插入方向和载体启动子相反」这类告警要顶到结果最上面，别埋在页尾 */
+const orientationAlert = computed(
+  () => (result.value?.warnings ?? []).find((w) => w.includes('插入方向和载体启动子相反')) ?? '',
+)
 
 function goToSequencing() {
   router.push({ path: '/sequencing', query: { mode: 'design', ref: props.designId } })
@@ -220,6 +240,12 @@ onUnmounted(() => {
       
       <!-- 完成状态 -->
       <div v-else class="completed-state">
+        <!-- 插入方向告警：5'/3' 两端酶填反时只有这里能看出来 -->
+        <div v-if="orientationAlert" class="orientation-alert">
+          <strong>⚠️ 插入方向需要核对</strong>
+          <p>{{ orientationAlert }}</p>
+        </div>
+
         <!-- 优化结果 -->
         <div class="result-section">
           <h2>优化结果</h2>
@@ -239,6 +265,10 @@ onUnmounted(() => {
             <div v-if="result.insert_start && result.insert_end" class="metric-card">
               <span class="metric-label">插入区间</span>
               <span class="metric-value">{{ result.insert_start }}-{{ result.insert_end }}</span>
+            </div>
+            <div v-if="insertStrand" class="metric-card">
+              <span class="metric-label">插入方向</span>
+              <span class="metric-value">{{ insertStrand }}</span>
             </div>
           </div>
         </div>
@@ -421,6 +451,28 @@ onUnmounted(() => {
 .status-text p {
   color: var(--text-secondary);
   font-size: 0.875rem;
+}
+
+.orientation-alert {
+  background: #fff4e5;
+  border: 1px solid #ffb74d;
+  border-left: 4px solid #f57c00;
+  border-radius: 0.5rem;
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 1.5rem;
+  color: #6b3d00;
+}
+
+.orientation-alert strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 1rem;
+}
+
+.orientation-alert p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
 }
 
 .result-section {
