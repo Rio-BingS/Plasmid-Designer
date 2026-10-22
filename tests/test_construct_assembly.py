@@ -118,6 +118,55 @@ def test_restriction_single_site_is_point_insertion():
     assert construct[iend:iend + len(plan.tail)] == plan.tail
 
 
+# 把上面的 340 bp 载体整体转过 170 bp：XhoI/BamHI 的切点跑到编号原点两侧，
+# 「两个切点之间」的 40 bp 废片段变成跨原点的一小段（一次性载体常见情形：
+# 上传文件的 ORIGIN 是任意的，MCS 往往就压在原点附近）
+WRAPPED_VECTOR = VECTOR[170:] + VECTOR[:170]
+
+
+def test_restriction_ignores_the_wrapped_direction_when_mcs_point_sits_on_a_cut():
+    """推测 MCS 是个点、点又正好落在某把酶的切点上时，方向不能选反
+
+    旧口径按「切除区间是否包含 MCS 点」打分：包含 158 的那一侧是 (198, 158]
+    = 整圈 300 bp，于是选它 → apply_plan 判「跨原点」→ 回退成 MCS 整段替换，
+    废片段没被切走、基因落在位点之外（pET-30a 实测就是这样）。
+    """
+    plan, warns = _plan_restriction("XhoI", "BamHI", window=(158, 158))
+    assert plan is not None
+    assert (plan.left_cut, plan.right_cut) == (158, 198)
+    assert plan.removed == 40
+    assert not [w for w in warns if "超过载体一半" in w]
+
+
+def test_restriction_assembles_cut_pair_across_origin():
+    """切除区间跨原点时旋转组装，不再回退成「MCS 整段替换」"""
+    xhoi = physical_sites(WRAPPED_VECTOR, "XhoI")[0]["cut_fwd"]
+    bamhi = physical_sites(WRAPPED_VECTOR, "BamHI")[0]["cut_fwd"]
+    assert bamhi < xhoi                      # 40 bp 废片段跨原点
+    warns: list = []
+    plan = plan_restriction(WRAPPED_VECTOR, "BamHI", "XhoI", window=(xhoi, xhoi),
+                            circular=True, warnings=warns)
+    assert plan is not None
+    assert (plan.left_cut, plan.right_cut) == (xhoi, bamhi)
+    assert plan.removed == 40
+    # 左切点是 XhoI（enzyme_3）：粘端反着配，基因只能以反向互补进构建体
+    assert plan.insert_reverse is True
+
+    gene = "ATG" + "GAA" * 20 + "TAA"
+    construct, features, istart, iend, _w = apply_plan(
+        WRAPPED_VECTOR, [], plan, insert=gene, insert_name="g", circular=True)
+    assert features[0]["strand"] == "-"
+    assert len(construct) == (len(WRAPPED_VECTOR) - plan.removed
+                             + len(plan.head) + len(gene) + len(plan.tail))
+    from core.seq_utils import revcomp
+
+    assert construct[istart - 1:iend] == revcomp(gene)
+    # 两个位点在连接处复原，基因仍夹在它们之间
+    assert construct[istart - 1 - len(plan.head):istart - 1] == plan.head
+    assert construct[iend:iend + len(plan.tail)] == plan.tail
+    assert physical_sites(construct, "XhoI") and physical_sites(construct, "BamHI")
+
+
 def test_restriction_without_sites_returns_none_with_warning():
     warns = []
     plan = plan_restriction(VECTOR, "PmeI", "EcoRI", window=(150, 200),

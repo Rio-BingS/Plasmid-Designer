@@ -66,6 +66,39 @@ def test_assemble_construct_inserts_at_mcs():
     assert res["start"] > 80 or res["start"] == 80 + (len(insert) - 6)
 
 
+def test_assemble_construct_keeps_cut_pair_when_mcs_point_sits_on_a_cut():
+    """一次性载体的 MCS 是「推测点」，点落在切点上时不能退回整段替换
+
+    pET-30a 实测：XhoI 切点 158、NdeI 切点 346（废片段 188 bp），推测的 MCS
+    点正好取在 158。旧口径按「切除区间是否包含该点」打分，于是选中反方向的
+    「整圈 5234 bp」→ 判「切点跨原点」→ 退回 MCS 整段替换：图谱上废片段
+    没被切走、基因落在两个位点之外。这里的载体只有一对位点，点压在左切点上。
+    """
+    sequence = "G" * 40 + "CTCGAG" + "T" * 34 + "GGATCC" + "C" * 40
+    vector = Vector(
+        id="adhoc",
+        name="uploaded",
+        sequence=sequence,
+        # 推测 MCS = 纯插入点（start=point, end=point-1），点压在 XhoI 切点上
+        mcs=MCS(name="MCS（按唯一位点推测）", start=41, end=40, sites=[]),
+    )
+    gene = "ATG" + "GAA" * 20 + "TAA"
+    asm = assemble_construct(vector, gene, "ins", method="restriction",
+                             enzyme_5="XhoI", enzyme_3="BamHI")
+    assert not [w for w in asm.warnings if "已按 MCS 区间替换" in w]
+    assert not [w for w in asm.warnings if "跨越载体原点" in w]
+    # 两个切点之间的废片段被切走，两端补回位点残留：XhoI 的 TCGAG / BamHI 的 G
+    from core.construct_assembly import physical_sites
+
+    xhoi = physical_sites(sequence, "XhoI")[0]["cut_fwd"]
+    bamhi = physical_sites(sequence, "BamHI")[0]["cut_fwd"]
+    assert asm.insert_start == xhoi + 1 + 5
+    assert asm.insert_end - asm.insert_start + 1 == len(gene)
+    assert len(asm.sequence) == len(sequence) - (bamhi - xhoi) + 5 + len(gene) + 1
+    assert asm.features[0]["strand"] == "+"
+    assert sequence[40:46] in asm.sequence and sequence[80:86] in asm.sequence
+
+
 def test_run_design_end_to_end_minimal():
     req = DesignRequest(
         sequence="MKLVWAALLTF",
