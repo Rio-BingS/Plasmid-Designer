@@ -118,6 +118,274 @@ def _mcs_window(vector) -> Optional[Tuple[int, int]]:
     return (start, end)
 
 
+@dataclass
+class RestrictionEnds:
+    """双酶切两个连接端的最终指派（方向已解析）
+
+    enzyme_5 / enzyme_3 是**接基因 5′ / 3′ 端**的酶，由载体表达盒决定，
+    不是用户填的那两个框的顺序。strand 是基因最终落在构建体的哪条链上。
+    """
+
+    enzyme_5: str
+    enzyme_3: str
+    strand: str = "+"
+    source: str = "default"          # annotation / auto_detected / ambiguous / default / user
+    hint: Dict = field(default_factory=dict)
+    removed_bp: int = 0
+    warnings: List[str] = field(default_factory=list)
+    # 自动识别出来、载体本身没有注释的元件（预览要用它们画启动子）
+    detected: List[Dict] = field(default_factory=list)
+
+
+_ANNOTATION_CACHE: Dict[str, List[Dict]] = {}
+
+
+def _auto_annotate(backbone: str, circular: bool) -> List[Dict]:
+    """对骨架跑一次元件库识别（载体没有注释时用来找启动子）
+
+    5 kb 质粒约 130–230 ms，按序列摘要 + 拓扑缓存，同一载体只有第一次付这个代价。
+    """
+    import hashlib
+
+    if not backbone:
+        return []
+    key = hashlib.sha256(backbone.encode()).hexdigest() + ("c" if circular else "l")
+    hit = _ANNOTATION_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from core.plasmid_map.annotate import annotate
+
+        feats = annotate(backbone, circular) or []
+    except Exception:  # 注释失败不影响设计，按「没有注释」处理
+        feats = []
+    converted = []
+    for feat in feats:
+        strand = feat.get("strand")
+        converted.append({
+            "name": feat.get("name") or "",
+            "type": feat.get("type") or "",
+            "start": feat.get("start"),
+            "end": feat.get("end"),
+            "strand": "-" if strand in (-1, "-") else "+",
+        })
+    if len(_ANNOTATION_CACHE) > 16:
+        _ANNOTATION_CACHE.clear()
+    _ANNOTATION_CACHE[key] = converted
+    return converted
+
+
+def _cassette_elements(vector, backbone: str, circular: bool) -> Tuple[List[Dict], str]:
+    """载体的方向性元件：先用自己的注释，没有启动子时自动识别
+
+    返回 (元件列表, 来源)。来源 = annotation / auto_detected / none。
+    """
+    from core.construct_assembly import _is_promoter
+
+    elements = _vector_element_dicts(vector)
+    if any(_is_promoter(e) for e in elements):
+        return elements, "annotation"
+    detected = _auto_annotate(backbone, circular)
+    if any(_is_promoter(e) for e in detected):
+        # 自动识别的元件补进来；和已有注释重叠的丢掉（注释优先）
+        extra = [e for e in detected if not _overlaps_any(e, elements)]
+        return elements + extra, "auto_detected"
+    return elements, "none"
+
+
+def _overlaps_any(element: Dict, others: List[Dict]) -> bool:
+    """元件与已有注释是否重叠（同位置重复的自动识别结果不再重复画）"""
+    start = int(element.get("start") or 0)
+    end = int(element.get("end") or 0)
+    for other in others:
+        os_ = int(other.get("start") or 0)
+        oe = int(other.get("end") or 0)
+        if start <= oe and os_ <= end:
+            return True
+    return False
+
+
+def resolve_restriction_ends(
+    vector,
+    backbone: str,
+    enzyme_a: Optional[str],
+    enzyme_b: Optional[str],
+    *,
+    direction: str = "auto",
+    circular: bool = True,
+    window: Optional[Tuple[int, int]] = None,
+) -> RestrictionEnds:
+    """把「两把酶」解析成「接基因 5′ 端 / 3′ 端」的指派
+
+    方向按载体表达盒判定（cassette_hint）：启动子紧邻哪一端、RBS/终止子在
+    哪一端。direction 取 auto / forward / reverse：auto 听载体的，forward
+    与 reverse 是用户显式指定（反义构建），此时覆盖载体的判定。
+    """
+    from core.construct_assembly import cassette_hint, plan_restriction
+
+    ends = RestrictionEnds(enzyme_5=enzyme_a or "", enzyme_3=enzyme_b or "")
+    if not enzyme_a or not enzyme_b or enzyme_a == enzyme_b:
+        return ends
+    probe = plan_restriction(backbone, enzyme_a, enzyme_b, window=window,
+                             circular=circular, warnings=[])
+    if probe is None or probe.left_cut == probe.right_cut:
+        return ends
+    left_owner, right_owner = (
+        (enzyme_b, enzyme_a) if probe.insert_reverse else (enzyme_a, enzyme_b)
+    )
+    elements, element_source = _cassette_elements(vector, backbone, circular)
+    if element_source == "auto_detected":
+        annotated = _vector_element_dicts(vector)
+        ends.detected = [e for e in elements if e not in annotated]
+    hint = cassette_hint(elements, probe.left_cut, probe.right_cut)
+    base = hint.get("strand")
+    if direction == "plus":
+        desired = "+"
+    elif direction == "minus":
+        desired = "-"
+    elif direction == "reverse":
+        # 相对「载体判定」反向：反义构建。载体判不出时按默认（正链）反向
+        desired = "-" if (base or "+") == "+" else "+"
+    else:
+        desired = base or "+"
+    if desired == "+":
+        ends.enzyme_5, ends.enzyme_3 = left_owner, right_owner
+    else:
+        ends.enzyme_5, ends.enzyme_3 = right_owner, left_owner
+    ends.strand = desired
+    ends.hint = hint
+    ends.removed_bp = probe.removed
+    if direction in ("plus", "minus", "reverse"):
+        ends.source = "user"
+        ends.warnings.append(
+            f"按你的选择做{'负链' if desired == '-' else '正链'}插入：基因 5′ 端接 "
+            f"{ends.enzyme_5}、3′ 端接 {ends.enzyme_3}"
+            + ("（与载体表达方向相反，转录产物为反义 RNA）" if desired != (base or "+") else "")
+        )
+    elif base:
+        ends.source = "auto_detected" if element_source == "auto_detected" else "annotation"
+    elif hint.get("ambiguous"):
+        ends.source = "ambiguous"
+        ends.warnings.append(
+            f"插入区间两侧都有启动子/RBS 证据，无法自动判定方向：已按默认处理"
+            f"（5′ 端接上游切点 {left_owner}）。若与预期不符，请在表单上勾选「反向」重新设计"
+        )
+    else:
+        ends.source = "default"
+        ends.warnings.append(
+            f"载体上没有可判定的启动子/RBS，插入方向按默认处理（5′ 端接上游切点 "
+            f"{left_owner}）。若与预期不符，请勾选「反向」重新设计"
+        )
+    return ends
+
+
+def build_restriction_preview(request) -> Dict:
+    """限制性克隆的实时预览：把两把酶解析成**成品构建体**的布局
+
+    做法是用占位基因跑一遍真实组装（assemble_construct），所以返回的坐标、
+    元件位置、连接处碱基与正式设计完全一致——示意图画的就是成品，被切走的
+    载体片段不在图上（真实质粒上它也不存在）。
+    """
+    from core.construct_assembly import physical_sites
+
+    inline = getattr(request, "vector", None)
+    warnings: List[str] = []
+    if inline is not None:
+        from app.adhoc_vector import vector_from_inline
+
+        vector, vec_meta = vector_from_inline(inline, max_length=MAP_MAX_LENGTH)
+        warnings.extend(vec_meta.get("warnings") or [])
+    elif request.vector_id:
+        vector = get_vector_library().get_vector(request.vector_id)
+        if vector is None:
+            raise ValueError(f"未找到载体 {request.vector_id}")
+    else:
+        raise ValueError("预览需要 vector_id 或内联载体")
+
+    enzymes = [e for e in (getattr(request, "enzymes", None) or []) if e]
+    if len(enzymes) < 2 or enzymes[0] == enzymes[1]:
+        raise ValueError("预览需要两个不同的限制酶")
+    backbone = ensure_vector_backbone(vector)
+    circular = str(getattr(vector, "topology", "circular") or "circular").lower() != "linear"
+    ends = resolve_restriction_ends(
+        vector, backbone, enzymes[0], enzymes[1],
+        direction=getattr(request, "direction", "auto"),
+        circular=circular, window=_mcs_window(vector))
+    warnings.extend(ends.warnings)
+
+    gene_len = int(getattr(request, "insert_length", 0) or 600)
+    estimated = not getattr(request, "insert_length", None)
+    asm = assemble_construct(
+        vector, "N" * gene_len, "insert", method="restriction",
+        enzyme_5=ends.enzyme_5, enzyme_3=ends.enzyme_3, check_cassette=False,
+        extra_elements=ends.detected)
+    warnings.extend(asm.warnings)
+    construct = asm.sequence
+
+    # 切除长度取规划值：构建体两端还补了位点残留（head/tail），
+    # 用长度差反推会把补回的碱基算进切除量
+    removed = max(0, ends.removed_bp)
+    sites: List[Dict] = []
+    for role, enzyme, boundary in (
+        ("five", ends.enzyme_5, asm.insert_start),
+        ("three", ends.enzyme_3, asm.insert_end),
+    ):
+        hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
+        if not hits:
+            continue
+        best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
+        sites.append({
+            "role": role,
+            "enzyme": enzyme,
+            "position": int(best["position"]),
+            "cut": int(best["cut_fwd"]),
+            "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
+        })
+
+    lo = asm.insert_start - 3000
+    hi = asm.insert_end + 3000
+    features = []
+    for feat in asm.features:
+        start = int(feat.get("start") or 0)
+        end = int(feat.get("end") or 0)
+        if start == asm.insert_start and str(feat.get("type") or "").upper() == "CDS":
+            continue  # 占位基因本身不是元件
+        if end < lo or start > hi:
+            continue
+        features.append({
+            "name": feat.get("name") or "feature",
+            "type": feat.get("type") or "other",
+            "start": start, "end": end,
+            "strand": feat.get("strand") or "+",
+        })
+    features.sort(key=lambda item: item["start"])
+    features = features[:16]
+
+    five_at = max(0, asm.insert_start - 7)
+    three_at = max(0, asm.insert_end - 6)
+    return {
+        "vector": {"name": vector.name or "vector", "length": len(backbone),
+                   "topology": "linear" if not circular else "circular"},
+        "sites": sites,
+        "gene": {"start": asm.insert_start, "end": asm.insert_end,
+                 "length": gene_len, "estimated": estimated},
+        "removed_bp": removed,
+        "construct_length": len(construct),
+        "strand": ends.strand,
+        "source": ends.source,
+        "ambiguous": bool(ends.hint.get("ambiguous")),
+        "gene_5prime_enzyme": ends.enzyme_5,
+        "gene_3prime_enzyme": ends.enzyme_3,
+        "evidence": ends.hint.get("evidence") or [],
+        "features": features,
+        "junctions": {
+            "five": construct[five_at:five_at + 16],
+            "three": construct[three_at:three_at + 16],
+        },
+        "warnings": warnings,
+    }
+
+
 def _assemble_by_mcs(backbone: str, vector, insert: str, insert_name: str,
                      warnings: List[str]) -> ConstructAssembly:
     """回退路径：把 MCS 注释区间整段换成插入片段（旧行为）
@@ -201,6 +469,8 @@ def assemble_construct(
     overhang_5: Optional[str] = None,
     overhang_3: Optional[str] = None,
     anchor: Optional[int] = None,
+    check_cassette: bool = True,
+    extra_elements: Optional[List[Dict]] = None,
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
@@ -250,13 +520,14 @@ def assemble_construct(
             warnings.append(f"{exc}：已按 MCS 区间替换构建体")
             plan = None
 
-    if plan is not None and method == "restriction":
+    if plan is not None and method == "restriction" and check_cassette:
         # 表达方向自检：5'/3' 两端酶填反时粘端照样配得上、构建体照样拼得出来，
         # 只是基因整个反着进质粒（转录不出目标蛋白），而图谱上看不出对错。
         # 载体自己带启动子注释时用它判定基因该往哪条链读，判定结果与本次装配
         # 相反就明确告警并给出「把两端酶对调」的具体写法——不静默改动用户填写。
         required, promoter = cassette_direction(
-            _vector_element_dicts(vector), plan.left_cut, plan.right_cut)
+            _vector_element_dicts(vector) + list(extra_elements or []),
+            plan.left_cut, plan.right_cut)
         if required and (required == "-") != bool(plan.insert_reverse):
             # 写进 plan.warnings（apply_plan 会把它复制进返回的告警列表）
             plan.warnings.append(
@@ -271,7 +542,7 @@ def assemble_construct(
     if plan is not None:
         try:
             seq, feats, istart, iend, plan_warnings = apply_plan(
-                backbone, _vector_element_dicts(vector), plan,
+                backbone, _vector_element_dicts(vector) + list(extra_elements or []), plan,
                 insert=insert, insert_name=insert_name,
                 circular=circular)
         except ValueError:
@@ -492,8 +763,15 @@ def design_primers_for_method(
     optimized_dna: str,
     vector,
     backbone: str,
+    *,
+    enzyme_5: Optional[str] = None,
+    enzyme_3: Optional[str] = None,
 ) -> List[PrimerInfo]:
     """按「插入片段来源 × 克隆方法」设计引物/寡核苷酸。
+
+    enzyme_5 / enzyme_3 是**已解析**的指派（接基因 5′/3′ 端的酶）：由
+    resolve_restriction_ends 按载体表达盒定下来，这里不再读 request 里的原值，
+    否则引物和构建体会各说各话。
 
     - 来源=PCR：产出带克隆末端的扩增引物对（末端形态由克隆方法决定）
     - 来源=全基因合成：产出重叠组装 oligo 组 + 带克隆末端的
@@ -531,14 +809,14 @@ def design_primers_for_method(
             return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
         # restriction：双酶切（5'/3' 端可用不同酶；未提供时回落到单酶 enzyme）
-        enzyme_5 = request.enzyme_5 or request.enzyme
-        enzyme_3 = request.enzyme_3 or request.enzyme
-        if not enzyme_5 or not enzyme_3:
+        e5 = enzyme_5 or request.enzyme_5 or request.enzyme
+        e3 = enzyme_3 or request.enzyme_3 or request.enzyme
+        if not e5 or not e3:
             raise ValueError(
                 "限制性克隆需指定限制酶：enzyme_5 与 enzyme_3（或单酶 enzyme）"
             )
         pair = designer.design_restriction_primers(
-            optimized_dna, enzyme_5, enzyme_3, primer_name=name
+            optimized_dna, e5, e3, primer_name=name
         )
         return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
@@ -670,6 +948,7 @@ def run_design(
             gg_oh5, gg_oh3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
 
         backbone = "N" * 5000
+        resolved_ends: Optional[RestrictionEnds] = None
         if not vector:
             result.warnings.append(f"未找到载体 {request.vector_id}，使用空骨架回退")
             result.vector_name = request.vector_id
@@ -691,16 +970,33 @@ def run_design(
         else:
             result.vector_name = vector.name
             backbone = ensure_vector_backbone(vector)
+            if request.cloning_method == CloningMethod.RESTRICTION:
+                # 方向由载体表达盒决定：两把酶填成什么顺序都不影响结果，
+                # 只有用户显式选「正向/反向」时才覆盖（反义构建）
+                resolved_ends = resolve_restriction_ends(
+                    vector, backbone,
+                    request.enzyme_5 or request.enzyme,
+                    request.enzyme_3 or request.enzyme,
+                    direction=getattr(request, "insert_direction", "auto"),
+                    circular=str(getattr(vector, "topology", "circular")
+                                 or "circular").lower() != "linear",
+                    window=_mcs_window(vector),
+                )
+                result.warnings.extend(resolved_ends.warnings)
             # 按克隆方法建模切点：Gibson 不切除碱基、双酶切/GG 切走两个切点之间的片段
             assembly = assemble_construct(
                 vector, optimized_dna, request.sequence_name or "insert",
                 method=request.cloning_method.value,
                 insert_pos=gibson_pos,
                 enzyme=request.enzyme,
-                enzyme_5=request.enzyme_5 or request.enzyme,
-                enzyme_3=request.enzyme_3 or request.enzyme,
+                enzyme_5=(resolved_ends.enzyme_5 if resolved_ends
+                          else request.enzyme_5 or request.enzyme),
+                enzyme_3=(resolved_ends.enzyme_3 if resolved_ends
+                          else request.enzyme_3 or request.enzyme),
                 overhang_5=gg_oh5,
                 overhang_3=gg_oh3,
+                check_cassette=not (resolved_ends and resolved_ends.source == "user"),
+                extra_elements=resolved_ends.detected if resolved_ends else None,
             )
             result.warnings.extend(assembly.warnings)
 
@@ -731,7 +1027,11 @@ def run_design(
         result.insert_end = assembly.insert_end
 
         # 4. 引物
-        result.primers = design_primers_for_method(request, optimized_dna, vector, backbone)
+        result.primers = design_primers_for_method(
+            request, optimized_dna, vector, backbone,
+            enzyme_5=resolved_ends.enzyme_5 if resolved_ends else None,
+            enzyme_3=resolved_ends.enzyme_3 if resolved_ends else None,
+        )
 
         # 4.0 Golden Gate：按完整扩增子数位点，引物尾与插入片段拼接处新生的位点也会多切
         if request.cloning_method == CloningMethod.GOLDEN_GATE and result.primers:

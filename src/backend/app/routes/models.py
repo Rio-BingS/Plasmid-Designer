@@ -70,8 +70,14 @@ class DesignOptions(BaseModel):
     # 产出完全错误的引物而无人察觉。按克隆方法在下方校验器中强制要求
     enzyme: Optional[str] = Field(default=None, min_length=1, description="克隆酶（Golden Gate Type IIS 酶；restriction 单酶兼容回退）")
     # 双酶切：restriction 方法 5'/3' 端分别用不同酶；缺省回落到 enzyme（兼容单酶切）
-    enzyme_5: Optional[str] = Field(default=None, description="双酶切 5' 端限制酶")
-    enzyme_3: Optional[str] = Field(default=None, description="双酶切 3' 端限制酶")
+    enzyme_5: Optional[str] = Field(default=None, description="双酶切位点之一（方向由载体表达盒判定，顺序无关）")
+    enzyme_3: Optional[str] = Field(default=None, description="双酶切位点之二（方向由载体表达盒判定，顺序无关）")
+    # 插入方向：auto=按载体启动子/RBS 判定；forward=基因 5′ 端接上游切点；
+    # reverse=反向（反义构建）。只在 auto 判不出来或用户明确要反义时用得上
+    # auto=按载体表达盒判定；reverse=与判定相反（反义构建）；
+    # plus/minus=用户看预览图后手动指定基因落在哪条链
+    insert_direction: Literal["auto", "reverse", "plus", "minus"] = Field(
+        default="auto", description="插入方向：auto/reverse/plus/minus")
     oligo_length: int = Field(default=60, ge=40, le=100, description="[已废弃，改用 oligo_length_min/max] 未提供范围时的固定长度")
     # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
     oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")
@@ -201,6 +207,17 @@ class DesignVectorPayload(BaseModel):
     mcs: Optional[DesignVectorMcs] = None
     unique_enzymes: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+
+
+class RestrictionPreviewRequest(BaseModel):
+    """双酶切实时预览：两把酶 + 载体 → 成品构建体的布局（用于表单里的示意图）"""
+
+    enzymes: List[str] = Field(..., min_length=1, max_length=2, description="两个酶切位点（顺序无关）")
+    vector_id: Optional[str] = Field(default=None, max_length=120)
+    vector: Optional[DesignVectorInput] = Field(default=None, description="内联一次性载体")
+    insert_length: Optional[int] = Field(default=None, ge=30, le=30000,
+                                        description="基因长度（氨基酸输入按 aa×3 估）")
+    direction: Literal["auto", "reverse", "plus", "minus"] = "auto"
 
 
 class DesignRequest(DesignOptions):

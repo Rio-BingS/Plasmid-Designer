@@ -16,6 +16,7 @@ vi.mock('@/api', async (importOriginal) => ({
   getVectors: vi.fn(),
   getCodonTables: vi.fn(),
   getEnzymes: vi.fn(),
+  getRestrictionPreview: vi.fn(),
   formatApiError: ((await importOriginal()) as typeof import('@/api')).formatApiError
 }))
 

@@ -352,20 +352,44 @@ def test_run_design_pet28a_bamhi_xhoi_gene_on_minus_strand():
     assert str(t7.strand).strip() in ("-", "-1")
 
 
-def test_run_design_pet28a_xhoi_bamhi_gene_on_plus_strand():
-    """对调两端酶后基因落在正链（与载体表达盒相反，供用户按需选择）"""
-    from app.design_service import get_vector_library
+def test_run_design_pet28a_plus_strand_only_when_user_asks():
+    """显式要求正向（反义构建）：insert_direction=plus 时基因才落在正链
+
+    两端酶的先后顺序不再决定方向——方向由载体表达盒判定。用户真要反义构建，
+    用 insert_direction=plus/minus 表达，设计页上是「反向」开关。
+    """
     from app.map_documents import design_map_document
     from app.routes.models import CloningMethod, DesignStatus
 
-    res = _run(CloningMethod.RESTRICTION, enzyme_5="XhoI", enzyme_3="BamHI")
+    res = _run(CloningMethod.RESTRICTION, enzyme_5="XhoI", enzyme_3="BamHI",
+               insert_direction="plus")
     assert res.status == DesignStatus.COMPLETED, res.errors
     span = res.construct_sequence[res.insert_start - 1:res.insert_end]
     assert span == res.optimized_sequence
+    assert any("按你的选择" in w for w in res.warnings)
 
     doc = design_map_document(res)
     insert = next(f for f in doc["features"] if f["source"] == "design")
     assert insert["strand"] == 1
+
+
+def test_run_design_enzyme_order_does_not_change_the_construct():
+    """两把酶填反 / 填正，构建体与引物必须完全一致
+
+    用户没有义务记住哪个框是「基因 5′ 端」：方向由载体表达盒（pET-28a 的 T7
+    在负链）判定。这条锁住「顺序无关」——此前填反了照样出图，只是基因反着插。
+    """
+    from app.routes.models import CloningMethod, DesignStatus
+
+    forward = _run(CloningMethod.RESTRICTION, enzyme_5="BamHI", enzyme_3="XhoI")
+    swapped = _run(CloningMethod.RESTRICTION, enzyme_5="XhoI", enzyme_3="BamHI")
+    assert forward.status == DesignStatus.COMPLETED, forward.errors
+    assert swapped.status == DesignStatus.COMPLETED, swapped.errors
+    assert forward.construct_sequence == swapped.construct_sequence
+    assert (forward.insert_start, forward.insert_end) == (swapped.insert_start, swapped.insert_end)
+    # 引物也跟着解析后的指派走：正向引物带的是接基因 5′ 端那把酶
+    assert "BamHI" in (forward.primers[0].notes or "")
+    assert "BamHI" in (swapped.primers[0].notes or "")
 
 
 def test_run_design_gibson_insert_stays_on_plus_strand():

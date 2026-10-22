@@ -267,19 +267,18 @@ onUnmounted(() => {
           </div>
 
           <div class="form-group" v-if="cloningMethod === 'restriction'">
-            <label class="form-label">5′ 端限制酶（基因起始 / ATG 那一端）</label>
-            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI（接基因起始端）" />
+            <label class="form-label">酶切位点一</label>
+            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
           </div>
 
           <div class="form-group" v-if="cloningMethod === 'restriction'">
-            <label class="form-label">3′ 端限制酶（基因末尾 / 终止密码子那一端）</label>
-            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI（接基因末端）" />
+            <label class="form-label">酶切位点二</label>
+            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
           </div>
 
           <p v-if="cloningMethod === 'restriction'" class="hint-text">
-            这两项是<strong>插入片段自己的两端</strong>：前一项的位点在基因起始处复原，
-            后一项在基因末尾复原。填反了基因会整个反着插进质粒（pET 系列 T7 在负链，
-            通常 NdeI 填前、XhoI 填后）。
+            两把酶的先后顺序不影响结果：基因接哪一端由载体自己的启动子/RBS 判定
+            （需要反义构建时请到单条设计页勾选「反向」）。
           </p>
 
       <div class="form-group">
