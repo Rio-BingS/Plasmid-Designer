@@ -8,6 +8,41 @@
 
 ## [Unreleased]
 
+### 升级注意
+- 引入 Alembic 管理数据库结构迁移（`docs/MIGRATIONS.md`）：存量部署升级后
+  在 src/backend 下执行一次 `python -m alembic -c alembic.ini stamp head`
+  对齐版本号（不重放建表）；`init_db()` 的 create_all 与轻量列迁移原样保留，
+  两条路径并存。依赖锁文件新增 alembic，需重新安装（锁由
+  scripts/lock_requirements.sh 重新生成）。
+- core 不再反向 import `app.config`：新增 `core/paths.py` 统一解析
+  DATA_DIR / VECTORS_DIR / CODON_TABLES_DIR（环境变量 → 项目根 .env → 默认值，
+  与 app.config 同口径）。测试里如需注入目录改用环境变量
+  （monkeypatch.setenv），monkeypatch settings 字段对 core 不再生效。
+
+### 新增
+- 数据库备份/恢复：`deploy/scripts/backup.sh`（自动判定 PostgreSQL/SQLite，
+  含保留策略与 uploads 打包）、`deploy/scripts/restore.sh`、定时任务示例与
+  恢复演练清单见 `deploy/BACKUP.md`；黑盒回归 tests/test_deploy_backup.py。
+- Alembic 迁移体系：baseline 迁移（与模型零差异）、`tests/test_migrations.py`
+  回归锁（upgrade head 后模型与库结构必须一致；存量库 stamp head 不重放）。
+
+### 变更
+- 测序分析管线 `core/sanger/pipeline.py` 的 `analyze()`（约 1140 行）拆为
+  5 个阶段函数（`_analyze_one_read` / `_signal_analysis_pass` /
+  `_variant_confidence_pass` / `_homopolymer_report_pass` / `_build_conclusion`），
+  analyze 本体缩为约 190 行编排；行为不变。
+- 前端 API 层（`src/frontend/src/api/index.ts`）请求参数与认证/批量/导入/
+  缓存响应补齐类型（新增 `AuthTokenResponse` / `BatchProgress` /
+  `NcbiSearchResult` 等，见 `src/types/index.ts`）。
+
+### 修复
+- CAI 计算：密码子频率表记 0.0 的密码子曾使 `log(0)` 抛 ValueError，
+  w 值现夹到 `_CAI_W_FLOOR`（1e-6）。
+- 载体库批量导入结果提示读了不存在的 `imported_ncbi` 字段，页面恒显示
+  「成功导入 undefined 个载体」；改读后端实际返回的 `ncbi` 数组。
+- `core/external_vector_importer.py` 的 print 改为 logger（生产环境不再丢日志）；
+  `translate_dna` 收敛到 `core.seq_utils.translate` 唯一实现。
+
 ## [2.18.0] - 2026-10-23
 
 ### 升级注意
