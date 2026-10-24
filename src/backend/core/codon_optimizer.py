@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from collections import Counter
 import math
 
-from core.seq_utils import CODON_TABLE, gc_fraction, revcomp as _seq_revcomp
+from core.seq_utils import CODON_TABLE, CODON_TO_AA as AMINO_ACID_TABLE, gc_fraction, translate, revcomp as _seq_revcomp
 from core.seq_input import normalize_sequence_text as _normalize_aa
 
 
@@ -68,8 +68,7 @@ HOST_CLASS = {
 
 
 # 标准遗传密码表收敛到 core.seq_utils
-# AMINO_ACID_TABLE（密码子 → 氨基酸）保留为兼容别名
-from core.seq_utils import CODON_TO_AA as AMINO_ACID_TABLE
+# AMINO_ACID_TABLE（密码子 → 氨基酸）保留为兼容别名，见文件头部导入
 
 
 _SPECIES_ALIASES = {
@@ -926,16 +925,8 @@ class CodonOptimizer:
 
 
 def translate_dna(dna_sequence: str) -> str:
-    """将DNA序列翻译为氨基酸序列"""
-    dna_sequence = dna_sequence.upper().replace('T', 'U')
-    
-    aa_sequence = []
-    for i in range(0, len(dna_sequence) - 2, 3):
-        codon = dna_sequence[i:i+3]
-        aa = AMINO_ACID_TABLE.get(codon.replace('U', 'T'), 'X')
-        aa_sequence.append(aa)
-    
-    return ''.join(aa_sequence)
+    """将DNA序列翻译为氨基酸序列（收敛到 core.seq_utils.translate 唯一实现）"""
+    return translate(dna_sequence, stop_at_stop=False)
 
 
 def reverse_translate(aa_sequence: str, species: str = "ecoli") -> str:
