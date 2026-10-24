@@ -77,13 +77,11 @@ _SPECIES_ALIASES = {
 
 
 def _codon_tables_dir() -> Optional[Path]:
-    """密码子表目录：settings.CODON_TABLES_DIR 优先，其次项目内 data/codon_tables"""
-    candidates = []
-    try:
-        from app.config import settings
-        candidates.append(Path(settings.CODON_TABLES_DIR))
-    except Exception:
-        pass
+    """密码子表目录：CODON_TABLES_DIR 配置（环境变量/.env，见 core.paths）优先，
+    其次项目内 data/codon_tables"""
+    from core.paths import codon_tables_dir as _configured_dir
+
+    candidates = [_configured_dir()]
     here = Path(__file__).resolve()
     candidates.append(here.parents[3] / "data" / "codon_tables")  # .../project/data
     candidates.append(here.parents[2] / "data" / "codon_tables")
@@ -867,19 +865,19 @@ class CodonOptimizer:
     def _calculate_cai(self, dna_seq: str, aa_seq: str) -> float:
         """
         计算CAI (Codon Adaptation Index)
-        
+
         CAI = (Π(w_i))^(1/L)
         其中 w_i 是每个密码子的相对适应性，L是密码子数量
         """
         if not dna_seq or not aa_seq:
             return 0.0
-        
+
         # 计算每个氨基酸的最优密码子频率
         max_freq = {}
         for aa, codons in CODON_TABLE.items():
             if aa != '*':
                 max_freq[aa] = max(self.codon_freq.get(c, 0) for c in codons)
-        
+
         # 计算每个密码子的w值
         w_values = []
         for i, aa in enumerate(aa_seq):
@@ -888,13 +886,13 @@ class CodonOptimizer:
             max_f = max_freq.get(aa, 1)
             w = freq / max_f if max_f > 0 else 0.01
             w_values.append(w)
-        
+
         # 计算几何平均
         log_sum = sum(math.log(w) for w in w_values)
         cai = math.exp(log_sum / len(w_values))
-        
+
         return cai
-    
+
     def _calculate_gc_content(self, dna_seq: str) -> float:
         """计算GC含量（0-1 比例，收敛到 core.seq_utils）"""
         return gc_fraction(dna_seq)
