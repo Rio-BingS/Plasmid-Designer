@@ -220,7 +220,7 @@ QUICK_IMPORT_SCRIPT = """
 '''
 
 import sys
-from app.config import BACKEND_DIR
+from core.paths import BACKEND_DIR
 sys.path.insert(0, str(BACKEND_DIR))
 
 from core.external_vector_importer import (
