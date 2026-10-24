@@ -436,3 +436,13 @@ def test_refinement_runs_despite_unavoidable_motif():
     assert optimizer._calculate_cai(refined, aa) > optimizer._calculate_cai(start_dna, aa)
     # 可避开的 motif 不被重新引入（CAT 的出现数不增加）
     assert refined.count("CAT") <= start_dna.count("CAT")
+
+
+def test_cai_zero_frequency_codon_does_not_crash():
+    """回归锁：密码子频率表把某密码子记为 0.0 时 CAI 的 log(0) 不得崩溃
+    （w 值夹到 _CAI_W_FLOOR，见审查清单「CAI log(0) 边界」）"""
+    optimizer = CodonOptimizer(species="ecoli")
+    optimizer.codon_freq["AAA"] = 0.0
+    cai = optimizer._calculate_cai("AAA" * 5, "K" * 5)
+    assert 0.0 < cai <= 1.0
+

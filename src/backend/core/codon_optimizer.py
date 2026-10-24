@@ -50,6 +50,10 @@ FIVE_PRIME_WINDOW = 60   # 5' 结构检查窗口 (nt)
 HAIRPIN_STEM = 4         # 发夹茎最短 bp
 HAIRPIN_TOLERANCE = 1    # 5' 窗口允许的茎匹配数上限
 
+# CAI 里 w 值的下限：频率表把某密码子记为 0.0 时 w=0 会让 log(0) 崩溃
+# （数学上 CAI 对 0 频率密码子无定义，惯例是夹到一个小正数）
+_CAI_W_FLOOR = 1e-6
+
 # 隐蔽调控 motif 审查表（按宿主类别）
 CENSOR_MOTIFS = {
     "prokaryote": ["AGGAGG", "TATAAT", "TTTTTT"],   # SD 序列 / -10 区 / poly-T
@@ -862,6 +866,9 @@ class CodonOptimizer:
 
         return dna_list
     
+    # CAI 里 w 值的下限：频率表把某密码子记为 0.0 时 w=0 会让 log(0) 崩溃
+    # （数学上 CAI 对 0 频率密码子无定义，惯例是夹到一个小正数；
+    #  常量定义在模块顶部 _CAI_W_FLOOR）
     def _calculate_cai(self, dna_seq: str, aa_seq: str) -> float:
         """
         计算CAI (Codon Adaptation Index)
@@ -885,7 +892,7 @@ class CodonOptimizer:
             freq = self.codon_freq.get(codon, 0.01)
             max_f = max_freq.get(aa, 1)
             w = freq / max_f if max_f > 0 else 0.01
-            w_values.append(w)
+            w_values.append(max(w, _CAI_W_FLOOR))
 
         # 计算几何平均
         log_sum = sum(math.log(w) for w in w_values)
