@@ -2511,214 +2511,115 @@ def _signal_maps(r: Dict) -> Optional[Dict]:
     return r["_sigmaps"]
 
 
-def analyze(
-    ab1_files: List[Tuple[str, bytes]],
-    reference: str,
-    features: Optional[List[Dict]] = None,
-    min_q: int = MIN_TRIM_Q,
-    allow_decompose: bool = True,
-    signal_correct: bool = True,
-    poly_local_ratio: bool = True,
-    circular: bool = False,
-    zone_params: Optional[ZoneParams] = None,
-) -> Dict:
-    """全自动分析入口
+def _analyze_one_read(
+    filename: str, blob: bytes, *, ref: str, align_fn, norm_variants,
+    zone_params, min_q: int, signal_correct: bool, circular: bool,
+) -> Tuple[Optional[Dict], Optional[Dict]]:
+    """analyze 的逐 read 阶段：解析→质量修剪→比对→tracy 交叉 basecall。
 
-    ab1_files: [(filename, bytes), ...]
-    reference: 参考载体序列（1-based 坐标）
-    circular: 参考为环状（质粒）时，每条 read 对「参考 + 参考[:k]」比对
-    （k≈read 长），跨越原点的 read 整条比对上；变体、覆盖区间（跨原点
-    拆为两段）、共识、read↔参考坐标映射全部按 ((p-1) % L) + 1 折回。
-    False（默认）按线性参考比对，行为与此前一致。
-    signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
-    显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
-    poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
-    中位数——信号沿 read 衰减时后段正常 poly 会被误判压缩）。
-    zone_params: read 可信区边界（首端硬区/灰区、尾端灰区/硬区，read 坐标 bp），
-    缺省 30/60/700/900，见 reliable_zone。
+    返回 (read 结果字典, None) 或 (None, errors 条目)：单文件失败不阻断整体。
     """
-    features = features or []
-    zone_params = zone_params or DEFAULT_ZONE
-    ref = reference.upper().replace("U", "T")
-    if not ref:
-        raise ValueError("参考序列为空，无法进行比对分析")
+    try:
+        read = extract_read(blob)
+    except (AbiParseError, Exception) as e:  # noqa: BLE001 单文件失败不阻断整体
+        return None, {"filename": filename, "error": f"解析失败: {e}"}
 
-    read_results: List[Dict] = []
-    errors: List[Dict] = []
-    L_ref = len(ref)
-    _align = align_read_circular if circular else align_read
-    # indel 最左归一化：环状参考上可越过原点左移——在三倍参考的中间一份
-    # 上归一化（坐标 +L 抬升），结果折回；线性参考维持原口径
-    ref3 = ref * 3 if circular else ""
+    bases = read["bases"]
+    quality = read["quality"]
+    if len(bases) < MIN_WINDOW:
+        return None, {"filename": filename, "error": "碱基数过少（<50bp）"}
 
-    def _norm_all(vs: List[Dict]) -> List[Dict]:
-        if not circular:
-            return _normalize_indel_all(ref, vs)
-        out = []
-        for v in vs:
-            nv = _normalize_indel(ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
-            out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
-        return out
+    # A2 基线校正：峰级定量前扣除各通道加性本底（通道映射不动）；
+    # 显示与定量统一使用校正后信号（关闭开关回退原始信号）
+    if signal_correct:
+        read["trace"] = baseline_correct(read["trace"])
 
-    for filename, blob in ab1_files:
-        try:
-            read = extract_read(blob)
-        except (AbiParseError, Exception) as e:  # noqa: BLE001 单文件失败不阻断整体
-            errors.append({"filename": filename, "error": f"解析失败: {e}"})
-            continue
-
-        bases = read["bases"]
-        quality = read["quality"]
-        if len(bases) < MIN_WINDOW:
-            errors.append({"filename": filename, "error": "碱基数过少（<50bp）"})
-            continue
-
-        # A2 基线校正：峰级定量前扣除各通道加性本底（通道映射不动）；
-        # 显示与定量统一使用校正后信号（关闭开关回退原始信号）
-        if signal_correct:
-            read["trace"] = baseline_correct(read["trace"])
-
-        s, e = _trim_by_quality(bases, quality, min_q)
-        trimmed = bases[s:e]
-        trimmed_q = quality[s:e]
-        # 阈值高于全部碱基 Q 值时修剪结果为空：记为错误条目，
-        # 不能送进 PairwiseAligner（空序列会抛 ValueError → 500）
-        if len(trimmed) < MIN_WINDOW:
-            errors.append({
-                "filename": filename,
-                "error": f"Q≥{min_q} 的碱基不足 {MIN_WINDOW}bp（修剪后仅 {len(trimmed)}bp），无法比对",
-            })
-            continue
-        mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
-        grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
-
-        aln = _align(trimmed, ref, trimmed_q)
-        # 截断提示：环状参考的跨原点 read 已整条比对，仍截断即另有原因
-        partial = _check_partial_alignment(trimmed, aln, circular)
-
-        # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
-        # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
-        aln["variants"] = _norm_all(aln["variants"])
-        for v in aln["variants"]:
-            rp = v.get("read_pos") or 1
-            qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
-            v["quality"] = trimmed_q[qi]
-
-        # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
-        # 终审 C-09：tracy 全流程降级隔离——一条低质量 ab1 的交叉 basecall
-        # 异常不得拖垮整份多 read 分析
-        cross = _try_tracy_basecall(blob)
-        used_tracy = cross is not None
-        cross_variants: List[Dict] = []
-        tracy_calls: Optional[Dict] = None
-        if used_tracy:
-            cb, cq = cross[0], cross[1]
-            # 第三项为 JSON 路径的次级调用（FASTQ 退化路径无此项）
-            tracy_calls = cross[2] if len(cross) > 2 else None
-            cs, ce = _trim_by_quality(cb, cq, min_q)
-            # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
-            # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
-            if ce - cs >= MIN_WINDOW:
-                caln = _align(cb[cs:ce], ref, cq[cs:ce])
-                for v in caln["variants"]:
-                    rp = v.get("read_pos") or 1
-                    qi = min(max(rp - 1, 0), len(cq[cs:ce]) - 1)
-                    v["quality"] = cq[cs:ce][qi]
-                cross_variants = _norm_all(caln["variants"])
-
-        # 混合峰检测移至 poly 结构识别之后（B4：滑移 echo 先于 mixed 判定剔除）
-        # 变体 read_pos 基于 trimmed 碱基（1-based）；峰坐标保持 trace 数据点坐标系，
-        # 与 PLOC 一致，供混合检测与峰级证据按相邻峰窗口取样
-        trimmed_peaks = [
-            read["peak_indices"][i] for i in range(s, min(e, len(read["peak_indices"])))
-        ]
-
-        read_results.append({
+    s, e = _trim_by_quality(bases, quality, min_q)
+    trimmed = bases[s:e]
+    trimmed_q = quality[s:e]
+    # 阈值高于全部碱基 Q 值时修剪结果为空：记为错误条目，
+    # 不能送进 PairwiseAligner（空序列会抛 ValueError → 500）
+    if len(trimmed) < MIN_WINDOW:
+        return None, {
             "filename": filename,
-            "sample_name": read["sample_name"],
-            "raw_length": len(bases),
-            "trimmed_length": len(trimmed),
-            "mean_q": round(mean_q, 1),
-            "grade": grade,
-            "q20_ratio": q20_ratio,
-            "crl": crl,
-            "trimmed_bases": trimmed,
-            "trimmed_quality": trimmed_q,
-            "alignment": aln,
-            "trace": read["trace"],
-            "peak_indices": read["peak_indices"],
-            "trimmed_peaks": trimmed_peaks,
-            # poly 计数用：质量修剪常剪掉 poly 末端低 Q 压缩区，峰窗需沿
-            # 原始 read 外扩（B4），保留原始碱基串与修剪偏移
-            "raw_bases": bases,
-            "trim_start": s,
-            "cross_variants": cross_variants if used_tracy else None,
-            "tracy_calls": tracy_calls,
-            "partial_alignment": partial,
-            # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
-            "reliable_zone": compute_reliable_zone(
-                len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
-        })
+            "error": f"Q≥{min_q} 的碱基不足 {MIN_WINDOW}bp（修剪后仅 {len(trimmed)}bp），无法比对",
+        }
+    mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
+    grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
 
-    # 可信区折算到参考坐标（展开坐标，与 alignment.ref_start/ref_end 同系）：
-    # 报告「read 概况」按参考坐标列出每条 read 的不可信区段
-    for r in read_results:
-        zone = r.get("reliable_zone")
-        if not zone:
-            continue
-        r2ref, _ = _read_ref_maps(r, fold=False)
-        inside = [rf for rp, rf in r2ref.items() if in_zone(zone, rp)]
-        zone["ref_trusted"] = [min(inside), max(inside)] if inside else None
+    aln = align_fn(trimmed, ref, trimmed_q)
+    # 截断提示：环状参考的跨原点 read 已整条比对，仍截断即另有原因
+    partial = _check_partial_alignment(trimmed, aln, circular)
 
-    # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
-    all_variants: List[Dict] = []
-    for r in read_results:
-        for v in r["alignment"]["variants"]:
-            vv = {**v, "read": r["filename"], "read_q": v.get("quality", 0)}
-            all_variants.append(vv)
-    # 按 (ref_pos, type, alt) 去重合并（多 read 支持计数）
-    merged: Dict[Tuple, Dict] = {}
-    for v in all_variants:
-        key = _variant_key(v)
-        if key in merged:
-            merged[key]["support_reads"] += 1
-            merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
-        else:
-            merged[key] = {**v, "support_reads": 1}
-    variants = list(merged.values())
-    variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
-    variants = annotate_variants(variants, features, ref)
+    # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
+    # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
+    aln["variants"] = norm_variants(aln["variants"])
+    for v in aln["variants"]:
+        rp = v.get("read_pos") or 1
+        qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
+        v["quality"] = trimmed_q[qi]
 
-    # poly 重复结构：参考序列扫描（B3：period 1-3 + 观察级）+ 变体归属
-    poly_runs = find_repeat_runs(ref)
-    _annotate_homopolymer(ref, variants, poly_runs)
+    # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
+    # 终审 C-09：tracy 全流程降级隔离——一条低质量 ab1 的交叉 basecall
+    # 异常不得拖垮整份多 read 分析
+    cross = _try_tracy_basecall(blob)
+    used_tracy = cross is not None
+    cross_variants: List[Dict] = []
+    tracy_calls: Optional[Dict] = None
+    if used_tracy:
+        cb, cq = cross[0], cross[1]
+        # 第三项为 JSON 路径的次级调用（FASTQ 退化路径无此项）
+        tracy_calls = cross[2] if len(cross) > 2 else None
+        cs, ce = _trim_by_quality(cb, cq, min_q)
+        # 终审 C-09：守卫必须看修剪后长度——修剪后为空时
+        # align_read("") 抛 ValueError，一条低质量 read 拖垮整份分析
+        if ce - cs >= MIN_WINDOW:
+            caln = align_fn(cb[cs:ce], ref, cq[cs:ce])
+            for v in caln["variants"]:
+                rp = v.get("read_pos") or 1
+                qi = min(max(rp - 1, 0), len(cq[cs:ce]) - 1)
+                v["quality"] = cq[cs:ce][qi]
+            cross_variants = norm_variants(caln["variants"])
 
-    # 比对端点落在同聚物区内部 → 落点歧义标注（不改变判定）：
-    # local 比对在同聚物内的起止随打分滑移，read 端部悬空也源于此——
-    # 覆盖边界与跨引物互检的参考定位在该端点附近可能有数 bp 偏差
-    poly_p1 = [run for run in poly_runs
-               if run["period"] == 1 and run.get("tier") == "poly"]
-    edge_ambiguous_reads: List[Dict] = []
-    for r in read_results:
-        aln = r["alignment"]
-        if aln.get("ref_end", 0) <= 0:
-            continue
-        hits = []
-        for edge_key, edge_label in (("ref_start", "起点"), ("ref_end", "终点")):
-            pos = aln[edge_key]
-            if _circ_len(aln):
-                pos = fold_pos(pos, L_ref)
-            run = next((rn for rn in poly_p1
-                        if rn["start"] <= pos <= rn["end"]), None)
-            if run:
-                hits.append({"edge": edge_label, "ref_pos": pos,
-                             "base": run.get("base") or "",
-                             "start": run["start"], "end": run["end"]})
-        if hits:
-            r["homopolymer_edge_hits"] = hits
-            edge_ambiguous_reads.append({
-                "filename": r["filename"], "hits": hits})
+    # 混合峰检测移至 poly 结构识别之后（B4：滑移 echo 先于 mixed 判定剔除）
+    # 变体 read_pos 基于 trimmed 碱基（1-based）；峰坐标保持 trace 数据点坐标系，
+    # 与 PLOC 一致，供混合检测与峰级证据按相邻峰窗口取样
+    trimmed_peaks = [
+        read["peak_indices"][i] for i in range(s, min(e, len(read["peak_indices"])))
+    ]
 
+    return ({
+        "filename": filename,
+        "sample_name": read["sample_name"],
+        "raw_length": len(bases),
+        "trimmed_length": len(trimmed),
+        "mean_q": round(mean_q, 1),
+        "grade": grade,
+        "q20_ratio": q20_ratio,
+        "crl": crl,
+        "trimmed_bases": trimmed,
+        "trimmed_quality": trimmed_q,
+        "alignment": aln,
+        "trace": read["trace"],
+        "peak_indices": read["peak_indices"],
+        "trimmed_peaks": trimmed_peaks,
+        # poly 计数用：质量修剪常剪掉 poly 末端低 Q 压缩区，峰窗需沿
+        # 原始 read 外扩（B4），保留原始碱基串与修剪偏移
+        "raw_bases": bases,
+        "trim_start": s,
+        "cross_variants": cross_variants if used_tracy else None,
+        "tracy_calls": tracy_calls,
+        "partial_alignment": partial,
+        # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
+        "reliable_zone": compute_reliable_zone(
+            len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
+    }, None)
+
+def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
+                          poly_local_ratio: bool) -> None:
+    """B4/B5 每 read 的信号层分析（就地修改 read_results）：滑移 echo、
+    poly 下游骤降、合并压缩区、mixed 逐位判定与分级（P17：stutter 先于 merge）。
+    """
     # 每 read 的信号层分析（B4/B5）：滑移 echo 位置 → 从 mixed 中剔除；
     # poly 末端下游骤降记录。mixed 判定在此进行（P17 顺序：stutter 先于 merge）。
     # Step A：run 窗口对该 read 呈"合并压缩"（无可分辨峰/强压缩）时记入
@@ -2807,11 +2708,11 @@ def analyze(
             for d in r["mixed_detail"]:
                 d["tracy"] = tags.get(d["pos"])
 
-    # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
-    # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
-    # 其他引物同报双峰才倾向真实混合。结论与建议均按互检结果措辞
-    mixed_corroboration = _corroborate_mixed(read_results)
-
+def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
+                             poly_local_ratio: bool) -> None:
+    """变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持），
+    含跨 read 干净覆盖反证与互检定案、合并压缩区降级（就地修改 variants）。
+    """
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
     mixed_by_read = {r["filename"]: set(r["mixed_positions"]) for r in read_results}
@@ -2933,32 +2834,12 @@ def analyze(
                     f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
                     f"质量不足以互检")
 
-    # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
-    # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
-    # 构成独立证据。是否真实仍由峰级证据、多 read 支持与 Q 值决定。
-    corrob_keys: set = set()
-    for r in read_results:
-        for cv in r.get("cross_variants") or []:
-            corrob_keys.add(_variant_key(cv))
-    if corrob_keys:
-        for v in variants:
-            if _variant_key(v) in corrob_keys:
-                v["corroborated_by_basecall"] = True
-
-    # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
-    # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
-    low_keys = {_variant_key(v) for v in variants if v.get("confidence") == "low"}
-    consensus = _build_consensus(ref, read_results, skip_keys=low_keys,
-                                 circular=circular)
-
-    # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
-    # （线性比对即 (ref_start, ref_end)，与此前一致）
-    coverage_ranges = merge_coverage(
-        [sp for r in read_results for sp in aln_segments(r["alignment"])],
-        len(ref),
-    )
-    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref), circular=circular)
-
+def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
+                             read_results: List[Dict],
+                             coverage_ranges: List[Tuple[int, int]]) -> List[Dict]:
+    """poly 重复结构清单：仅列出落在测序覆盖范围内的结构，回填测得重复数。
+    对每条覆盖该结构的 read 做峰图独立计数并交叉验证（B2/B3/B4 口径），
+    并给出整段重复数的 Step B 综合评判。"""
     # poly 重复结构清单：仅列出落在测序覆盖范围内的结构，回填测得重复数。
     # 除调用碱基外，对每条覆盖该结构的 read 做峰图独立计数并交叉验证：
     # 正反 read 的滑移位置不同，计数互差或与调用数不符 → 重复数不可靠。
@@ -3221,6 +3102,16 @@ def analyze(
         entry["run_covered"] = len(cov_pos)
         homopolymer_report.append(entry)
 
+    return homopolymer_report
+def _build_conclusion(
+    read_results: List[Dict], variants: List[Dict], mixed_corroboration: Dict,
+    edge_ambiguous_reads: List[Dict], consensus: Dict,
+    coverage_ranges: List[Tuple[int, int]], coverage_gaps: List[Dict],
+    homopolymer_report: List[Dict], ref: str, features: List[Dict],
+) -> Tuple[str, List[Dict], Dict]:
+    """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
+    自动结论（编码区结论放最前）。返回 (conclusion, cds_reports, mixed_profiles)。
+    """
     # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
     # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
     shown_variants = [v for v in variants if not v.get("cross_read_resolved")]
@@ -3611,6 +3502,163 @@ def analyze(
                                           resolved=len(resolved_variants))
                       + "\n\n\n" + conclusion)
 
+    return conclusion, cds_reports, mixed_profiles
+def analyze(
+    ab1_files: List[Tuple[str, bytes]],
+    reference: str,
+    features: Optional[List[Dict]] = None,
+    min_q: int = MIN_TRIM_Q,
+    allow_decompose: bool = True,
+    signal_correct: bool = True,
+    poly_local_ratio: bool = True,
+    circular: bool = False,
+    zone_params: Optional[ZoneParams] = None,
+) -> Dict:
+    """全自动分析入口
+
+    ab1_files: [(filename, bytes), ...]
+    reference: 参考载体序列（1-based 坐标）
+    circular: 参考为环状（质粒）时，每条 read 对「参考 + 参考[:k]」比对
+    （k≈read 长），跨越原点的 read 整条比对上；变体、覆盖区间（跨原点
+    拆为两段）、共识、read↔参考坐标映射全部按 ((p-1) % L) + 1 折回。
+    False（默认）按线性参考比对，行为与此前一致。
+    signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
+    显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
+    poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read
+    中位数——信号沿 read 衰减时后段正常 poly 会被误判压缩）。
+    zone_params: read 可信区边界（首端硬区/灰区、尾端灰区/硬区，read 坐标 bp），
+    缺省 30/60/700/900，见 reliable_zone。
+    """
+    features = features or []
+    zone_params = zone_params or DEFAULT_ZONE
+    ref = reference.upper().replace("U", "T")
+    if not ref:
+        raise ValueError("参考序列为空，无法进行比对分析")
+
+    read_results: List[Dict] = []
+    errors: List[Dict] = []
+    L_ref = len(ref)
+    _align = align_read_circular if circular else align_read
+    # indel 最左归一化：环状参考上可越过原点左移——在三倍参考的中间一份
+    # 上归一化（坐标 +L 抬升），结果折回；线性参考维持原口径
+    ref3 = ref * 3 if circular else ""
+
+    def _norm_all(vs: List[Dict]) -> List[Dict]:
+        if not circular:
+            return _normalize_indel_all(ref, vs)
+        out = []
+        for v in vs:
+            nv = _normalize_indel(ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
+            out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
+        return out
+
+    for filename, blob in ab1_files:
+        rd, err = _analyze_one_read(
+            filename, blob, ref=ref, align_fn=_align, norm_variants=_norm_all,
+            zone_params=zone_params, min_q=min_q, signal_correct=signal_correct,
+            circular=circular)
+        if err is not None:
+            errors.append(err)
+        elif rd is not None:
+            read_results.append(rd)
+    # 可信区折算到参考坐标（展开坐标，与 alignment.ref_start/ref_end 同系）：
+    # 报告「read 概况」按参考坐标列出每条 read 的不可信区段
+    for r in read_results:
+        zone = r.get("reliable_zone")
+        if not zone:
+            continue
+        r2ref, _ = _read_ref_maps(r, fold=False)
+        inside = [rf for rp, rf in r2ref.items() if in_zone(zone, rp)]
+        zone["ref_trusted"] = [min(inside), max(inside)] if inside else None
+
+    # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
+    all_variants: List[Dict] = []
+    for r in read_results:
+        for v in r["alignment"]["variants"]:
+            vv = {**v, "read": r["filename"], "read_q": v.get("quality", 0)}
+            all_variants.append(vv)
+    # 按 (ref_pos, type, alt) 去重合并（多 read 支持计数）
+    merged: Dict[Tuple, Dict] = {}
+    for v in all_variants:
+        key = _variant_key(v)
+        if key in merged:
+            merged[key]["support_reads"] += 1
+            merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
+        else:
+            merged[key] = {**v, "support_reads": 1}
+    variants = list(merged.values())
+    variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
+    variants = annotate_variants(variants, features, ref)
+
+    # poly 重复结构：参考序列扫描（B3：period 1-3 + 观察级）+ 变体归属
+    poly_runs = find_repeat_runs(ref)
+    _annotate_homopolymer(ref, variants, poly_runs)
+
+    # 比对端点落在同聚物区内部 → 落点歧义标注（不改变判定）：
+    # local 比对在同聚物内的起止随打分滑移，read 端部悬空也源于此——
+    # 覆盖边界与跨引物互检的参考定位在该端点附近可能有数 bp 偏差
+    poly_p1 = [run for run in poly_runs
+               if run["period"] == 1 and run.get("tier") == "poly"]
+    edge_ambiguous_reads: List[Dict] = []
+    for r in read_results:
+        aln = r["alignment"]
+        if aln.get("ref_end", 0) <= 0:
+            continue
+        hits = []
+        for edge_key, edge_label in (("ref_start", "起点"), ("ref_end", "终点")):
+            pos = aln[edge_key]
+            if _circ_len(aln):
+                pos = fold_pos(pos, L_ref)
+            run = next((rn for rn in poly_p1
+                        if rn["start"] <= pos <= rn["end"]), None)
+            if run:
+                hits.append({"edge": edge_label, "ref_pos": pos,
+                             "base": run.get("base") or "",
+                             "start": run["start"], "end": run["end"]})
+        if hits:
+            r["homopolymer_edge_hits"] = hits
+            edge_ambiguous_reads.append({
+                "filename": r["filename"], "hits": hits})
+
+    _signal_analysis_pass(read_results, poly_runs, poly_local_ratio)
+    # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
+    # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
+    # 其他引物同报双峰才倾向真实混合。结论与建议均按互检结果措辞
+    mixed_corroboration = _corroborate_mixed(read_results)
+
+    _variant_confidence_pass(variants, read_results, poly_local_ratio)
+    # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
+    # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
+    # 构成独立证据。是否真实仍由峰级证据、多 read 支持与 Q 值决定。
+    corrob_keys: set = set()
+    for r in read_results:
+        for cv in r.get("cross_variants") or []:
+            corrob_keys.add(_variant_key(cv))
+    if corrob_keys:
+        for v in variants:
+            if _variant_key(v) in corrob_keys:
+                v["corroborated_by_basecall"] = True
+
+    # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
+    # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
+    low_keys = {_variant_key(v) for v in variants if v.get("confidence") == "low"}
+    consensus = _build_consensus(ref, read_results, skip_keys=low_keys,
+                                 circular=circular)
+
+    # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
+    # （线性比对即 (ref_start, ref_end)，与此前一致）
+    coverage_ranges = merge_coverage(
+        [sp for r in read_results for sp in aln_segments(r["alignment"])],
+        len(ref),
+    )
+    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref), circular=circular)
+
+    homopolymer_report = _homopolymer_report_pass(
+        poly_runs, variants, read_results, coverage_ranges)
+    conclusion, cds_reports, mixed_profiles = _build_conclusion(
+        read_results, variants, mixed_corroboration, edge_ambiguous_reads,
+        consensus, coverage_ranges, coverage_gaps, homopolymer_report,
+        ref, features)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
