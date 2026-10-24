@@ -20,6 +20,8 @@ help:
 	@echo "  make dev-frontend - 启动前端 (3000)"
 	@echo "  make test         - 运行后端测试"
 	@echo "  make clean        - 清理临时文件"
+	@echo "  make backup       - 备份数据库（deploy/BACKUP.md）"
+	@echo "  make restore F=... - 恢复数据库"
 	@echo ""
 	@echo "Docker 命令:"
 	@echo "  make docker-up    - 启动 Docker 服务"
@@ -53,6 +55,14 @@ clean:
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.log" -delete
+
+# 备份/恢复（见 deploy/BACKUP.md）
+backup:
+	bash deploy/scripts/backup.sh
+
+restore:
+	@if [ -z "$(F)" ]; then echo "用法: make restore F=data/backups/xxx.db.gz"; exit 2; fi
+	bash deploy/scripts/restore.sh $(F)
 
 # Docker（compose 文件在 deploy/docker/）
 docker-up:
