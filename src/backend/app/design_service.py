@@ -38,25 +38,11 @@ class ConstructAssembly:
     junction: str = ""
 
 
-_vector_library_cache = None
-
-
-def get_vector_library():
-    """进程级载体库缓存。"""
-    global _vector_library_cache
-    if _vector_library_cache is None:
-        from core.vector_library import VectorLibrary
-
-        lib = VectorLibrary()
-        lib.load_from_directory(settings.VECTORS_DIR)
-        _vector_library_cache = lib
-    return _vector_library_cache
-
-
-def invalidate_vector_library_cache() -> None:
-    global _vector_library_cache
-    _vector_library_cache = None
-
+# 载体库进程级缓存迁到 app.vector_library_cache（多个路由模块只为此
+# import 本模块）；这里保留同名 re-export，既有导入路径不变
+from app.vector_library_cache import (  # noqa: F401
+    get_vector_library, invalidate_vector_library_cache,
+)
 
 def ensure_vector_backbone(vector) -> str:
     """确保载体有可用骨架序列；YAML 无 sequence 时用特征拼出占位骨架。"""
