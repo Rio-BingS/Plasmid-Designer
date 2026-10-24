@@ -9,6 +9,7 @@ uvicorn[standard]==0.52.4
 python-multipart==0.0.32
 
 # Database（STORAGE_MODE=database 时使用；本地开发默认 SQLite，无需额外驱动）
+alembic==1.20.1
 sqlalchemy==2.0.52
 psycopg2-binary==2.9.12
 redis==8.1.0
