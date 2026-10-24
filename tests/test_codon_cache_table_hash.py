@@ -25,7 +25,12 @@ _AA = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSL
 def tables(tmp_path, monkeypatch):
     d = tmp_path / "codon_tables"
     shutil.copytree(TABLES, d)
-    monkeypatch.setattr(settings, "CODON_TABLES_DIR", str(d))
+    # core._codon_tables_dir 走 core.paths（环境变量 → .env → 默认值），不再读 settings
+    monkeypatch.setenv("CODON_TABLES_DIR", str(d))
+    # 隔离守门：注入未生效时上面的用例会静默改到真实 data/codon_tables/
+    # （该文件曾被累积写入 "# edited" 标记），必须在此失败而不是改坏数据
+    from core.codon_optimizer import _codon_tables_dir
+    assert _codon_tables_dir() == d, "CODON_TABLES_DIR 注入未生效，测试将污染真实数据文件"
     cache.backend.clear_pattern("codon_opt:*")
     yield d
     cache.backend.clear_pattern("codon_opt:*")

@@ -20,7 +20,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
-from app.config import settings
+
+from core import paths as core_paths
 
 
 @dataclass
@@ -272,8 +273,8 @@ class GenBankImporter:
 class VectorLibraryManager:
     """载体库管理器 - 统一接口"""
     
-    def __init__(self, data_dir: str = settings.VECTORS_DIR):
-        self.data_dir = data_dir
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = data_dir or str(core_paths.vectors_dir())
         self.ncbi = NCBIClient()
         self.addgene = AddgeneClient()
         self.genbank = GenBankImporter()

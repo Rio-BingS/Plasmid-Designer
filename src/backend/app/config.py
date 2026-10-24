@@ -6,14 +6,12 @@ import sys
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 项目根目录：src/backend 的父级，即 plasmid-designer-v2/
-PROJECT_ROOT = Path(__file__).resolve().parents[3]  # config.py -> app -> backend -> src -> project_root
-BACKEND_DIR = Path(__file__).resolve().parents[1]  # config.py -> app -> backend
-
 # 确保 core 包可被导入
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+_BACKEND_DIR = Path(__file__).resolve().parents[1]  # config.py -> app -> backend
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
+from core.paths import BACKEND_DIR, PROJECT_ROOT  # noqa: E402  路径单一来源（core 不得反向 import app）
 from core._version import __version__ as _VERSION  # noqa: E402  版本号单一来源
 
 DATA_DIR_DEFAULT = str(PROJECT_ROOT / "data")
