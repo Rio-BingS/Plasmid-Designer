@@ -126,8 +126,8 @@ async function handleRegister() {
     )
     if (result.requires_verification) {
       enterVerifyMode(
-        result.verify_token,
-        result.email,
+        result.verify_token ?? '',
+        result.email ?? '',
         result.mail_sent
           ? `验证码已发送至 ${result.email}，请查收邮箱完成验证`
           : '验证码邮件发送失败，请点击"重新发送"重试'

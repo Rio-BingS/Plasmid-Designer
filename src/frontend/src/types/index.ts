@@ -195,3 +195,136 @@ export interface CodonTable {
   file: string
   species?: string
 }
+
+// ==================== 认证 / 用户（对齐 app/auth/jwt_auth.py 与 auth/routes.py） ====================
+
+export interface UserInfo {
+  id: string
+  email: string
+  username: string
+  is_active?: boolean
+  is_admin?: boolean
+  email_verified?: boolean
+  /** 个人功能权限覆盖（null = 跟随层级默认） */
+  allowed_features?: string[] | null
+  batch_max_reads_per_group?: number | null
+  batch_max_total_reads?: number | null
+}
+
+/** 登录 / 注册 / 邮箱验证的令牌响应（RegisterResponse 与 Token 同形） */
+export interface AuthTokenResponse {
+  access_token: string | null
+  token_type: string
+  expires_in: number
+  user: UserInfo | null
+  requires_verification?: boolean
+  verify_token?: string | null
+  email?: string | null
+  mail_sent?: boolean
+}
+
+// ==================== 批量设计（对齐 BatchDesignRequest / BatchProgressResponse） ====================
+
+export type BatchDesignRequestPayload = Partial<Omit<DesignRequest, 'sequence' | 'sequence_name'>> & {
+  sequences: string[]
+  sequence_names?: string[] | null
+}
+
+/** POST /vectors/import/ncbi（按关键词导入共享载体库） */
+export interface NcbiImportResult {
+  imported: number
+  query: string
+}
+
+/** POST /vectors/import/ncbi-id（按 ID 导入单条） */
+export interface NcbiIdImportResult {
+  success: boolean
+  seq_id?: string
+  error?: string
+}
+
+/** GET /auth/verify（令牌复查：无效不 401，返回 valid=false） */
+export interface VerifyTokenResponse {
+  valid: boolean
+  user: UserInfo | null
+}
+
+export interface BatchDesignError {
+  index?: number
+  sequence_name?: string
+  error: string
+}
+
+/** POST /api/batch/design 的响应（BatchDesignStatus） */
+export interface BatchStatus {
+  batch_id: string
+  total: number
+  completed: number
+  failed: number
+  status: string
+  results: string[]
+  errors: BatchDesignError[]
+}
+
+/** GET /api/batch/design/{batch_id}/progress 的响应（BatchProgressResponse） */
+export interface BatchProgress {
+  batch_id: string
+  total: number
+  completed: number
+  failed: number
+  pending: number
+  status: string
+  progress_percent: number
+  results: Record<string, unknown>[]
+  errors: BatchDesignError[]
+}
+
+// ==================== 载体导入 / 搜索（对齐 routes/vector_routes.py） ====================
+
+export interface NcbiSearchResult {
+  query: string
+  count: number
+  results: { id: string; url: string }[]
+}
+
+export interface VectorPreview {
+  id: string
+  name: string
+  source: string
+  length: number
+  description: string
+  gc_content: number
+  features_count: number
+  warnings: string[]
+}
+
+export interface VectorUploadResult {
+  success: boolean
+  vector: { id: string; name: string; length: number; features: DesignVectorFeature[] }
+  replaced?: boolean
+  warnings: string[]
+}
+
+export interface BatchImportResult {
+  ncbi: string[]
+  files: string[]
+  errors: string[]
+}
+
+export interface DeleteVectorResult {
+  success: boolean
+  message?: string
+}
+
+// ==================== 缓存（对齐 app/cache_routes.py） ====================
+
+export interface CacheInfo {
+  backend?: string
+  [key: string]: unknown
+}
+
+export interface CacheClearResult {
+  cleared?: number
+  pattern?: string
+  [key: string]: unknown
+}
