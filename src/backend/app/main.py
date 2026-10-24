@@ -176,7 +176,7 @@ from app.rate_limit_routes import router as rate_limit_router
 from app.analysis_routes import router as analysis_router
 from app.routes.map_routes import router as map_router
 from app.routes.map_online_routes import router as map_online_router
-from app.routes.sequencing_routes import router as sequencing_router
+from app.routes.sequencing_endpoints import router as sequencing_router
 from app.routes.sequencing_session_routes import router as sequencing_session_router
 from app.admin_routes import router as admin_router
 from app.gating import require_feature, require_any_feature
