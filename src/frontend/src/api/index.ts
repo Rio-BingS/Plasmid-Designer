@@ -1,8 +1,12 @@
 import axios from 'axios'
 import { currentAuthEpoch, notifySessionExpired } from './session'
 import type {
-  DesignRequest, DesignResult, DesignVectorInput, DesignVectorPayload, InsertDirection,
-  RestrictionPreview, VectorInfo, CodonTable
+  AuthTokenResponse, BatchDesignRequestPayload, BatchImportResult, BatchProgress,
+  BatchStatus, CacheClearResult, CacheInfo, DeleteVectorResult, DesignRequest,
+  DesignResult, DesignVectorInput, DesignVectorPayload, InsertDirection,
+  NcbiIdImportResult, NcbiImportResult, NcbiSearchResult, RestrictionPreview,
+  UserInfo, VectorInfo, VectorPreview, VerifyTokenResponse,
+  VectorUploadResult, CodonTable
 } from '@/types'
 import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
@@ -221,47 +225,47 @@ export async function getCodonTables(): Promise<CodonTable[]> {
 // 载体/设计图谱（MapDocument）见 map/api.ts 的 getVectorMap / getDesignMap
 
 // NCBI 搜索
-export async function searchNcbi(query: string, limit: number = 10): Promise<any> {
+export async function searchNcbi(query: string, limit: number = 10): Promise<NcbiSearchResult> {
   const response = await api.get('/vectors/search/ncbi', { params: { query, limit } })
   return response.data
 }
 
 // NCBI 导入
-export async function importFromNcbi(query: string, limit: number = 5): Promise<any> {
+export async function importFromNcbi(query: string, limit: number = 5): Promise<NcbiImportResult> {
   const response = await api.post('/vectors/import/ncbi', null, { params: { query, limit } })
   return response.data
 }
 
 // NCBI ID 直接导入
-export async function importFromNcbiId(seqId: string): Promise<any> {
+export async function importFromNcbiId(seqId: string): Promise<NcbiIdImportResult> {
   const response = await api.post('/vectors/import/ncbi-id', null, { params: { seq_id: seqId } })
   return response.data
 }
 
 // NCBI 预览
-export async function previewNcbi(seqId: string): Promise<any> {
+export async function previewNcbi(seqId: string): Promise<VectorPreview> {
   const response = await api.get(`/vectors/preview/ncbi/${encodeURIComponent(seqId)}`)
   return response.data
 }
 
 // 删除载体
-export async function deleteVector(vectorId: string): Promise<any> {
+export async function deleteVector(vectorId: string): Promise<DeleteVectorResult> {
   const response = await api.delete(`/vectors/${encodeURIComponent(vectorId)}`)
   return response.data
 }
 
 // 批量设计
-export async function submitBatchDesign(request: any): Promise<any> {
+export async function submitBatchDesign(request: BatchDesignRequestPayload): Promise<BatchStatus> {
   const response = await api.post('/design/batch', request)
   return response.data
 }
 
-export async function getBatchProgress(batchId: string): Promise<any> {
+export async function getBatchProgress(batchId: string): Promise<BatchProgress> {
   const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}`)
   return response.data
 }
 
-export async function getBatchReport(batchId: string): Promise<any> {
+export async function getBatchReport(batchId: string): Promise<Record<string, unknown>> {
   const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}/report`)
   return response.data
 }
@@ -282,7 +286,7 @@ export async function getVectorSequence(vectorId: string, format: string = 'fast
 }
 
 // 上传载体文件导入
-export async function uploadVectorFile(file: File): Promise<any> {
+export async function uploadVectorFile(file: File): Promise<VectorUploadResult> {
   const formData = new FormData()
   formData.append('file', file)
   const response = await api.post('/vectors/import/upload', formData)
@@ -359,7 +363,7 @@ export async function updateVector(vectorId: string, data: {
 }
 
 // 批量导入载体
-export async function batchImportVectors(ncbiIds: string[], filePaths: string[] = []): Promise<any> {
+export async function batchImportVectors(ncbiIds: string[], filePaths: string[] = []): Promise<BatchImportResult> {
   const response = await api.post('/vectors/import/batch', {
     ncbi_ids: ncbiIds,
     file_paths: filePaths
@@ -540,13 +544,13 @@ export async function saveMapAsVector(payload: {
 }
 
 // 获取缓存信息
-export async function getCacheInfo(): Promise<any> {
+export async function getCacheInfo(): Promise<CacheInfo> {
   const response = await api.get('/cache/stats')
   return response.data
 }
 
 // 清除缓存
-export async function clearCache(): Promise<any> {
+export async function clearCache(): Promise<CacheClearResult> {
   const response = await api.post('/cache/clear')
   return response.data
 }
@@ -634,12 +638,12 @@ export async function getEnzymes(): Promise<{
   return response.data
 }
 // 用户认证
-export async function login(email: string, password: string): Promise<any> {
+export async function login(email: string, password: string): Promise<AuthTokenResponse> {
   const response = await api.post('/auth/login', { email, password })
   return response.data
 }
 
-export async function register(email: string, username: string, password: string, confirmPassword: string): Promise<any> {
+export async function register(email: string, username: string, password: string, confirmPassword: string): Promise<AuthTokenResponse> {
   const response = await api.post('/auth/register', {
     email,
     username,
@@ -649,7 +653,7 @@ export async function register(email: string, username: string, password: string
   return response.data
 }
 
-export async function getCurrentUser(): Promise<any> {
+export async function getCurrentUser(): Promise<UserInfo | null> {
   try {
     const response = await api.get('/auth/me')
     return response.data
@@ -658,13 +662,13 @@ export async function getCurrentUser(): Promise<any> {
   }
 }
 
-export async function verifyToken(): Promise<any> {
+export async function verifyToken(): Promise<VerifyTokenResponse> {
   const response = await api.get('/auth/verify')
   return response.data
 }
 
 // 用户登出
-export async function logout(): Promise<any> {
+export async function logout(): Promise<void> {
   const response = await api.post('/auth/logout')
   return response.data
 }

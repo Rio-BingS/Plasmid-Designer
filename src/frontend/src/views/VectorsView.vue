@@ -179,7 +179,7 @@ async function handleBatchImport() {
     batchImporting.value = true
     batchResult.value = ''
     const result = await batchImportVectors(ids)
-    batchResult.value = `成功导入 ${result.imported_ncbi} 个载体` +
+    batchResult.value = `成功导入 ${result.ncbi.length} 个载体` +
       (result.errors.length > 0 ? `，${result.errors.length} 个失败` : '')
     await loadVectors()
   } catch (e: any) {
