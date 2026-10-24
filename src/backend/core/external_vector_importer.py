@@ -9,6 +9,7 @@
 5. Benchling 导出格式
 """
 
+import logging
 import os
 import re
 import json
@@ -22,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core import paths as core_paths
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,7 +75,7 @@ class NCBIClient:
                 self.last_request_time = time.time()
                 return response.read().decode('utf-8')
         except urllib.error.URLError as e:
-            print(f"NCBI API 请求失败: {e}")
+            logger.warning("NCBI API 请求失败: %s", e)
             return None
     
     def search(self, query: str, database: str = "nucleotide", limit: int = 20) -> List[str]:
@@ -266,7 +269,7 @@ class GenBankImporter:
                 try:
                     vectors.append(self.import_file(str(file)))
                 except Exception as e:
-                    print(f"Error importing {file}: {e}")
+                    logger.warning("GenBank 导入失败 %s: %s", file, e)
         return vectors
 
 
