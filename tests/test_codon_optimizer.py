@@ -446,3 +446,11 @@ def test_cai_zero_frequency_codon_does_not_crash():
     cai = optimizer._calculate_cai("AAA" * 5, "K" * 5)
     assert 0.0 < cai <= 1.0
 
+
+
+def test_translate_dna_matches_seq_utils_translate():
+    """回归锁：translate_dna 收敛到 core.seq_utils.translate 唯一实现后，
+    语义不变（终止密码子保留 '*'、未识别密码子 'X'、尾部不完整密码子忽略）"""
+    from core.seq_utils import translate
+    for dna in ("ATGAAATAG", "ATGNNNTAA", "ATGAA", "atgtag", "ATGAAAUAA"):
+        assert translate_dna(dna) == translate(dna, stop_at_stop=False)
