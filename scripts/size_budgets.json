@@ -1,0 +1,11 @@
+{
+  "src/backend/app/design_service.py": 1192,
+  "src/backend/app/routes/sequencing_routes.py": 960,
+  "src/backend/core/clone_strategy.py": 1022,
+  "src/backend/core/codon_optimizer.py": 935,
+  "src/backend/core/primer_designer.py": 971,
+  "src/backend/core/sanger/pipeline.py": 3699,
+  "src/frontend/src/composables/useSeqViz.ts": 963,
+  "src/frontend/src/map/components/CircularMap.vue": 929,
+  "src/frontend/src/views/DesignView.vue": 994
+}

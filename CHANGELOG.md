@@ -8,6 +8,23 @@
 
 ## [Unreleased]
 
+### 变更
+- 按审查方案完成大文件拆分（全部为纯搬运，行为不变）：
+  - 前端 API 层 `api/index.ts`（1333 行）按域拆为 10 个模块，`index.ts`
+    保留 re-export 兼容层，`from '@/api'` 调用方零改动；
+  - 测序端点从 `app/routes/sequencing_routes.py` 迁到
+    `sequencing_endpoints.py`（helper/存储/常量留在原处——12 个测试文件
+    以其为 patch 面、会话路由以 `sr._batch_pipeline` 复用，零测试改动）；
+  - 载体库页 `VectorsView.vue`（1249 → 803 行）：在线来源逻辑抽为
+    `composables/useOnlineImport.ts`，上传/批量导入/编辑对话框抽为
+    `components/Vector*Modal.vue`（defineModel 共享开关）；
+  - 引物设计类外基础层（Tm 模型/数据类/筛查规则）迁到
+    `core/primer_base.py`，`primer_designer` 保留 re-export；
+  - 载体库进程级缓存独立为 `app/vector_library_cache.py`（多路由此前
+    只为它 import 整个 design_service）。
+- 新增 `scripts/check_file_size.py` 文件尺寸预算并挂进 CI：新文件
+  ≤900 行，历史大文件按 `scripts/size_budgets.json` 记账、只许变小。
+
 ### 升级注意
 - 引入 Alembic 管理数据库结构迁移（`docs/MIGRATIONS.md`）：存量部署升级后
   在 src/backend 下执行一次 `python -m alembic -c alembic.ini stamp head`
