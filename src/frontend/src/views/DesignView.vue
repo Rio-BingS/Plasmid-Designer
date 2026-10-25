@@ -783,16 +783,17 @@ function loadExample() {
           </div>
           <template v-if="gibsonLinearization === 'custom_arms'">
             <div class="form-group">
-              <label class="form-label">5′ 重组臂（基因 5′ 端上游的载体同源序列）</label>
-              <input v-model="customArm5" class="form-input" placeholder="粘贴臂序列（15-200bp，正反方向均可）" />
+              <label class="form-label">同源臂 ①（顺序无关）</label>
+              <input v-model="customArm5" class="form-input" placeholder="粘贴载体同源区序列（15-200bp，正反方向均可）" />
             </div>
             <div class="form-group">
-              <label class="form-label">3′ 重组臂（基因 3′ 端下游的载体同源序列）</label>
-              <input v-model="customArm3" class="form-input" placeholder="粘贴臂序列（15-200bp，正反方向均可）" />
+              <label class="form-label">同源臂 ②（顺序无关）</label>
+              <input v-model="customArm3" class="form-input" placeholder="粘贴载体同源区序列（15-200bp，正反方向均可）" />
             </div>
             <p class="hint-text">
-              两条臂按同一方向粘贴即可：工具把整条插入分子（臂5+基因+臂3）按两种取向
-              在载体上定位，唯一匹配才有效。臂必须与载体完全同源（15-200bp）。
+              两条臂的填写顺序与粘贴方向都不影响结果（与填两把酶切位点一样）：
+              工具按载体位置自动分左右，按启动子方向自动定装配链向——贴反了会
+              自动纠正并在预览里说明。臂必须与载体完全同源（15-200bp）。
             </p>
             <p class="hint-text">
               预览会即时判定拼接定位：两臂各锚定在哪、能否唯一围出插入区间、基因按
