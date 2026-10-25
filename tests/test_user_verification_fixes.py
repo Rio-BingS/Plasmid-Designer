@@ -183,3 +183,82 @@ def test_restriction_preview_default_unchanged():
         enzymes=["NdeI", "XhoI"], vector_id="pET-28a", insert_length=111))
     assert len(pv["sites"]) == 2
     assert pv["strand"] == "-"
+
+
+# ---------- 6. 自定义同源臂：预览与拼接定位判定 ----------
+
+ARM5 = "GGTGGTGGTACGTACTG"      # 17bp，锚在载体 21..37
+ARM3 = "TTATCCACAGGACTCAGT"     # 18bp，锚在载体 68..85
+ARMS_BB = "A" * 20 + ARM5 + "C" * 30 + ARM3 + "T" * 20
+
+
+def _arms_inline_vector():
+    from app.schemas import DesignVectorInput
+    return DesignVectorInput(id="armtest", name="armtest", sequence=ARMS_BB,
+                             topology="circular")
+
+
+def test_arms_preview_locates_and_shows_strand():
+    """同源臂预览：基因落在两臂之间（30bp C 区被替换），正链装配"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_inline_vector(), insert_length=120,
+        cloning_method="custom_arms", homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "+"
+    assert pv["gene"]["start"] == 38          # 臂5 末端 37 之后
+    assert pv["removed_bp"] == 30             # 中间的 C*30 被替换
+    assert pv["construct_length"] == len(ARMS_BB) - 30 + 120
+    assert pv["sites"] == []                  # 无切点几何，不画酶切线
+    assert pv["gene_5prime_enzyme"].startswith("臂5")
+    assert pv["gene_3prime_enzyme"].startswith("臂3")
+
+
+def test_arms_preview_reverse_orientation():
+    """臂按负链取向（反向互补匹配）：预览判为负链装配。
+    负链装配要求臂5 的锚点在右：镜像骨架（臂3 在左、臂5 在右）+ 臂取反向互补"""
+    from core.seq_utils import revcomp
+    mirrored = "A" * 20 + ARM3 + "C" * 30 + ARM5 + "T" * 20
+    from app.schemas import DesignVectorInput
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=DesignVectorInput(id="mir", name="mir", sequence=mirrored,
+                                 topology="circular"),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=revcomp(ARM5), homology_arm_3=revcomp(ARM3)))
+    assert pv["strand"] == "-"
+
+
+def test_arms_preview_swapped_arms_fails_loudly():
+    """两臂贴反（5′/3′ 位置互换）：预览直接报错给出原因——拼接顺序的判断"""
+    import pytest
+    with pytest.raises(ValueError) as exc:
+        build_restriction_preview(RestrictionPreviewRequest(
+            vector=_arms_inline_vector(), insert_length=120,
+            cloning_method="custom_arms", homology_arm_5=ARM3,
+            homology_arm_3=ARM5))
+    assert "围出插入区间" in str(exc.value)
+
+
+def test_arms_preview_unknown_arm_fails_loudly():
+    import pytest
+    with pytest.raises(ValueError) as exc:
+        build_restriction_preview(RestrictionPreviewRequest(
+            vector=_arms_inline_vector(), insert_length=120,
+            cloning_method="custom_arms", homology_arm_5="ACGT" * 5,
+            homology_arm_3=ARM3))
+    assert "无精确匹配" in str(exc.value)
+
+
+def test_arms_design_reports_splice_position():
+    """正式设计结果里也有拼接定位说明（锚点、替换量、装配链向）"""
+    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
+    result = run_design("uvf_arms", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CloningMethod.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    splice = [w for w in result.warnings if w.startswith("拼接定位")]
+    assert splice, "同源臂设计必须给出拼接定位说明"
+    assert "臂5 末端 37" in splice[0]
+    assert "正链" in splice[0]
