@@ -12,7 +12,16 @@ import {
   previewEnsembl, previewSnapgene, searchAddgeneIndex, searchSnapgene,
   searchUniprot, gatewayErrorText,
 } from '@/api'
-import type { OnlinePreview, OnlineSourceInfo, UniProtNucleotide } from '@/api'
+import type {
+  AddgeneIndexRow, AddgeneMetadata, OnlinePreview, OnlineSourceInfo,
+  SnapgenePlasmidRow, UniProtEntry, UniProtNucleotide,
+} from '@/api'
+
+/** 统一的错误消息提取（网关文案 → 后端 detail → 异常 message → 兜底） */
+function errTextOf(e: unknown, fallback: string): string {
+  const err = e as { response?: { data?: { detail?: string } }; message?: string }
+  return gatewayErrorText(e) || err?.response?.data?.detail || err?.message || fallback
+}
 
 export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Promise<void> | void }) {
   const { loggedIn, reload } = opts
@@ -27,7 +36,7 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
   // SnapGene 在线库
   const sgSets = ref<{ set_id: string; name: string }[]>([])
   const sgSetId = ref('')
-  const sgRows = ref<any[]>([])
+  const sgRows = ref<SnapgenePlasmidRow[]>([])
   const sgLoading = ref(false)
   const sgError = ref('')
   /** 非空 = 正在显示跨集合搜索结果（集合框里输入的是质粒名） */
@@ -44,8 +53,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
   const ensemblLoading = ref(false)
   // Addgene
   const addgeneTerm = ref('')
-  const addgeneRows = ref<any[]>([])
-  const addgeneMeta = ref<any>(null)
+  const addgeneRows = ref<AddgeneIndexRow[]>([])
+  const addgeneMeta = ref<AddgeneMetadata | null>(null)
   const addgeneError = ref('')
   const addgeneLoading = ref(false)
   // Addgene 全长序列导入（需管理员 + 后端已配置用户自备会话）
@@ -55,8 +64,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
   // UniProt（蛋白库反查：条目 → 核酸交叉引用 → 去 NCBI/Ensembl 取 DNA）
   const uniprotQuery = ref('')
   const uniprotReviewed = ref(false)
-  const uniprotRows = ref<any[]>([])
-  const uniprotEntry = ref<any>(null)
+  const uniprotRows = ref<UniProtEntry[]>([])
+  const uniprotEntry = ref<UniProtEntry | null>(null)
   const uniprotNucleotide = ref<UniProtNucleotide[]>([])
   const uniprotError = ref('')
   const uniprotLoading = ref(false)
@@ -72,10 +81,6 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
   // 部署方是否配了 Addgene 会话（决定「导入为本地载体」按钮是否可用）
   const addgeneSession = computed(
     () => onlineSources.value.find(s => s.id === 'addgene')?.session_configured === true)
-
-  function errText(e: any, fallback: string): string {
-    return gatewayErrorText(e) || e?.response?.data?.detail || e?.message || fallback
-  }
 
   async function ensureOnlineSources() {
     if (onlineSources.value.length) return
@@ -105,8 +110,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       sgSets.value = res.sets || []
       if (!sgSetId.value && sgSets.value.length) sgSetId.value = sgSets.value[0].set_id
       if (sgSetId.value) await loadSnapgeneIndex()
-    } catch (e: any) {
-      sgError.value = errText(e, '在线库集合加载失败')
+    } catch (e) {
+      sgError.value = errTextOf(e, '在线库集合加载失败')
     } finally {
       sgLoading.value = false
     }
@@ -124,8 +129,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
     try {
       const res = await getSnapgeneSetIndex(sgSetId.value)
       if (gen === sgIndexGen) sgRows.value = res.plasmids || []
-    } catch (e: any) {
-      if (gen === sgIndexGen) sgError.value = errText(e, '集合索引加载失败')
+    } catch (e) {
+      if (gen === sgIndexGen) sgError.value = errTextOf(e, '集合索引加载失败')
     } finally {
       if (gen === sgIndexGen) sgLoading.value = false
     }
@@ -141,30 +146,30 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
     try {
       const res = await searchSnapgene(q)
       if (gen === sgIndexGen) sgRows.value = res.plasmids || []
-    } catch (e: any) {
-      if (gen === sgIndexGen) sgError.value = errText(e, '搜索失败')
+    } catch (e) {
+      if (gen === sgIndexGen) sgError.value = errTextOf(e, '搜索失败')
     } finally {
       if (gen === sgIndexGen) sgLoading.value = false
     }
   }
 
-  function rowSetId(row: any): string {
+  function rowSetId(row: SnapgenePlasmidRow): string {
     return row?.set_id || sgSetId.value
   }
 
-  async function openSnapgenePreview(row: any) {
+  async function openSnapgenePreview(row: SnapgenePlasmidRow) {
     onlineMsg.value = ''
     try {
       sgPreviewSetId.value = rowSetId(row)
       onlinePreview.value = await previewSnapgene(sgPreviewSetId.value, row.plasmid_id)
       showOnlinePreview.value = true
-    } catch (e: any) {
-      onlineMsg.value = `预览失败: ${errText(e, '')}`
+    } catch (e) {
+      onlineMsg.value = `预览失败: ${errTextOf(e, '')}`
     }
   }
 
   /** 列表里直接导入（省去预览一步） */
-  async function importSnapgeneRow(row: any) {
+  async function importSnapgeneRow(row: SnapgenePlasmidRow) {
     if (onlineImporting.value) return
     onlineImporting.value = true
     onlineMsg.value = ''
@@ -172,8 +177,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       const res = await importFromSnapgene(rowSetId(row), row.plasmid_id)
       onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp）`
       await reload()
-    } catch (e: any) {
-      onlineMsg.value = `导入失败: ${errText(e, '')}`
+    } catch (e) {
+      onlineMsg.value = `导入失败: ${errTextOf(e, '')}`
     } finally {
       onlineImporting.value = false
     }
@@ -186,8 +191,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
     try {
       onlinePreview.value = await previewEnsembl(ensemblId.value.trim(), ensemblType.value)
       showOnlinePreview.value = true
-    } catch (e: any) {
-      onlineMsg.value = `预览失败: ${errText(e, '')}`
+    } catch (e) {
+      onlineMsg.value = `预览失败: ${errTextOf(e, '')}`
     } finally {
       ensemblLoading.value = false
     }
@@ -209,8 +214,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       }
       showOnlinePreview.value = false
       await reload()
-    } catch (e: any) {
-      onlineMsg.value = `导入失败: ${errText(e, '')}`
+    } catch (e) {
+      onlineMsg.value = `导入失败: ${errTextOf(e, '')}`
     } finally {
       onlineImporting.value = false
     }
@@ -226,8 +231,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       const res = await searchAddgeneIndex(addgeneTerm.value.trim())
       addgeneRows.value = res.results || []
       if (addgeneRows.value.length === 0) addgeneError.value = res.note || '本地索引无命中'
-    } catch (e: any) {
-      addgeneError.value = errText(e, 'Addgene 搜索失败')
+    } catch (e) {
+      addgeneError.value = errTextOf(e, 'Addgene 搜索失败')
     } finally {
       addgeneLoading.value = false
     }
@@ -239,8 +244,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
     addgeneMeta.value = null
     try {
       addgeneMeta.value = await getAddgeneMetadata(id, addgeneSession.value)
-    } catch (e: any) {
-      addgeneError.value = errText(e, 'Addgene 元数据查询失败')
+    } catch (e) {
+      addgeneError.value = errTextOf(e, 'Addgene 元数据查询失败')
     } finally {
       addgeneLoading.value = false
     }
@@ -257,8 +262,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       const res = await importFromAddgene(pid)
       onlineMsg.value = `已导入 ${res.vector.name}（${res.vector.length} bp，${res.vector.features} 个特征）`
       await reload()
-    } catch (e: any) {
-      addgeneError.value = `导入失败: ${errText(e, '')}`
+    } catch (e) {
+      addgeneError.value = `导入失败: ${errTextOf(e, '')}`
     } finally {
       addgeneImporting.value = false
     }
@@ -278,8 +283,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       const res = await searchUniprot(q, 10, uniprotReviewed.value)
       uniprotRows.value = res.results || []
       if (uniprotRows.value.length === 0) uniprotError.value = 'UniProt 无命中'
-    } catch (e: any) {
-      uniprotError.value = errText(e, 'UniProt 检索失败')
+    } catch (e) {
+      uniprotError.value = errTextOf(e, 'UniProt 检索失败')
     } finally {
       uniprotLoading.value = false
     }
@@ -295,8 +300,8 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
       const res = await getUniprotEntry(accession)
       uniprotEntry.value = res.entry
       uniprotNucleotide.value = res.nucleotide || []
-    } catch (e: any) {
-      uniprotError.value = errText(e, 'UniProt 条目查询失败')
+    } catch (e) {
+      uniprotError.value = errTextOf(e, 'UniProt 条目查询失败')
     } finally {
       uniprotLoading.value = false
     }

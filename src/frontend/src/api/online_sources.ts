@@ -91,6 +91,32 @@ export interface OnlinePreview {
   license: string
 }
 
+/** SnapGene 在线库一行质粒（集合索引与跨集合搜索共用；搜索结果带 set_id/set_name） */
+export interface SnapgenePlasmidRow {
+  plasmid_id: string
+  name?: string
+  set_id?: string
+  set_name?: string
+  url?: string
+  [key: string]: unknown
+}
+
+/** Addgene 本地索引一行（只读展示；导入按 id 走用户自备会话） */
+export interface AddgeneIndexRow {
+  id: string
+  name?: string
+  [key: string]: unknown
+}
+
+/** Addgene 元数据查询结果（getAddgeneMetadata） */
+export interface AddgeneMetadata {
+  plasmid_id?: string
+  metadata?: Record<string, unknown>
+  note?: string
+  [key: string]: unknown
+}
+
+
 export async function getOnlineSources(): Promise<{
   enabled: boolean
   /** SnapGene 在线库开关（默认 false）；开启后也只对已登录用户开放 */
@@ -107,13 +133,13 @@ export async function getSnapgeneSets(): Promise<{ count: number; sets: { set_id
   return response.data
 }
 
-export async function getSnapgeneSetIndex(setId: string): Promise<{ set_id: string; count: number; plasmids: any[] }> {
+export async function getSnapgeneSetIndex(setId: string): Promise<{ set_id: string; count: number; plasmids: SnapgenePlasmidRow[] }> {
   const response = await api.get(`/vectors/import/snapgene/sets/${encodeURIComponent(setId)}`)
   return response.data
 }
 
 export async function searchSnapgene(q: string): Promise<{
-  query: string; count: number; truncated: boolean; plasmids: any[]; failed_sets: string[]
+  query: string; count: number; truncated: boolean; plasmids: SnapgenePlasmidRow[]; failed_sets: string[]
 }> {
   const response = await api.get('/vectors/import/snapgene/search', { params: { q }, timeout: 90_000 })
   return response.data

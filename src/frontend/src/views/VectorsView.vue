@@ -47,7 +47,7 @@ const downloadingId = ref('')
 
 // NCBI 搜索
 const ncbiQuery = ref('')
-const ncbiResults = ref<any[]>([])
+const ncbiResults = ref<{ id: string; url: string }[]>([])
 const ncbiSearching = ref(false)
 const previewData = ref<any>(null)
 const showPreviewModal = ref(false)
@@ -82,8 +82,8 @@ async function handleDelete(vectorId: string, event: Event) {
   try {
     await deleteVector(vectorId)
     await loadVectors()
-  } catch (e: any) {
-    alert(`删除失败: ${e.response?.data?.detail || e.message}`)
+  } catch (e) {
+    alert(`删除失败: ${(e as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail || (e as Error).message}`)
   }
 }
 
@@ -95,8 +95,8 @@ async function downloadSequence(vectorId: string, format: string, event: Event) 
     const content = await getVectorSequence(vectorId, format)
     const ext = format === 'genbank' ? 'gb' : 'fasta'
     downloadTextFile(content, `${vectorId}.${ext}`)
-  } catch (e: any) {
-    alert(`下载失败: ${e.response?.data?.detail || e.message}`)
+  } catch (e) {
+    alert(`下载失败: ${(e as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail || (e as Error).message}`)
   } finally {
     downloadingId.value = ''
   }
