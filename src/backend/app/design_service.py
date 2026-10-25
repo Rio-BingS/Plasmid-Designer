@@ -13,7 +13,7 @@ from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
 from core.primer_designer import screen_gg_overhang_pair
-from app.routes.models import (
+from app.schemas import (
     MAP_MAX_LENGTH,
     CloningMethod,
     DesignRequest,
