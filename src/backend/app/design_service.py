@@ -93,6 +93,12 @@ def _vector_element_dicts(vector) -> List[Dict]:
     ]
 
 
+def _vector_is_circular(vector) -> bool:
+    """载体拓扑是否环状（缺省按环状处理）"""
+    return str(getattr(vector, "topology", "circular")
+               or "circular").lower() != "linear"
+
+
 def _mcs_window(vector) -> Optional[Tuple[int, int]]:
     """MCS 区间（1-based 闭区间），供「切点是否落在多克隆位点附近」判定
 
@@ -1082,14 +1088,22 @@ def design_primers_for_method(
                 return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
             if gibson_double_digest and gibson_plan is not None:
                 # 双酶切线性化：插入分子 = 位点残留 + 基因 + 位点残留，
-                # 同源臂覆盖线性化载体末端（含各自的位点前缀）
-                fragment = gibson_plan.head + optimized_dna + gibson_plan.tail
+                # 同源臂越过切点锚定线性化载体两端。负链装配时基因取
+                # 反向互补进片段（构建体正链上是 revcomp(基因)），臂的
+                # 左右只由连接点决定、不随取向对调
+                body = optimized_dna
+                if gibson_plan.insert_reverse:
+                    from core.seq_utils import revcomp as _gene_rc
+                    body = _gene_rc(optimized_dna)
+                fragment = gibson_plan.head + body + gibson_plan.tail
                 pair = designer.design_gibson_primers(
                     fragment,
                     backbone if backbone else "N" * 5000,
                     gibson_plan.left_cut,
+                    gibson_plan.right_cut,
                     homology_arm=request.homology_arm,
                     primer_name=name,
+                    circular=_vector_is_circular(vector),
                 )
                 return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
             insert_pos = resolve_gibson_insert_pos(request, vector)
@@ -1100,6 +1114,7 @@ def design_primers_for_method(
                 insert_pos,
                 homology_arm=request.homology_arm,
                 primer_name=name,
+                circular=_vector_is_circular(vector),
             )
             return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
@@ -1407,13 +1422,19 @@ def run_design(
         gibson_double_plan = None
         if (request.cloning_method == CloningMethod.GIBSON and not gibson_single
                 and not gibson_arms_mode):
+            # 与 assemble_construct 用同一套参数重算（解析后的酶指派 +
+            # 相同 window/join/keep_sites），保证引物/方案文本与构建体
+            # 的切点、取向完全一致——用原始酶重算会在显式方向覆盖下
+            # 与实际组装各说各话
             from core.construct_assembly import plan_restriction as _plan_restriction
             gibson_double_plan = _plan_restriction(
-                backbone, request.enzyme_5 or request.enzyme,
-                request.enzyme_3 or request.enzyme,
+                backbone,
+                (resolved_ends.enzyme_5 if resolved_ends else "")
+                or (request.enzyme_5 or request.enzyme),
+                (resolved_ends.enzyme_3 if resolved_ends else "")
+                or (request.enzyme_3 or request.enzyme),
                 window=_mcs_window(vector),
-                circular=str(getattr(vector, "topology", "circular")
-                             or "circular").lower() != "linear",
+                circular=_vector_is_circular(vector),
                 warnings=[], join="gibson",
                 keep_sites=getattr(request, "keep_restriction_sites", True))
         result.primers = design_primers_for_method(
@@ -1465,8 +1486,10 @@ def run_design(
             }
             if not gibson_single:
                 strategy_kwargs.update(
-                    enzyme_5=request.enzyme_5 or request.enzyme or "",
-                    enzyme_3=request.enzyme_3 or request.enzyme or "",
+                    enzyme_5=(resolved_ends.enzyme_5 if resolved_ends else "")
+                    or request.enzyme_5 or request.enzyme or "",
+                    enzyme_3=(resolved_ends.enzyme_3 if resolved_ends else "")
+                    or request.enzyme_3 or request.enzyme or "",
                     insert_position=(gibson_double_plan.left_cut
                                      if gibson_double_plan else 0),
                 )
