@@ -174,6 +174,54 @@ class PrimerDesigner:
             annealing_temp=annealing_temp
         )
     
+    def design_custom_arm_primers(
+        self,
+        insert_seq: str,
+        arm_5: str,
+        arm_3: str,
+        primer_name: str = "gibson"
+    ) -> PrimerPair:
+        """用户自定义同源臂的 Gibson 引物。
+
+        arm_5 / arm_3 为用户提供的重组臂（基因读法方向）：正向引物 = 5′ 臂 +
+        基因前段退火区；反向引物 = 臂3 的反向互补 + 基因后段退火区。
+        插入分子（PCR 产物）= 臂5 + 基因 + 臂3，两臂与载体连接点同源。
+        """
+        insert_seq = insert_seq.upper()
+        forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
+        forward = Primer(
+            name=f"{primer_name}_F",
+            sequence=forward_annealing.sequence,
+            primer_type=PrimerType.GIBSON_FP,
+            tm=forward_annealing.tm,
+            gc_content=forward_annealing.gc_content,
+            length=forward_annealing.length,
+            target_start=forward_annealing.target_start,
+            target_end=forward_annealing.target_end,
+            overhang=arm_5.upper(),
+            notes=f"Gibson forward, user-provided {len(arm_5)}bp homology arm"
+        )
+        reverse_annealing = self._design_reverse_primer(
+            insert_seq, len(insert_seq), "temp", anchor=True)
+        reverse = Primer(
+            name=f"{primer_name}_R",
+            sequence=reverse_annealing.sequence,
+            primer_type=PrimerType.GIBSON_RP,
+            tm=reverse_annealing.tm,
+            gc_content=reverse_annealing.gc_content,
+            length=reverse_annealing.length,
+            target_start=reverse_annealing.target_start,
+            target_end=reverse_annealing.target_end,
+            overhang=self._reverse_complement(arm_3.upper()),
+            notes=f"Gibson reverse, user-provided {len(arm_3)}bp homology arm"
+        )
+        return PrimerPair(
+            forward=forward,
+            reverse=reverse,
+            product_size=len(insert_seq),
+            annealing_temp=self._calculate_annealing_temp(forward.tm, reverse.tm)
+        )
+
     def design_golden_gate_primers(
         self,
         insert_seq: str,

@@ -56,9 +56,12 @@ const insertDirection = computed<InsertDirection>(() =>
 // 开头的冗余 ATG，避免蛋白 N 端出现连续两个 Met（第一个 M 由位点提供）
 const autoTrimStartCodon = ref(true)
 // Gibson 线性化方式：双酶切（默认，主流实践）或单位点（旧模型）
-const gibsonSingleSite = ref(false)
+const gibsonLinearization = ref<'double_digest' | 'single_site' | 'custom_arms'>('double_digest')
 // 双酶切线性化时是否把位点重建回连接处（默认保留；关闭 = 无缝连接）
 const keepRestrictionSites = ref(true)
+// 自定义同源臂（custom_arms）：两条臂按同一方向粘贴，工具自动判取向
+const customArm5 = ref('')
+const customArm3 = ref('')
 // 质粒命名：序列名（默认）或加载体名前缀
 const vectorNamePrefix = ref(false)
 // 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
@@ -183,7 +186,9 @@ function currentDraft() {
     reverseInsert: reverseInsert.value,
     manualStrand: manualStrand.value,
     gibsonSite: gibsonSite.value,
-    gibsonSingleSite: gibsonSingleSite.value,
+    gibsonLinearization: gibsonLinearization.value,
+    customArm5: customArm5.value,
+    customArm3: customArm3.value,
     keepRestrictionSites: keepRestrictionSites.value,
     vectorNamePrefix: vectorNamePrefix.value,
     excludeEnzymes: [...excludeEnzymes.value],
@@ -229,7 +234,10 @@ function applyDraft(d: Record<string, any>) {
   if (typeof d.reverseInsert === 'boolean') reverseInsert.value = d.reverseInsert
   manualStrand.value = oneOf(d.manualStrand, ['', 'plus', 'minus'] as const, '')
   if (typeof d.gibsonSite === 'string') gibsonSite.value = d.gibsonSite
-  gibsonSingleSite.value = d.gibsonSingleSite === true
+  gibsonLinearization.value = oneOf(d.gibsonLinearization,
+    ['double_digest', 'single_site', 'custom_arms'] as const, 'double_digest')
+  if (typeof d.customArm5 === 'string') customArm5.value = d.customArm5
+  if (typeof d.customArm3 === 'string') customArm3.value = d.customArm3
   keepRestrictionSites.value = d.keepRestrictionSites !== false
   vectorNamePrefix.value = d.vectorNamePrefix === true
   if (Array.isArray(d.excludeEnzymes)) {
@@ -289,7 +297,9 @@ function clearForm() {
   manualStrand.value = ''
   preview.value = null
   gibsonSite.value = ''
-  gibsonSingleSite.value = false
+  gibsonLinearization.value = 'double_digest'
+  customArm5.value = ''
+  customArm3.value = ''
   keepRestrictionSites.value = true
   vectorNamePrefix.value = false
   excludeEnzymes.value = []
@@ -418,16 +428,16 @@ async function handleSubmit() {
     request.vector_name_prefix = vectorNamePrefix.value
     if (cloningMethod.value === 'gibson') {
       request.trim_redundant_start = autoTrimStartCodon.value
-      if (!gibsonSingleSite.value) {
+      request.gibson_linearization = gibsonLinearization.value
+      if (gibsonLinearization.value === 'double_digest') {
         request.keep_restriction_sites = keepRestrictionSites.value
-      }
-      if (gibsonSingleSite.value) {
-        request.gibson_linearization = 'single_site'
-        if (gibsonSite.value) request.gibson_site = gibsonSite.value
-      } else {
-        request.gibson_linearization = 'double_digest'
         request.enzyme_5 = enzyme5.value
         request.enzyme_3 = enzyme3.value
+      } else if (gibsonLinearization.value === 'single_site') {
+        if (gibsonSite.value) request.gibson_site = gibsonSite.value
+      } else {
+        request.homology_arm_5 = customArm5.value.trim()
+        request.homology_arm_3 = customArm3.value.trim()
       }
     }
     if (excludeEnzymesApplicable.value && excludeEnzymes.value.length) {
@@ -700,7 +710,7 @@ function loadExample() {
 
         <!-- Gibson 参数 -->
         <div v-if="cloningMethod === 'gibson'" class="method-params">
-          <template v-if="!gibsonSingleSite">
+          <template v-if="gibsonLinearization === 'double_digest'">
             <div class="form-group">
               <label class="form-label">线性化酶切位点一</label>
               <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
@@ -717,7 +727,7 @@ function loadExample() {
               插入片段以同源臂与载体末端连接。方向由载体表达盒自动判定。
             </p>
           </template>
-          <template v-else>
+          <template v-if="gibsonLinearization === 'single_site'">
             <div class="form-group">
               <label class="form-label">定位酶切位点（可选）</label>
               <EnzymeAutocomplete
@@ -728,11 +738,38 @@ function loadExample() {
               <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
             </div>
           </template>
-          <label class="checkbox-label">
-            <input v-model="gibsonSingleSite" type="checkbox" />
-            <span>改用单位点线性化（单切点插入，不切除载体片段）</span>
-          </label>
-          <label v-if="!gibsonSingleSite" class="checkbox-label trim-start-row">
+          <div class="form-group">
+            <label class="form-label">载体线性化方式</label>
+            <div class="direction-row">
+              <label class="checkbox-label">
+                <input v-model="gibsonLinearization" type="radio" value="double_digest" />
+                <span>双酶切线性化（默认）</span>
+              </label>
+              <label class="checkbox-label">
+                <input v-model="gibsonLinearization" type="radio" value="single_site" />
+                <span>单位点</span>
+              </label>
+              <label class="checkbox-label">
+                <input v-model="gibsonLinearization" type="radio" value="custom_arms" />
+                <span>自定义同源臂</span>
+              </label>
+            </div>
+          </div>
+          <template v-if="gibsonLinearization === 'custom_arms'">
+            <div class="form-group">
+              <label class="form-label">5′ 重组臂（基因 5′ 端上游的载体同源序列）</label>
+              <input v-model="customArm5" class="form-input" placeholder="粘贴臂序列（15-200bp，正反方向均可）" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">3′ 重组臂（基因 3′ 端下游的载体同源序列）</label>
+              <input v-model="customArm3" class="form-input" placeholder="粘贴臂序列（15-200bp，正反方向均可）" />
+            </div>
+            <p class="hint-text">
+              两条臂按同一方向粘贴即可：工具把整条插入分子（臂5+基因+臂3）按两种取向
+              在载体上定位，唯一匹配才有效。臂必须与载体完全同源（15-200bp）。
+            </p>
+          </template>
+          <label v-if="gibsonLinearization === 'double_digest'" class="checkbox-label trim-start-row">
             <input v-model="keepRestrictionSites" type="checkbox" />
             <span>保留连接处的酶切位点（关闭 = 无缝连接：同源臂越过位点，
               位点碱基被重组去除，构建体不再含 NdeI/XhoI 等位点序列）</span>
