@@ -229,15 +229,12 @@ app.add_middleware(CsrfMiddleware)
 from app.middleware import setup_middleware
 setup_middleware(app)
 
-# /api/map/* 请求体流式体积上限：边收边计数，超限直接 413（不进下游、不整体读入）；
-# 位于 CORS 之内，413 也带 CORS 头
-from app.map_body_limit import (
-    DESIGN_VECTOR_PREFIX, MapBodyLimitMiddleware, design_vector_body_limit,
-)
-app.add_middleware(MapBodyLimitMiddleware)
-# 设计页载体上传/在线导入：同一套流式体积上限（上传按文件上限，其余按 JSON 上限）
-app.add_middleware(MapBodyLimitMiddleware, limit_for=design_vector_body_limit,
-                   prefix=DESIGN_VECTOR_PREFIX)
+# /api/* 请求体流式体积上限：边收边计数，超限直接 413（不进下游、不整体读入）；
+# 位于 CORS 之内，413 也带 CORS 头。上限表覆盖 map、设计（含一次性载体）、
+# analysis、batch、auth；其余 /api/* 路径（如测序上传，自带多层上限）透传
+from app.map_body_limit import MapBodyLimitMiddleware, api_body_limit
+app.add_middleware(MapBodyLimitMiddleware, limit_for=api_body_limit,
+                   prefix=None)
 
 # CORS 中间件最后添加 = 最外层（终审 C-05）：429/5xx 响应必须带 CORS 头，
 # 否则前端 fetch 只看到 Network Error；预检 OPTIONS 也不再被内层限流计费。

@@ -126,3 +126,42 @@ def test_nginx_map_location_body_size_matches_backend_limits(conf):
     need = max(map_routes.MAP_MAX_UPLOAD_MB + 64 / 1024, map_routes.MAP_MAX_JSON_MB)
     assert need <= mb < 100  # 比通用 /api 的 100m 严，又不小于后端上限
     assert text.index("location ^~ /api/map/") < text.index("location /api {")
+
+
+# ==================== v2.19 第二轮审查：上限表推广到 analysis/batch/auth ====================
+
+def _json_chunks(total: int):
+    """无 Content-Length 的分块 JSON（chunked 传输形态），前缀使其最终可被 pydantic 拒绝"""
+    yield b'{"sequence":"'
+    sent = 0
+    while sent < total:
+        yield b"A" * 8192
+        sent += 8192
+    yield b'"}'
+
+
+def test_analysis_body_over_limit_is_413(client, monkeypatch):
+    """/api/analysis/* 超限 413：pydantic 校验发生在整体读入后，必须由中间件先挡。"""
+    import app.map_body_limit as mbl
+    monkeypatch.setattr(mbl, "ANALYSIS_JSON_BYTES", 50_000)
+    r = client.post(
+        "/api/analysis/analyze", content=_json_chunks(200_000),
+        headers={"content-type": "application/json", "transfer-encoding": "chunked"})
+    assert r.status_code == 413 and "过大" in r.json()["detail"]
+
+
+def test_auth_body_over_limit_is_413(client, monkeypatch):
+    """/api/auth/* 上限 64KB：登录/注册 JSON 极小，超限即 413。"""
+    import app.map_body_limit as mbl
+    monkeypatch.setattr(mbl, "AUTH_JSON_BYTES", 1024)
+    r = client.post(
+        "/api/auth/login", content=b'{"email":"' + b"x" * 4096 + b'"}',
+        headers={"content-type": "application/json"})
+    assert r.status_code == 413
+
+
+def test_unlimited_api_path_passes_through(client):
+    """不设限的 /api/* 路径透传不受影响（测序端点自带按文件上限，走自己的 400/413）。"""
+    r = client.post("/api/sequencing/analyze", files={"files": ("x.ab1", b"junk", "application/octet-stream")})
+    # 请求成功送达下游（由测序端点自身的校验拒绝），而非中间件 413
+    assert r.status_code != 413
