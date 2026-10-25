@@ -1,7 +1,7 @@
 """路径与数据目录解析 — app.config 与 core 共用的叶子模块
 
 分层约束：core 不得反向 import app（此前的 codon_optimizer /
-external_vector_importer / vector_data_sources 各自从 app.config 取目录配置）。
+external_vector_importer 各自从 app.config 取目录配置）。
 需要目录配置的 core 模块统一从这里取；本模块只依赖标准库。
 
 解析顺序与 app.config 一致：环境变量 → 项目根 .env（pydantic-settings 读
