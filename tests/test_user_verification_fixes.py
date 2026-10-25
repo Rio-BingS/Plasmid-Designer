@@ -292,8 +292,9 @@ def _reconstruct_molecule(oligos):
 
 
 def test_synthesis_restriction_oligos_include_sites_and_spacer():
-    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 保护碱基+位点+基因+位点
-    +保护碱基；不再产出「组装后扩增」引物对——合成产物酶切即可连接，无需再扩一轮"""
+    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 载体连接点侧翼+位点+基因
+    +位点+侧翼（侧翼直接取载体序列，全序列可在图谱核对）；不再产出
+    「组装后扩增」引物对——合成产物酶切即可连接，无需再扩一轮"""
     from app.routes.models import DesignRequest
     result = run_design("uvf_syn_res", DesignRequest(
         sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
@@ -308,7 +309,15 @@ def test_synthesis_restriction_oligos_include_sites_and_spacer():
     assert len(oligos) >= 2
     molecule = _reconstruct_molecule(oligos)
     cloned = result.cloned_sequence or result.optimized_sequence
-    assert molecule == ("TTTTTT" + "CATATG" + cloned + "CTCGAG" + "TTTTTT")
+    # 结构：两端各 6nt（载体连接点侧翼）+ NdeI 位点 + 克隆工作序列 + XhoI
+    assert molecule[6:12] == "CATATG" and molecule[-12:-6] == "CTCGAG"
+    assert molecule[12:12 + len(cloned)] == cloned
+    assert len(molecule) == 12 + 6 + len(cloned) + 6
+    # 侧翼必须是构建体上的真实序列：正链装配时整条分子原样落在构建体上，
+    # 负链装配时落在构建体的反向互补上——这正是「全序列可核对」的要求
+    cons = (result.construct_sequence or "").upper()
+    assert molecule in cons or molecule in revcomp(cons), \
+        "合成分子（含两端载体侧翼）必须整体落在构建体序列上"
     assert any("已包含克隆末端" in w for w in result.warnings)
 
 
@@ -343,10 +352,9 @@ def test_synthesis_golden_gate_keeps_cloning_pair():
         "Golden Gate 未把末端合进 oligo，应保留组装后扩增加末端的引物对"
 
 
-def test_synthesis_end_oligos_annotate_protective_spacer():
-    """首/尾 oligo 的 notes 必须写明保护碱基与位点的去向：保护碱基酶切后
-    随小片段去除、不在构建体中——用户拿 oligo 去图谱搜索首尾差 6nt，
-    差在哪、为什么差要写在明面上，不留给用户猜（v2.25.0 用户反馈）"""
+def test_synthesis_end_oligos_annotate_vector_flanks():
+    """首/尾 oligo 的 notes 写明两端成分：默认取载体连接点侧翼（与图谱
+    一致、可全序列核对），酶名一并写明——用户核对合成订单不用再猜"""
     from app.routes.models import DesignRequest
     result = run_design("uvf_syn_note", DesignRequest(
         sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
@@ -355,10 +363,29 @@ def test_synthesis_end_oligos_annotate_protective_spacer():
         insert_source="gene_synthesis", sequence_name="myGene"))
     assert result.status == DesignStatus.COMPLETED, result.errors
     first, last = result.primers[0], result.primers[-1]
-    assert "保护碱基" in (first.notes or "") and "NdeI" in (first.notes or ""), first.notes
-    assert "不在构建体中" in (first.notes or "")
-    assert "保护碱基" in (last.notes or "") and "XhoI" in (last.notes or ""), last.notes
-    assert "不在构建体中" in (last.notes or "")
+    assert "载体连接点侧翼" in (first.notes or "") and "NdeI" in (first.notes or ""), first.notes
+    assert "可在图谱核对" in (first.notes or "")
+    assert "载体连接点侧翼" in (last.notes or "") and "XhoI" in (last.notes or ""), last.notes
+    assert "可在图谱核对" in (last.notes or "")
+
+
+def test_synthesis_end_oligos_fall_back_to_protective_spacer():
+    """载体侧翼取不到（位点不在载体上、回退 MCS 区间替换）时回退固定
+    保护碱基，notes 与结果层说明必须如实写明「不在构建体中」"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_pad", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="KpnI", enzyme_3="PstI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "保护碱基" in (first.notes or "") and "不在构建体中" in (first.notes or ""), first.notes
+    assert "保护碱基" in (last.notes or "") and "不在构建体中" in (last.notes or ""), last.notes
+    molecule = _reconstruct_molecule(
+        [p for p in result.primers if p.name.startswith("myGene")])
+    assert molecule.startswith("TTTTTT") and molecule.endswith("TTTTTT"), \
+        "侧翼不可用时应回退 6nt 固定保护碱基"
 
 
 def test_synthesis_gibson_end_oligos_annotate_arms():
@@ -379,9 +406,9 @@ def test_synthesis_gibson_end_oligos_annotate_arms():
 
 
 def test_synthesis_oligos_all_locate_on_construct():
-    """oligo↔构建体一致性自检：每条合成 oligo（剥去两端保护碱基折算后）
-    都必须能在构建体序列（顶链或反向互补）上定位；正常设计不允许出现
-    「无法在构建体序列上定位」告警"""
+    """oligo↔构建体一致性：两端取载体侧翼后，每条合成 oligo 的**全序列**
+    （不用扣任何碱基）都必须能在构建体序列（顶链或反向互补）上定位；
+    正常设计不允许出现「无法在构建体序列上定位」告警"""
     from app.routes.models import DesignRequest
     result = run_design("uvf_syn_loc", DesignRequest(
         sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
@@ -394,8 +421,8 @@ def test_synthesis_oligos_all_locate_on_construct():
     cons_rc = revcomp(cons)
     for p in (x for x in result.primers if x.target_start is not None):
         s = p.full_sequence.upper()
-        cands = [s] + ([s[6:], s[:-6], s[6:-6]] if len(s) > 12 else [])
-        assert any(c in cons or c in cons_rc for c in cands), p.name
+        assert s in cons or s in cons_rc, \
+            f"{p.name} 全序列应可定位（载体侧翼核对）: {s[:30]}…"
 
 
 def test_arms_preview_unknown_arm_fails_loudly():
