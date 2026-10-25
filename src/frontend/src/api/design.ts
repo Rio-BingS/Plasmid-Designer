@@ -14,6 +14,7 @@ export async function submitDesign(request: DesignRequest): Promise<{ design_id:
 /**
  * 双酶切实时预览：选好两个酶就把成品构建体的布局算出来（不提交任务、不落库）。
  * 方向由后端按载体表达盒判定，front 只负责把用户的选择传过去。
+ * cloning_method='gibson' 时按 Gibson 双酶切线性化预览（keep_restriction_sites 生效）。
  */
 export async function getRestrictionPreview(payload: {
   enzymes: string[]
@@ -21,6 +22,8 @@ export async function getRestrictionPreview(payload: {
   vector?: DesignVectorInput
   insert_length?: number
   direction?: InsertDirection
+  cloning_method?: 'restriction' | 'gibson'
+  keep_restriction_sites?: boolean
 }): Promise<RestrictionPreview> {
   const response = await api.post('/design/restriction-preview', payload)
   return response.data

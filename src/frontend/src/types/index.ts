@@ -160,6 +160,10 @@ export interface PrimerInfo {
 export interface DesignResult {
   /** 成品质粒名：序列名或「载体名-序列名」 */
   plasmid_name?: string
+  /** 优化序列开头的 ATG 已被去除（NdeI 等位点自带 ATG 充当起始密码子，蛋白不变） */
+  start_codon_removed?: boolean
+  /** 克隆工作序列（组装/引物退火用）：位点自带 ATG 时已去掉开头 ATG，比优化序列短 3bp */
+  cloned_sequence?: string
   design_id: string
   status: DesignStatus
   input_sequence: string
