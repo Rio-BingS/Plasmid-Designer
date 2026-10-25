@@ -99,6 +99,42 @@ def _vector_is_circular(vector) -> bool:
                or "circular").lower() != "linear"
 
 
+def _circular_backbone_window(backbone: str, start: int, length: int,
+                              circular: bool) -> str:
+    """载体上 [start, start+length) 的连续窗口；环状时越过首尾自动绕回
+    （跨原点的连接点碱基是真实存在的质粒序列），线性时负起点/越界截空"""
+    n = len(backbone)
+    if length <= 0 or n == 0:
+        return ""
+    if not circular:
+        if start < 0:
+            return ""
+        return backbone[start:start + length]
+    start %= n
+    if start + length <= n:
+        return backbone[start:start + length]
+    return backbone[start:] + backbone[:start + length - n]
+
+
+def _fusion_frame_warnings(fusion: Dict, pos: int) -> List[str]:
+    """融合克隆的读码框 / 内部 Met 告警（Gibson 单点与自定义臂共用口径）"""
+    name = fusion.get("name") or fusion.get("type") or "CDS"
+    cnt = pos - int(fusion["start"]) + 1   # 融合元件在插入点前的碱基数
+    if cnt % 3 == 0:
+        return [
+            "Gibson 融合克隆提示："
+            f"线性化点紧邻 {name}（CDS）末端且同框，插入序列开头的 ATG 会作为"
+            "内部甲硫氨酸进入融合蛋白；如需纯融合请去掉序列开头的 ATG，"
+            "保留与否请按实验意图确认"
+        ]
+    return [
+        "Gibson 融合克隆读码框不匹配："
+        f"线性化点位于 {name}（CDS）内，插入点前该 CDS 已有 {cnt} bp"
+        f"（非 3 的倍数），直接拼接会使下游读码框移位 {3 - cnt % 3} bp；"
+        "请调整线性化位置或同源臂设计"
+    ]
+
+
 def _mcs_window(vector) -> Optional[Tuple[int, int]]:
     """MCS 区间（1-based 闭区间），供「切点是否落在多克隆位点附近」判定
 
@@ -675,7 +711,7 @@ def _resolve_redundant_start_codon(
             and gibson_arms_plan is not None):
         # 自定义同源臂：按基因 5′ 连接点的载体碱基判定（正反链）
         return _resolve_custom_arms_start_codon(
-            request, backbone, gibson_arms_plan, optimized_dna)
+            request, vector, backbone, gibson_arms_plan, optimized_dna)
     if (request.cloning_method == CloningMethod.GIBSON
             and (gibson_single_site
                  or getattr(request, "gibson_linearization", "double_digest")
@@ -738,28 +774,35 @@ def _resolve_redundant_start_codon(
 
 
 def _resolve_custom_arms_start_codon(
-    request, backbone: str, plan, optimized_dna: str,
+    request, vector, backbone: str, plan, optimized_dna: str,
 ) -> Tuple[str, List[str]]:
     """自定义同源臂：起始密码子按基因 5′ 连接点的载体碱基判定。
 
     正链装配看左连接点前 3bp，负链装配（臂角色互换）看右连接点后 3bp 的
     反向互补；去除的是插入序列自己开头的 ATG（基因读法），蛋白仍与输入
-    氨基酸一致。融合克隆检测第一版仅覆盖正链装配（负链臂落进 minus CDS
-    的场景挂账）。
+    氨基酸一致。正链装配先做融合克隆检查（连接点落在正链 CDS/tag 内或
+    紧贴其末端时与 Gibson 单点同口径：只告警读码框/内部 Met，不自动去除）；
+    负链臂落进 minus CDS 的融合检测仍挂账。环状载体的连接点碱基跨原点时
+    按绕回窗口取（不再漏检）。
     """
     if not backbone or not optimized_dna:
         return optimized_dna, []
     if not str(optimized_dna).upper().startswith("ATG"):
         return optimized_dna, []
+    circular = _vector_is_circular(vector) if vector is not None else True
+    if not plan.insert_reverse and vector is not None:
+        from core.construct_assembly import gibson_junction_fusion
+        fusion = gibson_junction_fusion(
+            _vector_element_dicts(vector), plan.left_cut)
+        if fusion is not None:
+            return optimized_dna, _fusion_frame_warnings(fusion, plan.left_cut)
     if plan.insert_reverse:
         from core.seq_utils import revcomp as _rc
-        if plan.right_cut + 3 > len(backbone):
-            return optimized_dna, []
-        leading_ok = _rc(backbone[plan.right_cut:plan.right_cut + 3]) == "ATG"
+        leading_ok = _rc(_circular_backbone_window(
+            backbone, plan.right_cut, 3, circular)) == "ATG"
     else:
-        if plan.left_cut < 3:
-            return optimized_dna, []
-        leading_ok = backbone[plan.left_cut - 3:plan.left_cut].upper() == "ATG"
+        leading_ok = _circular_backbone_window(
+            backbone, plan.left_cut - 3, 3, circular).upper() == "ATG"
     if not leading_ok:
         return optimized_dna, []
     where = "线性化点前" if not plan.insert_reverse else "线性化点后（负链读法）"
@@ -803,31 +846,18 @@ def _resolve_gibson_start_codon(
 
     from core.construct_assembly import gibson_junction_fusion
     pos = resolve_gibson_insert_pos(request, vector)          # 0-based
-    if pos < 3 or pos >= len(backbone):
+    if pos >= len(backbone):
         return optimized_dna, []
+    circular = _vector_is_circular(vector)
+    # 连接点前 3bp：环状时跨原点按绕回窗口取（载体末尾 + 开头）
+    leading = _circular_backbone_window(backbone, pos - 3, 3, circular).upper()
     elements = _vector_element_dicts(vector)
     fusion = gibson_junction_fusion(elements, pos)
     if fusion is not None:
         # 融合克隆：读码框与内部 Met 告警与插入序列首密码子无关
-        name = fusion.get("name") or fusion.get("type") or "CDS"
-        cnt = pos - int(fusion["start"]) + 1   # 融合元件在插入点前的碱基数
-        if cnt % 3 == 0:
-            return optimized_dna, [
-                "Gibson 融合克隆提示："
-                f"线性化点紧邻 {name}（CDS）末端且同框，插入序列开头的 ATG 会作为"
-                "内部甲硫氨酸进入融合蛋白；如需纯融合请去掉序列开头的 ATG，"
-                "保留与否请按实验意图确认"
-            ]
-        return optimized_dna, [
-            "Gibson 融合克隆读码框不匹配："
-            f"线性化点位于 {name}（CDS）内，插入点前该 CDS 已有 {cnt} bp"
-            f"（非 3 的倍数），直接拼接会使下游读码框移位 {3 - cnt % 3} bp；"
-            "请调整线性化位置或同源臂设计"
-        ]
+        return optimized_dna, _fusion_frame_warnings(fusion, pos)
 
-    if not str(optimized_dna).upper().startswith("ATG"):
-        return optimized_dna, []
-    if backbone[pos - 3:pos].upper() != "ATG":
+    if leading != "ATG":
         return optimized_dna, []
     where = request.gibson_site or "MCS 起点"
     if getattr(request, "trim_redundant_start", True) and len(optimized_dna) > 6:
@@ -1058,12 +1088,14 @@ def design_primers_for_method(
     enzyme_3: Optional[str] = None,
     gibson_double_digest: bool = False,
     gibson_plan=None,
+    gibson_insert_pos: Optional[int] = None,
 ) -> List[PrimerInfo]:
     """按「插入片段来源 × 克隆方法」设计引物/寡核苷酸。
 
     enzyme_5 / enzyme_3 是**已解析**的指派（接基因 5′/3′ 端的酶）：由
     resolve_restriction_ends 按载体表达盒定下来，这里不再读 request 里的原值，
-    否则引物和构建体会各说各话。
+    否则引物和构建体会各说各话。gibson_insert_pos 是组装用的单位点线性化
+    位置（同酶双填回退时已被覆盖为该酶自己的切点），不传才就地重算。
 
     - 来源=PCR：产出带克隆末端的扩增引物对（末端形态由克隆方法决定）
     - 来源=全基因合成：产出重叠组装 oligo 组 + 带克隆末端的
@@ -1106,7 +1138,9 @@ def design_primers_for_method(
                     circular=_vector_is_circular(vector),
                 )
                 return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
-            insert_pos = resolve_gibson_insert_pos(request, vector)
+            insert_pos = (gibson_insert_pos
+                          if gibson_insert_pos is not None
+                          else resolve_gibson_insert_pos(request, vector))
             insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
             pair = designer.design_gibson_primers(
                 optimized_dna,
@@ -1269,6 +1303,7 @@ def run_design(
         # 位点不全时回退单位点线性化（旧模型）并明确告警
         gibson_single = False
         gibson_arms_mode = False
+        gibson_same_enzyme = False
         if request.cloning_method == CloningMethod.GIBSON:
             if getattr(request, "gibson_linearization", "double_digest") == "custom_arms":
                 # 自定义同源臂：臂序列即定位（plan 在 else 分支拿到 backbone
@@ -1283,10 +1318,16 @@ def run_design(
                 gibson_single = False
             else:
                 gibson_single = True
+                gibson_same_enzyme = bool(
+                    (request.enzyme_5 or request.enzyme)
+                    and (request.enzyme_5 or request.enzyme)
+                    == (request.enzyme_3 or request.enzyme))
                 gibson_pos = resolve_gibson_insert_pos(request, vector)
                 result.warnings.append(
-                    "Gibson 双酶切线性化需要两个不同的酶切位点：未提供完整位点，"
-                    "已按单位点线性化处理")
+                    "Gibson 双酶切线性化需要两个不同的酶切位点："
+                    + (f"两把酶相同（{request.enzyme_5 or request.enzyme}）。"
+                       if gibson_same_enzyme else "未提供完整位点，")
+                    + "已按单位点线性化处理")
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:
             gg_oh5, gg_oh3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
 
@@ -1330,6 +1371,20 @@ def run_design(
                     backbone, request.homology_arm_5, request.homology_arm_3,
                     circular=str(getattr(vector, "topology", "circular")
                                  or "circular").lower() != "linear")
+            elif gibson_same_enzyme:
+                # 同酶双填回退的单点线性化：优先落在这把酶自己的切点上
+                # （MCS 窗口内优先），与用户填这把酶的意图一致，而不是
+                # 笼统落到 MCS 起点
+                from core.construct_assembly import physical_sites
+                _enz = request.enzyme_5 or request.enzyme
+                _hits = physical_sites(backbone, _enz,
+                                       circular=_vector_is_circular(vector))
+                if _hits:
+                    _lo, _hi = _mcs_window(vector) or (0, len(backbone))
+                    _pick = next(
+                        (s for s in _hits if _lo <= int(s["position"]) <= _hi),
+                        _hits[0])
+                    gibson_pos = int(_pick["cut_fwd"])
 
             if (request.cloning_method == CloningMethod.RESTRICTION
                     or (request.cloning_method == CloningMethod.GIBSON
@@ -1444,6 +1499,7 @@ def run_design(
             gibson_double_digest=(request.cloning_method == CloningMethod.GIBSON
                                   and not gibson_single and not gibson_arms_mode),
             gibson_plan=gibson_double_plan,
+            gibson_insert_pos=gibson_pos,
         )
 
         # 4.0 Golden Gate：按完整扩增子数位点，引物尾与插入片段拼接处新生的位点也会多切
