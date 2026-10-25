@@ -39,6 +39,72 @@ def _feature(raw: Dict, source: str, ftype: Optional[str] = None) -> Dict:
     return f
 
 
+def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
+    """把引物/合成 oligo 定位到构建体序列上 → 图谱引物轨道。
+
+    合成 oligo 按**全序列**定位（负链装配时 oligo 落在互补链上，图谱按
+    负链画出——用户才能直接看到「首位引物对上了」，不用自己手工去序列
+    里搜反向互补）；PCR 引物带保护碱基/酶切位点，全序列不在构建体上，
+    按 3′ 端退火区（末 20nt）定位。跨原点的命中与定位不到的跳过。
+    """
+    from core.seq_utils import revcomp
+
+    primers = getattr(result, "primers", None) or []
+    if not primers or not seq:
+        return []
+    length = len(seq)
+    seq_rc = revcomp(seq)
+    out: List[Dict] = []
+    for p in primers:
+        s = str(getattr(p, "full_sequence", None) or getattr(p, "sequence", "")
+                or "").upper().replace(" ", "")
+        if not s or len(s) > length:
+            continue
+        hit = _find_span(seq, s)
+        strand = 1
+        if hit is None:
+            hit = _find_span(seq_rc, s)
+            strand = -1
+        anneal = ""
+        if hit is None and len(s) > 20:
+            # PCR 引物：3′ 端退火区才结合模板，末 20nt 定位。退火序列落在
+            # 哪条链，引物延伸方向就在哪条链（F 引物=基因正义链片段，负链
+            # 装配时命中互补链；R 引物=模板链片段，命中正链）——按命中链
+            # 自然标注即箭头方向，无需按名字翻转
+            anneal = s[-20:]
+            hit = _find_span(seq, anneal)
+            strand = 1
+            if hit is None:
+                hit = _find_span(seq_rc, anneal)
+                strand = -1
+        if hit is None:
+            continue
+        i, span_len = hit
+        if strand == 1:
+            start, end = i + 1, i + span_len
+        else:
+            start, end = length - (i + span_len) + 1, length - i
+        if start > end and not circular:
+            continue  # 跨原点命中：环上允许 start>end，线性图跳过
+        out.append({
+            "id": f"primer-{getattr(p, 'name', '') or len(out)}",
+            "name": getattr(p, "name", "") or f"primer {len(out) + 1}",
+            "start": start, "end": end, "strand": strand,
+            "sequence": anneal or s,
+        })
+        if len(out) >= 5000:
+            break
+    return out
+
+
+def _find_span(text: str, pattern: str) -> Optional[tuple]:
+    """首个非跨原点命中 → (0-based 起点, 长度)；找不到返回 None"""
+    i = text.find(pattern)
+    if i == -1 or i + len(pattern) > len(text):
+        return None
+    return i, len(pattern)
+
+
 def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 100) -> Dict:
     construct = result.construct_sequence or result.optimized_sequence or ""
     circular = bool(result.construct_sequence)
@@ -68,6 +134,8 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
               or "Construct"),
         sequence=seq, topology="circular" if circular else "linear",
         source_format="design", features=feats, warnings=[],
+        # 引物轨道：合成 oligo / PCR 引物按实际结合位置与链向画在图谱上
+        primers=_locate_primer_spans(result, seq, circular),
         annotate=False, enzyme_set=enzyme_set, orf_min_aa=orf_min_aa,
     )
 
