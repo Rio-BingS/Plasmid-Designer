@@ -22,6 +22,7 @@ from app.auth.jwt_auth import User, get_current_user
 from app import batch_report_store, sequencing_store
 from app.gating import require_feature
 from app.design_service import get_vector_library
+from app.filename import content_disposition
 from app.routes import sequencing_routes
 from app.routes.sequencing_routes import (
     _ANALYSES, _STORE_LOCK,
@@ -311,10 +312,14 @@ async def export_consensus(analysis_id: str, request: Request,
     content, ext, safe_name = await run_in_threadpool(
         sequencing_routes._render_consensus_export,
         record, analysis_id, format, covered_only)
+    # 头值仅限 latin-1：safe_name 白名单放行了中文样品名，必须走
+    # RFC 5987 filename*（此前直接拼 filename= 会让中文样品 500）
     return PlainTextResponse(
         content=content,
         media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}.{ext}"},
+        headers={"Content-Disposition":
+                 content_disposition(f"{safe_name}.{ext}",
+                                     ascii_fallback=f"consensus.{ext}")},
     )
 
 @router.delete("/sequencing/analyses/{analysis_id}")
