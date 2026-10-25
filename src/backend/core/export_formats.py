@@ -11,7 +11,10 @@ from dataclasses import dataclass
 import struct
 import logging
 
-from core.genbank_format import format_locus_line
+from core.genbank_format import (
+    format_feature_line, format_locus_line, format_qualifier,
+    render_origin_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,21 +95,16 @@ class GenBankExporter:
                 location = f"{feature.start}..{feature.end}"
             else:
                 location = f"complement({feature.start}..{feature.end})"
-            
-            lines.append(f"     {feature_type:<15} {location}")
-            lines.append(f'                     /label="{feature.name}"')
+
+            lines.append(format_feature_line(feature_type, location))
+            lines.append(format_qualifier("label", feature.name))
             if feature.description:
-                lines.append(f'                     /note="{feature.description}"')
-            lines.append(f'                     /color="{feature.color}"')
-        
+                lines.append(format_qualifier("note", feature.description))
+            lines.append(format_qualifier("color", feature.color))
+
         # ORIGIN
         lines.append("ORIGIN")
-        seq = data.sequence.upper()
-        for i in range(0, len(seq), 60):
-            chunk = seq[i:i+60]
-            # 每 10 个碱基一组
-            groups = ' '.join([chunk[j:j+10] for j in range(0, len(chunk), 10)])
-            lines.append(f"{i+1:>9} {groups}")
+        lines.extend(render_origin_block(data.sequence))
         
         lines.append("//")
         

@@ -9,7 +9,9 @@ from typing import Dict, List, Optional, Tuple
 
 from app.cache import cache
 from app.config import settings
-from core.genbank_format import format_locus_line
+from core.genbank_format import (
+    format_feature_line, format_locus_line, format_qualifier, render_origin_block,
+)
 from core.primer_designer import screen_gg_overhang_pair
 from app.routes.models import (
     MAP_MAX_LENGTH,
@@ -1164,16 +1166,16 @@ def generate_genbank_from_result(result: DesignResult) -> str:
     lines.append('                     /mol_type="other DNA"')
 
     for feat in features:
-        ftype = (feat.get("type") or "misc_feature")[:15]
+        ftype = feat.get("type") or "misc_feature"
         start = feat.get("start", 1)
         end = feat.get("end", start)
         strand = feat.get("strand", "+")
         loc = f"complement({start}..{end})" if strand == "-" else f"{start}..{end}"
-        lines.append(f"     {ftype:<15} {loc}")
+        lines.append(format_feature_line(ftype, loc))
         name = feat.get("name") or "feature"
-        lines.append(f'                     /label="{name}"')
+        lines.append(format_qualifier("label", name))
         if feat.get("description"):
-            lines.append(f'                     /note="{feat["description"]}"')
+            lines.append(format_qualifier("note", feat["description"]))
 
     # 补一条兜底 CDS 只在「构建体里根本没有插入片段注释」时才需要。判据是
     # 坐标是否已经覆盖插入区间，不是名字是否叫 insert——用户给序列起了名
@@ -1189,10 +1191,6 @@ def generate_genbank_from_result(result: DesignResult) -> str:
         lines.append('                     /label="insert"')
 
     lines.append("ORIGIN")
-    seq = construct.upper()
-    for i in range(0, len(seq), 60):
-        chunk = seq[i : i + 60]
-        groups = " ".join(chunk[j : j + 10] for j in range(0, len(chunk), 10))
-        lines.append(f"{i + 1:>9} {groups}")
+    lines.extend(render_origin_block(construct))
     lines.append("//")
     return "\n".join(lines)
