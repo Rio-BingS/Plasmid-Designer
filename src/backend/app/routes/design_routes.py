@@ -24,13 +24,16 @@ from app.routes.models import (
     RestrictionPreviewRequest,
 )
 from app.storage import get_design_store
+from app.mirror_store import BoundedMirror
 
 router = APIRouter(prefix="/api/design", tags=["design"])
 
 logger = logging.getLogger(__name__)
 
-# 兼容旧代码/批量路由：内存镜像 + 存储层双写
-designs_db: Dict[str, DesignResult] = {}
+# 兼容旧代码/批量路由：内存镜像 + 存储层双写。
+# 镜像带上限 + TTL（此前无界：匿名持续提交即可撑大内存，第二轮审计 P2）；
+# 淘汰只清镜像，存储层仍是权威，下次读取自动回源
+designs_db: Dict[str, DesignResult] = BoundedMirror(max_items=500)
 
 
 def _persist(result: DesignResult) -> None:

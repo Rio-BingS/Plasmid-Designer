@@ -28,12 +28,14 @@ from app.routes.models import (
     SequenceType,
 )
 from app.storage import get_batch_store
+from app.mirror_store import BoundedMirror
 
 router = APIRouter(prefix="/api/design/batch", tags=["batch"])
 
 logger = logging.getLogger(__name__)
 
-batch_jobs: Dict[str, BatchDesignStatus] = {}
+# 内存镜像带上限 + TTL（同 designs_db：只清镜像，存储层权威）
+batch_jobs: Dict[str, BatchDesignStatus] = BoundedMirror(max_items=200)
 
 
 def _persist_batch(job: BatchDesignStatus) -> None:
