@@ -278,6 +278,37 @@ def test_cassette_hint_promoter_gap_extended():
     assert hint_far["strand"] is None
 
 
+def test_cassette_hint_nearby_promoter_beats_distant_opposite():
+    """邻近度加权：近处真表达盒（gap 100）必须压过 2000bp 外恰好朝插入区
+    读的无关反向启动子（否则窗口放宽后被别的表达盒带偏方向）"""
+    from core.construct_assembly import cassette_hint
+    elements = [
+        {"name": "T7 promoter", "type": "promoter",
+         "start": 100, "end": 118, "strand": "+"},          # 近处，gap 82 → 权重 3
+        {"name": "other cassette promoter", "type": "promoter",
+         "start": 4800, "end": 4818, "strand": "-"},        # 远处反向，gap 50 → 负链权重 3?
+    ]
+    # 远处启动子在 right_cut=1750 右侧 → gap = 4800-1750 = 3050 > 3000，不计入；
+    # 把它挪到 3700（gap 1950，权重 1）
+    elements[1]["start"] = 3700
+    elements[1]["end"] = 3718
+    hint = cassette_hint(elements, 200, 1750)
+    assert hint["strand"] == "+"
+    assert not hint["ambiguous"]
+    assert hint["promoter"]["name"] == "T7 promoter"
+
+
+def test_cassette_hint_equal_proximity_still_ambiguous():
+    """两侧都是贴邻的对立启动子（3 对 3）：仍判歧义，交给用户手选"""
+    from core.construct_assembly import cassette_hint
+    elements = [
+        {"name": "P_left", "type": "promoter", "start": 50, "end": 60, "strand": "+"},
+        {"name": "P_right", "type": "promoter", "start": 210, "end": 220, "strand": "-"},
+    ]
+    hint = cassette_hint(elements, 100, 180)   # 左 gap 40（权3），右 gap 30（权3）
+    assert hint["strand"] is None and hint["ambiguous"]
+
+
 def _arms_vector_with_promoter(feature: dict):
     from app.schemas import DesignVectorInput
     return DesignVectorInput(id="pdir", name="pdir", sequence=ARMS_BB,
