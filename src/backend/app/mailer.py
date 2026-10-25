@@ -62,6 +62,25 @@ async def send_email(to: str, subject: str, html: str) -> bool:
 
 # ==================== 各渠道实现（阻塞函数，线程池内调用） ====================
 
+def log_console_provider_warning() -> None:
+    """启动时调用：开了邮箱验证却还在用 console 渠道就告警。
+
+    console 渠道会把验证码明文打进日志——生产上任何能读容器日志的人
+    都能拿码接管新注册账号（部署 foot-gun，同 Addgene 共享会话告警）"""
+    provider = (settings.MAIL_PROVIDER or "console").strip().lower()
+    if provider != "console":
+        return
+    try:
+        from app.site_settings import get_settings
+        if not get_settings().get("email_verification_required"):
+            return
+    except Exception:
+        return  # 站点设置读不到（如 DB 未配置）时不阻断启动
+    logger.warning(
+        "MAIL_PROVIDER=console 且已开启邮箱验证：验证码将明文输出到日志，"
+        "生产环境请配置 SMTP/RESEND/BREVO 之一")
+
+
 def _send_console(to: str, subject: str, html: str) -> bool:
     import re as _re
     text = _re.sub(r"<[^>]+>", " ", html)
