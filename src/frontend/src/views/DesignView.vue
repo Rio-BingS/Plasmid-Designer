@@ -52,6 +52,9 @@ const manualStrand = ref<'' | 'plus' | 'minus'>('')
 const insertDirection = computed<InsertDirection>(() =>
   manualStrand.value || (reverseInsert.value ? 'reverse' : 'auto')
 )
+// NdeI/NcoI 这类位点自带 ATG（充当起始密码子）：默认自动去掉插入序列
+// 开头的冗余 ATG，避免蛋白 N 端出现连续两个 Met（第一个 M 由位点提供）
+const autoTrimStartCodon = ref(true)
 // 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
 const preview = ref<RestrictionPreview | null>(null)
 const previewLoading = ref(false)
@@ -395,6 +398,7 @@ async function handleSubmit() {
       request.enzyme_5 = enzyme5.value
       request.enzyme_3 = enzyme3.value
       request.insert_direction = insertDirection.value
+      request.trim_redundant_start = autoTrimStartCodon.value
     }
     if (cloningMethod.value === 'gibson' && gibsonSite.value) {
       request.gibson_site = gibsonSite.value
@@ -716,6 +720,12 @@ function loadExample() {
               </select>
             </label>
           </div>
+          <label class="checkbox-label trim-start-row">
+            <input v-model="autoTrimStartCodon" type="checkbox" />
+            <span>位点自带起始密码子时去除冗余 ATG（NdeI/NcoI 等位点末端的
+              ATG 充当起始密码子，自动去掉插入序列开头的 ATG，避免蛋白
+              N 端出现连续两个 Met）</span>
+          </label>
           <p class="hint-text">
             两把酶的先后顺序不影响结果：基因接哪一端由载体自己的启动子/RBS 判定。
             下面这张图就是提交后拿到的构建体（被切走的片段已经不在里面）。
