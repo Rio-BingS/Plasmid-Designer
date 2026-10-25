@@ -764,6 +764,21 @@ def cassette_hint(
     if not elements or right_cut <= left_cut:
         return hint
 
+    def _promoter_weight(gap: int) -> int:
+        """启动子按邻近度加权：贴着插入位点的启动子是表达盒主证（3），
+        隔了大标签/长 MCS 的仍是强证据（2），窗口边缘的只能算弱证据（1）。
+
+        没有权重时，窗口内一个**无关表达盒**的启动子（恰好朝插入区读）
+        与真正的近处表达盒平票甚至压过它——3000 窗口放宽后这不再是
+        理论风险。权重差 ≥2 的对立证据不再触发歧义，近处启动子稳定胜出；
+        近邻对近邻（3 对 3）仍然歧义、交给用户手选。
+        """
+        if gap <= 300:
+            return 3
+        if gap <= 1000:
+            return 2
+        return 1
+
     def _span(element: Dict) -> Optional[Tuple[int, int]]:
         try:
             start = int(element.get("start") or 0)
@@ -809,13 +824,13 @@ def cassette_hint(
                                          "name": element.get("name") or "terminator"})
 
     for gap, element in plus_promoters:
-        hint["score"]["+"] += 3
+        hint["score"]["+"] += _promoter_weight(gap)
         hint["evidence"].append({"kind": "promoter", "side": "+", "gap": gap,
                                  "name": element.get("name") or "promoter",
                                  "start": element.get("start"), "end": element.get("end"),
                                  "strand": str(element.get("strand") or "+")})
     for gap, element in minus_promoters:
-        hint["score"]["-"] += 3
+        hint["score"]["-"] += _promoter_weight(gap)
         hint["evidence"].append({"kind": "promoter", "side": "-", "gap": gap,
                                  "name": element.get("name") or "promoter",
                                  "start": element.get("start"), "end": element.get("end"),
