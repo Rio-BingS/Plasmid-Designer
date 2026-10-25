@@ -292,9 +292,9 @@ def _reconstruct_molecule(oligos):
 
 
 def test_synthesis_restriction_oligos_include_sites_and_spacer():
-    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 载体连接点侧翼+位点+基因
-    +位点+侧翼（侧翼直接取载体序列，全序列可在图谱核对）；不再产出
-    「组装后扩增」引物对——合成产物酶切即可连接，无需再扩一轮"""
+    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 构建体上「侧翼+位点残留
+    +基因+位点残留+侧翼」的现成段落（整条分子就是图谱上的一段，取向随
+    装配链向）；不再产出「组装后扩增」引物对——合成产物酶切即可连接"""
     from app.routes.models import DesignRequest
     result = run_design("uvf_syn_res", DesignRequest(
         sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
@@ -309,15 +309,15 @@ def test_synthesis_restriction_oligos_include_sites_and_spacer():
     assert len(oligos) >= 2
     molecule = _reconstruct_molecule(oligos)
     cloned = result.cloned_sequence or result.optimized_sequence
-    # 结构：两端各 6nt（载体连接点侧翼）+ NdeI 位点 + 克隆工作序列 + XhoI
-    assert molecule[6:12] == "CATATG" and molecule[-12:-6] == "CTCGAG"
-    assert molecule[12:12 + len(cloned)] == cloned
+    # 结构：两端各 6nt 载体侧翼 + 两个位点残留（分居两端，取向随链向）
+    # + 克隆工作序列（负链装配时为反向互补）
+    assert {molecule[6:12], molecule[-12:-6]} == {"CATATG", "CTCGAG"}
+    core = molecule[12:-12]
+    assert core in (cloned, revcomp(cloned)), molecule[:60]
     assert len(molecule) == 12 + 6 + len(cloned) + 6
-    # 侧翼必须是构建体上的真实序列：正链装配时整条分子原样落在构建体上，
-    # 负链装配时落在构建体的反向互补上——这正是「全序列可核对」的要求
+    # 分子就是构建体上的现成段落：整条分子原样落在构建体顶链上
     cons = (result.construct_sequence or "").upper()
-    assert molecule in cons or molecule in revcomp(cons), \
-        "合成分子（含两端载体侧翼）必须整体落在构建体序列上"
+    assert molecule in cons, "合成分子必须整体落在构建体序列上"
     assert any("已包含克隆末端" in w for w in result.warnings)
 
 
@@ -354,7 +354,7 @@ def test_synthesis_golden_gate_keeps_cloning_pair():
 
 def test_synthesis_end_oligos_annotate_vector_flanks():
     """首/尾 oligo 的 notes 写明两端成分：默认取载体连接点侧翼（与图谱
-    一致、可全序列核对），酶名一并写明——用户核对合成订单不用再猜"""
+    一致、可全序列核对）——位点在哪一端随装配链向而定，notes 不指名"""
     from app.routes.models import DesignRequest
     result = run_design("uvf_syn_note", DesignRequest(
         sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
@@ -363,9 +363,9 @@ def test_synthesis_end_oligos_annotate_vector_flanks():
         insert_source="gene_synthesis", sequence_name="myGene"))
     assert result.status == DesignStatus.COMPLETED, result.errors
     first, last = result.primers[0], result.primers[-1]
-    assert "载体连接点侧翼" in (first.notes or "") and "NdeI" in (first.notes or ""), first.notes
+    assert "载体连接点侧翼" in (first.notes or ""), first.notes
     assert "可在图谱核对" in (first.notes or "")
-    assert "载体连接点侧翼" in (last.notes or "") and "XhoI" in (last.notes or ""), last.notes
+    assert "载体连接点侧翼" in (last.notes or ""), last.notes
     assert "可在图谱核对" in (last.notes or "")
 
 
@@ -478,8 +478,9 @@ def test_map_document_annotates_synthesis_oligos_on_map():
             assert span == p.full_sequence.upper(), p.name
         else:
             assert revcomp(span) == p.full_sequence.upper(), p.name
-    # pET-28a 负链装配：首位 oligo 必须画在负链上
-    assert primers[oligos[0].name]["strand"] == -1
+    # 合成分子 = 构建体顶链段落：首位 oligo 画在正链，末位（反义）在负链
+    assert primers[oligos[0].name]["strand"] == 1
+    assert primers[oligos[-1].name]["strand"] == -1
 
 
 def test_map_document_annotates_pcr_primer_anneal_spans():
