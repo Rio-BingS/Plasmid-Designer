@@ -76,6 +76,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # pragma: no cover - 告警失败不阻断启动
         _logger.warning("Addgene 会话检查失败", exc_info=True)
 
+    # 开了邮箱验证却用 console 邮件渠道：验证码明文进日志，生产部署告警
+    try:
+        from app.mailer import log_console_provider_warning
+        log_console_provider_warning()
+    except Exception:  # pragma: no cover - 告警失败不阻断启动
+        pass
+
     # 批量测序分块上传会话：启动时清理上次残留的暂存目录，之后周期清理过期会话
     from app.routes.sequencing_session_routes import sweeper_loop
     sweeper = asyncio.create_task(sweeper_loop())
