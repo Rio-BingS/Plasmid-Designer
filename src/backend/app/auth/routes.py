@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .jwt_auth import (
+    _DUMMY_HASH,
     decode_token, extract_token,
     UserCreate, UserLogin, User, Token,
     verify_password, create_access_token, create_verify_token, decode_verify_token,
@@ -157,6 +158,11 @@ async def register(user_data: UserCreate, request: Request, response: Response,
     # 检查邮箱是否已注册
     existing_user = get_user_by_email(db, user_data.email)
     if existing_user:
+        # 时差对齐：正常路径先跑一轮 bcrypt 再落库，重复邮箱立即 400 会以
+        # 响应时长区分「邮箱已存在」。比对一个固定哑哈希让两条路径等时。
+        # 内容上仍明示「已注册」——注册口让用户发现手滑输错邮箱比隐藏
+        # 存在性更有价值（自托管低风险取舍，枚举已被通用限流约束）
+        await run_in_threadpool(verify_password, user_data.password, _DUMMY_HASH)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该邮箱已注册"
@@ -242,6 +248,9 @@ async def login(credentials: UserLogin, request: Request, response: Response,
     # 查找用户
     user = get_user_by_email(db, credentials.email)
     if not user:
+        # 时差对齐：不存在用户也跑一轮 bcrypt（哑哈希），否则「账号存在
+        # 与否」可用响应时长区分（存在的用户多 ~300ms 的 bcrypt 比对）
+        await run_in_threadpool(verify_password, credentials.password, _DUMMY_HASH)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="邮箱或密码错误"

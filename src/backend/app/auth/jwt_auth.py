@@ -98,6 +98,10 @@ class TokenData(BaseModel):
 # 不会被静默砍到与 72 字节前缀等价而不留痕
 _BCRYPT_MAX_PASSWORD_BYTES = 72
 
+# 登录/注册时差对齐用的哑哈希（不是任何真实密码的哈希，无保密性要求）：
+# 「账号不存在」路径也完整跑一次 bcrypt 比对，消除以响应时长枚举账号
+_DUMMY_HASH = "$2b$12$T56ys9v5iIuZtlItBqfTOO3QBKZsCIBOe/pQZTOP0gJSHldDseoVK"
+
 
 def _clamp_password(password: str) -> str:
     """把密码截到 bcrypt 实际参与哈希的前 72 字节（按 UTF-8 字节计）"""
