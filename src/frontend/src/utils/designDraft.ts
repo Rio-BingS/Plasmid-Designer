@@ -33,6 +33,9 @@ export interface DesignDraft {
   enzyme3?: string
   gibsonSite?: string
   gibsonSingleSite?: boolean
+  gibsonLinearization?: 'double_digest' | 'single_site' | 'custom_arms'
+  customArm5?: string
+  customArm3?: string
   excludeEnzymes?: string[]
   oligoLengthMin?: number
   oligoLengthMax?: number

@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -401,6 +402,109 @@ def plan_golden_gate(
                   f"（切除 {cut_length} bp，overhang {overhang_5}/{overhang_3}）"),
         warnings=warnings,
     )
+
+
+def plan_custom_arms(
+    backbone: str, arm_5: str, arm_3: str, *,
+    circular: bool = True, min_len: int = 15, max_len: int = 200,
+) -> AssemblyPlan:
+    """用户自定义同源臂的 Gibson 定位：由臂序列反推线性化边界。
+
+    用户把两条臂按同一方向粘贴（通常直接从载体图复制），工具把**整条插入
+    分子**（臂5 + 基因 + 臂3）按两种取向试装配：
+
+    - 正向：臂5 正向匹配的末端 = 左连接点 j5，臂3 正向匹配的起点 = 右连接点
+      j3，要求 j5 <= j3（区间 (j5, j3] 被替换，允许相等 = 纯插入）；
+    - 反向：臂3 的反向互补匹配左连接点、臂5 的反向互补匹配右连接点
+      （基因落负链，insert_reverse 承载，臂角色互换）。
+
+    恰好一种取向成立才有效；两个都成立（对称区）或都不成立时抛
+    ValueError（用户输入问题应显式失败，不做静默回退）。v1 限制：匹配
+    不跨线性编号原点（跨原点臂请旋转载体坐标后重试）。
+    """
+    def _clean(name: str, seq: str) -> str:
+        seq = re.sub(r"\s+", "", str(seq or "")).upper()
+        if not seq:
+            raise ValueError(f"{name}为空：请填写重组臂序列")
+        if len(seq) < min_len:
+            raise ValueError(
+                f"{name}仅 {len(seq)} bp：短于 {min_len}bp 的同源臂组装效率低，"
+                f"请使用 ≥{min_len}bp 的臂")
+        if len(seq) > max_len:
+            raise ValueError(f"{name}长 {len(seq)} bp：超过上限 {max_len}bp，"
+                             "请确认没有误粘贴整段序列")
+        bad = set(seq) - set("ACGT")
+        if bad:
+            raise ValueError(f"{name}含非 ACGT 碱基：{''.join(sorted(bad))}")
+        return seq
+
+    a5 = _clean("5′ 重组臂", arm_5)
+    a3 = _clean("3′ 重组臂", arm_3)
+    length = len(backbone)
+
+    def _find_all(query: str) -> List[int]:
+        """非跨原点的全部精确匹配起点（0-based）"""
+        out, start = [], 0
+        while True:
+            i = backbone.find(query, start)
+            if i < 0:
+                return out
+            out.append(i)
+            start = i + 1
+
+    from core.seq_utils import revcomp as _revcomp
+
+    def _locate(seq: str, label: str) -> List[int]:
+        """两个取向的全部匹配：(起点, 是否反向互补)"""
+        hits = [(p, False) for p in _find_all(seq)]
+        hits += [(p, True) for p in _find_all(_revcomp(seq))]
+        if len(hits) > 1:
+            pos_desc = "、".join(
+                f"{p + 1}（{'负链' if rc else '正链'}）" for p, rc in hits)
+            raise ValueError(
+                f"{label}在载体上匹配到 {len(hits)} 处（{pos_desc}）："
+                "定位不唯一，请加长臂序列或调整臂的位置")
+        if not hits:
+            raise ValueError(
+                f"{label}在载体上无精确匹配：请确认臂序列来自该载体"
+                "（两种取向均已尝试；跨线性编号原点的臂请旋转载体坐标）")
+        return hits
+
+    hits5 = _locate(a5, "5′ 重组臂")
+    hits3 = _locate(a3, "3′ 重组臂")
+    p5, rc5 = hits5[0]
+    p3, rc3 = hits3[0]
+
+    forward_valid = (not rc5 and not rc3) and (p5 + len(a5) <= p3)
+    reverse_valid = (rc5 and rc3) and (p3 + len(a3) <= p5)
+
+    if forward_valid and reverse_valid:
+        raise ValueError(
+            "两条重组臂在两种取向下都能装配（臂匹配对称）：请调整臂序列消除歧义")
+    if not forward_valid and not reverse_valid:
+        raise ValueError(
+            "两条重组臂的相对位置无法围出插入区间："
+            f"5′ 臂匹配在 {p5 + 1}（{'负链' if rc5 else '正链'}）、"
+            f"3′ 臂匹配在 {p3 + 1}（{'负链' if rc3 else '正链'}）——"
+            "请确认两臂分别位于插入区间的两侧、且方向一致")
+
+    if forward_valid:
+        left, right = p5 + len(a5), p3
+        removed = right - left
+        junction = (f"自定义同源臂定位：臂5 末端 {left} / 臂3 起点 {right + 1}"
+                    f"（替换 {removed} bp，无缝）")
+        return AssemblyPlan("gibson", left, right, head="", tail="",
+                            removed_bp=removed, junction=junction)
+    # 反向取向：臂3 的反向互补匹配段在左（基因 5′ 端经其右侧进入），
+    # 臂5 的反向互补匹配段在右；基因按负链放入
+    left = p3 + len(a3)
+    right = p5
+    removed = right - left
+    junction = (f"自定义同源臂定位（负链）：臂3 反向互补末端 {left} / "
+                f"臂5 反向互补起点 {right + 1}（替换 {removed} bp，无缝）")
+    return AssemblyPlan("gibson", left, right, head="", tail="",
+                        insert_reverse=True, removed_bp=removed,
+                        junction=junction)
 
 
 def plan_gibson(sequence: str, insert_pos: int) -> AssemblyPlan:

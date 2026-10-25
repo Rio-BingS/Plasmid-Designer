@@ -465,6 +465,7 @@ def assemble_construct(
     extra_elements: Optional[List[Dict]] = None,
     join: str = "sticky",
     keep_sites: bool = True,
+    custom_plan=None,
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
@@ -495,7 +496,10 @@ def assemble_construct(
         window = (anchor, anchor) if anchor is not None else _mcs_window(vector)
         plan_warnings: List[str] = []   # 单独收集，避免与 apply_plan 的返回重复
         try:
-            if method == "gibson":
+            if method == "gibson" and custom_plan is not None:
+                # 自定义同源臂：边界由臂序列定位（plan 已在调用方算好）
+                plan = custom_plan
+            elif method == "gibson":
                 pos = insert_pos
                 if pos is None:
                     pos = (int(vector.mcs.start) - 1) if vector.mcs and vector.mcs.start \
@@ -535,17 +539,21 @@ def assemble_construct(
                 f"（5′ 端填 {enzyme_3 or '-'}、3′ 端填 {enzyme_5 or '-'}）。")
 
     if plan is not None and method == "gibson" and check_cassette:
-        # Gibson 方向自检：插入模型恒按正链放置（取向实际由同源臂设计决定），
-        # 载体表达盒判为负链时，按当前模型组装出的基因是反义的——与 restriction
-        # 的「两端酶填反」同性质，必须在结果层说明而非默默给出反义构建体
+        # Gibson 方向自检：基因取向由臂/同源臂设计决定，载体表达盒判出的
+        # 方向与之相反时，组装出的基因是反义的——与 restriction 的「两端酶
+        # 填反」同性质，必须在结果层说明而非默默给出反义构建体
+        right_hint = (plan.right_cut if plan.right_cut > plan.left_cut
+                      else plan.left_cut + 1)
         hint = cassette_hint(
             _vector_element_dicts(vector) + list(extra_elements or []),
-            plan.left_cut, plan.left_cut + 1)
+            plan.left_cut, right_hint)
         if hint.get("strand") == "-":
+            advice = ("请交换两条重组臂的来源位置（取载体另一侧的同源区）重新填写"
+                      if custom_plan is not None else
+                      "请确认引物同源臂取向与此一致，或改用双酶切克隆（自动判向）")
             plan.warnings.append(
                 "Gibson 插入片段按正链组装，与载体表达盒方向（负链）相反："
-                "转录产物为反义 RNA。Gibson 的基因取向由同源臂设计决定，"
-                "请确认引物同源臂取向与此一致，或改用双酶切克隆（自动判向）")
+                f"转录产物为反义 RNA。{advice}")
 
     if plan is not None:
         try:
@@ -603,10 +611,12 @@ def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
             offset = len(site) - i
     elif plan.method == "gibson":
         from core.construct_assembly import gibson_junction_fusion
-        # 融合克隆（线性化点贴着/落在正链 CDS 内）：载体 ATG 是融合元件的
-        # 碱基而非起始密码子，CDS 不扩展
-        if vector is not None and gibson_junction_fusion(
-                _vector_element_dicts(vector), plan.left_cut) is not None:
+        # 融合克隆（连接点贴着/落在正链 CDS 内）：载体 ATG 是融合元件的
+        # 碱基而非起始密码子，CDS 不扩展。负链装配的基因 5′ 端在右连接点，
+        # 融合检测第一版不覆盖（负链 CDS 语义）
+        if (vector is not None and not plan.insert_reverse
+                and gibson_junction_fusion(
+                    _vector_element_dicts(vector), plan.left_cut) is not None):
             return
         offset = 3
     else:
@@ -639,6 +649,7 @@ def _resolve_redundant_start_codon(
     request, vector, backbone: str, optimized_dna: str,
     resolved_ends: Optional[RestrictionEnds],
     gibson_single_site: bool = False,
+    gibson_arms_plan=None,
 ) -> Tuple[str, List[str]]:
     """限制性克隆的起始密码子一致性检查（NdeI CATATG 是典型场景）。
 
@@ -654,6 +665,11 @@ def _resolve_redundant_start_codon(
     构建体里，绝不能动插入序列——用与组装完全相同的 plan_restriction
     探测一次，None 即回退路径。Golden Gate overhang（MoClo 惯例）不在此列。
     """
+    if (request.cloning_method == CloningMethod.GIBSON
+            and gibson_arms_plan is not None):
+        # 自定义同源臂：按基因 5′ 连接点的载体碱基判定（正反链）
+        return _resolve_custom_arms_start_codon(
+            request, backbone, gibson_arms_plan, optimized_dna)
     if (request.cloning_method == CloningMethod.GIBSON
             and (gibson_single_site
                  or getattr(request, "gibson_linearization", "double_digest")
@@ -710,6 +726,48 @@ def _resolve_redundant_start_codon(
     return optimized_dna, [
         "检测到冗余起始密码子："
         f"{enzyme_5_name} 位点自带 ATG 并充当起始密码子，插入序列又以 ATG 开头，"
+        "蛋白 N 端会出现连续两个 Met（Met-Met）；建议去掉输入序列开头的 ATG/M "
+        "重新设计，或勾选「位点自带起始密码子时去除冗余 ATG」"
+    ]
+
+
+def _resolve_custom_arms_start_codon(
+    request, backbone: str, plan, optimized_dna: str,
+) -> Tuple[str, List[str]]:
+    """自定义同源臂：起始密码子按基因 5′ 连接点的载体碱基判定。
+
+    正链装配看左连接点前 3bp，负链装配（臂角色互换）看右连接点后 3bp 的
+    反向互补；去除的是插入序列自己开头的 ATG（基因读法），蛋白仍与输入
+    氨基酸一致。融合克隆检测第一版仅覆盖正链装配（负链臂落进 minus CDS
+    的场景挂账）。
+    """
+    if not backbone or not optimized_dna:
+        return optimized_dna, []
+    if not str(optimized_dna).upper().startswith("ATG"):
+        return optimized_dna, []
+    if plan.insert_reverse:
+        from core.seq_utils import revcomp as _rc
+        if plan.right_cut + 3 > len(backbone):
+            return optimized_dna, []
+        leading_ok = _rc(backbone[plan.right_cut:plan.right_cut + 3]) == "ATG"
+    else:
+        if plan.left_cut < 3:
+            return optimized_dna, []
+        leading_ok = backbone[plan.left_cut - 3:plan.left_cut].upper() == "ATG"
+    if not leading_ok:
+        return optimized_dna, []
+    where = "线性化点前" if not plan.insert_reverse else "线性化点后（负链读法）"
+    if getattr(request, "trim_redundant_start", True) and len(optimized_dna) > 6:
+        return optimized_dna[3:], [
+            "已自动去除冗余起始密码子："
+            f"{where}的载体碱基以 ATG 结尾并充当起始密码子，插入序列再以 ATG 开头"
+            "会使蛋白 N 端出现连续两个 Met；已去掉插入序列开头的 ATG"
+            "（第一个甲硫氨酸由载体提供，蛋白与你输入的氨基酸序列一致）。"
+            "不希望自动去除可在设计表单取消勾选「位点自带起始密码子时去除冗余 ATG」"
+        ]
+    return optimized_dna, [
+        "检测到冗余起始密码子："
+        f"{where}的载体碱基以 ATG 结尾并充当起始密码子，插入序列又以 ATG 开头，"
         "蛋白 N 端会出现连续两个 Met（Met-Met）；建议去掉输入序列开头的 ATG/M "
         "重新设计，或勾选「位点自带起始密码子时去除冗余 ATG」"
     ]
@@ -1014,6 +1072,14 @@ def design_primers_for_method(
     def _cloning_pair() -> List[PrimerInfo]:
         """按克隆方法设计带对应末端的引物对"""
         if request.cloning_method == CloningMethod.GIBSON:
+            if (getattr(request, "gibson_linearization", "double_digest")
+                    == "custom_arms"):
+                # 自定义同源臂：插入分子 = 臂5 + 基因 + 臂3（臂由用户提供，
+                # 与载体连接点同源；构建体里臂就是载体自身的碱基）
+                pair = designer.design_custom_arm_primers(
+                    optimized_dna, request.homology_arm_5,
+                    request.homology_arm_3, primer_name=name)
+                return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
             if gibson_double_digest and gibson_plan is not None:
                 # 双酶切线性化：插入分子 = 位点残留 + 基因 + 位点残留，
                 # 同源臂覆盖线性化载体末端（含各自的位点前缀）
@@ -1187,8 +1253,13 @@ def run_design(
         # CDS 完整性逻辑全套复用；区别仅在引物（同源臂）与方案文本。
         # 位点不全时回退单位点线性化（旧模型）并明确告警
         gibson_single = False
+        gibson_arms_mode = False
         if request.cloning_method == CloningMethod.GIBSON:
-            if getattr(request, "gibson_linearization", "double_digest") == "single_site":
+            if getattr(request, "gibson_linearization", "double_digest") == "custom_arms":
+                # 自定义同源臂：臂序列即定位（plan 在 else 分支拿到 backbone
+                # 后计算），不走酶切位点
+                gibson_arms_mode = True
+            elif getattr(request, "gibson_linearization", "double_digest") == "single_site":
                 gibson_single = True
             elif ((request.enzyme_5 or request.enzyme)
                   and (request.enzyme_3 or request.enzyme)
@@ -1235,9 +1306,19 @@ def run_design(
             else:
                 result.plasmid_name = _base_name
 
+            # 自定义同源臂：由臂序列反推线性化边界（定位失败/歧义直接抛
+            # ValueError，设计以失败态给出原因，不做静默回退）
+            gibson_arms_plan = None
+            if gibson_arms_mode:
+                from core.construct_assembly import plan_custom_arms
+                gibson_arms_plan = plan_custom_arms(
+                    backbone, request.homology_arm_5, request.homology_arm_3,
+                    circular=str(getattr(vector, "topology", "circular")
+                                 or "circular").lower() != "linear")
+
             if (request.cloning_method == CloningMethod.RESTRICTION
                     or (request.cloning_method == CloningMethod.GIBSON
-                        and not gibson_single)):
+                        and not gibson_single and not gibson_arms_mode)):
                 # 方向由载体表达盒决定：两把酶填成什么顺序都不影响结果，
                 # 只有用户显式选「正向/反向」时才覆盖（反义构建）
                 resolved_ends = resolve_restriction_ends(
@@ -1259,7 +1340,8 @@ def run_design(
                 # 去除发生在组装与引物设计之前，两者都消费 optimized_dna
                 optimized_dna, start_codon_warnings = _resolve_redundant_start_codon(
                     request, vector, backbone, optimized_dna, resolved_ends,
-                    gibson_single_site=gibson_single)
+                    gibson_single_site=gibson_single,
+                    gibson_arms_plan=gibson_arms_plan)
                 result.warnings.extend(start_codon_warnings)
                 result.optimized_sequence = optimized_dna
             # 按克隆方法建模切点：Gibson 单位点不切除碱基、双酶切（含 Gibson
@@ -1270,7 +1352,8 @@ def run_design(
                                           == CloningMethod.RESTRICTION
                                           or (request.cloning_method
                                               == CloningMethod.GIBSON
-                                              and not gibson_single))
+                                              and not gibson_single
+                                              and not gibson_arms_mode))
                         else request.cloning_method.value),
                 insert_pos=gibson_pos,
                 enzyme=request.enzyme,
@@ -1286,6 +1369,7 @@ def run_design(
                       else "sticky"),
                 keep_sites=(True if request.cloning_method == CloningMethod.RESTRICTION
                             else getattr(request, "keep_restriction_sites", True)),
+                custom_plan=gibson_arms_plan,
             )
             result.warnings.extend(assembly.warnings)
 
@@ -1296,7 +1380,7 @@ def run_design(
                 result.warnings.append(warning)
         elif (request.cloning_method == CloningMethod.RESTRICTION
               or (request.cloning_method == CloningMethod.GIBSON
-                  and not gibson_single)):
+                  and not gibson_single and not gibson_arms_mode)):
             # 插入片段内部含所选酶位点时酶切会切断片段，必须在结果层告警
             # （Gibson 双酶切线性化同样用酶切载体，同一约束）
             from core.sequence_analysis import RESTRICTION_ENZYMES
@@ -1321,7 +1405,8 @@ def run_design(
 
         # 4. 引物
         gibson_double_plan = None
-        if (request.cloning_method == CloningMethod.GIBSON and not gibson_single):
+        if (request.cloning_method == CloningMethod.GIBSON and not gibson_single
+                and not gibson_arms_mode):
             from core.construct_assembly import plan_restriction as _plan_restriction
             gibson_double_plan = _plan_restriction(
                 backbone, request.enzyme_5 or request.enzyme,
@@ -1336,7 +1421,7 @@ def run_design(
             enzyme_5=resolved_ends.enzyme_5 if resolved_ends else None,
             enzyme_3=resolved_ends.enzyme_3 if resolved_ends else None,
             gibson_double_digest=(request.cloning_method == CloningMethod.GIBSON
-                                  and not gibson_single),
+                                  and not gibson_single and not gibson_arms_mode),
             gibson_plan=gibson_double_plan,
         )
 

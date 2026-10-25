@@ -87,8 +87,14 @@ class DesignOptions(BaseModel):
     # Gibson 载体线性化方式：双酶切（默认，主流实践——两把酶切走区间，
     # 组装几何与限制性克隆一致，方向/起始密码子/CDS 逻辑全套复用）或
     # 单位点（单切点插入，旧模型）。双酶切需要 enzyme_5 + enzyme_3
-    gibson_linearization: Literal["double_digest", "single_site"] = Field(
+    gibson_linearization: Literal["double_digest", "single_site", "custom_arms"] = Field(
         default="double_digest", description="Gibson 载体线性化方式")
+    # 自定义同源臂（custom_arms 模式）：两条臂按同一方向粘贴即可，工具按
+    # 整条插入分子两种取向试装配；精确唯一匹配，臂长 15-200bp
+    homology_arm_5: str = Field(
+        default="", description="自定义 5′ 重组臂序列（custom_arms 模式必填）")
+    homology_arm_3: str = Field(
+        default="", description="自定义 3′ 重组臂序列（custom_arms 模式必填）")
     # 双酶切线性化时同源臂是否把位点重建回连接处：保留（默认）= 构建体里
     # 位点完整可再次酶切；关闭 = 无缝连接，位点碱基被同源臂重组消费掉
     keep_restriction_sites: bool = Field(

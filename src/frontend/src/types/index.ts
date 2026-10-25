@@ -84,8 +84,11 @@ export interface DesignRequest {
   insert_direction?: InsertDirection
   /** NdeI/NcoI 等位点自带起始密码子时自动去除插入序列开头的冗余 ATG（默认 true） */
   trim_redundant_start?: boolean
-  /** Gibson 载体线性化方式：双酶切（默认）或单位点 */
-  gibson_linearization?: 'double_digest' | 'single_site'
+  /** Gibson 载体线性化方式：双酶切（默认）/ 单位点 / 自定义同源臂 */
+  gibson_linearization?: 'double_digest' | 'single_site' | 'custom_arms'
+  /** 自定义 5′/3′ 重组臂（custom_arms 模式） */
+  homology_arm_5?: string
+  homology_arm_3?: string
   /** Gibson 双酶切线性化时保留连接处的酶切位点（默认 true；关闭 = 无缝连接） */
   keep_restriction_sites?: boolean
   /** 质粒名加载体名前缀（载体名-序列名） */
