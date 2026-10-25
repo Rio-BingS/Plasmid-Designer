@@ -343,6 +343,61 @@ def test_synthesis_golden_gate_keeps_cloning_pair():
         "Golden Gate 未把末端合进 oligo，应保留组装后扩增加末端的引物对"
 
 
+def test_synthesis_end_oligos_annotate_protective_spacer():
+    """首/尾 oligo 的 notes 必须写明保护碱基与位点的去向：保护碱基酶切后
+    随小片段去除、不在构建体中——用户拿 oligo 去图谱搜索首尾差 6nt，
+    差在哪、为什么差要写在明面上，不留给用户猜（v2.25.0 用户反馈）"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_note", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "保护碱基" in (first.notes or "") and "NdeI" in (first.notes or ""), first.notes
+    assert "不在构建体中" in (first.notes or "")
+    assert "保护碱基" in (last.notes or "") and "XhoI" in (last.notes or ""), last.notes
+    assert "不在构建体中" in (last.notes or "")
+
+
+def test_synthesis_gibson_end_oligos_annotate_arms():
+    """同源臂合成 oligo 的首尾 notes 写明「载体同源臂，组装后与载体序列
+    一致」——臂在图谱里，与限制性的保护碱基（不在图谱里）口径不同"""
+    from app.routes.models import CloningMethod as CM, DesignRequest
+    result = run_design("uvf_syn_arm_note", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "同源臂" in (first.notes or "") and "一致" in (first.notes or ""), first.notes
+    assert "同源臂" in (last.notes or "") and "一致" in (last.notes or ""), last.notes
+
+
+def test_synthesis_oligos_all_locate_on_construct():
+    """oligo↔构建体一致性自检：每条合成 oligo（剥去两端保护碱基折算后）
+    都必须能在构建体序列（顶链或反向互补）上定位；正常设计不允许出现
+    「无法在构建体序列上定位」告警"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_loc", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any("无法在构建体序列上定位" in w for w in result.warnings), result.warnings
+    cons = (result.construct_sequence or "").upper()
+    cons_rc = revcomp(cons)
+    for p in (x for x in result.primers if x.target_start is not None):
+        s = p.full_sequence.upper()
+        cands = [s] + ([s[6:], s[:-6], s[6:-6]] if len(s) > 12 else [])
+        assert any(c in cons or c in cons_rc for c in cands), p.name
+
+
 def test_arms_preview_unknown_arm_fails_loudly():
     import pytest
     with pytest.raises(ValueError) as exc:
