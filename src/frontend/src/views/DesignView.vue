@@ -403,6 +403,9 @@ async function handleSubmit() {
     if (cloningMethod.value === 'gibson' && gibsonSite.value) {
       request.gibson_site = gibsonSite.value
     }
+    if (cloningMethod.value === 'gibson') {
+      request.trim_redundant_start = autoTrimStartCodon.value
+    }
     if (excludeEnzymesApplicable.value && excludeEnzymes.value.length) {
       request.exclude_enzymes = excludeEnzymes.value
     }
@@ -680,6 +683,12 @@ function loadExample() {
             />
             <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
           </div>
+          <label class="checkbox-label trim-start-row">
+            <input v-model="autoTrimStartCodon" type="checkbox" />
+            <span>线性化点前自带起始密码子时去除冗余 ATG（载体碱基以 ATG 结尾时
+              自动去掉插入序列开头的 ATG，避免蛋白 N 端出现连续两个 Met；
+              融合到载体 CDS/tag 时仅提示读码框，不自动去除）</span>
+          </label>
         </div>
 
         <!-- Golden Gate 参数 -->
