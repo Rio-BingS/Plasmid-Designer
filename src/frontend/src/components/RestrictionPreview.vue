@@ -15,7 +15,7 @@ const props = defineProps<{
 }>()
 
 const VB_W = 1000
-const VB_H = 150
+const VB_H = 176
 const PAD = 28
 const BACKBONE_Y = 96
 const GENE_H = 18
@@ -57,7 +57,7 @@ const markerFeatures = computed(() => {
 /** 元件按类型分色（与结果页环形图 palette 一致）：启动子最醒目——
  *  它决定基因方向，是预览图上最需要看见的元件 */
 const MARKER_STYLES: Record<string, { fill: string; label: string; height: number }> = {
-  promoter: { fill: '#e9736f', label: '#c0392b', height: 16 },
+  promoter: { fill: '#e05252', label: '#c53030', height: 18 },
   terminator: { fill: '#47b096', label: '#2c7a67', height: 12 },
   rbs: { fill: '#f3ab68', label: '#b5622d', height: 10 },
   regulatory: { fill: '#a0aec0', label: '#718096', height: 10 },
@@ -66,6 +66,31 @@ const MARKER_STYLES: Record<string, { fill: string; label: string; height: numbe
 function markerStyle(type: string | undefined): { fill: string; label: string; height: number } {
   return MARKER_STYLES[(type || '').toLowerCase()] || MARKER_STYLES.regulatory
 }
+
+/** 标注防重叠：按 x 排序从左往右放，与前一标签相交就换下一行
+ *  （启动子与 RBS 紧邻时标签会叠在一起，实测 "RBS/promoter" 完全不可读） */
+const markerLabelLayout = computed(() => {
+  const items = markerFeatures.value.map((feat) => {
+    const x = (toX(feat.start) + toX(feat.end)) / 2
+    return { feat, x, label: shortName(feat.name) }
+  }).sort((a, b) => a.x - b.x)
+  const rowEnds: number[] = []
+  return items.map((it) => {
+    const width = it.label.length * 6.5 + 10
+    let row = rowEnds.findIndex((end) => it.x - width / 2 > end)
+    if (row === -1) {
+      rowEnds.push(it.x + width / 2)
+      row = rowEnds.length - 1
+    } else {
+      rowEnds[row] = it.x + width / 2
+    }
+    return { ...it, row }
+  })
+})
+
+const LABEL_ROW_H = 13
+const LABEL_Y0 = 134
+const MAX_LABEL_ROWS = 3
 
 /** 元件名称太长时截断（图上只留识别用的部分） */
 function shortName(name: string, max = 18): string {
@@ -174,26 +199,29 @@ const rulerTicks = computed(() => {
         <text :x="threeX" :y="GENE_Y + GENE_H / 2 + 30" class="rp-end" text-anchor="middle">3′</text>
 
         <!-- 附近元件（启动子/终止子/RBS）：按类型分色，启动子最大最红；
-             箭头方向 = 元件自身 strand -->
-        <g v-for="(feat, i) in markerFeatures" :key="`${feat.name}-${feat.start}-${i}`">
+             箭头方向 = 元件自身 strand；标签防重叠自动分行 -->
+        <g v-for="(item, i) in markerLabelLayout" :key="`${item.feat.name}-${item.feat.start}-${i}`">
           <path
-            :d="arrowPath(toX(feat.start), toX(feat.end), MARK_Y, markerStyle(feat.type).height, feat.strand === '-' ? -1 : 1)"
-            :fill="markerStyle(feat.type).fill" opacity="0.92"
+            :d="arrowPath(toX(item.feat.start), toX(item.feat.end), MARK_Y, markerStyle(item.feat.type).height, item.feat.strand === '-' ? -1 : 1)"
+            :fill="markerStyle(item.feat.type).fill" opacity="0.92"
           >
-            <title>{{ feat.name }}（{{ feat.type }}）</title>
+            <title>{{ item.feat.name }}（{{ item.feat.type }}）</title>
           </path>
-          <text :x="(toX(feat.start) + toX(feat.end)) / 2" :y="MARK_Y + 24"
-                class="rp-marker" :fill="markerStyle(feat.type).label" text-anchor="middle"
-                :font-weight="feat.type?.toLowerCase() === 'promoter' ? 700 : 400">
-            {{ shortName(feat.name) }}
+          <text
+            v-if="item.row < MAX_LABEL_ROWS"
+            :x="item.x" :y="LABEL_Y0 + item.row * LABEL_ROW_H"
+            class="rp-marker" :fill="markerStyle(item.feat.type).label" text-anchor="middle"
+            :font-weight="item.feat.type?.toLowerCase() === 'promoter' ? 700 : 400"
+          >
+            {{ item.label }}
           </text>
         </g>
 
         <!-- 窗口刻度 -->
         <g>
-          <line :x1="PAD" :x2="VB_W - PAD" y1="142" y2="142" stroke="#a0aec0" stroke-width="1" />
-          <text :x="PAD" y="138" class="rp-ruler" text-anchor="start">{{ rulerTicks[0] }}</text>
-          <text :x="VB_W - PAD" y="138" class="rp-ruler" text-anchor="end">{{ rulerTicks[1] }}</text>
+          <line :x1="PAD" :x2="VB_W - PAD" y1="168" y2="168" stroke="#a0aec0" stroke-width="1" />
+          <text :x="PAD" y="164" class="rp-ruler" text-anchor="start">{{ rulerTicks[0] }}</text>
+          <text :x="VB_W - PAD" y="164" class="rp-ruler" text-anchor="end">{{ rulerTicks[1] }}</text>
         </g>
       </svg>
 
