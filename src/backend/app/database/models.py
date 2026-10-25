@@ -32,6 +32,21 @@ engine = create_engine(
     connect_args=_connect_args
 )
 
+# SQLite 并发写治理（仅 sqlite 方言）：默认 journal 模式下写锁独占，
+# 线程池 + 后台任务的并发写会互相 "database is locked"。WAL 允许读写并行，
+# busy_timeout 让锁竞争等待而非立即报错；synchronous=NORMAL 是 WAL 下的
+# 推荐档（性能好，崩溃只丢最后一个事务、不损坏库）
+if DATABASE_URL.startswith("sqlite"):
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
 # 会话工厂
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
