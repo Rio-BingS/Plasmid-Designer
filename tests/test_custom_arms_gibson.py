@@ -51,7 +51,7 @@ def test_ambiguous_both_orientations_error():
 
 
 def test_no_match_error_names_the_arm():
-    with pytest.raises(ValueError, match="5′ 重组臂在载体上无精确匹配"):
+    with pytest.raises(ValueError, match="臂①（原 5′ 臂栏）在载体上无精确匹配"):
         plan_custom_arms(BB, "ACGCGTACGTACGTA", ARM3)
 
 
@@ -149,8 +149,9 @@ def test_custom_arms_start_codon_trim(monkeypatch):
     assert result.construct_sequence[feat["start"] - 1:feat["start"] + 2] == "ATG"
 
 
-def test_custom_arms_direction_warning_on_pet28a():
-    """pET-28a 表达盒在负链：正链臂匹配 → 方向相反告警（复用 cassette_hint）"""
+def test_custom_arms_direction_follows_promoter_on_pet28a():
+    """pET-28a 表达盒在负链：臂只给位置，装配链向按启动子自动判成负链
+    （旧模型按粘贴链向拼成正链、只告警不纠正——现在直接拼对）"""
     from app.design_service import get_vector_library
     bb = get_vector_library().get_vector("pET-28a").sequence
     arm5 = bb[140:158]   # 紧贴 XhoI(158) 左侧
@@ -158,7 +159,13 @@ def test_custom_arms_direction_warning_on_pet28a():
     result = run_design_fn("ca_dir", _arms_request(
         vector_id="pET-28a", homology_arm_5=arm5, homology_arm_3=arm3))
     assert result.status.value == "completed", result.errors
-    assert any("反义 RNA" in w for w in result.warnings)
+    assert any("CDS 方向与启动子一致" in w and "负链" in w
+               for w in result.warnings)
+    # 构建体 CDS 落在负链（与启动子同向）
+    cds = next(f for f in result.construct_features
+               if f["type"] == "CDS"
+               and "designed insert" in (f.get("description") or "").lower())
+    assert cds["strand"] == "-"
 
 
 def run_design_fn(design_id, request):

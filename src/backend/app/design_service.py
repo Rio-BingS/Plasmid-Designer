@@ -359,7 +359,10 @@ def build_restriction_preview(request) -> Dict:
         arm3 = str(getattr(request, "homology_arm_3", "") or "")
         if not arm5 or not arm3:
             raise ValueError("同源臂预览需要 5′/3′ 两条重组臂序列")
-        custom_plan = plan_custom_arms(backbone, arm5, arm3, circular=circular)
+        custom_plan = plan_custom_arms(
+            backbone, arm5, arm3, circular=circular,
+            direction=getattr(request, "direction", "auto"),
+            elements=_vector_element_dicts(vector))
         warnings.extend(custom_plan.warnings)
         strand = "-" if custom_plan.insert_reverse else "+"
         source = "user"
@@ -1162,6 +1165,7 @@ def design_primers_for_method(
     gibson_double_digest: bool = False,
     gibson_plan=None,
     gibson_insert_pos: Optional[int] = None,
+    gibson_arms_plan=None,
 ) -> List[PrimerInfo]:
     """按「插入片段来源 × 克隆方法」设计引物/寡核苷酸。
 
@@ -1185,11 +1189,14 @@ def design_primers_for_method(
         if request.cloning_method == CloningMethod.GIBSON:
             if (getattr(request, "gibson_linearization", "double_digest")
                     == "custom_arms"):
-                # 自定义同源臂：插入分子 = 臂5 + 基因 + 臂3（臂由用户提供，
-                # 与载体连接点同源；构建体里臂就是载体自身的碱基）
+                # 自定义同源臂：插入分子 = 臂5 + 基因 + 臂3。臂序列用
+                # plan 的解析结果（栏位顺序/粘贴链向可能已被自动纠正），
+                # 不再直接用 request 里的原始填写
+                arms = (gibson_arms_plan if gibson_arms_plan is not None else None)
+                arm5_seq = getattr(arms, "arm_5_seq", "") or request.homology_arm_5
+                arm3_seq = getattr(arms, "arm_3_seq", "") or request.homology_arm_3
                 pair = designer.design_custom_arm_primers(
-                    optimized_dna, request.homology_arm_5,
-                    request.homology_arm_3, primer_name=name)
+                    optimized_dna, arm5_seq, arm3_seq, primer_name=name)
                 return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
             if gibson_double_digest and gibson_plan is not None:
                 # 双酶切线性化：插入分子 = 位点残留 + 基因 + 位点残留，
@@ -1467,6 +1474,7 @@ def run_design(
         # 组装与方案文本共用的方法参数：切点/overhang 先算一次
         # （vector 为 None 时 derive_gg_overhangs 返回默认值）
         gibson_pos: Optional[int] = None
+        gibson_arms_plan = None
         gg_oh5: Optional[str] = None
         gg_oh3: Optional[str] = None
         gg_derived = False
@@ -1537,21 +1545,21 @@ def run_design(
 
             # 自定义同源臂：由臂序列反推线性化边界（定位失败/歧义直接抛
             # ValueError，设计以失败态给出原因，不做静默回退）
-            gibson_arms_plan = None
             if gibson_arms_mode:
                 from core.construct_assembly import plan_custom_arms
+                # 顺序/链向无关：栏位贴反自动对调、装配链向按启动子自动判定
                 gibson_arms_plan = plan_custom_arms(
                     backbone, request.homology_arm_5, request.homology_arm_3,
                     circular=str(getattr(vector, "topology", "circular")
-                                 or "circular").lower() != "linear")
+                                 or "circular").lower() != "linear",
+                    direction=getattr(request, "insert_direction", "auto"),
+                    elements=_vector_element_dicts(vector))
                 # 拼接顺序的「判断」写成结果层说明：两臂锚定在哪、替换了
                 # 哪段、基因按哪条链装配（定位失败/歧义在上方已直接抛错）
                 result.warnings.append(
                     "拼接定位："
                     + gibson_arms_plan.junction
-                    + f"；插入分子（臂5+基因+臂3）按"
-                    f"{'负链' if gibson_arms_plan.insert_reverse else '正链'}装配，"
-                    "两臂在载体上均唯一精确匹配")
+                    + "；两臂在载体上均唯一精确匹配")
             elif gibson_same_enzyme:
                 # 同酶双填回退的单点线性化：优先落在这把酶自己的切点上
                 # （MCS 窗口内优先），与用户填这把酶的意图一致，而不是
@@ -1695,6 +1703,7 @@ def run_design(
                                   and not gibson_single and not gibson_arms_mode),
             gibson_plan=gibson_double_plan,
             gibson_insert_pos=gibson_pos,
+            gibson_arms_plan=gibson_arms_plan,
         )
 
         # 4.0 组装可行性自检（限制性 / Gibson 双酶切线性化）：回退、粘端
