@@ -362,19 +362,3 @@ class VectorLibraryManager:
     def search_online(self, query: str) -> List[ExternalVector]:
         """在线搜索"""
         return self.addgene.search_vectors(query)
-
-
-# 便捷函数
-def import_from_ncbi(seq_id: str) -> ExternalVector:
-    """通过 NCBI ID 导入载体"""
-    client = NCBIClient()
-    return client.fetch_genbank(seq_id)
-
-def search_ncbi(query: str, limit: int = 5) -> List[ExternalVector]:
-    """搜索 NCBI 并返回载体列表"""
-    client = NCBIClient()
-    return client.search_and_fetch(query, limit)
-
-def import_genbank_file(filepath: str) -> ExternalVector:
-    """导入 GenBank 文件"""
-    return GenBankImporter().import_file(filepath)
