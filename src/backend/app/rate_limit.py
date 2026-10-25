@@ -349,7 +349,10 @@ _AUTH_BUCKETS = ("auth",)
 def normalize_email(value) -> str:
     if not isinstance(value, str):
         return ""
-    return value.strip().lower()[:254]
+    # 清除控制字符：email 会进限流键并随 429 日志输出，未过滤的 \r/\n
+    # 可伪造日志行（干扰取证），控制字符对邮箱匹配也毫无意义
+    cleaned = "".join(ch for ch in value if ch >= " " and ch != "\x7f")
+    return cleaned.strip().lower()[:254]
 
 
 def get_rate_limit_key(request: Request, endpoint: str, identity: Optional[str] = None) -> str:
@@ -409,7 +412,10 @@ def reset_login_failures(email) -> None:
 
 def too_many_response(key: str, limit_config: Dict, retry_after: int) -> JSONResponse:
     """统一的 429 响应（与中间件同形：detail + retry_after，带 Retry-After 头）"""
-    logger.warning(f"Rate limit exceeded: {key}")
+    # 键含用户可控的邮箱：日志只落清洗截断版（防 PII 全量进运维日志、
+    # 防多行输入伪造日志行），键本体（Redis/内存计数）保持原样
+    _log_key = re.sub(r"[\r\n\t]+", " ", key)[:120]
+    logger.warning("Rate limit exceeded: %s", _log_key)
     return JSONResponse(
         status_code=429,
         content={
