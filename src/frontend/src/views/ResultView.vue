@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } fr
 import { useRouter } from 'vue-router'
 import type { DesignResult } from '@/types'
 import { getDesign, downloadGenbank, downloadPrimers, formatApiError } from '@/api'
+import { splitWarning } from '@/utils/warning'
 import type { MapDocument } from '@/map/types'
 import { getDesignMap } from '@/map/api'
 // 图谱查看器只在点"查看质粒图谱"后才需要：单独拆包
@@ -365,7 +366,15 @@ onUnmounted(() => {
           <div v-if="result.warnings.length" class="warnings">
             <h4>警告</h4>
             <ul>
-              <li v-for="warn in result.warnings" :key="warn">{{ warn }}</li>
+              <!-- 摘要平铺、详细解释折叠：全句平铺过于冗长（用户反馈） -->
+              <li v-for="(warn, wi) in result.warnings" :key="wi">
+                <details class="warning-item">
+                  <summary>⚠️ {{ splitWarning(warn).summary }}</summary>
+                  <p v-if="splitWarning(warn).detail" class="warning-detail">
+                    {{ splitWarning(warn).detail }}
+                  </p>
+                </details>
+              </li>
             </ul>
           </div>
         </div>
@@ -654,6 +663,22 @@ onUnmounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin-bottom: 0.25rem;
+}
+
+.warning-item summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.warning-item[open] summary {
+  margin-bottom: 0.25rem;
+}
+
+.warning-detail {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border-color, #e0e0e0);
+  color: var(--text-secondary);
 }
 
 .download-section {
