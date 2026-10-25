@@ -9,7 +9,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -42,7 +42,8 @@ AUTH_COOKIE_MAX_AGE = ACCESS_TOKEN_EXPIRE_HOURS * 3600
 class UserBase(BaseModel):
     """用户基础模型"""
     email: EmailStr
-    username: str
+    # 与数据库列宽对齐（String(100)）：超长名在 PostgreSQL 下直接 DataError 500
+    username: str = Field(..., min_length=1, max_length=100)
 
 
 class UserCreate(UserBase):
