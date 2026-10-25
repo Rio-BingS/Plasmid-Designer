@@ -171,13 +171,13 @@ def _cassette_elements(vector, backbone: str, circular: bool) -> Tuple[List[Dict
 
     返回 (元件列表, 来源)。来源 = annotation / auto_detected / none。
     """
-    from core.construct_assembly import _is_promoter
+    from core.construct_assembly import is_promoter
 
     elements = _vector_element_dicts(vector)
-    if any(_is_promoter(e) for e in elements):
+    if any(is_promoter(e) for e in elements):
         return elements, "annotation"
     detected = _auto_annotate(backbone, circular)
-    if any(_is_promoter(e) for e in detected):
+    if any(is_promoter(e) for e in detected):
         # 自动识别的元件补进来；和已有注释重叠的丢掉（注释优先）
         extra = [e for e in detected if not _overlaps_any(e, elements)]
         return elements + extra, "auto_detected"
@@ -835,14 +835,14 @@ def _golden_gate_site_warning(sequence: str, enzyme_name: str) -> Optional[str]:
     酶参数走 REBASE（get_enzyme），任何 Golden Gate 候选酶都能检查，
     不再只认默认菜单里的 BsaI/BsmBI/BbsI。"""
     from core.enzyme_sites import get_enzyme
-    from core.primer_designer import _gg_site_count
+    from core.primer_designer import gg_site_count
 
     spec = get_enzyme(enzyme_name)
     if spec is None:
         return f"未知 Golden Gate 酶 {enzyme_name}，无法检查内部识别位点"
     # 按识别序列计数：靠近插入片段末端、切点落在片段外的位点 find_enzyme_sites
     # 会丢掉，但接上引物尾后切点就在扩增子内，照样会切
-    n = _gg_site_count(sequence, enzyme_name)
+    n = gg_site_count(sequence, enzyme_name)
     if not n:
         return None
     return (

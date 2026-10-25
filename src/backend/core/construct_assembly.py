@@ -464,7 +464,7 @@ def apply_plan(
 # 用来打破平局）→ 都没有就让用户按预览图自己选。判定只在证据唯一时给结论。
 
 
-def _is_promoter(element: Dict) -> bool:
+def is_promoter(element: Dict) -> bool:
     """元件是不是启动子（GenBank 里可能标成 promoter/regulatory，名字里也常带）"""
     kind = str(element.get("type") or "").strip().lower()
     if kind == "promoter":
@@ -533,7 +533,7 @@ def cassette_hint(
         if span is None:
             continue
         start, end = span
-        if _is_promoter(element):
+        if is_promoter(element):
             if str(element.get("strand") or "+") == "-":
                 gap = start - right_cut
                 if 0 < gap <= max_gap:
@@ -601,3 +601,6 @@ def cassette_direction(
     hint = cassette_hint(elements, left_cut, right_cut, max_gap=max_gap)
     return hint["strand"], hint["promoter"]
 
+
+# ==================== 公开化别名（跨层契约原为私有名）====================
+_is_promoter = is_promoter  # 公开化前的私有名（历史引用兼容）

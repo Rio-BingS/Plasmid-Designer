@@ -39,7 +39,7 @@ def norm_stem(name) -> str:
     return t.strip('"')
 
 
-def _squash(name) -> str:
+def squash_name(name) -> str:
     """分隔符不敏感形式：小写并去掉空白与 -/_。'S99678-M13F-75' → 's99678m13f75'"""
     return re.sub(r"[\s\-_]+", "", str(name).lower())
 
@@ -223,12 +223,12 @@ def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
     同一口径）：全名精确 > 忽略分隔符精确 > 与名称的某一段一致（"MBYSTC" ↔
     "17648 MBYSTC"）> 双向包含（短侧 ≥4 字符，防 "MX" 命中 "MX2"）。
     候选不唯一一律不猜，返回 (None, 原因)。"""
-    sq = _squash(stem)
-    segs = lambda n: {_squash(t) for t in re.split(r"\s+", n.strip()) if t}
+    sq = squash_name(stem)
+    segs = lambda n: {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}
     levels = (
         ([n for n in names if norm_stem(n) == stem],
          "文件名与质粒名称精确匹配"),
-        ([n for n in names if _squash(n) == sq],
+        ([n for n in names if squash_name(n) == sq],
          "文件名与质粒名称精确匹配（忽略分隔符）"),
         ([n for n in names if sq in segs(n)],
          f"文件名与质粒名称的组成部分一致（{{}}）"),
@@ -241,7 +241,7 @@ def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
                           + "、".join(sorted(cands))[:80] + "），无法唯一确定")
     cont = []
     for n in names:
-        nsq = _squash(n)
+        nsq = squash_name(n)
         if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
             cont.append(n)
     if len(cont) == 1:
@@ -335,18 +335,18 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     # ---- 图谱 → 质粒名称（返回 质粒名, 说明, 匹配强度 0=全名精确 1=忽略分隔符
     #      精确 2=与名称某一段一致 3=双向包含）----
     def _match_ref(f: Dict) -> Tuple[Optional[str], str, int]:
-        stem, sq = f["stem"], _squash(f["stem"])
+        stem, sq = f["stem"], squash_name(f["stem"])
         levels = (
             ([n for n in names if norm_stem(n) == stem],
              "文件名与质粒名称精确匹配"),
-            ([n for n in names if _squash(n) == sq],
+            ([n for n in names if squash_name(n) == sq],
              "文件名与质粒名称精确匹配（忽略分隔符）"),
-            ([n for n in names if sq in {_squash(t) for t in re.split(r"\s+", n.strip()) if t}],
+            ([n for n in names if sq in {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}],
              None),
         )
         cont = []
         for n in names:
-            nsq = _squash(n)
+            nsq = squash_name(n)
             if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
                 cont.append(n)
         for level, (cands, how) in enumerate(levels):
@@ -384,12 +384,12 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     sq_pool: Dict[str, List[Tuple[str, str, str]]] = {}
     for k, v in composed.items():
         if k not in composed_conflicts:
-            sq_pool.setdefault(_squash(k), []).append(v)
+            sq_pool.setdefault(squash_name(k), []).append(v)
     for k, (p, c) in bare_unique.items():
-        sq_pool.setdefault(_squash(k), []).append((p, c, "引物列精确匹配"))
+        sq_pool.setdefault(squash_name(k), []).append((p, c, "引物列精确匹配"))
 
     def _assign_read(f: Dict) -> Tuple[Optional[Tuple[str, str]], str]:
-        stem, sq = f["stem"], _squash(f["stem"])
+        stem, sq = f["stem"], squash_name(f["stem"])
         if stem in composed_conflicts:
             return None, "「克隆号+引物」组合在信息表中对应多行，无法唯一归属"
         hit = composed.get(stem)
@@ -407,7 +407,7 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
         # 裸引物条目只做精确匹配、不参与包含——含引物名但克隆号未知/不在表中
         # 的文件（如 S99999-M13F-75）不能凭引物名吸收进某个克隆
         cont = [(k, v) for k, v in composed.items()
-                if k not in composed_conflicts and len(_squash(k)) >= 4 and _squash(k) in sq]
+                if k not in composed_conflicts and len(squash_name(k)) >= 4 and squash_name(k) in sq]
         if cont:
             uniq = {(v[0], v[1]) for _, v in cont}
             if len(uniq) == 1:
@@ -473,12 +473,12 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     for (plasmid, _clone) in list(groups):
         if not plasmid or plasmid in ref_by_plasmid:
             continue
-        nsq = _squash(plasmid)
+        nsq = squash_name(plasmid)
         if len(nsq) < 4:
             continue
         cands = [f for f in ref_files
-                 if min(len(nsq), len(_squash(f["stem"]))) >= 4
-                 and (nsq in _squash(f["stem"]) or _squash(f["stem"]) in nsq)]
+                 if min(len(nsq), len(squash_name(f["stem"]))) >= 4
+                 and (nsq in squash_name(f["stem"]) or squash_name(f["stem"]) in nsq)]
         if len(cands) == 1:
             ref_by_plasmid[plasmid] = {
                 "file": cands[0],
@@ -494,11 +494,11 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     for (plasmid, _clone) in list(groups):
         if not plasmid or plasmid in ref_by_plasmid:
             continue
-        nsq = _squash(plasmid)
+        nsq = squash_name(plasmid)
         if len(nsq) < 2:
             continue
         hosts = [n for n in names if n != plasmid and nsq in
-                 {_squash(t) for t in re.split(r"\s+", n.strip()) if t}]
+                 {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}]
         if len(hosts) != 1:
             continue
         host_ref = ref_by_plasmid.get(hosts[0])
@@ -681,3 +681,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     if tail:
         out += "；" + "；".join(tail)
     return out
+
+
+# ==================== 公开化别名（跨层契约原为私有名）====================
+_squash = squash_name  # 公开化前的私有名（历史引用兼容）
