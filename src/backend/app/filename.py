@@ -36,11 +36,12 @@ def content_disposition(safe_name: str, *,
                         ascii_fallback: Optional[str] = None) -> str:
     """组装 `attachment` 的 Content-Disposition 值。
 
-    safe_name 应先经 sanitize_filename；纯 ASCII 直接 filename=，非 ASCII
-    走 filename*=UTF-8''...（RFC 5987），并给不支持 filename* 的旧客户端
+    safe_name 应先经 sanitize_filename（保证无引号/CR/LF，可安全放进
+    quoted-string）；纯 ASCII 直接 filename="..."，非 ASCII 走
+    filename*=UTF-8''...（RFC 5987），并给不支持 filename* 的旧客户端
     一个 ASCII 兜底名。"""
     if safe_name.isascii():
-        return f"attachment; filename={safe_name}"
+        return f'attachment; filename="{safe_name}"'
     ascii_name = ascii_fallback or "download"
-    return (f"attachment; filename={ascii_name}; "
+    return (f'attachment; filename="{ascii_name}"; '
             f"filename*=UTF-8''{quote(safe_name)}")

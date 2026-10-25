@@ -40,13 +40,13 @@ def test_sanitize_filename_truncates():
 # ==================== 单元：content_disposition ====================
 
 def test_content_disposition_ascii():
-    assert content_disposition("pET-28a.gb") == "attachment; filename=pET-28a.gb"
+    assert content_disposition("pET-28a.gb") == 'attachment; filename="pET-28a.gb"'
 
 
 def test_content_disposition_cjk_uses_rfc5987():
     # 非 ASCII 必须走 filename*（HTTP 头仅限 latin-1），且给 ASCII 兜底名
     val = content_disposition("样品-consensus.gb", ascii_fallback="consensus.gb")
-    assert val.startswith("attachment; filename=consensus.gb; filename*=UTF-8''")
+    assert val.startswith('attachment; filename="consensus.gb"; filename*=UTF-8\'\'')
     assert "%E6%A0%B7%E5%93%81" in val  # 「样品」的 percent-encoding
 
 
@@ -67,12 +67,14 @@ def _export(client, name):
 
 
 def test_export_header_injection_is_neutralized(client):
-    """引号/CRLF 注入尝试：响应头里不允许出现裸 CR/LF 或用户引号。"""
+    """引号/CRLF 注入尝试：filename 的 quoted-string 值内不允许出现
+    裸引号或 CR/LF（否则可逃逸出值域注入响应头）。"""
     resp = _export(client, 'x"; injected="1')
     assert resp.status_code == 200, resp.text
     cd = resp.headers["content-disposition"]
     assert "\r" not in cd and "\n" not in cd
-    assert '"' not in cd.split("filename=")[-1].split(";")[0]
+    value = cd.split('filename="', 1)[1].rsplit('"', 1)[0]
+    assert '"' not in value and "injected" not in value
 
 
 def test_export_cjk_name_does_not_500(client):
