@@ -82,13 +82,17 @@ const estimatedInsertLength = computed(() => {
 
 const previewApplicable = computed(() => {
   if (!(vectorMode.value !== 'library' ? !!adhocVector.value : !!vectorId.value)) return false
-  // 限制性克隆与 Gibson 双酶切线性化几何相同，都有实时预览；
-  // 单位点/自定义同源臂没有切点几何，不出图
+  // 限制性克隆、Gibson 双酶切线性化、自定义同源臂都有实时预览；
+  // 单位点没有切点几何，不出图
   if (cloningMethod.value === 'restriction') {
     return !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
   }
   if (cloningMethod.value === 'gibson' && gibsonLinearization.value === 'double_digest') {
     return !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
+  }
+  // 自定义同源臂：两条臂都有内容就请求预览（定位判定在预览里直接给出）
+  if (cloningMethod.value === 'gibson' && gibsonLinearization.value === 'custom_arms') {
+    return customArm5.value.trim().length >= 15 && customArm3.value.trim().length >= 15
   }
   return false
 })
@@ -101,10 +105,16 @@ async function fetchPreview() {
   }
   previewLoading.value = true
   previewError.value = ''
-  const isGibson = cloningMethod.value === 'gibson'
+  const isGibson = cloningMethod.value === 'gibson' && gibsonLinearization.value === 'double_digest'
+  const isArms = cloningMethod.value === 'gibson' && gibsonLinearization.value === 'custom_arms'
   try {
     preview.value = await getRestrictionPreview({
-      enzymes: [enzyme5.value, enzyme3.value],
+      ...(isArms
+        ? {
+            homology_arm_5: customArm5.value.trim(),
+            homology_arm_3: customArm3.value.trim(),
+          }
+        : { enzymes: [enzyme5.value, enzyme3.value] }),
       ...(adhocVector.value
         ? { vector: {
             id: adhocVector.value.id,
@@ -117,7 +127,7 @@ async function fetchPreview() {
         : { vector_id: vectorId.value }),
       insert_length: estimatedInsertLength.value,
       direction: insertDirection.value,
-      cloning_method: isGibson ? 'gibson' : 'restriction',
+      cloning_method: isArms ? 'custom_arms' : isGibson ? 'gibson' : 'restriction',
       ...(isGibson ? { keep_restriction_sites: keepRestrictionSites.value } : {}),
     })
   } catch (e: any) {
@@ -131,7 +141,7 @@ async function fetchPreview() {
 // 改酶/换载体/改方向/改序列长度都会让图变——250ms 防抖，别每次按键都打后端
 watch(
   [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
-   insertDirection, gibsonLinearization, keepRestrictionSites],
+   insertDirection, gibsonLinearization, keepRestrictionSites, customArm5, customArm3],
   () => {
     if (previewTimer) clearTimeout(previewTimer)
     previewTimer = setTimeout(() => {
@@ -784,6 +794,15 @@ function loadExample() {
               两条臂按同一方向粘贴即可：工具把整条插入分子（臂5+基因+臂3）按两种取向
               在载体上定位，唯一匹配才有效。臂必须与载体完全同源（15-200bp）。
             </p>
+            <p class="hint-text">
+              预览会即时判定拼接定位：两臂各锚定在哪、能否唯一围出插入区间、基因按
+              哪条链装配——定位失败或不唯一会直接给出原因，不必提交后再失败。
+            </p>
+            <RestrictionPreviewCard
+              :preview="preview"
+              :loading="previewLoading"
+              :error="previewError"
+            />
           </template>
           <label v-if="gibsonLinearization === 'double_digest'" class="checkbox-label trim-start-row">
             <input v-model="keepRestrictionSites" type="checkbox" />
