@@ -1154,17 +1154,51 @@ def resolve_gibson_insert_pos(request: DesignRequest, vector) -> int:
     return seq_len // 2 if seq_len >= 2 else 100
 
 
-def _restriction_end_flanks(assembly, enzyme_5: Optional[str], enzyme_3: Optional[str],
-                            n: int = 6) -> Optional[Tuple[str, str]]:
-    """限制性合成分子两端的载体连接点侧翼（分子取向）。
+def _construct_segment_molecule(assembly, plan, n_left: int, n_right: int,
+                                circular: bool) -> Optional[str]:
+    """合成分子 = 组装构建体上「片段（含接头残留）± 两侧侧翼」的真实段落。
 
-    保护碱基本可用任意序列：直接取构建体连接点外侧的载体序列，oligo 每个
-    碱基都能在图谱上核对（用户核对合成订单时不用再扣保护碱基）。分子 5′ 端
-    接 e5 位点：正链装配时位点残留贴基因左端，负链装配时贴右端（粘端只在
-    同一位点间互补）——按位点残留在构建体上的实际位置取侧翼，不另做取向
-    推断。位点残留不贴着基因（意外排布/回退路径）、侧翼不足 n bp、侧翼里
-    又出现所选酶位点（串联位点会让酶切多切一刀）时返回 None，调用方回退
-    固定保护碱基。
+    构建体是组装的既成结果、坐标自洽——分子直接取它的段落，oligo 与图谱
+    的对应关系由构造保证，不再依赖任何臂/接头取向簿记（基因取向 vs 构建
+    体取向正是 v2.26.2 首/尾 oligo 装反的根源）。片段边界用 insert_start/
+    insert_end（基因本体）± 接头残留长度推出；跨原点（环状）取环绕段落。
+    返回 None 表示取不到（回退路径 / 边界越界 / 含非 ATGC 碱基）。
+    """
+    if assembly is None or not getattr(assembly, "plan_used", True):
+        return None
+    cons = (assembly.sequence or "").upper()
+    i_s, i_e = assembly.insert_start, assembly.insert_end
+    if not cons or not i_s or not i_e or not (1 <= i_s <= i_e <= len(cons)):
+        return None
+    head_len = len(getattr(plan, "head", "") or "") if plan is not None else 0
+    tail_len = len(getattr(plan, "tail", "") or "") if plan is not None else 0
+    frag_start = i_s - head_len          # 1-based：接头残留首碱基
+    frag_end = i_e + tail_len            # 1-based：接头残留末碱基
+    start1, end1 = frag_start - n_left, frag_end + n_right
+    length = len(cons)
+    if start1 < 1 or end1 > length:
+        if not circular or end1 - start1 + 1 > length:
+            return None
+        seg = cons[start1 - 1:] + cons[:end1]   # 跨原点环绕
+    else:
+        seg = cons[start1 - 1:end1]
+    if len(seg) != n_left + (frag_end - frag_start + 1) + n_right:
+        return None
+    if not set(seg) <= set("ATGC"):
+        return None
+    return seg
+
+
+def _restriction_construct_molecule(assembly, enzyme_5: Optional[str],
+                                    enzyme_3: Optional[str],
+                                    n: int) -> Optional[str]:
+    """限制性合成分子 = 构建体上「连接点外侧各 n nt + 位点残留 + 基因」段落。
+
+    与 _construct_segment_molecule 同思路，但限制性的接头残留（位点复原）
+    长度不等于识别序列长度的情形无法从 plan 直接拿——按位点残留在构建体
+    上紧贴基因两端的实际位置定位。定位失败（回退路径 / 侧翼不足 / 侧翼里
+    又出现所选酶位点——串联位点会多切一刀）返回 None，调用方回退固定
+    保护碱基。
     """
     if assembly is None or not getattr(assembly, "plan_used", True):
         return None
@@ -1175,34 +1209,33 @@ def _restriction_end_flanks(assembly, enzyme_5: Optional[str], enzyme_3: Optiona
         return None
     cons = (assembly.sequence or "").upper()
     i_s, i_e = assembly.insert_start, assembly.insert_end
-    if (not cons or not i_s or not i_e or i_s < 1
-            or i_e > len(cons) or i_s > i_e):
+    if not cons or not i_s or not i_e or not (1 <= i_s <= i_e <= len(cons)):
         return None
     g5 = i_s - 1              # 0-based 基因首碱基
     g3 = i_e                  # 0-based 切片边界：基因末碱基后一位
     l5, l3 = len(site5), len(site3)
-    ok_bases = set("ATGC")
     if cons[g5 - l5:g5] == site5 and cons[g3:g3 + l3] == site3:
-        # 正链装配：top strand = 分子取向，侧翼原样取
-        a, b = g5 - l5 - n, g5 - l5
-        c, d = g3 + l3, g3 + l3 + n
-        if a < 0 or d > len(cons):
-            return None
-        f5, f3 = cons[a:b], cons[c:d]
+        head_len, tail_len = l5, l3
     elif cons[g5 - l3:g5] == site3 and cons[g3:g3 + l5] == site5:
-        # 负链装配：分子取向 = 构建体反向互补，分子 5′ 端贴右连接点
-        a, b = g3 + l5, g3 + l5 + n
-        c, d = g5 - l3 - n, g5 - l3
-        if c < 0 or b > len(cons):
-            return None
-        from core.seq_utils import revcomp as _rc
-        f5, f3 = _rc(cons[a:b]), _rc(cons[c:d])
+        head_len, tail_len = l3, l5
     else:
         return None
-    for f, site in ((f5, site5), (f5, site3), (f3, site5), (f3, site3)):
-        if not f or not set(f) <= ok_bases or site in f:
-            return None
-    return f5, f3
+    a = g5 - head_len - n                 # 0-based：分子起点（含侧翼）
+    b = g3 + tail_len + n                 # 0-based：分子终点（不含）
+    length = len(cons)
+    if a >= 0 and b <= length:
+        molecule = cons[a:b]
+    elif b - a <= length:                 # 环状载体跨原点取环绕段落
+        molecule = cons[a % length:] + cons[:b % length]
+    else:
+        return None
+    if len(molecule) != n + head_len + (g3 - g5) + tail_len + n:
+        return None
+    for site in (site5, site3):
+        for end in (molecule[:n], molecule[-n:]):
+            if not end or site in end:
+                return None
+    return molecule
 
 
 def _synthesis_molecule(
@@ -1210,17 +1243,19 @@ def _synthesis_molecule(
     enzyme_5: Optional[str], enzyme_3: Optional[str],
     gibson_double_digest: bool, gibson_plan, gibson_insert_pos: Optional[int],
     gibson_arms_plan, designer,
-) -> Tuple[str, Optional[str]]:
+) -> Tuple[str, Optional[str], bool]:
     """全基因合成的目标分子：把克隆末端直接合进 oligo（能合就合）。
 
-    返回 (分子序列, 说明)。说明为 None 表示末端未包含（Golden Gate 等连接
-    语义不同的方法）——调用方回退旧行为（合成基因 + 组装后扩增加末端）。
+    返回 (分子序列, 说明, 末端是否取自构建体)。说明为 None 表示末端未
+    包含（Golden Gate 等连接语义不同的方法）——调用方回退旧行为（合成
+    基因 + 组装后扩增加末端）。
 
-    合成分子的顶链与原「PCR 产物」完全同构：
+    分子优先直接取**组装构建体上「片段±侧翼」的现成段落**：构建体坐标
+    自洽，oligo 与图谱的对应关系由构造保证，不需要任何取向换算；取不到
+    （载体回退路径等）才退回按 plan 字段重新拼接，末端用固定保护碱基：
 
-    - 限制性：两端各 6nt + e5 位点 + 基因 + e3 位点(反向互补)。两端优先取
-      载体连接点外侧的载体序列（oligo 全序列可在图谱上核对），取不到才用
-      固定保护碱基；侧翼/保护碱基保证酶切效率，酶切后随小片段去除；
+    - 限制性：两端各 6nt + 连接处位点残留 + 基因。侧翼/保护碱基保证酶切
+      效率，酶切后随小片段去除；
     - Gibson（双酶切/单位点/自定义同源臂）：两端同源臂 + 基因（负链装配
       时基因取反向互补），合成产物退火后直接与线性化载体组装。
     """
@@ -1235,21 +1270,20 @@ def _synthesis_molecule(
         site5 = restriction_site(e5 or "")
         site3 = restriction_site(e3 or "")
         if site5 and site3:
-            # 两端优先取载体连接点侧翼（用户拿 oligo 核对图谱时全序列
-            # 可对上）；取不到（回退路径/侧翼不足/串联位点）才用固定
-            # 保护碱基——酶切效果等价，只是核对时要扣除两端
-            flanks = _restriction_end_flanks(assembly, e5, e3, len(pad))
-            if flanks:
-                f5, f3 = flanks
-                return (f5 + site5 + optimized_dna + _rc(site3) + f3,
+            molecule = _restriction_construct_molecule(
+                assembly, e5, e3, len(pad))
+            if molecule:
+                return (molecule,
                         f"合成 oligo 已包含克隆末端（{e5}/{e3} 位点与两端各 "
                         f"{len(pad)}nt 载体连接点侧翼）：合成产物酶切后可直接"
-                        "连接载体，无需 PCR 扩增加末端；两端侧翼取自载体连接点"
-                        "外侧序列，oligo 全序列可在构建体图谱上核对")
+                        "连接载体，无需 PCR 扩增加末端；整条分子取自构建体"
+                        "段落，oligo 全序列可在构建体图谱上核对",
+                        True)
             return (pad + site5 + optimized_dna + _rc(site3) + pad,
                     f"合成 oligo 已包含克隆末端（{e5}/{e3} 位点与两端 "
                     f"{len(pad)}nt 保护碱基）：合成产物酶切后可直接连接载体，"
-                    "无需 PCR 扩增加末端")
+                    "无需 PCR 扩增加末端",
+                    False)
     elif method == CloningMethod.GIBSON:
         lin = getattr(request, "gibson_linearization", "double_digest")
         arm = int(getattr(request, "homology_arm", 20) or 20)
@@ -1257,20 +1291,37 @@ def _synthesis_molecule(
         if lin == "custom_arms" and gibson_arms_plan is not None:
             body = (_rc(optimized_dna) if gibson_arms_plan.insert_reverse
                     else optimized_dna)
-            # 臂用「构建体取向」的 arm_left_seq/arm_right_seq（左/右连接点
-            # 外侧的载体正链臂）。plan 的 arm_5_seq/arm_3_seq 是「基因取向」
-            # （负链装配时左右互换且各自反互补，供引物使用）——合成分子若
-            # 直接拼它们，两臂会整体装反，首/尾 oligo 与图谱对不上
-            # （pET-21a 负链装配实测）
+            # 侧翼长度按解析后的左右臂取（用户两条臂长度可能不同）
+            n_left = len(getattr(gibson_arms_plan, "arm_left_seq", "") or "")
+            n_right = len(getattr(gibson_arms_plan, "arm_right_seq", "") or "")
+            molecule = _construct_segment_molecule(
+                assembly, gibson_arms_plan, n_left or arm, n_right or arm,
+                circular)
+            if molecule:
+                return (molecule,
+                        "合成 oligo 已包含两条同源臂（载体同源区，与构建体"
+                        "序列一致）：合成产物可直接 Gibson 组装，无需 PCR "
+                        "扩增加臂；整条分子取自构建体段落",
+                        True)
+            # 回退：按 plan 的构建体取向臂字段拼接（无构建体可用时）
             left_arm = (getattr(gibson_arms_plan, "arm_left_seq", "")
                         or gibson_arms_plan.arm_5_seq)
             right_arm = (getattr(gibson_arms_plan, "arm_right_seq", "")
                          or gibson_arms_plan.arm_3_seq)
             return (left_arm + body + right_arm,
                     "合成 oligo 已包含两条同源臂（载体同源区，与构建体序列"
-                    "一致）：合成产物可直接 Gibson 组装，无需 PCR 扩增加臂")
+                    "一致）：合成产物可直接 Gibson 组装，无需 PCR 扩增加臂",
+                    True)
         if gibson_double_digest and gibson_plan is not None:
             body = _rc(optimized_dna) if gibson_plan.insert_reverse else optimized_dna
+            molecule = _construct_segment_molecule(
+                assembly, gibson_plan, arm, arm, circular)
+            if molecule:
+                return (molecule,
+                        "合成 oligo 已包含两端同源臂（载体同源区+位点残留）："
+                        "合成产物可直接 Gibson 组装，无需 PCR 扩增加臂；"
+                        "整条分子取自构建体段落",
+                        True)
             left_arm = _circular_backbone_window(
                 backbone, gibson_plan.left_cut - arm, arm, circular)
             right_arm = _circular_backbone_window(
@@ -1278,29 +1329,39 @@ def _synthesis_molecule(
             return (left_arm + gibson_plan.head + body + gibson_plan.tail
                     + right_arm,
                     "合成 oligo 已包含两端同源臂（载体同源区+位点残留）："
-                    "合成产物可直接 Gibson 组装，无需 PCR 扩增加臂")
+                    "合成产物可直接 Gibson 组装，无需 PCR 扩增加臂",
+                    True)
         insert_pos = (gibson_insert_pos if gibson_insert_pos is not None
                       else resolve_gibson_insert_pos(request, vector))
         insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
+        molecule = _construct_segment_molecule(
+            assembly, None, arm, arm, circular)
+        if molecule:
+            return (molecule,
+                    "合成 oligo 已包含两端同源臂：合成产物可直接 Gibson 组装，"
+                    "无需 PCR 扩增加臂；整条分子取自构建体段落",
+                    True)
         left_arm = _circular_backbone_window(
             backbone, insert_pos - arm, arm, circular)
         right_arm = _circular_backbone_window(
             backbone, insert_pos, arm, circular)
         return (left_arm + optimized_dna + right_arm,
                 "合成 oligo 已包含两端同源臂：合成产物可直接 Gibson 组装，"
-                "无需 PCR 扩增加臂")
-    return optimized_dna, None
+                "无需 PCR 扩增加臂",
+                True)
+    return optimized_dna, None, False
 
 
 def _annotate_synthesis_oligo_ends(infos, molecule: str, ends_note: Optional[str],
-                                   request, *, assembly=None,
+                                   request, *, ends_from_construct: bool = False,
                                    enzyme_5, enzyme_3, designer) -> None:
     """给覆盖合成分子两端的首/尾 oligo 在 notes 里写明末端成分。
 
-    限制性分子两端 = 载体侧翼/保护碱基 + 位点：用载体侧翼时 oligo 全序列
-    都在图谱里（首/尾 oligo 横跨连接点，正好用来核对拼接）；用固定保护
-    碱基时酶切后随小片段去除、不进构建体——差在哪、为什么差写进 notes，
-    不留给用户猜（也不像随机加的）。Gibson 分子的两端是载体同源臂，
+    限制性分子两端 = 载体侧翼/保护碱基 + 位点：末端取自构建体时 oligo
+    全序列都在图谱里（首/尾 oligo 横跨连接点，正好用来核对拼接），位点
+    在哪一端随装配链向而定，notes 不指名方向；回退固定保护碱基时酶切后
+    随小片段去除、不进构建体（此时分子是基因取向，e5 贴 5′ 端）——差在
+    哪、为什么差写进 notes，不留给用户猜。Gibson 分子的两端是载体同源臂，
     组装后与载体序列一致（就在图谱里）。
     """
     if ends_note is None:
@@ -1311,9 +1372,6 @@ def _annotate_synthesis_oligo_ends(infos, molecule: str, ends_note: Optional[str
     method = request.cloning_method
     e5 = enzyme_5 or request.enzyme_5 or request.enzyme
     e3 = enzyme_3 or request.enzyme_3 or request.enzyme
-    flanks = None
-    if method == CloningMethod.RESTRICTION:
-        flanks = _restriction_end_flanks(assembly, e5, e3, pad_len)
     for info in infos:
         ts, te = info.target_start, info.target_end
         if ts is None or te is None:
@@ -1321,18 +1379,18 @@ def _annotate_synthesis_oligo_ends(infos, molecule: str, ends_note: Optional[str
         parts: List[str] = []
         if method == CloningMethod.RESTRICTION:
             if ts == 0:
-                if flanks:
+                if ends_from_construct:
                     parts.append(
-                        f"分子5′末端={pad_len}nt载体连接点侧翼+{e5}位点："
+                        f"分子5′末端={pad_len}nt载体连接点侧翼+连接处位点："
                         "均为构建体序列，oligo 全序列可在图谱核对")
                 elif molecule.startswith(pad):
                     parts.append(
                         f"分子5′末端={pad_len}nt保护碱基+{e5}位点："
                         "保护碱基保障酶切效率，酶切后随小片段去除，不在构建体中")
             if te == mol_len:
-                if flanks:
+                if ends_from_construct:
                     parts.append(
-                        f"分子3′末端={e3}位点+{pad_len}nt载体连接点侧翼："
+                        f"分子3′末端=连接处位点+{pad_len}nt载体连接点侧翼："
                         "均为构建体序列，oligo 全序列可在图谱核对")
                 elif molecule.endswith(pad):
                     parts.append(
@@ -1454,7 +1512,7 @@ def design_primers_for_method(
         # 全基因合成：克隆末端（同源臂/位点+保护碱基）直接合进 oligo——
         # 合成产物即可组装/酶切，省掉「合成基因 → PCR 加末端」一轮；
         # 末端语义不同的方法（Golden Gate）保留合成后扩增加末端的旧路径
-        molecule, ends_note = _synthesis_molecule(
+        molecule, ends_note, ends_from_construct = _synthesis_molecule(
             request, optimized_dna, vector, backbone, assembly=assembly,
             enzyme_5=enzyme_5, enzyme_3=enzyme_3,
             gibson_double_digest=gibson_double_digest, gibson_plan=gibson_plan,
@@ -1469,7 +1527,8 @@ def design_primers_for_method(
         )
         infos = [_primer_to_info(o) for o in oligos]
         _annotate_synthesis_oligo_ends(
-            infos, molecule, ends_note, request, assembly=assembly,
+            infos, molecule, ends_note, request,
+            ends_from_construct=ends_from_construct,
             enzyme_5=enzyme_5, enzyme_3=enzyme_3, designer=designer)
         primers.extend(infos)
         if ends_note is None:
@@ -1953,15 +2012,19 @@ def run_design(
         if (request.insert_source == "gene_synthesis"
                 and request.cloning_method in (CloningMethod.RESTRICTION,
                                                CloningMethod.GIBSON)):
-            flanked = False
+            # 末端是否取自构建体：直接看每条合成 oligo 能否**全序列**命中
+            # 构建体（顶链或反向互补）——取到了就是「构建体现成段落」模式，
+            # 有保护碱基回退的必然剥 6nt 后才命中
+            from core.seq_utils import revcomp as _cons_rc
+            cons_up = (result.construct_sequence or "").upper()
+            cons_rc = _cons_rc(cons_up) if cons_up else ""
+            syn_oligos = [p for p in result.primers
+                          if p.target_start is not None]
+            flanked = bool(cons_up and syn_oligos) and all(
+                p.full_sequence.upper() in cons_up
+                or p.full_sequence.upper() in cons_rc for p in syn_oligos)
             ends_tail = ""
             if request.cloning_method == CloningMethod.RESTRICTION:
-                e5_info = (resolved_ends.enzyme_5 if resolved_ends
-                           else (request.enzyme_5 or request.enzyme))
-                e3_info = (resolved_ends.enzyme_3 if resolved_ends
-                           else (request.enzyme_3 or request.enzyme))
-                flanked = _restriction_end_flanks(
-                    assembly, e5_info, e3_info) is not None
                 ends_tail = ("限制性克隆合成分子两端各 6nt 直接取自载体连接点"
                              "外侧序列，oligo 每个碱基都可在构建体图谱上核对"
                              if flanked else
