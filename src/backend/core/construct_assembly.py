@@ -243,11 +243,14 @@ def pick_flanking(
 def plan_restriction(
     sequence: str, enzyme_5: str, enzyme_3: str, *,
     window: Optional[Tuple[int, int]] = None, circular: bool = True,
-    warnings: List[str],
+    warnings: List[str], join: str = "sticky",
 ) -> Optional[AssemblyPlan]:
     """双酶切：两个切点之间整段被切走，基因两端补回位点残留碱基
 
     载体上没有位点时返回 None（调用方回退到「按 MCS 区间替换」并保留告警）。
+    join="sticky"（粘端连接，默认）或 "gibson"（双酶切线性化 + Gibson 同源臂
+    连接）：两者几何完全一致，仅连接处的物理约束不同——粘端配对强制基因
+    取向，Gibson 取向由同源臂设计决定，反向排布的告警文案随之区分。
     """
     length = len(sequence)
     try:
@@ -312,17 +315,24 @@ def plan_restriction(
         head, tail = site5[k5:], site3[:k3]
     else:
         head, tail = site3[k3:], site5[:k5]
-        warnings.append(
-            f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
-            "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
-            "请勾选「反向」后重新设计")
+        if join == "gibson":
+            warnings.append(
+                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
+                "负链（-）组装。Gibson 的基因取向由同源臂设计决定，请确认引物"
+                "同源臂使基因 5′ 端位于该端；如需反义构建请勾选「反向」重新设计")
+        else:
+            warnings.append(
+                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
+                "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
+                "请勾选「反向」后重新设计")
 
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
         insert_reverse=reverse, removed_bp=cut_length,
         junction=(f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
                   f"（切除 {cut_length} bp，位点在连接处复原"
-                  + ("，插入片段在负链" if reverse else "") + "）"),
+                  + ("，插入片段在负链" if reverse else "")
+                  + ("，Gibson 同源臂连接）" if join == "gibson" else "）")),
         warnings=warnings,
     )
 

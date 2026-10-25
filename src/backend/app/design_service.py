@@ -205,6 +205,7 @@ def resolve_restriction_ends(
     direction: str = "auto",
     circular: bool = True,
     window: Optional[Tuple[int, int]] = None,
+    join: str = "sticky",
 ) -> RestrictionEnds:
     """把「两把酶」解析成「接基因 5′ 端 / 3′ 端」的指派
 
@@ -218,7 +219,7 @@ def resolve_restriction_ends(
     if not enzyme_a or not enzyme_b or enzyme_a == enzyme_b:
         return ends
     probe = plan_restriction(backbone, enzyme_a, enzyme_b, window=window,
-                             circular=circular, warnings=[])
+                             circular=circular, warnings=[], join=join)
     if probe is None or probe.left_cut == probe.right_cut:
         return ends
     left_owner, right_owner = (
@@ -462,6 +463,7 @@ def assemble_construct(
     anchor: Optional[int] = None,
     check_cassette: bool = True,
     extra_elements: Optional[List[Dict]] = None,
+    join: str = "sticky",
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
@@ -501,7 +503,7 @@ def assemble_construct(
             elif method == "restriction":
                 plan = plan_restriction(backbone, enzyme_5 or "", enzyme_3 or "",
                                         window=window, circular=circular,
-                                        warnings=plan_warnings)
+                                        warnings=plan_warnings, join=join)
             else:
                 plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
                                         overhang_3 or "", window=window,
@@ -632,6 +634,7 @@ def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
 def _resolve_redundant_start_codon(
     request, vector, backbone: str, optimized_dna: str,
     resolved_ends: Optional[RestrictionEnds],
+    gibson_single_site: bool = False,
 ) -> Tuple[str, List[str]]:
     """限制性克隆的起始密码子一致性检查（NdeI CATATG 是典型场景）。
 
@@ -647,9 +650,14 @@ def _resolve_redundant_start_codon(
     构建体里，绝不能动插入序列——用与组装完全相同的 plan_restriction
     探测一次，None 即回退路径。Golden Gate overhang（MoClo 惯例）不在此列。
     """
-    if request.cloning_method == CloningMethod.GIBSON:
+    if (request.cloning_method == CloningMethod.GIBSON
+            and (gibson_single_site
+                 or getattr(request, "gibson_linearization", "double_digest")
+                 != "double_digest")):
+        # Gibson 单位点线性化：无位点残留，按连接处实际碱基判定
         return _resolve_gibson_start_codon(request, vector, backbone, optimized_dna)
-    if request.cloning_method != CloningMethod.RESTRICTION or not optimized_dna:
+    if request.cloning_method not in (CloningMethod.RESTRICTION,
+                                      CloningMethod.GIBSON) or not optimized_dna:
         return optimized_dna, []
     if not str(optimized_dna).upper().startswith("ATG"):
         return optimized_dna, []
@@ -975,6 +983,8 @@ def design_primers_for_method(
     *,
     enzyme_5: Optional[str] = None,
     enzyme_3: Optional[str] = None,
+    gibson_double_digest: bool = False,
+    gibson_plan=None,
 ) -> List[PrimerInfo]:
     """按「插入片段来源 × 克隆方法」设计引物/寡核苷酸。
 
@@ -995,6 +1005,18 @@ def design_primers_for_method(
     def _cloning_pair() -> List[PrimerInfo]:
         """按克隆方法设计带对应末端的引物对"""
         if request.cloning_method == CloningMethod.GIBSON:
+            if gibson_double_digest and gibson_plan is not None:
+                # 双酶切线性化：插入分子 = 位点残留 + 基因 + 位点残留，
+                # 同源臂覆盖线性化载体末端（含各自的位点前缀）
+                fragment = gibson_plan.head + optimized_dna + gibson_plan.tail
+                pair = designer.design_gibson_primers(
+                    fragment,
+                    backbone if backbone else "N" * 5000,
+                    gibson_plan.left_cut,
+                    homology_arm=request.homology_arm,
+                    primer_name=name,
+                )
+                return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
             insert_pos = resolve_gibson_insert_pos(request, vector)
             insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
             pair = designer.design_gibson_primers(
@@ -1151,8 +1173,25 @@ def run_design(
         gg_oh5: Optional[str] = None
         gg_oh3: Optional[str] = None
         gg_derived = False
+        # Gibson 双酶切线性化（主流实践）：载体用两把酶切开、区间被切走，
+        # 组装几何与 restriction 完全一致——方向判定、位点残留起始密码子、
+        # CDS 完整性逻辑全套复用；区别仅在引物（同源臂）与方案文本。
+        # 位点不全时回退单位点线性化（旧模型）并明确告警
+        gibson_single = False
         if request.cloning_method == CloningMethod.GIBSON:
-            gibson_pos = resolve_gibson_insert_pos(request, vector)
+            if getattr(request, "gibson_linearization", "double_digest") == "single_site":
+                gibson_single = True
+            elif ((request.enzyme_5 or request.enzyme)
+                  and (request.enzyme_3 or request.enzyme)
+                  and (request.enzyme_5 or request.enzyme)
+                  != (request.enzyme_3 or request.enzyme)):
+                gibson_single = False
+            else:
+                gibson_single = True
+                gibson_pos = resolve_gibson_insert_pos(request, vector)
+                result.warnings.append(
+                    "Gibson 双酶切线性化需要两个不同的酶切位点：未提供完整位点，"
+                    "已按单位点线性化处理")
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:
             gg_oh5, gg_oh3, gg_derived = derive_gg_overhangs(vector, request.enzyme)
 
@@ -1179,7 +1218,9 @@ def run_design(
         else:
             result.vector_name = vector.name
             backbone = ensure_vector_backbone(vector)
-            if request.cloning_method == CloningMethod.RESTRICTION:
+            if (request.cloning_method == CloningMethod.RESTRICTION
+                    or (request.cloning_method == CloningMethod.GIBSON
+                        and not gibson_single)):
                 # 方向由载体表达盒决定：两把酶填成什么顺序都不影响结果，
                 # 只有用户显式选「正向/反向」时才覆盖（反义构建）
                 resolved_ends = resolve_restriction_ends(
@@ -1190,6 +1231,8 @@ def run_design(
                     circular=str(getattr(vector, "topology", "circular")
                                  or "circular").lower() != "linear",
                     window=_mcs_window(vector),
+                    join="gibson" if request.cloning_method == CloningMethod.GIBSON
+                    else "sticky",
                 )
                 result.warnings.extend(resolved_ends.warnings)
 
@@ -1198,13 +1241,20 @@ def run_design(
                 # 起始密码子一致性（restriction 位点残留 / gibson 线性化点）。
                 # 去除发生在组装与引物设计之前，两者都消费 optimized_dna
                 optimized_dna, start_codon_warnings = _resolve_redundant_start_codon(
-                    request, vector, backbone, optimized_dna, resolved_ends)
+                    request, vector, backbone, optimized_dna, resolved_ends,
+                    gibson_single_site=gibson_single)
                 result.warnings.extend(start_codon_warnings)
                 result.optimized_sequence = optimized_dna
-            # 按克隆方法建模切点：Gibson 不切除碱基、双酶切/GG 切走两个切点之间的片段
+            # 按克隆方法建模切点：Gibson 单位点不切除碱基、双酶切（含 Gibson
+            # 双酶切线性化）与 GG 切走两个切点之间的片段
             assembly = assemble_construct(
                 vector, optimized_dna, request.sequence_name or "insert",
-                method=request.cloning_method.value,
+                method=("restriction" if (request.cloning_method
+                                          == CloningMethod.RESTRICTION
+                                          or (request.cloning_method
+                                              == CloningMethod.GIBSON
+                                              and not gibson_single))
+                        else request.cloning_method.value),
                 insert_pos=gibson_pos,
                 enzyme=request.enzyme,
                 enzyme_5=(resolved_ends.enzyme_5 if resolved_ends
@@ -1215,6 +1265,8 @@ def run_design(
                 overhang_3=gg_oh3,
                 check_cassette=not (resolved_ends and resolved_ends.source == "user"),
                 extra_elements=resolved_ends.detected if resolved_ends else None,
+                join=("gibson" if request.cloning_method == CloningMethod.GIBSON
+                      else "sticky"),
             )
             result.warnings.extend(assembly.warnings)
 
@@ -1222,8 +1274,11 @@ def run_design(
             warning = _golden_gate_site_warning(optimized_dna, request.enzyme)
             if warning:
                 result.warnings.append(warning)
-        elif request.cloning_method == CloningMethod.RESTRICTION:
+        elif (request.cloning_method == CloningMethod.RESTRICTION
+              or (request.cloning_method == CloningMethod.GIBSON
+                  and not gibson_single)):
             # 插入片段内部含所选酶位点时酶切会切断片段，必须在结果层告警
+            # （Gibson 双酶切线性化同样用酶切载体，同一约束）
             from core.sequence_analysis import RESTRICTION_ENZYMES
             from core.seq_utils import revcomp as _seq_revcomp
             for enz in dict.fromkeys(
@@ -1245,10 +1300,23 @@ def run_design(
         result.insert_end = assembly.insert_end
 
         # 4. 引物
+        gibson_double_plan = None
+        if (request.cloning_method == CloningMethod.GIBSON and not gibson_single):
+            from core.construct_assembly import plan_restriction as _plan_restriction
+            gibson_double_plan = _plan_restriction(
+                backbone, request.enzyme_5 or request.enzyme,
+                request.enzyme_3 or request.enzyme,
+                window=_mcs_window(vector),
+                circular=str(getattr(vector, "topology", "circular")
+                             or "circular").lower() != "linear",
+                warnings=[], join="gibson")
         result.primers = design_primers_for_method(
             request, optimized_dna, vector, backbone,
             enzyme_5=resolved_ends.enzyme_5 if resolved_ends else None,
             enzyme_3=resolved_ends.enzyme_3 if resolved_ends else None,
+            gibson_double_digest=(request.cloning_method == CloningMethod.GIBSON
+                                  and not gibson_single),
+            gibson_plan=gibson_double_plan,
         )
 
         # 4.0 Golden Gate：按完整扩增子数位点，引物尾与插入片段拼接处新生的位点也会多切
@@ -1289,6 +1357,13 @@ def run_design(
                 "insert_position": gibson_pos if gibson_pos is not None else 0,
                 "homology_arm": request.homology_arm,
             }
+            if not gibson_single:
+                strategy_kwargs.update(
+                    enzyme_5=request.enzyme_5 or request.enzyme or "",
+                    enzyme_3=request.enzyme_3 or request.enzyme or "",
+                    insert_position=(gibson_double_plan.left_cut
+                                     if gibson_double_plan else 0),
+                )
         elif request.cloning_method == CloningMethod.GOLDEN_GATE:
             overhang_5 = gg_oh5 if gg_oh5 is not None else "AATG"
             overhang_3 = gg_oh3 if gg_oh3 is not None else "GCTT"

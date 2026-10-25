@@ -84,6 +84,11 @@ class DesignOptions(BaseModel):
     trim_redundant_start: bool = Field(
         default=True,
         description="限制性克隆位点自带起始密码子时，自动去除插入序列开头的冗余 ATG")
+    # Gibson 载体线性化方式：双酶切（默认，主流实践——两把酶切走区间，
+    # 组装几何与限制性克隆一致，方向/起始密码子/CDS 逻辑全套复用）或
+    # 单位点（单切点插入，旧模型）。双酶切需要 enzyme_5 + enzyme_3
+    gibson_linearization: Literal["double_digest", "single_site"] = Field(
+        default="double_digest", description="Gibson 载体线性化方式")
     oligo_length: int = Field(default=60, ge=40, le=100, description="[已废弃，改用 oligo_length_min/max] 未提供范围时的固定长度")
     # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
     oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")

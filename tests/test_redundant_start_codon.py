@@ -182,6 +182,19 @@ def test_forward_synthetic_vector_trims_and_extends_start(monkeypatch):
 # ==================== Gibson ====================
 
 def _gibson_request(**over):
+    """单点位 Gibson（旧模型）请求：不带酶、显式声明 single_site。
+    双酶切线性化测试用 _gibson_double_request。"""
+    over.setdefault("gibson_linearization", "single_site")
+    over.setdefault("enzyme_5", None)
+    over.setdefault("enzyme_3", None)
+    return _restriction_request(cloning_method="gibson", **over)
+
+
+def _gibson_double_request(**over):
+    """双酶切线性化 Gibson 请求（默认模式，pET-28a NdeI/XhoI）"""
+    over.setdefault("gibson_linearization", "double_digest")
+    over.setdefault("enzyme_5", "NdeI")
+    over.setdefault("enzyme_3", "XhoI")
     return _restriction_request(cloning_method="gibson", **over)
 
 
@@ -291,3 +304,92 @@ def test_gibson_direction_warning_on_pet28a():
     assert any("反义 RNA" in w for w in result.warnings)
     # 默认线性化点（MCS 起点）前不是 ATG：不触发去除
     assert not any("已自动去除冗余起始密码子" in w for w in result.warnings)
+
+
+# ==================== Gibson 双酶切线性化（默认模式）====================
+
+def test_gibson_double_digest_matches_restriction_semantics():
+    """双酶切线性化 Gibson = restriction 几何：去除、CDS 扩展、方向全套适用"""
+    result = run_design("gd_trim", _gibson_double_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    # 位点残留起始密码子：与 restriction 同一套去除逻辑
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+    assert not result.optimized_sequence.upper().startswith("ATG")
+    feat = _insert_cds(result)
+    assert _start_codon_of(result, feat) == "ATG"
+    assert "起始密码子来自 NdeI" in feat["description"]
+    # pET-28a 表达盒负链 → 反向排布告警应为 Gibson 文案（同源臂，非粘端）
+    assert any("同源臂" in w and "粘端" not in w for w in result.warnings
+               if "切点在前" in w)
+
+
+def test_gibson_double_digest_primers_use_homology_arms():
+    """双酶切 Gibson 引物：同源臂覆盖线性化末端，基因段含位点残留"""
+    result = run_design("gd_primer", _gibson_double_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert len(result.primers) >= 2
+    fwd, rev = result.primers[0], result.primers[1]
+    # 同源臂（overhang）非空且来自线性化末端
+    assert fwd.overhang and rev.overhang
+    # 基因段（引物主体）以位点残留开头：pET-28a 反向排布下 PCR 分子
+    # = XhoI 残留(TCGAG) + 基因反向互补 + NdeI 残留，正向引物锚定分子 5′ 端
+    assert fwd.sequence.upper().startswith("TCGAG")
+
+
+def test_gibson_double_digest_protocol_mentions_digest():
+    """方案文本：双酶切线性化步骤写明两把酶"""
+    result = run_design("gd_proto", _gibson_double_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    text = json.dumps(result.clone_protocol, ensure_ascii=False) if not isinstance(
+        result.clone_protocol, str) else result.clone_protocol
+    assert "NdeI/XhoI 双酶切线性化" in text
+
+
+def test_gibson_double_digest_without_sites_falls_back(monkeypatch):
+    """双酶切模式但载体缺位点：回退 MCS 替换，绝不动插入序列"""
+    from core.vector_library import MCS, Vector
+    from app import design_service
+
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 47 + "ATG" + "C" * 52,   # 无 NdeI/XhoI 位点
+        mcs=MCS(name="MCS", start=51, end=56, sites=[]),
+        elements=[],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("gd_fallback", _gibson_double_request(vector_id="synth"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    # 位点方案落空 → 插入序列的 ATG 是唯一起始密码子，不能去
+    assert result.optimized_sequence.upper().startswith("ATG")
+    assert not any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+
+
+def test_gibson_double_digest_without_enzymes_falls_back_to_single(monkeypatch):
+    """双酶切模式但位点不全：告警并按单位点线性化处理（旧模型仍可用）"""
+    from core.vector_library import MCS, Vector
+    from app import design_service
+
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 47 + "ATG" + "C" * 52,
+        mcs=MCS(name="MCS", start=51, end=56, sites=[]),
+        elements=[],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("gd_partial", _restriction_request(
+        cloning_method="gibson", vector_id="synth",
+        gibson_linearization="double_digest", enzyme_5="NdeI", enzyme_3=None))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("已按单位点线性化处理" in w for w in result.warnings)
+    # 单点位模型照常工作
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
