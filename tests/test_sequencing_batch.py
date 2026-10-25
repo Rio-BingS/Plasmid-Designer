@@ -265,6 +265,30 @@ def test_batch_file_limit_enforced_before_reading(client, monkeypatch):
     assert all(it["status"] == "analyzed" for it in resp_ok.json()["items"])
 
 
+def test_batch_file_limit_patchable_via_module_attr(client, monkeypatch):
+    """端点级文件数上限必须读 sequencing_routes 模块属性（回归锁）：
+
+    端点从 sequencing_routes 按值 import 常量的旧写法下，monkeypatch
+    sequencing_routes.MAX_BATCH_FILES 不影响端点检查（快照双真相源），
+    只有 sequencing_routes 内部的第二道检查兜底（读完全部字节后才拒绝）。
+    本测试把上限 patch 成 3 后发 4 个文件，断言端点在读字节前即以
+    patch 值拒绝（_read_limited 打桩为不可调用标记）。
+    """
+    from app.routes import sequencing_routes
+
+    def _must_not_read(f, max_bytes=None):
+        raise AssertionError("超限请求不应读取任何文件字节")
+
+    with monkeypatch.context() as m:
+        m.setattr(sequencing_routes, "MAX_BATCH_FILES", 3)
+        m.setattr(sequencing_routes, "_read_limited", _must_not_read)
+        files = [("files", (f"{i}.ab1", b"x", "application/octet-stream"))
+                 for i in range(4)]
+        resp = client.post("/api/sequencing/analyze-batch", files=files)
+    assert resp.status_code == 400
+    assert "3" in resp.json()["detail"]
+
+
 def test_batch_rejects_excel_lock_file_by_name(client):
     """Excel 打开信息表时留下的 ~$ 锁文件应被明确拒绝（而非 500 或含糊报错）"""
     resp = _post(client, [_ab1("T1.ab1", REF_MX)],
