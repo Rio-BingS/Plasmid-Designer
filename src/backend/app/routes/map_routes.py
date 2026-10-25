@@ -18,6 +18,7 @@ POST /api/map/import/ncbi      NCBI accession → efetch GenBank → MapDocument
 
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -50,6 +51,8 @@ from core.plasmid_map.ncbi import fetch_genbank_text, normalize_accession
 from core.plasmid_map.parsers import clean_sequence
 
 router = APIRouter(prefix="/api/map", tags=["map"])
+
+logger = logging.getLogger(__name__)
 
 # MAP_MAX_UPLOAD_MB / MAP_MAX_UPLOAD_BYTES 定义在 app/routes/models.py
 # （设计页的载体上传与图谱页共用同一上限）
@@ -122,11 +125,11 @@ def _cache_put(key: str, doc: Dict, size: Optional[int] = None) -> None:
         try:
             cache.backend.delete(k)
         except Exception:
-            pass
+            logger.warning("图谱缓存失效失败 key=%s", k, exc_info=True)
     try:
         cache.backend.set(key, doc, MAP_CACHE_TTL)
     except Exception:
-        pass
+        logger.warning("图谱缓存写入失败 key=%s", key, exc_info=True)
 
 
 def _http_error(e: MapParseError) -> HTTPException:
@@ -387,7 +390,7 @@ def _ncbi_text(acc: str) -> str:
         try:
             cache.backend.set(key, text, NCBI_TEXT_CACHE_TTL)
         except Exception:
-            pass
+            logger.warning("NCBI 文本缓存写入失败 acc=%s", acc, exc_info=True)
     return text
 
 

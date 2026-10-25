@@ -59,7 +59,7 @@ def _load_batch(batch_id: str) -> BatchDesignStatus | None:
             batch_jobs[batch_id] = job
             return job
     except Exception:
-        pass
+        logger.warning("批量任务 %s 存储层回载失败", batch_id, exc_info=True)
     return None
 
 

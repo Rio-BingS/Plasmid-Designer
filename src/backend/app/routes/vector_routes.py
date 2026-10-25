@@ -43,8 +43,8 @@ def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
             cache.backend.delete(f"vector:{vector_id}")
         cache.backend.clear_pattern("vector_list:*")
     except Exception:
-        # 缓存失效失败不影响写操作结果（TTL 兜底）
-        pass
+        # 缓存失效失败不影响写操作结果（TTL 兜底），但留痕供运维排查
+        logger.warning("载体缓存失效失败 id=%s", vector_id, exc_info=True)
 
 
 def _safe_filename(name: str) -> str:
@@ -102,7 +102,7 @@ async def list_vectors(
     try:
         cache.cache_vector_list(filters, [v.model_dump(mode="json") for v in result])
     except Exception:
-        pass
+        logger.warning("载体列表缓存写入失败", exc_info=True)
 
     return result
 
@@ -139,7 +139,7 @@ async def get_vector(vector_id: str):
     try:
         cache.cache_vector(vector_id, info.model_dump(mode="json"))
     except Exception:
-        pass
+        logger.warning("载体详情缓存写入失败 id=%s", vector_id, exc_info=True)
 
     return info
 
