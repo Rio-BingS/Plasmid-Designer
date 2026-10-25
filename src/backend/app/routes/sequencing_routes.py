@@ -37,7 +37,6 @@ GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 
 import asyncio
 import os
-import re
 import secrets
 import threading
 import weakref
@@ -47,17 +46,14 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 from openpyxl.utils.exceptions import InvalidFileException
 from starlette.concurrency import run_in_threadpool
 from zipfile import BadZipFile
 
-from app.auth.jwt_auth import User, get_current_user
-from app.vector_library_cache import get_vector_library
+from app.auth.jwt_auth import User
 from app import batch_read_limits, site_settings
-from app.gating import require_feature
 from app import batch_report_store, sequencing_store
 from app.sequencing_upload_sessions import DiskBlob, LazyFileEntry
 from app.sequencing_batch import (
@@ -69,7 +65,7 @@ from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
-from app.filename import content_disposition, sanitize_filename
+from app.filename import sanitize_filename
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,

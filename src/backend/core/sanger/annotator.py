@@ -7,7 +7,7 @@
 
 from typing import Dict, List
 
-from core.enzyme_sites import ENZYME_TABLE, find_enzyme_sites
+from core.enzyme_sites import find_enzyme_sites
 from core.seq_utils import revcomp as _revcomp
 from core.seq_utils import CODON_TO_AA as _STD_TABLE
 
