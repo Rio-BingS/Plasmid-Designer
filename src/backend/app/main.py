@@ -49,32 +49,32 @@ async def lifespan(app: FastAPI):
         from app.database import init_db
         init_db()
     except Exception as e:
-        print(f"⚠️ 数据库初始化失败（认证/持久化功能将不可用）: {e}")
+        _logger.warning("数据库初始化失败（认证/持久化功能将不可用）", exc_info=True)
 
     # 匿名测序记录的明文访问令牌改存摘要（幂等，失败仅留痕）
     try:
         from app.sequencing_store import migrate_plaintext_tokens
         migrate_plaintext_tokens()
     except Exception as e:
-        print(f"⚠️ 测序记录令牌迁移失败: {e}")
+        _logger.warning("测序记录令牌迁移失败", exc_info=True)
 
     # 管理员引导：配置了 ADMIN_EMAIL/ADMIN_PASSWORD 且该邮箱未注册时创建管理员
     try:
         from app.auth.bootstrap import bootstrap_admin
         action = bootstrap_admin()
         if action == "created":
-            print(f"✅ 已创建管理员账号 {settings.ADMIN_EMAIL}")
+            _logger.info("已创建管理员账号 %s", settings.ADMIN_EMAIL)
         elif action == "promoted":
-            print(f"✅ 已将现有用户 {settings.ADMIN_EMAIL} 提升为管理员")
+            _logger.info("已将现有用户 %s 提升为管理员", settings.ADMIN_EMAIL)
     except Exception as e:
-        print(f"⚠️ 管理员引导失败: {e}")
+        _logger.warning("管理员引导失败", exc_info=True)
 
     # Addgene 用户自备会话只适合单用户自托管：多用户部署时告警（审查 M2）
     try:
         from app.online_import import log_addgene_shared_session_warning
         log_addgene_shared_session_warning()
     except Exception as e:  # pragma: no cover - 告警失败不阻断启动
-        print(f"⚠️ Addgene 会话检查失败: {e}")
+        _logger.warning("Addgene 会话检查失败", exc_info=True)
 
     # 批量测序分块上传会话：启动时清理上次残留的暂存目录，之后周期清理过期会话
     from app.routes.sequencing_session_routes import sweeper_loop
