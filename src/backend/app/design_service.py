@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -43,6 +44,8 @@ class ConstructAssembly:
 from app.vector_library_cache import (  # noqa: F401
     get_vector_library, invalidate_vector_library_cache,
 )
+
+logger = logging.getLogger(__name__)
 
 def ensure_vector_backbone(vector) -> str:
     """确保载体有可用骨架序列；YAML 无 sequence 时用特征拼出占位骨架。"""
@@ -1114,6 +1117,9 @@ def run_design(
         result.completed_at = datetime.now()
 
     except Exception as e:
+        # 结果对象只装一句 str(e)；堆栈必须落日志，否则批量里某条失败
+        # 完全不可诊断
+        logger.exception("design %s failed", result.design_id)
         result.status = DesignStatus.FAILED
         result.errors.append(str(e))
         result.completed_at = datetime.now()
