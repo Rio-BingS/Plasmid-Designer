@@ -11,7 +11,7 @@ designs_db / batch_jobs 这类「存储层之上的读缓存」此前无界增�
 
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class BoundedMirror(dict):

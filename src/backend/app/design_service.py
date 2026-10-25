@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from app.cache import cache
-from app.config import settings
+from app.config import settings  # 测试经 design_service.settings 打补丁（patch 面）
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )

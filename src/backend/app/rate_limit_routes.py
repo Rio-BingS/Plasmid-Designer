@@ -2,8 +2,8 @@
 速率限制 API 路由
 提供速率限制管理和查询接口
 """
-from fastapi import APIRouter, Request, HTTPException, Depends
-from typing import Dict, List
+from fastapi import APIRouter, Request, Depends
+from typing import Dict
 from app.rate_limit import limiter, RATE_LIMITS, get_rate_limit_key, get_client_ip
 from app.auth.jwt_auth import get_admin_user
 

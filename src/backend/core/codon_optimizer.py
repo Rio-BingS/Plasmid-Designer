@@ -23,7 +23,6 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from collections import Counter
 import math
 
 from core.seq_utils import CODON_TABLE, CODON_TO_AA as AMINO_ACID_TABLE, gc_fraction, translate, revcomp as _seq_revcomp

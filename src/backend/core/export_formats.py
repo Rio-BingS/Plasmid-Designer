@@ -6,7 +6,7 @@ import json
 import zipfile
 import io
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from dataclasses import dataclass
 import struct
 import logging

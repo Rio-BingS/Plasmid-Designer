@@ -18,7 +18,7 @@ import jwt
 
 from app.config import settings, validate_secret_key
 from app.database import get_db
-from app.database.crud import get_user_by_id, get_user_by_email, is_token_revoked
+from app.database.crud import get_user_by_id, is_token_revoked
 
 # 配置 — 密钥来自环境变量/配置。导入即校验：占位/过短/低熵密钥直接抛错，
 # 不依赖 lifespan，也不因 DEBUG 豁免（签发与验签都用到它，无从绕过）

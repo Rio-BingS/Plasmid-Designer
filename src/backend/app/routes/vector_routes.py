@@ -6,10 +6,8 @@
 
 import logging
 import os
-import re
 import yaml
 import tempfile
-import shutil
 from typing import List, Optional, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -24,7 +22,7 @@ from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
-from app.filename import content_disposition, sanitize_filename
+from app.filename import sanitize_filename
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
