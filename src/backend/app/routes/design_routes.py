@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.jwt_auth import User, get_current_user
 from app.cache import cache
@@ -109,14 +110,14 @@ async def restriction_preview(request: RestrictionPreviewRequest,
     from app.design_service import build_restriction_preview
 
     try:
-        return build_restriction_preview(request)
+        # 酶切模拟是 CPU 密集同步计算，移交线程池避免阻塞事件循环
+        return await run_in_threadpool(build_restriction_preview, request)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.get("/{design_id}", response_model=DesignResult)
-async def get_design(design_id: str, user: Optional[User] = Depends(get_current_user)):
-    # 读取缓存：仅完成态结果会被写入，因此缓存命中即为最终结果
+def _load_design_through_cache(design_id: str) -> Optional[DesignResult]:
+    """读穿透（同步：缓存可能走 Redis、存储层是 DB，都有 IO）"""
     cached_data = cache.get_design_result(design_id)
     if cached_data is not None:
         try:
@@ -132,13 +133,12 @@ async def get_design(design_id: str, user: Optional[User] = Depends(get_current_
                 cache.invalidate_design(design_id)
                 cached = None
         if cached is not None:
-            return _ensure_design_access(cached, user)
+            return cached
 
     result = _load(design_id)
-    result = _ensure_design_access(result, user)
 
     # 读回填：存储层命中的完成态结果写入缓存，后续轮询不再走存储
-    if result.status == DesignStatus.COMPLETED:
+    if result is not None and result.status == DesignStatus.COMPLETED:
         try:
             cache.cache_design_result(design_id, result.model_dump(mode="json"))
         except Exception:
@@ -146,13 +146,21 @@ async def get_design(design_id: str, user: Optional[User] = Depends(get_current_
     return result
 
 
+@router.get("/{design_id}", response_model=DesignResult)
+async def get_design(design_id: str, user: Optional[User] = Depends(get_current_user)):
+    # 缓存（Redis）与存储层（DB）都是同步 IO，整体移交线程池
+    result = await run_in_threadpool(_load_design_through_cache, design_id)
+    return _ensure_design_access(result, user)
+
+
 @router.get("/{design_id}/download/genbank")
 async def download_genbank(design_id: str, user: Optional[User] = Depends(get_current_user)):
-    result = _ensure_design_access(_load(design_id), user)
+    result = _ensure_design_access(
+        await run_in_threadpool(_load_design_through_cache, design_id), user)
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")
 
-    content = generate_genbank_from_result(result)
+    content = await run_in_threadpool(generate_genbank_from_result, result)
     return PlainTextResponse(
         content=content,
         media_type="text/plain",
@@ -162,7 +170,8 @@ async def download_genbank(design_id: str, user: Optional[User] = Depends(get_cu
 
 @router.get("/{design_id}/download/primers")
 async def download_primers(design_id: str, user: Optional[User] = Depends(get_current_user)):
-    result = _ensure_design_access(_load(design_id), user)
+    result = _ensure_design_access(
+        await run_in_threadpool(_load_design_through_cache, design_id), user)
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")
 
@@ -185,7 +194,8 @@ async def get_design_map_data(
     from app.map_documents import design_map_document
     from app.routes.map_routes import cached_document
 
-    result = _ensure_design_access(_load(design_id), user)
+    result = _ensure_design_access(
+        await run_in_threadpool(_load_design_through_cache, design_id), user)
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")
     key = {
