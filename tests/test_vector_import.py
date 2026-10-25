@@ -5,8 +5,6 @@
 import pytest
 import sys
 
-sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
-
 from core.external_vector_importer import (
     NCBIClient, GenBankImporter, VectorLibraryManager,
     ExternalVector
