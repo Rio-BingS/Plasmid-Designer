@@ -906,7 +906,9 @@ class GeneSynthesisStrategy:
                       "no outer-primer amplification round needed",
                 notes_zh="oligo 已包含克隆末端（同源臂/酶切位点+保护碱基）："
                          "重叠延伸拼出全长分子后直接进入克隆步骤，"
-                         "无需再用外侧引物扩增加末端"
+                         "无需再用外侧引物扩增加末端。注意：限制性克隆首尾 "
+                         "oligo 两端的保护碱基只保障酶切效率，酶切后随小片段"
+                         "去除，不在构建体图谱中"
             ),
             CloningStep(
                 step_number=4,
