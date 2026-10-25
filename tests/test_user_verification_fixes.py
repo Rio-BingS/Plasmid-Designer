@@ -425,6 +425,60 @@ def test_synthesis_oligos_all_locate_on_construct():
             f"{p.name} 全序列应可定位（载体侧翼核对）: {s[:30]}…"
 
 
+def test_map_document_annotates_synthesis_oligos_on_map():
+    """图谱引物轨道：合成 oligo 按**全序列**定位并画在图谱上（负链装配
+    画在负链）——用户在图谱上直接看到首位引物对上了，不用自己去序列里
+    搜反向互补（pET-21a 负链插入的实测反馈：首位 oligo 只在互补链命中）"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_map", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    doc = design_map_document(result)
+    primers = {p["name"]: p for p in doc["primers"]}
+    oligos = [p for p in result.primers if p.target_start is not None]
+    assert len(primers) == len(oligos), doc["primers"]
+    doc_seq = doc["sequence"].upper()
+    for p in oligos:
+        mp = primers[p.name]
+        assert mp["start"] >= 1 and mp["end"] <= len(doc_seq)
+        span = doc_seq[mp["start"] - 1:mp["end"]]
+        if mp["strand"] == 1:
+            assert span == p.full_sequence.upper(), p.name
+        else:
+            assert revcomp(span) == p.full_sequence.upper(), p.name
+    # pET-28a 负链装配：首位 oligo 必须画在负链上
+    assert primers[oligos[0].name]["strand"] == -1
+
+
+def test_map_document_annotates_pcr_primer_anneal_spans():
+    """PCR 来源：引物全序列含保护碱基/位点不在构建体上，图谱按 3′ 端
+    退火区定位，F/R 都能上图且反链语义正确"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_pcr_map", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    doc = design_map_document(result)
+    primers = {p["name"]: p for p in doc["primers"]}
+    assert any(n.endswith("_F") for n in primers), primers.keys()
+    assert any(n.endswith("_R") for n in primers), primers.keys()
+    fwd = next(v for k, v in primers.items() if k.endswith("_F"))
+    rev = next(v for k, v in primers.items() if k.endswith("_R"))
+    assert rev["strand"] == 1 and fwd["strand"] == -1, (fwd, rev)
+    # pET-28a 负链装配：F 引物（基因正义片段）延伸方向 = 负链，
+    # R 引物（模板链片段）延伸方向 = 正链；退火区序列与图谱跨度一致
+    doc_seq = doc["sequence"].upper()
+    for mp in (fwd, rev):
+        span = doc_seq[mp["start"] - 1:mp["end"]]
+        got = span if mp["strand"] == 1 else revcomp(span)
+        assert got == mp["sequence"].upper()
+
+
 def test_arms_preview_unknown_arm_fails_loudly():
     import pytest
     with pytest.raises(ValueError) as exc:
