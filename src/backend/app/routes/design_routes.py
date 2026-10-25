@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.auth.jwt_auth import User, get_current_user
 from app.cache import cache
+from app.filename import content_disposition, sanitize_filename
 from app.design_service import (
     generate_genbank_from_result,
     run_design,
@@ -162,10 +163,14 @@ async def download_genbank(design_id: str, user: Optional[User] = Depends(get_cu
         raise HTTPException(status_code=400, detail="Design not completed")
 
     content = await run_in_threadpool(generate_genbank_from_result, result)
+    # 下载名优先用质粒名（序列名或「载体名-序列名」），中文走 RFC 5987
+    gb_name = sanitize_filename(result.plasmid_name or design_id,
+                                fallback=design_id) + ".gb"
     return PlainTextResponse(
         content=content,
         media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename={design_id}.gb"},
+        headers={"Content-Disposition": content_disposition(
+            gb_name, ascii_fallback=f"{design_id}.gb")},
     )
 
 

@@ -57,6 +57,10 @@ const insertDirection = computed<InsertDirection>(() =>
 const autoTrimStartCodon = ref(true)
 // Gibson 线性化方式：双酶切（默认，主流实践）或单位点（旧模型）
 const gibsonSingleSite = ref(false)
+// 双酶切线性化时是否把位点重建回连接处（默认保留；关闭 = 无缝连接）
+const keepRestrictionSites = ref(true)
+// 质粒命名：序列名（默认）或加载体名前缀
+const vectorNamePrefix = ref(false)
 // 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
 const preview = ref<RestrictionPreview | null>(null)
 const previewLoading = ref(false)
@@ -180,6 +184,8 @@ function currentDraft() {
     manualStrand: manualStrand.value,
     gibsonSite: gibsonSite.value,
     gibsonSingleSite: gibsonSingleSite.value,
+    keepRestrictionSites: keepRestrictionSites.value,
+    vectorNamePrefix: vectorNamePrefix.value,
     excludeEnzymes: [...excludeEnzymes.value],
     oligoLengthMin: oligoLengthMin.value,
     oligoLengthMax: oligoLengthMax.value,
@@ -224,6 +230,8 @@ function applyDraft(d: Record<string, any>) {
   manualStrand.value = oneOf(d.manualStrand, ['', 'plus', 'minus'] as const, '')
   if (typeof d.gibsonSite === 'string') gibsonSite.value = d.gibsonSite
   gibsonSingleSite.value = d.gibsonSingleSite === true
+  keepRestrictionSites.value = d.keepRestrictionSites !== false
+  vectorNamePrefix.value = d.vectorNamePrefix === true
   if (Array.isArray(d.excludeEnzymes)) {
     excludeEnzymes.value = d.excludeEnzymes.filter((x: any) => typeof x === 'string')
   }
@@ -282,6 +290,8 @@ function clearForm() {
   preview.value = null
   gibsonSite.value = ''
   gibsonSingleSite.value = false
+  keepRestrictionSites.value = true
+  vectorNamePrefix.value = false
   excludeEnzymes.value = []
   oligoLengthMin.value = 40
   oligoLengthMax.value = 80
@@ -405,8 +415,12 @@ async function handleSubmit() {
       request.insert_direction = insertDirection.value
       request.trim_redundant_start = autoTrimStartCodon.value
     }
+    request.vector_name_prefix = vectorNamePrefix.value
     if (cloningMethod.value === 'gibson') {
       request.trim_redundant_start = autoTrimStartCodon.value
+      if (!gibsonSingleSite.value) {
+        request.keep_restriction_sites = keepRestrictionSites.value
+      }
       if (gibsonSingleSite.value) {
         request.gibson_linearization = 'single_site'
         if (gibsonSite.value) request.gibson_site = gibsonSite.value
@@ -525,6 +539,12 @@ function loadExample() {
         <div class="form-group">
           <label class="form-label">序列名称</label>
           <input v-model="sequenceName" class="form-input" placeholder="例如: GFP" />
+        </div>
+        <div class="form-group checkbox-group">
+          <label class="checkbox-label">
+            <input v-model="vectorNamePrefix" type="checkbox" />
+            <span>质粒名加载体名前缀（载体名-序列名，用于 GenBank 导出与下载文件名）</span>
+          </label>
         </div>
       </div>
       
@@ -711,6 +731,11 @@ function loadExample() {
           <label class="checkbox-label">
             <input v-model="gibsonSingleSite" type="checkbox" />
             <span>改用单位点线性化（单切点插入，不切除载体片段）</span>
+          </label>
+          <label v-if="!gibsonSingleSite" class="checkbox-label trim-start-row">
+            <input v-model="keepRestrictionSites" type="checkbox" />
+            <span>保留连接处的酶切位点（关闭 = 无缝连接：同源臂越过位点，
+              位点碱基被重组去除，构建体不再含 NdeI/XhoI 等位点序列）</span>
           </label>
           <label class="checkbox-label trim-start-row">
             <input v-model="autoTrimStartCodon" type="checkbox" />

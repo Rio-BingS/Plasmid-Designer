@@ -86,6 +86,10 @@ export interface DesignRequest {
   trim_redundant_start?: boolean
   /** Gibson 载体线性化方式：双酶切（默认）或单位点 */
   gibson_linearization?: 'double_digest' | 'single_site'
+  /** Gibson 双酶切线性化时保留连接处的酶切位点（默认 true；关闭 = 无缝连接） */
+  keep_restriction_sites?: boolean
+  /** 质粒名加载体名前缀（载体名-序列名） */
+  vector_name_prefix?: boolean
 }
 
 /**
@@ -151,6 +155,8 @@ export interface PrimerInfo {
 }
 
 export interface DesignResult {
+  /** 成品质粒名：序列名或「载体名-序列名」 */
+  plasmid_name?: string
   design_id: string
   status: DesignStatus
   input_sequence: string

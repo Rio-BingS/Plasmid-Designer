@@ -89,6 +89,14 @@ class DesignOptions(BaseModel):
     # 单位点（单切点插入，旧模型）。双酶切需要 enzyme_5 + enzyme_3
     gibson_linearization: Literal["double_digest", "single_site"] = Field(
         default="double_digest", description="Gibson 载体线性化方式")
+    # 双酶切线性化时同源臂是否把位点重建回连接处：保留（默认）= 构建体里
+    # 位点完整可再次酶切；关闭 = 无缝连接，位点碱基被同源臂重组消费掉
+    keep_restriction_sites: bool = Field(
+        default=True,
+        description="Gibson 双酶切线性化时保留连接处的酶切位点（关闭为无缝连接）")
+    # 质粒命名：默认用序列名；开启后加载体名前缀（载体名-序列名）
+    vector_name_prefix: bool = Field(
+        default=False, description="质粒名加载体名前缀（载体名-序列名）")
     oligo_length: int = Field(default=60, ge=40, le=100, description="[已废弃，改用 oligo_length_min/max] 未提供范围时的固定长度")
     # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
     oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")
@@ -306,6 +314,9 @@ class DesignResult(BaseModel):
     # 载体信息
     vector_id: str
     vector_name: str = ""
+    # 成品质粒名：默认为序列名；开启 vector_name_prefix 后为「载体名-序列名」。
+    # GenBank 导出的 LOCUS 与下载文件名都以它为准（缺省回退 design_id）
+    plasmid_name: Optional[str] = None
     final_length: Optional[int] = None
 
     # 引物
