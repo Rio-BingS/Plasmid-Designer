@@ -20,7 +20,6 @@ const PAD = 28
 const BACKBONE_Y = 96
 const GENE_H = 18
 const GENE_Y = 68
-const MARK_H = 12
 const MARK_Y = 116
 
 /** 窗口：基因 + 两个位点 + 附近元件，再留一点边距 */
@@ -54,6 +53,19 @@ const markerFeatures = computed(() => {
   if (!p) return []
   return (p.features || []).filter((f) => markerTypes.includes((f.type || '').toLowerCase()))
 })
+
+/** 元件按类型分色（与结果页环形图 palette 一致）：启动子最醒目——
+ *  它决定基因方向，是预览图上最需要看见的元件 */
+const MARKER_STYLES: Record<string, { fill: string; label: string; height: number }> = {
+  promoter: { fill: '#e9736f', label: '#c0392b', height: 16 },
+  terminator: { fill: '#47b096', label: '#2c7a67', height: 12 },
+  rbs: { fill: '#f3ab68', label: '#b5622d', height: 10 },
+  regulatory: { fill: '#a0aec0', label: '#718096', height: 10 },
+}
+
+function markerStyle(type: string | undefined): { fill: string; label: string; height: number } {
+  return MARKER_STYLES[(type || '').toLowerCase()] || MARKER_STYLES.regulatory
+}
 
 /** 元件名称太长时截断（图上只留识别用的部分） */
 function shortName(name: string, max = 18): string {
@@ -161,12 +173,20 @@ const rulerTicks = computed(() => {
         <text :x="fiveX" :y="GENE_Y + GENE_H / 2 + 30" class="rp-end" text-anchor="middle">5′</text>
         <text :x="threeX" :y="GENE_Y + GENE_H / 2 + 30" class="rp-end" text-anchor="middle">3′</text>
 
-        <!-- 附近元件（启动子/终止子/RBS）：箭头方向 = 元件自身 strand -->
+        <!-- 附近元件（启动子/终止子/RBS）：按类型分色，启动子最大最红；
+             箭头方向 = 元件自身 strand -->
         <g v-for="(feat, i) in markerFeatures" :key="`${feat.name}-${feat.start}-${i}`">
-          <path :d="arrowPath(toX(feat.start), toX(feat.end), MARK_Y, MARK_H, feat.strand === '-' ? -1 : 1)"
-                fill="#38a169" opacity="0.85" />
+          <path
+            :d="arrowPath(toX(feat.start), toX(feat.end), MARK_Y, markerStyle(feat.type).height, feat.strand === '-' ? -1 : 1)"
+            :fill="markerStyle(feat.type).fill" opacity="0.92"
+          >
+            <title>{{ feat.name }}（{{ feat.type }}）</title>
+          </path>
           <text :x="(toX(feat.start) + toX(feat.end)) / 2" :y="MARK_Y + 24"
-                class="rp-marker" text-anchor="middle">{{ shortName(feat.name) }}</text>
+                class="rp-marker" :fill="markerStyle(feat.type).label" text-anchor="middle"
+                :font-weight="feat.type?.toLowerCase() === 'promoter' ? 700 : 400">
+            {{ shortName(feat.name) }}
+          </text>
         </g>
 
         <!-- 窗口刻度 -->
