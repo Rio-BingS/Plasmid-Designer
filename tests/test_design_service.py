@@ -335,7 +335,8 @@ def test_design_restriction_primers_double_digest():
 
 
 def test_design_primers_gene_synthesis_with_cloning_pair():
-    """来源=全基因合成：产出组装 oligo 组 + 带双酶切末端的组装后扩增引物"""
+    """来源=全基因合成：克隆末端（位点+保护碱基）直接合进 oligo——
+    合成产物酶切即可连接，不再产出「组装后扩增」引物对"""
     from app.routes.models import CloningMethod, DesignRequest, SequenceType
     from app.design_service import design_primers_for_method
 
@@ -352,15 +353,32 @@ def test_design_primers_gene_synthesis_with_cloning_pair():
     )
     primers = design_primers_for_method(req, dna, vector=None, backbone="")
 
-    names = [p.name for p in primers]
-    # 87bp、默认长度范围（60/60）→ 2 条错位交替 oligo + 1 对克隆引物
-    assert names[:2] == ["syn_S01", "syn_AS02"]
-    assert names[-2:] == ["syn_F", "syn_R"]                  # 末端为克隆引物对
     from core.primer_designer import PrimerDesigner as _PD
+    from core.seq_utils import revcomp
     sp = _PD.PROTECTIVE_SPACER
-    assert primers[-2].full_sequence.startswith(sp + "GGATCC")  # 保护碱基 + BamHI
-    assert primers[-1].full_sequence.startswith(sp + "CTCGAG")  # 保护碱基 + XhoI（回文）
+    molecule = sp + "GGATCC" + dna + "CTCGAG" + sp
+
+    names = [p.name for p in primers]
+    # 错位交替 oligo 覆盖整条「保护碱基+位点+基因+位点+保护碱基」分子
+    assert names[0] == "syn_S01"
     assert len(primers) % 2 == 0                             # 寡核苷酸总数为偶数
+    assert not any(n.endswith(("_F", "_R")) for n in names), \
+        "末端已合进 oligo，不应再产出扩增加末端的引物对"
+    assert primers[0].sequence.startswith(sp + "GGATCC")     # 保护碱基 + BamHI
+    assert revcomp(primers[-1].sequence.upper()).endswith("CTCGAG" + sp)
+    # 按 oligo 坐标重建 == 期望分子（内容级）
+    spans = {}
+    for i, o in enumerate(primers):
+        seg = o.sequence.upper() if i % 2 == 0 else revcomp(o.sequence.upper())
+        spans[(o.target_start, o.target_end)] = seg
+    lo = min(s for s, _ in spans)
+    hi = max(e for _, e in spans)
+    assert (lo, hi) == (0, len(molecule))
+    buf = [""] * len(molecule)
+    for (s, e), seg in spans.items():
+        for j, ch in enumerate(seg):
+            buf[s + j] = ch
+    assert "".join(buf) == molecule
 
 
 def test_legacy_gene_synthesis_method_normalized():

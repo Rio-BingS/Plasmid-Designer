@@ -891,19 +891,22 @@ class GeneSynthesisStrategy:
                 step_number=3,
                 action="Assembly PCR",
                 description="Assemble oligos into full-length gene by overlap extension PCR",
-                description_zh="通过重叠延伸PCR将寡核苷酸组装为全长基因",
+                description_zh="通过重叠延伸PCR将寡核苷酸组装为全长分子",
                 reagents=["Oligo pool", "PCR Master Mix", "Assembly buffer"],
                 reagents_zh=["寡核苷酸池", "PCR预混液", "组装缓冲液"],
                 conditions={
                     "Initial denaturation": "98°C, 30s",
                     "Cycling (15 cycles)": "98°C 10s, 55°C 15s, 72°C 30s/kb",
-                    "Extension": "Add outer primers for amplification",
-                    "Additional cycles": "20 cycles with outer primers"
                 },
-                duration="~3 hours",
-                duration_zh="约3小时",
-                notes="Use outer primers to amplify the assembled product",
-                notes_zh="使用外侧引物扩增组装产物"
+                duration="~2 hours",
+                duration_zh="约2小时",
+                notes="Oligos already include the cloning ends (homology arms / "
+                      "restriction sites with protective bases): assemble the "
+                      "full-length molecule and proceed directly to cloning — "
+                      "no outer-primer amplification round needed",
+                notes_zh="oligo 已包含克隆末端（同源臂/酶切位点+保护碱基）："
+                         "重叠延伸拼出全长分子后直接进入克隆步骤，"
+                         "无需再用外侧引物扩增加末端"
             ),
             CloningStep(
                 step_number=4,
