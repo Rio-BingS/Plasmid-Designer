@@ -35,6 +35,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from app.cache import cache
+from app.filename import content_disposition, sanitize_filename
 from app.routes.models import (
     MAP_MAX_ENZYMES, MAP_MAX_FEATURES, MAP_MAX_LENGTH,
     MAP_MAX_UPLOAD_BYTES, MAP_MAX_UPLOAD_MB,
@@ -415,9 +416,6 @@ async def import_ncbi(req: MapNcbiRequest):
                                   _ncbi_build, (acc, opts), {})
 
 
-_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
-
-
 @router.post("/export/genbank", response_class=Response,
              responses={200: {"content": {"chemical/x-genbank": {}}}})
 async def export_genbank(doc: MapDocument):
@@ -440,9 +438,11 @@ async def export_genbank(doc: MapDocument):
                                     detail=f"「{f.get('name')}」跨原点（start > end），"
                                            "线性分子不能导出跨原点特征")
     text = await run_in_threadpool(document_to_genbank, data)
-    fname = (_FILENAME_SAFE.sub("_", doc.name).strip("_") or "sequence")[:80] + ".gb"
+    # 头值仅限 latin-1：文档名可能是中文，走 RFC 5987（统一实现 app/filename.py）
+    fname = sanitize_filename(doc.name, fallback="sequence") + ".gb"
     return Response(
         content=text,
         media_type="chemical/x-genbank",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": content_disposition(fname,
+                                                            ascii_fallback="sequence.gb")},
     )

@@ -24,6 +24,7 @@ from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
+from app.filename import content_disposition, sanitize_filename
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
@@ -50,13 +51,12 @@ def _invalidate_vector_cache(vector_id: Optional[str] = None) -> None:
 
 
 def _safe_filename(name: str) -> str:
-    """输出文件名白名单过滤：仅保留字母/数字/点/下划线/连字符。
+    """YAML 文件名 slug：仅 ASCII 白名单（统一实现见 app/filename.py）。
 
     此前上传载体用 vector.name.replace('/', '_') 拼 YAML 文件名，
     未过滤反斜杠等字符，Windows 下可构成路径分隔（KNOWN_ISSUES 3.3）。
     """
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
-    return cleaned or "vector"
+    return sanitize_filename(name, allow_cjk=False, fallback="vector")
 
 
 # ==================== 路由 ====================
