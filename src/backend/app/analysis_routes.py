@@ -23,6 +23,7 @@ from core.export_formats import (
     create_export_data_from_vector
 )
 from app.auth.jwt_auth import User, get_current_user
+from app.filename import content_disposition, sanitize_filename
 from app.cache import ANALYSIS_ENZYMES_VERSION, cached
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -456,22 +457,19 @@ async def export_sequence(request: ExportRequest):
             "sbol": ".json"
         }
         ext = extensions.get(request.format, ".txt")
-        
+        # name 是用户可控输入：白名单过滤后组装（防 Content-Disposition 头注入）
+        disposition = content_disposition(sanitize_filename(request.name) + ext)
         if isinstance(content, bytes):
             return StreamingResponse(
                 io.BytesIO(content),
                 media_type=mime_type,
-                headers={
-                    "Content-Disposition": f"attachment; filename={request.name}{ext}"
-                }
+                headers={"Content-Disposition": disposition}
             )
         else:
             return PlainTextResponse(
                 content=content,
                 media_type=mime_type,
-                headers={
-                    "Content-Disposition": f"attachment; filename={request.name}{ext}"
-                }
+                headers={"Content-Disposition": disposition}
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -508,9 +506,9 @@ async def export_all_formats(request: ExportRequest):
     return StreamingResponse(
         io.BytesIO(zip_content),
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename={request.name}_exports.zip"
-        }
+        headers={"Content-Disposition":
+                 content_disposition(sanitize_filename(request.name) + "_exports.zip",
+                                     ascii_fallback="exports.zip")}
     )
 
 
