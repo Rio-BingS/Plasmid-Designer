@@ -9,8 +9,7 @@
 - 二级结构预测
 """
 
-import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 from core.seq_utils import CODON_TO_AA as _CODON_TO_AA, gc_percent

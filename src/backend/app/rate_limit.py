@@ -7,9 +7,8 @@ import json
 import re
 import time
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple, Callable
-from fastapi import Request, HTTPException, Depends
-from fastapi.security import APIKeyHeader
+from typing import Dict, List, Optional, Tuple
+from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import logging

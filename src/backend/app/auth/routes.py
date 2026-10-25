@@ -16,7 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,7 +38,7 @@ from app.database import (
     get_last_sent_email_verification, email_verification_stats_since,
     reserve_email_verification_attempt,
 )
-from app.features import features_for_tier, features_for_user, tier_for
+from app.features import features_for_user, tier_for
 from app.mailer import send_email, verification_email_html
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])

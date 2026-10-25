@@ -2,7 +2,7 @@
 序列分析和导出 API 路由
 """
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from typing import Annotated, List, Dict, Optional
 from pydantic import BaseModel, BeforeValidator, Field, model_validator

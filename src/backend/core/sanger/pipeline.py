@@ -2263,7 +2263,6 @@ def _build_cds_reports(
         protein_identical = ref_prot == alt_prot_raw
 
         # 起始/终止密码子状态（参考方向核酸层面判定，参照 VEP/snpEff 的 start_lost/stop_lost）
-        from Bio.SeqUtils import seq3
 
         def _orient(s: str) -> str:
             return _seq_revcomp(s) if strand == "-" else s

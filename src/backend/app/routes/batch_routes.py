@@ -24,9 +24,7 @@ from app.routes.models import (
     BatchDesignStatus,
     BatchProgressResponse,
     DesignRequest,
-    DesignStatus,
-    SequenceType,
-)
+    DesignStatus)
 from app.storage import get_batch_store
 from app.mirror_store import BoundedMirror
 

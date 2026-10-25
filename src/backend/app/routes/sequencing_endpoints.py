@@ -11,7 +11,7 @@
 import os
 import secrets
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
