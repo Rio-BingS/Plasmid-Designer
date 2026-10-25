@@ -61,7 +61,11 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
         else:
             feats.append(_feature(raw, "vector"))
     return build_document(
-        name=result.vector_name and f"{result.vector_name} + insert" or "Construct",
+        # 图谱名与结果页/GenBank 同名：plasmid_name（序列名或「载体名-序列名」）。
+        # 此前硬编码「载体名 + insert」，用户开了载体名前缀后图谱仍是旧名
+        name=(result.plasmid_name
+              or (result.vector_name and f"{result.vector_name} + insert")
+              or "Construct"),
         sequence=seq, topology="circular" if circular else "linear",
         source_format="design", features=feats, warnings=[],
         annotate=False, enzyme_set=enzyme_set, orf_min_aa=orf_min_aa,
