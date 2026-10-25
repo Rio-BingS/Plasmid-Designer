@@ -85,3 +85,30 @@ def format_locus_line(
         f"LOCUS       {name_and_length} bp    {mol_type:<7} "
         f"{topology:<8} {division} {date_str}"
     )
+
+
+# ==================== FEATURES / ORIGIN 块（全仓库唯一实现）====================
+# 此前 ORIGIN 排版循环在 export_formats / design_service / sequencing_routes
+# 三处逐字复制（第二轮审计 C1）。改这里的排版 = 改全部导出口径。
+
+def format_feature_line(feature_type: str, location: str) -> str:
+    """FEATURES 表里的一行特征键 + 位置（键列宽 16，GenBank 平面文件规范）"""
+    return f"     {(feature_type or 'misc_feature')[:15]:<15} {location}"
+
+
+def format_qualifier(key: str, value: str) -> str:
+    """FEATURES 表里的一行限定词（/key="value"）"""
+    return f'                     /{key}="{value}"'
+
+
+def render_origin_block(seq: str) -> list:
+    """ORIGIN 块（不含 "ORIGIN" 行本身与结尾 "//"）：60 碱基/行、每 10 个一组。
+
+    行号 1 起算右对齐 9 列，与 Biopython 写出器口径一致。"""
+    seq = (seq or "").upper()
+    lines = []
+    for i in range(0, len(seq), 60):
+        chunk = seq[i:i + 60]
+        groups = " ".join(chunk[j:j + 10] for j in range(0, len(chunk), 10))
+        lines.append(f"{i + 1:>9} {groups}")
+    return lines

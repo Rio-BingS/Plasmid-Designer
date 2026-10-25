@@ -66,7 +66,9 @@ from app.sequencing_batch import (
     run_batch_groups,
 )
 from app.sequencing_report import backfill_excel, build_batch_zip
-from core.genbank_format import format_locus_line
+from core.genbank_format import (
+    format_feature_line, format_locus_line, format_qualifier, render_origin_block,
+)
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,
@@ -901,17 +903,19 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
                 joint="；联合覆盖拼接" if e.get("joint_coverage") else "",
                 est=e.get("length_estimate"),
             )
-            feats.append(f"     misc_feature    {e['start']}..{e['end']}\n"
-                         f"                     /note=\"{label} {e['start']}-{e['end']}：{txt}\"")
+            feats.append(format_feature_line("misc_feature", f"{e['start']}..{e['end']}\n")
+                         + format_qualifier("note", f"{label} {e['start']}-{e['end']}：{txt}"))
         definition = "Sanger consensus sequence"
         if segs:
             # 未测位置 N 屏蔽：坐标与特征不位移，下游软件可直接定位实测段
             seq = _mask_uncovered(seq, segs)
             feats = [
-                f"     misc_feature    {s}..{e}\n"
-                f"                     /note=\"实测覆盖区 {s}-{e}"
-                + ("" if (s, e) == (rs, re_) else f"，参考 {rs}-{re_}")
-                + "（未测位置已按 N 屏蔽）\""
+                format_feature_line("misc_feature", f"{s}..{e}\n")
+                + format_qualifier(
+                    "note",
+                    f"实测覆盖区 {s}-{e}"
+                    + ("" if (s, e) == (rs, re_) else f"，参考 {rs}-{re_}")
+                    + "（未测位置已按 N 屏蔽）")
                 for (s, e), (rs, re_) in zip(segs, ref_spans)
             ] + feats
             definition = "Sanger consensus (unverified positions N-masked)"
@@ -924,10 +928,7 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
             *feats,
             "ORIGIN",
         ]
-        for i in range(0, len(seq), 60):
-            chunk = seq[i:i + 60]
-            groups = " ".join(chunk[j:j + 10] for j in range(0, len(chunk), 10))
-            lines.append(f"{i + 1:>9} {groups}")
+        lines.extend(render_origin_block(seq))
         lines.append("//")
         content = "\n".join(lines)
         ext = "gb"
