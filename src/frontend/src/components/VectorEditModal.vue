@@ -15,6 +15,7 @@ const editForm = ref({
 })
 const editSaving = ref(false)
 
+// immediate：挂载时 vector 已就位（如页面恢复态）也要回填，不只是变更时
 watch(() => props.vector, (v) => {
   if (!v) return
   editForm.value = {
@@ -25,7 +26,7 @@ watch(() => props.vector, (v) => {
     antibiotic_resistance: v.antibiotic_resistance.join(', '),
     copy_number: v.copy_number
   }
-})
+}, { immediate: true })
 
 async function saveEdit() {
   if (!props.vector) return
