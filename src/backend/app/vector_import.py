@@ -26,9 +26,7 @@ from fastapi import HTTPException
 
 from core.plasmid_map.parsers import ParsedRecord, clean_sequence
 from core.vector_library import is_url_key, safe_http_url
-
-# 落盘文件名白名单：仅保留字母/数字/点/下划线/连字符（防路径分隔符注入）
-_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+from app.filename import sanitize_filename
 
 
 class VectorIdConflict(HTTPException):
@@ -60,9 +58,8 @@ def provenance_block(source: str, *, url: str = "", license: str = "",
 
 
 def safe_slug(name: str, fallback: str = "vector") -> str:
-    """输出文件名/ID 用的安全片段（旧 vector_routes._safe_filename 的同名实现）"""
-    cleaned = _SLUG_RE.sub("_", str(name or "")).strip("._")
-    return cleaned[:80] or fallback
+    """输出文件名/ID 用的安全片段（统一实现见 app/filename.py，ASCII 白名单）"""
+    return sanitize_filename(name, allow_cjk=False, fallback=fallback)
 
 
 def make_vector_id(source: str, name: str) -> str:
