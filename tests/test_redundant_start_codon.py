@@ -177,3 +177,117 @@ def test_forward_synthetic_vector_trims_and_extends_start(monkeypatch):
     # CDS 起点向前扩 3bp：TATG 的末尾 ATG 是起始密码子
     assert feat["start"] == result.insert_start - 3
     assert result.construct_sequence[feat["start"] - 1:feat["start"] + 2] == "ATG"
+
+
+# ==================== Gibson ====================
+
+def _gibson_request(**over):
+    return _restriction_request(cloning_method="gibson", **over)
+
+
+def test_gibson_standalone_trims_and_extends_cds(monkeypatch):
+    """线性化点前 3bp 为 ATG（独立表达）：默认去除 + CDS 向前扩 3bp"""
+    from core.vector_library import MCS, Vector
+    from app import design_service
+
+    # "A"*47 + "ATG"：MCS 起点 51 → 线性化 pos=50（0-based），backbone[:50] 以 ATG 结尾
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 47 + "ATG" + "C" * 52,
+        mcs=MCS(name="MCS", start=51, end=56, sites=[]),
+        elements=[],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("g_trim", _gibson_request(vector_id="synth"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+    assert not result.optimized_sequence.upper().startswith("ATG")
+    feat = _insert_cds(result)
+    assert feat["strand"] == "+"
+    assert feat["start"] == result.insert_start - 3
+    assert result.construct_sequence[feat["start"] - 1:feat["start"] + 2] == "ATG"
+    assert "线性化点前的载体碱基" in feat["description"]
+
+
+def test_gibson_option_off_only_warns(monkeypatch):
+    from core.vector_library import MCS, Vector
+    from app import design_service
+
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 47 + "ATG" + "C" * 52,
+        mcs=MCS(name="MCS", start=51, end=56, sites=[]),
+        elements=[],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("g_keep", _gibson_request(
+        vector_id="synth", trim_redundant_start=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("检测到冗余起始密码子") for w in result.warnings)
+    assert result.optimized_sequence.upper().startswith("ATG")
+
+
+def test_gibson_fusion_in_frame_warns_internal_met(monkeypatch):
+    """线性化点紧贴正链 tag CDS 末端且同框：不去除，提示内部 Met"""
+    from core.vector_library import ElementType, MCS, Vector, VectorElement
+    from app import design_service
+
+    # tag 40..48（9bp 同框）+ C 区；MCS 起点 49 → pos=48，紧贴 tag 末端
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 39 + "GGTGGTGGT" + "C" * 52,
+        mcs=MCS(name="MCS", start=49, end=54, sites=[]),
+        elements=[VectorElement("6xHis", ElementType.TAG, 40, 48, "GGTGGTGGT", strand="+")],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("g_fuse", _gibson_request(vector_id="synth"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("融合克隆" in w and "内部甲硫氨酸" in w for w in result.warnings)
+    assert result.optimized_sequence.upper().startswith("ATG")  # 不动序列
+
+
+def test_gibson_fusion_frameshift_warns(monkeypatch):
+    """线性化点在 tag CDS 内部且碱基数非 3 的倍数：移码告警"""
+    from core.vector_library import ElementType, MCS, Vector, VectorElement
+    from app import design_service
+
+    # tag 41..49（9bp，插入点前占 8bp，非 3 倍数）+ C 区；MCS 起点 49 → pos=48 在 tag 内
+    vector = Vector(
+        id="synth", name="synth",
+        sequence="A" * 40 + "GGTGGTGGT" + "C" * 51,
+        mcs=MCS(name="MCS", start=49, end=54, sites=[]),
+        elements=[VectorElement("6xHis", ElementType.TAG, 41, 49, "GGTGGTGGT", strand="+")],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("g_shift", _gibson_request(vector_id="synth"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("读码框不匹配" in w and "移位" in w for w in result.warnings)
+
+
+def test_gibson_direction_warning_on_pet28a():
+    """pET-28a 表达盒在负链：Gibson 正链组装必须给出方向相反告警"""
+    result = run_design("g_dir", _gibson_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("反义 RNA" in w for w in result.warnings)
+    # 默认线性化点（MCS 起点）前不是 ATG：不触发去除
+    assert not any("已自动去除冗余起始密码子" in w for w in result.warnings)

@@ -87,6 +87,29 @@ def restriction_site(enzyme: str) -> str:
         return ""
 
 
+def gibson_junction_fusion(elements, pos: int) -> Optional[Dict]:
+    """Gibson 线性化点是否落在正链 CDS/tag 元件内或紧贴其末端（融合克隆）。
+
+    pos 与 plan_gibson 的 left_cut 同义（1-based「保留到该位」），插入片段
+    占据 (pos, ...]：元件 start <= pos <= end 时，该元件的碱基直接续接插入
+    片段——基因与元件（如 His-tag）融合，读码框与内部 Met 语义取代
+    「起始密码子」语义。负链元件与正链插入片段不融合，不算。
+    """
+    for el in elements or []:
+        kind = str(el.get("type") or "").strip().lower()
+        if kind not in ("cds", "tag"):
+            continue
+        if str(el.get("strand") or "+") != "+":
+            continue
+        try:
+            s, e = int(el.get("start") or 0), int(el.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if s > 0 and s <= pos <= e:
+            return el
+    return None
+
+
 def physical_sites(sequence: str, enzyme: str, *, circular: bool = True) -> List[Dict]:
     """载体的某酶位点（每个物理位点一条；回文酶正反链重复上报已去重）"""
     if not sequence:
