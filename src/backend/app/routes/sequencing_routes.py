@@ -74,7 +74,7 @@ from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,
 )
-from core.sanger.pipeline import analyze, _try_tracy_decompose
+from core.sanger.pipeline import analyze, try_tracy_decompose
 from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
 
@@ -395,7 +395,7 @@ def _run_full_analysis(
                 ab1_path = os.path.join(td, "sample.ab1")
                 with open(ab1_path, "wb") as fh:
                     fh.write(blob)
-                dec = _try_tracy_decompose(ab1_path, ref_fasta)
+                dec = try_tracy_decompose(ab1_path, ref_fasta)
                 if dec:
                     alleles[filename] = dec
         result["decomposed_alleles"] = alleles

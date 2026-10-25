@@ -32,11 +32,11 @@ from typing import Dict, List, Optional, Tuple, Union
 
 # 表内别名判定的分隔符不敏感形式与 core.sanger.batch 共用一份实现，保证
 # 归档合并与图谱共享对「同一质粒的不同写法」口径完全一致
-from core.sanger.batch import _squash
+from core.sanger.batch import squash_name
 # 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
 # 网页、结论文本、整理包报告里说法一致，避免各写各的）
-from core.sanger.pipeline import (END_MARGIN, _peak_verdict_phrase,
-                                  _pos_ranges_str, _run_label,
+from core.sanger.pipeline import (END_MARGIN, peak_verdict_phrase,
+                                  pos_ranges_str, run_label,
                                   alignment_span_text)
 
 ZIP_ROOT = "测序整理"
@@ -164,12 +164,12 @@ def _plasmid_folders(plasmids: List[str]) -> Dict[str, str]:
     uniq = sorted({p for p in plasmids if p})
     rep: Dict[str, str] = {}
     for n in uniq:                     # 仅大小写/分隔符不同的写法共用一个文件夹
-        rep.setdefault(_squash(n), n)
+        rep.setdefault(squash_name(n), n)
     reps = sorted(set(rep.values()))
-    segs = {n: {_squash(t) for t in re.split(r"\s+", n.strip()) if t} for n in reps}
+    segs = {n: {squash_name(t) for t in re.split(r"\s+", n.strip()) if t} for n in reps}
     host: Dict[str, Optional[str]] = {}
     for n in reps:
-        cands = [m for m in reps if m != n and _squash(n) in segs[m]]
+        cands = [m for m in reps if m != n and squash_name(n) in segs[m]]
         host[n] = cands[0] if len(cands) == 1 else None
     final: Dict[str, str] = {}
     for n in reps:                     # 传递并入最终宿主（环兜底限步数）
@@ -178,7 +178,7 @@ def _plasmid_folders(plasmids: List[str]) -> Dict[str, str]:
             cur = host[cur]
             hops += 1
         final[n] = cur
-    return {p: final[rep[_squash(p)]] if p else "sample" for p in plasmids}
+    return {p: final[rep[squash_name(p)]] if p else "sample" for p in plasmids}
 
 
 def _fmt_change(v) -> str:
@@ -277,14 +277,14 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
             for e in hp_entries:
                 rel_txt = ("可靠" if e.get("count_reliable", True)
                            else "**不可靠**（峰图与调用不一致，建议核对峰图）")
-                lines.append(_md_row(_run_label(e), f"{e['start']}–{e['end']}",
-                                     e['ref_repeat_count'], _peak_verdict_phrase(e),
+                lines.append(_md_row(run_label(e), f"{e['start']}–{e['end']}",
+                                     e['ref_repeat_count'], peak_verdict_phrase(e),
                                      rel_txt))
             lines.append("")
         for e in hp_entries:
             if e.get("count_reliable", True) or not e.get("read_counts"):
                 continue
-            lines.append(f"- **{_run_label(e)} {e['start']}-{e['end']}**（峰图矛盾）逐 read 证据：")
+            lines.append(f"- **{run_label(e)} {e['start']}-{e['end']}**（峰图矛盾）逐 read 证据：")
             for x in e["read_counts"]:
                 d = "反向" if x["direction"] == "-" else "正向"
                 n = x["peak_count"] if x["peak_count"] is not None else "?"
@@ -303,7 +303,7 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                     v.get("confidence"), v.get("confidence"))
                 lines.append(_md_row(
                     v['ref_pos'], kind, _fmt_change(v),
-                    f"{_run_label(hp)} {hp['start']}-{hp['end']}",
+                    f"{run_label(hp)} {hp['start']}-{hp['end']}",
                     f"{hp['ref_repeat_count']}→{hp['observed_repeat_count']}", conf))
             lines.append("")
     # 双峰（疑似混合）检测：次级峰 >30% 的位点计为双峰位点（已剔除 poly 滑移
@@ -331,7 +331,7 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
                    if p.get("median_ratio") is not None else "—")
             frac = p.get("minor_fraction")
             frac_txt = f"约 {round(frac * 100)}%" if frac else "—"
-            pos_txt = _pos_ranges_str(p["positions"], max_ranges=10)
+            pos_txt = pos_ranges_str(p["positions"], max_ranges=10)
             if p.get("pullup_excluded"):
                 pos_txt += f"；另有 {p['pullup_excluded']} 处饱和峰拖影已剔除"
             lines.append(_md_row(r['filename'], label, p['count'], pct, frac_txt, pos_txt))
