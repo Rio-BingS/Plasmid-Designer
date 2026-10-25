@@ -738,7 +738,7 @@ def cassette_hint(
     left_cut: int,
     right_cut: int,
     *,
-    max_gap: int = 1500,
+    max_gap: int = 3000,
     rbs_gap: int = 120,
     terminator_gap: int = 800,
 ) -> Dict:
@@ -752,8 +752,12 @@ def cassette_hint(
     * RBS 贴在某一侧 → 该侧是表达盒（+2）；
     * 终止子贴在某一侧 → 转录从该侧读出去，属另一侧（+2）。
 
-    返回 {"strand", "score", "promoter", "evidence", "ambiguous"}。strand 为
-    None 表示证据不唯一或不足——调用方此时应让用户手选，不要瞎猜。
+    max_gap 取 3000：启动子与插入位点之间常隔大标签/MCS/接头（pET 系列的
+    His-tag、 thrombin、 dozens bp 的 MCS），1500 会把合法表达盒判成
+    「无证据」→ 方向回落默认正链（实测用户载体启动子距切点 ~1600bp 时
+    方向判定失效）。返回 {"strand", "score", "promoter", "evidence",
+    "ambiguous"}。strand 为 None 表示证据不唯一或不足——调用方此时应让
+    用户手选，不要瞎猜。
     """
     hint: Dict = {"strand": None, "score": {"+": 0, "-": 0}, "promoter": None,
                   "evidence": [], "ambiguous": False}

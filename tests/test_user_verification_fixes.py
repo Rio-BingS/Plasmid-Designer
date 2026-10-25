@@ -262,3 +262,69 @@ def test_arms_design_reports_splice_position():
     assert splice, "同源臂设计必须给出拼接定位说明"
     assert "臂5 末端 37" in splice[0]
     assert "正链" in splice[0]
+
+
+# ---------- 7. CDS 方向 = 启动子方向（同源臂预览/设计的判定） ----------
+
+def test_cassette_hint_promoter_gap_extended():
+    """启动子距切点 1600bp（>旧上限 1500）：必须仍能判定方向——
+    大标签/MCS 隔开启动子的载体此前方向判定失效、回落默认正链"""
+    from core.construct_assembly import cassette_hint
+    elements = [{"name": "T7 promoter", "type": "promoter",
+                 "start": 1, "end": 18, "strand": "+"}]
+    hint = cassette_hint(elements, 1700, 1750)   # gap = 1682
+    assert hint["strand"] == "+"
+    hint_far = cassette_hint(elements, 5000, 5050)   # 超过 3000：判不出
+    assert hint_far["strand"] is None
+
+
+def _arms_vector_with_promoter(feature: dict):
+    from app.schemas import DesignVectorInput
+    return DesignVectorInput(id="pdir", name="pdir", sequence=ARMS_BB,
+                             topology="circular", features=[feature])
+
+
+def test_arms_preview_direction_agreement_is_stated():
+    """正链启动子在插入区间上游 + 正向臂：预览明确说「方向一致」"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 1, "end": 18, "strand": "+"}),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "+"
+    assert any("CDS 方向与启动子一致" in w and "正链" in w
+               for w in pv["warnings"])
+
+
+def test_arms_preview_direction_conflict_warned():
+    """负链启动子（表达盒读向右→左）+ 正向臂拼接：预览必须报
+    「CDS 方向与启动子相反」并给出翻转办法——这就是「生硬拼接」的判定"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "+"
+    conflict = [w for w in pv["warnings"] if "CDS 方向与启动子相反" in w]
+    assert conflict, pv["warnings"]
+    assert "T7 promoter" in conflict[0]
+    assert "反义 RNA" in conflict[0]
+    assert "反向互补" in conflict[0]
+
+
+def test_arms_design_direction_conflict_warned():
+    """正式设计同样报方向冲突（对称判定：负链启动子 × 正链装配）"""
+    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
+    result = run_design("uvf_arms_dir", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        cloning_method=CloningMethod.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("CDS 方向与启动子相反" in w for w in result.warnings)
