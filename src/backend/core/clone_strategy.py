@@ -901,14 +901,15 @@ class GeneSynthesisStrategy:
                 duration="~2 hours",
                 duration_zh="约2小时",
                 notes="Oligos already include the cloning ends (homology arms / "
-                      "restriction sites with protective bases): assemble the "
+                      "restriction sites flanked by vector-junction sequence "
+                      "or protective bases): assemble the "
                       "full-length molecule and proceed directly to cloning — "
                       "no outer-primer amplification round needed",
-                notes_zh="oligo 已包含克隆末端（同源臂/酶切位点+保护碱基）："
+                notes_zh="oligo 已包含克隆末端（同源臂/酶切位点+两端各6nt）："
                          "重叠延伸拼出全长分子后直接进入克隆步骤，"
-                         "无需再用外侧引物扩增加末端。注意：限制性克隆首尾 "
-                         "oligo 两端的保护碱基只保障酶切效率，酶切后随小片段"
-                         "去除，不在构建体图谱中"
+                         "无需再用外侧引物扩增加末端。限制性克隆两端 6nt 直接"
+                         "取载体连接点外侧序列，与构建体图谱一致、可全序列核对；"
+                         "侧翼不可用时回退保护碱基（酶切后随小片段去除）"
             ),
             CloningStep(
                 step_number=4,
