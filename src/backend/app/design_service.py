@@ -476,8 +476,8 @@ def assemble_construct(
     作回退，且由 warnings 说明原因，不静默退回。
     """
     from core.construct_assembly import (
-        apply_plan, cassette_direction, plan_gibson, plan_golden_gate,
-        plan_restriction,
+        apply_plan, cassette_direction, cassette_hint, plan_gibson,
+        plan_golden_gate, plan_restriction,
     )
 
     backbone = ensure_vector_backbone(vector)
@@ -530,6 +530,19 @@ def assemble_construct(
                 f"基因会反着插进去、转录不出目标蛋白。把两端酶对调后重新设计"
                 f"（5′ 端填 {enzyme_3 or '-'}、3′ 端填 {enzyme_5 or '-'}）。")
 
+    if plan is not None and method == "gibson" and check_cassette:
+        # Gibson 方向自检：插入模型恒按正链放置（取向实际由同源臂设计决定），
+        # 载体表达盒判为负链时，按当前模型组装出的基因是反义的——与 restriction
+        # 的「两端酶填反」同性质，必须在结果层说明而非默默给出反义构建体
+        hint = cassette_hint(
+            _vector_element_dicts(vector) + list(extra_elements or []),
+            plan.left_cut, plan.left_cut + 1)
+        if hint.get("strand") == "-":
+            plan.warnings.append(
+                "Gibson 插入片段按正链组装，与载体表达盒方向（负链）相反："
+                "转录产物为反义 RNA。Gibson 的基因取向由同源臂设计决定，"
+                "请确认引物同源臂取向与此一致，或改用双酶切克隆（自动判向）")
+
     if plan is not None:
         try:
             seq, feats, istart, iend, plan_warnings = apply_plan(
@@ -541,7 +554,8 @@ def assemble_construct(
             warnings.append("切点跨越载体原点，已按 MCS 区间替换构建体")
         else:
             warnings.extend(plan_warnings)
-            _extend_insert_cds_for_site_start(seq, feats, istart, iend, plan, enzyme_5)
+            _extend_insert_cds_for_site_start(seq, feats, istart, iend, plan,
+                                              enzyme_5, vector)
             return ConstructAssembly(
                 sequence=seq, insert_start=istart, insert_end=iend,
                 features=feats, warnings=warnings, junction=plan.junction)
@@ -551,45 +565,68 @@ def assemble_construct(
 
 def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
                                       istart: int, iend: int,
-                                      plan, enzyme_5: Optional[str]) -> None:
-    """CDS 完整性：NdeI/NcoI 这类位点自带 ATG，双酶切连接处位点复原后
-    紧贴基因 5′ 端的 ATG 就是实际起始密码子——把它包进 CDS 注释。
+                                      plan, enzyme_5: Optional[str],
+                                      vector=None) -> None:
+    """CDS 完整性：连接处紧贴基因 5′ 端的载体自带 ATG 就是实际起始密码子
+    （restriction 的位点残留 ATG / Gibson 线性化点前 3bp）——把它包进 CDS
+    注释。
 
-    此前 CDS 注释从基因第一个碱基开始（位点残留归为克隆接头），当位点
+    此前 CDS 注释从基因第一个碱基开始（接头/残留归为克隆接头），当载体
     提供起始密码子时注释的 ORF 与真实读码框差几 bp，图谱 ORF 推断与
     测序 CDS 变异分析都会偏。只改 CDS 特征的起止，insert_start/end 克隆
     坐标不动；连接处实际碱基与预期不符（意外排布）时保持原注释不动。
     """
-    if plan is None or plan.method != "restriction" or not enzyme_5:
+    if plan is None:
         return
-    from core.construct_assembly import restriction_site
-    from core.seq_utils import revcomp as _revcomp
-    site = restriction_site(enzyme_5)
-    if not site:
+    offset = 0
+    if plan.method == "restriction":
+        if not enzyme_5:
+            return
+        from core.construct_assembly import restriction_site
+        site = restriction_site(enzyme_5)
+        if not site:
+            return
+        if plan.insert_reverse:
+            from core.seq_utils import revcomp as _revcomp
+            j = _revcomp(site).rfind("ATG")
+            if j < 0:
+                return
+            offset = len(site) - j
+        else:
+            i = site.rfind("ATG")
+            if i < 0:
+                return
+            offset = len(site) - i
+    elif plan.method == "gibson":
+        from core.construct_assembly import gibson_junction_fusion
+        # 融合克隆（线性化点贴着/落在正链 CDS 内）：载体 ATG 是融合元件的
+        # 碱基而非起始密码子，CDS 不扩展
+        if vector is not None and gibson_junction_fusion(
+                _vector_element_dicts(vector), plan.left_cut) is not None:
+            return
+        offset = 3
+    else:
         return
+
     feat = feats[0] if feats and feats[0].get("type") == "CDS" else None
     if feat is None:
         return
     if plan.insert_reverse:
-        # 负链基因 5′ 端在片段右侧：起始密码子 = 位点前 3bp 的反向互补
-        j = _revcomp(site).rfind("ATG")
-        if j < 0:
+        if iend + offset > len(seq):
             return
-        offset = len(site) - j
-        if iend + offset > len(seq) or _revcomp(seq[iend:iend + 3]) != "ATG":
+        from core.seq_utils import revcomp as _revcomp
+        if offset != 3 or _revcomp(seq[iend:iend + 3]) != "ATG":
             return
         feat["end"] = iend + offset
     else:
-        i = site.rfind("ATG")
-        if i < 0:
-            return
-        offset = len(site) - i
         start = istart - offset
         if start < 1 or seq[start - 1:start + 2] != "ATG":
             return
         feat["start"] = start
+    origin = (f"{enzyme_5} 位点" if plan.method == "restriction"
+              else "线性化点前的载体碱基")
     feat["description"] = (feat.get("description") or "") + \
-        f"；起始密码子来自 {enzyme_5} 位点（CDS 已包含）"
+        f"；起始密码子来自 {origin}（CDS 已包含）"
 
 
 def _resolve_redundant_start_codon(
@@ -610,6 +647,8 @@ def _resolve_redundant_start_codon(
     构建体里，绝不能动插入序列——用与组装完全相同的 plan_restriction
     探测一次，None 即回退路径。Golden Gate overhang（MoClo 惯例）不在此列。
     """
+    if request.cloning_method == CloningMethod.GIBSON:
+        return _resolve_gibson_start_codon(request, vector, backbone, optimized_dna)
     if request.cloning_method != CloningMethod.RESTRICTION or not optimized_dna:
         return optimized_dna, []
     if not str(optimized_dna).upper().startswith("ATG"):
@@ -656,6 +695,74 @@ def _resolve_redundant_start_codon(
         f"{enzyme_5_name} 位点自带 ATG 并充当起始密码子，插入序列又以 ATG 开头，"
         "蛋白 N 端会出现连续两个 Met（Met-Met）；建议去掉输入序列开头的 ATG/M "
         "重新设计，或勾选「位点自带起始密码子时去除冗余 ATG」"
+    ]
+
+
+def _resolve_gibson_start_codon(
+    request, vector, backbone: str, optimized_dna: str,
+) -> Tuple[str, List[str]]:
+    """Gibson 的起始密码子一致性（比 restriction 复杂，见各分支）。
+
+    Gibson 定位通常按酶切位点（gibson_site / MCS 起点，见
+    resolve_gibson_insert_pos），但没有位点残留——连接处语义由**实际碱基**
+    决定，分三种情形：
+
+    - 融合克隆：线性化点落在正链 CDS/tag 内或紧贴其末端 → 基因与元件融合，
+      起始密码子语义不成立；只告警读码框（碱基数非 3 的倍数 = 移位）与
+      内部 Met，不自动去除（保留与否取决于实验意图，如肠激酶位点）；
+    - 独立表达：线性化点前 3bp 为 ATG 且插入序列以 ATG 开头 → 与 restriction
+      同一套去除/告警，CDS 注释同样向前扩 3bp；
+    - 方向：Gibson 当前恒按正链组装（模型限制），表达盒判为负链时告警
+      （方向告警在 assemble_construct 内做，随组装告警返回）。
+    """
+    if not backbone or not optimized_dna or not vector:
+        return optimized_dna, []
+    if not str(optimized_dna).upper().startswith("ATG"):
+        return optimized_dna, []
+
+    from core.construct_assembly import gibson_junction_fusion
+    pos = resolve_gibson_insert_pos(request, vector)          # 0-based
+    if pos < 3 or pos >= len(backbone):
+        return optimized_dna, []
+    elements = _vector_element_dicts(vector)
+    fusion = gibson_junction_fusion(elements, pos)
+    if fusion is not None:
+        # 融合克隆：读码框与内部 Met 告警与插入序列首密码子无关
+        name = fusion.get("name") or fusion.get("type") or "CDS"
+        cnt = pos - int(fusion["start"]) + 1   # 融合元件在插入点前的碱基数
+        if cnt % 3 == 0:
+            return optimized_dna, [
+                "Gibson 融合克隆提示："
+                f"线性化点紧邻 {name}（CDS）末端且同框，插入序列开头的 ATG 会作为"
+                "内部甲硫氨酸进入融合蛋白；如需纯融合请去掉序列开头的 ATG，"
+                "保留与否请按实验意图确认"
+            ]
+        return optimized_dna, [
+            "Gibson 融合克隆读码框不匹配："
+            f"线性化点位于 {name}（CDS）内，插入点前该 CDS 已有 {cnt} bp"
+            f"（非 3 的倍数），直接拼接会使下游读码框移位 {3 - cnt % 3} bp；"
+            "请调整线性化位置或同源臂设计"
+        ]
+
+    if not str(optimized_dna).upper().startswith("ATG"):
+        return optimized_dna, []
+    if backbone[pos - 3:pos].upper() != "ATG":
+        return optimized_dna, []
+    where = request.gibson_site or "MCS 起点"
+    if getattr(request, "trim_redundant_start", True) and len(optimized_dna) > 6:
+        return optimized_dna[3:], [
+            "已自动去除冗余起始密码子："
+            f"线性化点（{where}处）前的载体碱基以 ATG 结尾并充当起始密码子，"
+            "插入序列再以 ATG 开头会使蛋白 N 端出现连续两个 Met；已去掉插入序列"
+            "开头的 ATG（第一个甲硫氨酸由载体提供，蛋白与你输入的氨基酸序列一致）。"
+            "不希望自动去除可在设计表单取消勾选「位点自带起始密码子时去除冗余 ATG」"
+        ]
+    return optimized_dna, [
+        "检测到冗余起始密码子："
+        f"线性化点（{where}处）前的载体碱基以 ATG 结尾并充当起始密码子，"
+        "插入序列又以 ATG 开头，蛋白 N 端会出现连续两个 Met（Met-Met）；"
+        "建议去掉输入序列开头的 ATG/M 重新设计，或勾选"
+        "「位点自带起始密码子时去除冗余 ATG」"
     ]
 
 
@@ -1086,8 +1193,10 @@ def run_design(
                 )
                 result.warnings.extend(resolved_ends.warnings)
 
-                # 起始密码子一致性：位点自带 ATG 时按选项去除冗余起始 ATG
-                # （去除发生在组装与引物设计之前，两者都消费 optimized_dna）
+            if request.cloning_method in (CloningMethod.RESTRICTION,
+                                          CloningMethod.GIBSON):
+                # 起始密码子一致性（restriction 位点残留 / gibson 线性化点）。
+                # 去除发生在组装与引物设计之前，两者都消费 optimized_dna
                 optimized_dna, start_codon_warnings = _resolve_redundant_start_codon(
                     request, vector, backbone, optimized_dna, resolved_ends)
                 result.warnings.extend(start_codon_warnings)
