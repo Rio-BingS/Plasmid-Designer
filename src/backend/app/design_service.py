@@ -391,7 +391,7 @@ def build_restriction_preview(request) -> Dict:
         method="gibson" if arms_mode else "restriction",
         enzyme_5=(ends.enzyme_5 if not arms_mode else None),
         enzyme_3=(ends.enzyme_3 if not arms_mode else None),
-        check_cassette=False,
+        check_cassette=True,
         extra_elements=(ends.detected if not arms_mode else None),
         join="gibson" if (is_gibson or arms_mode) else "sticky",
         keep_sites=keep_sites if not arms_mode else True,
@@ -638,21 +638,37 @@ def assemble_construct(
                 f"（5′ 端填 {enzyme_3 or '-'}、3′ 端填 {enzyme_5 or '-'}）。")
 
     if plan is not None and method == "gibson" and check_cassette:
-        # Gibson 方向自检：基因取向由臂/同源臂设计决定，载体表达盒判出的
-        # 方向与之相反时，组装出的基因是反义的——与 restriction 的「两端酶
-        # 填反」同性质，必须在结果层说明而非默默给出反义构建体
+        # Gibson 方向自检（对称）：基因取向由臂/同源臂设计决定，与载体
+        # 表达盒（启动子/RBS）判出的方向相反时，组装出的是反义构建体——
+        # 必须在结果层说清；一致时（同源臂模式）也明确说「方向正确」
         right_hint = (plan.right_cut if plan.right_cut > plan.left_cut
                       else plan.left_cut + 1)
         hint = cassette_hint(
             _vector_element_dicts(vector) + list(extra_elements or []),
             plan.left_cut, right_hint)
-        if hint.get("strand") == "-":
+        hint_strand = hint.get("strand")
+        assembly_strand = "-" if plan.insert_reverse else "+"
+        if hint_strand and hint_strand != assembly_strand:
+            promoter = hint.get("promoter") or {}
             advice = ("请交换两条重组臂的来源位置（取载体另一侧的同源区）重新填写"
                       if custom_plan is not None else
                       "请确认引物同源臂取向与此一致，或改用双酶切克隆（自动判向）")
+            where = (f"{promoter.get('name') or '启动子'}"
+                     f"（{promoter.get('start')}..{promoter.get('end')}，"
+                     f"{'负' if str(promoter.get('strand') or '+') == '-' else '正'}链）"
+                     if promoter else "载体表达盒")
             plan.warnings.append(
-                "Gibson 插入片段按正链组装，与载体表达盒方向（负链）相反："
-                f"转录产物为反义 RNA。{advice}")
+                f"CDS 方向与启动子相反：{where}决定的转录方向是"
+                f"{'负链' if hint_strand == '-' else '正链'}，而按当前臂/同源臂的"
+                f"锚定位置，基因落在{'负链' if assembly_strand == '-' else '正链'}"
+                f"上，转录产物为反义 RNA。{advice}"
+                + ("；把两条臂改为其反向互补序列可翻转装配方向"
+                   if custom_plan is not None else ""))
+        elif hint_strand and custom_plan is not None:
+            # 同源臂模式：明确说「拼对了」，用户不用自己去图上核对
+            plan.warnings.append(
+                f"CDS 方向与启动子一致（{'负链' if hint_strand == '-' else '正链'}）："
+                "按当前两条臂的锚定位置，基因与载体表达方向相同")
 
     if plan is not None:
         try:
