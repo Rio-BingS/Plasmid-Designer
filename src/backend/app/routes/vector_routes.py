@@ -21,7 +21,9 @@ from app import config
 from app.design_service import get_vector_library, invalidate_vector_library_cache
 from app.map_documents import vector_map_preview
 from app.auth.jwt_auth import get_admin_user
-from core.genbank_format import format_locus_line
+from core.genbank_format import (
+    format_feature_line, format_locus_line, format_qualifier, render_origin_block,
+)
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
@@ -228,17 +230,14 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
             '                     /organism="synthetic construct"',
         ]
         for elem in vector.elements:
-            ftype = (elem.element_type.value or "misc_feature")[:15]
+            ftype = elem.element_type.value or "misc_feature"
             loc = f"complement({elem.start}..{elem.end})" if elem.strand == "-" else f"{elem.start}..{elem.end}"
-            lines.append(f"     {ftype:<15} {loc}")
-            lines.append(f'                     /label="{elem.name}"')
+            lines.append(format_feature_line(ftype, loc))
+            lines.append(format_qualifier("label", elem.name))
             if elem.description:
-                lines.append(f'                     /note="{elem.description[:80]}"')
+                lines.append(format_qualifier("note", elem.description[:80]))
         lines.append("ORIGIN")
-        for i in range(0, len(seq_upper), 60):
-            chunk = seq_upper[i:i + 60]
-            groups = ' '.join([chunk[j:j + 10] for j in range(0, len(chunk), 10)])
-            lines.append(f"{i + 1:>9} {groups}")
+        lines.extend(render_origin_block(seq_upper))
         lines.append("//")
         content = '\n'.join(lines)
     else:

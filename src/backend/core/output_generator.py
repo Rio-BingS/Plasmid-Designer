@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
-from core.genbank_format import format_locus_line
+from core.genbank_format import format_locus_line, render_origin_block
 
 
 @dataclass
@@ -94,17 +94,10 @@ class GenBankGenerator:
         
         # 序列
         lines.append(f"ORIGIN")
-        
-        seq = design.final_sequence.upper()
-        for i in range(0, len(seq), 60):
-            chunk = seq[i:i+60]
-            # 每10个碱基一组
-            groups = ' '.join([chunk[j:j+10] for j in range(0, len(chunk), 10)])
-            pos = i + 1
-            lines.append(f"{pos:>9} {groups}")
-        
+        lines.extend(render_origin_block(design.final_sequence))
+
         lines.append(f"//")
-        
+
         return '\n'.join(lines)
 
 

@@ -181,3 +181,25 @@ def test_output_generator_genbank_round_trips():
     assert rec.name == "pET28a_GFP_const"
     assert len(rec) == len(seq)
     assert rec.annotations["topology"] == "circular"
+
+
+def test_origin_layout_loop_has_single_implementation():
+    """防回潮（第二轮审计 C1）：ORIGIN 60/10 排版循环此前在三处逐字复制，
+    收敛到 core.genbank_format.render_origin_block 后，仓库内不允许再出现。"""
+    import re as _re
+    from pathlib import Path
+    backend = Path(__file__).resolve().parents[1] / "src" / "backend"
+    pattern = _re.compile(r"range\(0,\s*len\((seq|construct|data\.sequence|\w+)\s*\)?,?\s*60\)|"
+                          r"len\(seq\),\s*60\)")
+    offenders = []
+    for py in backend.rglob("*.py"):
+        if py.name == "genbank_format.py":  # 唯一实现所在地
+            continue
+        text = py.read_text(encoding="utf-8", errors="ignore")
+        for m in _re.finditer(r"range\(0, len\([^)]*\), 60\)", text):
+            # GenBank ORIGIN 循环的签名是「60/行 + 10 个一组 + 行号」；
+            # FASTA 的 60 字符换行（无分组无行号）不算副本
+            window = text[m.start():m.start() + 400]
+            if "j:j+10" in window.replace(" ", "") or "j:j + 10" in window:
+                offenders.append(f"{py.relative_to(backend)}: {m.group(0)}")
+    assert not offenders, f"ORIGIN 排版循环出现副本：{offenders}"
