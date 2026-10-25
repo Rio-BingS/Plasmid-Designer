@@ -55,7 +55,7 @@ from starlette.concurrency import run_in_threadpool
 from zipfile import BadZipFile
 
 from app.auth.jwt_auth import User, get_current_user
-from app.design_service import get_vector_library
+from app.vector_library_cache import get_vector_library
 from app import batch_read_limits, site_settings
 from app.gating import require_feature
 from app import batch_report_store, sequencing_store

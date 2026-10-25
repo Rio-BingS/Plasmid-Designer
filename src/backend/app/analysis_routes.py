@@ -569,7 +569,7 @@ async def export_vector(vector_id: str, format: str = "genbank"):
         vector_id: 载体 ID
         format: genbank / snapgene / benchling / fasta / sbol
     """
-    from app.design_service import get_vector_library
+    from app.vector_library_cache import get_vector_library
 
     vector = get_vector_library().get_vector(vector_id)
     if not vector:
