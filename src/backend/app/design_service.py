@@ -1257,10 +1257,18 @@ def _synthesis_molecule(
         if lin == "custom_arms" and gibson_arms_plan is not None:
             body = (_rc(optimized_dna) if gibson_arms_plan.insert_reverse
                     else optimized_dna)
-            return (gibson_arms_plan.arm_5_seq + body
-                    + gibson_arms_plan.arm_3_seq,
-                    "合成 oligo 已包含两条同源臂：合成产物可直接 Gibson 组装，"
-                    "无需 PCR 扩增加臂")
+            # 臂用「构建体取向」的 arm_left_seq/arm_right_seq（左/右连接点
+            # 外侧的载体正链臂）。plan 的 arm_5_seq/arm_3_seq 是「基因取向」
+            # （负链装配时左右互换且各自反互补，供引物使用）——合成分子若
+            # 直接拼它们，两臂会整体装反，首/尾 oligo 与图谱对不上
+            # （pET-21a 负链装配实测）
+            left_arm = (getattr(gibson_arms_plan, "arm_left_seq", "")
+                        or gibson_arms_plan.arm_5_seq)
+            right_arm = (getattr(gibson_arms_plan, "arm_right_seq", "")
+                         or gibson_arms_plan.arm_3_seq)
+            return (left_arm + body + right_arm,
+                    "合成 oligo 已包含两条同源臂（载体同源区，与构建体序列"
+                    "一致）：合成产物可直接 Gibson 组装，无需 PCR 扩增加臂")
         if gibson_double_digest and gibson_plan is not None:
             body = _rc(optimized_dna) if gibson_plan.insert_reverse else optimized_dna
             left_arm = _circular_backbone_window(
