@@ -541,11 +541,122 @@ def assemble_construct(
             warnings.append("切点跨越载体原点，已按 MCS 区间替换构建体")
         else:
             warnings.extend(plan_warnings)
+            _extend_insert_cds_for_site_start(seq, feats, istart, iend, plan, enzyme_5)
             return ConstructAssembly(
                 sequence=seq, insert_start=istart, insert_end=iend,
                 features=feats, warnings=warnings, junction=plan.junction)
 
     return _assemble_by_mcs(backbone, vector, insert, insert_name, warnings)
+
+
+def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
+                                      istart: int, iend: int,
+                                      plan, enzyme_5: Optional[str]) -> None:
+    """CDS 完整性：NdeI/NcoI 这类位点自带 ATG，双酶切连接处位点复原后
+    紧贴基因 5′ 端的 ATG 就是实际起始密码子——把它包进 CDS 注释。
+
+    此前 CDS 注释从基因第一个碱基开始（位点残留归为克隆接头），当位点
+    提供起始密码子时注释的 ORF 与真实读码框差几 bp，图谱 ORF 推断与
+    测序 CDS 变异分析都会偏。只改 CDS 特征的起止，insert_start/end 克隆
+    坐标不动；连接处实际碱基与预期不符（意外排布）时保持原注释不动。
+    """
+    if plan is None or plan.method != "restriction" or not enzyme_5:
+        return
+    from core.construct_assembly import restriction_site
+    from core.seq_utils import revcomp as _revcomp
+    site = restriction_site(enzyme_5)
+    if not site:
+        return
+    feat = feats[0] if feats and feats[0].get("type") == "CDS" else None
+    if feat is None:
+        return
+    if plan.insert_reverse:
+        # 负链基因 5′ 端在片段右侧：起始密码子 = 位点前 3bp 的反向互补
+        j = _revcomp(site).rfind("ATG")
+        if j < 0:
+            return
+        offset = len(site) - j
+        if iend + offset > len(seq) or _revcomp(seq[iend:iend + 3]) != "ATG":
+            return
+        feat["end"] = iend + offset
+    else:
+        i = site.rfind("ATG")
+        if i < 0:
+            return
+        offset = len(site) - i
+        start = istart - offset
+        if start < 1 or seq[start - 1:start + 2] != "ATG":
+            return
+        feat["start"] = start
+    feat["description"] = (feat.get("description") or "") + \
+        f"；起始密码子来自 {enzyme_5} 位点（CDS 已包含）"
+
+
+def _resolve_redundant_start_codon(
+    request, vector, backbone: str, optimized_dna: str,
+    resolved_ends: Optional[RestrictionEnds],
+) -> Tuple[str, List[str]]:
+    """限制性克隆的起始密码子一致性检查（NdeI CATATG 是典型场景）。
+
+    位点在连接处复原后自带 ATG 且紧贴基因 5′ 端——常规 pET 用法里它就是
+    起始密码子；插入序列再以 ATG 开头会让蛋白 N 端出现连续两个 Met。
+
+    - trim_redundant_start=True（默认）：去掉插入序列开头的 ATG。蛋白仍与
+      输入氨基酸一致——第一个甲硫氨酸由位点 ATG 提供；正反链通用，因为
+      基因读法上自己的起始密码子都在插入序列头部。
+    - False：只告警不动序列。
+
+    防护：位点方案落空（载体缺位点回退 MCS 整段替换）时位点根本不在
+    构建体里，绝不能动插入序列——用与组装完全相同的 plan_restriction
+    探测一次，None 即回退路径。Golden Gate overhang（MoClo 惯例）不在此列。
+    """
+    if request.cloning_method != CloningMethod.RESTRICTION or not optimized_dna:
+        return optimized_dna, []
+    if not str(optimized_dna).upper().startswith("ATG"):
+        return optimized_dna, []
+
+    enzyme_5_name = (resolved_ends.enzyme_5 if resolved_ends and resolved_ends.enzyme_5
+                     else (request.enzyme_5 or request.enzyme))
+    if not enzyme_5_name:
+        return optimized_dna, []
+    from core.construct_assembly import plan_restriction, restriction_site
+    site = restriction_site(enzyme_5_name)
+    if not site:
+        return optimized_dna, []
+
+    strand = (resolved_ends.strand if resolved_ends and resolved_ends.strand else "+")
+    # 位点 ATG 是否紧贴基因 5′ 端：正链看位点末尾，负链（反向互补读基因）
+    # 看位点开头（其反向互补的末尾是 ATG）
+    supplies = site.endswith("ATG") if strand != "-" else site.startswith("CAT")
+    if not supplies:
+        return optimized_dna, []
+
+    circular = str(getattr(vector, "topology", "circular")
+                   or "circular").lower() != "linear"
+    probe = plan_restriction(
+        backbone, request.enzyme_5 or request.enzyme,
+        request.enzyme_3 or request.enzyme,
+        window=_mcs_window(vector), circular=circular, warnings=[])
+    if probe is None:
+        # 位点方案落空 → 走 MCS 整段替换，位点不在构建体里：
+        # 此时插入序列的 ATG 是唯一的起始密码子，不能去
+        return optimized_dna, []
+
+    if getattr(request, "trim_redundant_start", True) and len(optimized_dna) > 6:
+        trimmed = optimized_dna[3:]
+        return trimmed, [
+            "已自动去除冗余起始密码子："
+            f"{enzyme_5_name} 位点自带 ATG 并充当起始密码子，插入序列再以 ATG 开头"
+            "会使蛋白 N 端出现连续两个 Met；已去掉插入序列开头的 ATG"
+            "（第一个甲硫氨酸由位点提供，蛋白与你输入的氨基酸序列一致）。"
+            "不希望自动去除可在设计表单取消勾选「位点自带起始密码子时去除冗余 ATG」"
+        ]
+    return optimized_dna, [
+        "检测到冗余起始密码子："
+        f"{enzyme_5_name} 位点自带 ATG 并充当起始密码子，插入序列又以 ATG 开头，"
+        "蛋白 N 端会出现连续两个 Met（Met-Met）；建议去掉输入序列开头的 ATG/M "
+        "重新设计，或勾选「位点自带起始密码子时去除冗余 ATG」"
+    ]
 
 
 def derive_gg_overhangs(vector, enzyme_name: str) -> Tuple[str, str, bool]:
@@ -974,6 +1085,13 @@ def run_design(
                     window=_mcs_window(vector),
                 )
                 result.warnings.extend(resolved_ends.warnings)
+
+                # 起始密码子一致性：位点自带 ATG 时按选项去除冗余起始 ATG
+                # （去除发生在组装与引物设计之前，两者都消费 optimized_dna）
+                optimized_dna, start_codon_warnings = _resolve_redundant_start_codon(
+                    request, vector, backbone, optimized_dna, resolved_ends)
+                result.warnings.extend(start_codon_warnings)
+                result.optimized_sequence = optimized_dna
             # 按克隆方法建模切点：Gibson 不切除碱基、双酶切/GG 切走两个切点之间的片段
             assembly = assemble_construct(
                 vector, optimized_dna, request.sequence_name or "insert",

@@ -1,0 +1,179 @@
+"""限制性克隆起始密码子一致性（NdeI 位点自带 ATG，第二轮审计后用户反馈）
+
+场景：pET 类载体用 NdeI（CATATG）克隆时，位点复原后末尾 ATG 紧贴基因、
+通常充当起始密码子；插入序列（氨基酸输入经密码子优化）又以 ATG 开头时，
+成品蛋白 N 端出现连续两个 Met。行为：
+- trim_redundant_start=True（默认）→ 去掉插入序列开头的 ATG，第一个甲硫氨酸
+  由位点提供，蛋白与输入氨基酸一致；
+- False → 只告警不动序列；
+- 位点方案落空（载体缺位点回退 MCS 替换）→ 绝不动插入序列；
+- CDS 注释把位点里的起始密码子包进来（CDS 完整性）。
+"""
+
+import json
+import os
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from app.design_service import (  # noqa: E402
+    CloningMethod, _resolve_redundant_start_codon, run_design,
+)
+from app.routes.models import DesignRequest, DesignStatus  # noqa: E402
+
+AA_SEQ = "M" + "EKT" * 20   # 以 M 开头的氨基酸输入（密码子优化产出 ATG 开头）
+
+
+def _restriction_request(**over) -> DesignRequest:
+    payload = {
+        "sequence": AA_SEQ,
+        "sequence_type": "amino_acid",
+        "vector_id": "pET-28a",
+        "cloning_method": "restriction",
+        "enzyme_5": "NdeI",
+        "enzyme_3": "XhoI",
+    }
+    payload.update(over)
+    return DesignRequest(**payload)
+
+
+def _insert_cds(result):
+    return next(f for f in result.construct_features
+                if f["type"] == "CDS" and "designed insert" in (f.get("description") or "").lower())
+
+
+def _start_codon_of(result, feat) -> str:
+    """按链取向取出 CDS 注释起点处的前三个碱基（基因读法方向）"""
+    from core.seq_utils import revcomp
+    construct = result.construct_sequence
+    if feat["strand"] == "-":
+        return revcomp(construct[feat["end"] - 3:feat["end"]])
+    return construct[feat["start"] - 1:feat["start"] + 2]
+
+
+def test_ndei_default_trims_and_keeps_cds_complete():
+    """默认（去除开启）：插入序列开头的 ATG 被去掉，CDS 包含位点起始密码子"""
+    result = run_design("d_trim", _restriction_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+    # 去除后优化序列不再以 ATG 开头（第一个 M 由位点提供）
+    assert not result.optimized_sequence.upper().startswith("ATG")
+    feat = _insert_cds(result)
+    assert _start_codon_of(result, feat) == "ATG"  # 起始密码子来自位点
+    # pET-28a 表达盒在负链：CDS 注释终点向位点扩 3bp
+    assert feat["strand"] == "-"
+    assert feat["end"] == result.insert_end + 3
+    assert "起始密码子来自 NdeI" in feat["description"]
+
+
+def test_ndei_option_off_warns_but_keeps_duplicate():
+    """关闭去除：只告警，基因自带 ATG 保留（Met-Met），CDS 仍扩展到位点"""
+    result = run_design("d_keep", _restriction_request(trim_redundant_start=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("检测到冗余起始密码子") for w in result.warnings)
+    assert result.optimized_sequence.upper().startswith("ATG")
+    feat = _insert_cds(result)
+    construct = result.construct_sequence
+    # 基因自带的 ATG 还在（用户选择保留）：负链基因 5′ 端 = 片段右侧
+    from core.seq_utils import revcomp
+    assert revcomp(construct[result.insert_end - 3:result.insert_end]) == "ATG"
+    # 但 CDS 注释仍从位点的 ATG 开始（真实起始密码子在位点里）
+    assert _start_codon_of(result, feat) == "ATG"
+    assert feat["end"] == result.insert_end + 3
+
+
+def test_ndei_reverse_strand_on_pet28a_trims_at_gene_5_end():
+    """pET-28a 表达盒在负链：NdeI 是基因 5′ 端，去除与 CDS 扩展在另一端坐标"""
+    result = run_design("d_rev", _restriction_request(insert_direction="minus"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+    feat = _insert_cds(result)
+    assert feat["strand"] == "-"
+    construct = result.construct_sequence
+    # 基因 5′ 端在片段右侧：位点前 3bp（CAT）的反向互补是起始密码子
+    assert feat["end"] == result.insert_end + 3
+    from core.seq_utils import revcomp
+    assert revcomp(construct[result.insert_end:result.insert_end + 3]) == "ATG"
+
+
+def test_bamhi_xhoi_no_detection():
+    """BamHI（GGATCC）位点不含贴基因的 ATG：不告警、不去除"""
+    result = run_design("d_bam", _restriction_request(
+        enzyme_5="BamHI", enzyme_3="XhoI", trim_redundant_start=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any("起始密码子" in w for w in result.warnings)
+    assert result.optimized_sequence.upper().startswith("ATG")
+
+
+def test_site_missing_fallback_never_trims():
+    """载体上没有 NdeI（回退 MCS 整段替换，位点不在构建体里）：绝不动插入序列"""
+    from core.vector_library import Vector  # noqa: F401  确认可导入
+    from app import design_service
+
+    class _FakeLib:
+        def get_vector(self, vector_id):
+            from core.vector_library import CloningSite, MCS, Vector
+            return Vector(
+                id="synth", name="noNdeI",
+                sequence="A" * 50 + "GGATCC" + "C" * 50,
+                mcs=MCS(name="MCS", start=51, end=56, sites=[
+                    CloningSite("BamHI", "GGATCC", 51, 57, "GATC", True)]),
+                elements=[],
+            )
+
+    request = SimpleNamespace(
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI", enzyme=None,
+        trim_redundant_start=True,
+    )
+    dna = "ATG" + "AAAGGGTTT" * 5
+    out, warnings = _resolve_redundant_start_codon(
+        request, _FakeLib().get_vector("x"), _FakeLib().get_vector("x").sequence,
+        dna, resolved_ends=None)
+    assert out == dna, "位点方案落空时不得改写插入序列"
+    assert warnings == []
+
+
+def test_golden_gate_out_of_scope():
+    """Golden Gate overhang（如 AATG）是 MoClo 惯例，不在本检测范围"""
+    from app import design_service
+    request = SimpleNamespace(
+        cloning_method=CloningMethod.GOLDEN_GATE,
+        enzyme_5=None, enzyme_3=None, enzyme="BsaI",
+        trim_redundant_start=True,
+    )
+    out, warnings = _resolve_redundant_start_codon(
+        request, None, "N" * 100, "ATGAAAGGG", resolved_ends=None)
+    assert out == "ATGAAAGGG" and warnings == []
+
+
+def test_forward_synthetic_vector_trims_and_extends_start(monkeypatch):
+    """正链合成载体（NdeI 在左）：去除后 CDS 起点向位点残留扩 3bp"""
+    from core.vector_library import CloningSite, MCS, Vector
+    from app import design_service
+
+    seq = "A" * 50 + "CATATG" + "G" * 40 + "CTCGAG" + "C" * 50
+    vector = Vector(
+        id="synth", name="synth", sequence=seq,
+        mcs=MCS(name="MCS", start=51, end=56, sites=[
+            CloningSite("NdeI", "CATATG", 51, 57, "TA", True)]),
+        elements=[],
+    )
+
+    class _Lib:
+        def get_vector(self, vector_id):
+            return vector
+
+    monkeypatch.setattr(design_service, "get_vector_library", lambda: _Lib())
+    result = run_design("d_fwd", _restriction_request(vector_id="synth"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+    feat = _insert_cds(result)
+    assert feat["strand"] == "+"
+    # CDS 起点向前扩 3bp：TATG 的末尾 ATG 是起始密码子
+    assert feat["start"] == result.insert_start - 3
+    assert result.construct_sequence[feat["start"] - 1:feat["start"] + 2] == "ATG"

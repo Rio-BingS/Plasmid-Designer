@@ -78,6 +78,12 @@ class DesignOptions(BaseModel):
     # plus/minus=用户看预览图后手动指定基因落在哪条链
     insert_direction: Literal["auto", "reverse", "plus", "minus"] = Field(
         default="auto", description="插入方向：auto/reverse/plus/minus")
+    # NdeI/NcoI 这类位点自带 ATG 且在连接处复原后充当起始密码子；插入序列
+    # 再以 ATG 开头会让蛋白 N 端出现连续两个 Met。默认自动去掉插入序列开头
+    # 的 ATG（第一个甲硫氨酸由位点提供，蛋白与输入氨基酸一致）
+    trim_redundant_start: bool = Field(
+        default=True,
+        description="限制性克隆位点自带起始密码子时，自动去除插入序列开头的冗余 ATG")
     oligo_length: int = Field(default=60, ge=40, le=100, description="[已废弃，改用 oligo_length_min/max] 未提供范围时的固定长度")
     # 寡核苷酸长度范围：合成 oligo 在 [min, max] 内自动均衡切分
     oligo_length_min: Optional[int] = Field(default=None, ge=20, le=100, description="寡核苷酸最短长度")

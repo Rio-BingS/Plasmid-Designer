@@ -75,6 +75,18 @@ def _enzyme_cut(enzyme: str) -> Tuple[str, int, int]:
     return site, int(c1), int(c2)
 
 
+def restriction_site(enzyme: str) -> str:
+    """酶的识别序列（大写）；未知/不可用于建模的酶返回空串（不抛错）。
+
+    供起始密码子一致性检查用：NdeI CATATG / NcoI CCATGG 这类位点在连接处
+    复原后自带 ATG，紧贴基因时通常充当起始密码子。"""
+    try:
+        site, _, _ = _enzyme_cut(enzyme)
+        return site.upper()
+    except ValueError:
+        return ""
+
+
 def physical_sites(sequence: str, enzyme: str, *, circular: bool = True) -> List[Dict]:
     """载体的某酶位点（每个物理位点一条；回文酶正反链重复上报已去重）"""
     if not sequence:
