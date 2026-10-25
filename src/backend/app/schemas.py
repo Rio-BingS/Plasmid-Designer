@@ -235,7 +235,11 @@ class DesignVectorPayload(BaseModel):
 
 
 class RestrictionPreviewRequest(BaseModel):
-    """双酶切实时预览：两把酶 + 载体 → 成品构建体的布局（用于表单里的示意图）"""
+    """双酶切实时预览：两把酶 + 载体 → 成品构建体的布局（用于表单里的示意图）
+
+    cloning_method="gibson" 时按 Gibson 双酶切线性化预览（几何与限制性
+    克隆相同，连接语义走 join="gibson"，保留位点开关生效）。
+    """
 
     enzymes: List[str] = Field(..., min_length=1, max_length=2, description="两个酶切位点（顺序无关）")
     vector_id: Optional[str] = Field(default=None, max_length=120)
@@ -243,6 +247,8 @@ class RestrictionPreviewRequest(BaseModel):
     insert_length: Optional[int] = Field(default=None, ge=30, le=30000,
                                         description="基因长度（氨基酸输入按 aa×3 估）")
     direction: Literal["auto", "reverse", "plus", "minus"] = "auto"
+    cloning_method: Literal["restriction", "gibson"] = "restriction"
+    keep_restriction_sites: bool = True
 
 
 class DesignRequest(DesignOptions):
@@ -306,6 +312,9 @@ class DesignResult(BaseModel):
     # 序列信息
     input_sequence: str
     optimized_sequence: Optional[str] = None
+    # 克隆工作序列（组装与引物退火用的就是它）：位点自带 ATG 充当起始密码子时
+    # 已去除开头的 ATG，比 optimized_sequence 短 3 bp；未裁剪时与之一致
+    cloned_sequence: Optional[str] = None
 
     # 完整构建体（插入 + 载体骨架）
     construct_sequence: Optional[str] = None
@@ -324,6 +333,9 @@ class DesignResult(BaseModel):
     # GenBank 导出的 LOCUS 与下载文件名都以它为准（缺省回退 design_id）
     plasmid_name: Optional[str] = None
     final_length: Optional[int] = None
+    # 优化序列开头的 ATG 已被去除（NdeI 等位点自带 ATG 充当起始密码子）：
+    # 前端据此在优化序列旁挂提示，解释「为什么比输入蛋白少 3 bp」
+    start_codon_removed: bool = False
 
     # 引物
     primers: List[PrimerInfo] = Field(default_factory=list)

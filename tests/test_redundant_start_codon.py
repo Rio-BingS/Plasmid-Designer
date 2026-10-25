@@ -60,8 +60,9 @@ def test_ndei_default_trims_and_keeps_cds_complete():
     result = run_design("d_trim", _restriction_request())
     assert result.status == DesignStatus.COMPLETED, result.errors
     assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
-    # 去除后优化序列不再以 ATG 开头（第一个 M 由位点提供）
-    assert not result.optimized_sequence.upper().startswith("ATG")
+    # 克隆工作序列（组装/引物用）不再以 ATG 开头（第一个 M 由位点提供）；
+    # optimized_sequence 保持完整 CDS 语义，仍以 ATG 开头
+    assert not result.cloned_sequence.upper().startswith("ATG")
     feat = _insert_cds(result)
     assert _start_codon_of(result, feat) == "ATG"  # 起始密码子来自位点
     # pET-28a 表达盒在负链：CDS 注释终点向位点扩 3bp
@@ -219,7 +220,7 @@ def test_gibson_standalone_trims_and_extends_cds(monkeypatch):
     result = run_design("g_trim", _gibson_request(vector_id="synth"))
     assert result.status == DesignStatus.COMPLETED, result.errors
     assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
-    assert not result.optimized_sequence.upper().startswith("ATG")
+    assert not result.cloned_sequence.upper().startswith("ATG")
     feat = _insert_cds(result)
     assert feat["strand"] == "+"
     assert feat["start"] == result.insert_start - 3
@@ -314,7 +315,7 @@ def test_gibson_double_digest_matches_restriction_semantics():
     assert result.status == DesignStatus.COMPLETED, result.errors
     # 位点残留起始密码子：与 restriction 同一套去除逻辑
     assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
-    assert not result.optimized_sequence.upper().startswith("ATG")
+    assert not result.cloned_sequence.upper().startswith("ATG")
     feat = _insert_cds(result)
     assert _start_codon_of(result, feat) == "ATG"
     assert "起始密码子来自 NdeI" in feat["description"]
