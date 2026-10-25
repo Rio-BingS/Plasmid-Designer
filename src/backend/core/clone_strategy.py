@@ -690,8 +690,13 @@ class RestrictionCloningStrategy:
                 },
                 duration="~1.5 hours",
                 duration_zh="约1.5小时",
-                notes=f"Primers contain {enzyme_5} and {enzyme_3} sites",
-                notes_zh=f"引物包含{enzyme_5}和{enzyme_3}酶切位点"
+                notes=f"Primers contain {enzyme_5} and {enzyme_3} sites with "
+                      f"6nt protective spacer at 5' ends (digestion of a site "
+                      f"flush with the PCR product end is inefficient; the "
+                      f"spacer is removed during digestion)",
+                notes_zh=f"引物包含{enzyme_5}和{enzyme_3}酶切位点；PCR 产物末端的位点"
+                         "等效平末端、几乎切不动，5′ 端已加 6nt 保护碱基保证酶切效率"
+                         "（保护碱基在酶切后随小片段去除，不进构建体）"
             ),
             CloningStep(
                 step_number=2,
