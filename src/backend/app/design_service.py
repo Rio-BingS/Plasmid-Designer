@@ -1222,6 +1222,46 @@ def _synthesis_molecule(
     return optimized_dna, None
 
 
+def _annotate_synthesis_oligo_ends(infos, molecule: str, ends_note: Optional[str],
+                                   request, *, enzyme_5, enzyme_3, designer) -> None:
+    """给覆盖合成分子两端的首/尾 oligo 在 notes 里写明末端成分。
+
+    限制性分子两端 = 保护碱基 + 位点；保护碱基只为保障酶切效率，酶切后
+    随小片段去除、不进构建体——用户拿 oligo 去图谱搜索时首尾必然「差
+    6nt」，把差在哪、为什么差写进 notes，不留给用户猜（也不像随机加的）。
+    Gibson 分子的两端是载体同源臂，组装后与载体序列一致（就在图谱里）。
+    """
+    if ends_note is None:
+        return
+    pad = designer.PROTECTIVE_SPACER
+    pad_len = len(pad)
+    mol_len = len(molecule)
+    method = request.cloning_method
+    e5 = enzyme_5 or request.enzyme_5 or request.enzyme
+    e3 = enzyme_3 or request.enzyme_3 or request.enzyme
+    for info in infos:
+        ts, te = info.target_start, info.target_end
+        if ts is None or te is None:
+            continue
+        parts: List[str] = []
+        if method == CloningMethod.RESTRICTION:
+            if ts == 0 and molecule.startswith(pad):
+                parts.append(
+                    f"分子5′末端={pad_len}nt保护碱基+{e5}位点："
+                    "保护碱基保障酶切效率，酶切后随小片段去除，不在构建体中")
+            if te == mol_len and molecule.endswith(pad):
+                parts.append(
+                    f"分子3′末端={e3}位点+{pad_len}nt保护碱基："
+                    "酶切后去除，不在构建体中")
+        elif method == CloningMethod.GIBSON:
+            if ts == 0:
+                parts.append("分子5′末端为载体同源臂（组装后与载体序列一致）")
+            if te == mol_len:
+                parts.append("分子3′末端为载体同源臂（组装后与载体序列一致）")
+        if parts:
+            info.notes = ((info.notes + "；") if info.notes else "") + "；".join(parts)
+
+
 def design_primers_for_method(
     request: DesignRequest,
     optimized_dna: str,
@@ -1243,8 +1283,9 @@ def design_primers_for_method(
     位置（同酶双填回退时已被覆盖为该酶自己的切点），不传才就地重算。
 
     - 来源=PCR：产出带克隆末端的扩增引物对（末端形态由克隆方法决定）
-    - 来源=全基因合成：产出重叠组装 oligo 组 + 带克隆末端的
-      组装后扩增引物对（用于拼装完成后的扩增加克隆末端）
+    - 来源=全基因合成：克隆末端（位点+保护碱基/同源臂）直接合进重叠
+      组装 oligo 组，合成产物即可组装/酶切（Golden Gate 末端语义不同，
+      保留「合成基因 + 组装后扩增加末端」旧路径）
     """
     from core.primer_designer import PrimerDesigner
 
@@ -1340,7 +1381,11 @@ def design_primers_for_method(
             overlap_length=request.overlap_length,
             primer_name=name,
         )
-        primers.extend(_primer_to_info(o) for o in oligos)
+        infos = [_primer_to_info(o) for o in oligos]
+        _annotate_synthesis_oligo_ends(
+            infos, molecule, ends_note, request,
+            enzyme_5=enzyme_5, enzyme_3=enzyme_3, designer=designer)
+        primers.extend(infos)
         if ends_note is None:
             # 组装完成后用带克隆末端的引物扩增出可克隆的插入片段
             primers.extend(_cloning_pair())
@@ -1817,14 +1862,43 @@ def run_design(
                 )
 
         # 4.1 全基因合成：克隆末端已合进 oligo（限制性/Gibson）——说明
-        # 合成产物可直接组装，省掉扩增加末端一轮
+        # 合成产物可直接组装，省掉扩增加末端一轮；并写明保护碱基的去向，
+        # 避免用户拿 oligo 去图谱搜索时对不上就以为序列是乱加的
         if (request.insert_source == "gene_synthesis"
                 and request.cloning_method in (CloningMethod.RESTRICTION,
                                                CloningMethod.GIBSON)):
             result.warnings.append(
                 "全基因合成的 oligo 已包含克隆末端（同源臂/酶切位点+保护碱基）："
                 "重叠延伸拼出全长分子后即可直接 Gibson 组装或酶切连接，"
-                "无需再用引物扩增补末端")
+                "无需再用引物扩增补末端。限制性克隆首尾 oligo 两端的保护碱基"
+                "只保障酶切效率，酶切后随小片段去除，不在构建体图谱中；"
+                "负链插入时 oligo 与图谱序列互为反向互补")
+
+            # 4.1b oligo↔构建体一致性自检：每条合成 oligo 都必须能在构建体
+            # 序列（顶链或其反向互补）上定位；限制性分子首尾的保护碱基酶切
+            # 后去除，折算时允许剥掉两端各 6nt 再比对。定位失败说明合成产物
+            # 拼出的分子与构建体不是同一个东西，必须显式报警而不是让用户对
+            # 图谱时自己发现
+            if result.construct_sequence and getattr(assembly, "plan_used", True):
+                from core.seq_utils import revcomp as _cons_rc
+                cons_up = result.construct_sequence.upper()
+                cons_rc = _cons_rc(cons_up)
+                unlocated: List[str] = []
+                for info in result.primers:
+                    if info.target_start is None:
+                        continue  # 克隆引物对（如 Golden Gate 回退路径）不参与
+                    s = info.full_sequence.upper()
+                    cands = [s]
+                    if len(s) > 12:  # 端部 oligo 剥保护碱基后再比对
+                        cands += [s[6:], s[:-6], s[6:-6]]
+                    if not any(c in cons_up or c in cons_rc for c in cands):
+                        unlocated.append(info.name)
+                if unlocated:
+                    shown = "、".join(unlocated[:5]) + ("等" if len(unlocated) > 5 else "")
+                    result.warnings.append(
+                        f"警告：合成 oligo {shown} 无法在构建体序列上定位"
+                        "（已按酶切去除两端保护碱基折算）——合成产物与构建体"
+                        "不一致，请核对设计")
 
         # 5. 克隆方案
         method_map = {
