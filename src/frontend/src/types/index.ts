@@ -82,6 +82,8 @@ export interface DesignRequest {
   exclude_enzymes?: string[]
   /** 双酶切插入方向：默认 auto（按载体启动子/RBS 判定） */
   insert_direction?: InsertDirection
+  /** NdeI/NcoI 等位点自带起始密码子时自动去除插入序列开头的冗余 ATG（默认 true） */
+  trim_redundant_start?: boolean
 }
 
 /**
