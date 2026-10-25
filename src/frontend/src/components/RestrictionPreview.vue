@@ -105,7 +105,7 @@ const summary = computed(() => {
 const evidenceText = computed(() => {
   const p = props.preview
   if (!p) return ''
-  if (p.source === 'user') return '按你选择的方向组装（反义构建/手动指定）'
+  if (p.source === 'user') return '方向由你的填写决定（同源臂定位 / 手动指定方向）'
   const promoter = p.evidence?.find((e) => e.kind === 'promoter')
   const parts: string[] = []
   if (p.ambiguous) {
