@@ -22,6 +22,23 @@ from core.primer_base import (  # noqa: F401  re-export 兼容既有导入路径
 )
 
 
+def _vector_slice(seq: str, start: int, length: int, circular: bool) -> str:
+    """从载体序列取连续片段。环状时 start 越过首尾自动绕回（跨原点的
+    同源臂是真实的载体末端序列）；线性时负起点截到 0（同源臂允许比
+    请求的短），越界尾巴自然为空。"""
+    n = len(seq)
+    if length <= 0 or n == 0:
+        return ""
+    if circular:
+        start %= n
+        if start + length <= n:
+            return seq[start:start + length]
+        return seq[start:] + seq[:start + length - n]
+    if start < 0:
+        start = 0
+    return seq[start:start + length]
+
+
 class PrimerDesigner:
     """引物设计器"""
     
@@ -105,30 +122,41 @@ class PrimerDesigner:
         self,
         insert_seq: str,
         vector_seq: str,
-        insert_start_in_vector: int,
+        left_cut: int,
+        right_cut: Optional[int] = None,
         homology_arm: int = 20,
-        primer_name: str = "gibson"
+        primer_name: str = "gibson",
+        circular: bool = True,
     ) -> PrimerPair:
         """
-        设计Gibson Assembly引物
-        
+        设计Gibson Assembly引物（支持双酶切线性化的两个切点）
+
         Args:
-            insert_seq: 插入片段序列
+            insert_seq: 插入分子序列（双酶切线性化时含两端位点残留；
+                负链装配时应传 head + revcomp(基因) + tail）
             vector_seq: 载体序列
-            insert_start_in_vector: 插入位置在载体中的起始位置
+            left_cut: 线性化载体左切点（apply_plan 的 0 基边界口径），
+                正向引物同源臂取其上游 homology_arm bp
+            right_cut: 右切点；反向引物同源臂取其下游的互补链。
+                单点线性化两切点相同（缺省 = left_cut，与旧行为一致）。
+                双酶切时两个切点不同，反向臂必须锚定右切点下游——
+                取左切点下游会落进被切除的废片段，引物在线性化载体上
+                无处退火
             homology_arm: 同源臂长度 (bp)
             primer_name: 引物名称前缀
-        
+            circular: 载体是否环状（环状时同源臂切片越过首尾自动绕回）
+
         Returns:
             PrimerPair 带同源臂的引物对
         """
+        if right_cut is None:
+            right_cut = left_cut
         insert_seq = insert_seq.upper()
         vector_seq = vector_seq.upper()
-        
+
         # 正向引物：载体同源臂 + 插入片段起始（退火区锚定插入片段 5' 端，A-07）
-        vector_upstream = vector_seq[
-            max(0, insert_start_in_vector - homology_arm):insert_start_in_vector
-        ]
+        vector_upstream = _vector_slice(
+            vector_seq, left_cut - homology_arm, homology_arm, circular)
         forward_annealing = self._design_forward_primer(insert_seq, 0, "temp", anchor=True)
         forward = Primer(
             name=f"{primer_name}_F",
@@ -143,11 +171,10 @@ class PrimerDesigner:
             notes=f"Gibson forward, {homology_arm}bp homology arm"
         )
         
-        # 反向引物：插入片段末尾 + 载体同源臂（反向互补）
+        # 反向引物：插入片段末尾 + 载体同源臂（反向互补，锚定右切点下游）
         insert_end = len(insert_seq)
-        vector_downstream = vector_seq[
-            insert_start_in_vector:insert_start_in_vector + homology_arm
-        ]
+        vector_downstream = _vector_slice(
+            vector_seq, right_cut, homology_arm, circular)
         reverse_annealing = self._design_reverse_primer(insert_seq, insert_end, "temp", anchor=True)
         # 载体下游序列的反向互补作为overhang
         vector_downstream_rc = self._reverse_complement(vector_downstream)
