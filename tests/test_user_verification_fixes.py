@@ -226,15 +226,51 @@ def test_arms_preview_reverse_orientation():
     assert pv["strand"] == "-"
 
 
-def test_arms_preview_swapped_arms_fails_loudly():
-    """两臂贴反（5′/3′ 位置互换）：预览直接报错给出原因——拼接顺序的判断"""
-    import pytest
-    with pytest.raises(ValueError) as exc:
-        build_restriction_preview(RestrictionPreviewRequest(
-            vector=_arms_inline_vector(), insert_length=120,
-            cloning_method="custom_arms", homology_arm_5=ARM3,
-            homology_arm_3=ARM5))
-    assert "围出插入区间" in str(exc.value)
+def test_arms_preview_swapped_fields_auto_swap():
+    """两臂栏位贴反：不再报错——按载体位置自动对调并说明（顺序无关）"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_inline_vector(), insert_length=120,
+        cloning_method="custom_arms", homology_arm_5=ARM3,
+        homology_arm_3=ARM5))
+    assert pv["strand"] == "+"
+    assert pv["gene"]["start"] == 38 and pv["removed_bp"] == 30
+    assert any("自动对调" in w for w in pv["warnings"])
+
+
+def test_arms_preview_direction_follows_promoter():
+    """负链启动子（表达盒读向右→左）+ 正向粘贴的臂：不再「生硬拼接」，
+    装配链向自动按启动子判成负链（臂取右端同源区的反向互补）"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "-"
+    notes = " ".join(pv["warnings"])
+    assert "装配方向按载体启动子判定" in notes
+    assert "负链" in notes
+    assert "自动纠正" in notes
+
+
+def test_arms_design_direction_follows_promoter():
+    """正式设计同样按启动子自动定链向：CDS 落负链、与启动子一致"""
+    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
+    result = run_design("uvf_arms_dir", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        cloning_method=CloningMethod.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    cds = next(f for f in result.construct_features
+               if "designed insert" in (f.get("description") or "").lower())
+    assert cds["strand"] == "-"
+    assert any("CDS 方向与启动子一致" in w and "负链" in w
+               for w in result.warnings)
 
 
 def test_arms_preview_unknown_arm_fails_loudly():
@@ -327,35 +363,3 @@ def test_arms_preview_direction_agreement_is_stated():
     assert any("CDS 方向与启动子一致" in w and "正链" in w
                for w in pv["warnings"])
 
-
-def test_arms_preview_direction_conflict_warned():
-    """负链启动子（表达盒读向右→左）+ 正向臂拼接：预览必须报
-    「CDS 方向与启动子相反」并给出翻转办法——这就是「生硬拼接」的判定"""
-    pv = build_restriction_preview(RestrictionPreviewRequest(
-        vector=_arms_vector_with_promoter(
-            {"name": "T7 promoter", "type": "promoter",
-             "start": 90, "end": 95, "strand": "-"}),
-        insert_length=120, cloning_method="custom_arms",
-        homology_arm_5=ARM5, homology_arm_3=ARM3))
-    assert pv["strand"] == "+"
-    conflict = [w for w in pv["warnings"] if "CDS 方向与启动子相反" in w]
-    assert conflict, pv["warnings"]
-    assert "T7 promoter" in conflict[0]
-    assert "反义 RNA" in conflict[0]
-    assert "反向互补" in conflict[0]
-
-
-def test_arms_design_direction_conflict_warned():
-    """正式设计同样报方向冲突（对称判定：负链启动子 × 正链装配）"""
-    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
-    result = run_design("uvf_arms_dir", DesignRequest(
-        sequence=AA, sequence_type="amino_acid",
-        vector=_arms_vector_with_promoter(
-            {"name": "T7 promoter", "type": "promoter",
-             "start": 90, "end": 95, "strand": "-"}),
-        cloning_method=CloningMethod.GIBSON,
-        gibson_linearization="custom_arms",
-        homology_arm_5=ARM5, homology_arm_3=ARM3,
-        sequence_name="myGene"))
-    assert result.status == DesignStatus.COMPLETED, result.errors
-    assert any("CDS 方向与启动子相反" in w for w in result.warnings)
