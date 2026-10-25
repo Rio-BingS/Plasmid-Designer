@@ -53,6 +53,11 @@ class AssemblyPlan:
     # 被切走的载体碱基数。切除区间跨原点时 right_cut - left_cut 是负数，
     # 不能靠坐标差反推，由规划函数显式给出（left==right 表示纯插入 = 0）
     removed_bp: int = 0
+    # 无缝连接（Gibson 同源臂越过位点、重组消费掉位点碱基）：切点已外扩到
+    # 完整位点边界，构建体里没有位点序列。起始密码子语义归基因自身，
+    # CDS 扩展据此跳过——不能用「head/tail 为空」判断，平末端酶保留位点时
+    # head/tail 同样是空串
+    seamless: bool = False
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -295,6 +300,30 @@ def plan_restriction(
             return None
         # 单酶切/单一位点：纯插入，位点在两端各复原一次
         point = common[0]
+        if join == "gibson" and not keep_sites:
+            # 无缝纯插入：位点两侧序列一并去除，切点外扩到各自完整位点边界
+            # （与双切点无缝同一套域归一规则）
+            left = point - k5
+            right = point + len(site3) - k3
+            if circular:
+                if length:
+                    left = ((left - 1) % length) + 1
+                    right = ((right - 1) % length) + 1
+            elif left < 0 or right > length:
+                warnings.append(
+                    f"{enzyme_5}/{enzyme_3} 位点紧贴载体末端，无缝外扩越界："
+                    "已按 MCS 区间替换构建体")
+                return None
+            removed = _forward_dist(left, right, length, circular)
+            warnings.append(
+                f"酶切位点已从构建体去除（无缝连接）：连接处不再保留 "
+                f"{enzyme_5}/{enzyme_3} 位点序列，位点无法再次酶切")
+            return AssemblyPlan(
+                "restriction", left, right, head="", tail="",
+                removed_bp=removed, seamless=True,
+                junction=(f"{enzyme_5} 单切点 {point}（纯插入，位点已去除，"
+                          "无缝连接，Gibson 同源臂连接）"),
+                warnings=warnings)
         return AssemblyPlan(
             "restriction", point, point, head=site5[k5:], tail=site3[:k3],
             junction=f"{enzyme_5} 单切点 {point}（纯插入）", warnings=warnings)
@@ -333,11 +362,23 @@ def plan_restriction(
     seamless = join == "gibson" and not keep_sites
     if seamless:
         # 无缝连接：同源臂越过位点、重组把位点碱基消费掉——切点各向外扩到
-        # 完整位点边界，构建体里不再出现位点序列（head/tail 置空）
+        # 完整位点边界，构建体里不再出现位点序列（head/tail 置空）。
+        # 切点定义域是 [1..length]（0 ≡ length ≡ 原点），外扩是裸算术，
+        # 跨原点位点扩完会越界（负数 / 超过 length）；不归一的话 apply_plan
+        # 的 Python 切片会静默产出错误构建体（实测多出上百 bp）
         k_left, site_left = (k5, site5) if not reverse else (k3, site3)
         k_right, site_right = (k3, site3) if not reverse else (k5, site5)
         left -= k_left
         right += len(site_right) - k_right
+        if circular:
+            if length:
+                left = ((left - 1) % length) + 1
+                right = ((right - 1) % length) + 1
+        elif left < 0 or right > length:
+            warnings.append(
+                f"{enzyme_5}/{enzyme_3} 位点紧贴载体末端，无缝外扩越界："
+                "已按 MCS 区间替换构建体")
+            return None
         head, tail = "", ""
         cut_length = _forward_dist(left, right, length, circular)
         warnings.append(
@@ -357,6 +398,7 @@ def plan_restriction(
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
         insert_reverse=reverse, removed_bp=cut_length,
+        seamless=seamless,
         junction=junction,
         warnings=warnings,
     )
@@ -549,6 +591,10 @@ def apply_plan(
 
     if length <= 0:
         return fragment, [], 1, len(fragment), warnings
+    if left < 0 or right > length:
+        # 切点越出 [0, length] 切片域：Python 负索引/越界切片会静默给出
+        # 错误序列，宁可显式失败走 MCS 回退（调用方已有 ValueError 分支）
+        raise ValueError("cut pair wraps origin")
     if right < left:
         if not circular:
             raise ValueError("cut pair wraps origin")
