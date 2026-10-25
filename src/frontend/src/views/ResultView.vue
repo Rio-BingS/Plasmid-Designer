@@ -292,6 +292,11 @@ onUnmounted(() => {
         <span class="seq-length">{{ (result.optimized_sequence || result.input_sequence).length }} bp</span>
         <button class="btn btn-secondary btn-small" @click="copySequence">复制序列</button>
       </div>
+      <p v-if="result.start_codon_removed" class="seq-trim-note">
+        ℹ️ 此处是<b>完整 CDS</b> 的优化序列（与输入蛋白一一对应）。构建体的起始密码子由
+        载体位点提供（如 NdeI 的 CATATG），克隆用的工作序列（引物退火区、组装片段）
+        已去掉开头的 ATG，比这条序列短 3 bp 属正常现象，蛋白不变。
+      </p>
       <div class="sequence-display">
         {{ formatSequence(result.optimized_sequence || result.input_sequence) }}
       </div>
@@ -615,6 +620,17 @@ onUnmounted(() => {
 .seq-length {
   font-size: 0.875rem;
   color: var(--text-secondary);
+}
+
+.seq-trim-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-secondary, #f7fafc);
+  border-left: 3px solid #4299e1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.25rem;
 }
 
 .btn-small {

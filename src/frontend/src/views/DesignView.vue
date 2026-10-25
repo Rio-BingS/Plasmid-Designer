@@ -80,11 +80,18 @@ const estimatedInsertLength = computed(() => {
   return length >= 30 ? length : undefined
 })
 
-const previewApplicable = computed(() =>
-  cloningMethod.value === 'restriction'
-  && !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
-  && (vectorMode.value !== 'library' ? !!adhocVector.value : !!vectorId.value)
-)
+const previewApplicable = computed(() => {
+  if (!(vectorMode.value !== 'library' ? !!adhocVector.value : !!vectorId.value)) return false
+  // 限制性克隆与 Gibson 双酶切线性化几何相同，都有实时预览；
+  // 单位点/自定义同源臂没有切点几何，不出图
+  if (cloningMethod.value === 'restriction') {
+    return !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
+  }
+  if (cloningMethod.value === 'gibson' && gibsonLinearization.value === 'double_digest') {
+    return !!enzyme5.value && !!enzyme3.value && enzyme5.value !== enzyme3.value
+  }
+  return false
+})
 
 async function fetchPreview() {
   if (!previewApplicable.value) {
@@ -94,6 +101,7 @@ async function fetchPreview() {
   }
   previewLoading.value = true
   previewError.value = ''
+  const isGibson = cloningMethod.value === 'gibson'
   try {
     preview.value = await getRestrictionPreview({
       enzymes: [enzyme5.value, enzyme3.value],
@@ -109,6 +117,8 @@ async function fetchPreview() {
         : { vector_id: vectorId.value }),
       insert_length: estimatedInsertLength.value,
       direction: insertDirection.value,
+      cloning_method: isGibson ? 'gibson' : 'restriction',
+      ...(isGibson ? { keep_restriction_sites: keepRestrictionSites.value } : {}),
     })
   } catch (e: any) {
     preview.value = null
@@ -120,7 +130,8 @@ async function fetchPreview() {
 
 // 改酶/换载体/改方向/改序列长度都会让图变——250ms 防抖，别每次按键都打后端
 watch(
-  [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength, insertDirection],
+  [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
+   insertDirection, gibsonLinearization, keepRestrictionSites],
   () => {
     if (previewTimer) clearTimeout(previewTimer)
     previewTimer = setTimeout(() => {
@@ -726,6 +737,11 @@ function loadExample() {
               载体用两把酶切开、两位点之间的片段被切除（与限制性克隆同一几何），
               插入片段以同源臂与载体末端连接。方向由载体表达盒自动判定。
             </p>
+            <RestrictionPreviewCard
+              :preview="preview"
+              :loading="previewLoading"
+              :error="previewError"
+            />
           </template>
           <template v-if="gibsonLinearization === 'single_site'">
             <div class="form-group">
