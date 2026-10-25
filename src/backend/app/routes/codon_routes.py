@@ -1,5 +1,6 @@
 """密码子表路由 — 从 main.py 提取"""
 
+import logging
 import os
 from fastapi import APIRouter
 
@@ -7,6 +8,8 @@ from app.cache import cache
 from app.config import settings
 
 router = APIRouter(prefix="/api/codon-tables", tags=["codon-tables"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.get("")
@@ -38,6 +41,6 @@ async def list_codon_tables():
     try:
         cache.cache_codon_tables(tables, digest)
     except Exception:
-        pass
+        logger.warning("密码子表缓存写入失败", exc_info=True)
 
     return tables

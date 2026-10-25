@@ -43,14 +43,15 @@ def _persist(result: DesignResult) -> None:
         store = get_design_store()
         store.save(result.design_id, result.model_dump(mode="json"))
     except Exception:
-        # 存储层失败不阻断主流程（如 DB 未配置）
-        pass
+        # 存储层失败不阻断主流程（如 DB 未配置），但结果重启即丢——必须留痕
+        logger.warning("设计 %s 落库失败（结果仅存内存，重启丢失）",
+                       result.design_id, exc_info=True)
     # 完成态写入响应缓存（24h TTL）；中间态不缓存，避免轮询读到过期状态
     if result.status == DesignStatus.COMPLETED:
         try:
             cache.cache_design_result(result.design_id, result.model_dump(mode="json"))
         except Exception:
-            pass
+            logger.warning("设计 %s 响应缓存写入失败", result.design_id, exc_info=True)
 
 
 def _load(design_id: str) -> DesignResult | None:
