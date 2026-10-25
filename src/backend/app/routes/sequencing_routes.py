@@ -69,6 +69,7 @@ from app.sequencing_report import backfill_excel, build_batch_zip
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
+from app.filename import content_disposition, sanitize_filename
 from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,
@@ -869,10 +870,10 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
 
     纯 CPU 工作（N 屏蔽、逐行排版），由路由放进线程池执行"""
     seq = record["consensus"]["sequence"]
-    # 文件名白名单过滤：sample_name 源自用户上传文件名，未过滤可注入
-    # Content-Disposition 响应头（引号/CR/LF）
-    safe_name = re.sub(r"[^A-Za-z0-9._\-一-鿿]+", "_",
-                       f"{record['sample_name']}-consensus").strip("._") or "consensus"
+    # 文件名白名单过滤（统一实现 app/filename.py）：sample_name 源自用户上传
+    # 文件名，未过滤可注入 Content-Disposition 响应头（引号/CR/LF）
+    safe_name = sanitize_filename(f"{record['sample_name']}-consensus",
+                                  fallback="consensus")
     # 实测片段：新记录带 consensus.segments（共识下标，插入/缺失后仍对得上）；
     # 旧记录退回参考坐标的 coverage_ranges（无插入缺失时两者一致）
     read_segs = (record["consensus"].get("segments") or []) if covered_only else []

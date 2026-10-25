@@ -13,17 +13,21 @@ from typing import Optional
 from urllib.parse import quote
 
 # 白名单：ASCII 安全字符 + 常用中文区间（一-鿿 = U+4E00..U+9FFF）。
-# 其余（引号、分号、CR/LF、控制字符、emoji 等）一律折叠为 "_"
+# 其余（引号、分号、CR/LF、控制字符、emoji 等）一律折叠为 "_"。
+# 文件系统 slug（YAML 文件名、载体 ID）不允许 CJK，走 allow_cjk=False
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._\-一-鿿]+")
+_FILENAME_SAFE_ASCII = re.compile(r"[^A-Za-z0-9._\-]+")
 _BAD_EDGES = "._"
 
 
 def sanitize_filename(name: str, *, max_len: int = 80,
-                      fallback: str = "export") -> str:
+                      fallback: str = "export",
+                      allow_cjk: bool = True) -> str:
     """把任意用户输入收敛成安全文件名：白名单替换 → 去首尾点下划线 → 截断。
 
     结果保证非空且只含白名单字符；全非法输入回退 fallback。"""
-    safe = _FILENAME_SAFE.sub("_", str(name or "")).strip(_BAD_EDGES)
+    pattern = _FILENAME_SAFE if allow_cjk else _FILENAME_SAFE_ASCII
+    safe = pattern.sub("_", str(name or "")).strip(_BAD_EDGES)
     safe = safe[:max_len].strip(_BAD_EDGES)
     return safe or fallback
 
