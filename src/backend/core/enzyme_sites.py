@@ -64,7 +64,7 @@ def _site_regex(site: str) -> "re.Pattern":
     return re.compile(body)
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=1024)  # key 是酶名字符串（含未命中噪声），有界防撑内存
 def get_enzyme(name: str) -> Optional[Dict]:
     """按名称从 REBASE 取酶参数；未知/不适用的酶返回 None。
 

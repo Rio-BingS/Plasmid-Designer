@@ -92,7 +92,7 @@ def enzyme_set_names(set_id: str) -> Optional[List[str]]:
     return None
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=1024)  # key 含用户可控酶名，有界防缓存撑内存
 def enzyme_info(name: str) -> Optional[Dict]:
     """单把酶的静态属性：recognition 记法、末端类型、突出端序列"""
     spec = get_enzyme(name)
