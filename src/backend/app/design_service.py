@@ -1154,6 +1154,74 @@ def resolve_gibson_insert_pos(request: DesignRequest, vector) -> int:
     return seq_len // 2 if seq_len >= 2 else 100
 
 
+def _synthesis_molecule(
+    request, optimized_dna: str, vector, backbone: str, *,
+    enzyme_5: Optional[str], enzyme_3: Optional[str],
+    gibson_double_digest: bool, gibson_plan, gibson_insert_pos: Optional[int],
+    gibson_arms_plan, designer,
+) -> Tuple[str, Optional[str]]:
+    """全基因合成的目标分子：把克隆末端直接合进 oligo（能合就合）。
+
+    返回 (分子序列, 说明)。说明为 None 表示末端未包含（Golden Gate 等连接
+    语义不同的方法）——调用方回退旧行为（合成基因 + 组装后扩增加末端）。
+
+    合成分子的顶链与原「PCR 产物」完全同构：
+
+    - 限制性：保护碱基 + e5 位点 + 基因 + e3 位点(反向互补) + 保护碱基，
+      酶切后得到与粘端克隆一致的片段（末端位点贴边切不动，保护碱基保证
+      酶切效率，酶切后随小片段去除）；
+    - Gibson（双酶切/单位点/自定义同源臂）：两端同源臂 + 基因（负链装配
+      时基因取反向互补），合成产物退火后直接与线性化载体组装。
+    """
+    from core.construct_assembly import restriction_site
+    from core.seq_utils import revcomp as _rc
+
+    method = request.cloning_method
+    pad = designer.PROTECTIVE_SPACER
+    if method == CloningMethod.RESTRICTION:
+        e5 = enzyme_5 or request.enzyme_5 or request.enzyme
+        e3 = enzyme_3 or request.enzyme_3 or request.enzyme
+        site5 = restriction_site(e5 or "")
+        site3 = restriction_site(e3 or "")
+        if site5 and site3:
+            return (pad + site5 + optimized_dna + _rc(site3) + pad,
+                    f"合成 oligo 已包含克隆末端（{e5}/{e3} 位点与两端 "
+                    f"{len(pad)}nt 保护碱基）：合成产物酶切后可直接连接载体，"
+                    "无需 PCR 扩增加末端")
+    elif method == CloningMethod.GIBSON:
+        lin = getattr(request, "gibson_linearization", "double_digest")
+        arm = int(getattr(request, "homology_arm", 20) or 20)
+        circular = _vector_is_circular(vector)
+        if lin == "custom_arms" and gibson_arms_plan is not None:
+            body = (_rc(optimized_dna) if gibson_arms_plan.insert_reverse
+                    else optimized_dna)
+            return (gibson_arms_plan.arm_5_seq + body
+                    + gibson_arms_plan.arm_3_seq,
+                    "合成 oligo 已包含两条同源臂：合成产物可直接 Gibson 组装，"
+                    "无需 PCR 扩增加臂")
+        if gibson_double_digest and gibson_plan is not None:
+            body = _rc(optimized_dna) if gibson_plan.insert_reverse else optimized_dna
+            left_arm = _circular_backbone_window(
+                backbone, gibson_plan.left_cut - arm, arm, circular)
+            right_arm = _circular_backbone_window(
+                backbone, gibson_plan.right_cut, arm, circular)
+            return (left_arm + gibson_plan.head + body + gibson_plan.tail
+                    + right_arm,
+                    "合成 oligo 已包含两端同源臂（载体同源区+位点残留）："
+                    "合成产物可直接 Gibson 组装，无需 PCR 扩增加臂")
+        insert_pos = (gibson_insert_pos if gibson_insert_pos is not None
+                      else resolve_gibson_insert_pos(request, vector))
+        insert_pos = max(0, min(insert_pos, max(0, len(backbone) - 1)))
+        left_arm = _circular_backbone_window(
+            backbone, insert_pos - arm, arm, circular)
+        right_arm = _circular_backbone_window(
+            backbone, insert_pos, arm, circular)
+        return (left_arm + optimized_dna + right_arm,
+                "合成 oligo 已包含两端同源臂：合成产物可直接 Gibson 组装，"
+                "无需 PCR 扩增加臂")
+    return optimized_dna, None
+
+
 def design_primers_for_method(
     request: DesignRequest,
     optimized_dna: str,
@@ -1256,17 +1324,26 @@ def design_primers_for_method(
         return [_primer_to_info(pair.forward), _primer_to_info(pair.reverse)]
 
     if request.insert_source == "gene_synthesis":
-        # 全基因合成：成对正反链重叠 oligo 覆盖完整插入片段（双链完全覆盖）
+        # 全基因合成：克隆末端（同源臂/位点+保护碱基）直接合进 oligo——
+        # 合成产物即可组装/酶切，省掉「合成基因 → PCR 加末端」一轮；
+        # 末端语义不同的方法（Golden Gate）保留合成后扩增加末端的旧路径
+        molecule, ends_note = _synthesis_molecule(
+            request, optimized_dna, vector, backbone,
+            enzyme_5=enzyme_5, enzyme_3=enzyme_3,
+            gibson_double_digest=gibson_double_digest, gibson_plan=gibson_plan,
+            gibson_insert_pos=gibson_insert_pos,
+            gibson_arms_plan=gibson_arms_plan, designer=designer)
         oligos = designer.design_synthesis_oligos(
-            optimized_dna,
+            molecule,
             oligo_length_min=request.oligo_length_min or request.oligo_length,
             oligo_length_max=request.oligo_length_max or request.oligo_length,
             overlap_length=request.overlap_length,
             primer_name=name,
         )
         primers.extend(_primer_to_info(o) for o in oligos)
-        # 组装完成后用带克隆末端的引物扩增出可克隆的插入片段
-        primers.extend(_cloning_pair())
+        if ends_note is None:
+            # 组装完成后用带克隆末端的引物扩增出可克隆的插入片段
+            primers.extend(_cloning_pair())
     else:
         primers = _cloning_pair()
 
@@ -1738,6 +1815,16 @@ def run_design(
                     f"警告：检测到 {xh} 处寡核苷酸间潜在交叉杂交（3' 端 12mer 匹配），"
                     "建议调整 oligo 长度范围后重新设计"
                 )
+
+        # 4.1 全基因合成：克隆末端已合进 oligo（限制性/Gibson）——说明
+        # 合成产物可直接组装，省掉扩增加末端一轮
+        if (request.insert_source == "gene_synthesis"
+                and request.cloning_method in (CloningMethod.RESTRICTION,
+                                               CloningMethod.GIBSON)):
+            result.warnings.append(
+                "全基因合成的 oligo 已包含克隆末端（同源臂/酶切位点+保护碱基）："
+                "重叠延伸拼出全长分子后即可直接 Gibson 组装或酶切连接，"
+                "无需再用引物扩增补末端")
 
         # 5. 克隆方案
         method_map = {
