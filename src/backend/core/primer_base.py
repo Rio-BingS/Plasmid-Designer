@@ -208,7 +208,7 @@ def export_primers_to_excel(primer_pairs: List[PrimerPair], output_path: str) ->
 
 # ==================== Golden Gate 拼接处位点检查 ====================
 
-def _gg_site_count(seq: str, enzyme_name: str) -> int:
+def gg_site_count(seq: str, enzyme_name: str) -> int:
     """识别序列出现次数（双链）。按识别序列计而不是按切点：线性片段末端的
     位点切点可能落在片段外而被 find_enzyme_sites 丢掉，拼在扩增子里却会切"""
     from core.enzyme_sites import _site_regex, get_enzyme
@@ -246,7 +246,7 @@ def _gg_spacer(enzyme_name: str, site: str, n: int, overhang: str, downstream: s
         if sp in tried:
             continue
         tried.add(sp)
-        if _gg_site_count(f"GG{site}{sp}{overhang}{head}", enzyme_name) == 1:
+        if gg_site_count(f"GG{site}{sp}{overhang}{head}", enzyme_name) == 1:
             return sp
     return "A" * n
 
@@ -256,5 +256,9 @@ def gg_junction_extra_sites(insert_seq: str, enzyme_name: str, forward_tail: str
     """完整扩增子（F 尾 + 插入片段 + rc(R 尾)）里，除两端引物尾各一个与插入片段
     内部原有的位点之外，拼接处另外形成的识别位点数"""
     amplicon = forward_tail + insert_seq + revcomp(reverse_tail)
-    return max(0, _gg_site_count(amplicon, enzyme_name) - 2
-               - _gg_site_count(insert_seq, enzyme_name))
+    return max(0, gg_site_count(amplicon, enzyme_name) - 2
+               - gg_site_count(insert_seq, enzyme_name))
+
+
+# ==================== 公开化别名（跨层契约原为私有名）====================
+_gg_site_count = gg_site_count  # 公开化前的私有名（历史引用兼容）

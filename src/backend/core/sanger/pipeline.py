@@ -691,7 +691,7 @@ def _classify_mixed(entries: List[Dict], read_len: int,
     return profile
 
 
-def _try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
+def try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
     """若 tracy 可用，对混合样品执行 decompose，返回两条等位基因序列"""
     tracy = shutil.which(TRACY_BIN) or (TRACY_BIN if os.path.isfile(TRACY_BIN) else None)
     if not tracy:
@@ -992,7 +992,7 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
     return first, last, called
 
 
-def _pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
+def pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
     """位点列表压缩成连续区段（如 81–140、201–260）：结论给范围概览，
     超出 max_ranges 段截断并注明总段数，逐位细节在峰图里核对"""
     if not positions:
@@ -1336,13 +1336,13 @@ def _mixed_check_phrase(chk: Dict) -> str:
     if chk["clean"]:
         parts.append(f"{chk['clean']} 处其他引物覆盖且峰形单一（倾向噪声）")
     if chk["uncovered"]:
-        ref_txt = _pos_ranges_str(chk.get("uncovered_ref") or [])
+        ref_txt = pos_ranges_str(chk.get("uncovered_ref") or [])
         parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核"
                      + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
     return "互检：" + "、".join(parts) if parts else ""
 
 
-def _run_label(run: Dict) -> str:
+def run_label(run: Dict) -> str:
     """重复结构标签：period=1 为 poly(A) 同聚物；period>1 为 (CAG)n 型重复"""
     if run.get("period", 1) == 1 and run.get("base"):
         return f"poly({run['base']}) 同聚物"
@@ -1352,7 +1352,7 @@ def _run_label(run: Dict) -> str:
     return "重复序列"
 
 
-def _peak_verdict_phrase(e: Dict) -> str:
+def peak_verdict_phrase(e: Dict) -> str:
     """峰图主判读短语（以可分辨峰为准，basecaller 调用数只在逐 read 里出现）"""
     ref = e["ref_repeat_count"]
     m = e.get("peak_measured")
@@ -1391,7 +1391,7 @@ def _poly_anchor_notes(homopolymer_report: List[Dict]) -> List[str]:
         reason = ("路标落在信号异常区" if g == "unreliable"
                   else "路标处于信号边缘或单侧锚定")
         notes.append(
-            f"注意：{_run_label(e)} {e['start']}-{e['end']} 重复数已由峰图"
+            f"注意：{run_label(e)} {e['start']}-{e['end']} 重复数已由峰图"
             f"计数确证（{e.get('observed_repeat_count', '?')} 个），但该 run"
             f"的锚定路标不可靠（{reason}）——计数确证但定位存疑，run 起止"
             "可能整体偏移数 bp，建议对照图谱核对边界")
@@ -3237,7 +3237,7 @@ def _build_conclusion(
         if (z["raw_start"], z["raw_end"]) != (z["start"], z["end"]):
             zone_txt += f"（原始 {z['raw_start']}–{z['raw_end']}）"
         base = (f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
-                f"{_pos_ranges_str(p['positions'])}"
+                f"{pos_ranges_str(p['positions'])}"
                 f"（read 坐标；可信区 {zone_txt} 以外未计入）")
         mixed_lines.append(base + (f"；{note}" if note else ""))
     scat = [(r, r["mixed_profile"]) for r in read_results
@@ -3267,7 +3267,7 @@ def _build_conclusion(
             chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
             note = _mixed_check_phrase(chk) if crossable else ""
             base = (f"  ↳ {r['filename']}：{p['count']} 处双峰位于 read "
-                    f"{_pos_ranges_str(p['positions'])}（read 坐标）")
+                    f"{pos_ranges_str(p['positions'])}（read 坐标）")
             mixed_lines.append(base + (f"；{note}" if note else ""))
     # 跨引物互检汇总（↳ 行随逐 read 明细折叠）：多引物同报双峰的参考位置
     # 是真实混合的最强信号；其余按 复核一致/无覆盖 归类
@@ -3285,7 +3285,7 @@ def _build_conclusion(
             uncov_refs = sorted({rp
                                  for d in mc["by_read"].values()
                                  for rp in d.get("uncovered_ref") or []})
-            ref_txt = _pos_ranges_str(uncov_refs)
+            ref_txt = pos_ranges_str(uncov_refs)
             parts.append(f"{mc['uncov_total']} 处仅单条引物覆盖，无法互检"
                          + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
         if parts:
@@ -3351,7 +3351,7 @@ def _build_conclusion(
         }
         poly_warnings = [
             f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
-            f"{_peak_verdict_phrase(e)}——{_verdict_warn.get(e.get('run_verdict'), '以峰图可分辨峰为准，建议人工复核')}"
+            f"{peak_verdict_phrase(e)}——{_verdict_warn.get(e.get('run_verdict'), '以峰图可分辨峰为准，建议人工复核')}"
             for e in homopolymer_report
             if e["tier"] == "poly" and not e["count_reliable"]
         ]
@@ -3418,7 +3418,7 @@ def _build_conclusion(
             if hp.get("peak_count") is not None:
                 rel += f"；峰图独立计数 {hp['peak_count']} 个"
             lines.append(
-                f"  ↳ {_run_label(hp)} {hp['start']}-{hp['end']}："
+                f"  ↳ {run_label(hp)} {hp['start']}-{hp['end']}："
                 f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
                 f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
             )
@@ -3448,8 +3448,8 @@ def _build_conclusion(
             vt = _verdict_phrase.get(
                 e.get("run_verdict"), "峰压缩区，以峰图可分辨峰为准")
             lines.append(
-                f"  ↳ {_run_label(e)} {e['start']}-{e['end']} 峰图判读："
-                f"{_peak_verdict_phrase(e)}（{anchor}{detail}）"
+                f"  ↳ {run_label(e)} {e['start']}-{e['end']} 峰图判读："
+                f"{peak_verdict_phrase(e)}（{anchor}{detail}）"
                 f"——{vt}，建议人工核对峰图"
             )
         lines.extend(dropout_notes)
@@ -3697,3 +3697,10 @@ def analyze(
         "errors": errors,
         "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
     }
+
+
+# ==================== 公开化别名（跨层契约原为私有名）====================
+_try_tracy_decompose = try_tracy_decompose  # 公开化前的私有名（历史引用兼容）
+_pos_ranges_str = pos_ranges_str  # 公开化前的私有名（历史引用兼容）
+_run_label = run_label  # 公开化前的私有名（历史引用兼容）
+_peak_verdict_phrase = peak_verdict_phrase  # 公开化前的私有名（历史引用兼容）
