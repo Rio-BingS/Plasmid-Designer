@@ -243,7 +243,7 @@ def pick_flanking(
 def plan_restriction(
     sequence: str, enzyme_5: str, enzyme_3: str, *,
     window: Optional[Tuple[int, int]] = None, circular: bool = True,
-    warnings: List[str], join: str = "sticky",
+    warnings: List[str], join: str = "sticky", keep_sites: bool = True,
 ) -> Optional[AssemblyPlan]:
     """双酶切：两个切点之间整段被切走，基因两端补回位点残留碱基
 
@@ -251,6 +251,9 @@ def plan_restriction(
     join="sticky"（粘端连接，默认）或 "gibson"（双酶切线性化 + Gibson 同源臂
     连接）：两者几何完全一致，仅连接处的物理约束不同——粘端配对强制基因
     取向，Gibson 取向由同源臂设计决定，反向排布的告警文案随之区分。
+    keep_sites=False 仅对 join="gibson" 有意义：同源臂越过位点、重组把位点
+    碱基消费掉（无缝连接），切点各向外扩到完整位点边界，构建体里不再出现
+    位点序列——此时位点无法充当起始密码子，起始密码子语义归基因自身。
     """
     length = len(sequence)
     try:
@@ -326,13 +329,34 @@ def plan_restriction(
                 "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
                 "请勾选「反向」后重新设计")
 
+    seamless = join == "gibson" and not keep_sites
+    if seamless:
+        # 无缝连接：同源臂越过位点、重组把位点碱基消费掉——切点各向外扩到
+        # 完整位点边界，构建体里不再出现位点序列（head/tail 置空）
+        k_left, site_left = (k5, site5) if not reverse else (k3, site3)
+        k_right, site_right = (k3, site3) if not reverse else (k5, site5)
+        left -= k_left
+        right += len(site_right) - k_right
+        head, tail = "", ""
+        cut_length = _forward_dist(left, right, length, circular)
+        warnings.append(
+            f"酶切位点已从构建体去除（无缝连接）：连接处不再保留 "
+            f"{enzyme_5}/{enzyme_3} 位点序列，位点无法再次酶切")
+
+    if seamless:
+        junction = (f"双酶切线性化（切除 {cut_length} bp，"
+                    f"{enzyme_5}/{enzyme_3} 位点已去除，无缝连接，Gibson 同源臂连接"
+                    + ("，插入片段在负链" if reverse else "") + "）")
+    else:
+        junction = (f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
+                    f"（切除 {cut_length} bp，位点在连接处复原"
+                    + ("，插入片段在负链" if reverse else "")
+                    + ("，Gibson 同源臂连接）" if join == "gibson" else "）"))
+
     return AssemblyPlan(
         "restriction", left, right, head=head, tail=tail,
         insert_reverse=reverse, removed_bp=cut_length,
-        junction=(f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
-                  f"（切除 {cut_length} bp，位点在连接处复原"
-                  + ("，插入片段在负链" if reverse else "")
-                  + ("，Gibson 同源臂连接）" if join == "gibson" else "）")),
+        junction=junction,
         warnings=warnings,
     )
 

@@ -464,6 +464,7 @@ def assemble_construct(
     check_cassette: bool = True,
     extra_elements: Optional[List[Dict]] = None,
     join: str = "sticky",
+    keep_sites: bool = True,
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
@@ -503,7 +504,8 @@ def assemble_construct(
             elif method == "restriction":
                 plan = plan_restriction(backbone, enzyme_5 or "", enzyme_3 or "",
                                         window=window, circular=circular,
-                                        warnings=plan_warnings, join=join)
+                                        warnings=plan_warnings, join=join,
+                                        keep_sites=keep_sites)
             else:
                 plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
                                         overhang_3 or "", window=window,
@@ -613,6 +615,8 @@ def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
     feat = feats[0] if feats and feats[0].get("type") == "CDS" else None
     if feat is None:
         return
+    if plan.method == "restriction" and not plan.head and not plan.tail:
+        return  # 无缝连接（位点去除）：CDS 起点就是基因自身起点
     if plan.insert_reverse:
         if iend + offset > len(seq):
             return
@@ -673,7 +677,12 @@ def _resolve_redundant_start_codon(
 
     strand = (resolved_ends.strand if resolved_ends and resolved_ends.strand else "+")
     # 位点 ATG 是否紧贴基因 5′ 端：正链看位点末尾，负链（反向互补读基因）
-    # 看位点开头（其反向互补的末尾是 ATG）
+    # 看位点开头（其反向互补的末尾是 ATG）。无缝连接（位点去除）时位点
+    # 根本不在构建体里，起始密码子语义归基因自身
+    gibson_double = (request.cloning_method == CloningMethod.GIBSON
+                     and not gibson_single_site)
+    if gibson_double and not getattr(request, "keep_restriction_sites", True):
+        return optimized_dna, []
     supplies = site.endswith("ATG") if strand != "-" else site.startswith("CAT")
     if not supplies:
         return optimized_dna, []
@@ -1218,6 +1227,14 @@ def run_design(
         else:
             result.vector_name = vector.name
             backbone = ensure_vector_backbone(vector)
+            # 成品质粒名：默认为序列名；开启前缀后为「载体名-序列名」。
+            # GenBank LOCUS 与下载文件名都以它为准
+            _base_name = request.sequence_name or "insert"
+            if request.vector_name_prefix and result.vector_name:
+                result.plasmid_name = f"{result.vector_name}-{_base_name}"
+            else:
+                result.plasmid_name = _base_name
+
             if (request.cloning_method == CloningMethod.RESTRICTION
                     or (request.cloning_method == CloningMethod.GIBSON
                         and not gibson_single)):
@@ -1267,8 +1284,11 @@ def run_design(
                 extra_elements=resolved_ends.detected if resolved_ends else None,
                 join=("gibson" if request.cloning_method == CloningMethod.GIBSON
                       else "sticky"),
+                keep_sites=(True if request.cloning_method == CloningMethod.RESTRICTION
+                            else getattr(request, "keep_restriction_sites", True)),
             )
             result.warnings.extend(assembly.warnings)
+
 
         if request.cloning_method == CloningMethod.GOLDEN_GATE:
             warning = _golden_gate_site_warning(optimized_dna, request.enzyme)
@@ -1309,7 +1329,8 @@ def run_design(
                 window=_mcs_window(vector),
                 circular=str(getattr(vector, "topology", "circular")
                              or "circular").lower() != "linear",
-                warnings=[], join="gibson")
+                warnings=[], join="gibson",
+                keep_sites=getattr(request, "keep_restriction_sites", True))
         result.primers = design_primers_for_method(
             request, optimized_dna, vector, backbone,
             enzyme_5=resolved_ends.enzyme_5 if resolved_ends else None,
@@ -1452,7 +1473,8 @@ def generate_genbank_from_result(result: DesignResult) -> str:
             insert_start, insert_end = 1, len(result.optimized_sequence)
 
     lines = []
-    locus_name = result.design_id[:16].replace("-", "_")
+    # LOCUS 名优先用质粒名（序列名或「载体名-序列名」），旧结果回退 design_id
+    locus_name = (result.plasmid_name or result.design_id.replace("-", "_"))
     length = len(construct) or result.final_length or 0
 
     lines.append(format_locus_line(locus_name, length, topology="circular"))

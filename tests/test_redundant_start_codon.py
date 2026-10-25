@@ -393,3 +393,53 @@ def test_gibson_double_digest_without_enzymes_falls_back_to_single(monkeypatch):
     assert any("已按单位点线性化处理" in w for w in result.warnings)
     # 单点位模型照常工作
     assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
+
+# ==================== Gibson 保留/去除酶切位点 ====================
+
+def test_gibson_double_digest_scarless_removes_sites():
+    """关闭保留位点（无缝连接）：构建体不含位点序列、不去起始 ATG、CDS 不扩展"""
+    result = run_design("gd_scarless", _gibson_double_request(
+        keep_restriction_sites=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    construct = result.construct_sequence.upper()
+    # 位点整体从构建体去除
+    assert "CATATG" not in construct and "CTCGAG" not in construct
+    assert any("无缝连接" in w for w in result.warnings)
+    # 位点不在构建体里 → 插入序列自己的 ATG 是唯一起始密码子，不能去
+    assert result.optimized_sequence.upper().startswith("ATG")
+    # CDS 注释不扩展（起点 = 基因自身起点）
+    feat = _insert_cds(result)
+    assert feat["start"] == result.insert_start
+    # 引物：插入分子 = 基因本身（无位点残留）
+    assert result.primers and not result.primers[0].sequence.upper().startswith("TCGAG")
+
+
+def test_gibson_double_digest_keep_sites_default_restores():
+    """默认保留位点：构建体连接处位点完整（回归对照）"""
+    result = run_design("gd_keep", _gibson_double_request())
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    construct = result.construct_sequence.upper()
+    assert "CATATG" in construct and "CTCGAG" in construct
+
+
+# ==================== 质粒命名 ====================
+
+def test_plasmid_name_defaults_to_sequence_name():
+    """默认质粒名 = 序列名"""
+    result = run_design("n_base", _restriction_request(sequence_name="GFP"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert result.plasmid_name == "GFP"
+
+
+def test_plasmid_name_with_vector_prefix():
+    """开启前缀：质粒名 = 载体名-序列名，GenBank LOCUS 以它为准"""
+    result = run_design("n_prefix", _restriction_request(
+        sequence_name="GFP", vector_name_prefix=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert result.plasmid_name == "pET-28a(+)-GFP"  # 载体全名含 (+)
+    # GenBank 导出 LOCUS 用质粒名（format_locus_line 会做字符清理）
+    from app.design_service import generate_genbank_from_result
+    gb = generate_genbank_from_result(result)
+    assert gb.splitlines()[0].startswith("LOCUS")
+    locus = gb.splitlines()[0].replace("-", "_").replace("(", "_").replace(")", "_")
+    assert "pET_28a" in locus and "GFP" in locus
