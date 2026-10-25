@@ -17,7 +17,7 @@ from core.primer_base import (  # noqa: F401  re-export 兼容既有导入路径
     TM_DNTPS_MM, TM_MIN_LENGTH, TM_MG_MM, TM_NA_MM, TM_NN_TABLE,
     TM_PRIMER_NM, TM_SALTCORR, TM_TEMPLATE_NM,
     _gg_site_count, _gg_spacer, _hamming, calculate_tm,
-    export_primers_to_excel, gg_junction_extra_sites, _tm_nn,
+    gg_junction_extra_sites, _tm_nn,
     screen_gg_overhang_pair, gg_site_count,
 )
 

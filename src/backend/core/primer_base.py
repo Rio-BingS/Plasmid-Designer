@@ -181,31 +181,6 @@ class PrimerPair:
         }
 
 
-def export_primers_to_excel(primer_pairs: List[PrimerPair], output_path: str) -> None:
-    """导出引物到Excel（简化版，实际可用openpyxl）"""
-    import csv
-    
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter='\t')
-        writer.writerow([
-            'Name', 'Forward Sequence', 'Forward Tm', 
-            'Reverse Sequence', 'Reverse Tm',
-            'Product Size', 'Recommended Ta'
-        ])
-        
-        for pair in primer_pairs:
-            d = pair.to_order_dict()
-            writer.writerow([
-                d['name'],
-                d['forward_seq'],
-                d['forward_tm'],
-                d['reverse_seq'],
-                d['reverse_tm'],
-                d['product_size'],
-                d['recommended_ta']
-            ])
-
-
 # ==================== Golden Gate 拼接处位点检查 ====================
 
 def gg_site_count(seq: str, enzyme_name: str) -> int:
