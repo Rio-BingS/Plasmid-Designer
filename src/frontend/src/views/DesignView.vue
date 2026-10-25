@@ -55,6 +55,8 @@ const insertDirection = computed<InsertDirection>(() =>
 // NdeI/NcoI 这类位点自带 ATG（充当起始密码子）：默认自动去掉插入序列
 // 开头的冗余 ATG，避免蛋白 N 端出现连续两个 Met（第一个 M 由位点提供）
 const autoTrimStartCodon = ref(true)
+// Gibson 线性化方式：双酶切（默认，主流实践）或单位点（旧模型）
+const gibsonSingleSite = ref(false)
 // 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
 const preview = ref<RestrictionPreview | null>(null)
 const previewLoading = ref(false)
@@ -177,6 +179,7 @@ function currentDraft() {
     reverseInsert: reverseInsert.value,
     manualStrand: manualStrand.value,
     gibsonSite: gibsonSite.value,
+    gibsonSingleSite: gibsonSingleSite.value,
     excludeEnzymes: [...excludeEnzymes.value],
     oligoLengthMin: oligoLengthMin.value,
     oligoLengthMax: oligoLengthMax.value,
@@ -220,6 +223,7 @@ function applyDraft(d: Record<string, any>) {
   if (typeof d.reverseInsert === 'boolean') reverseInsert.value = d.reverseInsert
   manualStrand.value = oneOf(d.manualStrand, ['', 'plus', 'minus'] as const, '')
   if (typeof d.gibsonSite === 'string') gibsonSite.value = d.gibsonSite
+  gibsonSingleSite.value = d.gibsonSingleSite === true
   if (Array.isArray(d.excludeEnzymes)) {
     excludeEnzymes.value = d.excludeEnzymes.filter((x: any) => typeof x === 'string')
   }
@@ -277,6 +281,7 @@ function clearForm() {
   manualStrand.value = ''
   preview.value = null
   gibsonSite.value = ''
+  gibsonSingleSite.value = false
   excludeEnzymes.value = []
   oligoLengthMin.value = 40
   oligoLengthMax.value = 80
@@ -400,11 +405,16 @@ async function handleSubmit() {
       request.insert_direction = insertDirection.value
       request.trim_redundant_start = autoTrimStartCodon.value
     }
-    if (cloningMethod.value === 'gibson' && gibsonSite.value) {
-      request.gibson_site = gibsonSite.value
-    }
     if (cloningMethod.value === 'gibson') {
       request.trim_redundant_start = autoTrimStartCodon.value
+      if (gibsonSingleSite.value) {
+        request.gibson_linearization = 'single_site'
+        if (gibsonSite.value) request.gibson_site = gibsonSite.value
+      } else {
+        request.gibson_linearization = 'double_digest'
+        request.enzyme_5 = enzyme5.value
+        request.enzyme_3 = enzyme3.value
+      }
     }
     if (excludeEnzymesApplicable.value && excludeEnzymes.value.length) {
       request.exclude_enzymes = excludeEnzymes.value
@@ -670,25 +680,48 @@ function loadExample() {
 
         <!-- Gibson 参数 -->
         <div v-if="cloningMethod === 'gibson'" class="method-params">
+          <template v-if="!gibsonSingleSite">
+            <div class="form-group">
+              <label class="form-label">线性化酶切位点一</label>
+              <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">线性化酶切位点二</label>
+              <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
+            </div>
+            <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
+              ⚠️ 双酶切线性化请选择两种不同的限制酶
+            </p>
+            <p class="hint-text">
+              载体用两把酶切开、两位点之间的片段被切除（与限制性克隆同一几何），
+              插入片段以同源臂与载体末端连接。方向由载体表达盒自动判定。
+            </p>
+          </template>
+          <template v-else>
+            <div class="form-group">
+              <label class="form-label">定位酶切位点（可选）</label>
+              <EnzymeAutocomplete
+                v-model="gibsonSite"
+                :enzymes="gibsonMcsMap"
+                placeholder="搜索；留空为自动（MCS 起点）"
+              />
+              <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
+            </div>
+          </template>
+          <label class="checkbox-label">
+            <input v-model="gibsonSingleSite" type="checkbox" />
+            <span>改用单位点线性化（单切点插入，不切除载体片段）</span>
+          </label>
+          <label class="checkbox-label trim-start-row">
+            <input v-model="autoTrimStartCodon" type="checkbox" />
+            <span>位点/线性化点自带起始密码子时去除冗余 ATG（自动去掉插入序列
+              开头的 ATG，避免蛋白 N 端出现连续两个 Met；融合到载体 CDS/tag
+              时仅提示读码框，不自动去除）</span>
+          </label>
           <div class="form-group">
             <label class="form-label">同源臂长度 (bp)</label>
             <input v-model.number="homologyArm" type="number" class="form-input" min="15" max="40" />
           </div>
-          <div class="form-group">
-            <label class="form-label">定位酶切位点（可选）</label>
-            <EnzymeAutocomplete
-              v-model="gibsonSite"
-              :enzymes="gibsonMcsMap"
-              placeholder="搜索；留空为自动（MCS 起点）"
-            />
-            <p class="hint-text">选择载体上的酶切位点以定位同源重组位置（载体线性化点），引物同源臂将围绕该位点设计</p>
-          </div>
-          <label class="checkbox-label trim-start-row">
-            <input v-model="autoTrimStartCodon" type="checkbox" />
-            <span>线性化点前自带起始密码子时去除冗余 ATG（载体碱基以 ATG 结尾时
-              自动去掉插入序列开头的 ATG，避免蛋白 N 端出现连续两个 Met；
-              融合到载体 CDS/tag 时仅提示读码框，不自动去除）</span>
-          </label>
         </div>
 
         <!-- Golden Gate 参数 -->
