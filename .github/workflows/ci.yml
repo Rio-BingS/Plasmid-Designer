@@ -16,6 +16,8 @@ jobs:
   backend:
     name: Backend (pytest + pip-audit)
     runs-on: ubuntu-latest
+    # 挂死的测试不该烧满 6 小时 runner 时长（GitHub 默认 360 分钟）
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -66,8 +68,9 @@ jobs:
             -r deploy/docker/requirements.backend.txt
 
   frontend:
-    name: Frontend (vue-tsc + vitest + npm audit)
+    name: Frontend (vue-tsc + vitest + build + npm audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/frontend
@@ -88,6 +91,10 @@ jobs:
 
       - name: Unit tests
         run: npx vitest run
+
+      # vue-tsc 只查类型；rollup 打包错误（动态导入/循环依赖等）要真构建才能暴露
+      - name: Build
+        run: npm run build
 
       # 阻断：会打进浏览器产物的生产依赖不允许 high 及以上漏洞
       - name: npm audit (production deps)
