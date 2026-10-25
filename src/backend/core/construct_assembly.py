@@ -58,6 +58,10 @@ class AssemblyPlan:
     # CDS 扩展据此跳过——不能用「head/tail 为空」判断，平末端酶保留位点时
     # head/tail 同样是空串
     seamless: bool = False
+    # 自定义同源臂：解析后的臂序列（按装配链向从载体位点取正链或其反向互补）。
+    # 引物设计直接消费它——用户粘贴的栏位顺序/链向可能已被自动纠正
+    arm_5_seq: str = ""
+    arm_3_seq: str = ""
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -470,22 +474,26 @@ def plan_golden_gate(
 
 
 def plan_custom_arms(
-    backbone: str, arm_5: str, arm_3: str, *,
+    backbone: str, arm_a: str, arm_b: str, *,
     circular: bool = True, min_len: int = 15, max_len: int = 200,
+    direction: str = "auto", elements=None,
 ) -> AssemblyPlan:
     """用户自定义同源臂的 Gibson 定位：由臂序列反推线性化边界。
 
-    用户把两条臂按同一方向粘贴（通常直接从载体图复制），工具把**整条插入
-    分子**（臂5 + 基因 + 臂3）按两种取向试装配：
+    **顺序与链向无关**（与「填两把酶切位点」同一体验）：两条臂贴进哪个栏、
+    按正链还是反向互补贴都不影响结果——
 
-    - 正向：臂5 正向匹配的末端 = 左连接点 j5，臂3 正向匹配的起点 = 右连接点
-      j3，要求 j5 <= j3（区间 (j5, j3] 被替换，允许相等 = 纯插入）；
-    - 反向：臂3 的反向互补匹配左连接点、臂5 的反向互补匹配右连接点
-      （基因落负链，insert_reverse 承载，臂角色互换）。
+    1. 各自在载体上定位（正反两种取向都试，须唯一精确匹配）；
+    2. 按位置自动分左右：上游同源区成为臂5 侧、下游成为臂3 侧
+       （用户栏位贴反时自动纠正并说明）；
+    3. 装配链向按「用户显式方向 > 载体启动子（cassette_hint）> 粘贴链向
+       共识（两条都按反向互补匹配 = 负链）> 默认正链」决定，臂序列按
+       链向从载体位点重建（负链时臂5 = 右端同源区的反向互补），写入
+       plan.arm_5_seq / plan.arm_3_seq 供引物设计直接消费。
 
-    恰好一种取向成立才有效；两个都成立（对称区）或都不成立时抛
-    ValueError（用户输入问题应显式失败，不做静默回退）。v1 限制：匹配
-    不跨线性编号原点（跨原点臂请旋转载体坐标后重试）。
+    定位失败/多处匹配/两臂重叠围不出区间时抛 ValueError（用户输入问题
+    应显式失败）。v1 限制：匹配不跨线性编号原点（跨原点臂请旋转载体
+    坐标后重试）。
     """
     def _clean(name: str, seq: str) -> str:
         seq = re.sub(r"\s+", "", str(seq or "")).upper()
@@ -503,8 +511,8 @@ def plan_custom_arms(
             raise ValueError(f"{name}含非 ACGT 碱基：{''.join(sorted(bad))}")
         return seq
 
-    a5 = _clean("5′ 重组臂", arm_5)
-    a3 = _clean("3′ 重组臂", arm_3)
+    a = _clean("臂①（原 5′ 臂栏）", arm_a)
+    b = _clean("臂②（原 3′ 臂栏）", arm_b)
     length = len(backbone)
 
     def _find_all(query: str) -> List[int]:
@@ -519,57 +527,113 @@ def plan_custom_arms(
 
     from core.seq_utils import revcomp as _revcomp
 
-    def _locate(seq: str, label: str) -> List[int]:
-        """两个取向的全部匹配：(起点, 是否反向互补)"""
-        hits = [(p, False) for p in _find_all(seq)]
-        hits += [(p, True) for p in _find_all(_revcomp(seq))]
-        if len(hits) > 1:
+    def _locate(seq: str, label: str) -> Tuple[int, bool]:
+        """两个取向的全部匹配：(起点, 是否反向互补匹配)。
+
+        回文臂自身与其反向互补在同一位点重复命中，按同位点去重（记正链）；
+        不同位点的多处命中仍是不唯一，显式报错。
+        """
+        by_pos: Dict[int, bool] = {}
+        for p in _find_all(seq):
+            by_pos.setdefault(p, False)
+        for p in _find_all(_revcomp(seq)):
+            if p not in by_pos:
+                by_pos[p] = True
+        if len(by_pos) > 1:
             pos_desc = "、".join(
-                f"{p + 1}（{'负链' if rc else '正链'}）" for p, rc in hits)
+                f"{p + 1}（{'负链' if rc else '正链'}）" for p, rc in sorted(by_pos.items()))
             raise ValueError(
-                f"{label}在载体上匹配到 {len(hits)} 处（{pos_desc}）："
+                f"{label}在载体上匹配到 {len(by_pos)} 处（{pos_desc}）："
                 "定位不唯一，请加长臂序列或调整臂的位置")
-        if not hits:
+        if not by_pos:
             raise ValueError(
                 f"{label}在载体上无精确匹配：请确认臂序列来自该载体"
                 "（两种取向均已尝试；跨线性编号原点的臂请旋转载体坐标）")
-        return hits
+        return next(iter(by_pos.items()))
 
-    hits5 = _locate(a5, "5′ 重组臂")
-    hits3 = _locate(a3, "3′ 重组臂")
-    p5, rc5 = hits5[0]
-    p3, rc3 = hits3[0]
+    pa, rc_a = _locate(a, "臂①（原 5′ 臂栏）")
+    pb, rc_b = _locate(b, "臂②（原 3′ 臂栏）")
 
-    forward_valid = (not rc5 and not rc3) and (p5 + len(a5) <= p3)
-    reverse_valid = (rc5 and rc3) and (p3 + len(a3) <= p5)
-
-    if forward_valid and reverse_valid:
-        raise ValueError(
-            "两条重组臂在两种取向下都能装配（臂匹配对称）：请调整臂序列消除歧义")
-    if not forward_valid and not reverse_valid:
+    # 按位置分左右：上游同源区 = 臂5 侧，下游 = 臂3 侧（栏位顺序无关）
+    if pa + len(a) <= pb:
+        left_pos, left_len, left_rc = pa, len(a), rc_a
+        right_pos, right_len, right_rc = pb, len(b), rc_b
+        left_label, right_label = "臂①", "臂②"
+    elif pb + len(b) <= pa:
+        left_pos, left_len, left_rc = pb, len(b), rc_b
+        right_pos, right_len, right_rc = pa, len(a), rc_a
+        left_label, right_label = "臂②", "臂①"
+    else:
         raise ValueError(
             "两条重组臂的相对位置无法围出插入区间："
-            f"5′ 臂匹配在 {p5 + 1}（{'负链' if rc5 else '正链'}）、"
-            f"3′ 臂匹配在 {p3 + 1}（{'负链' if rc3 else '正链'}）——"
-            "请确认两臂分别位于插入区间的两侧、且方向一致")
+            f"臂① 匹配在 {pa + 1}（{'负链' if rc_a else '正链'}）、"
+            f"臂② 匹配在 {pb + 1}（{'负链' if rc_b else '正链'}）——"
+            "两臂同源区重叠，请确认各自位于插入区间的两侧")
 
-    if forward_valid:
-        left, right = p5 + len(a5), p3
-        removed = right - left
-        junction = (f"自定义同源臂定位：臂5 末端 {left} / 臂3 起点 {right + 1}"
-                    f"（替换 {removed} bp，无缝）")
-        return AssemblyPlan("gibson", left, right, head="", tail="",
-                            removed_bp=removed, junction=junction)
-    # 反向取向：臂3 的反向互补匹配段在左（基因 5′ 端经其右侧进入），
-    # 臂5 的反向互补匹配段在右；基因按负链放入
-    left = p3 + len(a3)
-    right = p5
+    left = left_pos + left_len
+    right = right_pos
     removed = right - left
-    junction = (f"自定义同源臂定位（负链）：臂3 反向互补末端 {left} / "
-                f"臂5 反向互补起点 {right + 1}（替换 {removed} bp，无缝）")
+
+    # 装配链向：显式方向 > 启动子 > 粘贴链向共识 > 默认正链
+    # （相邻臂 = 纯插入时区间为空，cassette_hint 会提前返回——用
+    # right_hint 技巧给一个 1bp 伪区间，让启动子判定照常工作）
+    right_hint = right if right > left else left + 1
+    hint = cassette_hint(elements or [], left, right_hint)
+    hint_strand = hint.get("strand")
+    if direction == "plus":
+        strand = "+"
+    elif direction == "minus":
+        strand = "-"
+    elif direction == "reverse":
+        strand = "-" if (hint_strand or "+") == "+" else "+"
+    elif hint_strand:
+        strand = hint_strand
+    elif rc_a and rc_b:
+        strand = "-"      # 两条都按反向互补匹配：沿用粘贴链向共识
+    else:
+        strand = "+"
+
+    seq_left_plus = backbone[left_pos:left_pos + left_len].upper()
+    seq_right_plus = backbone[right_pos:right_pos + right_len].upper()
+    if strand == "+":
+        arm_5_seq, arm_3_seq = seq_left_plus, seq_right_plus
+    else:
+        arm_5_seq, arm_3_seq = _revcomp(seq_right_plus), _revcomp(seq_left_plus)
+
+    notes: List[str] = []
+    if left_label != "臂①":
+        notes.append(
+            f"两条臂的栏位顺序与载体位置相反，已自动对调："
+            f"{left_label} 栏的序列在上游（充当臂5 侧）、"
+            f"{right_label} 栏的序列在下游（充当臂3 侧）——同源臂填写顺序无关")
+    for label, pasted, resolved, pasted_rc in (
+            ("臂①", a, arm_5_seq, rc_a), ("臂②", b, arm_3_seq, rc_b)):
+        if resolved.upper() != pasted.upper():
+            notes.append(
+                f"{label}按装配链向取自载体同源区"
+                f"（{'反向互补' if pasted_rc else '正链'}匹配）：引物中的臂序列"
+                "以解析结果为准，粘贴的链向/栏位不影响构建体")
+
+    if hint_strand:
+        notes.append(
+            f"装配方向按载体启动子判定：基因按"
+            f"{'负链' if strand == '-' else '正链'}插入"
+            + ("（与粘贴链向不同，已自动纠正）"
+               if (rc_a and rc_b) != (strand == "-") else ""))
+    elif direction in ("plus", "minus", "reverse"):
+        notes.append(f"装配方向按你的选择：基因按"
+                     f"{'负链' if strand == '-' else '正链'}插入")
+    elif not (rc_a and rc_b):
+        notes.append("载体上没有可判定的启动子/RBS，装配方向按默认（正链）处理；"
+                     "若与预期不符，请在表单勾选「反向」重新设计")
+
+    junction = (f"自定义同源臂定位：臂5 末端 {left} / 臂3 起点 {right + 1}"
+                f"（替换 {removed} bp，无缝，"
+                f"{'负链' if strand == '-' else '正链'}装配）")
     return AssemblyPlan("gibson", left, right, head="", tail="",
-                        insert_reverse=True, removed_bp=removed,
-                        junction=junction)
+                        insert_reverse=(strand == "-"), removed_bp=removed,
+                        arm_5_seq=arm_5_seq, arm_3_seq=arm_3_seq,
+                        junction=junction, warnings=notes)
 
 
 def plan_gibson(sequence: str, insert_pos: int) -> AssemblyPlan:
