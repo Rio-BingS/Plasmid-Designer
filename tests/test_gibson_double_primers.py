@@ -84,7 +84,7 @@ def test_minus_strand_fragment_matches_construct_strand():
     assert result.status == DesignStatus.COMPLETED, result.errors
     cds = _insert_cds(result)
     assert cds["strand"] == "-"
-    gene_rc = revcomp(result.optimized_sequence)
+    gene_rc = revcomp(result.cloned_sequence)   # 克隆工作序列（位点 ATG 已裁）
     fwd, rev = result.primers[0], result.primers[1]
     # 片段 = head(TCGAG) + revcomp(基因) + tail(CA)
     assert fwd.sequence.upper().startswith(plan.head)
@@ -123,7 +123,7 @@ def test_seamless_double_digest_arms_anchor_expanded_cuts():
         backbone[plan.right_cut:plan.right_cut + ARM])
     # 无缝 + 负链：片段直接以 revcomp(基因) 开头
     assert fwd.sequence.upper().startswith(
-        revcomp(result.optimized_sequence)[:8])
+        revcomp(result.cloned_sequence)[:8])
 
 
 def test_homology_arm_wraps_origin():

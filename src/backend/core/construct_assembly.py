@@ -93,6 +93,29 @@ def restriction_site(enzyme: str) -> str:
         return ""
 
 
+def sticky_overhang(enzyme: str) -> str:
+    """酶切产生的突出单链序列（5'→3' 字母）；平末端返回空串。
+
+    cut=(c1,c2)：c2>c1 为 5' 突出（顶链 site[c1:c2]）；c1>c2 为 3' 突出，
+    突出的是底链，其 5'→3' 字母为 site[c2:c1] 的反向互补。连接配对只看
+    突出链的 5'→3' 序列（回文粘端如 TCGA/TA 任意两端互配），因此两把酶
+    粘端相同 = 连接方向不唯一。
+
+    不可用于双酶切建模的酶（Type IIS 等）返回空串——调用方只在双酶切
+    方案成立时才用它做方向性检查。
+    """
+    try:
+        site, c1, c2 = _enzyme_cut(enzyme)
+    except ValueError:
+        return ""
+    if c1 == c2:
+        return ""
+    if c2 > c1:
+        return site[c1:c2].upper()
+    from core.seq_utils import revcomp as _rc
+    return _rc(site[c2:c1])
+
+
 def gibson_junction_fusion(elements, pos: int) -> Optional[Dict]:
     """Gibson 线性化点是否落在正链 CDS/tag 元件内或紧贴其末端（融合克隆）。
 
