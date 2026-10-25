@@ -238,17 +238,24 @@ class RestrictionPreviewRequest(BaseModel):
     """双酶切实时预览：两把酶 + 载体 → 成品构建体的布局（用于表单里的示意图）
 
     cloning_method="gibson" 时按 Gibson 双酶切线性化预览（几何与限制性
-    克隆相同，连接语义走 join="gibson"，保留位点开关生效）。
+    克隆相同，连接语义走 join="gibson"，保留位点开关生效）；
+    cloning_method="custom_arms" 时按自定义同源臂定位预览——臂定位的
+    ValueError（无匹配/多处匹配/围不出区间）直接返回给前端展示。
     """
 
-    enzymes: List[str] = Field(..., min_length=1, max_length=2, description="两个酶切位点（顺序无关）")
+    enzymes: List[str] = Field(default_factory=list, max_length=2,
+                               description="两个酶切位点（顺序无关）")
     vector_id: Optional[str] = Field(default=None, max_length=120)
     vector: Optional[DesignVectorInput] = Field(default=None, description="内联一次性载体")
     insert_length: Optional[int] = Field(default=None, ge=30, le=30000,
                                         description="基因长度（氨基酸输入按 aa×3 估）")
     direction: Literal["auto", "reverse", "plus", "minus"] = "auto"
-    cloning_method: Literal["restriction", "gibson"] = "restriction"
+    cloning_method: Literal["restriction", "gibson", "custom_arms"] = "restriction"
     keep_restriction_sites: bool = True
+    homology_arm_5: Optional[str] = Field(default=None, max_length=200,
+                                          description="5′ 重组臂（custom_arms 模式必填）")
+    homology_arm_3: Optional[str] = Field(default=None, max_length=200,
+                                          description="3′ 重组臂（custom_arms 模式必填）")
 
 
 class DesignRequest(DesignOptions):

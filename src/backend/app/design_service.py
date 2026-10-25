@@ -341,60 +341,96 @@ def build_restriction_preview(request) -> Dict:
         raise ValueError("预览需要 vector_id 或内联载体")
 
     enzymes = [e for e in (getattr(request, "enzymes", None) or []) if e]
-    if len(enzymes) < 2 or enzymes[0] == enzymes[1]:
-        raise ValueError("预览需要两个不同的限制酶")
     backbone = ensure_vector_backbone(vector)
     circular = str(getattr(vector, "topology", "circular") or "circular").lower() != "linear"
-    # Gibson 双酶切线性化与限制性克隆几何相同：连接语义不同（join/保留位点）
-    is_gibson = getattr(request, "cloning_method", "restriction") == "gibson"
-    keep_sites = (True if not is_gibson
-                  else getattr(request, "keep_restriction_sites", True))
-    ends = resolve_restriction_ends(
-        vector, backbone, enzymes[0], enzymes[1],
-        direction=getattr(request, "direction", "auto"),
-        circular=circular, window=_mcs_window(vector),
-        join="gibson" if is_gibson else "sticky")
-    warnings.extend(ends.warnings)
-
     gene_len = int(getattr(request, "insert_length", 0) or 600)
     estimated = not getattr(request, "insert_length", None)
+    # Gibson 双酶切线性化与限制性克隆几何相同：连接语义不同（join/保留位点）
+    is_gibson = getattr(request, "cloning_method", "restriction") == "gibson"
+    arms_mode = getattr(request, "cloning_method", "restriction") == "custom_arms"
+    custom_plan = None
+
+    if arms_mode:
+        # 自定义同源臂：臂序列即定位。plan_custom_arms 的 ValueError（无匹配/
+        # 多处匹配/两臂相对位置围不出区间）直接抛给前端——这就是拼接顺序的
+        # 「判断」：定位不成立用户立刻看到原因，不用提交设计再失败
+        from core.construct_assembly import plan_custom_arms
+        arm5 = str(getattr(request, "homology_arm_5", "") or "")
+        arm3 = str(getattr(request, "homology_arm_3", "") or "")
+        if not arm5 or not arm3:
+            raise ValueError("同源臂预览需要 5′/3′ 两条重组臂序列")
+        custom_plan = plan_custom_arms(backbone, arm5, arm3, circular=circular)
+        warnings.extend(custom_plan.warnings)
+        strand = "-" if custom_plan.insert_reverse else "+"
+        source = "user"
+        ambiguous = False
+        evidence: List[Dict] = []
+        label5 = f"臂5 {len(arm5)}bp"
+        label3 = f"臂3 {len(arm3)}bp"
+        sites: List[Dict] = []
+        removed = max(0, custom_plan.removed)
+    else:
+        if len(enzymes) < 2 or enzymes[0] == enzymes[1]:
+            raise ValueError("预览需要两个不同的限制酶")
+        keep_sites = (True if not is_gibson
+                      else getattr(request, "keep_restriction_sites", True))
+        ends = resolve_restriction_ends(
+            vector, backbone, enzymes[0], enzymes[1],
+            direction=getattr(request, "direction", "auto"),
+            circular=circular, window=_mcs_window(vector),
+            join="gibson" if is_gibson else "sticky")
+        warnings.extend(ends.warnings)
+        strand = ends.strand
+        source = ends.source
+        ambiguous = bool(ends.hint.get("ambiguous"))
+        evidence = ends.hint.get("evidence") or []
+        label5, label3 = ends.enzyme_5, ends.enzyme_3
+
     asm = assemble_construct(
-        vector, "N" * gene_len, "insert", method="restriction",
-        enzyme_5=ends.enzyme_5, enzyme_3=ends.enzyme_3, check_cassette=False,
-        extra_elements=ends.detected,
-        join="gibson" if is_gibson else "sticky",
-        keep_sites=keep_sites)
+        vector, "N" * gene_len, "insert",
+        method="gibson" if arms_mode else "restriction",
+        enzyme_5=(ends.enzyme_5 if not arms_mode else None),
+        enzyme_3=(ends.enzyme_3 if not arms_mode else None),
+        check_cassette=False,
+        extra_elements=(ends.detected if not arms_mode else None),
+        join="gibson" if (is_gibson or arms_mode) else "sticky",
+        keep_sites=keep_sites if not arms_mode else True,
+        custom_plan=custom_plan)
     warnings.extend(asm.warnings)
     construct = asm.sequence
 
-    # 切除长度取规划值：构建体两端还补了位点残留（head/tail），
-    # 用长度差反推会把补回的碱基算进切除量。无缝（Gibson 保留位点关）
-    # 时切点外扩到位点边界，切除量要按无缝 plan 重取
-    removed = max(0, ends.removed_bp)
-    if is_gibson and not keep_sites:
-        from core.construct_assembly import plan_restriction as _plan_seamless
-        seamless_plan = _plan_seamless(
-            backbone, ends.enzyme_5, ends.enzyme_3,
-            window=_mcs_window(vector), circular=circular,
-            warnings=[], join="gibson", keep_sites=False)
-        if seamless_plan is not None:
-            removed = max(0, seamless_plan.removed)
+    if arms_mode:
+        removed = max(0, custom_plan.removed)
+    else:
+        # 切除长度取规划值：构建体两端还补了位点残留（head/tail），
+        # 用长度差反推会把补回的碱基算进切除量。无缝（Gibson 保留位点关）
+        # 时切点外扩到位点边界，切除量要按无缝 plan 重取
+        removed = max(0, ends.removed_bp)
+        if is_gibson and not keep_sites:
+            from core.construct_assembly import plan_restriction as _plan_seamless
+            seamless_plan = _plan_seamless(
+                backbone, ends.enzyme_5, ends.enzyme_3,
+                window=_mcs_window(vector), circular=circular,
+                warnings=[], join="gibson", keep_sites=False)
+            if seamless_plan is not None:
+                removed = max(0, seamless_plan.removed)
     sites: List[Dict] = []
-    for role, enzyme, boundary in (
-        ("five", ends.enzyme_5, asm.insert_start),
-        ("three", ends.enzyme_3, asm.insert_end),
-    ):
-        hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
-        if not hits:
-            continue
-        best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
-        sites.append({
-            "role": role,
-            "enzyme": enzyme,
-            "position": int(best["position"]),
-            "cut": int(best["cut_fwd"]),
-            "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
-        })
+    if not arms_mode:
+        for role, enzyme, boundary in (
+            ("five", ends.enzyme_5, asm.insert_start),
+            ("three", ends.enzyme_3, asm.insert_end),
+        ):
+            hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
+            if not hits:
+                continue
+            best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
+            sites.append({
+                "role": role,
+                "enzyme": enzyme,
+                "position": int(best["position"]),
+                "cut": int(best["cut_fwd"]),
+                "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
+            })
 
     lo = asm.insert_start - 3000
     hi = asm.insert_end + 3000
@@ -425,12 +461,12 @@ def build_restriction_preview(request) -> Dict:
                  "length": gene_len, "estimated": estimated},
         "removed_bp": removed,
         "construct_length": len(construct),
-        "strand": ends.strand,
-        "source": ends.source,
-        "ambiguous": bool(ends.hint.get("ambiguous")),
-        "gene_5prime_enzyme": ends.enzyme_5,
-        "gene_3prime_enzyme": ends.enzyme_3,
-        "evidence": ends.hint.get("evidence") or [],
+        "strand": strand,
+        "source": source,
+        "ambiguous": ambiguous,
+        "gene_5prime_enzyme": label5,
+        "gene_3prime_enzyme": label3,
+        "evidence": evidence,
         "features": features,
         "junctions": {
             "five": construct[five_at:five_at + 16],
@@ -1492,6 +1528,14 @@ def run_design(
                     backbone, request.homology_arm_5, request.homology_arm_3,
                     circular=str(getattr(vector, "topology", "circular")
                                  or "circular").lower() != "linear")
+                # 拼接顺序的「判断」写成结果层说明：两臂锚定在哪、替换了
+                # 哪段、基因按哪条链装配（定位失败/歧义在上方已直接抛错）
+                result.warnings.append(
+                    "拼接定位："
+                    + gibson_arms_plan.junction
+                    + f"；插入分子（臂5+基因+臂3）按"
+                    f"{'负链' if gibson_arms_plan.insert_reverse else '正链'}装配，"
+                    "两臂在载体上均唯一精确匹配")
             elif gibson_same_enzyme:
                 # 同酶双填回退的单点线性化：优先落在这把酶自己的切点上
                 # （MCS 窗口内优先），与用户填这把酶的意图一致，而不是
