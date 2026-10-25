@@ -273,6 +273,76 @@ def test_arms_design_direction_follows_promoter():
                for w in result.warnings)
 
 
+# ---------- 8. 全基因合成：oligo 直接包含克隆末端 ----------
+
+def _reconstruct_molecule(oligos):
+    """按 oligo 坐标与链向重建合成 oligo 覆盖的全长分子"""
+    from core.seq_utils import revcomp
+    spans = {}
+    for i, o in enumerate(oligos):
+        seg = o.sequence.upper() if i % 2 == 0 else revcomp(o.sequence.upper())
+        spans[(o.target_start, o.target_end)] = seg
+    lo = min(s for s, _ in spans)
+    hi = max(e for _, e in spans)
+    buf = [""] * (hi - lo)
+    for (s, e), seg in spans.items():
+        for j, ch in enumerate(seg):
+            buf[s - lo + j] = ch
+    return "".join(buf)
+
+
+def test_synthesis_restriction_oligos_include_sites_and_spacer():
+    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 保护碱基+位点+基因+位点
+    +保护碱基；不再产出「组装后扩增」引物对——合成产物酶切即可连接，无需再扩一轮"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_res", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene",
+        optimize_codons=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any(p.name.endswith(("_F", "_R")) for p in result.primers), \
+        "克隆末端已含在合成分子里，不应再产出扩增加末端的引物对"
+    oligos = [p for p in result.primers if p.name.startswith("myGene")]
+    assert len(oligos) >= 2
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    assert molecule == ("TTTTTT" + "CATATG" + cloned + "CTCGAG" + "TTTTTT")
+    assert any("已包含克隆末端" in w for w in result.warnings)
+
+
+def test_synthesis_gibson_arms_oligos_include_arms():
+    """全基因合成 + 同源臂：oligo 覆盖的分子 = 臂5+基因+臂3（解析后的臂），
+    不再产出扩增加臂的引物对"""
+    from app.routes.models import CloningMethod as CM, DesignRequest, DesignStatus
+    result = run_design("uvf_syn_arm", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any(p.name.endswith(("_F", "_R")) for p in result.primers)
+    oligos = [p for p in result.primers if p.name.startswith("myGene")]
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    assert molecule == ARM5 + cloned + ARM3
+
+
+def test_synthesis_golden_gate_keeps_cloning_pair():
+    """Golden Gate 末端语义不同（BsaI 位点+overhang）：保留合成后扩增的旧路径"""
+    from app.routes.models import CloningMethod as CM, DesignRequest, DesignStatus
+    result = run_design("uvf_syn_gg", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CM.GOLDEN_GATE, enzyme="BsaI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(p.name.endswith("_F") for p in result.primers), \
+        "Golden Gate 未把末端合进 oligo，应保留组装后扩增加末端的引物对"
+
+
 def test_arms_preview_unknown_arm_fails_loudly():
     import pytest
     with pytest.raises(ValueError) as exc:
