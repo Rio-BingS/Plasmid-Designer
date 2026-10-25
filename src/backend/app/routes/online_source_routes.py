@@ -29,7 +29,7 @@ from app import online_import as oi
 from app.online_import import require_snapgene_enabled, require_snapgene_user
 from app.cache import cache
 from app.auth.jwt_auth import get_admin_user, get_current_user
-from app.design_service import invalidate_vector_library_cache
+from app.vector_library_cache import invalidate_vector_library_cache
 from app.routes.models import (
     MAP_MAX_LENGTH,
     SnapGeneImportRequest,

@@ -21,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from app.auth.jwt_auth import User, get_current_user
 from app import batch_report_store, sequencing_store
 from app.gating import require_feature
-from app.design_service import get_vector_library
+from app.vector_library_cache import get_vector_library
 from app.filename import content_disposition
 from app.routes import sequencing_routes
 from app.routes.sequencing_routes import (

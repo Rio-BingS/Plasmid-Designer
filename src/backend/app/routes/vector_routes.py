@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.cache import cache
 from app import config
-from app.design_service import get_vector_library, invalidate_vector_library_cache
+from app.vector_library_cache import get_vector_library, invalidate_vector_library_cache
 from app.map_documents import vector_map_preview
 from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import (
