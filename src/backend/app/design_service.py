@@ -625,7 +625,7 @@ def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
     feat = feats[0] if feats and feats[0].get("type") == "CDS" else None
     if feat is None:
         return
-    if plan.method == "restriction" and not plan.head and not plan.tail:
+    if plan.method == "restriction" and getattr(plan, "seamless", False):
         return  # 无缝连接（位点去除）：CDS 起点就是基因自身起点
     if plan.insert_reverse:
         if iend + offset > len(seq):
