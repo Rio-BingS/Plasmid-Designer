@@ -24,12 +24,14 @@ from app.gating import require_feature
 from app.design_service import get_vector_library
 from app.routes import sequencing_routes
 from app.routes.sequencing_routes import (
-    BATCH_TTL, MAX_BATCH_FILES, MAX_REF_BP, _ANALYSES, _STORE_LOCK,
+    _ANALYSES, _STORE_LOCK,
     _aget_analysis, _analyze_endpoint, _batch_pipeline, _batch_read_limits_for,
     _can_access, _heavy_slot, _read_batch_uploads, _read_limited, _reference_circular,
     _request_access_token, _run_heavy, _sweep_expired, _sweep_reports, _summary,
     _token_hash_matches, parse_zone_form, parse_reference_topology,
 )
+# 上限常量经模块属性访问（而非按值 import）：测试 monkeypatch
+# sequencing_routes.MAX_... 时端点级检查同步生效，避免双真相源
 
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
@@ -65,10 +67,10 @@ async def analyze_sequencing_upload(
     if len(ref_seq) < 50:
         raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
     # 终审 C-01：长度上限（见 _analyze_endpoint 同款校验）
-    if len(ref_seq) > MAX_REF_BP:
+    if len(ref_seq) > sequencing_routes.MAX_REF_BP:
         raise HTTPException(
             status_code=413,
-            detail=f"参考序列过长（{len(ref_seq)} bp > {MAX_REF_BP} bp）：请截取待验证区段后重新分析")
+            detail=f"参考序列过长（{len(ref_seq)} bp > {sequencing_routes.MAX_REF_BP} bp）：请截取待验证区段后重新分析")
 
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
@@ -104,8 +106,8 @@ async def analyze_sequencing_batch(
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
     # 文件数上限在读取任何字节之前生效：否则超限请求会把全部文件读进内存
     # （每个 20MB 上限 × 数百个文件 = GB 级 OOM 面）才被拒绝
-    if len(files) > MAX_BATCH_FILES:
-        raise HTTPException(status_code=400, detail=f"文件数超过上限（{MAX_BATCH_FILES} 个）")
+    if len(files) > sequencing_routes.MAX_BATCH_FILES:
+        raise HTTPException(status_code=400, detail=f"文件数超过上限（{sequencing_routes.MAX_BATCH_FILES} 个）")
     # read 数上限按请求者解析（站点设置读库在并发槽外完成）
     read_limits = _batch_read_limits_for(user)
 
@@ -136,7 +138,7 @@ async def download_batch_report(batch_id: str, request: Request,
                          detail="整理包不存在或已过期（生成 15 分钟后自动清理，请重新批量分析）")
     await run_in_threadpool(_sweep_reports)
     rec = await run_in_threadpool(batch_report_store.load_meta, batch_id)
-    if rec is None or time.time() - float(rec.get("created_ts", 0)) > BATCH_TTL:
+    if rec is None or time.time() - float(rec.get("created_ts", 0)) > sequencing_routes.BATCH_TTL:
         raise gone
     owner = rec.get("owner_id")
     is_admin = bool(user and user.is_admin)
