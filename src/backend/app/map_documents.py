@@ -45,7 +45,9 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
     合成 oligo 按**全序列**定位（负链装配时 oligo 落在互补链上，图谱按
     负链画出——用户才能直接看到「首位引物对上了」，不用自己手工去序列
     里搜反向互补）；PCR 引物带保护碱基/酶切位点，全序列不在构建体上，
-    按 3′ 端退火区（末 20nt）定位。跨原点的命中与定位不到的跳过。
+    按 3′ 端退火区（末 20nt）定位。环状构建体允许跨原点命中（切除区间
+    跨原点被旋转后，跨连接点的 oligo 必然绕过原点——start>end 的环绕
+    表示，前端 unroll 同特征一样展开）；线性图上跨原点的跳过。
     """
     from core.seq_utils import revcomp
 
@@ -60,10 +62,10 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
                 or "").upper().replace(" ", "")
         if not s or len(s) > length:
             continue
-        hit = _find_span(seq, s)
+        hit = _find_span(seq, s, circular)
         strand = 1
         if hit is None:
-            hit = _find_span(seq_rc, s)
+            hit = _find_span(seq_rc, s, circular)
             strand = -1
         anneal = ""
         if hit is None and len(s) > 20:
@@ -72,18 +74,22 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
             # 装配时命中互补链；R 引物=模板链片段，命中正链）——按命中链
             # 自然标注即箭头方向，无需按名字翻转
             anneal = s[-20:]
-            hit = _find_span(seq, anneal)
+            hit = _find_span(seq, anneal, circular)
             strand = 1
             if hit is None:
-                hit = _find_span(seq_rc, anneal)
+                hit = _find_span(seq_rc, anneal, circular)
                 strand = -1
         if hit is None:
             continue
         i, span_len = hit
+        # 环状时 i 可能越出 [0, length)（跨原点命中），按环长取模换算；
+        # 非环绕时与旧公式完全一致
         if strand == 1:
-            start, end = i + 1, i + span_len
+            start = i % length + 1
+            end = (i + span_len - 1) % length + 1
         else:
-            start, end = length - (i + span_len) + 1, length - i
+            start = (length - i - span_len) % length + 1
+            end = (length - i - 1) % length + 1
         if start > end and not circular:
             continue  # 跨原点命中：环上允许 start>end，线性图跳过
         out.append({
@@ -97,10 +103,14 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
     return out
 
 
-def _find_span(text: str, pattern: str) -> Optional[tuple]:
-    """首个非跨原点命中 → (0-based 起点, 长度)；找不到返回 None"""
-    i = text.find(pattern)
-    if i == -1 or i + len(pattern) > len(text):
+def _find_span(text: str, pattern: str, circular: bool = False) -> Optional[tuple]:
+    """首个命中 → (0-based 起点, 长度)；找不到返回 None。
+
+    circular 时在双倍序列上找：跨原点命中的起点可能 ≥ len(text)，调用方
+    按环长取模换算成 start>end 的环绕坐标。"""
+    hay = text + text[:len(pattern) - 1] if circular else text
+    i = hay.find(pattern)
+    if i == -1:
         return None
     return i, len(pattern)
 
