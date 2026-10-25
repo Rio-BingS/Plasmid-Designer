@@ -6,6 +6,50 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [Unreleased]
+
+### 升级注意
+- 无（本轮无破坏性变更；API 行为与数据格式均保持）。SQLite 部署首次启动
+  后 journal 模式切换为 WAL（同目录多出 `-wal`/`-shm` 文件，属正常现象）。
+
+### 新增
+- 请求体流式体积上限推广为全 `/api/*` 路径表（analysis/batch/auth 8MB/64KB
+  等，超限在读体阶段 413，pydantic 校验前即拦截 OOM 面）；
+- 设计与批量任务内存镜像加容量上限 + TTL 淘汰（`app/mirror_store.py`，
+  匿名持续提交不再线性撑大进程内存）；
+- SQLite 引擎开启 WAL + busy_timeout（并发写不再 "database is locked"）；
+- 开启邮箱验证却配 `MAIL_PROVIDER=console` 时启动告警（验证码会明文进日志）；
+- CI：两 job 加 timeout-minutes，前端 job 补 `npm run build` 打包验证。
+
+### 变更
+- 第二轮审计的结构收敛（全部保持旧导入路径，调用方零改动）：
+  - GenBank FEATURES/ORIGIN 排版收敛到 `core/genbank_format.py` 唯一实现
+    （此前 5 处手拼副本），测试断言副本数不回升；
+  - 下载文件名清洗收敛到 `app/filename.py`（此前 4 处口径不一），非 ASCII
+    名称统一走 RFC 5987 `filename*`；
+  - DTO 上提为 `app/schemas.py`（服务层不再 import 路由层）；载体库缓存
+    消费方切换到 `app/vector_library_cache`；跨层私有名公开化（旧名留别名）；
+  - `core/sanger/pipeline.py` 同聚物判读簇拆到 `core/sanger/homopolymer.py`
+    （3699 → 2872 行，纯搬运）。
+- 删除死代码约 700 行：`app/exceptions.py`（从未接线的异常体系）、
+  `app/batch_processor.py`、`core/vector_data_sources.py`、零调用的
+  translate 副本与引物 TSV 导出、41 处未使用导入。
+- 前端：`useOnlineImport` 与三个载体 modal 组件补测试（19 个新用例）；
+  在线导入状态与载体页 `any` 全部类型化；VectorEditModal 修复挂载时
+  vector 已就位不回填表单的缺陷。
+
+### 修复
+- `analysis` 导出端点 Content-Disposition 文件名注入（用户可控 name 此前
+  未过滤直接拼响应头）；中文样品名的共识导出不再 500；
+- `run_design` 失败只留 str(e)：补 `logger.exception`（此前堆栈全丢）；
+  缓存/持久化静默吞异常 12 处统一落告警日志（含设计落库失败）；
+- 测序端点上限常量改经模块属性访问（消除与测试 monkeypatch 的快照双真相源）；
+- 注册用户名补 max_length=100（超长名 PostgreSQL 下 500）；
+  登录/注册哑哈希比对消除账号存在性时差侧信道；限流 429 日志过滤控制
+  字符（防日志伪造与 PII 全量落盘）；
+- 设计读取/酶切预览/GenBank 序列化移出事件循环（run_in_threadpool）；
+  酶名 lru_cache 有界化（1024）。
+
 ## [2.19.0] - 2026-10-25
 
 ### 变更
