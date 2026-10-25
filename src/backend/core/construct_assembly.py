@@ -62,6 +62,13 @@ class AssemblyPlan:
     # 引物设计直接消费它——用户粘贴的栏位顺序/链向可能已被自动纠正
     arm_5_seq: str = ""
     arm_3_seq: str = ""
+    # 同两臂的「构建体取向」（载体正链、按左/右连接点摆放）：arm_left_seq 是
+    # 构建体上左连接点外侧的正链臂、arm_right_seq 是右连接点外侧的正链臂。
+    # 合成分子必须用这一对——arm_5_seq/arm_3_seq 是「基因取向」（负链装配时
+    # 左右互换且各自反互补），直接拼接会把合成分子两臂装反，首/尾 oligo
+    # 与图谱对不上（pET-21a 实测）
+    arm_left_seq: str = ""
+    arm_right_seq: str = ""
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -595,9 +602,12 @@ def plan_custom_arms(
 
     seq_left_plus = backbone[left_pos:left_pos + left_len].upper()
     seq_right_plus = backbone[right_pos:right_pos + right_len].upper()
+    # 构建体取向的臂（左连接点外侧正链 / 右连接点外侧正链）：合成分子直接用
+    arm_left_seq, arm_right_seq = seq_left_plus, seq_right_plus
     if strand == "+":
         arm_5_seq, arm_3_seq = seq_left_plus, seq_right_plus
     else:
+        # 基因取向（引物用）：负链装配时基因 5′ 在右连接点，臂随基因反互补
         arm_5_seq, arm_3_seq = _revcomp(seq_right_plus), _revcomp(seq_left_plus)
 
     notes: List[str] = []
@@ -633,6 +643,7 @@ def plan_custom_arms(
     return AssemblyPlan("gibson", left, right, head="", tail="",
                         insert_reverse=(strand == "-"), removed_bp=removed,
                         arm_5_seq=arm_5_seq, arm_3_seq=arm_3_seq,
+                        arm_left_seq=arm_left_seq, arm_right_seq=arm_right_seq,
                         junction=junction, warnings=notes)
 
 

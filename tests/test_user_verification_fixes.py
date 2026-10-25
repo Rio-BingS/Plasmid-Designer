@@ -405,6 +405,35 @@ def test_synthesis_gibson_end_oligos_annotate_arms():
     assert "同源臂" in (last.notes or "") and "一致" in (last.notes or ""), last.notes
 
 
+def test_synthesis_arms_negative_strand_uses_construct_orientation():
+    """负链装配的自定义同源臂：合成分子必须取「构建体取向」的臂
+    （左臂正链 + rc(基因) + 右臂正链）。plan 的 arm_5_seq/arm_3_seq 是
+    基因取向（左右互换+各自反互补，供引物用），pET-21a 负链装配实测
+    把它们直接拼进分子导致首/尾 oligo 与图谱对不上——回归于此"""
+    from app.routes.models import CloningMethod as CM, DesignRequest
+    result = run_design("uvf_syn_arm_rev", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    oligos = [p for p in result.primers if p.target_start is not None]
+    assert len(oligos) >= 2
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    # 分子 = 构建体取向：左臂正链 + 反向互补基因 + 右臂正链
+    assert molecule == ARM5 + revcomp(cloned) + ARM3, molecule[:60]
+    # 整条分子就是构建体的一个段落——每条 oligo 全序列可定位
+    cons = (result.construct_sequence or "").upper()
+    for p in oligos:
+        s = p.full_sequence.upper()
+        assert s in cons or s in revcomp(cons), p.name
+
+
 def test_synthesis_oligos_all_locate_on_construct():
     """oligo↔构建体一致性：两端取载体侧翼后，每条合成 oligo 的**全序列**
     （不用扣任何碱基）都必须能在构建体序列（顶链或反向互补）上定位；
