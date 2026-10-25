@@ -84,6 +84,8 @@ export interface DesignRequest {
   insert_direction?: InsertDirection
   /** NdeI/NcoI 等位点自带起始密码子时自动去除插入序列开头的冗余 ATG（默认 true） */
   trim_redundant_start?: boolean
+  /** Gibson 载体线性化方式：双酶切（默认）或单位点 */
+  gibson_linearization?: 'double_digest' | 'single_site'
 }
 
 /**

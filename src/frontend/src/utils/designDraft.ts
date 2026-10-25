@@ -32,6 +32,7 @@ export interface DesignDraft {
   enzyme5?: string
   enzyme3?: string
   gibsonSite?: string
+  gibsonSingleSite?: boolean
   excludeEnzymes?: string[]
   oligoLengthMin?: number
   oligoLengthMax?: number

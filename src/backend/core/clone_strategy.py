@@ -343,9 +343,15 @@ class GibsonAssemblyStrategy:
         vector_seq: str,
         vector_name: str,
         insert_position: int,
-        homology_arm: int = 20
+        homology_arm: int = 20,
+        enzyme_5: str = "",
+        enzyme_3: str = ""
     ) -> CloningStrategy:
-        """生成Gibson Assembly策略"""
+        """生成Gibson Assembly策略
+
+        enzyme_5/enzyme_3 同时给出时为双酶切线性化模式（主流实践）：载体用
+        两把酶切开、两位点之间片段被切除，方案文本相应描述酶切线性化。
+        """
         insert_len = len(insert_seq)
         vector_len = len(vector_seq)
         product_size = vector_len + insert_len
@@ -371,12 +377,22 @@ class GibsonAssemblyStrategy:
             CloningStep(
                 step_number=2,
                 action="Linearize vector",
-                description=f"Linearize {vector_name} by PCR or restriction digest",
-                description_zh=f"通过PCR或限制性酶切线性化{vector_name}",
-                reagents=["Vector plasmid", "PCR reagents or restriction enzymes"],
-                reagents_zh=["载体质粒", "PCR试剂或限制性内切酶"],
+                description=(f"Linearize {vector_name} by {enzyme_5}/{enzyme_3} double digest "
+                             f"(the fragment between the two sites is discarded)"
+                             if enzyme_5 and enzyme_3 else
+                             f"Linearize {vector_name} by PCR or restriction digest"),
+                description_zh=(f"用 {enzyme_5}/{enzyme_3} 双酶切线性化{vector_name}"
+                                f"（两位点之间的片段被切除）" if enzyme_5 and enzyme_3 else
+                                f"通过PCR或限制性酶切线性化{vector_name}"),
+                reagents=(["Vector plasmid", enzyme_5, enzyme_3]
+                          if enzyme_5 and enzyme_3 else
+                          ["Vector plasmid", "PCR reagents or restriction enzymes"]),
+                reagents_zh=(["载体质粒", enzyme_5, enzyme_3]
+                             if enzyme_5 and enzyme_3 else
+                             ["载体质粒", "PCR试剂或限制性内切酶"]),
                 conditions={
-                    "Method": "PCR amplification or restriction digest",
+                    "Method": ("Double digest" if enzyme_5 and enzyme_3
+                               else "PCR amplification or restriction digest"),
                     "If digest": "Follow enzyme manufacturer protocol"
                 },
                 duration="1-2 hours",
@@ -988,7 +1004,9 @@ def generate_cloning_strategy(
         return generator.generate(
             insert_seq, insert_name, vector_seq, vector_name,
             insert_position=kwargs.get('insert_position', 0),
-            homology_arm=kwargs.get('homology_arm', 20)
+            homology_arm=kwargs.get('homology_arm', 20),
+            enzyme_5=kwargs.get('enzyme_5', ''),
+            enzyme_3=kwargs.get('enzyme_3', '')
         )
 
     elif method == CloningMethod.GOLDEN_GATE:
