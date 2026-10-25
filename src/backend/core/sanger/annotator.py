@@ -14,13 +14,8 @@ from core.seq_utils import CODON_TO_AA as _STD_TABLE
 # 兼容别名（方向：密码子 → 氨基酸，大写值，与历史表一致）
 CODON_TABLE = _STD_TABLE
 
-# 反向互补收敛到 core.seq_utils（导入名 _revcomp 与原函数名一致，调用点无需改动）
-
-
-def translate(seq: str) -> str:
-    """按标准遗传密码直译（U→T；未识别密码子 → 'x'，沿用历史口径）"""
-    seq = seq.upper().replace("U", "T")
-    return "".join(_STD_TABLE.get(seq[i:i + 3], "x") for i in range(0, len(seq) - len(seq) % 3, 3))
+# 反向互补收敛到 core.seq_utils（导入名 _revcomp 与原函数名一致，调用点无需改动）；
+# 蛋白翻译的唯一权威实现在 core.seq_utils.translate（此前的本地副本零调用，已删）
 
 
 def group_feature_segments(features: List[Dict]) -> List[List[Dict]]:
