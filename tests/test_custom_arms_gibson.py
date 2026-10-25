@@ -143,7 +143,7 @@ def test_custom_arms_start_codon_trim(monkeypatch):
     result = run_design_fn("ca_trim", _arms_request(homology_arm_5=arm5_atg))
     assert result.status.value == "completed", result.errors
     assert any(w.startswith("已自动去除冗余起始密码子") for w in result.warnings)
-    assert not result.optimized_sequence.upper().startswith("ATG")
+    assert not result.cloned_sequence.upper().startswith("ATG")
     feat = next(f for f in result.construct_features
                 if f["type"] == "CDS" and "designed insert" in f.get("description", "").lower())
     assert result.construct_sequence[feat["start"] - 1:feat["start"] + 2] == "ATG"

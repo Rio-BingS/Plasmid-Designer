@@ -39,6 +39,10 @@ class ConstructAssembly:
     warnings: List[str] = field(default_factory=list)
     # 切点/切除区间的可读说明（如「BamHI 切点 198 / EcoRI 切点 5000，切除 4802 bp」）
     junction: str = ""
+    # 是否按真实切点方案（plan）组装。False = 回退 MCS 区间替换：构建体连接处
+    # 没有位点、与引物带入的位点不对应，酶切-连接复现不出该构建体（调用方
+    # 据此追加显式告警，不静默）
+    plan_used: bool = True
 
 
 # 载体库缓存迁至 app.vector_library_cache；此处 re-export 维持旧导入路径
@@ -341,10 +345,15 @@ def build_restriction_preview(request) -> Dict:
         raise ValueError("预览需要两个不同的限制酶")
     backbone = ensure_vector_backbone(vector)
     circular = str(getattr(vector, "topology", "circular") or "circular").lower() != "linear"
+    # Gibson 双酶切线性化与限制性克隆几何相同：连接语义不同（join/保留位点）
+    is_gibson = getattr(request, "cloning_method", "restriction") == "gibson"
+    keep_sites = (True if not is_gibson
+                  else getattr(request, "keep_restriction_sites", True))
     ends = resolve_restriction_ends(
         vector, backbone, enzymes[0], enzymes[1],
         direction=getattr(request, "direction", "auto"),
-        circular=circular, window=_mcs_window(vector))
+        circular=circular, window=_mcs_window(vector),
+        join="gibson" if is_gibson else "sticky")
     warnings.extend(ends.warnings)
 
     gene_len = int(getattr(request, "insert_length", 0) or 600)
@@ -352,13 +361,24 @@ def build_restriction_preview(request) -> Dict:
     asm = assemble_construct(
         vector, "N" * gene_len, "insert", method="restriction",
         enzyme_5=ends.enzyme_5, enzyme_3=ends.enzyme_3, check_cassette=False,
-        extra_elements=ends.detected)
+        extra_elements=ends.detected,
+        join="gibson" if is_gibson else "sticky",
+        keep_sites=keep_sites)
     warnings.extend(asm.warnings)
     construct = asm.sequence
 
     # 切除长度取规划值：构建体两端还补了位点残留（head/tail），
-    # 用长度差反推会把补回的碱基算进切除量
+    # 用长度差反推会把补回的碱基算进切除量。无缝（Gibson 保留位点关）
+    # 时切点外扩到位点边界，切除量要按无缝 plan 重取
     removed = max(0, ends.removed_bp)
+    if is_gibson and not keep_sites:
+        from core.construct_assembly import plan_restriction as _plan_seamless
+        seamless_plan = _plan_seamless(
+            backbone, ends.enzyme_5, ends.enzyme_3,
+            window=_mcs_window(vector), circular=circular,
+            warnings=[], join="gibson", keep_sites=False)
+        if seamless_plan is not None:
+            removed = max(0, seamless_plan.removed)
     sites: List[Dict] = []
     for role, enzyme, boundary in (
         ("five", ends.enzyme_5, asm.insert_start),
@@ -487,6 +507,7 @@ def _assemble_by_mcs(backbone: str, vector, insert: str, insert_name: str,
         insert_end=insert_end,
         features=features,
         warnings=warnings,
+        plan_used=False,
     )
 
 
@@ -1231,6 +1252,106 @@ def _golden_gate_junction_warning(primers: List[PrimerInfo], insert: str,
             "识别位点，酶切会多切；建议更换 overhang 或酶")
 
 
+def _direction_summary(ends) -> str:
+    """把 resolve_restriction_ends 的自动方向判定写成一句用户能看见的话。
+
+    判定成功时 resolve_restriction_ends 不产生任何告警——用户（尤其走
+    Gibson 双酶切线性化时）看不出方向识别是否生效，这里补一条结果层说明。
+    """
+    promoter = ends.hint.get("promoter") if ends.hint else None
+    if promoter:
+        basis = (f"启动子 {promoter.get('name') or 'promoter'}"
+                 f"（{promoter.get('start')}..{promoter.get('end')}，"
+                 f"{'负' if str(promoter.get('strand') or '+') == '-' else '正'}链）")
+    else:
+        evidence = (ends.hint.get("evidence") or []) if ends.hint else []
+        names = "、".join(str(e.get("name") or "") for e in evidence[:2] if e.get("name"))
+        basis = f"载体表达盒证据（{names}）" if names else "载体表达盒位置"
+    strand_text = "负链（-）" if ends.strand == "-" else "正链（+）"
+    return (f"方向判定：基因 5′ 端接 {ends.enzyme_5}、3′ 端接 {ends.enzyme_3}，"
+            f"按{strand_text}插入（依据：{basis}）")
+
+
+def _assembly_feasibility_warnings(
+    request, assembly, resolved_ends: Optional[RestrictionEnds],
+    primers: List[PrimerInfo],
+) -> List[str]:
+    """双酶切组装可行性自检（限制性克隆 / Gibson 双酶切线性化共用）。
+
+    切点几何由 plan_restriction/apply_plan 保证；这里检查的是「按返回的
+    引物做酶切-连接能否真的得到这条构建体」：
+
+    1. 组装走了 MCS 区间回退 → 构建体连接处没有位点，与引物带入的位点
+       不对应，酶切-连接复现不出该构建体（此前只有笼统的回退告警）；
+    2. 两把酶粘端相同（如 XhoI/SalI 同为 TCGA）或都是平末端 → 连接方向
+       不唯一，载体判定的方向没有物理约束，必须测序确认；
+    3. 保留位点模式下构建体必须能找到两个完整识别序列、无缝模式下必须
+       找不到（位点复原自检）；引物必须带对应的位点（限制性克隆）。
+
+    发现任何一条都写成显式告警，不静默。
+    """
+    from core.construct_assembly import restriction_site, sticky_overhang
+    from core.seq_utils import revcomp as _rc
+
+    warnings: List[str] = []
+    e5 = (resolved_ends.enzyme_5 if resolved_ends and resolved_ends.enzyme_5
+          else (request.enzyme_5 or request.enzyme or ""))
+    e3 = (resolved_ends.enzyme_3 if resolved_ends and resolved_ends.enzyme_3
+          else (request.enzyme_3 or request.enzyme or ""))
+    if not e5 or not e3 or e5 == e3:
+        return warnings
+
+    if not getattr(assembly, "plan_used", True):
+        warnings.append(
+            f"警告：{e5}/{e3} 无法按双酶切建模（位点缺失或区间无法围出），"
+            "构建体是按 MCS 区间替换生成的——连接处没有这两个位点，"
+            "按引物引入位点酶切-连接无法复现该构建体；"
+            "请改用载体序列上真实存在的酶切位点，或核对导入的载体序列")
+        return warnings
+
+    oh5, oh3 = sticky_overhang(e5), sticky_overhang(e3)
+    if oh5 and oh5 == oh3:
+        warnings.append(
+            f"警告：{e5} 与 {e3} 的粘端相同（{oh5}），插入片段两种方向都能连接——"
+            "载体表达盒判定的方向不构成物理约束，构建完成后请测序确认方向；"
+            "如需方向强制，换用粘端不同的酶组合")
+    elif not oh5 and not oh3:
+        warnings.append(
+            f"警告：{e5} 与 {e3} 均为平末端，连接无方向性且效率低——"
+            "插入方向完全随机，请测序确认；建议优先选择带粘端的酶组合")
+
+    keep_sites = (True if request.cloning_method == CloningMethod.RESTRICTION
+                  else getattr(request, "keep_restriction_sites", True))
+    construct = assembly.sequence or ""
+    seamless = not keep_sites   # 无缝仅对 Gibson 双酶切线性化有意义；restriction 恒保留位点
+    if construct:
+        sites_in = [name for name, site in ((e5, restriction_site(e5)),
+                                            (e3, restriction_site(e3)))
+                    if site and site in construct]
+        if keep_sites and not seamless and len(sites_in) < 2:
+            warnings.append(
+                "警告：构建体中未找到完整的 "
+                + "、".join(n for n in (e5, e3) if n not in sites_in)
+                + " 识别序列——位点没有正确复原，酶切-连接无法复现该构建体，"
+                "请核对载体序列与酶选择")
+        elif seamless and sites_in:
+            warnings.append(
+                f"警告：无缝连接的构建体中仍存在 {'、'.join(sites_in)} 位点序列——"
+                "与无缝连接语义矛盾，请核对组装结果")
+
+    if (request.cloning_method == CloningMethod.RESTRICTION and primers
+            and keep_sites):
+        site5, site3 = restriction_site(e5), restriction_site(e3)
+        fwd = next((p for p in primers if p.name.endswith("_F")), None)
+        rev = next((p for p in primers if p.name.endswith("_R")), None)
+        if (site5 and fwd and site5 not in fwd.sequence.upper()) or \
+           (site3 and rev and site3 not in rev.sequence.upper()):
+            warnings.append(
+                f"警告：克隆引物 5′ 端未携带完整的 {e5}/{e3} 位点——"
+                "PCR 产物酶切后无法与载体两端配对连接，请检查引物")
+    return warnings
+
+
 def run_design(
     design_id: str,
     request: DesignRequest,
@@ -1403,17 +1524,31 @@ def run_design(
                     else "sticky",
                 )
                 result.warnings.extend(resolved_ends.warnings)
+                if (resolved_ends.strand and resolved_ends.source
+                        in ("annotation", "auto_detected")):
+                    # 自动判定成功时 ends 本身不产生告警；方向对用户不可见
+                    # （尤其 Gibson 双酶切线性化），这里补一条结果层说明
+                    result.warnings.append(_direction_summary(resolved_ends))
 
             if request.cloning_method in (CloningMethod.RESTRICTION,
                                           CloningMethod.GIBSON):
                 # 起始密码子一致性（restriction 位点残留 / gibson 线性化点）。
                 # 去除发生在组装与引物设计之前，两者都消费 optimized_dna
-                optimized_dna, start_codon_warnings = _resolve_redundant_start_codon(
+                # 「优化后序列」保持完整 CDS 语义（含 ATG，与输入蛋白一一
+                # 对应，步骤 1 已赋值）；位点自带 ATG 的裁剪只发生在**克隆
+                # 工作序列**里——组装与引物退火用的是 optimized_dna（裁剪后）
+                result.cloned_sequence, start_codon_warnings = _resolve_redundant_start_codon(
                     request, vector, backbone, optimized_dna, resolved_ends,
                     gibson_single_site=gibson_single,
                     gibson_arms_plan=gibson_arms_plan)
+                optimized_dna = result.cloned_sequence
                 result.warnings.extend(start_codon_warnings)
-                result.optimized_sequence = optimized_dna
+                # 前端徽章：克隆工作序列比优化序列少 3 bp 的原因（位点 ATG 提供起始密码子）
+                result.start_codon_removed = any(
+                    w.startswith("已自动去除") for w in start_codon_warnings)
+            else:
+                # 其余方法（Golden Gate / 全基因合成）不裁剪：克隆工作序列 = 优化序列
+                result.cloned_sequence = optimized_dna
             # 按克隆方法建模切点：Gibson 单位点不切除碱基、双酶切（含 Gibson
             # 双酶切线性化）与 GG 切走两个切点之间的片段
             assembly = assemble_construct(
@@ -1501,6 +1636,15 @@ def run_design(
             gibson_plan=gibson_double_plan,
             gibson_insert_pos=gibson_pos,
         )
+
+        # 4.0 组装可行性自检（限制性 / Gibson 双酶切线性化）：回退、粘端
+        # 方向性、位点复原、引物位点一致性——发现「按引物做不出这条构建体」
+        # 的情形就显式告警，不留到用户实验失败
+        if vector and (request.cloning_method == CloningMethod.RESTRICTION
+                       or (request.cloning_method == CloningMethod.GIBSON
+                           and not gibson_single and not gibson_arms_mode)):
+            result.warnings.extend(_assembly_feasibility_warnings(
+                request, assembly, resolved_ends, result.primers))
 
         # 4.0 Golden Gate：按完整扩增子数位点，引物尾与插入片段拼接处新生的位点也会多切
         if request.cloning_method == CloningMethod.GOLDEN_GATE and result.primers:
