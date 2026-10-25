@@ -1179,7 +1179,9 @@ def _construct_segment_molecule(assembly, plan, n_left: int, n_right: int,
     if start1 < 1 or end1 > length:
         if not circular or end1 - start1 + 1 > length:
             return None
-        seg = cons[start1 - 1:] + cons[:end1]   # 跨原点环绕
+        # 跨原点环绕：只可能一侧越界，两侧各取模。end1 不取模时切片
+        # cons[:end1] 会被钳制成整条序列，长度校验必然失败、白走回退
+        seg = cons[(start1 - 1) % length:] + cons[:end1 % length]
     else:
         seg = cons[start1 - 1:end1]
     if len(seg) != n_left + (frag_end - frag_start + 1) + n_right:
@@ -1191,14 +1193,14 @@ def _construct_segment_molecule(assembly, plan, n_left: int, n_right: int,
 
 def _restriction_construct_molecule(assembly, enzyme_5: Optional[str],
                                     enzyme_3: Optional[str],
-                                    n: int) -> Optional[str]:
+                                    n: int, circular: bool) -> Optional[str]:
     """限制性合成分子 = 构建体上「连接点外侧各 n nt + 位点残留 + 基因」段落。
 
     与 _construct_segment_molecule 同思路，但限制性的接头残留（位点复原）
     长度不等于识别序列长度的情形无法从 plan 直接拿——按位点残留在构建体
     上紧贴基因两端的实际位置定位。定位失败（回退路径 / 侧翼不足 / 侧翼里
-    又出现所选酶位点——串联位点会多切一刀）返回 None，调用方回退固定
-    保护碱基。
+    又出现所选酶位点——串联位点会多切一刀 / 线性载体侧翼越出末端）返回
+    None，调用方回退固定保护碱基。
     """
     if assembly is None or not getattr(assembly, "plan_used", True):
         return None
@@ -1225,7 +1227,7 @@ def _restriction_construct_molecule(assembly, enzyme_5: Optional[str],
     length = len(cons)
     if a >= 0 and b <= length:
         molecule = cons[a:b]
-    elif b - a <= length:                 # 环状载体跨原点取环绕段落
+    elif circular and b - a <= length:     # 环状载体跨原点取环绕段落
         molecule = cons[a % length:] + cons[:b % length]
     else:
         return None
@@ -1236,6 +1238,18 @@ def _restriction_construct_molecule(assembly, enzyme_5: Optional[str],
             if not end or site in end:
                 return None
     return molecule
+
+
+def _oligo_hits_construct(s: str, cons_up: str, cons_rc: str) -> bool:
+    """oligo 序列是否命中构建体（顶链或其反向互补）。
+
+    环状构建体上的合成分子可能是跨原点的环绕段落（切除区间跨原点被
+    apply_plan 旋转后，右连接点就在字符串末端，侧翼必然绕过原点）——
+    线性子串判断会漏掉环绕命中，把合法 oligo 误报成「无法定位」，用
+    双倍序列补上环绕语义。
+    """
+    return (s in cons_up or s in cons_rc
+            or s in cons_up + cons_up or s in cons_rc + cons_rc)
 
 
 def _synthesis_molecule(
@@ -1271,7 +1285,7 @@ def _synthesis_molecule(
         site3 = restriction_site(e3 or "")
         if site5 and site3:
             molecule = _restriction_construct_molecule(
-                assembly, e5, e3, len(pad))
+                assembly, e5, e3, len(pad), _vector_is_circular(vector))
             if molecule:
                 return (molecule,
                         f"合成 oligo 已包含克隆末端（{e5}/{e3} 位点与两端各 "
@@ -2013,16 +2027,16 @@ def run_design(
                 and request.cloning_method in (CloningMethod.RESTRICTION,
                                                CloningMethod.GIBSON)):
             # 末端是否取自构建体：直接看每条合成 oligo 能否**全序列**命中
-            # 构建体（顶链或反向互补）——取到了就是「构建体现成段落」模式，
-            # 有保护碱基回退的必然剥 6nt 后才命中
+            # 构建体（顶链或反向互补，环状允许跨原点环绕）——取到了就是
+            # 「构建体现成段落」模式，有保护碱基回退的必然剥 6nt 后才命中
             from core.seq_utils import revcomp as _cons_rc
             cons_up = (result.construct_sequence or "").upper()
             cons_rc = _cons_rc(cons_up) if cons_up else ""
             syn_oligos = [p for p in result.primers
                           if p.target_start is not None]
             flanked = bool(cons_up and syn_oligos) and all(
-                p.full_sequence.upper() in cons_up
-                or p.full_sequence.upper() in cons_rc for p in syn_oligos)
+                _oligo_hits_construct(p.full_sequence.upper(), cons_up, cons_rc)
+                for p in syn_oligos)
             ends_tail = ""
             if request.cloning_method == CloningMethod.RESTRICTION:
                 ends_tail = ("限制性克隆合成分子两端各 6nt 直接取自载体连接点"
@@ -2054,7 +2068,8 @@ def run_design(
                     cands = [s]
                     if len(s) > 12:  # 端部 oligo 剥保护碱基后再比对
                         cands += [s[6:], s[:-6], s[6:-6]]
-                    if not any(c in cons_up or c in cons_rc for c in cands):
+                    if not any(_oligo_hits_construct(c, cons_up, cons_rc)
+                               for c in cands):
                         unlocated.append(info.name)
                 if unlocated:
                     shown = "、".join(unlocated[:5]) + ("等" if len(unlocated) > 5 else "")

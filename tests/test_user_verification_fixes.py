@@ -599,3 +599,84 @@ def test_arms_preview_direction_agreement_is_stated():
     assert any("CDS 方向与启动子一致" in w and "正链" in w
                for w in pv["warnings"])
 
+
+
+# ---------- 环状构建体的跨原点一致性（v2.26.3 核查补充） ----------
+# 切除区间跨原点时 apply_plan 会把载体旋转到切除区间不跨原点，旋转后右
+# 连接点就在构建体字符串末端——合成分子的右侧翼必然越界环绕。四件事必须
+# 在环绕语义下仍然自洽：取段、限制性取段、oligo↔构建体命中判定、图谱
+# 引物轨道。
+
+def _wrap_assembly(cons, i_s, i_e):
+    from types import SimpleNamespace
+    return SimpleNamespace(sequence=cons, insert_start=i_s, insert_end=i_e,
+                           plan_used=True)
+
+
+def test_construct_segment_molecule_wraps_right_flank():
+    """右侧翼越出构建体末端：环状取环绕段落（修复前 cons[:end1] 被切片
+    钳制成整条序列、长度校验必然失败而白走回退）；线性返回 None"""
+    from app.design_service import _construct_segment_molecule
+    from types import SimpleNamespace
+    cons = "ACGTTACAGGCTTGAACCGGTTAACTGAGC" * 16     # 480bp，仅 ATGC
+    gene_len = 30
+    i_s, i_e = len(cons) - gene_len + 1, len(cons)    # 基因贴字符串末端
+    plan = SimpleNamespace(head="", tail="")
+    seg = _construct_segment_molecule(_wrap_assembly(cons, i_s, i_e),
+                                      plan, 6, 6, circular=True)
+    assert seg == cons[i_s - 1 - 6:] + cons[:6]       # 尾段 + 首段环绕
+    assert len(seg) == 6 + gene_len + 6
+    assert _construct_segment_molecule(_wrap_assembly(cons, i_s, i_e),
+                                       plan, 6, 6, circular=False) is None
+
+
+def test_restriction_construct_molecule_wraps_and_linear_guard():
+    """位点残留贴基因、右端越出构建体：环状取环绕分子（首段=末尾侧翼），
+    线性载体不允许环绕、返回 None 回退保护碱基"""
+    from app.design_service import _restriction_construct_molecule
+    prefix = "ACGTTACAGGCTTGAACCGGTTAACTGAGC" * 4     # 120bp 无位点侧翼
+    gene = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGT"        # 36bp
+    cons = prefix + "CATATG" + gene + "CTCGAG"        # 位点复原贴基因两端
+    i_s = len(prefix) + 6 + 1
+    i_e = i_s + len(gene) - 1
+    asm = _wrap_assembly(cons, i_s, i_e)
+    mol = _restriction_construct_molecule(asm, "NdeI", "XhoI", 6, circular=True)
+    # 环绕分子 = 末 54nt（侧翼6+CATATG+基因+CTCGAG）+ 首 6nt 侧翼
+    assert mol == cons[len(prefix) - 6:] + cons[:6]
+    assert mol[6:12] == "CATATG" and mol[-12:-6] == "CTCGAG"
+    assert _restriction_construct_molecule(asm, "NdeI", "XhoI", 6,
+                                           circular=False) is None
+
+
+def test_oligo_hits_construct_allows_wrapping_hit():
+    """环绕 oligo（末段+首段拼成）不是线性子串——命中判定必须用环绕语义，
+    否则跨连接点的合法 oligo 被 4.1/4.1b 误报「无法在构建体上定位」"""
+    from app.design_service import _oligo_hits_construct
+    cons = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGTCCGGATTAAGCCTTAGGCATCGATTGCAAGGTC"   # 66bp 无周期环状
+    assert _oligo_hits_construct(cons[5:25], cons, revcomp(cons))
+    wrapped = cons[-10:] + cons[:10]
+    assert wrapped not in cons and wrapped not in revcomp(cons)
+    assert _oligo_hits_construct(wrapped, cons, revcomp(cons))
+
+
+def test_locate_primer_spans_wrapped_on_circular():
+    """环状构建体上跨原点的 oligo 要画出轨道（start>end 环绕表示），
+    线性图上跳过；非环绕负链命中坐标与旧公式一致（回归保护）"""
+    from types import SimpleNamespace
+    from app.map_documents import _locate_primer_spans
+    seq = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGTCCGGATTAAGCCTTAGGCATCGATTGCAAGGTC"   # 66bp 无周期
+    wrapped = seq[-10:] + seq[:10]
+    p = SimpleNamespace(name="wrapS", full_sequence=wrapped,
+                        sequence=wrapped, target_start=0)
+    out = _locate_primer_spans(SimpleNamespace(primers=[p]), seq, True)
+    assert len(out) == 1
+    assert out[0]["strand"] == 1
+    assert out[0]["start"] == len(seq) - 10 + 1 and out[0]["end"] == 10
+    assert _locate_primer_spans(SimpleNamespace(primers=[p]),
+                                seq, False) == []
+    mid = seq[10:30]
+    prc = SimpleNamespace(name="negS", full_sequence=revcomp(mid),
+                          sequence=revcomp(mid), target_start=0)
+    out3 = _locate_primer_spans(SimpleNamespace(primers=[prc]), seq, True)
+    assert out3 and out3[0]["strand"] == -1
+    assert (out3[0]["start"], out3[0]["end"]) == (11, 30)
