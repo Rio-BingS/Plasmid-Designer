@@ -221,7 +221,10 @@ onUnmounted(() => {
         <div class="status-text">
           <h2>设计{{ result.status === 'completed' ? '完成' : result.status === 'failed' ? '失败' : '中' }}</h2>
           <p v-if="result.status === 'running'">正在处理序列，请稍候...</p>
-          <p v-else-if="result.status === 'completed'">设计 ID: {{ result.design_id }}</p>
+          <p v-else-if="result.status === 'completed'">
+            <template v-if="result.plasmid_name">质粒名称: {{ result.plasmid_name }}　</template>
+            设计 ID: {{ result.design_id }}
+          </p>
         </div>
       </div>
       
