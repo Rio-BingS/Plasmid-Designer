@@ -313,5 +313,207 @@ class TestBatchGoldenGateEnzyme:
         assert "value_error" not in text
 
 
+# ==================== v2.27.0：内联载体 / 合并订购表 / ZIP 命名 / 进度字段 ====================
+
+class TestBatchInlineVector:
+    """批量请求支持内联一次性载体（与单条 DesignRequest.vector 同语义）"""
+
+    def test_inline_vector_accepted(self):
+        from app.schemas import DesignVectorInput
+
+        vec = DesignVectorInput(
+            id="pdir", name="pDir-1", sequence="ACGT" * 100,
+            topology="circular")
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", vector=vec)
+        assert request.vector is not None
+        assert request.vector.name == "pDir-1"
+
+    def test_inline_vector_forwarded_to_each_row(self, monkeypatch):
+        """后台任务逐条构造 DesignRequest 时内联载体原样带下去"""
+        from app.schemas import DesignVectorInput
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        seen = []
+
+        def fake_run_design(design_id, single):
+            seen.append(single.vector)
+            return DesignResult(
+                design_id=design_id, status=DesignStatus.COMPLETED,
+                input_sequence=single.sequence, optimized_sequence="ATG",
+                construct_sequence="ATG", vector_id=single.vector_id,
+                cloning_method=single.cloning_method.value, created_at=datetime.now(),
+            )
+
+        monkeypatch.setattr(batch_routes, "run_design", fake_run_design)
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        vec = DesignVectorInput(
+            id="pdir", name="pDir-1", sequence="ACGT" * 100,
+            topology="circular")
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", vector=vec)
+        job = BatchDesignStatus(batch_id="batch_vecfwd001", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+
+        assert len(seen) == 2
+        assert all(v is not None and v.name == "pDir-1" for v in seen)
+
+
+class TestBatchPrimerTsv:
+    """合并引物订购表：列序、类型标注、按基因分组"""
+
+    def _primer(self, name, target_start=None, tm=55.0, gc=50.0):
+        from app.schemas import PrimerInfo
+        return PrimerInfo(
+            name=name, sequence="ACGT", full_sequence="ACGTACGTAC",
+            tm=tm, gc_content=gc, length=10, target_start=target_start)
+
+    def test_header_and_column_order(self):
+        from app.routes.batch_routes import generate_batch_primer_tsv
+        text = generate_batch_primer_tsv([("geneA", self._primer("geneA_S01", 0))])
+        header = text.splitlines()[0]
+        assert header.split("\t") == [
+            "#", "基因名", "引物名", "类型", "序列(5'→3')", "长度", "Tm", "GC%", "备注"]
+        row = text.splitlines()[1].split("\t")
+        assert row[0] == "geneA_S01" and row[1] == "geneA"   # 首列=引物名（行标识）
+        assert row[4] == "ACGTACGTAC"                        # 订购口径 = full_sequence
+
+    def test_type_labels(self):
+        from app.routes.batch_routes import generate_batch_primer_tsv, _oligo_type
+        assert _oligo_type(self._primer("g_S01", 0)) == "Sense"
+        assert _oligo_type(self._primer("g_AS02", 10)) == "Antisense"
+        assert _oligo_type(self._primer("g_F")) == "Forward"
+        assert _oligo_type(self._primer("g_R")) == "Reverse"
+        text = generate_batch_primer_tsv([
+            ("g1", self._primer("g1_F")), ("g1", self._primer("g1_R")),
+            ("g2", self._primer("g2_S01", 0)),
+        ])
+        types = [line.split("\t")[3] for line in text.splitlines()[1:]]
+        assert types == ["Forward", "Reverse", "Sense"]
+
+    def test_grouped_by_gene_in_batch_order(self):
+        from app.routes.batch_routes import generate_batch_primer_tsv
+        text = generate_batch_primer_tsv([
+            ("geneA", self._primer("geneA_S01", 0)),
+            ("geneB", self._primer("geneB_S01", 0)),
+            ("geneB", self._primer("geneB_AS02", 5)),
+        ])
+        genes = [line.split("\t")[1] for line in text.splitlines()[1:]]
+        assert genes == ["geneA", "geneB", "geneB"]
+
+
+class TestZipEntryName:
+    """ZIP 内文件名 = 序列名（清洗），重名缀 design_id 末 4 位"""
+
+    def test_sanitize_and_dedupe(self):
+        from app.routes.batch_routes import _zip_entry_name
+        used = set()
+        assert _zip_entry_name("A01-1", "design_aaaabbbb", ".gb", used) == "A01-1.gb"
+        # 重名 → 缀 design_id 末 4 位
+        assert _zip_entry_name("A01-1", "design_ccccdddd", ".gb", used) == "A01-1_dddd.gb"
+        # 非法字符清洗；清洗后为空 → 用 design_id 末 4 位
+        assert _zip_entry_name("a/b:c", "design_11112222", ".gb", used) == "a_b_c.gb"
+        assert _zip_entry_name("***", "design_33334444", ".gb", used) == "4444.gb"
+
+
+class TestBatchDownloadEndpoints:
+    """端点层：合并订购表与 ZIP 内容/命名（走真实 run_design 的 completed 任务）"""
+
+    def _submit_and_run(self, client, names=True):
+        """提交 2 条序列的批量任务。TestClient 同步执行 BackgroundTasks，
+        响应返回时后台任务已跑完"""
+        body = {
+            "sequences": ["MGEKTKTEKTKTEKTKTEKT", "MGDYKDDDDKGGGG"],
+            "sequence_type": "amino_acid",
+            "cloning_method": "restriction",
+            "enzyme_5": "NdeI", "enzyme_3": "XhoI",
+            "optimize_codons": False,
+        }
+        if names:
+            body["sequence_names"] = ["geneAA", "geneBB"]
+        resp = client.post("/api/design/batch", json=body)
+        assert resp.status_code == 200, resp.text
+        batch_id = resp.json()["batch_id"]
+        from app.routes import batch_routes
+        job = batch_routes._load_batch(batch_id)
+        assert job.status == "completed" and job.completed == 2, job.errors
+        return batch_id, job
+
+    def test_progress_includes_sequence_name_and_counts(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        batch_id, _ = self._submit_and_run(client)
+        resp = client.get(f"/api/design/batch/{batch_id}")
+        assert resp.status_code == 200
+        rows = resp.json()["results"]
+        assert len(rows) == 2
+        assert {r["sequence_name"] for r in rows} == {"geneAA", "geneBB"}
+        assert all(r["primer_count"] > 0 for r in rows)
+        assert all(isinstance(r["warnings_count"], int) for r in rows)
+
+    def test_primers_tsv_endpoint(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        batch_id, _ = self._submit_and_run(client)
+        resp = client.get(f"/api/design/batch/{batch_id}/download/primers")
+        assert resp.status_code == 200
+        assert "tab-separated-values" in resp.headers["content-type"]
+        lines = resp.text.strip().splitlines()
+        assert lines[0].split("\t") == [
+            "#", "基因名", "引物名", "类型", "序列(5'→3')", "长度", "Tm", "GC%", "备注"]
+        genes = {line.split("\t")[1] for line in lines[1:]}
+        assert genes == {"geneAA", "geneBB"}
+
+    def test_zip_uses_sequence_names_and_contains_all_primers(self):
+        import io
+        import zipfile as zfmod
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        batch_id, _ = self._submit_and_run(client)
+        resp = client.get(f"/api/design/batch/{batch_id}/download")
+        assert resp.status_code == 200
+        with zfmod.ZipFile(io.BytesIO(resp.content)) as zf:
+            names = zf.namelist()
+        assert "all_primers.tsv" in names
+        assert "geneAA.gb" in names and "geneAA_primers.tsv" in names
+        assert "geneBB.gb" in names and "geneBB_primers.tsv" in names
+        assert not any(n.startswith("design_") for n in names)
+
+    def test_zip_duplicate_names_get_design_suffix(self):
+        """两条同名序列：文件名缀各自 design_id 末 4 位，不互相覆盖"""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        body = {
+            "sequences": ["MGEKTKTEKTKTEKTKTEKT", "MGEKTKTEKTKTEKTKTEKT"],
+            "sequence_type": "amino_acid",
+            "cloning_method": "restriction",
+            "enzyme_5": "NdeI", "enzyme_3": "XhoI",
+            "optimize_codons": False,
+            "sequence_names": ["same", "same"],
+        }
+        resp = client.post("/api/design/batch", json=body)
+        assert resp.status_code == 200
+        batch_id = resp.json()["batch_id"]
+        resp = client.get(f"/api/design/batch/{batch_id}/download")
+        import io
+        import zipfile as zfmod
+        with zfmod.ZipFile(io.BytesIO(resp.content)) as zf:
+            gb_names = sorted(n for n in zf.namelist() if n.endswith(".gb"))
+        # 重名去重：两条文件名不同，且都是同一 base（其中一条带 _dddd 后缀）
+        assert len(gb_names) == 2
+        b1, b2 = (n[:-3] for n in gb_names)
+        assert b1 != b2 and (b1.split("_")[0] == b2.split("_")[0])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

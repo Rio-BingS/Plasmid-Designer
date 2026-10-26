@@ -410,6 +410,10 @@ class BatchDesignRequest(DesignOptions):
     """
     sequences: List[str] = Field(..., min_length=1, max_length=100)
     sequence_names: Optional[List[str]] = None
+    # 一次性载体：与单条设计的 DesignRequest.vector 同语义——给了就整批用
+    # 它（忽略 vector_id），不写载体库。批量页的上传/在线导入经此前传
+    vector: Optional[DesignVectorInput] = Field(
+        default=None, description="内联一次性载体（整批共用）；为空时按 vector_id 查载体库")
 
     @field_validator("sequences", mode="before")
     @classmethod

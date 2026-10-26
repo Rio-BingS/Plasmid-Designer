@@ -26,5 +26,11 @@ export async function downloadBatchResults(batchId: string): Promise<void> {
   await saveBlobResponse(response, `${batchId}_results.zip`)
 }
 
+/** 合并引物订购表：整批所有引物汇总成一张 TSV（按基因分组核对订购单） */
+export async function downloadBatchPrimers(batchId: string): Promise<void> {
+  const response = await api.get(`/design/batch/${encodeURIComponent(batchId)}/download/primers`, { responseType: 'blob' })
+  await saveBlobResponse(response, `${batchId}_all_primers.tsv`)
+}
+
 
 // 载体序列下载
