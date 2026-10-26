@@ -259,6 +259,12 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   （conftest.py 会重新注入正确路径）
 - **测试里改 site_settings 必须用真实 `app.database.SessionLocal`**，结束时恢复默认并
   `invalidate_cache()`，否则污染后续模块（设计端点 403）
+- **本地绿 ≠ CI 绿**：CI 比本地多四道门禁（尺寸预算 `scripts/check_file_size.py`、
+  pip-audit、npm build、npm audit ×2，全部阻断）。改完代码先本地预演尺寸预算，
+  否则「测试全绿但 CI 红」（v2.18.0→v2.29.2 连续 23 次红灯的教训，详见 HANDOVER §7.4）
+- **被 skip 的测试等于不存在的测试**：平台相关测试（`skipif(platform=="win")`）写入时
+  就要在真实 Linux 上跑一次（可借 VPS）；`test_deploy_backup.py` 曾因此带着漏传脚本
+  路径的 bug 存活多轮，还连带掩盖了 backup.sh 的两个真实缺陷
 - **`tests/test_config_cors.py` 会 `reload(app.config)`**（生成新的 settings 实例）：
   模块里 `from app.config import settings` 拿到的是旧对象，之后用例打桩
   `settings.VECTORS_DIR` 之类对那个模块不生效——路由里一律用 `config.settings.X`
@@ -287,9 +293,13 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.17.2；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本 v2.30.1（2026-10-27）；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
-- 刚接手先读 docs/HANDOVER.md（现状、已修问题留档、部署缺口与下一步）
+- 测试基线（2026-10-26）：后端 **1796 passed / 43 skipped**（约 105 s）、前端 **82 文件 /
+  636 passed**、`vue-tsc` 0 error、CI 绿；与基线不符先查原因，别直接改断言
+- 刚接手先读 docs/HANDOVER.md（现状、已修问题留档 §7.4–7.5、下一步）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
+- 线上：Docker Compose on VPS（`ssh myvps`，/opt/plasmid-designer），发版流程见
+  HANDOVER §2「线上部署」行
