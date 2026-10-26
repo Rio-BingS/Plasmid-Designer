@@ -87,9 +87,16 @@ TEMPLATE_ROWS = [
     ["A01-2", "MGDYKDDDDKGGGG", "", "gibson", "", "双酶切", "", "", "", ""],
 ]
 
+# 简单批量模板：只有名称+序列两列（统一参数，无参数列）
+TEMPLATE_ROWS_SIMPLE = [
+    ["序列名", "序列"],
+    ["A01-1", "MGEKTKTEKTKTEKTKTEKT"],
+    ["A01-2", "MGDYKDDDDKGGGG"],
+]
+
 # 填写说明（写在模板第二个工作表；首行表头与解析规则一一对应）
 TEMPLATE_GUIDE = [
-    ["批量设计序列清单 — 填写说明"],
+    ["批量设计序列清单（复杂批量） — 填写说明"],
     [""],
     ["1. 第一个工作表「序列清单」：A 列填序列名（可自定义，用于结果/订购表/ZIP 命名），"],
     ["   B 列填序列（氨基酸或 DNA，与提交时的「序列类型」一致）。"],
@@ -104,33 +111,57 @@ TEMPLATE_GUIDE = [
     ["   目标物种：ecoli / human / yeast / cho。"],
     ["4. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
     ["5. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
-    ["6. 填好后回到批量设计页上传本文件，在预览表里核对名称与参数后提交。"],
+    ["6. 填好后回到批量设计页（复杂批量模式）上传本文件，在预览表里核对名称与参数后提交。"],
+    ["7. 所有序列用同一套参数？用「简单批量」模式下载的两列模板更简单。"],
+]
+
+# 简单批量模板的说明
+TEMPLATE_GUIDE_SIMPLE = [
+    ["批量设计序列清单（简单批量） — 填写说明"],
+    [""],
+    ["1. 第一个工作表「序列清单」：A 列填序列名（可自定义，用于结果/订购表/ZIP 命名），"],
+    ["   B 列填序列（氨基酸或 DNA，与提交时的「序列类型」一致）。"],
+    ["2. 表头保留：解析靠「序列名/基因名/Name/Gene/序列/Sequence」等关键词识别列；"],
+    ["   无表头时按第 1 列=名称、第 2 列=序列处理。"],
+    ["3. 简单批量所有序列用同一套参数（批量页上设置）。需要每条序列各自指定"],
+    ["   载体/克隆方法/酶等，请切到「复杂批量」模式下载含参数列的完整模板。"],
+    ["4. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
+    ["5. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
+    ["6. 填好后回到批量设计页上传本文件，在预览表里核对名称后提交。"],
 ]
 
 
-def generate_template_xlsx() -> bytes:
-    """批量上传模板 .xlsx：序列清单 + 填写说明两个工作表。"""
+def generate_template_xlsx(variant: str = "complex") -> bytes:
+    """批量上传模板 .xlsx：序列清单 + 填写说明两个工作表。
+
+    variant="complex"（默认）= 含参数列（复杂批量）；"simple" = 两列
+    （简单批量，统一参数）。"""
     import openpyxl
     from openpyxl.styles import Font, PatternFill
+
+    if variant == "simple":
+        template_rows, guide_rows = TEMPLATE_ROWS_SIMPLE, TEMPLATE_GUIDE_SIMPLE
+    else:
+        template_rows, guide_rows = TEMPLATE_ROWS, TEMPLATE_GUIDE
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "序列清单"
     bold = Font(bold=True)
     fill = PatternFill("solid", fgColor="D9E7FD")
-    for row in TEMPLATE_ROWS:
+    for row in template_rows:
         ws.append(row)
     for cell in ws[1]:
         cell.font = bold
         cell.fill = fill
-    # 示例序列列给足够宽度；参数列窄一些
+    # 示例序列列给足够宽度；复杂模板的参数列窄一些
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 60
-    for col in ("C", "D", "E", "F", "G", "H", "I", "J"):
-        ws.column_dimensions[col].width = 14
-    # 预留 30 个空行（带边框感无需，空白即可），用户直接往下填
+    if variant != "simple":
+        for col in ("C", "D", "E", "F", "G", "H", "I", "J"):
+            ws.column_dimensions[col].width = 14
     guide = wb.create_sheet("填写说明")
-    for row in TEMPLATE_GUIDE:
+    for row in guide_rows:
         guide.append(row)
     guide.column_dimensions["A"].width = 100
     buf = io.BytesIO()
