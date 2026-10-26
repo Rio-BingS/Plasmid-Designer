@@ -335,7 +335,7 @@ def _format_row_error(exc: Exception) -> str:
 
 
 def _resolve_library_vector(value: str) -> str:
-    """Excel 载体列的值（载体名或 ID）→ 库内 vector_id。
+    """载体库里的值（载体名或 ID）→ 库内 vector_id。
 
     先按 ID 精确查，再按 name 精确匹配；不用模糊搜索（会对 description
     产生歧义命中）。查不到抛 ValueError，落该行 errors。"""
@@ -347,7 +347,41 @@ def _resolve_library_vector(value: str) -> str:
         if v.name == value:
             return v.id
     raise ValueError(f"载体「{value}」不在载体库：请填库内载体名或 ID"
-                     "（一次性载体请在批量页上传，不能进表格）")
+                     "（自己上传的载体请先在批量页「批量上传载体」区块上传）")
+
+
+def _resolve_row_vector(value: str, source: Optional[str],
+                        pool: List) -> Dict:
+    """行级载体解析 → DesignRequest.vector 的值（dict）。
+
+    - source="inline"（自己上传载体）：只在载体池里按名字/ID 精确匹配，
+      命中返回该 DesignVectorInput（每行可用不同上传载体）；
+    - source="library"：只在载体库解析，返回 {"vector_id": ...}；
+    - 留空：先库后池。
+    """
+    if source == "inline":
+        for v in pool:
+            if value in (getattr(v, "name", ""), getattr(v, "id", "")):
+                return {"vector": v.model_dump()}
+        raise ValueError(
+            f"载体「{value}」不在本次上传的载体池里：请先在批量页"
+            "「批量上传载体」区块上传（载体名=文件名去扩展名）")
+    if source == "library":
+        return {"vector_id": _resolve_library_vector(value)}
+    # 留空：先库后池
+    from app.vector_library_cache import get_vector_library
+    library = get_vector_library()
+    if library.get_vector(value) is not None:
+        return {"vector_id": value}
+    for v in library.list_vectors():
+        if v.name == value:
+            return {"vector_id": v.id}
+    for v in pool:
+        if value in (getattr(v, "name", ""), getattr(v, "id", "")):
+            return {"vector": v.model_dump()}
+    raise ValueError(
+        f"载体「{value}」既不在载体库、也不在本次上传的载体池里："
+        "请核对载体名，或在批量页上传该载体")
 
 
 def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: List[str]):
@@ -369,12 +403,17 @@ def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: Lis
             row = (request.row_params[i]
                    if request.row_params and i < len(request.row_params) else None)
             merged = request.model_dump(
-                exclude={"sequences", "sequence_names", "row_params"})
+                exclude={"sequences", "sequence_names", "row_params", "vectors"})
             if row is not None:
                 overrides = row.model_dump(exclude_none=True)
                 vec = overrides.pop("vector", None)
+                vsrc = overrides.pop("vector_source", None)
                 if vec:
-                    overrides["vector_id"] = _resolve_library_vector(vec)
+                    # 行级指定了载体：批级共用内联载体必须清掉，否则
+                    # run_design 里 vector 优先于 vector_id、行级被压过
+                    merged.pop("vector", None)
+                    overrides.update(_resolve_row_vector(
+                        vec, vsrc, request.vectors or []))
                 merged.update(overrides)   # 行级非 None 覆盖批级
             single = DesignRequest(
                 **merged,

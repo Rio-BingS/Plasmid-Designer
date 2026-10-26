@@ -28,19 +28,25 @@ UPLOAD_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".tsv")
 NAME_HEADER_HINTS = ("序列名", "基因名", "名称", "name", "gene", "id")
 SEQ_HEADER_HINTS = ("序列", "sequence", "seq")
 
-# 参数列表头 → params 字典键（canonical）。子串匹配、按列表顺序；
-# 单「酶/Enzyme」列放最后——「酶5/5'酶」列会先被更具体的 hint 占走
+# 参数列表头 → params 字典键（canonical）。子串匹配；**列表顺序即优先级**：
+# 「载体来源」必须在「载体」前（否则其含「载体」二字被抢）；「排除酶*」必须
+# 在「酶1/酶2」前（否则「排除酶切位点1」含「酶1」被抢）。exclude_enzymes
+# 特殊：允许多列（排除酶切位点1/2…），命中后不 break 掉后续同类列
 PARAM_HEADER_HINTS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("vector_source", ("载体来源", "vector_source")),
     ("vector", ("载体", "vector")),
     ("cloning_method", ("克隆方法", "克隆方式", "cloning", "assembly_method")),
     ("insert_source", ("插入来源", "片段来源", "insert_source")),
     ("linearization", ("线性化", "linearization", "linearization_mode")),
-    ("enzyme_5", ("酶5", "5'酶", "5′酶", "enzyme_5", "enzyme5")),
-    ("enzyme_3", ("酶3", "3'酶", "3′酶", "enzyme_3", "enzyme3")),
+    ("exclude_enzymes", ("排除酶切位点", "排除酶", "排除位点", "exclude_enzyme")),
+    ("enzyme_5", ("酶1", "酶5", "1'酶", "5'酶", "1′酶", "5′酶", "enzyme_1", "enzyme_5", "enzyme1")),
+    ("enzyme_3", ("酶2", "酶3", "2'酶", "3'酶", "2′酶", "3′酶", "enzyme_2", "enzyme_3", "enzyme2")),
     ("enzyme", ("酶", "enzyme")),
     ("direction", ("方向", "direction")),
     ("species", ("物种", "species")),
 ]
+# 允许出现在多个列的参数键（值合并为列表）
+MULTI_COL_PARAM_KEYS = {"exclude_enzymes"}
 
 # Excel 参数值 → 标准枚举值（归一只做「字符串→枚举」，合法性校验全部
 # 复用 DesignOptions 现有校验器——不出现两套校验）。匹配前 lower 去空白
@@ -76,15 +82,20 @@ DIRECTION_ALIASES = {
     "plus": "plus", "正链": "plus", "+": "plus",
     "minus": "minus", "负链": "minus", "-": "minus",
 }
+VECTOR_SOURCE_ALIASES = {
+    "library": "library", "载体库": "library", "库": "library",
+    "inline": "inline", "自己上传载体": "inline", "自己上传": "inline",
+    "上传载体": "inline", "上传": "inline",
+}
 
 _NAME_CELL_RE = re.compile(r"[\r\n\t]")
 
 # 模板里的示例行：与解析规则同源——用户在模板上直接改，表头/列序不用记。
 # 参数列（C 起）全部可留空 = 继承批量页统一设置
 TEMPLATE_ROWS = [
-    ["序列名", "序列", "载体", "克隆方法", "插入来源", "线性化", "酶5", "酶3", "方向", "目标物种"],
-    ["A01-1", "MGEKTKTEKTKTEKTKTEKT", "pET-28a", "限制性酶切", "pcr", "", "NdeI", "XhoI", "auto", "ecoli"],
-    ["A01-2", "MGDYKDDDDKGGGG", "", "gibson", "", "双酶切", "", "", "", ""],
+    ["序列名", "序列", "载体来源", "载体", "克隆方法", "插入来源", "线性化", "酶1", "酶2", "方向", "目标物种", "排除酶切位点1", "排除酶切位点2"],
+    ["A01-1", "MGEKTKTEKTKTEKTKTEKT", "载体库", "pET-28a", "限制性酶切", "pcr", "", "NdeI", "XhoI", "自动判定", "ecoli", "", ""],
+    ["A01-2", "MGDYKDDDDKGGGG", "自己上传载体", "pET-21a", "gibson", "", "双酶切", "", "", "", "", "EcoRI", "BamHI"],
 ]
 
 # 简单批量模板：只有名称+序列两列（统一参数，无参数列）
@@ -103,12 +114,14 @@ TEMPLATE_GUIDE = [
     ["2. 表头保留：解析靠「序列名/基因名/Name/Gene/序列/Sequence」等关键词识别列；"],
     ["   无表头时按第 1 列=名称、第 2 列=序列处理（此时没有参数列）。"],
     ["3. 参数列（C 列起）全部可选、留空 = 用批量页上设置的统一参数；每行可覆盖："],
-    ["   载体：只能填载体库里的载体名或 ID（一次性载体不进表格）；"],
+    ["   载体来源：载体库 / 自己上传载体（自己上传的载体需先在批量页「批量上传」"],
+    ["   区块上传，载体名=文件名去扩展名）；载体：载体名（按来源列解析）；"],
     ["   克隆方法：gibson / golden_gate / 限制性酶切 / 全基因合成（中英文均可）；"],
     ["   插入来源：pcr / 全基因合成；线性化：双酶切 / 单位点 / 自定义同源臂（Gibson 用）；"],
-    ["   酶5/酶3：限制性或 Gibson 双酶切的两个酶，如 NdeI、XhoI（Golden Gate 行必须"],
-    ["   在本行填 Type IIS 酶，或在页面上统一选好）；方向：自动 / 反向 / 正链 / 负链；"],
-    ["   目标物种：ecoli / human / yeast / cho。"],
+    ["   酶1/酶2：限制性或 Gibson 双酶切的两个酶，如 NdeI、XhoI（Golden Gate 行必须"],
+    ["   在本行填 Type IIS 酶，或在页面上统一选好）；方向：自动判定 / 反向 / 正链 / 负链；"],
+    ["   目标物种：ecoli / human / yeast / cho；排除酶切位点：优化序列时要避开"],
+    ["   的限制酶（可填两列，仅氨基酸输入且启用密码子优化时生效）。"],
     ["4. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
     ["5. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
     ["6. 填好后回到批量设计页（复杂批量模式）上传本文件，在预览表里核对名称与参数后提交。"],
@@ -158,7 +171,7 @@ def generate_template_xlsx(variant: str = "complex") -> bytes:
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 60
     if variant != "simple":
-        for col in ("C", "D", "E", "F", "G", "H", "I", "J"):
+        for col in ("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"):
             ws.column_dimensions[col].width = 14
     guide = wb.create_sheet("填写说明")
     for row in guide_rows:
@@ -225,18 +238,18 @@ def _load_rows(data: bytes, suffix: str) -> List[List[str]]:
 
 
 def _find_columns(header: List[str]) -> Tuple[Optional[int], Optional[int],
-                                              Dict[str, int]]:
-    """表头行 → (名称列, 序列列, 参数列{canonical 键: 列号})。
+                                              Dict[str, object]]:
+    """表头行 → (名称列, 序列列, 参数列{canonical 键: 列号}).
 
-    名称列先识别：「序列名/基因名」也含「序列」二字，序列列若先匹配会把
-    名称列抢走。已识别为名称/序列列的单元格不再参与参数列匹配；参数列
-    之间同格不重复占用（一个表头只认一种参数）。"""
+    exclude_enzymes 特殊：值是 List[int]（允许多列，排除酶切位点1/2…），
+    其余键值是 int。名称列先识别（「序列名/基因名」也含「序列」二字）；
+    已识别为名称/序列列的单元格不再参与参数列匹配。"""
     def _norm(cell: str) -> str:
         return (cell.lower().replace(" ", "").replace("'", "")
                 .replace("′", "").replace("_", "").replace("-", ""))
 
     name_col = seq_col = None
-    param_cols: Dict[str, int] = {}
+    param_cols: Dict[str, object] = {}
     used: set = set()
     for i, cell in enumerate(header):
         low = _norm(cell)
@@ -255,6 +268,14 @@ def _find_columns(header: List[str]) -> Tuple[Optional[int], Optional[int],
         if not low:
             continue
         for key, hints in PARAM_HEADER_HINTS:
+            if key in MULTI_COL_PARAM_KEYS:
+                # 多列参数（排除酶切位点1/2…）：每个命中的单元格各收集一次；
+                # 占用该格并跳出，防止同一格再被更宽的「酶」规则抢走
+                if any(_norm(h) in low for h in hints):
+                    param_cols.setdefault(key, []).append(i)
+                    used.add(i)
+                    break
+                continue
             if key in param_cols:
                 continue
             if any(_norm(h) in low for h in hints):
@@ -280,7 +301,10 @@ def _normalize_param(key: str, value: str) -> str:
         legal = "双酶切 / 单位点 / 自定义同源臂"
     elif key == "direction":
         table, label = DIRECTION_ALIASES, "方向"
-        legal = "自动 / 反向 / 正链 / 负链"
+        legal = "自动判定 / 反向 / 正链 / 负链"
+    elif key == "vector_source":
+        table, label = VECTOR_SOURCE_ALIASES, "载体来源"
+        legal = "载体库 / 自己上传载体"
     else:
         return value.strip()
     hit = table.get(v) or table.get(value.strip().lower())
@@ -351,9 +375,19 @@ def parse_spreadsheet(data: bytes, suffix: str,
         # 行级参数：有参数列才带 params（旧两列文件不含该键，前端兼容）；
         # 空单元格 = 该项留空 = 继承批量页统一设置
         if param_cols:
-            params: Dict[str, str] = {}
+            params: Dict[str, object] = {}
             for key, col in param_cols.items():
-                raw = row[col] if col < len(row) else ""
+                if key in MULTI_COL_PARAM_KEYS:
+                    # 多列合并（排除酶切位点1/2…），去重保序
+                    values: List[str] = []
+                    for c in col if isinstance(col, list) else [col]:
+                        raw = row[c] if c < len(row) else ""
+                        if raw and raw not in values:
+                            values.append(raw)
+                    if values:
+                        params[key] = values
+                    continue
+                raw = row[col] if isinstance(col, int) and col < len(row) else ""
                 if not raw:
                     continue
                 params[key] = _normalize_param(key, raw)

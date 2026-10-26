@@ -52,6 +52,8 @@ export interface SpreadsheetRow {
   named?: boolean
   params?: {
     vector?: string
+    /** 载体来源：library=载体库；inline=自己上传载体（批量上传的载体池） */
+    vector_source?: 'library' | 'inline'
     cloning_method?: string
     insert_source?: string
     linearization?: string
@@ -60,6 +62,8 @@ export interface SpreadsheetRow {
     enzyme_3?: string
     direction?: string
     species?: string
+    /** 排除酶切位点（多列合并） */
+    exclude_enzymes?: string[]
   }
 }
 
