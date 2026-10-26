@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable, DesignVectorPayload } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, downloadBatchTemplate, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 import { parseBatchInput, validateParsed, type ParsedSequence } from '@/utils/fastaParse'
@@ -305,6 +305,11 @@ async function handleDownloadPrimers() {
   catch (e: any) { error.value = '下载失败: ' + (e.message || '未知错误') }
 }
 
+async function handleDownloadTemplate() {
+  try { await downloadBatchTemplate() }
+  catch (e: any) { error.value = '下载失败: ' + (e.message || '未知错误') }
+}
+
 async function fetchBatchReport() {
   try { batchReport.value = await getBatchReport(batchId.value) }
   catch (e) { console.warn('Failed to fetch batch report:', e) }
@@ -353,6 +358,9 @@ onUnmounted(() => {
           <div class="input-actions">
             <button @click="pickFile" class="btn btn-secondary btn-small">
               上传文件（FASTA / Excel / CSV）
+            </button>
+            <button @click="handleDownloadTemplate" class="btn btn-secondary btn-small">
+              下载表格模板
             </button>
             <input
               ref="fileInput" type="file" accept=".fasta,.fa,.fna,.txt,.xlsx,.xlsm,.csv,.tsv"

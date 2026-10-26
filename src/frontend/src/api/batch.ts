@@ -45,5 +45,11 @@ export async function parseSpreadsheetFile(
   return response.data
 }
 
+/** 批量上传表格模板 .xlsx（序列清单 + 填写说明） */
+export async function downloadBatchTemplate(): Promise<void> {
+  const response = await api.get('/design/batch/template', { responseType: 'blob' })
+  await saveBlobResponse(response, 'batch_sequences_template.xlsx')
+}
+
 
 // 载体序列下载
