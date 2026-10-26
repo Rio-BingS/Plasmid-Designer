@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable, DesignVectorPayload } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 import { parseBatchInput, validateParsed, type ParsedSequence } from '@/utils/fastaParse'
@@ -35,16 +35,29 @@ function onNameEdit(i: number, ev: Event) {
 
 function pickFile() { fileInput.value?.click() }
 
+const isSpreadsheet = (filename: string) =>
+  /\.(xlsx|xlsm|csv|tsv)$/i.test(filename)
+
 async function onFileChange(ev: Event) {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
   try {
-    const text = await file.text()
-    // 与粘贴内容合并（文件内容在前），用户可在预览表里删改
-    sequencesText.value = (sequencesText.value ? sequencesText.value.trimEnd() + '\n\n' : '') + text
-  } catch (e) {
-    error.value = '文件读取失败：' + (e instanceof Error ? e.message : '未知错误')
+    if (isSpreadsheet(file.name)) {
+      // Excel/CSV 走后端解析（npm 的 xlsx 库有未修复安全公告，前端不引），
+      // 结果以 FASTA 形式并入粘贴框——与手动粘贴同一套预览/编辑逻辑
+      const res = await parseSpreadsheetFile(file, sequenceType.value)
+      const fasta = res.sequences
+        .map((r: { name: string; sequence: string }) => `>${r.name}\n${r.sequence}`)
+        .join('\n\n')
+      sequencesText.value = (sequencesText.value ? sequencesText.value.trimEnd() + '\n\n' : '') + fasta
+    } else {
+      const text = await file.text()
+      // 与粘贴内容合并（文件内容在前），用户可在预览表里删改
+      sequencesText.value = (sequencesText.value ? sequencesText.value.trimEnd() + '\n\n' : '') + text
+    }
+  } catch (e: any) {
+    error.value = formatApiError(e, '文件读取失败')
   }
   input.value = ''
 }
@@ -339,10 +352,10 @@ onUnmounted(() => {
           ></textarea>
           <div class="input-actions">
             <button @click="pickFile" class="btn btn-secondary btn-small">
-              上传 FASTA 文件
+              上传文件（FASTA / Excel / CSV）
             </button>
             <input
-              ref="fileInput" type="file" accept=".fasta,.fa,.fna,.txt"
+              ref="fileInput" type="file" accept=".fasta,.fa,.fna,.txt,.xlsx,.xlsm,.csv,.tsv"
               style="display: none" @change="onFileChange"
             />
             <button @click="loadExamples" class="btn btn-secondary btn-small">
