@@ -400,6 +400,29 @@ class VectorInfo(BaseModel):
 
 # ==================== 批量设计 ====================
 
+class RowParams(BaseModel):
+    """批量设计中单条序列的参数覆盖（全 Optional）。
+
+    非 None 字段覆盖批量级统一参数（Excel 参数列经 alias 归一后填进来）；
+    None = 继承批级。合法性不在本模型校验——行级 DesignRequest 构造时
+    复用 DesignOptions 的同一套校验器，失败落该行 errors 而非炸整批。
+    vector 字段是载体库的载体名/ID 字符串（Excel 列），合并时解析成
+    vector_id；一次性载体体积大不进表格，仍走批量级 vector 字段整批共用。
+    """
+    vector: Optional[str] = Field(default=None, max_length=120,
+                                  description="载体库载体名或 ID（行级覆盖）")
+    cloning_method: Optional[CloningMethod] = None
+    insert_source: Optional[Literal["pcr", "gene_synthesis"]] = None
+    gibson_linearization: Optional[Literal[
+        "double_digest", "single_site", "custom_arms"]] = None
+    enzyme: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    enzyme_5: Optional[str] = Field(default=None, max_length=40)
+    enzyme_3: Optional[str] = Field(default=None, max_length=40)
+    insert_direction: Optional[Literal[
+        "auto", "reverse", "plus", "minus"]] = None
+    target_species: Optional[str] = Field(default=None, max_length=20)
+
+
 class BatchDesignRequest(DesignOptions):
     """批量设计请求
 
@@ -414,6 +437,11 @@ class BatchDesignRequest(DesignOptions):
     # 它（忽略 vector_id），不写载体库。批量页的上传/在线导入经此前传
     vector: Optional[DesignVectorInput] = Field(
         default=None, description="内联一次性载体（整批共用）；为空时按 vector_id 查载体库")
+    # 行级参数覆盖（Excel 参数列 / 前端逐行覆盖）：与 sequences 对齐，
+    # 元素可为 None（该行完全继承批级）；RowParams 内非 None 字段覆盖批级。
+    # 行级合法性在后台任务构造每条 DesignRequest 时校验，失败落该行 errors
+    row_params: Optional[List[Optional[RowParams]]] = Field(
+        default=None, description="每条序列的参数覆盖（与 sequences 等长，元素可为 null）")
 
     @field_validator("sequences", mode="before")
     @classmethod
@@ -440,6 +468,8 @@ class BatchDesignRequest(DesignOptions):
             raise ValueError(f"批量序列总长度不能超过 {batch_total}")
         if self.sequence_names is not None and len(self.sequence_names) != len(self.sequences):
             raise ValueError("sequence_names 数量必须与 sequences 一致")
+        if self.row_params is not None and len(self.row_params) != len(self.sequences):
+            raise ValueError("row_params 数量必须与 sequences 一致")
         return self
 
 

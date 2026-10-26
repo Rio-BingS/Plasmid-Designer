@@ -2,10 +2,10 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable, DesignVectorPayload } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, downloadBatchTemplate, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, downloadBatchTemplate, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError, type SpreadsheetRow } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
-import { parseBatchInput, validateParsed, type ParsedSequence } from '@/utils/fastaParse'
+import { parseBatchInput, validateParsed } from '@/utils/fastaParse'
 import { loadBatchHistory, recordBatch, type BatchHistoryEntry } from '@/utils/batchHistory'
 
 const router = useRouter()
@@ -16,21 +16,42 @@ const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
 const fileInput = ref<HTMLInputElement | null>(null)
 /** 预览表里用户改过的名称（index → name），覆盖解析结果 */
 const nameOverrides = ref<Record<number, string>>({})
+/** 表格上传的行（可带行级参数）：与文本行分开保存，避免参数丢失在文本重建里 */
+const spreadsheetRows = ref<SpreadsheetRow[]>([])
 
-const parsedSequences = computed<ParsedSequence[]>(() => {
+/** 预览数据源：表格行在前（带参数），文本解析行在后（继承批级） */
+interface PreviewRow extends SpreadsheetRow {
+  fromSheet: boolean
+}
+
+const textRows = computed(() => {
   const rows = parseBatchInput(sequencesText.value)
   return rows.map((r, i) => ({
     ...r,
     name: nameOverrides.value[i]?.trim() || r.name,
   }))
 })
+
+const previewRows = computed<PreviewRow[]>(() => [
+  ...spreadsheetRows.value.map((r) => ({ ...r, fromSheet: true })),
+  ...textRows.value.map((r) => ({ ...r, fromSheet: false })),
+])
+
+const parsedSequences = computed(() => previewRows.value)
+const hasRowParams = computed(() =>
+  previewRows.value.some((r) => r.params && Object.keys(r.params).length))
 const sequenceCount = computed(() => parsedSequences.value.length)
 const invalidRows = computed(() => parsedSequences.value
   .map((r, i) => (validateParsed(r.sequence, sequenceType.value) ? -1 : i))
   .filter((i) => i >= 0))
 
 function onNameEdit(i: number, ev: Event) {
-  nameOverrides.value[i] = (ev.target as HTMLInputElement).value
+  const row = previewRows.value[i]
+  if (row?.fromSheet) {
+    spreadsheetRows.value[i] = { ...spreadsheetRows.value[i], name: (ev.target as HTMLInputElement).value }
+  } else {
+    nameOverrides.value[i - spreadsheetRows.value.length] = (ev.target as HTMLInputElement).value
+  }
 }
 
 function pickFile() { fileInput.value?.click() }
@@ -45,12 +66,9 @@ async function onFileChange(ev: Event) {
   try {
     if (isSpreadsheet(file.name)) {
       // Excel/CSV 走后端解析（npm 的 xlsx 库有未修复安全公告，前端不引），
-      // 结果以 FASTA 形式并入粘贴框——与手动粘贴同一套预览/编辑逻辑
+      // 行进独立列表（可带行级参数）——并入文本框会把参数丢掉
       const res = await parseSpreadsheetFile(file, sequenceType.value)
-      const fasta = res.sequences
-        .map((r: { name: string; sequence: string }) => `>${r.name}\n${r.sequence}`)
-        .join('\n\n')
-      sequencesText.value = (sequencesText.value ? sequencesText.value.trimEnd() + '\n\n' : '') + fasta
+      spreadsheetRows.value.push(...res.sequences)
     } else {
       const text = await file.text()
       // 与粘贴内容合并（文件内容在前），用户可在预览表里删改
@@ -63,23 +81,23 @@ async function onFileChange(ev: Event) {
 }
 
 function removeRow(i: number) {
-  // 从源文本删掉第 i 条记录：按解析结果重拼不现实（会丢失原始格式），
-  // 直接把该行标记为无效太绕——最直接的做法是重置 override 并提示用户
-  // 在文本框里删除该段。为保持简单，这里从解析结果层面剔除：
-  // 用 override 表做不到（只改名字），所以改为重写文本框：
-  const rows = parseBatchInput(sequencesText.value)
-  const target = rows[i]
-  if (!target) return
-  // 把第 i 条记录的文本从源里删掉：定位原始块很脆弱，退而求其次——
-  // 用剩余记录重建文本（FASTA 形式，名称保留）
-  const remaining = rows.filter((_, idx) => idx !== i)
-  sequencesText.value = remaining
-    .map((r) => `>${r.name}\n${r.sequence}`)
-    .join('\n\n')
-  nameOverrides.value = {}
+  const row = previewRows.value[i]
+  if (!row) return
+  if (row.fromSheet) {
+    spreadsheetRows.value = spreadsheetRows.value.filter((_, idx) => idx !== i)
+  } else {
+    // 文本行：从源文本重建（FASTA 形式，名称保留；文本行无行级参数，不丢失）
+    const idx = i - spreadsheetRows.value.length
+    const remaining = textRows.value.filter((_, ridx) => ridx !== idx)
+    sequencesText.value = remaining
+      .map((r) => `>${r.name}\n${r.sequence}`)
+      .join('\n\n')
+    nameOverrides.value = {}
+  }
 }
 
 function loadExamples() {
+  spreadsheetRows.value = []
   sequencesText.value = [
     '>A01-1\nMKVLWAALLTFLGCAATSGSQAPDRRNRLALASLLRLQGVSSVQIRCRDSDMNADADATIRR',
     '>A01-2\nMGVSGAVPKLFVGKTLYFSVFCFVCCFQVVSLSYAYVTLPIAVMVVCTFQQSRQGAAKIF',
@@ -249,6 +267,10 @@ async function handleSubmit() {
             source: adhocVector.value.source,
           }, vector_id: adhocVector.value.id }
         : { vector_id: vectorId.value }),
+      // 行级参数（表格参数列）：全部行都没填时省略 = 纯批级模式
+      ...(hasRowParams.value ? {
+        row_params: parsedSequences.value.map((r) => r.params ?? null),
+      } : {}),
     })
     recordBatch({ batchId: result.batch_id, submittedAt: Date.now(), total: result.total })
     recentBatches.value = loadBatchHistory()
@@ -328,7 +350,9 @@ function resetBatch() {
 onUnmounted(() => {
   stopPolling()
 })
-</script><template>
+</script>
+
+<template>
   <div class="batch-design-page">
     <h1>批量设计</h1>
     <p class="subtitle">一次提交多个序列，批量生成质粒构建方案与引物订购表</p>
@@ -375,11 +399,18 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 解析预览表：名称可编辑、长度、合法性 -->
+        <!-- 解析预览表：名称可编辑、长度、合法性；任一行带参数列时展示参数 -->
         <div v-if="sequenceCount" class="preview-table-wrap">
           <table class="preview-table">
             <thead>
-              <tr><th>#</th><th>名称</th><th>长度</th><th>状态</th><th></th></tr>
+              <tr>
+                <th>#</th><th>名称</th><th>长度</th><th>状态</th>
+                <th v-if="hasRowParams">来源</th>
+                <template v-if="hasRowParams">
+                  <th>载体</th><th>克隆方法</th><th>酶</th>
+                </template>
+                <th></th>
+              </tr>
             </thead>
             <tbody>
               <tr v-for="(row, i) in parsedSequences" :key="i"
@@ -397,10 +428,25 @@ onUnmounted(() => {
                   <span v-if="validateParsed(row.sequence, sequenceType)" class="ok">✓</span>
                   <span v-else class="bad">字符不合法</span>
                 </td>
+                <template v-if="hasRowParams">
+                  <td>
+                    <span v-if="row.fromSheet" class="sheet-badge">表格</span>
+                    <span v-else class="src-text">粘贴</span>
+                  </td>
+                  <td>{{ row.params?.vector || '—' }}</td>
+                  <td>{{ row.params?.cloning_method || '—' }}</td>
+                  <td>
+                    {{ row.params?.enzyme_5 || row.params?.enzyme || '—'
+                    }}{{ row.params?.enzyme_3 ? ' / ' + row.params.enzyme_3 : '' }}
+                  </td>
+                </template>
                 <td><button class="btn btn-small btn-secondary" @click="removeRow(i)">移除</button></td>
               </tr>
             </tbody>
           </table>
+          <p v-if="hasRowParams" class="hint-text">
+            「—」= 该项用批量页统一设置；表格行参数来自上传文件（可在文件里修改后重新上传）
+          </p>
         </div>
       </div>
 
@@ -1001,6 +1047,19 @@ h1 {
 .preview-table .bad {
   color: #ef4444;
   font-size: 0.8rem;
+}
+
+.sheet-badge {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+}
+
+.src-text {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
 }
 
 .vector-mode-row {
