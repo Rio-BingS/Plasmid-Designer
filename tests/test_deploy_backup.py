@@ -48,8 +48,11 @@ def sandbox(tmp_path):
         encoding="utf-8",
     )
     (fake_bin / "docker").chmod(0o755)
+    # dirname 等 backup.sh 依赖的外部命令；「无 sqlite3」的用例会把子进程
+    # PATH 收紧到只剩 fake_bin（见 run_backup 调用处的 env_extra），所以
+    # 这里必须把脚本用到的全部外部命令备齐
     for tool in ("gzip", "date", "du", "cut", "mkdir", "grep", "ls", "rm",
-                 "tar", "cat", "tr", "tail"):
+                 "tar", "cat", "tr", "tail", "dirname", "sed", "sort"):
         src = shutil.which(tool)
         if src:
             (fake_bin / tool).symlink_to(src)
@@ -116,8 +119,10 @@ def test_sqlite_fallback_without_sqlite3_warns(sandbox):
     data = project / "data"
     data.mkdir()
     (data / "plasmid_designer.db").write_bytes(b"sqlite-main")
-    (fake_bin / "sqlite3").unlink(missing_ok=True)
-    r = run_backup(project, fake_bin, tmp_path)
+    # PATH 收紧到只剩 fake_bin：CI/桌面 Linux 常自带真实 sqlite3，仅删假
+    # sqlite3 时 command -v 仍会找到真的，走不到拷贝回退分支
+    r = run_backup(project, fake_bin, tmp_path,
+                   env_extra={"PATH": str(fake_bin)})
     assert r.returncode == 0, r.stderr
     assert "sqlite3" in r.stderr  # 退回拷贝必须有告警
     assert len(list((data / "backups").glob("plasmid_designer_*.db.gz"))) == 1
@@ -136,7 +141,8 @@ def test_keep_prunes_old_backups(sandbox):
         f = backups / f"plasmid_designer_old{i}.db.gz"
         f.write_bytes(b"old")
         os.utime(f, (time.time() - (3 - i) * 1000,) * 2)
-    r = run_backup(project, fake_bin, tmp_path, "--keep", "2")
+    r = run_backup(project, fake_bin, tmp_path, "--keep", "2",
+                   env_extra={"PATH": str(fake_bin)})
     assert r.returncode == 0, r.stderr
     remain = sorted(p.name for p in backups.glob("plasmid_designer_*.db.gz"))
     # 新备份 + 最近的 1 份旧备份（old2），共 2 份
