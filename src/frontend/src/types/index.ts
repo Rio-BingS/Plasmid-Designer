@@ -245,6 +245,8 @@ export interface AuthTokenResponse {
 export type BatchDesignRequestPayload = Partial<Omit<DesignRequest, 'sequence' | 'sequence_name'>> & {
   sequences: string[]
   sequence_names?: string[] | null
+  /** 内联一次性载体（整批共用，与单条设计 vector 同语义） */
+  vector?: DesignVectorInput | null
 }
 
 /** POST /vectors/import/ncbi（按关键词导入共享载体库） */
@@ -292,8 +294,21 @@ export interface BatchProgress {
   pending: number
   status: string
   progress_percent: number
-  results: Record<string, unknown>[]
+  results: BatchResultRow[]
   errors: BatchDesignError[]
+}
+
+/** 进度响应中的已完成条目（v2.27.0 起带序列名与计数） */
+export interface BatchResultRow {
+  design_id: string
+  status: string
+  /** 成品质粒名（默认=序列名；开启载体名前缀则「载体名-序列名」） */
+  sequence_name?: string
+  cai?: number | null
+  gc_content?: number | null
+  vector_name?: string
+  primer_count?: number
+  warnings_count?: number
 }
 
 // ==================== 载体导入 / 搜索（对齐 routes/vector_routes.py） ====================

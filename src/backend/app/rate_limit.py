@@ -489,6 +489,7 @@ _ENDPOINT_RULES: List[Tuple[str, str, str]] = [
 # 只读但重型的端点：整段模板匹配（{param} 匹配单个路径段）
 _READ_RULES: List[Tuple[str, str]] = [
     ("/api/design/batch/{id}/download", "export"),
+    ("/api/design/batch/{id}/download/{fmt}", "export"),
     ("/api/design/batch/{id}/report", "export"),
     ("/api/design/{id}/download/{fmt}", "export"),
     ("/api/analysis/design/{id}/export", "export"),
