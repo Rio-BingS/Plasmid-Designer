@@ -63,10 +63,16 @@ export interface SpreadsheetRow {
   }
 }
 
-/** 批量上传表格模板 .xlsx（序列清单 + 填写说明） */
-export async function downloadBatchTemplate(): Promise<void> {
-  const response = await api.get('/design/batch/template', { responseType: 'blob' })
-  await saveBlobResponse(response, 'batch_sequences_template.xlsx')
+/** 批量上传表格模板 .xlsx（simple=两列统一参数 / complex=含参数列逐行覆盖） */
+export async function downloadBatchTemplate(variant: 'simple' | 'complex'): Promise<void> {
+  const response = await api.get('/design/batch/template', {
+    responseType: 'blob',
+    params: { variant },
+  })
+  const filename = variant === 'simple'
+    ? 'batch_sequences_template_simple.xlsx'
+    : 'batch_sequences_template.xlsx'
+  await saveBlobResponse(response, filename)
 }
 
 

@@ -100,17 +100,23 @@ async def create_batch_design(request: BatchDesignRequest, background_tasks: Bac
 
 @router.get("/template")
 async def download_batch_template(
+    variant: str = "complex",
     user: Optional[User] = Depends(get_current_user),
 ):
-    """批量上传表格模板 .xlsx：序列清单 + 填写说明（与解析规则同源）。"""
+    """批量上传表格模板 .xlsx：序列清单 + 填写说明（与解析规则同源）。
+
+    variant=simple → 两列模板（简单批量，统一参数）；
+    variant=complex（默认）→ 含参数列（复杂批量，行级覆盖）。
+    """
     from app.spreadsheet_parse import generate_template_xlsx
 
-    data = generate_template_xlsx()
+    filename = ("batch_sequences_template_simple.xlsx" if variant == "simple"
+                else "batch_sequences_template.xlsx")
+    data = generate_template_xlsx(variant)
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition":
-                 'attachment; filename=batch_sequences_template.xlsx'},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

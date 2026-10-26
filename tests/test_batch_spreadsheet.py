@@ -213,6 +213,41 @@ class TestParamColumns:
 
 
 class TestTemplate:
+    def test_simple_template_two_columns_roundtrip(self):
+        """简单批量模板只有名称+序列两列，解析结果无 params（与解析规则同源闭环）"""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.spreadsheet_parse import parse_spreadsheet
+        client = TestClient(app)
+        resp = client.get("/api/design/batch/template", params={"variant": "simple"})
+        assert resp.status_code == 200
+        assert "template_simple" in resp.headers["content-disposition"]
+        rows = parse_spreadsheet(resp.content, ".xlsx", "amino_acid")
+        assert [r["name"] for r in rows] == ["A01-1", "A01-2"]
+        assert all("params" not in r for r in rows)
+
+    def test_complex_template_keeps_param_columns(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import openpyxl
+        client = TestClient(app)
+        resp = client.get("/api/design/batch/template", params={"variant": "complex"})
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        header = [c.value for c in wb["序列清单"][1]]
+        assert "载体" in header and "克隆方法" in header
+        resp2 = client.get("/api/design/batch/template")
+        wb2 = openpyxl.load_workbook(io.BytesIO(resp2.content))
+        header2 = [c.value for c in wb2["序列清单"][1]]
+        assert header2 == header        # 缺省 variant = complex
+
+    def test_unknown_variant_rejected_or_defaults(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        resp = client.get("/api/design/batch/template", params={"variant": "bogus"})
+        # 未知 variant 按 complex 处理（含参数列），不 500
+        assert resp.status_code == 200
+
     def test_template_download_and_roundtrip(self):
         """模板可下载，且模板本身能被自家解析器解析出示例行（闭环）"""
         from fastapi.testclient import TestClient
