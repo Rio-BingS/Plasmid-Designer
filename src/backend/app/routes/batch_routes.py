@@ -98,6 +98,22 @@ async def create_batch_design(request: BatchDesignRequest, background_tasks: Bac
     }
 
 
+@router.get("/template")
+async def download_batch_template(
+    user: Optional[User] = Depends(get_current_user),
+):
+    """批量上传表格模板 .xlsx：序列清单 + 填写说明（与解析规则同源）。"""
+    from app.spreadsheet_parse import generate_template_xlsx
+
+    data = generate_template_xlsx()
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename=batch_sequences_template.xlsx'},
+    )
+
+
 @router.post("/parse-spreadsheet")
 async def parse_batch_spreadsheet(
     file: UploadFile,

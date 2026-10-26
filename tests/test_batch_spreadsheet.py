@@ -144,5 +144,26 @@ class TestEndpoint:
         assert "非法字符" in resp.json()["detail"]
 
 
+class TestTemplate:
+    def test_template_download_and_roundtrip(self):
+        """模板可下载，且模板本身能被自家解析器解析出示例行（闭环）"""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.spreadsheet_parse import parse_spreadsheet
+        client = TestClient(app)
+        resp = client.get("/api/design/batch/template")
+        assert resp.status_code == 200
+        assert "spreadsheetml" in resp.headers["content-type"]
+        rows = parse_spreadsheet(resp.content, ".xlsx", "amino_acid")
+        assert [r["name"] for r in rows] == ["A01-1", "A01-2"]
+        assert rows[0]["sequence"] == "MGEKTKTEKTKTEKTKTEKT"
+
+    def test_template_has_guide_sheet(self):
+        import openpyxl
+        from app.spreadsheet_parse import generate_template_xlsx
+        wb = openpyxl.load_workbook(io.BytesIO(generate_template_xlsx()))
+        assert wb.sheetnames == ["序列清单", "填写说明"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

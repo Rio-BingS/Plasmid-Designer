@@ -30,6 +30,54 @@ SEQ_HEADER_HINTS = ("序列", "sequence", "seq")
 
 _NAME_CELL_RE = re.compile(r"[\r\n\t]")
 
+# 模板里的示例行：与解析规则同源——用户在模板上直接改，表头/列序不用记
+TEMPLATE_ROWS = [
+    ["序列名", "序列"],
+    ["A01-1", "MGEKTKTEKTKTEKTKTEKT"],
+    ["A01-2", "MGDYKDDDDKGGGG"],
+]
+
+# 填写说明（写在模板第二个工作表；首行表头与解析规则一一对应）
+TEMPLATE_GUIDE = [
+    ["批量设计序列清单 — 填写说明"],
+    [""],
+    ["1. 第一个工作表「序列清单」：A 列填序列名（可自定义，用于结果/订购表/ZIP 命名），"],
+    ["   B 列填序列（氨基酸或 DNA，与提交时的「序列类型」一致）。"],
+    ["2. 表头保留：解析靠「序列名/基因名/Name/Gene/序列/Sequence」等关键词识别列；"],
+    ["   无表头时按第 1 列=名称、第 2 列=序列处理。"],
+    ["3. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
+    ["4. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
+    ["5. 填好后回到批量设计页上传本文件，在预览表里核对名称后提交。"],
+]
+
+
+def generate_template_xlsx() -> bytes:
+    """批量上传模板 .xlsx：序列清单 + 填写说明两个工作表。"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "序列清单"
+    bold = Font(bold=True)
+    fill = PatternFill("solid", fgColor="D9E7FD")
+    for row in TEMPLATE_ROWS:
+        ws.append(row)
+    for cell in ws[1]:
+        cell.font = bold
+        cell.fill = fill
+    # 示例序列列给足够宽度；名称列同理
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 60
+    # 预留 30 个空行（带边框感无需，空白即可），用户直接往下填
+    guide = wb.create_sheet("填写说明")
+    for row in TEMPLATE_GUIDE:
+        guide.append(row)
+    guide.column_dimensions["A"].width = 100
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 
 def _clean_cell(v) -> str:
     """单元格 → 干净字符串；数值 123.0 → '123'（防 Excel 自动转数值）"""
