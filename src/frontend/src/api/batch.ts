@@ -35,7 +35,7 @@ export async function downloadBatchPrimers(batchId: string): Promise<void> {
 /** 表格上传解析（.xlsx/.xlsm/.csv/.tsv → 批量序列清单；后端 openpyxl 解析） */
 export async function parseSpreadsheetFile(
   file: File, sequenceType: 'amino_acid' | 'dna'
-): Promise<{ sequences: { name: string; sequence: string; named: boolean }[]; count: number }> {
+): Promise<{ sequences: SpreadsheetRow[]; count: number }> {
   const form = new FormData()
   form.append('file', file)
   const response = await api.post(
@@ -43,6 +43,24 @@ export async function parseSpreadsheetFile(
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
   return response.data
+}
+
+/** 表格上传的单行：params 来自参数列（alias 已在后端归一为标准枚举字符串） */
+export interface SpreadsheetRow {
+  name: string
+  sequence: string
+  named?: boolean
+  params?: {
+    vector?: string
+    cloning_method?: string
+    insert_source?: string
+    linearization?: string
+    enzyme?: string
+    enzyme_5?: string
+    enzyme_3?: string
+    direction?: string
+    species?: string
+  }
 }
 
 /** 批量上传表格模板 .xlsx（序列清单 + 填写说明） */

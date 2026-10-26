@@ -328,6 +328,22 @@ def _format_row_error(exc: Exception) -> str:
     return str(exc)
 
 
+def _resolve_library_vector(value: str) -> str:
+    """Excel 载体列的值（载体名或 ID）→ 库内 vector_id。
+
+    先按 ID 精确查，再按 name 精确匹配；不用模糊搜索（会对 description
+    产生歧义命中）。查不到抛 ValueError，落该行 errors。"""
+    from app.vector_library_cache import get_vector_library
+    library = get_vector_library()
+    if library.get_vector(value) is not None:
+        return value
+    for v in library.list_vectors():
+        if v.name == value:
+            return v.id
+    raise ValueError(f"载体「{value}」不在载体库：请填库内载体名或 ID"
+                     "（一次性载体请在批量页上传，不能进表格）")
+
+
 def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: List[str]):
     """后台批量设计：每条序列调用统一 run_design。"""
     job = _load_batch(batch_id)
@@ -342,9 +358,20 @@ def run_batch_design_task(batch_id: str, request: BatchDesignRequest, names: Lis
         design_id = f"design_{uuid.uuid4().hex[:12]}"
         try:
             # 整体转发 DesignOptions 与内联载体的全部参数，避免逐字段复制
-            # 漏掉新增选项导致单任务与批量结果不一致
+            # 漏掉新增选项导致单任务与批量结果不一致；行级非 None 覆盖
+            # 批级（row_params 与 sequences 对齐，见 RowParams）
+            row = (request.row_params[i]
+                   if request.row_params and i < len(request.row_params) else None)
+            merged = request.model_dump(
+                exclude={"sequences", "sequence_names", "row_params"})
+            if row is not None:
+                overrides = row.model_dump(exclude_none=True)
+                vec = overrides.pop("vector", None)
+                if vec:
+                    overrides["vector_id"] = _resolve_library_vector(vec)
+                merged.update(overrides)   # 行级非 None 覆盖批级
             single = DesignRequest(
-                **request.model_dump(exclude={"sequences", "sequence_names"}),
+                **merged,
                 sequence=sequence,
                 sequence_name=sequence_name,
             )

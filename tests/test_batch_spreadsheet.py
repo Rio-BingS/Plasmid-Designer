@@ -144,6 +144,74 @@ class TestEndpoint:
         assert "非法字符" in resp.json()["detail"]
 
 
+class TestParamColumns:
+    """v2.29.0：Excel 参数列（每行覆盖载体/克隆方法/酶等）"""
+
+    def test_chinese_param_headers(self):
+        rows = [["序列名", "序列", "载体", "克隆方法", "酶5", "酶3", "方向"],
+                ["A01-1", "MGEKTKTEKTKTEKTKTEKT", "pET-28a", "限制性酶切", "NdeI", "XhoI", "自动"],
+                ["A01-2", "MGDYKDDDDKGGGG", "", "gibson", "", "", ""]]
+        out = _parse(rows)
+        assert out[0]["params"] == {
+            "vector": "pET-28a", "cloning_method": "restriction",
+            "enzyme_5": "NdeI", "enzyme_3": "XhoI", "direction": "auto"}
+        # 只填克隆方法的行：params 只含该键（其余留空 = 继承批级）
+        assert out[1]["params"] == {"cloning_method": "gibson"}
+
+    def test_english_param_headers_and_aliases(self):
+        rows = [["Name", "Sequence", "Vector", "Cloning Method", "Insert Source",
+                 "Linearization", "Direction", "Species"],
+                ["g1", "MGEKTKTEKTKTEKTKTEKT", "pET-21a", "Golden Gate", "全基因合成",
+                 "双酶切", "反向", "human"]]
+        out = _parse(rows)
+        assert out[0]["params"] == {
+            "vector": "pET-21a", "cloning_method": "golden_gate",
+            "insert_source": "gene_synthesis", "linearization": "double_digest",
+            "direction": "reverse", "species": "human"}
+
+    def test_single_enzyme_column(self):
+        """单「酶」列：更具体的酶5/酶3 列先被占用，剩余列归 enzyme"""
+        rows = [["序列名", "序列", "酶"],
+                ["g1", "MGEKTKTEKTKTEKTKTEKT", "BsaI"]]
+        out = _parse(rows)
+        assert out[0]["params"] == {"enzyme": "BsaI"}
+
+    def test_legacy_two_column_file_has_no_params(self):
+        out = _parse([["序列名", "序列"], ["g1", "MGEKTKTEKTKTEKTKTEKT"]])
+        assert "params" not in out[0]
+
+    def test_unknown_cloning_method_lists_legal_values(self):
+        with pytest.raises(ValueError, match="无法识别"):
+            _parse([["序列名", "序列", "克隆方法"],
+                    ["g1", "MGEKTKTEKTKTEKTKTEKT", "魔法组装"]])
+        try:
+            _parse([["序列名", "序列", "克隆方法"],
+                    ["g1", "MGEKTKTEKTKTEKTKTEKT", "魔法组装"]])
+        except ValueError as e:
+            assert "gibson" in str(e) and "限制性酶切" in str(e)
+
+    def test_param_error_reports_row(self):
+        with pytest.raises(ValueError, match="克隆方法"):
+            _parse([["序列名", "序列", "克隆方法"],
+                    ["g1", "MGEKTKTEKTKTEKTKTEKT", "ok"],
+                    ["g2", "MGDYKDDDDKGGGG", "错误值"]])
+
+    def test_template_has_param_columns_roundtrip(self):
+        """模板含参数列，且模板自身可被解析出参数（与解析规则同源闭环）"""
+        import openpyxl
+        from app.spreadsheet_parse import generate_template_xlsx
+        wb = openpyxl.load_workbook(io.BytesIO(generate_template_xlsx()))
+        header = [c.value for c in wb["序列清单"][1]]
+        assert header[:2] == ["序列名", "序列"]
+        assert "载体" in header and "克隆方法" in header and "酶5" in header
+        rows = parse_spreadsheet(generate_template_xlsx(), ".xlsx", "amino_acid")
+        assert rows[0]["params"]["cloning_method"] == "restriction"
+        assert rows[0]["params"]["enzyme_5"] == "NdeI"
+        # 第二行示范大部分参数留空 = 继承批级（只填克隆方法与线性化）
+        assert rows[1]["params"] == {"cloning_method": "gibson",
+                                     "linearization": "double_digest"}
+
+
 class TestTemplate:
     def test_template_download_and_roundtrip(self):
         """模板可下载，且模板本身能被自家解析器解析出示例行（闭环）"""

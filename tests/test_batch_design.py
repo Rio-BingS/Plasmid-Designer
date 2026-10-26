@@ -515,5 +515,142 @@ class TestBatchDownloadEndpoints:
         assert b1 != b2 and (b1.split("_")[0] == b2.split("_")[0])
 
 
+# ==================== v2.29.0：行级参数覆盖（row_params） ====================
+
+class TestRowParams:
+    """行级参数覆盖：契约校验、后台任务合并、行级报错不炸整批"""
+
+    def _fake_run(self, seen):
+        from app.routes.models import DesignResult, DesignStatus
+
+        def fake(design_id, single):
+            seen.append(single)
+            return DesignResult(
+                design_id=design_id, status=DesignStatus.COMPLETED,
+                input_sequence=single.sequence, optimized_sequence="ATG",
+                construct_sequence="ATG", vector_id=single.vector_id,
+                cloning_method=single.cloning_method.value, created_at=datetime.now(),
+            )
+        return fake
+
+    def test_row_params_count_mismatch_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="row_params 数量必须与 sequences 一致"):
+            BatchDesignRequest(
+                sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+                cloning_method="restriction",
+                row_params=[{"cloning_method": "gibson"}])   # 1 条 vs 2 序列
+
+    def test_row_params_accept_enums_and_none(self):
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction",
+            row_params=[{"cloning_method": "gibson", "gibson_linearization": "custom_arms"},
+                        None])
+        assert request.row_params[0].cloning_method.value == "gibson"
+        assert request.row_params[1] is None
+
+    def test_row_params_merged_into_each_design_request(self, monkeypatch):
+        """行级非 None 覆盖批级；None 行完全继承批级"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction",
+            row_params=[
+                {"cloning_method": "gibson", "gibson_linearization": "single_site",
+                 "enzyme_5": "BamHI", "enzyme_3": "EcoRI"},
+                None,
+            ])
+        job = BatchDesignStatus(batch_id="batch_rowparam01", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+
+        # 第 1 行：行级覆盖生效
+        assert seen[0].cloning_method.value == "gibson"
+        assert seen[0].gibson_linearization == "single_site"
+        assert seen[0].enzyme_5 == "BamHI" and seen[0].enzyme_3 == "EcoRI"
+        # 第 2 行：完全继承批级
+        assert seen[1].cloning_method.value == "restriction"
+        assert seen[1].enzyme_5 == "NdeI" and seen[1].enzyme_3 == "XhoI"
+
+    def test_row_vector_resolved_from_library_name(self, monkeypatch):
+        """行级载体列（库内载体名）→ 解析成 vector_id"""
+        from unittest.mock import patch
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        class _FakeVec:
+            id = "pET-21a"
+            name = "pET-21a(+)"
+
+        class _FakeLib:
+            def get_vector(self, vid):
+                return None          # 按名填的载体不是 ID：ID 查落空
+            def list_vectors(self):
+                return [_FakeVec()]  # name 精确匹配 → pET-21a
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction",
+            row_params=[{"vector": "pET-21a(+)"}])
+        job = BatchDesignStatus(batch_id="batch_rowvec001", total=1, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        with patch("app.vector_library_cache.get_vector_library",
+                   return_value=_FakeLib()):
+            batch_routes.run_batch_design_task(job.batch_id, request, ["a"])
+        assert seen[0].vector_id == "pET-21a"      # 名字 → 解析成库内 id
+
+    def test_row_vector_not_in_library_fails_row_only(self, monkeypatch):
+        """行级载体不在库：该行 errors，其余行正常完成"""
+        from unittest.mock import patch
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        class _FakeLib:
+            def get_vector(self, vid):
+                return None
+            def list_vectors(self):
+                return []
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction",
+            row_params=[{"vector": "不存在的载体"}, None])
+        job = BatchDesignStatus(batch_id="batch_rowvec002", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        with patch("app.vector_library_cache.get_vector_library",
+                   return_value=_FakeLib()):
+            batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+        done = batch_routes._load_batch(job.batch_id)
+        assert done.completed == 1 and done.failed == 1
+        assert "不在载体库" in done.errors[0]["error"]
+
+    def test_row_invalid_enum_rejected_at_submit(self):
+        """行级非法枚举在批量请求构造时即 422（提交时拦截）"""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            BatchDesignRequest(
+                sequences=["ATGAAA"], enzyme_5="NdeI", enzyme_3="XhoI",
+                cloning_method="restriction",
+                row_params=[{"cloning_method": "not_a_method"}])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
