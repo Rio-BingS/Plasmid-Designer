@@ -24,17 +24,67 @@ MAX_SHEET_COLS = 50
 UPLOAD_SUFFIXES = (".xlsx", ".xlsm", ".csv", ".tsv")
 
 # 表头列名识别（小写、去空白后子串匹配）。中英文常见叫法都认；
-# 顺序即优先级：先找序列列再找名称列（序列列是必需的）
+# 名称列先识别：「序列名/基因名」也含「序列」二字（见 _find_columns）
 NAME_HEADER_HINTS = ("序列名", "基因名", "名称", "name", "gene", "id")
 SEQ_HEADER_HINTS = ("序列", "sequence", "seq")
 
+# 参数列表头 → params 字典键（canonical）。子串匹配、按列表顺序；
+# 单「酶/Enzyme」列放最后——「酶5/5'酶」列会先被更具体的 hint 占走
+PARAM_HEADER_HINTS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("vector", ("载体", "vector")),
+    ("cloning_method", ("克隆方法", "克隆方式", "cloning", "assembly_method")),
+    ("insert_source", ("插入来源", "片段来源", "insert_source")),
+    ("linearization", ("线性化", "linearization", "linearization_mode")),
+    ("enzyme_5", ("酶5", "5'酶", "5′酶", "enzyme_5", "enzyme5")),
+    ("enzyme_3", ("酶3", "3'酶", "3′酶", "enzyme_3", "enzyme3")),
+    ("enzyme", ("酶", "enzyme")),
+    ("direction", ("方向", "direction")),
+    ("species", ("物种", "species")),
+]
+
+# Excel 参数值 → 标准枚举值（归一只做「字符串→枚举」，合法性校验全部
+# 复用 DesignOptions 现有校验器——不出现两套校验）。匹配前 lower 去空白
+CLONING_METHOD_ALIASES = {
+    "gibson": "gibson", "gibson装配": "gibson", "吉布森": "gibson",
+    "gibson组装": "gibson",
+    "golden_gate": "golden_gate", "goldengate": "golden_gate",
+    "golden gate": "golden_gate", "金门": "golden_gate",
+    "golden gate组装": "golden_gate",
+    "restriction": "restriction", "限制性": "restriction",
+    "限制性酶切": "restriction", "酶切": "restriction",
+    "双酶切": "restriction", "单酶切": "restriction",
+    "gene_synthesis": "gene_synthesis", "全基因合成": "gene_synthesis",
+    "基因合成": "gene_synthesis", "合成": "gene_synthesis",
+}
+INSERT_SOURCE_ALIASES = {
+    "pcr": "pcr", "pcr引物": "pcr", "pcr引物设计": "pcr", "引物": "pcr",
+    "gene_synthesis": "gene_synthesis", "全基因合成": "gene_synthesis",
+    "合成": "gene_synthesis", "寡核苷酸": "gene_synthesis",
+}
+LINEARIZATION_ALIASES = {
+    "double_digest": "double_digest", "双酶切": "double_digest",
+    "双酶切线性化": "double_digest",
+    "single_site": "single_site", "单位点": "single_site",
+    "单位点线性化": "single_site",
+    "custom_arms": "custom_arms", "自定义同源臂": "custom_arms",
+    "自定义臂": "custom_arms", "同源臂": "custom_arms",
+}
+DIRECTION_ALIASES = {
+    "auto": "auto", "自动": "auto", "自动判定": "auto",
+    "reverse": "reverse", "反向": "reverse", "反义": "reverse",
+    "反义构建": "reverse",
+    "plus": "plus", "正链": "plus", "+": "plus",
+    "minus": "minus", "负链": "minus", "-": "minus",
+}
+
 _NAME_CELL_RE = re.compile(r"[\r\n\t]")
 
-# 模板里的示例行：与解析规则同源——用户在模板上直接改，表头/列序不用记
+# 模板里的示例行：与解析规则同源——用户在模板上直接改，表头/列序不用记。
+# 参数列（C 起）全部可留空 = 继承批量页统一设置
 TEMPLATE_ROWS = [
-    ["序列名", "序列"],
-    ["A01-1", "MGEKTKTEKTKTEKTKTEKT"],
-    ["A01-2", "MGDYKDDDDKGGGG"],
+    ["序列名", "序列", "载体", "克隆方法", "插入来源", "线性化", "酶5", "酶3", "方向", "目标物种"],
+    ["A01-1", "MGEKTKTEKTKTEKTKTEKT", "pET-28a", "限制性酶切", "pcr", "", "NdeI", "XhoI", "auto", "ecoli"],
+    ["A01-2", "MGDYKDDDDKGGGG", "", "gibson", "", "双酶切", "", "", "", ""],
 ]
 
 # 填写说明（写在模板第二个工作表；首行表头与解析规则一一对应）
@@ -44,10 +94,17 @@ TEMPLATE_GUIDE = [
     ["1. 第一个工作表「序列清单」：A 列填序列名（可自定义，用于结果/订购表/ZIP 命名），"],
     ["   B 列填序列（氨基酸或 DNA，与提交时的「序列类型」一致）。"],
     ["2. 表头保留：解析靠「序列名/基因名/Name/Gene/序列/Sequence」等关键词识别列；"],
-    ["   无表头时按第 1 列=名称、第 2 列=序列处理。"],
-    ["3. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
-    ["4. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
-    ["5. 填好后回到批量设计页上传本文件，在预览表里核对名称后提交。"],
+    ["   无表头时按第 1 列=名称、第 2 列=序列处理（此时没有参数列）。"],
+    ["3. 参数列（C 列起）全部可选、留空 = 用批量页上设置的统一参数；每行可覆盖："],
+    ["   载体：只能填载体库里的载体名或 ID（一次性载体不进表格）；"],
+    ["   克隆方法：gibson / golden_gate / 限制性酶切 / 全基因合成（中英文均可）；"],
+    ["   插入来源：pcr / 全基因合成；线性化：双酶切 / 单位点 / 自定义同源臂（Gibson 用）；"],
+    ["   酶5/酶3：限制性或 Gibson 双酶切的两个酶，如 NdeI、XhoI（Golden Gate 行必须"],
+    ["   在本行填 Type IIS 酶，或在页面上统一选好）；方向：自动 / 反向 / 正链 / 负链；"],
+    ["   目标物种：ecoli / human / yeast / cho。"],
+    ["4. 行数上限 200（批量设计单次最多 100 条）；序列列不要混入编号、备注等文本。"],
+    ["5. 也支持 CSV/TSV：另存为 CSV 时请用 UTF-8 或 GBK 编码（Excel 中文环境默认可直接上传）。"],
+    ["6. 填好后回到批量设计页上传本文件，在预览表里核对名称与参数后提交。"],
 ]
 
 
@@ -66,9 +123,11 @@ def generate_template_xlsx() -> bytes:
     for cell in ws[1]:
         cell.font = bold
         cell.fill = fill
-    # 示例序列列给足够宽度；名称列同理
+    # 示例序列列给足够宽度；参数列窄一些
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 60
+    for col in ("C", "D", "E", "F", "G", "H", "I", "J"):
+        ws.column_dimensions[col].width = 14
     # 预留 30 个空行（带边框感无需，空白即可），用户直接往下填
     guide = wb.create_sheet("填写说明")
     for row in TEMPLATE_GUIDE:
@@ -134,21 +193,69 @@ def _load_rows(data: bytes, suffix: str) -> List[List[str]]:
         wb.close()
 
 
-def _find_columns(header: List[str]) -> Tuple[Optional[int], Optional[int]]:
-    """表头行 → (名称列, 序列列)；识别不出表头返回 (None, None)。
+def _find_columns(header: List[str]) -> Tuple[Optional[int], Optional[int],
+                                              Dict[str, int]]:
+    """表头行 → (名称列, 序列列, 参数列{canonical 键: 列号})。
 
     名称列先识别：「序列名/基因名」也含「序列」二字，序列列若先匹配会把
-    名称列抢走。已识别为名称列的单元格不再参与序列列匹配。"""
+    名称列抢走。已识别为名称/序列列的单元格不再参与参数列匹配；参数列
+    之间同格不重复占用（一个表头只认一种参数）。"""
+    def _norm(cell: str) -> str:
+        return (cell.lower().replace(" ", "").replace("'", "")
+                .replace("′", "").replace("_", "").replace("-", ""))
+
     name_col = seq_col = None
+    param_cols: Dict[str, int] = {}
+    used: set = set()
     for i, cell in enumerate(header):
-        low = cell.lower().replace(" ", "")
+        low = _norm(cell)
         if not low:
             continue
         if name_col is None and any(h in low for h in NAME_HEADER_HINTS):
             name_col = i
+            used.add(i)
         elif seq_col is None and any(h in low for h in SEQ_HEADER_HINTS):
             seq_col = i
-    return name_col, seq_col
+            used.add(i)
+    for i, cell in enumerate(header):
+        if i in used:
+            continue
+        low = _norm(cell)
+        if not low:
+            continue
+        for key, hints in PARAM_HEADER_HINTS:
+            if key in param_cols:
+                continue
+            if any(_norm(h) in low for h in hints):
+                param_cols[key] = i
+                used.add(i)
+                break
+    return name_col, seq_col, param_cols
+
+
+def _normalize_param(key: str, value: str) -> str:
+    """Excel 参数值 → 标准枚举字符串；查不到不猜，报错列出合法值。
+
+    酶名/载体名/物种只做大小写归一（合法性由后续校验器/载体库判定）。"""
+    v = value.strip().lower().replace(" ", "")
+    if key == "cloning_method":
+        table, label = CLONING_METHOD_ALIASES, "克隆方法"
+        legal = "gibson / golden_gate / 限制性酶切 / 全基因合成"
+    elif key == "insert_source":
+        table, label = INSERT_SOURCE_ALIASES, "插入来源"
+        legal = "pcr / 全基因合成"
+    elif key == "linearization":
+        table, label = LINEARIZATION_ALIASES, "线性化"
+        legal = "双酶切 / 单位点 / 自定义同源臂"
+    elif key == "direction":
+        table, label = DIRECTION_ALIASES, "方向"
+        legal = "自动 / 反向 / 正链 / 负链"
+    else:
+        return value.strip()
+    hit = table.get(v) or table.get(value.strip().lower())
+    if hit is None:
+        raise ValueError(f"{label}「{value}」无法识别，可用值：{legal}")
+    return hit
 
 
 def _looks_like_sequence(cell: str, dna: Optional[bool] = None) -> bool:
@@ -174,11 +281,11 @@ def parse_spreadsheet(data: bytes, suffix: str,
         raise ValueError(f"表格行数超过上限（{MAX_SHEET_ROWS} 行），请分批提交")
 
     # 表头识别：第一行能同时认出序列列才算表头；否则按位置约定
-    # （第1列=名称、第2列=序列）处理，第一行也当数据
+    # （第1列=名称、第2列=序列）处理，第一行也当数据（没有参数列）
     header = rows[0]
-    name_col, seq_col = _find_columns(header)
+    name_col, seq_col, param_cols = _find_columns(header)
     if seq_col is None:
-        name_col, seq_col = 0, 1
+        name_col, seq_col, param_cols = 0, 1, {}
         data_rows = rows
         inferred = True
     else:
@@ -204,12 +311,24 @@ def parse_spreadsheet(data: bytes, suffix: str,
             raise ValueError(
                 f"第 {i + 1} 行序列含非法字符（{col} 列）——请确认序列列没有"
                 "混入编号、备注等文本")
-        out.append({
+        entry: Dict[str, object] = {
             "name": name[:100],
             "sequence": seq.upper() if suffix not in (".csv", ".tsv") else seq,
             "named": bool(row[name_col] if name_col is not None
                           and name_col < len(row) else "") and not inferred,
-        })
+        }
+        # 行级参数：有参数列才带 params（旧两列文件不含该键，前端兼容）；
+        # 空单元格 = 该项留空 = 继承批量页统一设置
+        if param_cols:
+            params: Dict[str, str] = {}
+            for key, col in param_cols.items():
+                raw = row[col] if col < len(row) else ""
+                if not raw:
+                    continue
+                params[key] = _normalize_param(key, raw)
+            if params:
+                entry["params"] = params
+        out.append(entry)
     if not out:
         raise ValueError("表格里没有可识别的序列行")
     return out

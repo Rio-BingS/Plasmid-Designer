@@ -247,6 +247,8 @@ export type BatchDesignRequestPayload = Partial<Omit<DesignRequest, 'sequence' |
   sequence_names?: string[] | null
   /** 内联一次性载体（整批共用，与单条设计 vector 同语义） */
   vector?: DesignVectorInput | null
+  /** 行级参数覆盖（与 sequences 等长；元素 null = 该行完全继承批级） */
+  row_params?: (Record<string, unknown> | null)[] | null
 }
 
 /** POST /vectors/import/ncbi（按关键词导入共享载体库） */
