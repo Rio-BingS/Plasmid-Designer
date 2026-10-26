@@ -35,11 +35,15 @@ def sandbox(tmp_path):
 
     fake_bin = tmp_path / "fakebin"
     fake_bin.mkdir()
+    # 真实脚本用 `docker compose -f <路径> ps/exec ...` 调用，所以按参数列表
+    # 里是否出现 ps/exec 判定（不能看固定位置 $2，-f 在前面）
     (fake_bin / "docker").write_text(
         "#!/bin/bash\n"
         'echo "docker $*" >> "$FAKE_LOG"\n'
-        'if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then echo "container_id"; exit 0; fi\n'
-        'if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then cat; exit 0; fi\n'
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "ps" ]; then echo "container_id"; exit 0; fi\n'
+        '  if [ "$a" = "exec" ]; then cat; exit 0; fi\n'
+        "done\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -60,8 +64,11 @@ def run_backup(project, fake_bin, tmp_path, *args, env_extra=None):
     env.pop("DATA_DIR", None)
     if env_extra:
         env.update(env_extra)
+    # 被测对象是沙箱里的 backup.sh 副本：bash 必须先接脚本路径再接脚本参数，
+    # 否则 --keep 等会被 bash 当成自己的选项（bash: --keep: invalid option）
+    script = project / "deploy" / "scripts" / "backup.sh"
     return subprocess.run(
-        [str(BASH), *args], cwd=project, env=env,
+        [str(BASH), str(script), *args], cwd=project, env=env,
         capture_output=True, text=True, timeout=60,
     )
 
