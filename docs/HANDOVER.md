@@ -1,7 +1,8 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-22（`v2.17.2`；三套测试为本机当天实测，历史红灯留档见 §7）。
+> **更新**：2026-10-27（`v2.30.1`；批量设计两步工作流收尾，CI 自 v2.18.0 起连续红灯清零，
+> 本次修复留档见 §7.4，下一步见 §8）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -11,32 +12,32 @@
 
 ## 1. 一句话现状
 
-单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.17.2**
-（2026-10-22 发布，标签与 `main` 均已推送 GitHub），功能完整可用、有持续的真实数据回归。
-2026-10-19 本机实测：后端 **1491 passed / 39 skipped / 0 failed**，前端 **67 文件 / 531 passed**，
-`vue-tsc --noEmit` **0 error**。
+单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.30.1**
+（2026-10-27 发布，标签与 `main` 均已推送，CI 绿）。功能完整可用、有持续的真实数据回归。
+2026-10-26 实测：后端 **1796 passed / 43 skipped / 0 failed**（CI 口径，含此前被
+尺寸预算挡住从未跑过的 `test_deploy_backup.py`），前端 **82 文件 / 636 passed**，
+`vue-tsc --noEmit` **0 error**。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
+`/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
+backend/frontend 容器（流程见 §2「线上部署」行）。
 
-**唯一已知缺口是部署，不是代码**：本机 `src/frontend/dist/` 还是 **2026-10-08 的单包旧构建**
-（1 个 `index-*.js` 327 KB + 1 个 css；v2.13 起前端已按路由拆包），线上前端资产若也源自它，
-则 v2.13→v2.16.2 的所有前端改动都还没上线。见 §8 P1。
+**当前最大缺口是批量页体量**：`src/frontend/src/views/BatchDesignView.vue` 已 **1318 行**、
+连续两轮触发 CI 尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
 
-## 2. 事实清单（2026-10-19 本机实测，可直接引用）
+## 2. 事实清单（2026-10-26/27 实测，可直接引用）
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.17.2`（2026-10-22 补丁版：双酶切插入片段按真实链方向组装；follow-redirects 升到 1.16.1 修安全通告） |
-| 后端测试 | **1491 passed / 39 skipped / 0 failed**（约 100 秒；CI 上那 5 项真实数据回归被 skip） |
-| 前端测试 | **67 个文件 / 531 passed**（约 14 秒）；`vue-tsc --noEmit` **0 error** |
-| 运行时 | Python **3.12.5**（仓库根 `.venv`）+ Node **v24.19.0** / npm 11.17.0；FastAPI + Vue3/Vite |
+| 版本 / 标签 | `v2.30.1`（2026-10-27：复杂批量载体池 + 表格参数列对齐；CI 修复链 v2.29.3–v2.29.5 见 §7.4） |
+| 后端测试 | **1796 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 前端测试 | **82 个文件 / 636 passed**；`vue-tsc --noEmit` **0 error** |
+| 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
-| 前端构建产物 | `src/frontend/dist/`：**2026-10-08 00:11** 的单包构建（3 文件 / 0.38 MB / 主包 327 KB）——**旧**，见 §8 P1；`dist/` 在 `.gitignore` 里，不入库 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
 | 缓存版本常量 | `CODON_OPT_ALGO="v2.2"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="4"`（`app/routes/map_routes.py`） |
-| 业务数据 | `data/vectors/` 9 份载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（55 KB 图谱元件库） |
-| 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归会真跑） |
-| CI | `.github/workflows/ci.yml`：`pytest tests -q` + `pip-audit`；`vue-tsc` + `vitest` + `npm audit` |
-| 部署模板 | `deploy/docker`（Compose + nginx）、`deploy/bare`（Ubuntu systemd + nginx）、`deploy/scripts`（deploy.sh / Makefile） |
-| 线上部署 | 仓库里**没有**主机名/凭据。按 KNOWN_ISSUES「部署备忘」与 v2.15.0 的 Cloudflare 修复推断：1 核 2G VPS、裸机 systemd、`dist/` 本地构建后上传、Cloudflare 前置——**接手须向所有者确认，不要猜着连** |
+| 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
+| 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
+| CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（§7.4 教训） |
+| 线上部署 | **Docker Compose on VPS**（`ssh myvps`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出） |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
 
 ## 3. 版本主线（v2.12 之后）
@@ -181,22 +182,58 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 - **教训**：ID 校验要拿真实索引全量回归，别按示例写白名单；「列出来」和「打开」两条路径的
   校验口径必须一致。
 
+### 7.4 CI 连续红灯三层根因 + backup.sh 两个真实缺陷（v2.29.3–v2.29.5，2026-10-26）
+
+- **现象**：CI 自 v2.18.0（2026-10-22）起连续 23 次失败，本地全量测试一直是绿的，无人察觉。
+- **根因三层（逐层剥开）**：
+  1. **门禁失败，测试从未跑到**：①文件尺寸预算被 v2.18→v2.29 的功能迭代打穿
+     （6 个文件越线，其中 `construct_assembly.py` 与 `BatchDesignView.vue` 硬超 900 行默认
+     预算）；②`npm audit --audit-level=high` 被 happy-dom 17.x 的 CVE-2026-33943（high）
+     卡住 → 尺寸预算 `--refresh` 记账 + happy-dom 升 21.0.4。
+  2. **`tests/test_deploy_backup.py` 从未真正运行过**：Windows 被 `skipif(platform=="win")`
+     跳过、CI 被尺寸预算挡在测试步骤之前。修好门禁后首个 Linux 运行即暴露测试自身两处 bug：
+     `run_backup` 调 bash 时漏传脚本路径（`--keep` 被 bash 当成自己的选项）、fake docker 按
+     参数固定位置匹配与真实调用 `docker compose -f <path> ps` 对不上。
+  3. **CI runner 环境差异**：Ubuntu runner 自带真实 sqlite3，「无 sqlite3 走拷贝回退」的
+     用例删掉假工具后 `command -v` 仍找到真的 → 真拒绝伪造 DB 文件。修法：把子进程 PATH
+     收紧到只剩测试沙箱（并补齐脚本依赖的 dirname 等符号链接）。
+- **连带修复的 backup.sh 两个真实生产缺陷**（Linux 实测暴露）：`set -u` 下 PostgreSQL 模式
+  走到 uploads 打包段 `DATA_DIR` 未定义（只在 SQLite 分支赋值）→ 备份完成后退出 1；保留
+  策略在某前缀无备份时 `ls` 退出码 2 被 `pipefail` 误判为失败。cron 备份自此恢复正常退出。
+- **验证**：VPS（Ubuntu/py3.10）实测 4 passed；CI run #106 起回绿。
+- **教训**：①**被 skip 的测试等于不存在的测试**——写入平台相关测试时就该在目标平台跑一次；
+  ②**本地绿 ≠ CI 绿**——CI 独有的门禁（尺寸预算/audit/build）要在本地预演，改完代码先跑
+  `python scripts/check_file_size.py`；③连续红灯无人看的根因是这几轮迭代只盯本地测试，
+  没有「推完看一眼 CI」的收尾动作。
+
+### 7.5 合成分子取向簿记的根治（v2.26.x，2026-10-26）
+
+- **现象**：全基因合成的合成 oligo 两端与构建体图谱对不上（用户 SnapGene 实测反馈），
+  v2.26.0/v2.26.2 两次修复都只对了一半（负链装配时同源臂左右互换且各自反互补）。
+- **根因**：同源臂计划里有两套取向——`arm_5_seq/arm_3_seq` 是「基因取向」（供 PCR 引物），
+  合成分子误用了它；本质是**用簿记推坐标，而构建体本身坐标自洽**。
+- **修法（v2.26.3 架构性根治）**：合成分子直接取**构建体上的现成段落**（片段±侧翼），
+  oligo↔图谱的对应关系由构造保证，不再做任何取向换算；连带 v2.26.4 修了环状构建体
+  跨原点场景（旋转后右连接点贴字符串末端，取段/命中判定/图谱轨道都要环绕语义）。
+- **教训**：凡是「从既成结果反推」的场景，直接取既成结果的段落，别重建——簿记迟早左右互换。
+
 ## 8. 建议的下一步（按优先级）
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
-| **P1** | 本地 `npm run build` 重建 `src/frontend/dist/`，整目录上传并做一次线上验收 | 本机 `dist/` 是 2026-10-08 的**单包**旧构建，v2.13 起已按路由拆包；v2.15.1→v2.16.x 的前端改动（环形图谱放大裁切、测序结论/峰图展示、read「可信区」列与高级参数）也都在其后 |
-| **P1** | 线上后端升到 v2.17.2 并验证三处 | 只需 `git pull` + 重启；验：搜 `pET-28a` 能打开（§7.3）、测序结论坐标不再自相矛盾（v2.16.1）、read 概况表有「可信区」列（v2.16.0） |
-| P2 | 图谱「高级参数」可用性回访 | v2.16.0 新增可调边界，缺真实用户反馈 |
-| P2 | 把 `_assert_private` 收进共享 helper | 目前两个测试文件各一份，出现第三处就该提取 |
-| P3 | iGEM Registry 通道 / UniProt 蛋白级注释 | UniProt 现只做「反查核酸入口」；iGEM 完全未接（用户未表态，先别自行动手） |
-| P3 | SnapGene 中长期方案 | 现为「默认开启 + 登录可用」的风险接受态；长期应申请 GraphPad 授权或改用 NCBI 对应记录 |
+| **P1** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 连续两轮 CI 尺寸预算记账（900→1195→1318），再涨就要频繁动白名单；拆完白名单应只减不增 |
+| **P1** | CI 尺寸预算纪律：动代码后本地先跑 `python scripts/check_file_size.py`，超线先拆分或明确记账 | v2.30.0 又红过一次才记账；把预演纳入收尾动作可避免「本地绿 CI 红」复发 |
+| P2 | 批量二期候选：每条序列更多参数覆盖、服务端批量历史列表 API（现为 localStorage 本地恢复，换设备不可见） | 用户工作流可能需要 |
+| P2 | 白名单历史大文件拆分收敛（design_service.py 2235、primer_designer 1048 等） | 与 P1 同一轮重构做，白名单只减不增 |
+| P3 | 批量执行并发度（现为串行逐条，100 条上限） | 常规基因每条 ~1s，暂够用 |
 
 **明确不要主动做的事**（用户已表态或已定案）：扩展酶表（「不需要，已有在线导入」）、
-SnapGene 批量镜像/定时同步、Addgene 代登录、把 `ADDGENE_SESSION_COOKIE` 当多用户特性推广、
+SnapGene 批量镜像/定时同步、Addgene 代登录、iGEM Registry 接入（用户未表态）、
 把仓库外侧的 `docs/` 与 `seqdemo_tmp/` 归档清理（用户要求保持原样）。
 
-**挂账但非 bug**：同聚物内部「缺第几个 A」信息论不可解，维持「计数确证、定位存疑」。
+**挂账但非 bug**：同聚物内部「缺第几个 A」信息论不可解，维持「计数确证、定位存疑」；
+Gibson 单位点恒正链组装（模型限制）、custom_arms 负链融合检测不覆盖、Golden Gate 合成
+oligo 未含末端。
 
 ## 9. 接手第一天 checklist
 
