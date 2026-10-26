@@ -6,6 +6,18 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.29.4] - 2026-10-26
+
+### 修复
+- **backup.sh 两处真实缺陷**（CI 恢复跑测试后首个 Linux 运行即暴露；
+  此前这组测试在 Windows 被 skip、在 CI 被尺寸预算挡住，从未真正执行）：
+  PostgreSQL 模式因 `DATA_DIR` 未初始化在 uploads 打包段退出 1（备份
+  已完成却报错）；保留策略清理在某前缀无备份时 `pipefail` 把成功误判
+  为失败（退出 2）。另修测试自身两处问题：调 bash 漏传脚本路径、假
+  docker 的参数位置匹配与真实调用不符。VPS（Ubuntu）实测 4 passed。
+- 部署侧注意：VPS 上 `/opt/plasmid-designer/deploy/scripts/backup.sh`
+  已随本次修复更新，cron 备份从此恢复可正常退出。
+
 ## [2.29.3] - 2026-10-26
 
 ### 修复
