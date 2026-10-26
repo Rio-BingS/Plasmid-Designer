@@ -32,5 +32,18 @@ export async function downloadBatchPrimers(batchId: string): Promise<void> {
   await saveBlobResponse(response, `${batchId}_all_primers.tsv`)
 }
 
+/** 表格上传解析（.xlsx/.xlsm/.csv/.tsv → 批量序列清单；后端 openpyxl 解析） */
+export async function parseSpreadsheetFile(
+  file: File, sequenceType: 'amino_acid' | 'dna'
+): Promise<{ sequences: { name: string; sequence: string; named: boolean }[]; count: number }> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await api.post(
+    `/design/batch/parse-spreadsheet?sequence_type=${sequenceType}`, form,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  )
+  return response.data
+}
+
 
 // 载体序列下载

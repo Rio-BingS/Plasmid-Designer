@@ -7,7 +7,8 @@ import zipfile
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile)
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
@@ -95,6 +96,38 @@ async def create_batch_design(request: BatchDesignRequest, background_tasks: Bac
         "total": len(request.sequences),
         "message": "批量设计任务已提交",
     }
+
+
+@router.post("/parse-spreadsheet")
+async def parse_batch_spreadsheet(
+    file: UploadFile,
+    sequence_type: str = "amino_acid",
+    user: Optional[User] = Depends(get_current_user),
+):
+    """上传表格（.xlsx/.xlsm/.csv/.tsv）解析为批量序列清单。
+
+    返回与 FASTA/粘贴相同的 [{name, sequence, named}] 语义，前端预览表
+    对三种入口一视同仁。解析在后端做：npm 上的 xlsx 库有未修复的安全
+    公告，前端不引 Excel 解析库。
+    """
+    from app.spreadsheet_parse import UPLOAD_SUFFIXES, parse_spreadsheet
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="文件为空")
+    name = file.filename or ""
+    suffix = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if suffix not in UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail="仅支持 .xlsx/.xlsm/.csv/.tsv 表格（含「名称」与「序列」两列）")
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件超过 5MB 上限")
+    try:
+        rows = parse_spreadsheet(data, suffix, sequence_type)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"sequences": rows, "count": len(rows)}
 
 
 @router.get("/{batch_id}", response_model=BatchProgressResponse)

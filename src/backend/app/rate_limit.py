@@ -471,6 +471,7 @@ _ENDPOINT_RULES: List[Tuple[str, str, str]] = [
     ("POST", "/api/vectors/{id}/sequencing/analyze", "upload"),
     # 批量设计
     ("POST", "/api/design/batch", "batch"),
+    ("POST", "/api/design/batch/parse-spreadsheet", "upload"),
     # 单条设计
     ("POST", "/api/design", "design"),
     # 认证写操作（登录爆破面）
