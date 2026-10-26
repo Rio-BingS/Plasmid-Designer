@@ -410,7 +410,10 @@ class RowParams(BaseModel):
     vector_id；一次性载体体积大不进表格，仍走批量级 vector 字段整批共用。
     """
     vector: Optional[str] = Field(default=None, max_length=120,
-                                  description="载体库载体名或 ID（行级覆盖）")
+                                  description="载体名/ID（行级覆盖；按 vector_source 解析）")
+    vector_source: Optional[Literal["library", "inline"]] = Field(
+        default=None,
+        description="载体来源：library=载体库；inline=自己上传载体（批量页上传的载体池）。留空先库后池")
     cloning_method: Optional[CloningMethod] = None
     insert_source: Optional[Literal["pcr", "gene_synthesis"]] = None
     gibson_linearization: Optional[Literal[
@@ -421,6 +424,9 @@ class RowParams(BaseModel):
     insert_direction: Optional[Literal[
         "auto", "reverse", "plus", "minus"]] = None
     target_species: Optional[str] = Field(default=None, max_length=20)
+    exclude_enzymes: Optional[List[str]] = Field(
+        default=None, max_length=10,
+        description="需从该行优化序列排除的限制酶（覆盖批量级 exclude_enzymes）")
 
 
 class BatchDesignRequest(DesignOptions):
@@ -442,6 +448,11 @@ class BatchDesignRequest(DesignOptions):
     # 行级合法性在后台任务构造每条 DesignRequest 时校验，失败落该行 errors
     row_params: Optional[List[Optional[RowParams]]] = Field(
         default=None, description="每条序列的参数覆盖（与 sequences 等长，元素可为 null）")
+    # 载体池（复杂批量「批量上传载体」区块）：一次性载体不入库，行级
+    # vector_source=inline 时按载体名/文件名从这里取
+    vectors: Optional[List[DesignVectorInput]] = Field(
+        default=None, max_length=100,
+        description="批量上传的一次性载体池（行级「自己上传载体」来源引用）")
 
     @field_validator("sequences", mode="before")
     @classmethod
