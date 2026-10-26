@@ -8,6 +8,6 @@
   "src/backend/core/sanger/pipeline.py": 2872,
   "src/frontend/src/composables/useSeqViz.ts": 963,
   "src/frontend/src/map/components/CircularMap.vue": 929,
-  "src/frontend/src/views/BatchDesignView.vue": 1195,
+  "src/frontend/src/views/BatchDesignView.vue": 1318,
   "src/frontend/src/views/DesignView.vue": 1144
 }
