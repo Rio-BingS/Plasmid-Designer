@@ -46,6 +46,10 @@ if [ -z "$DB_URL" ] && [ -f "$ENV_FILE" ] && grep -qE '^DB_PASSWORD=.+' "$ENV_FI
     DB_URL="postgresql:compose"
 fi
 
+# DATA_DIR 在两种模式都要用（PostgreSQL 模式的 uploads 打包也读它），
+# 必须在分支前初始化——set -u 下引用未定义变量会直接退出
+DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
+
 if [ -n "$DB_URL" ] && echo "$DB_URL" | grep -q '^postgresql'; then
     # ---- PostgreSQL（Docker compose） ----
     DB_USER="${DB_USER:-plasmid}"
@@ -65,7 +69,6 @@ if [ -n "$DB_URL" ] && echo "$DB_URL" | grep -q '^postgresql'; then
     fi
 else
     # ---- SQLite（裸机部署） ----
-    DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
     DB_FILE="$DATA_DIR/plasmid_designer.db"
     [ -f "$DB_FILE" ] || { echo "错误: 未找到 SQLite 库 $DB_FILE" >&2; exit 1; }
     OUT="$OUTPUT_DIR/plasmid_designer_${STAMP}.db.gz"
@@ -91,10 +94,12 @@ SIZE="$(du -h "$OUT" | cut -f1)"
 echo "备份完成: $OUT ($SIZE)"
 
 # ---- 保留策略 -------------------------------------------------------------
-# 按前缀分组各自保留最近 KEEP 份（db 与 uploads 互不挤占）
+# 按前缀分组各自保留最近 KEEP 份（db 与 uploads 互不挤占）。
+# 某前缀无备份时 ls 以 2 退出，pipefail+set -e 会把「备份成功」误判为失败——
+# 整条管线 || true 兜底（清不动旧文件不该让本次备份报错）
 for prefix in plasmid_designer_ uploads_; do
     ls -1t "$OUTPUT_DIR"/${prefix}*.gz 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
         rm -f "$old"
         echo "清理旧备份: $old"
-    done
+    done || true
 done
