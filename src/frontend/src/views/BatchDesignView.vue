@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VectorInfo, CodonTable, DesignVectorPayload } from '@/types'
-import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, downloadBatchTemplate, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError, type SpreadsheetRow } from '@/api'
+import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatchPrimers, parseSpreadsheetFile, downloadBatchTemplate, getBatchReport, getVectors, getCodonTables, getEnzymes, formatApiError, uploadDesignVector, type SpreadsheetRow } from '@/api'
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 import { parseBatchInput, validateParsed } from '@/utils/fastaParse'
@@ -186,6 +186,43 @@ const batchReport = ref<any>(null)
 // 本地任务历史：刷新/重开页面可回到进度页
 const recentBatches = ref<BatchHistoryEntry[]>([])
 
+// ==================== 批量载体池（复杂模式第一步） ====================
+// 一次多选上传多个载体文件，解析成功进池；表格「载体来源=自己上传载体」
+// 的行按载体名（文件名去扩展名）引用。不入库，仅随本次批量请求提交
+const vectorPool = ref<DesignVectorPayload[]>([])
+const poolUploading = ref(false)
+const poolInput = ref<HTMLInputElement | null>(null)
+
+function pickPoolFiles() { poolInput.value?.click() }
+
+async function onPoolFilesChange(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  if (!files.length) return
+  poolUploading.value = true
+  error.value = ''
+  const failed: string[] = []
+  for (const f of files) {
+    try {
+      const payload = await uploadDesignVector(f)
+      // 同名覆盖（重新上传更新版本）
+      vectorPool.value = [
+        ...vectorPool.value.filter((v) => v.name !== payload.name),
+        payload,
+      ]
+    } catch (e: any) {
+      failed.push(`${f.name}: ${formatApiError(e, '解析失败')}`)
+    }
+  }
+  if (failed.length) error.value = `部分载体解析失败——${failed.join('；')}`
+  poolUploading.value = false
+  input.value = ''
+}
+
+function removeFromPool(name: string) {
+  vectorPool.value = vectorPool.value.filter((v) => v.name !== name)
+}
+
 // Gibson 自定义臂模式下公共参数与克隆方法合并语义（与单条设计页一致）
 const isArmsMode = computed(() =>
   cloningMethod.value === 'gibson' && gibsonLinearization.value === 'custom_arms')
@@ -241,6 +278,19 @@ async function handleSubmit() {
   if (isArmsMode.value && (!homologyArm5.value.trim() || !homologyArm3.value.trim())) {
     error.value = '自定义同源臂模式需填写两条重组臂序列'; return
   }
+  if (designMode.value === 'complex') {
+    // 「自己上传载体」的行：名字必须已在载体池里（库载体无法在前端校验，
+    // 留给后端行级报错）
+    const poolNames = new Set(vectorPool.value.map((v) => v.name))
+    const missing = parsedSequences.value
+      .filter((r) => r.params?.vector_source === 'inline' && r.params.vector
+              && !poolNames.has(r.params.vector))
+      .map((r) => r.name)
+    if (missing.length) {
+      error.value = `以下行引用了自己上传载体但不在载体池里：${missing.join('、')}——请先在「批量上传载体」区块上传对应文件`
+      return
+    }
+  }
   isSubmitting.value = true
   error.value = ''
   try {
@@ -286,6 +336,13 @@ async function handleSubmit() {
       // 简单模式刻意忽略行级参数（= 之前的纯批级方案）
       ...(designMode.value === 'complex' && hasRowParams.value ? {
         row_params: parsedSequences.value.map((r) => r.params ?? null),
+      } : {}),
+      // 批量载体池（复杂模式第一步上传）：行级「自己上传载体」按名引用
+      ...(designMode.value === 'complex' && vectorPool.value.length ? {
+        vectors: vectorPool.value.map((v) => ({
+          id: v.id, name: v.name, sequence: v.sequence,
+          topology: v.topology, features: v.features, source: v.source,
+        })),
       } : {}),
     })
     recordBatch({ batchId: result.batch_id, submittedAt: Date.now(), total: result.total })
@@ -393,6 +450,30 @@ onUnmounted(() => {
     </div>
 
     <div class="batch-form">
+      <!-- 第一步：批量上传载体（复杂模式）——表格「载体来源=自己上传载体」的行按载体名引用 -->
+      <div v-if="designMode === 'complex'" class="form-section pool-section">
+        <h2>第一步：批量上传载体 <span class="pool-note">（自己上传载体，不入库，仅本次批量使用）</span></h2>
+        <div class="input-actions">
+          <button @click="pickPoolFiles" class="btn btn-secondary btn-small" :disabled="poolUploading">
+            {{ poolUploading ? '解析中...' : '选择载体文件（可多选）' }}
+          </button>
+          <input
+            ref="poolInput" type="file" multiple
+            accept=".gb,.gbk,.genbank,.gbff,.fa,.fasta,.fna,.dna"
+            style="display: none" @change="onPoolFilesChange"
+          />
+          <span class="sequence-count">已上传 {{ vectorPool.length }} 个载体（载体名 = 文件名去扩展名）</span>
+        </div>
+        <div v-if="vectorPool.length" class="pool-list">
+          <div v-for="v in vectorPool" :key="v.id + v.name" class="pool-item">
+            <span class="pool-name">{{ v.name }}</span>
+            <span class="recent-meta">{{ v.sequence.length }} bp · {{ v.topology === 'circular' ? '环状' : '线性' }}</span>
+            <button class="btn btn-small btn-secondary" @click="removeFromPool(v.name)">移除</button>
+          </div>
+        </div>
+        <p class="hint-text">表格参数列「载体来源=自己上传载体」的行按这里的载体名引用；「载体库」的行不依赖本区块</p>
+      </div>
+
       <!-- 序列输入 -->
       <div class="form-section">
         <h2>序列输入</h2>
@@ -442,7 +523,7 @@ onUnmounted(() => {
                 <th>#</th><th>名称</th><th>长度</th><th>状态</th>
                 <th v-if="showParamColumns">来源</th>
                 <template v-if="showParamColumns">
-                  <th>载体</th><th>克隆方法</th><th>酶</th>
+                  <th>载体</th><th>克隆方法</th><th>酶</th><th>排除酶</th>
                 </template>
                 <th></th>
               </tr>
@@ -468,12 +549,17 @@ onUnmounted(() => {
                     <span v-if="row.fromSheet" class="sheet-badge">表格</span>
                     <span v-else class="src-text">粘贴</span>
                   </td>
-                  <td>{{ row.params?.vector || '—' }}</td>
+                  <td>
+                    {{ row.params?.vector || '—' }}<span
+                      v-if="row.params?.vector_source"
+                      class="vec-src-badge">{{ row.params.vector_source === 'inline' ? '自传' : '库' }}</span>
+                  </td>
                   <td>{{ row.params?.cloning_method || '—' }}</td>
                   <td>
                     {{ row.params?.enzyme_5 || row.params?.enzyme || '—'
                     }}{{ row.params?.enzyme_3 ? ' / ' + row.params.enzyme_3 : '' }}
                   </td>
+                  <td>{{ (row.params?.exclude_enzymes || []).join('、') || '—' }}</td>
                 </template>
                 <td><button class="btn btn-small btn-secondary" @click="removeRow(i)">移除</button></td>
               </tr>
@@ -1131,6 +1217,43 @@ h1 {
 
 .ignored-hint {
   color: #b45309;
+}
+
+/* 批量载体池 */
+.pool-note {
+  font-size: 0.8rem;
+  font-weight: normal;
+  color: var(--text-secondary);
+}
+
+.pool-list {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pool-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 0.5rem;
+}
+
+.pool-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.vec-src-badge {
+  margin-left: 0.35rem;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
 }
 
 .vector-mode-row {

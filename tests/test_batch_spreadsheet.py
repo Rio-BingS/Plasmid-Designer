@@ -203,13 +203,19 @@ class TestParamColumns:
         wb = openpyxl.load_workbook(io.BytesIO(generate_template_xlsx()))
         header = [c.value for c in wb["序列清单"][1]]
         assert header[:2] == ["序列名", "序列"]
-        assert "载体" in header and "克隆方法" in header and "酶5" in header
+        assert "载体来源" in header and "载体" in header and "克隆方法" in header
+        assert "酶1" in header and "酶2" in header
+        assert "排除酶切位点1" in header and "排除酶切位点2" in header
         rows = parse_spreadsheet(generate_template_xlsx(), ".xlsx", "amino_acid")
         assert rows[0]["params"]["cloning_method"] == "restriction"
         assert rows[0]["params"]["enzyme_5"] == "NdeI"
-        # 第二行示范大部分参数留空 = 继承批级（只填克隆方法与线性化）
-        assert rows[1]["params"] == {"cloning_method": "gibson",
-                                     "linearization": "double_digest"}
+        assert rows[0]["params"]["vector_source"] == "library"
+        # 第二行示范大部分参数留空 = 继承批级；排除酶两列合并为列表
+        assert rows[1]["params"] == {"vector_source": "inline",
+                                     "vector": "pET-21a",
+                                     "cloning_method": "gibson",
+                                     "linearization": "double_digest",
+                                     "exclude_enzymes": ["EcoRI", "BamHI"]}
 
 
 class TestTemplate:

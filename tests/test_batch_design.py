@@ -642,6 +642,145 @@ class TestRowParams:
         assert done.completed == 1 and done.failed == 1
         assert "不在载体库" in done.errors[0]["error"]
 
+    def test_row_vector_source_inline_uses_pool(self, monkeypatch):
+        """载体来源=自己上传载体：只在载体池按名字找，命中回填整只载体"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+        from app.schemas import DesignVectorInput
+
+        pool = [DesignVectorInput(
+            id="up1", name="pET-21a", sequence="ACGT" * 50, topology="circular")]
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", vectors=pool,
+            row_params=[{"vector": "pET-21a", "vector_source": "inline"}])
+        job = BatchDesignStatus(batch_id="batch_poolin001", total=1, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a"])
+        done = batch_routes._load_batch(job.batch_id)
+        assert done.completed == 1, done.errors
+        # 行级拿到整只池载体（不是库 id）
+        assert seen[0].vector is not None and seen[0].vector.name == "pET-21a"
+
+    def test_row_vector_source_inline_missing_fails_row(self, monkeypatch):
+        """载体来源=自己上传载体但池里没有：该行报错，提示先上传"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction",
+            row_params=[{"vector": "pXX", "vector_source": "inline"}, None])
+        job = BatchDesignStatus(batch_id="batch_poolmis01", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+        done = batch_routes._load_batch(job.batch_id)
+        assert done.completed == 1 and done.failed == 1
+        assert "载体池" in done.errors[0]["error"]
+
+    def test_row_vector_source_library_strict(self, monkeypatch):
+        """载体来源=载体库：池里同名也不允许——只在库解析，未命中行级报错"""
+        from unittest.mock import patch
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+        from app.schemas import DesignVectorInput
+
+        pool = [DesignVectorInput(
+            id="up1", name="pET-28a", sequence="ACGT" * 50, topology="circular")]
+
+        class _FakeLib:
+            def get_vector(self, vid):
+                return None
+            def list_vectors(self):
+                return []
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", vectors=pool,
+            row_params=[{"vector": "pET-28a", "vector_source": "library"}])
+        job = BatchDesignStatus(batch_id="batch_libstr001", total=1, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        with patch("app.vector_library_cache.get_vector_library",
+                   return_value=_FakeLib()):
+            batch_routes.run_batch_design_task(job.batch_id, request, ["a"])
+        done = batch_routes._load_batch(job.batch_id)
+        assert done.failed == 1
+        assert "不在载体库" in done.errors[0]["error"]
+
+    def test_row_exclude_enzymes_override(self, monkeypatch):
+        """行级排除酶覆盖批级 exclude_enzymes"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", exclude_enzymes=["EcoRI"],
+            row_params=[{"exclude_enzymes": ["BamHI", "SalI"]}, None])
+        job = BatchDesignStatus(batch_id="batch_rowexc001", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+        batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+        assert seen[0].exclude_enzymes == ["BamHI", "SalI"]   # 行级覆盖
+        assert seen[1].exclude_enzymes == ["EcoRI"]           # 批级继承
+
+    def test_batch_vector_cleared_for_row_vector(self, monkeypatch):
+        """行级指定载体时批级共用内联载体必须清掉（否则压过行级）"""
+        from app.routes import batch_routes
+        from app.routes.models import DesignResult, DesignStatus
+        from app.schemas import DesignVectorInput
+
+        batch_vec = DesignVectorInput(
+            id="batchv", name="pBatchVec", sequence="ACGT" * 50, topology="circular")
+        seen = []
+        monkeypatch.setattr(batch_routes, "run_design", self._fake_run(seen))
+        monkeypatch.setattr(batch_routes, "_persist", lambda result: None)
+
+        request = BatchDesignRequest(
+            sequences=["ATGAAA", "ATGCCC"], enzyme_5="NdeI", enzyme_3="XhoI",
+            cloning_method="restriction", vector=batch_vec,
+            row_params=[{"vector": "pET-28a", "vector_source": "library"}, None])
+        job = BatchDesignStatus(batch_id="batch_batclr001", total=2, completed=0,
+                                failed=0, status="pending")
+        batch_routes._persist_batch(job)
+
+        from unittest.mock import patch
+
+        class _FakeVec:
+            id = "pET-28a"
+            name = "pET-28a"
+        class _FakeLib:
+            def get_vector(self, vid):
+                return _FakeVec() if vid == "pET-28a" else None
+            def list_vectors(self):
+                return [_FakeVec()]
+        with patch("app.vector_library_cache.get_vector_library",
+                   return_value=_FakeLib()):
+            batch_routes.run_batch_design_task(job.batch_id, request, ["a", "b"])
+        # 第 1 行：批级 vector 被清掉，用行级库载体
+        assert seen[0].vector is None
+        assert seen[0].vector_id == "pET-28a"
+        # 第 2 行：无行级载体，批级 vector 保留
+        assert seen[1].vector is not None and seen[1].vector.name == "pBatchVec"
+
     def test_row_invalid_enum_rejected_at_submit(self):
         """行级非法枚举在批量请求构造时即 422（提交时拦截）"""
         from pydantic import ValidationError
