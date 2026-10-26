@@ -10,6 +10,18 @@ import { loadBatchHistory, recordBatch, type BatchHistoryEntry } from '@/utils/b
 
 const router = useRouter()
 
+// ==================== 设计模式 ====================
+// 简单 = 之前的方案：粘贴/FASTA/Excel 上传 + 页面统一参数（行级参数忽略）；
+// 复杂 = 表格参数列逐行覆盖。选择记忆在 localStorage
+const MODE_KEY = 'plasmid-batch-design-mode'
+const designMode = ref<'simple' | 'complex'>(
+  localStorage.getItem(MODE_KEY) === 'complex' ? 'complex' : 'simple')
+
+function setDesignMode(mode: 'simple' | 'complex') {
+  designMode.value = mode
+  try { localStorage.setItem(MODE_KEY, mode) } catch { /* 隐私模式等，忽略 */ }
+}
+
 // ==================== 序列输入 ====================
 const sequencesText = ref('')
 const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
@@ -40,6 +52,9 @@ const previewRows = computed<PreviewRow[]>(() => [
 const parsedSequences = computed(() => previewRows.value)
 const hasRowParams = computed(() =>
   previewRows.value.some((r) => r.params && Object.keys(r.params).length))
+/** 复杂模式且有行级参数时才展示参数列（简单模式忽略行级参数） */
+const showParamColumns = computed(() =>
+  designMode.value === 'complex' && hasRowParams.value)
 const sequenceCount = computed(() => parsedSequences.value.length)
 const invalidRows = computed(() => parsedSequences.value
   .map((r, i) => (validateParsed(r.sequence, sequenceType.value) ? -1 : i))
@@ -267,8 +282,9 @@ async function handleSubmit() {
             source: adhocVector.value.source,
           }, vector_id: adhocVector.value.id }
         : { vector_id: vectorId.value }),
-      // 行级参数（表格参数列）：全部行都没填时省略 = 纯批级模式
-      ...(hasRowParams.value ? {
+      // 行级参数（表格参数列）：仅复杂模式且至少一行有参数时携带；
+      // 简单模式刻意忽略行级参数（= 之前的纯批级方案）
+      ...(designMode.value === 'complex' && hasRowParams.value ? {
         row_params: parsedSequences.value.map((r) => r.params ?? null),
       } : {}),
     })
@@ -357,6 +373,24 @@ onUnmounted(() => {
     <h1>批量设计</h1>
     <p class="subtitle">一次提交多个序列，批量生成质粒构建方案与引物订购表</p>
 
+    <!-- 设计模式：简单（之前的方案，统一参数） / 复杂（表格参数列逐行覆盖） -->
+    <div class="mode-section">
+      <div class="mode-toggle">
+        <button class="mode-btn" :class="{ active: designMode === 'simple' }"
+                @click="setDesignMode('simple')">简单批量</button>
+        <button class="mode-btn" :class="{ active: designMode === 'complex' }"
+                @click="setDesignMode('complex')">复杂批量</button>
+      </div>
+      <p class="hint-text mode-hint">
+        {{ designMode === 'simple'
+          ? '所有序列用同一套参数（页面上设置）：粘贴或上传序列清单即可'
+          : '表格参数列逐行覆盖：每条序列可各自指定载体/克隆方法/酶等（参数列留空仍用统一设置）' }}
+      </p>
+      <p v-if="designMode === 'simple' && hasRowParams" class="hint-text ignored-hint">
+        已上传的表格含参数列：简单批量会忽略行级参数，需要每行不同参数请切换到「复杂批量」
+      </p>
+    </div>
+
     <div class="batch-form">
       <!-- 序列输入 -->
       <div class="form-section">
@@ -405,8 +439,8 @@ onUnmounted(() => {
             <thead>
               <tr>
                 <th>#</th><th>名称</th><th>长度</th><th>状态</th>
-                <th v-if="hasRowParams">来源</th>
-                <template v-if="hasRowParams">
+                <th v-if="showParamColumns">来源</th>
+                <template v-if="showParamColumns">
                   <th>载体</th><th>克隆方法</th><th>酶</th>
                 </template>
                 <th></th>
@@ -428,7 +462,7 @@ onUnmounted(() => {
                   <span v-if="validateParsed(row.sequence, sequenceType)" class="ok">✓</span>
                   <span v-else class="bad">字符不合法</span>
                 </td>
-                <template v-if="hasRowParams">
+                <template v-if="showParamColumns">
                   <td>
                     <span v-if="row.fromSheet" class="sheet-badge">表格</span>
                     <span v-else class="src-text">粘贴</span>
@@ -444,7 +478,7 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
-          <p v-if="hasRowParams" class="hint-text">
+          <p v-if="showParamColumns" class="hint-text">
             「—」= 该项用批量页统一设置；表格行参数来自上传文件（可在文件里修改后重新上传）
           </p>
         </div>
@@ -1060,6 +1094,42 @@ h1 {
 .src-text {
   color: var(--text-secondary);
   font-size: 0.75rem;
+}
+
+/* 设计模式切换 */
+.mode-section {
+  background: white;
+  padding: 1rem 1.5rem;
+  border-radius: 0.75rem;
+  box-shadow: var(--shadow);
+}
+
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.mode-btn {
+  padding: 0.5rem 1.5rem;
+  border: none;
+  background: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.mode-btn.active {
+  background: var(--primary-color);
+  color: white;
+}
+
+.mode-hint {
+  margin-top: 0.5rem;
+}
+
+.ignored-hint {
+  color: #b45309;
 }
 
 .vector-mode-row {
