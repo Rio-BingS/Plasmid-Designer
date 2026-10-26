@@ -344,7 +344,8 @@ async function handleDownloadPrimers() {
 }
 
 async function handleDownloadTemplate() {
-  try { await downloadBatchTemplate() }
+  // 模板随模式走：简单=两列（统一参数），复杂=含参数列（逐行覆盖）
+  try { await downloadBatchTemplate(designMode.value) }
   catch (e: any) { error.value = '下载失败: ' + (e.message || '未知错误') }
 }
 

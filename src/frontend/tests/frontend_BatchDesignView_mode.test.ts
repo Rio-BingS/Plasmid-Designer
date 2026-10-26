@@ -12,21 +12,21 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() })
 }))
 
-vi.mock('@/api', async (importOriginal) => ({
-  submitBatchDesign: vi.fn(),
-  getBatchProgress: vi.fn(),
-  downloadBatchResults: vi.fn(),
-  downloadBatchPrimers: vi.fn(),
-  downloadBatchTemplate: vi.fn(),
-  parseSpreadsheetFile: vi.fn(),
-  getBatchReport: vi.fn(),
-  getVectors: vi.fn(),
-  getCodonTables: vi.fn(),
-  getEnzymes: vi.fn(),
-  formatApiError: ((await importOriginal()) as typeof import('@/api')).formatApiError
-}))
+  vi.mock('@/api', async (importOriginal) => ({
+    submitBatchDesign: vi.fn(),
+    getBatchProgress: vi.fn(),
+    downloadBatchResults: vi.fn(),
+    downloadBatchPrimers: vi.fn(),
+    downloadBatchTemplate: vi.fn(),
+    parseSpreadsheetFile: vi.fn(),
+    getBatchReport: vi.fn(),
+    getVectors: vi.fn(),
+    getCodonTables: vi.fn(),
+    getEnzymes: vi.fn(),
+    formatApiError: ((await importOriginal()) as typeof import('@/api')).formatApiError
+  }))
 
-import { submitBatchDesign, getVectors, getCodonTables, getEnzymes } from '@/api'
+import { submitBatchDesign, getVectors, getCodonTables, getEnzymes, downloadBatchTemplate } from '@/api'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -115,5 +115,17 @@ describe('批量设计模式切换', () => {
     vm.setDesignMode('complex')
     await flushPromises()
     expect(wrapper.find('.ignored-hint').exists()).toBe(false)
+  })
+
+  it('模板下载随模式：简单请求 simple 变体，复杂请求 complex 变体', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as any
+    expect(vm.designMode).toBe('simple')
+    await vm.handleDownloadTemplate()
+    expect(vi.mocked(downloadBatchTemplate)).toHaveBeenLastCalledWith('simple')
+
+    vm.setDesignMode('complex')
+    await vm.handleDownloadTemplate()
+    expect(vi.mocked(downloadBatchTemplate)).toHaveBeenLastCalledWith('complex')
   })
 })
