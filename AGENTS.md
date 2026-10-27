@@ -76,13 +76,15 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-22 实测，v2.17.1）：pytest
-**1633 passed / 39 skipped / 0 failed**，vitest **590**，vue-tsc **0**。其中 5 项真实数据回归
+测试基线（本机 Windows，2026-10-26/27 实测，v2.30.1）：pytest
+**1796 passed / 43 skipped / 0 failed**（约 105 s），vitest **636 passed / 82 文件**，
+vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
-病因与修法见 `docs/HANDOVER.md` §7（两处 Windows 权限位断言、一处测试自身用 `/` 拆
-Windows 路径、两处真实数据基线随 v2.15.1/v2.16.0 口径更新）。
-CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
+病因与修法见 `docs/HANDOVER.md` §7；v2.18.0→v2.29.2 的 CI 红灯链也已清零（同 §7.4）。
+CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，
+另有**尺寸预算门禁** `scripts/check_file_size.py`（新文件 ≤900 行、白名单只许变小，`scripts/size_budgets.json` 记账）。
+**本地只跑测试不够，动代码后要把门禁本地预演一遍**（v2.18.0→v2.29.2 连续红灯的教训，HANDOVER §7.4）。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
 （直接依赖、精确 pin、两份同名包同版本；仅测试用的包放 `requirements-dev.in`），然后 `bash scripts/lock_requirements.sh`

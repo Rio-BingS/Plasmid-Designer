@@ -1441,7 +1441,35 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...HEAD
+[2.30.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.0...v2.30.1
+[2.30.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.5...v2.30.0
+[2.29.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.4...v2.29.5
+[2.29.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.3...v2.29.4
+[2.29.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.2...v2.29.3
+[2.29.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.1...v2.29.2
+[2.29.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.0...v2.29.1
+[2.29.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.28.1...v2.29.0
+[2.28.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.28.0...v2.28.1
+[2.28.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.27.0...v2.28.0
+[2.27.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.26.4...v2.27.0
+[2.26.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.26.3...v2.26.4
+[2.26.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.26.2...v2.26.3
+[2.26.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.26.1...v2.26.2
+[2.26.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.26.0...v2.26.1
+[2.26.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.25.1...v2.26.0
+[2.25.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.25.0...v2.25.1
+[2.25.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.24.0...v2.25.0
+[2.24.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.23.2...v2.24.0
+[2.23.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.23.1...v2.23.2
+[2.23.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.23.0...v2.23.1
+[2.23.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.22.0...v2.23.0
+[2.22.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.21.1...v2.22.0
+[2.21.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.21.0...v2.21.1
+[2.21.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.20.0...v2.21.0
+[2.20.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.19.0...v2.20.0
+[2.19.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.18.0...v2.19.0
+[2.18.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.2...v2.18.0
 [2.17.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.1...v2.17.2
 [2.17.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.17.0...v2.17.1
 [2.17.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.16.2...v2.17.0
