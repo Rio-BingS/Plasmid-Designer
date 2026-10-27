@@ -64,6 +64,65 @@ def _site_regex(site: str) -> "re.Pattern":
     return re.compile(body)
 
 
+def _usable_restriction(enz) -> bool:
+    """Bio.Restriction 酶对象是否满足本应用的选用条件。
+
+    只接受有商业来源、每个位点只切一次（单切割对）、切割位置已知、
+    识别序列纯 IUPAC 的酶；两侧双切的酶（BaeI 等）与切点未定的酶不可用。
+    get_enzyme 与大小写别名索引共用同一判定，避免两处口径漂移。
+    """
+    from Bio.Restriction.Restriction import RestrictionType
+
+    if not isinstance(enz, RestrictionType):
+        return False
+    if not enz.is_comm() or enz.is_unknown() or enz.cut_twice():
+        return False
+    if enz.fst5 is None or enz.fst3 is None:
+        return False
+    site = str(enz.site).upper()
+    return bool(site) and all(ch in _IUPAC for ch in site)
+
+
+_lower_alias: Optional[Dict[str, str]] = None
+
+
+def _lower_alias_map() -> Dict[str, str]:
+    """可用酶的 {小写名: 规范名} 索引（懒构建一次，进程内复用）。
+
+    Excel 批量表与手写 API 调用里小写酶名（ndei/bamhi）极常见，精确
+    getattr 又大小写敏感——索引把「未知限制酶」的假阴性归一到规范拼写。
+    """
+    global _lower_alias
+    if _lower_alias is None:
+        from Bio import Restriction as _R
+        from Bio.Restriction.Restriction import RestrictionType
+
+        alias: Dict[str, str] = {}
+        for attr in dir(_R):
+            enz = getattr(_R, attr, None)
+            if isinstance(enz, RestrictionType) and enz.__name__ == attr \
+                    and _usable_restriction(enz):
+                alias.setdefault(attr.lower(), attr)
+        _lower_alias = alias
+    return _lower_alias
+
+
+def canonical_enzyme_name(name: str) -> str:
+    """酶名归一到规范拼写（ndei → NdeI）；查不到原样返回。
+
+    精确拼写直接返回（快路径）；小写别名索引只在首次未命中时构建一次。
+    查不到时不改写——错误提示保留用户原文更有用。
+    """
+    if not name or not isinstance(name, str):
+        return name
+    from Bio import Restriction as _R
+    from Bio.Restriction.Restriction import RestrictionType
+
+    if isinstance(getattr(_R, name, None), RestrictionType):
+        return name
+    return _lower_alias_map().get(name.lower(), name)
+
+
 @lru_cache(maxsize=1024)  # key 是酶名字符串（含未命中噪声），有界防撑内存
 def get_enzyme(name: str) -> Optional[Dict]:
     """按名称从 REBASE 取酶参数；未知/不适用的酶返回 None。
@@ -73,6 +132,7 @@ def get_enzyme(name: str) -> Optional[Dict]:
     （= (fst5, size + fst3)，可落在识别序列之外，如 Type IIS），
     overhang 为 '5prime' / '3prime' / None（平末端）。
 
+    名称大小写不敏感（ndei → NdeI）：Excel 批量表的酶列常是小写/全大写。
     只接受有商业来源、每个位点只切一次（单切割对）、切割位置已知的酶；
     两侧双切的酶（BaeI 等）与切点未定的酶返回 None。
     """
@@ -82,14 +142,13 @@ def get_enzyme(name: str) -> Optional[Dict]:
     from Bio.Restriction.Restriction import RestrictionType
 
     enz = getattr(_R, name, None)
-    if not isinstance(enz, RestrictionType) or enz.__name__ != name:
-        return None
-    if not enz.is_comm() or enz.is_unknown() or enz.cut_twice():
-        return None
-    if enz.fst5 is None or enz.fst3 is None:
-        return None
-    site = str(enz.site).upper()
-    if not site or any(ch not in _IUPAC for ch in site):
+    if not (isinstance(enz, RestrictionType) and enz.__name__ == name):
+        # 大小写归一到规范拼写后重试（get_enzyme 返回的 name 用规范拼写）
+        canonical = canonical_enzyme_name(name)
+        if canonical == name:
+            return None
+        return get_enzyme(canonical)
+    if not _usable_restriction(enz):
         return None
     if enz.is_5overhang():
         overhang = "5prime"
@@ -99,7 +158,7 @@ def get_enzyme(name: str) -> Optional[Dict]:
         overhang = None
     return {
         "name": name,
-        "site": site,
+        "site": str(enz.site).upper(),
         "cut": (enz.fst5, enz.size + enz.fst3),
         "overhang": overhang,
     }

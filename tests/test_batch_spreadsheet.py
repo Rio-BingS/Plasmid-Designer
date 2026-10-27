@@ -276,3 +276,35 @@ class TestTemplate:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_parse_lowercase_enzyme_names_canonicalized():
+    """酶列小写/全大写归一到规范拼写：曾原样透传，设计时报「未知限制酶」"""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from openpyxl import Workbook
+    import io
+
+    from app.spreadsheet_parse import parse_spreadsheet
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["序列名", "序列", "酶1", "酶2"])
+    ws.append(["A01", "MSKGEELFTG", "ndei", "XHOI"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    rows = parse_spreadsheet(buf.getvalue(), ".xlsx")
+    params = rows[0]["params"]
+    assert params["enzyme_5"] == "NdeI"
+    assert params["enzyme_3"] == "XhoI"
+
+
+def test_parse_csv_sequence_uppercased():
+    """CSV/TSV 序列统一转大写，与 xlsx 口径一致（曾只对 xlsx 转大写，
+    预览行显示小写、设计结果却是大写，看起来像大小写被区别对待）"""
+    from app.spreadsheet_parse import parse_spreadsheet
+
+    csv_data = "序列名,序列\nA01,mskgeelftg\n".encode("utf-8-sig")
+    rows = parse_spreadsheet(csv_data, ".csv")
+    assert rows[0]["sequence"] == "MSKGEELFTG"

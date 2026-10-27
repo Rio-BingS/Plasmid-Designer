@@ -56,6 +56,10 @@ export function normalizeSequenceInput(raw: string): string {
 /** 氨基酸单字母代码 + 终止符（与后端 core.codon_optimizer 的口径一致） */
 export const AMINO_ACID_CHARS = 'ACDEFGHIKLMNPQRSTVWY*'
 
+/** IUPAC DNA 碱基（含模糊码）：设计页 5′/3′ 接头后端按 IUPAC 校验，
+ * Kozak 共识常写作 GCCRCCATGG（R=A/G），这里保持同一口径 */
+export const IUPAC_DNA_CHARS = 'ACGTRYSWKMBDHVN'
+
 /** 找出手动输入里不被支持的字符（返回前若干个，附 1-based 位置） */
 export function findUnsupportedChars(
   seq: string,
