@@ -1,5 +1,5 @@
 {
-  "src/backend/app/design_service.py": 2235,
+  "src/backend/app/design_service.py": 2285,
   "src/backend/app/routes/sequencing_routes.py": 958,
   "src/backend/core/clone_strategy.py": 1051,
   "src/backend/core/codon_optimizer.py": 934,
@@ -9,5 +9,5 @@
   "src/frontend/src/composables/useSeqViz.ts": 963,
   "src/frontend/src/map/components/CircularMap.vue": 929,
   "src/frontend/src/views/BatchDesignView.vue": 1318,
-  "src/frontend/src/views/DesignView.vue": 1144
+  "src/frontend/src/views/DesignView.vue": 1210
 }

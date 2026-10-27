@@ -6,6 +6,18 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.0] - 2026-10-27
+
+### 新增
+- **5′ 前置 / 3′ 尾随固定 DNA 接头**（设计页「序列输入」可折叠区块）：
+  在插入片段两端按基因方向拼接既定序列（如 Kozak `GCCACC`、标签编码
+  区、终止密码子），提供 Kozak 一键预设。接头不参与密码子优化与排除
+  位点避让（优化序列保持纯 CDS）；负链插入时随整段反向互补，接头自动
+  落在基因 5′/3′ 端。配套检查（均不修改既定序列）：前置接头末尾自带
+  ATG 且序列以 M 开头 → 提示冗余起始密码子；接头内命中本设计的克隆酶
+  或排除清单酶识别序列 → 信息性提示。批量请求同样接受
+  `upstream_flank`/`downstream_flank` 字段（表格参数列未加，需要时再说）。
+
 ## [2.30.2] - 2026-10-27
 
 ### 修复
@@ -1448,7 +1460,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...HEAD
+[2.31.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...v2.31.0
 [2.30.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...v2.30.2
 [2.30.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.0...v2.30.1
 [2.30.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.5...v2.30.0
