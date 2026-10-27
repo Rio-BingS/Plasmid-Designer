@@ -155,7 +155,7 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
             feats.append(_feature(raw, "design", "cds"))
         else:
             feats.append(_feature(raw, "vector"))
-    return build_document(
+    doc = build_document(
         # 图谱名与结果页/GenBank 同名：plasmid_name（序列名或「载体名-序列名」）。
         # 此前硬编码「载体名 + insert」，用户开了载体名前缀后图谱仍是旧名
         name=(result.plasmid_name
@@ -167,6 +167,27 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
         primers=_locate_primer_spans(result, seq, circular),
         annotate=False, enzyme_set=enzyme_set, orf_min_aa=orf_min_aa,
     )
+    clone_enzymes = _clone_enzymes_of(result)
+    if clone_enzymes:
+        # 图谱前端据此强制显示并高亮克隆酶标签：多切点克隆酶（如 pcDNA3.1
+        # 上的 NcoI 有 4 个切点）按拥挤规则会被藏掉，巧合的单切点酶看起来
+        # 像克隆位点，用户会以为插入落在了别的酶之间
+        doc["meta"]["clone_enzymes"] = clone_enzymes
+    return doc
+
+
+def _clone_enzymes_of(result) -> List[str]:
+    """本设计实际使用的克隆酶；旧结果无 cloning_enzymes 字段时从方案文本
+    的「酶/试剂:」行回退解析（如 '酶/试剂: NcoI, XhoI, T4 DNA Ligase'）。"""
+    if getattr(result, "cloning_enzymes", None):
+        return [e for e in result.cloning_enzymes if e]
+    protocol = getattr(result, "clone_protocol", None) or ""
+    for line in protocol.splitlines():
+        s = line.strip()
+        if s.startswith("酶/试剂:") or s.startswith("Enzymes:"):
+            raw = s.split(":", 1)[1]
+            return [e.strip() for e in raw.split(",") if e.strip()]
+    return []
 
 
 def _vector_features(vector) -> List[Dict]:
