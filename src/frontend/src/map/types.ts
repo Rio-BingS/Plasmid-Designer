@@ -79,6 +79,8 @@ export interface MapDocument {
     source_format: 'genbank' | 'fasta' | 'snapgene' | 'raw' | 'design' | 'vector'
     enzyme_set: string
     warnings: string[]
+    /** 本设计实际使用的克隆酶（设计图谱专属）：前端强制显示并高亮这些标签 */
+    clone_enzymes?: string[]
   }
 }
 

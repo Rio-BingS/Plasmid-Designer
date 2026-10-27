@@ -1022,3 +1022,42 @@ def test_exclude_enzymes_lowercase_no_unknown_warning():
         _flank_request(insert_direction="plus", exclude_enzymes=["bamhi"]))
     assert ok.status == DesignStatus.COMPLETED
     assert not any("忽略未知限制酶" in w for w in ok.warnings)
+
+
+def test_design_map_meta_clone_enzymes_highlight():
+    """图谱 meta 带实际克隆酶：前端据此强制显示并高亮克隆酶标签。
+
+    多切点克隆酶（如 pcDNA3.1 上的 NcoI 有 4 个切点）按拥挤规则会被最先
+    隐藏，巧合的单切点酶看起来像克隆位点——克隆酶必须显式传给前端。"""
+    from app.map_documents import design_map_document
+
+    result = run_design(
+        "design_meta_enzymes",
+        _flank_request(enzyme_5="BamHI", enzyme_3="HindIII", insert_direction="plus"))
+    assert result.status == DesignStatus.COMPLETED
+    # 顺序是「基因 5′ 端酶、3′ 端酶」——pET-28a 上 BamHI/HindIII 解析为
+    # 负链装配时 5′ 端是 HindIII（左切点属主）
+    assert sorted(result.cloning_enzymes) == ["BamHI", "HindIII"]
+    doc = design_map_document(result)
+    assert sorted(doc["meta"]["clone_enzymes"]) == ["BamHI", "HindIII"]
+
+
+def test_design_map_clone_enzymes_fallback_from_protocol():
+    """旧结果无 cloning_enzymes 字段：从方案文本「酶/试剂:」行回退解析"""
+    from datetime import datetime
+    from app.map_documents import _clone_enzymes_of
+    from app.schemas import DesignResult
+
+    old = DesignResult(design_id="old", status=DesignStatus.COMPLETED, created_at=datetime.now(),
+                       input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
+                       cloning_method=CloningMethod.RESTRICTION,
+                       clone_protocol="# 限制性酶切克隆实验方案\n\n## 材料\n酶/试剂: NcoI, XhoI, T4 DNA Ligase\n")
+    assert _clone_enzymes_of(old) == ["NcoI", "XhoI", "T4 DNA Ligase"]
+    # 新结果直接用字段
+    new = old.model_copy(update={"cloning_enzymes": ["NcoI", "XhoI"]})
+    assert _clone_enzymes_of(new) == ["NcoI", "XhoI"]
+    # 两者皆无：空列表（前端不做高亮）
+    bare = DesignResult(design_id="bare", status=DesignStatus.COMPLETED, created_at=datetime.now(),
+                        input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
+                        cloning_method=CloningMethod.GIBSON)
+    assert _clone_enzymes_of(bare) == []

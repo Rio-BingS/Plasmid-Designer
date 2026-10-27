@@ -2016,6 +2016,18 @@ def run_design(
         result.construct_features = assembly.features
         result.insert_start = assembly.insert_start
         result.insert_end = assembly.insert_end
+        # 实际使用的克隆酶（解析后的规范拼写）：图谱强制显示并高亮这些
+        # 标签——多切点克隆酶的标签曾按拥挤规则被藏掉，用户选的位点反而
+        # 不显示，巧合的单切点酶看起来像克隆位点
+        if resolved_ends and resolved_ends.enzyme_5:
+            result.cloning_enzymes = [e for e in (resolved_ends.enzyme_5,
+                                                  resolved_ends.enzyme_3) if e]
+        elif request.cloning_method == CloningMethod.GOLDEN_GATE and request.enzyme:
+            result.cloning_enzymes = [request.enzyme]
+        elif (request.cloning_method == CloningMethod.GIBSON
+              and getattr(request, "gibson_linearization", "double_digest")
+              == "single_site" and getattr(request, "gibson_site", None)):
+            result.cloning_enzymes = [request.gibson_site]
 
         # 4. 引物
         gibson_double_plan = None

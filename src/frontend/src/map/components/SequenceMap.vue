@@ -116,7 +116,11 @@ const cutRows = computed(() => {
   }
   for (const [row, cs] of by) {
     layouts.set(row, layoutLinearLabels(
-      cs.map((c) => ({ id: `e:${c.id}`, text: c.name, bold: cutStyle(c).weight > 400, x: colX(c.cut - row * pr), priority: enzymePriority(c.enzyme.cut_count) })),
+      cs.map((c) => ({
+        id: `e:${c.id}`, text: c.name, bold: cutStyle(c).weight > 400, x: colX(c.cut - row * pr),
+        // 克隆酶标签与单切点同档优先级：多切点克隆酶曾被拥挤规则最先藏掉
+        priority: store.cloneEnzymes.value.has(c.name) ? enzymePriority(1) : enzymePriority(c.enzyme.cut_count),
+      })),
       { width: W.value, fontSize: 10, maxRows: ENZ_MAX_ROWS, gap: 6, left: gutter.value - 4, maxShift: 6 * CHAR_W },
     ))
   }
@@ -271,10 +275,11 @@ const rows = computed(() => {
     }
     const cuts = (cutRows.value.by.get(row) ?? []).map((c) => {
       const st = cutStyle(c)
+      const isClone = store.cloneEnzymes.value.has(c.name)
       const xt = colX(c.cut - (rs - 1))
       const bIn = c.cutBottom >= rs - 1 && c.cutBottom <= re
       const xb = bIn ? colX(c.cutBottom - (rs - 1)) : xt
-      return { key: `e:${c.id}`, name: c.name, xt, xb, color: st.color, weight: st.weight, dash: st.dash, blocked: st.blocked }
+      return { key: `e:${c.id}`, name: c.name, xt, xb, color: isClone ? '#ea580c' : st.color, weight: isClone ? 1.8 : st.weight, dash: st.dash, blocked: st.blocked }
     })
     const cutByKey = new Map(cuts.map((c) => [c.key, c]))
     const lay = cutRows.value.layouts.get(row)

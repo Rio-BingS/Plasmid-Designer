@@ -370,6 +370,11 @@ class DesignResult(BaseModel):
     # 优化序列开头的 ATG 已被去除（NdeI 等位点自带 ATG 充当起始密码子）：
     # 前端据此在优化序列旁挂提示，解释「为什么比输入蛋白少 3 bp」
     start_codon_removed: bool = False
+    # 本设计实际使用的克隆酶（组装解析后的规范拼写）。图谱据此强制显示
+    # 并高亮克隆酶标签——用户选的酶可能是多切点酶（如 pcDNA3.1 上的
+    # NcoI），标签曾按「切点数多优先隐藏」被挤掉，图谱读起来像插入落在
+    # 别的巧合单切点酶之间
+    cloning_enzymes: Optional[List[str]] = None
 
     # 引物
     primers: List[PrimerInfo] = Field(default_factory=list)

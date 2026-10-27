@@ -353,7 +353,10 @@ function cutGeomOf(c: (typeof overview.value.shown)[number]) {
   // 切线从外链伸出（画在特征之下，被特征遮住的部分自然隐去）
   const [x1, y1] = polar(cx.value, cy.value, strandOut.value, a)
   const [x2, y2] = polar(cx.value, cy.value, R0.value + 10, a)
-  return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2, color: st.color, weight: st.weight, dash: st.dash }
+  const isClone = store.cloneEnzymes.value.has(c.name)
+  return { ...c, key: `e:${c.id}`, a, x1, y1, x2, y2,
+           color: isClone ? '#ea580c' : st.color,
+           weight: isClone ? 1.8 : st.weight, dash: st.dash, isClone }
 }
 const cutGeoms = computed(() => overview.value.shown.map(cutGeomOf))
 // ---------------- 外置标签 ----------------
@@ -382,9 +385,14 @@ const labelData = computed(() => {
   for (const g of cutGroups.value) {
     const gp = groupParts(g)
     const c0 = g.members[0]
+    // 克隆酶标签视为「必显示」（与单切点同档优先级）：多切点克隆酶按
+    // 拥挤规则会被最先藏掉，用户选的位点反而不显示
+    const priority = Math.max(...g.members.map((c) => store.cloneEnzymes.value.has(c.name)
+      ? enzymePriority(1)
+      : enzymePriority(c.enzyme.cut_count)))
     inputs.push({
       id: g.key, text: gp.parts.map((p) => p.text).join('') + gp.extra, width: gp.w, height: ROW_H.value,
-      angle: c0.a, radius: R0.value + 10, priority: Math.max(...g.members.map((c) => enzymePriority(c.enzyme.cut_count))),
+      angle: c0.a, radius: R0.value + 10, priority,
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
