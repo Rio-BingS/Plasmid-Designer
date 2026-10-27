@@ -886,3 +886,32 @@ def test_flank_schema_normalization():
     # 空白接头归 None
     req = _flank_request(upstream_flank="   ")
     assert req.upstream_flank is None
+
+
+def test_design_map_insert_feature_with_site_atg_trim():
+    """NdeI 位点自带 ATG 触发冗余 ATG 去除 + CDS 扩展后，图谱仍能识别插入特征。
+
+    CDS 注释被扩展到把位点 ATG 包进编码区（end 592→595），而
+    insert_start/end 保持克隆坐标——design_map_document 的精确坐标匹配
+    曾因此漏掉插入 CDS，图谱上丢失 design 源特征（插入看起来不在所选
+    位点之间）。"""
+    from app.map_documents import design_map_document
+
+    req = DesignRequest(
+        sequence=_GENE_AA,
+        sequence_type=SequenceType.AMINO_ACID,
+        optimize_codons=True,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        vector_id="pET-28a",
+    )
+    result = run_design("design_map_site_atg", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert result.start_codon_removed  # 触发过 trim + CDS 扩展
+    doc = design_map_document(result)
+    design_feats = [f for f in doc["features"] if f["source"] == "design"]
+    assert len(design_feats) == 1
+    assert design_feats[0]["type"] == "cds"
+    # CDS 已扩展（end 越过克隆坐标），但起点仍与克隆坐标一致
+    assert design_feats[0]["start"] == result.insert_start
+    assert design_feats[0]["end"] >= result.insert_end
