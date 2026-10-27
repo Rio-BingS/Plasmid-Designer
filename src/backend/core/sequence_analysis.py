@@ -105,7 +105,22 @@ class _LazyEnzymeDict(Mapping):
         return self._data
 
     def __getitem__(self, key):
-        return self._load()[key]
+        data = self._load()
+        if key in data:
+            return data[key]
+        # 大小写归一（ndei → NdeI）：Bio.Restriction 的属性查找大小写敏感，
+        # Excel 表/手写调用里的小写酶名曾一路报「未知限制酶」
+        from core.enzyme_sites import canonical_enzyme_name
+
+        return data[canonical_enzyme_name(key)]
+
+    def get(self, key, default=None):
+        data = self._load()
+        if key in data:
+            return data[key]
+        from core.enzyme_sites import canonical_enzyme_name
+
+        return data.get(canonical_enzyme_name(key), default)
 
     def __iter__(self):
         return iter(self._load())

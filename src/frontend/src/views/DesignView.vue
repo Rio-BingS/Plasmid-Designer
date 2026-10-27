@@ -10,7 +10,7 @@ import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 import RestrictionPreviewCard from '@/components/RestrictionPreview.vue'
 import {
-  AMINO_ACID_CHARS, describeUnsupportedChars, findUnsupportedChars, normalizeSequenceInput
+  AMINO_ACID_CHARS, describeUnsupportedChars, findUnsupportedChars, normalizeSequenceInput, IUPAC_DNA_CHARS
 } from '@/utils/sequence'
 import { clearDesignDraft, loadDesignDraft, saveDesignDraft } from '@/utils/designDraft'
 
@@ -417,11 +417,13 @@ async function handleSubmit() {
     error.value = describeUnsupportedChars(bad, isAa ? 'amino_acid' : 'dna')
     return
   }
-  // 接头是既定 DNA：非法字符在这里拦下，别等后端 422
+  // 接头是既定 DNA：非法字符在这里拦下，别等后端 422。
+  // 字符集用 IUPAC（含模糊码）与后端口径一致——Kozak 共识 GCCRCCATGG 里的
+  // R 是合法写法，曾按 A/T/G/C 校验把它误拒
   for (const [label, flank] of [['5′ 前置', upstreamFlank.value], ['3′ 尾随', downstreamFlank.value]] as const) {
-    const flankBad = findUnsupportedChars(flank, 'ATGC')
+    const flankBad = findUnsupportedChars(flank, IUPAC_DNA_CHARS)
     if (flankBad.length) {
-      error.value = `${label}序列含无法识别的字符「${flankBad[0].char}」（第 ${flankBad[0].index} 位）；接头只接受 DNA 碱基 A/T/G/C`
+      error.value = `${label}序列含无法识别的字符「${flankBad[0].char}」（第 ${flankBad[0].index} 位）；接头接受 IUPAC DNA 碱基（A/T/G/C 及模糊码 R/Y/S/W/K/M/B/D/H/V/N）`
       return
     }
   }

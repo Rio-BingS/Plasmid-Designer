@@ -791,13 +791,14 @@ def _apply_flanks(request, optimized_dna: str, warnings: List[str]) -> str:
                 "出现连续两个 Met（Met-Met）；请去掉输入序列开头的 M（或前置"
                 "序列末尾的 ATG）后重新设计")
     from core.sequence_analysis import RESTRICTION_ENZYMES
+    from core.enzyme_sites import canonical_enzyme_name
 
     cloned = [e for e in (getattr(request, "enzyme_5", None),
                           getattr(request, "enzyme_3", None),
                           getattr(request, "enzyme", None)) if e]
     watch = set(cloned) | set(getattr(request, "exclude_enzymes", None) or [])
     for name in sorted(watch):
-        entry = RESTRICTION_ENZYMES.get(name)
+        entry = RESTRICTION_ENZYMES.get(canonical_enzyme_name(name))
         site = (entry[0] or "").upper() if entry else ""
         if not site:
             continue
@@ -1094,11 +1095,15 @@ def process_sequence(
         [e for e in (exclude_enzymes or []) if e] if applies_exclusion else []
     )
 
-    # 酶名合法性检查，取识别序列作为避让 motif（仅适用时）
+    # 酶名合法性检查，取识别序列作为避让 motif（仅适用时）。
+    # 酶名先归一到规范拼写（ndei → NdeI）：Excel 排除酶列常是小写
+    from core.enzyme_sites import canonical_enzyme_name
+
     motifs: List[str] = []
     unknown: List[str] = []
     for enzyme in exclude_enzymes:
-        entry = RESTRICTION_ENZYMES.get(enzyme)
+        canonical = canonical_enzyme_name(enzyme)
+        entry = RESTRICTION_ENZYMES.get(canonical)
         if entry and entry[0]:
             motifs.append(entry[0].upper())
         else:
@@ -1991,12 +1996,14 @@ def run_design(
             # 插入片段内部含所选酶位点时酶切会切断片段，必须在结果层告警
             # （Gibson 双酶切线性化同样用酶切载体，同一约束）
             from core.sequence_analysis import RESTRICTION_ENZYMES
+            from core.enzyme_sites import canonical_enzyme_name
             from core.seq_utils import revcomp as _seq_revcomp
             for enz in dict.fromkeys(
                 e for e in (request.enzyme_5 or request.enzyme,
                             request.enzyme_3 or request.enzyme) if e
             ):
-                site = (RESTRICTION_ENZYMES.get(enz) or (None,))[0]
+                site = (RESTRICTION_ENZYMES.get(canonical_enzyme_name(enz))
+                        or (None,))[0]
                 if site and (site in optimized_dna
                              or _seq_revcomp(site) in optimized_dna):
                     result.warnings.append(

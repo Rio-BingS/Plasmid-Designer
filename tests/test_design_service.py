@@ -980,3 +980,45 @@ def test_restriction_preview_keeps_element_sharing_insert_start():
     # 起点与插入起点相同但终点不同的元件不会被误吞（构造性验证过滤条件）
     assert any(f["start"] == gene["start"] and f["end"] != gene["end"]
                for f in pv["features"]) or True
+
+
+# ==================== 酶名大小写归一（ndei → NdeI）====================
+
+def test_get_enzyme_case_insensitive():
+    """酶名查找大小写不敏感：Excel 批量表的 ndei/bamhi 曾报「未知限制酶」"""
+    from core.enzyme_sites import get_enzyme, canonical_enzyme_name
+
+    assert get_enzyme("ndei") is not None
+    assert get_enzyme("ndei")["name"] == "NdeI"
+    assert get_enzyme("NDEI")["site"] == "CATATG"
+    assert get_enzyme("bamhi")["site"] == "GGATCC"
+    # 规范拼写行为不变；真未知酶仍返回 None；不可用酶（双切 BaeI）仍不可用
+    assert get_enzyme("NdeI")["name"] == "NdeI"
+    assert get_enzyme("xyz") is None
+    assert get_enzyme("BaeI") is None
+    assert canonical_enzyme_name("ndei") == "NdeI"
+    assert canonical_enzyme_name("xyz") == "xyz"  # 查不到保留原文（错误提示用）
+
+
+def test_design_with_lowercase_enzyme_names():
+    """小写酶名端到端：restriction 设计正常完成，产物与规范拼写一致"""
+    result = run_design(
+        "design_lower_enzyme",
+        _flank_request(enzyme_5="ndei", enzyme_3="xhoi"))
+    assert result.status == DesignStatus.COMPLETED
+    ref = run_design(
+        "design_lower_enzyme_ref",
+        _flank_request(enzyme_5="NdeI", enzyme_3="XhoI"))
+    assert result.construct_sequence == ref.construct_sequence
+
+
+def test_exclude_enzymes_lowercase_no_unknown_warning():
+    """排除酶列写小写：不再误报「忽略未知限制酶」，避让照常生效"""
+    result = run_design(
+        "design_lower_exclude",
+        _flank_request(insert_direction="plus"))
+    ok = run_design(
+        "design_lower_exclude2",
+        _flank_request(insert_direction="plus", exclude_enzymes=["bamhi"]))
+    assert ok.status == DesignStatus.COMPLETED
+    assert not any("忽略未知限制酶" in w for w in ok.warnings)
