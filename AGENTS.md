@@ -295,7 +295,8 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## 当前状态
 
-- 当前版本 v2.30.1（2026-10-27）；远程 https://github.com/Rio-BingS/Plasmid-Designer
+- 当前版本见 docs/HANDOVER.md §1（本文件不维护版本号，由 `scripts/check_docs_sync.py`
+  门禁把守）；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
 - 测试基线（2026-10-26）：后端 **1796 passed / 43 skipped**（约 105 s）、前端 **82 文件 /
   636 passed**、`vue-tsc` 0 error、CI 绿；与基线不符先查原因，别直接改断言

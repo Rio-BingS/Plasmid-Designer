@@ -1,6 +1,7 @@
 # Plasmid Designer v2
 
-自动化质粒构建设计平台 — 源码与部署配置分离版（当前版本 v2.9.0）
+自动化质粒构建设计平台 — 源码与部署配置分离版（当前版本见
+[docs/HANDOVER.md](docs/HANDOVER.md) §1；本文件不维护版本号）
 
 各版本的变化与升级注意事项见 [CHANGELOG.md](CHANGELOG.md)，升级前请先阅读。
 
@@ -509,9 +510,10 @@ npm run test:run
 npm run type-check
 ```
 
-基线（截至 v2.9.0）：后端 898 passed / 6 skipped（跳过项为本机真实 .ab1 回归集等
-skip-if-missing 用例），前端 vitest 208 passed。CI（`.github/workflows/ci.yml`）在 push main
-与 PR 时跑 pytest + pip-audit、vue-tsc + vitest + npm audit。
+基线（实时数字以 [docs/HANDOVER.md](docs/HANDOVER.md) §1/§2 为准）：后端 pytest、
+前端 vitest + `vue-tsc --noEmit`。CI（`.github/workflows/ci.yml`）在 push main
+与 PR 时跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，并有文档同步门禁
+`scripts/check_docs_sync.py` 与尺寸预算 `scripts/check_file_size.py`。
 
 ## 模块接线状态
 
