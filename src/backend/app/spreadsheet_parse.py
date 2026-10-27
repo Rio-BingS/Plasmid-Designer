@@ -305,6 +305,13 @@ def _normalize_param(key: str, value: str) -> str:
     elif key == "vector_source":
         table, label = VECTOR_SOURCE_ALIASES, "载体来源"
         legal = "载体库 / 自己上传载体"
+    elif key in ("enzyme", "enzyme_5", "enzyme_3"):
+        # 酶名归一到规范拼写（ndei → NdeI）：Bio.Restriction 查找大小写
+        # 敏感，Excel 里的小写/全大写酶名曾让该行报「未知限制酶」。
+        # 查不到时原样返回——错误留到设计阶段按行报，提示保留用户原文
+        from core.enzyme_sites import canonical_enzyme_name
+
+        return canonical_enzyme_name(value.strip())
     else:
         return value.strip()
     hit = table.get(v) or table.get(value.strip().lower())
@@ -368,7 +375,9 @@ def parse_spreadsheet(data: bytes, suffix: str,
                 "混入编号、备注等文本")
         entry: Dict[str, object] = {
             "name": name[:100],
-            "sequence": seq.upper() if suffix not in (".csv", ".tsv") else seq,
+            # 序列统一转大写：设计时后端归一本来就是大写，预览行显示另一种
+            # 大小写只会让人以为大小写被区别对待（曾只对 xlsx 转大写）
+            "sequence": seq.upper(),
             "named": bool(row[name_col] if name_col is not None
                           and name_col < len(row) else "") and not inferred,
         }

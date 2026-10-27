@@ -6,6 +6,21 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.3] - 2026-10-27
+
+### 修复
+- 全面复查挖出的三处输入口径类隐藏 bug：
+  - **酶名大小写敏感**：Bio.Restriction 按属性精确拼写查找，Excel 批量
+    表酶列写小写/全大写（ndei、XHOI）会报「未知限制酶」且设计失败。
+    查找统一改为大小写不敏感（ndei → NdeI）：克隆酶、排除酶、内部位
+    点警告、批量表格解析四处消费点全通；规范拼写行为不变，真未知酶
+    报错保留用户原文。表格解析的文档注释本声称做了这个归一，实为漏写。
+  - **批量 CSV/TSV 序列不转大写**：xlsx 行转大写而 CSV/TSV 原样保留，
+    预览显示小写、设计结果却是大写。统一转大写（设计端归一本就如此）。
+  - **设计页接头校验比后端严**：5′/3′ 接头前端按 A/T/G/C 校验，而后端
+    接受完整 IUPAC——Kozak 共识 GCCRCCATGG（R=A/G）会被误拒。前端改
+    IUPAC 口径。
+
 ## [2.31.2] - 2026-10-27
 
 ### 修复
@@ -1488,7 +1503,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...HEAD
+[2.31.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...v2.31.3
 [2.31.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...v2.31.2
 [2.31.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...v2.31.1
 [2.31.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...v2.31.0
