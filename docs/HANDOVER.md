@@ -33,7 +33,7 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
-| 缓存版本常量 | `CODON_OPT_ALGO="v2.2"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="4"`（`app/routes/map_routes.py`） |
+| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="4"`（`app/routes/map_routes.py`）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（§7.4 教训） |
@@ -91,7 +91,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
    `package-lock.json`（2 处）——共 4 个字符串，全部要改
 2. 补 `CHANGELOG.md` 的 `## [x.y.z] - 日期` 与链接引用（`[Unreleased]` 的 compare 目标一并改）
    - **同步外围文档，防再挂账**：CHANGELOG 新增的链接引用行（缺了整条 compare 链会静默断链，
-     v2.18–v2.30 曾断 13 个版本）；`AGENTS.md` 测试基线数字；工作区外壳 `../AGENTS.md`
+     v2.18–v2.30 曾断 13 个版本）；改了测试基线要 HANDOVER §1 与 AGENTS.md 两处同改；
+     改缓存常量要同步 §2「缓存版本常量」行。**一致性由 `scripts/check_docs_sync.py`
+     门禁机器校验（发版前必跑，红灯照提示修）**；工作区外壳 `../AGENTS.md`
      不维护版本号，无需改动（版本事实只收敛在 HANDOVER §1/§2）
 3. `git commit -m "chore: 发布 vX.Y.Z"` → `git tag -a vX.Y.Z -F <说明文件>` → `git push --follow-tags`
 4. `tests/test_version_sync.py` 会校验三处版本号一致，漏改必红
