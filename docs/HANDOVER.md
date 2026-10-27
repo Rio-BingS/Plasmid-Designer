@@ -90,6 +90,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 1. 升版本号：`src/backend/core/_version.py`、`src/frontend/package.json`、
    `package-lock.json`（2 处）——共 4 个字符串，全部要改
 2. 补 `CHANGELOG.md` 的 `## [x.y.z] - 日期` 与链接引用（`[Unreleased]` 的 compare 目标一并改）
+   - **同步外围文档，防再挂账**：CHANGELOG 新增的链接引用行（缺了整条 compare 链会静默断链，
+     v2.18–v2.30 曾断 13 个版本）；`AGENTS.md` 测试基线数字；工作区外壳 `../AGENTS.md`
+     不维护版本号，无需改动（版本事实只收敛在 HANDOVER §1/§2）
 3. `git commit -m "chore: 发布 vX.Y.Z"` → `git tag -a vX.Y.Z -F <说明文件>` → `git push --follow-tags`
 4. `tests/test_version_sync.py` 会校验三处版本号一致，漏改必红
 
