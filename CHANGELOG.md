@@ -1448,7 +1448,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...HEAD
+[2.30.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...v2.30.2
 [2.30.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.0...v2.30.1
 [2.30.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.5...v2.30.0
 [2.29.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.29.4...v2.29.5
