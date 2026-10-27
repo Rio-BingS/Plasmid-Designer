@@ -20,6 +20,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 文档同步门禁（tests/test_docs_sync.py）要对照 git tag 校验
+          # CHANGELOG [Unreleased] 的 compare 目标，浅克隆默认无 tag
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
