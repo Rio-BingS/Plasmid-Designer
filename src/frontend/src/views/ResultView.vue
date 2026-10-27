@@ -29,8 +29,12 @@ const error = ref('')
 const insertStrand = computed(() => {
   const r = result.value
   if (!r) return ''
+  // 覆盖式匹配而非坐标全等：位点 ATG 充当起始密码子时后端会把 CDS 注释
+  // 扩展几 bp（insert_start/end 仍是克隆坐标），全等匹配会漏掉这条特征，
+  // 链向卡片静默消失。扩展只朝外扩一端，覆盖判断两种方向都成立
   const hit = (r.construct_features ?? []).find(
-    (f) => f.start === r.insert_start && f.end === r.insert_end,
+    (f) => (f.type || '').toUpperCase() === 'CDS'
+      && f.start <= (r.insert_start ?? NaN) && f.end >= (r.insert_end ?? NaN),
   )
   if (hit?.strand === '-') return '负链（-）'
   if (hit?.strand === '+') return '正链（+）'

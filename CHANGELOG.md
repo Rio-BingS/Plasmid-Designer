@@ -6,6 +6,23 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.2] - 2026-10-27
+
+### 修复
+- 同类隐藏 bug 清理（「插入片段身份按坐标全等识别」在 CDS 扩展场景下
+  失效，与 v2.31.1 同根源，全面审计后共四处）：
+  - **GenBank 导出重复 CDS**：位点 ATG 触发 CDS 扩展时，兜底注释误判
+    「无插入注释」，导出里 `complement(164..595)` 与 `164..592` 两条
+    insert CDS 并存（SnapGene 显示两条反向 CDS）；批量 ZIP 的 .gb 同源。
+  - **结果页链向卡片静默消失**：前端按起止全等找插入特征，扩展后匹配
+    失败，负链/正链指示不再显示。
+  - **图谱识别依赖特征名**：v2.31.1 的兜底要求特征名恰为 insert，用户
+    自定义序列名（GFP/A01 等）+ 扩展场景仍会丢标注，一并在本轮改掉。
+  - **预览特征过滤加固**：占位基因跳过只按起点匹配，载体元件起点恰好
+    相同时会被误吞，补终点匹配。
+  识别语义统一改为「CDS 特征覆盖克隆坐标区间」：扩展只朝外扩一端，
+  覆盖判断对原样/正链扩展/负链扩展都成立，且不依赖特征名。
+
 ## [2.31.1] - 2026-10-27
 
 ### 修复
@@ -1471,7 +1488,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...HEAD
+[2.31.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...v2.31.2
 [2.31.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...v2.31.1
 [2.31.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...v2.31.0
 [2.30.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...v2.30.2

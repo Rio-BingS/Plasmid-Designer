@@ -1,5 +1,5 @@
 {
-  "src/backend/app/design_service.py": 2285,
+  "src/backend/app/design_service.py": 2299,
   "src/backend/app/routes/sequencing_routes.py": 958,
   "src/backend/core/clone_strategy.py": 1051,
   "src/backend/core/codon_optimizer.py": 934,

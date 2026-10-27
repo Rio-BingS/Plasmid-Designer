@@ -441,8 +441,11 @@ def build_restriction_preview(request) -> Dict:
     for feat in asm.features:
         start = int(feat.get("start") or 0)
         end = int(feat.get("end") or 0)
-        if start == asm.insert_start and str(feat.get("type") or "").upper() == "CDS":
-            continue  # 占位基因本身不是元件
+        # 占位基因本身不是元件：按起止都命中才跳过（只看 start 会把恰好
+        # 起点相同的载体元件一起吞掉）
+        if (start == asm.insert_start and end == asm.insert_end
+                and str(feat.get("type") or "").upper() == "CDS"):
+            continue
         if end < lo or start > hi:
             continue
         features.append({
@@ -2217,6 +2220,13 @@ def run_design(
     return result
 
 
+def _int_or_none(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def generate_genbank_from_result(result: DesignResult) -> str:
     """基于完整构建体生成 GenBank。"""
     construct = result.construct_sequence or result.optimized_sequence or ""
@@ -2267,12 +2277,16 @@ def generate_genbank_from_result(result: DesignResult) -> str:
             lines.append(format_qualifier("note", feat["description"]))
 
     # 补一条兜底 CDS 只在「构建体里根本没有插入片段注释」时才需要。判据是
-    # 坐标是否已经覆盖插入区间，不是名字是否叫 insert——用户给序列起了名
-    # （如 A01）时会走到这里，再补一条**没有 complement 的正链 CDS**，
-    # 负链插入的构建体一导入 SnapGene 就会看到两条方向相反的 CDS/箭头。
+    # 「有 CDS 特征覆盖插入区间」，不是起止精确相等——位点 ATG 充当起始
+    # 密码子时 CDS 特征被扩展几个 bp（insert_end 仍是克隆坐标），按精确
+    # 相等判会误判成「没有注释」，导出里出现两条重叠的 insert CDS。
+    # 也不是名字是否叫 insert——插入特征名跟随用户序列名
     covered = any(
-        int(f.get("start") or -1) == insert_start
-        and int(f.get("end") or -1) == insert_end
+        str(f.get("type") or "").upper() == "CDS"
+        and _int_or_none(f.get("start")) is not None
+        and _int_or_none(f.get("end")) is not None
+        and _int_or_none(f.get("start")) <= insert_start
+        and _int_or_none(f.get("end")) >= insert_end
         for f in features
     )
     if insert_start and insert_end and not covered:
