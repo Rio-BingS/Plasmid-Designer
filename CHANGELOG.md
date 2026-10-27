@@ -6,6 +6,17 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.4] - 2026-10-27
+
+### 修复
+- **图谱缓存未失效，旧结果仍显示修复前的错误标注**：v2.31.1–v2.31.3
+  连续修改图谱生成口径（插入特征识别改覆盖式、GenBank 兜底注释）但
+  漏递增图谱缓存版本 `MAP_ALGO_VERSION`，修复前生成的图谱文档仍以旧
+  键命中缓存继续返回——用户看旧设计时「图谱还是错的」。版本递增到
+  `5` 作废全部旧缓存，旧设计无需重新设计，重新打开图谱即按新口径
+  生成。GenBank 下载本就每次现算、不受此影响（若手上是修复前下载的
+  旧文件请重新下载）。
+
 ## [2.31.3] - 2026-10-27
 
 ### 修复
@@ -1503,7 +1514,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...HEAD
+[2.31.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...v2.31.4
 [2.31.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...v2.31.3
 [2.31.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...v2.31.2
 [2.31.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...v2.31.1
