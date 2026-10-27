@@ -28,7 +28,7 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | `v2.31.3`（2026-10-27：酶名大小写归一/CSV 序列转大写/接头校验 IUPAC；插入特征同类 bug 清理见 v2.31.2（GenBank 重复 CDS/链向卡片/图谱识别依赖特征名/预览过滤）；图谱标注修复见 v2.31.1；5′ 前置/3′ 尾随接头见 v2.31.0；小写序列修复见 v2.30.2、复杂批量载体池见 v2.30.0；CI 修复链 v2.29.3–v2.29.5 见 [postmortems](postmortems/2026-10-26-ci-red-chain-and-backup.md)） |
-| 后端测试 | **1806 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 后端测试 | **1811 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
 | 前端测试 | **83 个文件 / 641 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
