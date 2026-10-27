@@ -62,14 +62,16 @@ export function findUnsupportedChars(
   allowed: string,
   limit = 3
 ): { char: string; index: number }[] {
-  const allowedSet = new Set(allowed)
+  // 与后端 normalize_sequence_text 的「先归一后校验」同一口径：小写 acgt 是
+  // 合法输入（提交时后端统一转大写），这里按大小写不敏感判定，避免被前端拦下
+  const allowedSet = new Set(allowed.toUpperCase())
   const out: { char: string; index: number }[] = []
   const text = seq || ''
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i]
     // 空白与零宽字符由后端统一剔除（FASTA 分行、粘贴带的空格），不算非法字符
     if (/[\s\u200b-\u200d\u2060\ufeff]/.test(ch)) continue
-    if (allowedSet.has(ch)) continue
+    if (allowedSet.has(ch.toUpperCase())) continue
     out.push({ char: ch, index: i + 1 })
     if (out.length >= limit) break
   }
