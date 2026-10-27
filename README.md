@@ -177,10 +177,13 @@ STORAGE_MODE=memory uvicorn app.main:app --reload
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/design/batch` | 创建批量设计任务 |
-| GET | `/api/design/batch/{id}` | 查询批量进度 |
-| GET | `/api/design/batch/{id}/download` | 下载批量结果 (ZIP) |
+| POST | `/api/design/batch` | 创建批量设计任务（支持 FASTA 式多序列名、内联一次性载体 `vector`、上传载体池 `vectors`、行级参数覆盖 `row_params`——载体/克隆方法/酶/方向/排除酶等每行可不同） |
+| GET | `/api/design/batch/{id}` | 查询批量进度（结果条目含质粒名/引物数/警告数） |
+| GET | `/api/design/batch/{id}/download` | 下载批量结果 (ZIP：按质粒名命名的 .gb + 引物 TSV + 合并订购表 all_primers.tsv) |
+| GET | `/api/design/batch/{id}/download/primers` | 合并引物订购表 TSV（整批引物按基因分组，可直接核对订购单） |
 | GET | `/api/design/batch/{id}/report` | 获取汇总报告 |
+| GET | `/api/design/batch/template` | 上传表格模板 .xlsx（`?variant=simple` 两列统一参数 / `complex` 含参数列行级覆盖） |
+| POST | `/api/design/batch/parse-spreadsheet` | 上传 .xlsx/.xlsm/.csv/.tsv → 批量序列清单（后端 openpyxl 解析，参数列 alias 归一；限流档 `upload`） |
 
 ### 载体库
 

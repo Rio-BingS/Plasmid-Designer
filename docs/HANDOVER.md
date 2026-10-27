@@ -14,7 +14,7 @@
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.30.1**
 （2026-10-27 发布，标签与 `main` 均已推送，CI 绿）。功能完整可用、有持续的真实数据回归。
-2026-10-26 实测：后端 **1796 passed / 43 skipped / 0 failed**（CI 口径，含此前被
+2026-10-27 复核实测：后端 **1797 passed / 43 skipped / 0 failed**（CI 口径，含此前被
 尺寸预算挡住从未跑过的 `test_deploy_backup.py`），前端 **82 文件 / 636 passed**，
 `vue-tsc --noEmit` **0 error**。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
@@ -28,7 +28,7 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | `v2.30.1`（2026-10-27：复杂批量载体池 + 表格参数列对齐；CI 修复链 v2.29.3–v2.29.5 见 [postmortems](postmortems/2026-10-26-ci-red-chain-and-backup.md)） |
-| 后端测试 | **1796 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 后端测试 | **1797 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
 | 前端测试 | **82 个文件 / 636 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
@@ -52,6 +52,11 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 | v2.16.0 | read 首尾可信区逐条判定 | 首 30 bp 恒不可信、31–60 bp 按 Q 值/峰型判定、700 bp 后默认不可信（701–900 灰区）；「高级参数」可调四个边界（`reliable_zone`），read 概况表新增「可信区」列 |
 | v2.16.1 | 测序结论坐标口径统一 | 混合双峰详情行（修剪后 read 坐标）与结论尾部（原始 read 坐标）不一致，同一条结论里两处「可信区」自相矛盾；不同时一并写出原始区间（`可信区 13–682（原始 31–700）`） |
 | v2.16.2 | SnapGene 在线库「搜得到、导不进」 | 序列 ID 校验是字符白名单，而索引里 18%（488/2822）的 `url` 带 `( ) + ' &`；搜索不校验 ID、导入才校验，症状就是「列表里有、点了 422」。改为排除法，编码与主机白名单不变（详见 [snapgene-search-import-mismatch 留档](postmortems/2026-10-18-snapgene-search-import-mismatch.md)） |
+
+> **v2.17–v2.30 不在本表**（逐版变化见 [CHANGELOG.md](../CHANGELOG.md)）：批量设计
+> 大升级（FASTA/Excel 上传、合并引物订购表、简单/复杂模式、载体池与行级参数）、
+> 合成分子取构建体段落根治、CI 红灯链清理（§7.4）。本表的「主线规律」总结写于
+> v2.16 时代，v2.27 起批量功能线是「用户工作流驱动的新增」，规律已不适用。
 
 主线规律：**v2.13 之后几乎全是「真实数据驱动的精修」**——测序口径、图谱边界、SnapGene
 操作体验。新增功能少、改行为多，所以**每次动口径都要同时处理缓存版本与回归断言**；
@@ -111,17 +116,21 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 - 只用 `http.schannelCheckRevoke=false` 关掉吊销查询，证书链校验仍在；不要改用
   `http.sslVerify=false`。推送前照例 `git pull --rebase` 并先看 `git log --oneline origin/main..HEAD`。
 
-**部署**（细节见 `deploy/*/README.md`）：
+**部署**（细节见 `deploy/*/README.md`；线上现状见 §2「线上部署」行）：
 
-- 前端：**本地** `npm run build`，把 `src/frontend/dist/` **整目录替换**到线上（VPS 上构建会 OOM）；
-  `dist/` 不入库。v2.13 起产物是多个路由 chunk，**只覆盖 index.html 会白屏**。
-- 后端：`git pull` + `systemctl restart`（未开 reload）；新增环境变量要同步 `docker-compose.yml` 透传。
-- nginx：`deploy/*/nginx.conf` 有 `location ^~ /api/map/`（请求体 17 m）等更新，改过就要一起上。
+- 线上是 **Docker Compose on VPS**（`ssh myvps`，`/opt/plasmid-designer`）。发版：
+  `git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose
+  build backend frontend` → `up -d --force-recreate backend frontend`（前端必须
+  force-recreate）；验 `docker logs plasmid-backend | grep 'Plasmid Designer API'`。
+- 裸机 systemd（`deploy/bare/`）只是备选路线，线上未采用；旧流程「本地 build 传
+  dist/ + systemctl restart」已废弃。
+- nginx：`deploy/*/nginx.conf` 有 `location ^~ /api/map/`（请求体 17 m）等更新，改过
+  就要一起上。新增环境变量要同步 `docker-compose.yml` 透传。
 
 ## 6. 一碰就容易出事的约束（Top 9）
 
 1. **改结果口径必须递增缓存版本**：`ANALYSIS_ENZYMES_VERSION`（分析/酶表，现 `v3`）、
-   `MAP_ALGO_VERSION`（图谱，现 `4`，在 `map_routes.py`）、`CODON_OPT_ALGO`（现 `v2.2`）。
+   `MAP_ALGO_VERSION`（图谱，现 `4`，在 `map_routes.py`）、`CODON_OPT_ALGO`（现 `v2.3`）。
    否则用户命中旧缓存、以为改动没生效。只改 `data/codon_tables/*.yaml` 时内容摘要自动变化。
 2. **载体 YAML 契约**：`features[]` 必须带 `name`；出处写结构化 `data_provenance`
    （描述里那句可读标注不算）；拓扑按真实值落 `topology`；落盘撞车 409，同 ID 重导入才覆盖。
