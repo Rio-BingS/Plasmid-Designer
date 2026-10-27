@@ -177,17 +177,56 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
 
 
 def _clone_enzymes_of(result) -> List[str]:
-    """本设计实际使用的克隆酶；旧结果无 cloning_enzymes 字段时从方案文本
-    的「酶/试剂:」行回退解析（如 '酶/试剂: NcoI, XhoI, T4 DNA Ligase'）。"""
+    """本设计实际使用的克隆酶；旧结果无 cloning_enzymes 字段时两级回退：
+
+    1. 方案文本的「酶/试剂:」行——只保留真实限制酶（Gibson 行是
+       'Gibson Assembly Master Mix' 之类的试剂，过滤掉）；
+    2. 构建体连接点推断：识别序列恰好紧贴插入区间左端/右端的酶——
+       旧 Gibson 双酶切设计的线性化酶不在试剂行里，只能这样恢复。"""
+    from core.enzyme_sites import canonical_enzyme_name, get_enzyme
+
+    out: List[str] = []
+    seen = set()
+
+    def _add(name: str) -> None:
+        c = canonical_enzyme_name(name)
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+
     if getattr(result, "cloning_enzymes", None):
-        return [e for e in result.cloning_enzymes if e]
+        for e in result.cloning_enzymes:
+            if e:
+                _add(e)
+        return out
+
     protocol = getattr(result, "clone_protocol", None) or ""
     for line in protocol.splitlines():
         s = line.strip()
         if s.startswith("酶/试剂:") or s.startswith("Enzymes:"):
-            raw = s.split(":", 1)[1]
-            return [e.strip() for e in raw.split(",") if e.strip()]
-    return []
+            for e in s.split(":", 1)[1].split(","):
+                e = e.strip()
+                if e and get_enzyme(e):
+                    _add(e)
+
+    construct = getattr(result, "construct_sequence", None) or ""
+    i_s, i_e = getattr(result, "insert_start", None), getattr(result, "insert_end", None)
+    if construct and i_s and i_e:
+        from core.sequence_analysis import RESTRICTION_ENZYMES
+
+        for name, entry in RESTRICTION_ENZYMES.items():
+            site = (entry[0] or "").upper()
+            if not site:
+                continue
+            # 左连接点：识别序列结尾紧贴插入起点（无缝连接位点被消费，无匹配）
+            left_hit = i_s - 1 - len(site) >= 0 and \
+                construct[i_s - 1 - len(site):i_s - 1] == site
+            # 右连接点：识别序列开头紧贴插入终点
+            right_hit = i_e + len(site) <= len(construct) and \
+                construct[i_e:i_e + len(site)] == site
+            if left_hit or right_hit:
+                _add(name)
+    return out
 
 
 def _vector_features(vector) -> List[Dict]:

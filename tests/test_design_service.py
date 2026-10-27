@@ -1052,12 +1052,21 @@ def test_design_map_clone_enzymes_fallback_from_protocol():
                        input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
                        cloning_method=CloningMethod.RESTRICTION,
                        clone_protocol="# 限制性酶切克隆实验方案\n\n## 材料\n酶/试剂: NcoI, XhoI, T4 DNA Ligase\n")
-    assert _clone_enzymes_of(old) == ["NcoI", "XhoI", "T4 DNA Ligase"]
+    # 试剂行里的非酶条目（T4 DNA Ligase）被过滤，只留真实限制酶
+    assert _clone_enzymes_of(old) == ["NcoI", "XhoI"]
     # 新结果直接用字段
     new = old.model_copy(update={"cloning_enzymes": ["NcoI", "XhoI"]})
     assert _clone_enzymes_of(new) == ["NcoI", "XhoI"]
-    # 两者皆无：空列表（前端不做高亮）
+    # 两者皆无：从构建体连接点推断（旧 Gibson 双酶切设计的线性化酶不在
+    # 试剂行里——试剂行只有 Master Mix）。插入紧贴 NcoI(左)/XhoI(右) 位点
     bare = DesignResult(design_id="bare", status=DesignStatus.COMPLETED, created_at=datetime.now(),
                         input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
-                        cloning_method=CloningMethod.GIBSON)
-    assert _clone_enzymes_of(bare) == []
+                        cloning_method=CloningMethod.GIBSON,
+                        construct_sequence="TTTTACCATGG" + "ATGAAAA" + "CTCGAGTTTT",
+                        insert_start=12, insert_end=18)
+    assert sorted(_clone_enzymes_of(bare)) == ["NcoI", "XhoI"]
+    # 无构建体：空列表（前端不做高亮）
+    empty = DesignResult(design_id="empty", status=DesignStatus.COMPLETED, created_at=datetime.now(),
+                         input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
+                         cloning_method=CloningMethod.GIBSON)
+    assert _clone_enzymes_of(empty) == []
