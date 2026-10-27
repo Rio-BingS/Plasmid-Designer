@@ -110,6 +110,9 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   const enzymeList = computed(() => listEnzymes(doc.value.enzymes, enzymeFilter))
   const enzymes = computed(() => (show.enzymes ? visibleEnzymes(doc.value.enzymes, enzymeFilter) : []))
   const cuts = computed(() => cutMarks(enzymes.value, show.blocked))
+  /** 本设计实际使用的克隆酶（设计图谱 meta 带）：标签强制显示并高亮。
+   *  多切点克隆酶按拥挤规则会被藏掉，用户选的位点反而不显示 */
+  const cloneEnzymes = computed(() => new Set(doc.value.meta?.clone_enzymes ?? []))
   const orfs = computed(() => (show.orfs ? doc.value.orfs : []))
   const primers = computed(() => (show.primers ? doc.value.primers : []))
   const selectedFeature = computed(() => doc.value.features.find((f) => f.id === selectedFeatureId.value) ?? null)
@@ -222,7 +225,7 @@ export function createMapStore(docRef: Ref<MapDocument>) {
   return {
     doc, L, circular, selection, caret, selectedFeatureId, selectedFeature, hover, hoverTarget, show, hiddenFeatures,
     enzymeFilter, search, rotation, viewport, seqVisible, navigate, unshown,
-    features, enzymeList, enzymes, cuts, orfs, primers, stats,
+    features, enzymeList, enzymes, cuts, cloneEnzymes, orfs, primers, stats,
     select, setCaret, selectFeature, navigateTo, toggleFeatureHidden, toggleEnzymeHidden,
     runSearch, focusHit, focusFeatureHit, clearSearch, setUnshown, rangeInfo,
   }

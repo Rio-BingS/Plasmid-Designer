@@ -6,6 +6,20 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.5] - 2026-10-28
+
+### 修复
+- **图谱上你选的克隆酶反而没有标签**（用户实测 pcDNA3.1 + NcoI/XhoI：
+  图谱看着像插入落在 NdeI 与 XhoI 之间）：酶标签按「切点数」定显示优
+  先级、拥挤时多切点酶最先隐藏——NcoI 在 pcDNA3.1 上有 4 个切点（克
+  隆位点 + 基因开头 GCCACC ATGG 自带 + NeoR/SV40 里各一个）标签被藏，
+  而 NdeI 恰好在 CMV enhancer 里有 1 个巧合切点被保留，图谱「读起来」
+  像克隆用了 NdeI。数据与 GenBank 从来都是对的（插入 616..1383 落在
+  NcoI 610 / XhoI 1384 之间）。修复：设计结果记录实际克隆酶
+  （`cloning_enzymes`，旧结果从方案文本回退解析），图谱 meta 带给前
+  端——克隆酶标签与单切点酶同档优先级、不再被拥挤隐藏，且切线与标
+  签以橙色高亮；环形图与线性图同样处理。图谱缓存版本同步递增至 6。
+
 ## [2.31.4] - 2026-10-27
 
 ### 修复
@@ -1514,7 +1528,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...HEAD
+[2.31.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...v2.31.5
 [2.31.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...v2.31.4
 [2.31.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...v2.31.3
 [2.31.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...v2.31.2
