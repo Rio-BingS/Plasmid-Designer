@@ -24,10 +24,14 @@
 
 ## 部署备忘（1 核 2G VPS，非代码问题）
 
-1. **前端不要在 VPS 上构建**：`Dockerfile.frontend` 多阶段构建中的 `vite build` 峰值内存
-   可能超 1G，小机器上易 OOM。应本地构建后仅上传 `dist/`。
-2. **推荐裸机部署**：SQLite（`DATABASE_URL` 默认即可）+ `REDIS_ENABLED=false` +
-   `--workers 1`，总内存占用约 500MB 内；Docker 全家桶（约 0.9–1.2G）可用但余量小。
+1. **线上实况（2026-10-26 起）是 Docker Compose**：四容器跑在这台 VPS 上
+   （`/opt/plasmid-designer`，见 HANDOVER §2「线上部署」），发版 = 按 tag reset +
+   `docker compose build backend frontend` + `up -d --force-recreate`。
+   `Dockerfile.frontend` 的 `vite build` 峰值内存偏大（曾评估超 1G 有 OOM 风险），
+   实际运行正常但**发版时留意构建阶段内存**；若出现 OOM 再回到「本地构建传 dist」。
+2. **裸机部署（`deploy/bare/`）是备选路线，线上未采用**：SQLite +
+   `REDIS_ENABLED=false` + `--workers 1` 总占用约 500MB 内，内存紧张时是合理的
+   退路；此前「推荐裸机」的表述已过时。
 3. **瓶颈是 CPU 不是内存**：密码子优化/引物设计为 CPU 密集的 Python 计算，批量任务
    串行执行（对单核反而友好），单条设计秒级、批量明显排队属预期行为。
 
