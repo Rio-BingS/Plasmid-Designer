@@ -6,6 +6,17 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.1] - 2026-10-27
+
+### 修复
+- 选 NdeI/NcoI 这类位点自带 ATG 的酶时成品图谱丢失插入片段标注：
+  位点 ATG 充当起始密码子后图谱 CDS 会被扩展几个 bp（把载体 ATG 包进
+  编码区），而图谱文档按「起止与克隆坐标完全相等」识别插入特征，扩展
+  后匹配失败、插入 CDS 被降级成普通载体特征——看起来就像插入没落在
+  所选位点之间（预览图用的是另一套识别路径所以正常）。识别改为起止任
+  一端与克隆坐标一致且名为 insert 的 CDS。换位点前后的图谱标注现在一
+  致（预览图与成品图本就同源，此修复只影响成品图）。
+
 ## [2.31.0] - 2026-10-27
 
 ### 新增
@@ -1460,7 +1471,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.1...HEAD
+[2.31.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.0...v2.31.1
 [2.31.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.2...v2.31.0
 [2.30.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.1...v2.30.2
 [2.30.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.30.0...v2.30.1
