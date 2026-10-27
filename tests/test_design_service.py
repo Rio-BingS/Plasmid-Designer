@@ -786,3 +786,103 @@ def test_run_design_warns_internal_restriction_site():
     result = run_design("design_internal_site", req)
     assert result.status == DesignStatus.COMPLETED
     assert any("EcoRI" in w and "内部" in w for w in result.warnings)
+
+
+# ==================== 5′ 前置 / 3′ 尾随固定 DNA 接头（upstream/downstream_flank）====================
+
+_GENE_AA = ("MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLV"
+            "TTLTYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTISFKDDGTYKTRAEVKFEGDTLVNR"
+            "IELKGIDFKEDGNILGHKLEYN")
+
+
+def _flank_request(**overrides):
+    from app.schemas import DesignRequest as _Req
+
+    params = dict(
+        sequence=_GENE_AA,
+        sequence_type=SequenceType.AMINO_ACID,
+        optimize_codons=True,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="BamHI", enzyme_3="HindIII",
+        vector_id="pET-28a",
+    )
+    params.update(overrides)
+    return _Req(**params)
+
+
+def test_flanks_joined_in_gene_orientation():
+    """前置/尾随接头按基因方向拼进克隆工作序列，optimized_sequence 保持纯 CDS"""
+    result = run_design(
+        "design_flank_fwd",
+        _flank_request(upstream_flank="GCCACC", downstream_flank="TAAGGG",
+                       insert_direction="plus"))
+    assert result.status == DesignStatus.COMPLETED
+    # 优化序列不含接头（接头不参与密码子优化）
+    assert result.optimized_sequence.startswith("ATG")
+    assert "GCCACC" not in result.optimized_sequence
+    # 克隆工作序列两端是接头
+    assert result.cloned_sequence.startswith("GCCACCATG")
+    assert result.cloned_sequence.endswith("TAAGGG")
+    # 构建体里接头落在基因两侧（正链装配）
+    cs = result.construct_sequence
+    assert "GCCACC" + result.optimized_sequence in cs
+    assert result.optimized_sequence + "TAAGGG" in cs
+
+
+def test_flanks_follow_insert_on_minus_strand():
+    """负链插入：接头随整段反向互补，基因方向读仍是 前置+CDS"""
+    from core.seq_utils import revcomp
+
+    result = run_design(
+        "design_flank_minus",
+        _flank_request(upstream_flank="GCCACC", insert_direction="minus"))
+    assert result.status == DesignStatus.COMPLETED
+    cs = result.construct_sequence
+    # 构建体里存的是 rc(接头+CDS)；按基因方向读回来仍是 GCCACC+ATG...
+    probe = revcomp("GCCACC" + result.optimized_sequence[:12])
+    pos = cs.find(probe)
+    assert pos != -1
+    gene_read = revcomp(cs[pos:pos + len("GCCACC") + 12])
+    assert gene_read == "GCCACC" + result.optimized_sequence[:12]
+
+
+def test_flank_upstream_atg_warns_not_trimmed():
+    """前置接头自带 ATG：只提示冗余起始，不动既定序列（区别于酶切位点自动去除）"""
+    result = run_design(
+        "design_flank_atg",
+        _flank_request(upstream_flank="GCCACCATG"))
+    assert result.status == DesignStatus.COMPLETED
+    assert any("前置" in w and "Met" in w for w in result.warnings)
+    # 既定接头原样保留（不自动去除）
+    assert result.cloned_sequence.startswith("GCCACCATGATG")
+
+
+def test_flank_cloning_enzyme_site_warns():
+    """接头里含克隆酶识别序列：信息性提示，不改序列"""
+    # BamHI GGATCC 放进尾随接头
+    result = run_design(
+        "design_flank_bamhi",
+        _flank_request(downstream_flank="TAAGGATCC", insert_direction="plus"))
+    assert result.status == DesignStatus.COMPLETED
+    assert any("尾随" in w and "BamHI" in w for w in result.warnings)
+    assert result.cloned_sequence.endswith("TAAGGATCC")
+
+
+def test_flank_schema_normalization():
+    """接头归一：小写转大写、U→T、去空白；非法字符/空白归 None 报字段错"""
+    import pytest
+    from app.schemas import DesignRequest as _Req
+    from pydantic import ValidationError
+
+    req = _flank_request(upstream_flank=" gccacc ", downstream_flank="tauggc")
+    assert req.upstream_flank == "GCCACC"
+    assert req.downstream_flank == "TATGGC"  # U→T（tauggc 第 3 位 U）
+
+    with pytest.raises(ValidationError):
+        _Req(sequence=_GENE_AA, upstream_flank="ATGXZ")
+    with pytest.raises(ValidationError):
+        _Req(sequence=_GENE_AA, upstream_flank="A" * 3001)
+
+    # 空白接头归 None
+    req = _flank_request(upstream_flank="   ")
+    assert req.upstream_flank is None

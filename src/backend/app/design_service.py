@@ -763,6 +763,51 @@ def _extend_insert_cds_for_site_start(seq: str, feats: List[Dict],
         f"；起始密码子来自 {origin}（CDS 已包含）"
 
 
+def _apply_flanks(request, optimized_dna: str, warnings: List[str]) -> str:
+    """把 5′ 前置 / 3′ 尾随固定 DNA 接头按基因方向拼进插入序列。
+
+    接头是既定序列（Kozak、信号肽编码区、终止密码子后标签等）：不参与
+    密码子优化与排除位点避让（process_sequence 已在拼接前跑完），拼进后
+    随整段走组装——负链插入时 _rc 整段反向互补，接头自然落在基因的
+    5′/3′ 端，不需要单独的方向逻辑。
+
+    做两件不修改序列的事：
+    - 前置接头末尾自带 ATG 且序列以 M 开头 → 提示冗余起始（与酶切位点
+      自带 ATG 同类，但接头是用户给的既定序列，只提示不自动去除）；
+    - 接头里命中本设计的克隆酶或排除清单里的酶识别序列 → 信息性提示
+      （既定序列不该被改动，但克隆前值得知道）。
+    """
+    up = getattr(request, "upstream_flank", None) or ""
+    down = getattr(request, "downstream_flank", None) or ""
+    if not up and not down:
+        return optimized_dna
+    if up:
+        if optimized_dna.startswith("ATG") and up.endswith("ATG"):
+            warnings.append(
+                "5′ 前置序列末尾自带 ATG，插入序列又以 ATG 开头，蛋白 N 端会"
+                "出现连续两个 Met（Met-Met）；请去掉输入序列开头的 M（或前置"
+                "序列末尾的 ATG）后重新设计")
+    from core.sequence_analysis import RESTRICTION_ENZYMES
+
+    cloned = [e for e in (getattr(request, "enzyme_5", None),
+                          getattr(request, "enzyme_3", None),
+                          getattr(request, "enzyme", None)) if e]
+    watch = set(cloned) | set(getattr(request, "exclude_enzymes", None) or [])
+    for name in sorted(watch):
+        entry = RESTRICTION_ENZYMES.get(name)
+        site = (entry[0] or "").upper() if entry else ""
+        if not site:
+            continue
+        span = "5′ 前置" if site in up else (
+            "3′ 尾随" if site in down else None)
+        if span:
+            warnings.append(
+                f"{span}接头序列内含 {name}（{site}）识别位点：接头是既定"
+                f"序列不会改动，但{f'它与克隆酶相同，' if name in cloned else ''}"
+                "会破坏克隆/切出接头，请确认位点不干扰本次设计")
+    return up + optimized_dna + down
+
+
 def _resolve_redundant_start_codon(
     request, vector, backbone: str, optimized_dna: str,
     resolved_ends: Optional[RestrictionEnds],
@@ -1727,6 +1772,11 @@ def run_design(
         result.cai = cai
         result.gc_content = gc
         result.warnings.extend(seq_warnings)
+
+        # 1b. 固定 DNA 接头（5′ 前置 / 3′ 尾随，如 Kozak）：既定序列不参与
+        # 优化，在验证与组装前拼进克隆工作序列；optimized_sequence 保持
+        # 纯 CDS 优化产物（与输入氨基酸一一对应），接头只进组装侧
+        optimized_dna = _apply_flanks(request, optimized_dna, result.warnings)
 
         # 2. 验证
         validator = SequenceValidator()

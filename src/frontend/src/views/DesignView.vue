@@ -20,6 +20,11 @@ const router = useRouter()
 const sequenceType = ref<'amino_acid' | 'dna'>('amino_acid')
 const sequence = ref('')
 const sequenceName = ref('insert')
+// 5′ 前置 / 3′ 尾随固定 DNA 接头（基因方向）：Kozak、标签编码区等既定序列，
+// 后端原样拼进插入序列，不参与密码子优化
+const upstreamFlank = ref('')
+const downstreamFlank = ref('')
+const showFlanks = ref(false)
 const vectorId = ref('pET-28a')
 // 载体来源：载体库（共享库）/ 本地上传 / 在线导入。后两者的一次性载体只随
 // 本次设计提交，不写载体库（见 components/DesignVectorPicker.vue）
@@ -190,6 +195,8 @@ function currentDraft() {
     sequenceType: sequenceType.value,
     sequence: sequence.value,
     sequenceName: sequenceName.value,
+    upstreamFlank: upstreamFlank.value,
+    downstreamFlank: downstreamFlank.value,
     vectorId: vectorId.value,
     vectorMode: vectorMode.value,
     adhocVector: adhocVector.value,
@@ -236,6 +243,8 @@ function applyDraft(d: Record<string, any>) {
   sequenceType.value = oneOf(d.sequenceType, ['amino_acid', 'dna'] as const, 'amino_acid')
   if (typeof d.sequence === 'string') sequence.value = d.sequence
   if (typeof d.sequenceName === 'string' && d.sequenceName) sequenceName.value = d.sequenceName
+  if (typeof d.upstreamFlank === 'string') upstreamFlank.value = d.upstreamFlank
+  if (typeof d.downstreamFlank === 'string') downstreamFlank.value = d.downstreamFlank
   if (typeof d.vectorId === 'string' && d.vectorId) vectorId.value = d.vectorId
   vectorMode.value = oneOf(d.vectorMode, ['library', 'upload', 'online'] as const, 'library')
   adhocVector.value = isAdhocVectorDraft(d.adhocVector) ? d.adhocVector : null
@@ -301,6 +310,8 @@ function clearForm() {
   clearDesignDraft()
   sequence.value = ''
   sequenceName.value = 'insert'
+  upstreamFlank.value = ''
+  downstreamFlank.value = ''
   sequenceType.value = 'amino_acid'
   vectorMode.value = 'library'
   vectorId.value = availableVectors.value[0]?.id || 'pET-28a'
@@ -406,6 +417,14 @@ async function handleSubmit() {
     error.value = describeUnsupportedChars(bad, isAa ? 'amino_acid' : 'dna')
     return
   }
+  // 接头是既定 DNA：非法字符在这里拦下，别等后端 422
+  for (const [label, flank] of [['5′ 前置', upstreamFlank.value], ['3′ 尾随', downstreamFlank.value]] as const) {
+    const flankBad = findUnsupportedChars(flank, 'ATGC')
+    if (flankBad.length) {
+      error.value = `${label}序列含无法识别的字符「${flankBad[0].char}」（第 ${flankBad[0].index} 位）；接头只接受 DNA 碱基 A/T/G/C`
+      return
+    }
+  }
   if (cloningMethod.value === 'restriction' && enzyme5.value === enzyme3.value) {
     error.value = '双酶切请选择两种不同的限制酶'
     return
@@ -447,6 +466,8 @@ async function handleSubmit() {
       request.trim_redundant_start = autoTrimStartCodon.value
     }
     request.vector_name_prefix = vectorNamePrefix.value
+    if (upstreamFlank.value.trim()) request.upstream_flank = upstreamFlank.value.trim()
+    if (downstreamFlank.value.trim()) request.downstream_flank = downstreamFlank.value.trim()
     if (cloningMethod.value === 'gibson') {
       request.trim_redundant_start = autoTrimStartCodon.value
       request.gibson_linearization = gibsonLinearization.value
@@ -570,6 +591,25 @@ function loadExample() {
         <div class="form-group">
           <label class="form-label">序列名称</label>
           <input v-model="sequenceName" class="form-input" placeholder="例如: GFP" />
+        </div>
+        <div class="form-group">
+          <button type="button" class="flank-toggle" @click="showFlanks = !showFlanks">
+            {{ showFlanks ? '▾' : '▸' }} 5′ 前置 / 3′ 尾随固定序列（可选）
+          </button>
+          <template v-if="showFlanks">
+            <p class="flank-hint">
+              固定 DNA 接头按基因方向拼在插入片段两端（如 Kozak 序列、标签编码区）。
+              既定序列不参与密码子优化与排除位点避让；负链插入时随基因一起反向互补，位置自动正确。
+            </p>
+            <label class="form-label">5′ 前置序列（DNA，基因方向）</label>
+            <input v-model="upstreamFlank" class="form-input" placeholder="例如 Kozak: GCCACC" />
+            <button
+              type="button" class="btn btn-secondary flank-preset"
+              @click="upstreamFlank = 'GCCACC'"
+            >Kozak（GCCACC）</button>
+            <label class="form-label flank-second-label">3′ 尾随序列（DNA，基因方向）</label>
+            <input v-model="downstreamFlank" class="form-input" placeholder="例如终止密码子后标签编码区" />
+          </template>
         </div>
         <div class="form-group checkbox-group">
           <label class="checkbox-label">
@@ -985,6 +1025,32 @@ h1 {
   margin-top: 0.5rem;
   font-size: 0.875rem;
   padding: 0.5rem 1rem;
+}
+
+.flank-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--primary-color);
+  cursor: pointer;
+}
+
+.flank-hint {
+  margin: 0.5rem 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted, #666);
+}
+
+.flank-preset {
+  margin-top: 0.375rem;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.75rem;
+}
+
+.flank-second-label {
+  margin-top: 0.75rem;
 }
 
 .method-cards {
