@@ -130,6 +130,16 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
     for raw in raw_feats:
         is_insert = (not design_marked and ins_s is not None
                      and raw.get("start") == ins_s and raw.get("end") == ins_e)
+        if not is_insert:
+            # 起始密码子来自位点/线性化点时 CDS 注释被扩展几个 bp（把载体
+            # ATG 包进编码区），insert_start/end 仍是克隆坐标——精确匹配会
+            # 漏掉这条特征。兜底按「名字+方向」识别：扩展只改起止不改名，
+            # 且负链扩展只动 end、正链只动 start，另一端仍与克隆坐标重合
+            start_ok = (ins_s is not None and raw.get("start") == ins_s) or \
+                       (ins_e is not None and raw.get("end") == ins_e)
+            is_insert = (not design_marked and start_ok
+                         and (raw.get("name") or "").lower() in ("insert",)
+                         and str(raw.get("type") or "").upper() == "CDS")
         if is_insert:
             design_marked = True
             # 插入片段是密码子优化后的编码序列：固定为 cds，不按名称猜测
