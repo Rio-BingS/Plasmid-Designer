@@ -12,6 +12,9 @@
 3. AGENTS.md 测试基线与 HANDOVER §1 口径一致（改测试基线要两处同改）
 4. 仓库内文档不再硬编码版本号（版本事实只收敛在 core/_version.py + HANDOVER；
    CHANGELOG / HANDOVER 自身除外）
+5. 文档内 markdown 相对链接的目标文件存在；`§N` 编号交叉引用在目标文档里有对应标题
+   （文件改名/挪动后链接静默断掉是脱轨第二大来源；不查外链——网络依赖会假红）
+6. 文档引用的 § 编号在该文档自身存在对应标题（如「见 §7.4」而 HANDOVER 无 §7.4 即红）
 
 用法：python scripts/check_docs_sync.py（CI 阻断、pytest 也调同一实现）
 """
@@ -23,6 +26,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_URL = "https://github.com/Rio-BingS/Plasmid-Designer"
+
+# 链接/§引用检查的扫描范围：仓库根与 docs/ 下的说明文档（代码内 README 一并覆盖；
+# deploy/*/README.md 独立成套且面向运维，暂不扫）
+DOC_FILES = ["AGENTS.md", "README.md", "CHANGELOG.md", "CLAUDE.md",
+             "docs/HANDOVER.md", "docs/KNOWN_ISSUES.md",
+             "docs/MAP.md", "docs/CACHE.md", "docs/MIGRATIONS.md",
+             "docs/ALGORITHM_ROADMAP.md", "docs/README.md"]
 
 
 def latest_tag() -> str:
@@ -120,6 +130,55 @@ def check_no_hardcoded_versions(text: str) -> list[str]:
     return errors
 
 
+# ---------- 链接与 § 编号交叉引用 ----------
+
+def _doc_sections(body: str) -> set[str]:
+    """返回文档里出现过的节编号集合：标题（## 7.4）与正文引用（§7.4）都算"""
+    numbers = set(re.findall(r"^#{2,4}\s+((?:\d+\.)*\d+)", body, re.M))
+    numbers.update(re.findall(r"§((?:\d+\.)*\d+)", body))
+    return numbers
+
+
+def check_doc_links() -> list[str]:
+    errors = []
+    # 预读所有被扫描文档，供锚点/§ 校验
+    bodies: dict[str, str] = {}
+    for rel in DOC_FILES:
+        path = ROOT / rel
+        if path.exists():
+            bodies[rel] = path.read_text(encoding="utf-8")
+        else:
+            errors.append(f"DOC_FILES 里的 {rel} 不存在（清单与实际文件脱节，改本脚本）")
+
+    for rel, body in bodies.items():
+        base = (ROOT / rel).parent
+        # markdown 相对链接：跳过 http(s)/mailto/纯锚点
+        for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", body):
+            if re.match(r"^(https?:|mailto:|#)", target):
+                continue
+            resolved = (base / target).resolve()
+            if not resolved.exists():
+                errors.append(f"{rel} 相对链接断了：({target}) → 文件不存在")
+                continue
+            # 链接带锚点时校验目标文档有对应标题（GitHub slug 即小写去标点）
+            for anchor in re.findall(rf"\]\({re.escape(target)}#([^)]+)\)", body):
+                slug = anchor.lower()
+                heading_slugs = {
+                    re.sub(r"[^\w\s-]", "", h.lower()).strip().replace(" ", "-")
+                    for h in re.findall(r"^#+\s+(.+)$", bodies.get(
+                        str(resolved.relative_to(ROOT)).replace("\\", "/"), ""), re.M)
+                }
+                if slug not in heading_slugs:
+                    errors.append(f"{rel} 链接锚点断了：({target}#{anchor})")
+
+        # 本文档 §N 引用必须能在本文档找到对应标题或引用（如「见 §7.4」）
+        sections = _doc_sections(body)
+        for ref in re.findall(r"§((?:\d+\.)*\d+)", body):
+            if ref not in sections:
+                errors.append(f"{rel} § 引用悬空：§{ref} 在本文档无对应标题/引用")
+    return errors
+
+
 def main() -> int:
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     handover = (ROOT / "docs/HANDOVER.md").read_text(encoding="utf-8")
@@ -128,6 +187,7 @@ def main() -> int:
         *check_cache_constants(handover),
         *check_test_baseline(handover),
         *check_no_hardcoded_versions(handover),
+        *check_doc_links(),
     ]
     if errors:
         print("文档同步检查未通过：")
