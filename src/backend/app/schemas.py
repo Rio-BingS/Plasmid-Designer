@@ -116,7 +116,34 @@ class DesignOptions(BaseModel):
         default_factory=list,
         description="需从优化序列排除的限制酶（仅氨基酸输入且启用密码子优化时生效）",
     )
+    # 5′ 前置 / 3′ 尾随固定 DNA 接头（相对基因读法；如 Kozak GCCACC）：
+    # 按基因方向拼进插入序列后再走组装，负链插入时随整段反向互补，
+    # 位置自然正确。既定序列不参与密码子优化与排除位点避让
+    upstream_flank: Optional[str] = Field(
+        default=None, max_length=3000, description="5′ 前置 DNA 序列（基因方向，如 Kozak）")
+    downstream_flank: Optional[str] = Field(
+        default=None, max_length=3000, description="3′ 尾随 DNA 序列（基因方向）")
     protocol_language: Literal["zh", "en"] = Field(default="zh", description="实验方案语言")
+
+    @field_validator("upstream_flank", "downstream_flank", mode="before")
+    @classmethod
+    def _normalize_flank(cls, value):
+        """接头是既定 DNA：只做归一（U→T、小写转大写、去空白/全角），
+        非 IUPAC 碱基直接报字段错误——接头里混进非法字符多半是粘贴错序列"""
+        if not isinstance(value, str):
+            return value
+        from core.seq_input import normalize_dna_text
+
+        seq = normalize_dna_text(value)
+        if not seq:
+            return None
+        from core.plasmid_map.parsers import _IUPAC_DNA
+
+        bad = sorted(set(seq) - _IUPAC_DNA)
+        if bad:
+            raise ValueError(
+                f"接头序列含非法字符：{''.join(bad[:10])}（只接受 IUPAC DNA 碱基）")
+        return seq
 
     @model_validator(mode="after")
     def validate_ranges(self):

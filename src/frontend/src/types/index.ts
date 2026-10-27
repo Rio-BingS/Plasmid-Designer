@@ -93,6 +93,10 @@ export interface DesignRequest {
   keep_restriction_sites?: boolean
   /** 质粒名加载体名前缀（载体名-序列名） */
   vector_name_prefix?: boolean
+  /** 5′ 前置固定 DNA 接头（基因方向，如 Kozak GCCACC；既定序列不参与密码子优化） */
+  upstream_flank?: string
+  /** 3′ 尾随固定 DNA 接头（基因方向；既定序列不参与密码子优化） */
+  downstream_flank?: string
 }
 
 /**
