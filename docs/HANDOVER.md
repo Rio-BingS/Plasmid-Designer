@@ -1,7 +1,7 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-27（`v2.31.1`；图谱插入标注修复 + 5′ 前置/3′ 尾随接头 + 批量设计两步工作流，CI 自 v2.18.0 起连续红灯清零，
+> **更新**：2026-10-27（`v2.31.2`；插入特征识别同类 bug 清理（四处）+ 图谱插入标注修复 + 5′ 前置/3′ 尾随接头，CI 自 v2.18.0 起连续红灯清零，
 > 本次修复留档见 [postmortems/2026-10-26-ci-red-chain-and-backup](postmortems/2026-10-26-ci-red-chain-and-backup.md)，下一步见 §8）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
@@ -12,9 +12,9 @@
 
 ## 1. 一句话现状
 
-单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.31.1**
+单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.31.2**
 （2026-10-27 发布，标签与 `main` 均已推送，CI 绿）。功能完整可用、有持续的真实数据回归。
-2026-10-27 复核实测：后端 **1803 passed / 43 skipped / 0 failed**（CI 口径，含此前被
+2026-10-27 复核实测：后端 **1806 passed / 43 skipped / 0 failed**（CI 口径，含此前被
 尺寸预算挡住从未跑过的 `test_deploy_backup.py`），前端 **83 文件 / 641 passed**，
 `vue-tsc --noEmit` **0 error**。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
@@ -27,7 +27,7 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.31.1`（2026-10-27：修复位点自带 ATG 时图谱插入标注丢失；5′ 前置/3′ 尾随接头见 v2.31.0；小写序列修复见 v2.30.2、复杂批量载体池见 v2.30.0；CI 修复链 v2.29.3–v2.29.5 见 [postmortems](postmortems/2026-10-26-ci-red-chain-and-backup.md)） |
+| 版本 / 标签 | `v2.31.2`（2026-10-27：插入特征按坐标全等识别的同类 bug 清理（GenBank 重复 CDS/链向卡片/图谱识别依赖特征名/预览过滤）；图谱标注修复见 v2.31.1；5′ 前置/3′ 尾随接头见 v2.31.0；小写序列修复见 v2.30.2、复杂批量载体池见 v2.30.0；CI 修复链 v2.29.3–v2.29.5 见 [postmortems](postmortems/2026-10-26-ci-red-chain-and-backup.md)） |
 | 后端测试 | **1803 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
 | 前端测试 | **83 个文件 / 641 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
