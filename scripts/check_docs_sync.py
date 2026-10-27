@@ -171,11 +171,57 @@ def check_doc_links() -> list[str]:
                 if slug not in heading_slugs:
                     errors.append(f"{rel} 链接锚点断了：({target}#{anchor})")
 
-        # 本文档 §N 引用必须能在本文档找到对应标题或引用（如「见 §7.4」）
-        sections = _doc_sections(body)
+        # 已知跨文档引用写法：「HANDOVER §N」「`docs/HANDOVER.md` §N」
+        # 「[docs/HANDOVER.md](…) §N」「HANDOVER.md 的 §N」。提取紧邻 §N 前的文档名，
+        # 命中别名表按目标文档校验；裸 §N（前面不是文档名）按本文档校验
+        doc_aliases = {
+            "HANDOVER": "docs/HANDOVER.md", "HANDOVER.md": "docs/HANDOVER.md",
+            "AGENTS": "AGENTS.md", "AGENTS.md": "AGENTS.md",
+            "README": "README.md", "README.md": "README.md",
+            "KNOWN_ISSUES": "docs/KNOWN_ISSUES.md", "KNOWN_ISSUES.md": "docs/KNOWN_ISSUES.md",
+            "CACHE": "docs/CACHE.md", "CACHE.md": "docs/CACHE.md",
+            "MAP": "docs/MAP.md", "MAP.md": "docs/MAP.md",
+            "MIGRATIONS": "docs/MIGRATIONS.md", "MIGRATIONS.md": "docs/MIGRATIONS.md",
+            "ALGORITHM_ROADMAP": "docs/ALGORITHM_ROADMAP.md",
+            "ALGORITHM_ROADMAP.md": "docs/ALGORITHM_ROADMAP.md",
+            "CHANGELOG": "CHANGELOG.md", "CHANGELOG.md": "CHANGELOG.md",
+        }
+        heading_numbers = set(re.findall(r"^#{2,4}\s+((?:\d+\.)*\d+)", body, re.M))
+        # 跨文档引用：文档名（紧邻或带 markdown 链接）后跟一串 §N（允许 §1/§2、
+        # §7.4–7.5 这类写法），整串按目标文档校验；§N 之间的分隔符随意
+        cross_ref_re = re.compile(
+            r"([A-Za-z_./-]*[A-Z_][A-Za-z_./-]*\.md|[A-Z_]{2,})"
+            r"(?:\]\([^)]*\))?[`\s/]*(?:的)?[`\s/]*((?:§(?:\d+\.)*\d+[^§\n]{0,3})+)"
+        )
+        handled_refs: set[str] = set()
+        for m in cross_ref_re.finditer(body):
+            name = m.group(1).split("/")[-1]
+            refs = re.findall(r"§((?:\d+\.)*\d+)", m.group(2))
+            handled_refs.update(refs)
+            target = doc_aliases.get(name)
+            if target is None:
+                errors.append(
+                    f"{rel} § 引用了别名表里没有的文档名「{m.group(1)}」"
+                    "（新文档要在 check_doc_links 的 doc_aliases 登记，或改写引用）"
+                )
+                continue
+            target_headings = set(re.findall(
+                r"^#{2,4}\s+((?:\d+\.)*\d+)", bodies.get(target, ""), re.M))
+            for ref in refs:
+                if ref not in target_headings:
+                    errors.append(
+                        f"{rel} 跨文档 § 引用悬空：{name} §{ref} 在 {target} 无对应标题"
+                    )
+        # 其余裸 §N 视为本文档引用；§7.4 这类已拆走的编号，仅凭正文出现过不算存在
         for ref in re.findall(r"§((?:\d+\.)*\d+)", body):
-            if ref not in sections:
-                errors.append(f"{rel} § 引用悬空：§{ref} 在本文档无对应标题/引用")
+            if ref in handled_refs:
+                continue
+            if ref not in heading_numbers:
+                errors.append(
+                    f"{rel} § 引用悬空：§{ref} 在本文档无对应标题"
+                    "（若指向已拆走的内容，改为 postmortems 链接；跨文档引用请写成"
+                    "「HANDOVER §N」形式以便校验）"
+                )
     return errors
 
 
