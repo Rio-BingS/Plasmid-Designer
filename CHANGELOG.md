@@ -6,6 +6,15 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.31.6] - 2026-10-28
+
+### 修复
+- 旧设计的克隆酶高亮回退补全：v2.31.5 的回退只解析方案文本「酶/试剂」
+  行，但 Gibson 设计该行只有 'Gibson Assembly Master Mix'（试剂）——
+  现存 Gibson 设计的高亮依然出不来。补连接点推断：识别序列恰好紧贴
+  插入区间左/右端的酶即为克隆酶（无缝连接位点被消费时无匹配，符合预
+  期）；试剂行同时过滤出真实限制酶，非酶条目不再进入高亮列表。
+
 ## [2.31.5] - 2026-10-28
 
 ### 修复
@@ -1528,7 +1537,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...HEAD
+[2.31.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...v2.31.6
 [2.31.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...v2.31.5
 [2.31.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...v2.31.4
 [2.31.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.2...v2.31.3
