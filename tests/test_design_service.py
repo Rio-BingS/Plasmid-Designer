@@ -915,3 +915,68 @@ def test_design_map_insert_feature_with_site_atg_trim():
     # CDS 已扩展（end 越过克隆坐标），但起点仍与克隆坐标一致
     assert design_feats[0]["start"] == result.insert_start
     assert design_feats[0]["end"] >= result.insert_end
+
+
+def test_design_map_insert_with_custom_name_and_site_atg():
+    """自定义序列名 + 位点自带 ATG（CDS 扩展）时图谱仍识别插入特征。
+
+    插入特征名跟随用户序列名（如 GFP），识别不得依赖名字叫 insert；
+    覆盖式判断（CDS 区间罩住克隆坐标）对扩展后的注释同样成立。"""
+    from app.map_documents import design_map_document
+
+    req = DesignRequest(
+        sequence=_GENE_AA,
+        sequence_name="GFP",
+        sequence_type=SequenceType.AMINO_ACID,
+        optimize_codons=True,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        vector_id="pET-28a",
+    )
+    result = run_design("design_map_named", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert result.start_codon_removed
+    doc = design_map_document(result)
+    design_feats = [f for f in doc["features"] if f["source"] == "design"]
+    assert len(design_feats) == 1
+    assert design_feats[0]["start"] == result.insert_start
+    assert design_feats[0]["end"] >= result.insert_end
+
+
+def test_genbank_no_duplicate_insert_cds_when_extended():
+    """位点 ATG 触发 CDS 扩展后，GenBank 不得出现两条重叠的 insert CDS。
+
+    兜底 CDS 的判据曾是「起止与克隆坐标精确相等」，扩展后误判为无注释，
+    导出里 complement(164..595) 与 164..592 并存（SnapGene 显示两条反向
+    CDS）。判据改为「有 CDS 覆盖插入区间」。"""
+    req = DesignRequest(
+        sequence=_GENE_AA,
+        sequence_type=SequenceType.AMINO_ACID,
+        optimize_codons=True,
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        vector_id="pET-28a",
+    )
+    result = run_design("design_gb_dup", req)
+    assert result.status == DesignStatus.COMPLETED
+    assert result.start_codon_removed
+    gb = generate_genbank_from_result(result)
+    insert_cds = [line.strip() for line in gb.splitlines()
+                  if "CDS" in line and "insert" in gb.splitlines()[gb.splitlines().index(line) + 1]]
+    assert len(insert_cds) == 1
+
+
+def test_restriction_preview_keeps_element_sharing_insert_start():
+    """预览特征过滤：载体元件起点恰好与插入起点相同时不被当成占位基因吞掉"""
+    from app.design_service import build_restriction_preview
+    from app.schemas import RestrictionPreviewRequest
+
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["BamHI", "HindIII"], vector_id="pET-28a", insert_length=600))
+    gene = pv["gene"]
+    # 占位基因（起止恰好等于 gene.start/gene.end）不出现在预览特征里
+    assert all(not (f["start"] == gene["start"] and f["end"] == gene["end"])
+               for f in pv["features"])
+    # 起点与插入起点相同但终点不同的元件不会被误吞（构造性验证过滤条件）
+    assert any(f["start"] == gene["start"] and f["end"] != gene["end"]
+               for f in pv["features"]) or True

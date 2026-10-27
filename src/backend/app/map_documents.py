@@ -115,6 +115,27 @@ def _find_span(text: str, pattern: str, circular: bool = False) -> Optional[tupl
     return i, len(pattern)
 
 
+def _is_insert_feature(raw: Dict, ins_s: Optional[int], ins_e: Optional[int]) -> bool:
+    """识别构建体特征列表里的插入片段。
+
+    常规情况起点终点与克隆坐标（insert_start/insert_end）完全相等；位点
+    自带 ATG 充当起始密码子时 CDS 注释会被扩展几个 bp（把载体 ATG 包进
+    编码区），扩展只朝外扩一端（正链扩 start、负链扩 end）——所以用
+    「CDS 覆盖克隆区间」判断，原样与两个扩展方向都成立，且不依赖特征名
+    （插入片段名跟随用户序列名，未必叫 insert）。assemble_construct 把
+    插入特征放在列表首位，同名匹配到多条时先到先得。
+    """
+    if ins_s is None or ins_e is None:
+        return False
+    if str(raw.get("type") or "").upper() != "CDS":
+        return False
+    try:
+        start, end = int(raw.get("start")), int(raw.get("end"))
+    except (TypeError, ValueError):
+        return False
+    return start <= ins_s and end >= ins_e
+
+
 def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 100) -> Dict:
     construct = result.construct_sequence or result.optimized_sequence or ""
     circular = bool(result.construct_sequence)
@@ -128,19 +149,7 @@ def design_map_document(result, enzyme_set: str = "common", orf_min_aa: int = 10
                       "strand": "+", "description": "Optimized insert"}]
     design_marked = False
     for raw in raw_feats:
-        is_insert = (not design_marked and ins_s is not None
-                     and raw.get("start") == ins_s and raw.get("end") == ins_e)
-        if not is_insert:
-            # 起始密码子来自位点/线性化点时 CDS 注释被扩展几个 bp（把载体
-            # ATG 包进编码区），insert_start/end 仍是克隆坐标——精确匹配会
-            # 漏掉这条特征。兜底按「名字+方向」识别：扩展只改起止不改名，
-            # 且负链扩展只动 end、正链只动 start，另一端仍与克隆坐标重合
-            start_ok = (ins_s is not None and raw.get("start") == ins_s) or \
-                       (ins_e is not None and raw.get("end") == ins_e)
-            is_insert = (not design_marked and start_ok
-                         and (raw.get("name") or "").lower() in ("insert",)
-                         and str(raw.get("type") or "").upper() == "CDS")
-        if is_insert:
+        if not design_marked and _is_insert_feature(raw, ins_s, ins_e):
             design_marked = True
             # 插入片段是密码子优化后的编码序列：固定为 cds，不按名称猜测
             feats.append(_feature(raw, "design", "cds"))
