@@ -64,6 +64,9 @@ const CHIP_H = computed(() => FONT.value + 6)
 const CHIP_PAD = 5
 /** 同一切点合并成一行时最多列出几个酶名，其余写 +N */
 const GROUP_MAX = 3
+/** 环外引物标签上限：几十条 oligo 全部外挂会把图谱挤成一根标签柱（22 条实测），
+ * 超过时一条都不外挂——弧带与悬停提示仍在，序列视图逐条可见 */
+const MAX_PRIMER_LABELS = 10
 /** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
 const MAX_OVERVIEW_CUTS = 360
 const overview = computed(() => overviewCuts(store.cuts.value, MAX_OVERVIEW_CUTS))
@@ -397,8 +400,10 @@ const labelData = computed(() => {
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
   // 引物标签 = SnapGene 图谱视图画法：纯文字 + 位置范围，不用名牌色块
-  // （名牌是 SnapGene 序列视图的画法，v2.33.x 搬进环形图是张冠李戴）
-  for (const p of primerGeoms.value) {
+  // （名牌是 SnapGene 序列视图的画法，v2.33.x 搬进环形图是张冠李戴）。
+  // 引物过多时全部省略——放一半藏一半只会让用户误以为没设计另一半
+  const showPrimerLabels = store.primers.value.length <= MAX_PRIMER_LABELS
+  for (const p of showPrimerLabels ? primerGeoms.value : []) {
     const posText = showPos.value ? ` (${p.pos})` : ''
     const text = truncateText(p.name + posText, maxW, font)
     if (!text) continue
@@ -475,6 +480,12 @@ watch([labelLayout, featLanes], () => {
   }
   for (const d of overview.value.dropped) {
     items.push({ id: `e:${d.name}`, name: `${d.name}（${d.count} 处）`, reason: '切点过多，概览图略去（序列视图可见）' })
+  }
+  // 引物整体不外挂时逐条上报（数量太多，图上只画弧带）
+  if (store.primers.value.length > MAX_PRIMER_LABELS) {
+    for (const p of store.primers.value) {
+      items.push({ id: `p:${p.id}`, name: p.name, reason: `引物共 ${store.primers.value.length} 条，环形图不逐条标注（序列视图可见）` })
+    }
   }
   store.setUnshown('circular', items)
 }, { immediate: true })

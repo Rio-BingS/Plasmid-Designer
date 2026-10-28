@@ -6,6 +6,17 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.4] - 2026-10-28
+
+### 修复
+- **引物过多时环形图不再逐条标注**（v2.33.3 仍存在的问题，用户截图）：22 条
+  oligo 的设计里全部外挂展开、在环的一侧堆成一根标签长柱且名字被拦腰截断。
+  根因是引物总量未超布局容量上限、拥挤隐藏根本不触发。现在环外引物标签设
+  数量上限（10 条）：不超过时逐条标注（纯文字 + 位置范围），超过时**整体**
+  省略——弧带与悬停提示仍在、序列视图逐条可见，且逐条记入「无法显示」列表
+  说明原因，不放一半藏一半误导用户。已用 22 条（全部省略）与 6 条（逐条标
+  注）两种真实场景截图验证。
+
 ## [2.33.3] - 2026-10-28
 
 ### 修复
@@ -1626,7 +1637,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...HEAD
+[2.33.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...v2.33.4
 [2.33.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...v2.33.3
 [2.33.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...v2.33.2
 [2.33.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...v2.33.1
