@@ -13,14 +13,16 @@ describe('primer SnapGene style markers', () => {
     expect(src).toContain('fitsInside(p.name, 10')
   })
 
-  it('CircularMap primers: plain text label + position range (SnapGene map view style)', async () => {
+  it('CircularMap primers: plain text label + position range, capped count', async () => {
     // SnapGene 图谱视图：引物 = 细弧段 + 环外纯文字 + 位置范围 "(234 .. 260)"，
     // 不用名牌色块（那是序列视图的画法；v2.33.x 曾张冠李戴）。
-    // 优先级与普通特征同级，20+ oligo 放不下自动隐藏（v2.33.0 教训）
+    // 22 条 oligo 全部外挂会堆成标签长柱（v2.33.3 实测）——超过上限整体省略
     const { readFileSync } = await import('node:fs')
     const src = readFileSync('src/map/components/CircularMap.vue', 'utf-8')
     expect(src).toContain("kind: 'text', color: '#2f6aa8'")
-    expect(src).toContain("(${p.pos})")
+    expect(src).toContain('(${p.pos})')
+    expect(src).toContain('MAX_PRIMER_LABELS')
+    expect(src).toContain('showPrimerLabels ? primerGeoms.value : []')
     expect(src).not.toContain("kind: 'chip', fill: '#4a90d9'")
     expect(src).not.toContain('priority: 5e7')
     expect(src).not.toContain('internalArcLabel(p.name')

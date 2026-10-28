@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-28 实测，v2.33.3）：pytest
+测试基线（本机 Windows，2026-10-28 实测，v2.33.4）：pytest
 **1819 passed / 43 skipped / 0 failed**（约 105 s），vitest **643 passed / 84 文件**，
 vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
