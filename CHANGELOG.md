@@ -6,6 +6,15 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.32.4] - 2026-10-28
+
+### 修复
+- **上传载体显示名优先用文件名去扩展名**（与批量载体池同一口径）：
+  文件内部 LOCUS 名常与文件名无关（如「1009-1 Aa01-1-1 (1).dna」内部
+  叫「A01-1」——SnapGene 导出时保留原质粒名），导入后显示内部名让用
+  户以为传错了文件。vector_id 同步跟随显示名；在线导入等无文件名的
+  路径仍用文件内部名。
+
 ## [2.32.3] - 2026-10-28
 
 ### 修复
@@ -1576,7 +1585,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...HEAD
+[2.32.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...v2.32.4
 [2.32.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...v2.32.3
 [2.32.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...v2.32.2
 [2.32.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...v2.32.1
