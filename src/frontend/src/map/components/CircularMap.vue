@@ -400,7 +400,8 @@ const labelData = computed(() => {
     const text = truncateText(p.name, maxW, font)
     if (!text) continue
     inputs.push({ id: p.key, text, height: ROW_H.value, angle: p.mid, radius: p.r, priority: 5e7 })
-    info.set(p.key, { kind: 'text', color: '#2f6aa8', members: [p.key] })
+    // SnapGene 风格：引物名是蓝底白字名牌（与线性图同色），不是裸文字
+    info.set(p.key, { kind: 'chip', fill: '#4a90d9', stroke: '#2f6aa8', ink: '#ffffff', members: [p.key] })
   }
   return { info, inputs }
 })
@@ -865,7 +866,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
 
       <!-- ORF / 引物 -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
-      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#68ace4" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
+      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.7" class="cmap-primer" />
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
