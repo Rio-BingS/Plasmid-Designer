@@ -1070,3 +1070,19 @@ def test_design_map_clone_enzymes_fallback_from_protocol():
                          input_sequence="ATG", vector_id="pET-28a", vector_name="pET-28a",
                          cloning_method=CloningMethod.GIBSON)
     assert _clone_enzymes_of(empty) == []
+
+
+def test_restriction_preview_reports_enzyme_counts():
+    """预览响应带两把酶在成品构建体上的切点数。
+
+    多切点酶（如 pcDNA3.1 的 NcoI 4 个切点）在图谱上会产生多个切点，
+    选择时就该看见——曾只在图谱层可见，用户以为克隆位点只有一个。"""
+    from app.design_service import build_restriction_preview
+    from app.schemas import RestrictionPreviewRequest
+
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["NcoI", "XhoI"], vector_id="pET-28a", insert_length=600))
+    assert pv["enzyme_counts"]["NcoI"] >= 1
+    assert pv["enzyme_counts"]["XhoI"] >= 1
+    # 多切点酶的数值 ≥ 预览图上画出的位点（预览 sites 只画连接点处那一个）
+    assert pv["enzyme_counts"]["NcoI"] >= len([s for s in pv["sites"] if s["enzyme"] == "NcoI"])
