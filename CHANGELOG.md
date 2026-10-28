@@ -6,6 +6,18 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.3] - 2026-10-28
+
+### 修复
+- **环形图引物标签改回 SnapGene 图谱视图画法**：对照 SnapGene 官方截图
+  确认其图谱（Map）与序列（Sequence）两种视图的引物呈现本就是两套——
+  图谱视图是**环外纯文字 + 位置范围 `(234 .. 260)`**（无名牌色块），名牌
+  色块是序列视图的画法。v2.33.x 把名牌搬进环形图属于张冠李戴。现在环
+  形图引物标签 = 蓝色文字 + 位置范围（拥挤时自动隐藏、悬停可见），弧
+  带恢复原版细弧（#68ace4）；序列图维持条内白字（已是 SnapGene 序列视
+  图样式）。已用 22 条引物的真实载体（C01）在环形/序列/分屏三种视图
+  截图验证布局，不再出现名牌堆积或引线飞图。
+
 ## [2.33.2] - 2026-10-28
 
 ### 修复
@@ -1614,7 +1626,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...HEAD
+[2.33.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...v2.33.3
 [2.33.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...v2.33.2
 [2.33.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...v2.33.1
 [2.33.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...v2.33.0
