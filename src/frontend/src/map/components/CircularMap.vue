@@ -107,7 +107,7 @@ const labelMargin = computed(() => {
   if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
   let maxW = 0
   for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value) + 2 * CHIP_PAD)
-  for (const p of store.primers.value) maxW = Math.max(maxW, textWidth(p.name, FONT.value))
+  for (const p of store.primers.value) maxW = Math.max(maxW, textWidth(p.name, FONT.value) + (showPos.value ? textWidth(` (${p.start} .. ${p.end})`, POS_FONT.value) : 0))
   for (const c of overview.value.shown) {
     maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1) + (showPos.value ? textWidth(` (${c.cut})`, POS_FONT.value) : 0))
   }
@@ -341,7 +341,7 @@ const primerGeoms = computed(() => {
     if (lane === undefined) return []
     const r1 = R0.value + 14 + lane * 6
     const u = unroll(p, L.value)
-    return [{ id: p.id, name: p.name, key: `p:${p.id}`, mid: (ang(u.from) + ang(u.to)) / 2, r: r1 + 4, d: arcBandPath(cx.value, cy.value, r1, r1 + 4, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)), p.strand === 1 ? 1 : -1, 5 / r1) }]
+    return [{ id: p.id, name: p.name, key: `p:${p.id}`, pos: `${p.start} .. ${p.end}`, mid: (ang(u.from) + ang(u.to)) / 2, r: r1 + 4, d: arcBandPath(cx.value, cy.value, r1, r1 + 4, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)), p.strand === 1 ? 1 : -1, 5 / r1) }]
   })
 })
 
@@ -396,14 +396,14 @@ const labelData = computed(() => {
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
-  // 引物名用蓝底名牌（SnapGene 风格），但优先级与普通特征同级——
-  // 20+ oligo 的设计里放不下的自动隐藏（悬停可见），不强制展开挤爆布局。
-  // v2.33.0 曾标成「必显示」外挂全部展开，引线飞满全图（教训）
+  // 引物标签 = SnapGene 图谱视图画法：纯文字 + 位置范围，不用名牌色块
+  // （名牌是 SnapGene 序列视图的画法，v2.33.x 搬进环形图是张冠李戴）
   for (const p of primerGeoms.value) {
-    const text = truncateText(p.name, maxW, font)
+    const posText = showPos.value ? ` (${p.pos})` : ''
+    const text = truncateText(p.name + posText, maxW, font)
     if (!text) continue
     inputs.push({ id: p.key, text, height: ROW_H.value, angle: p.mid, radius: p.r + 6, priority: featurePriority('misc_feature', 1) })
-    info.set(p.key, { kind: 'chip', fill: '#4a90d9', stroke: '#2f6aa8', ink: '#ffffff', members: [p.key] })
+    info.set(p.key, { kind: 'text', color: '#2f6aa8', members: [p.key] })
   }
   return { info, inputs }
 })
@@ -868,7 +868,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
 
       <!-- ORF / 引物 -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
-      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.7" class="cmap-primer" />
+      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#68ace4" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
