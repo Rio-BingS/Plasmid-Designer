@@ -13,26 +13,25 @@ describe('primer SnapGene style markers', () => {
     expect(src).toContain('fitsInside(p.name, 10')
   })
 
-  it('CircularMap primers: SnapGene map style — magenta name, coords behind a Locations toggle', async () => {
-    // 对照 SnapGene 官方文档（Show or Hide Restriction Site or Primer Coordinates on a Map）
-    // 与官方截图：引物标签 = 环外洋红纯文字 + 位置由「位置」开关统一控制；
-    // 绝不截断坐标（`(1434 .. 14…` 比不写更糟），也绝不整体隐藏引物
+  it('CircularMap primers: blue name chip + coordinates, all labeled (SnapGene screenshot replica)', async () => {
+    // 按用户提供的 SnapGene 截图复刻：蓝底白字圆角名牌 + 旁侧坐标，
+    // 22 条全部标出；坐标放不下时整段省略但绝不截断
     const { readFileSync } = await import('node:fs')
     const src = readFileSync('src/map/components/CircularMap.vue', 'utf-8')
+    const chip = readFileSync('src/map/components/PrimerLabel.vue', 'utf-8')
     const mod = readFileSync('src/map/core/primer_labels.ts', 'utf-8')
     expect(src).toContain("kind: 'primer'")
-    expect(src).toContain('PRIMER_LABEL_COLOR')
-    expect(src).toContain('buildPrimerLabel')
-    expect(mod).toContain("PRIMER_LABEL_COLOR = '#a21caf'")
-    // 坐标放不下时整段省略，不截断
-    expect(mod).toContain('fitsPos ? p.name + posText : p.name')
+    expect(src).toContain('<PrimerLabel')
+    expect(chip).toContain('PRIMER_CHIP_FILL')
+    expect(mod).toContain("PRIMER_CHIP_FILL = '#4a90d9'")
+    expect(mod).toContain("PRIMER_CHIP_INK = '#ffffff'")
+    // 坐标放不下整段省略，不截断
+    expect(mod).toContain('fitsPos ? posText')
     expect(src).toContain('store.show.locations')
-    // 不得再出现 v2.33.4 的「超上限整体省略」与更早的名牌/沿弧方案
+    // 不得回退到「整体隐藏」与更早的沿弧/必显示外挂方案
     expect(src).not.toContain('MAX_PRIMER_LABELS')
-    expect(src).not.toContain("kind: 'chip', fill: '#4a90d9'")
-    expect(src).not.toContain('priority: 5e7')
     expect(src).not.toContain('internalArcLabel(p.name')
-    // 引物轨道保持原版细弧带（无 13px 加高）
+    // 引物轨道保持原版细弧带
     expect(src).toContain('lane * 6')
   })
 
