@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.1] - 2026-10-28
+
+### 修复
+- **环形图引物标签引线飞满全图**（v2.33.0 回归）：引物名牌被标成
+  「必显示」优先级外挂到标签环，20+ 条合成 oligo 的设计里所有名牌全
+  部展开、引线密布，图完全没法看。改为 SnapGene 同款做法——引物名沿
+  自己的弧形轨道书写（弧带加高到能放 9px 沿弧文字，2 道轨道半径预算
+  同步调整），不再外挂；放不下名字的短 oligo 只画弧带、悬停可见。
+  线性图的悬空名牌不变。
+
 ## [2.33.0] - 2026-10-28
 
 ### 变更
@@ -1594,7 +1604,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...HEAD
+[2.33.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...v2.33.1
 [2.33.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...v2.33.0
 [2.32.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...v2.32.4
 [2.32.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...v2.32.3
