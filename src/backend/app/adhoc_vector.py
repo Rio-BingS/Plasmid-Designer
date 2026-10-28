@@ -310,12 +310,20 @@ def payload_from_record(
     url: str = "",
     license_text: str = "",
     max_length: Optional[int] = None,
+    display_name: Optional[str] = None,
 ) -> Dict:
-    """解析记录 → 接口回执 / 设计请求可回传的一次性载体载荷"""
+    """解析记录 → 接口回执 / 设计请求可回传的一次性载体载荷
+
+    display_name：上传文件名去扩展名。给了就优先用它——用户对文件名的
+    记忆远强于文件内部的 LOCUS 名（真实案例：SnapGene 导出的 GenBank 文
+    件名叫「1009-1 Aa01-1-1 (1).dna」，内部 LOCUS 却是「A01-1」，导入后
+    显示内部名让用户以为传错了文件）。vector_id 同样跟随，保持 id↔名一致。
+    """
+    name = (display_name or record.name or "vector")[:80]
     vector, meta = build_vector(
-        name=record.name, sequence=record.sequence, features=record.features,
+        name=name, sequence=record.sequence, features=record.features,
         topology=record.topology, source=source,
-        vector_id=f"adhoc_{safe_slug(source, 'src')}_{safe_slug(record.name, 'vector')}",
+        vector_id=f"adhoc_{safe_slug(source, 'src')}_{safe_slug(name, 'vector')}",
         url=url, max_length=max_length,
     )
     warnings = list(record.warnings or []) + meta["warnings"]

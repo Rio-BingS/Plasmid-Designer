@@ -193,3 +193,29 @@ def test_truncated_dna_still_reports_snapgene_error():
     with pytest.raises(MapParseError) as ei:
         parse_file("bad.dna", bad, None)
     assert "SnapGene" in str(ei.value)
+
+
+def test_upload_display_name_prefers_filename():
+    """上传载体显示名优先用文件名去扩展名，文件内部 LOCUS 名作回退。
+
+    真实案例：SnapGene 导出的 GenBank 文件名叫「1009-1 Aa01-1-1 (1).dna」，
+    内部 LOCUS 是「A01-1」，导入后显示内部名让用户以为传错了文件。"""
+    from app.adhoc_vector import payload_from_record
+    from core.plasmid_map.parsers import parse_file
+
+    gb = (b"LOCUS       A01-1      27 bp DNA     circular SYN 01-JAN-2026\n"
+          b"ORIGIN\n"
+          b"        1 atggctagcatgactggtggacagcaa\n"
+          b"//\n")
+    rec = parse_file("1009-1 Aa01-1-1 (1).dna", gb, None)
+
+    # 有 display_name（上传端点传文件名去扩展名）：优先文件名
+    p = payload_from_record(rec, source="genbank", display_name="1009-1 Aa01-1-1 (1)")
+    assert p["name"] == "1009-1 Aa01-1-1 (1)"
+    assert "1009-1" in p["id"]
+    # 无 display_name（在线导入等路径）：保持文件内部名
+    p2 = payload_from_record(rec, source="genbank")
+    assert p2["name"] == "A01-1"
+    # 名字截断到 80 字符
+    p3 = payload_from_record(rec, source="genbank", display_name="x" * 100)
+    assert len(p3["name"]) == 80
