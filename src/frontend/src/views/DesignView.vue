@@ -1084,8 +1084,11 @@ h1 {
   gap: 0.5rem;
 }
 
+/* 酶名只有几个字符，全宽输入框把切点数徽标推到行尾、视觉割裂；
+   限宽让徽标紧跟在输入框后 */
 .enzyme-with-count > :first-child {
-  flex: 1;
+  width: 240px;
+  flex: 0 1 240px;
 }
 
 .cut-count-badge {
