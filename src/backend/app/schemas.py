@@ -686,6 +686,8 @@ class MapPrimer(BaseModel):
     end: int = Field(..., ge=1)
     strand: Literal[1, -1] = 1
     sequence: Optional[str] = Field(default=None, max_length=_map_limits.MAX_PRIMER_SEQ)
+    # 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框用；缺省无突出
+    full_sequence: Optional[str] = Field(default=None, max_length=_map_limits.MAX_PRIMER_SEQ)
 
 
 class MapMeta(BaseModel):

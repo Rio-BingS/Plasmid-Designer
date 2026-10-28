@@ -97,6 +97,9 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
             "name": getattr(p, "name", "") or f"primer {len(out) + 1}",
             "start": start, "end": end, "strand": strand,
             "sequence": anneal or s,
+            # 完整引物序列（含 5′ 突出）：序列视图按 SnapGene 式画出「名牌框 +
+            # 引物序列」，突出部分悬在结合区外。与 span 等长时前端画不出差异
+            "full_sequence": s,
         })
         if len(out) >= 5000:
             break

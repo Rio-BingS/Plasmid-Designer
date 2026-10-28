@@ -188,11 +188,15 @@ def build_document(
         strand = -1 if int(p.get("strand") or 1) == -1 else 1
         if _span_len(start, end, length) > MAX_PRIMER_SEQ:
             continue
+        full_seq = str(p.get("full_sequence") or "").upper().strip()
         prims.append({
             "id": str(p.get("id") or f"primer-{i}")[:64],
             "name": str(p.get("name") or f"primer {i}")[:80],
             "start": start, "end": end, "strand": strand,
             "sequence": str(p.get("sequence") or extract_span(sequence, start, end, strand)).upper(),
+            # 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框需要画出
+            # 悬在结合区外的突出部分；缺省与 sequence 等长（无突出）
+            **({"full_sequence": full_seq} if full_seq else {}),
         })
 
     return {
