@@ -6,6 +6,15 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.0] - 2026-10-28
+
+### 变更
+- **图谱引物改为 SnapGene 风格呈现**：线性序列图中引物条形统一
+  SnapGene 蓝（#4a90d9）、末端延伸箭头，引物名从条形内文字改为**悬在
+  退火区上方的蓝底白字名牌**（含引物的行自动加高避免遮挡）；环形图
+  引物标签从裸文字改为同款蓝底名牌、弧带颜色统一。与 SnapGene 中的
+  引物视觉一致，从图谱一眼分辨引物与特征。
+
 ## [2.32.4] - 2026-10-28
 
 ### 修复
@@ -1585,7 +1594,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...HEAD
+[2.33.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...v2.33.0
 [2.32.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...v2.32.4
 [2.32.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...v2.32.3
 [2.32.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...v2.32.2
