@@ -54,6 +54,8 @@ export function createMapStore(docRef: Ref<MapDocument>) {
     complement: true, translations: true,
     /** 显示被 dam/dcm 甲基化阻断的位点（灰色虚线） */
     blocked: true,
+    /** 显示酶切位点与引物结合区的坐标（SnapGene 的 Show Locations） */
+    locations: true,
   })
   const hiddenFeatures = ref<string[]>([])
   const enzymeFilter = reactive<EnzymeFilter>(defaultEnzymeFilter())

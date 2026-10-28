@@ -6,6 +6,20 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.5] - 2026-10-29
+
+### 修复
+- **环形图引物标签按 SnapGene 图谱口径重做**（v2.33.4 用「整体隐藏」回避
+  布局问题，被指偷懒且效果差）。对照 SnapGene 官方文档《Show or Hide
+  Restriction Site or Primer Coordinates on a Map》与官方截图，其做法是：
+  引物名是**洋红色环外纯文字**，坐标（`(97 .. 114)`）由侧栏 **Show
+  Locations** 开关统一控制（关掉只剩名字），拥挤时只隐藏放不下的少数、
+  **标出的名字与坐标必定完整**。据此重做：22 条引物实测可全部标出
+  （名字 + 坐标完整、无截断）；工具栏新增「位置」图层开关，关掉后只显名
+  字；标签栏宽度在含引物时放宽，避免坐标被截成 `(1434 .. 14…`。
+  引物标签构造逻辑抽到 `map/core/primer_labels.ts`（CircularMap 行数回到
+  预算内）。
+
 ## [2.33.4] - 2026-10-28
 
 ### 修复
@@ -1637,7 +1651,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.5...HEAD
+[2.33.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...v2.33.5
 [2.33.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...v2.33.4
 [2.33.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...v2.33.3
 [2.33.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...v2.33.2

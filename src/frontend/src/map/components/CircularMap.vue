@@ -28,6 +28,7 @@ import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn, tint } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { MAP_FONT, textWidth, truncateText } from '../core/text'
+import { buildPrimerLabel, PRIMER_LABEL_COLOR, PRIMER_LABEL_PRIORITY } from '../core/primer_labels'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
 
@@ -55,18 +56,15 @@ const cy = computed(() => S.value / 2)
 /** 窄屏（手机）：小一号字、更窄的标签栏，把空间让给环 */
 const compact = computed(() => S.value < 440)
 const FONT = computed(() => (compact.value ? 10 : 11))
-/** 酶标签里切点位置的字号（小一号、灰色） */
+/** 酶标签里切点位置的字号（小一号、灰色）。坐标整体由「位置」开关控制（SnapGene 的 Show Locations） */
 const POS_FONT = computed(() => FONT.value - 1.5)
-const showPos = computed(() => !compact.value)
+const showPos = computed(() => !compact.value && store.show.locations)
 /** 纯文字标签行高 / 色块标签（环外特征名）行高与左右内边距 */
 const ROW_H = computed(() => FONT.value + 3)
 const CHIP_H = computed(() => FONT.value + 6)
 const CHIP_PAD = 5
 /** 同一切点合并成一行时最多列出几个酶名，其余写 +N */
 const GROUP_MAX = 3
-/** 环外引物标签上限：几十条 oligo 全部外挂会把图谱挤成一根标签柱（22 条实测），
- * 超过时一条都不外挂——弧带与悬停提示仍在，序列视图逐条可见 */
-const MAX_PRIMER_LABELS = 10
 /** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
 const MAX_OVERVIEW_CUTS = 360
 const overview = computed(() => overviewCuts(store.cuts.value, MAX_OVERVIEW_CUTS))
@@ -106,7 +104,10 @@ function groupParts(g: CutGroup) {
  * 固定按 26% 留白会让短标签的质粒环缩到很小（pET-28a 在 640 px 里半径仅 ~130）。
  */
 const labelMargin = computed(() => {
-  const cap = S.value * (compact.value ? 0.22 : 0.26)
+  // 有引物标签时放宽上限：引物名 + 坐标（`C01_AS22 (1434 .. 1451)`）比酶名长，
+  // 按 26% 硬留会把坐标挤成 `(1434 .. 14…`（截断半个数字比不写更糟）。
+  // 宁可环小一点，也让标签写全——与 SnapGene 的取法一致
+  const cap = S.value * (compact.value ? 0.26 : store.primers.value.length ? 0.32 : 0.26)
   if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
   let maxW = 0
   for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value) + 2 * CHIP_PAD)
@@ -367,6 +368,7 @@ const cutGeoms = computed(() => overview.value.shown.map(cutGeomOf))
 type LabelInfo =
   | { kind: 'chip'; fill: string; stroke: string; ink: string; members: string[] }
   | { kind: 'enzyme'; parts: ReturnType<typeof groupParts>['parts']; extra: string; pos: string; members: string[] }
+  | { kind: 'primer'; name: string; pos: string; members: string[] }
   | { kind: 'text'; color: string; members: string[] }
 const labelData = computed(() => {
   const info = new Map<string, LabelInfo>()
@@ -399,16 +401,14 @@ const labelData = computed(() => {
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
-  // 引物标签 = SnapGene 图谱视图画法：纯文字 + 位置范围，不用名牌色块
-  // （名牌是 SnapGene 序列视图的画法，v2.33.x 搬进环形图是张冠李戴）。
-  // 引物过多时全部省略——放一半藏一半只会让用户误以为没设计另一半
-  const showPrimerLabels = store.primers.value.length <= MAX_PRIMER_LABELS
-  for (const p of showPrimerLabels ? primerGeoms.value : []) {
-    const posText = showPos.value ? ` (${p.pos})` : ''
-    const text = truncateText(p.name + posText, maxW, font)
-    if (!text) continue
-    inputs.push({ id: p.key, text, height: ROW_H.value, angle: p.mid, radius: p.r + 6, priority: featurePriority('misc_feature', 1) })
-    info.set(p.key, { kind: 'text', color: '#2f6aa8', members: [p.key] })
+  // 引物标签 = SnapGene 图谱视图画法（洋红名字 + 可关闭的位置坐标，见 core/primer_labels）
+  for (const p of primerGeoms.value) {
+    const lab = buildPrimerLabel(p, {
+      maxW, font, posFont: POS_FONT.value, showPos: showPos.value, rowH: ROW_H.value, priority: PRIMER_LABEL_PRIORITY,
+    })
+    if (!lab) continue
+    inputs.push(lab.input)
+    info.set(p.key, { kind: 'primer', name: lab.name, pos: lab.pos, members: [p.key] })
   }
   return { info, inputs }
 })
@@ -480,12 +480,6 @@ watch([labelLayout, featLanes], () => {
   }
   for (const d of overview.value.dropped) {
     items.push({ id: `e:${d.name}`, name: `${d.name}（${d.count} 处）`, reason: '切点过多，概览图略去（序列视图可见）' })
-  }
-  // 引物整体不外挂时逐条上报（数量太多，图上只画弧带）
-  if (store.primers.value.length > MAX_PRIMER_LABELS) {
-    for (const p of store.primers.value) {
-      items.push({ id: `p:${p.id}`, name: p.name, reason: `引物共 ${store.primers.value.length} 条，环形图不逐条标注（序列视图可见）` })
-    }
   }
   store.setUnshown('circular', items)
 }, { immediate: true })
@@ -907,6 +901,11 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
                  :font-weight="p.bold ? 700 : 400">{{ p.text }}</tspan>
           <tspan v-if="l.inf.extra" fill="#8b929b" font-weight="400">{{ l.inf.extra }}</tspan>
           <tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan>
+        </text>
+        <!-- 引物：洋红色名字，坐标同酶标签一样用小号灰字（SnapGene Show Locations） -->
+        <text v-else-if="l.inf.kind === 'primer'" :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central"
+              :text-anchor="l.anchor" class="cmap-label-text" :fill="PRIMER_LABEL_COLOR">
+          <tspan v-if="l.side === -1 && l.inf.pos" :font-size="POS_FONT" fill="#8b929b">{{ l.inf.pos }} </tspan>{{ l.inf.name }}<tspan v-if="l.side === 1 && l.inf.pos" :font-size="POS_FONT" fill="#8b929b">{{ l.inf.pos }}</tspan>
         </text>
         <text v-else :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
               :fill="l.inf.color" class="cmap-label-text">{{ l.text }}</text>
