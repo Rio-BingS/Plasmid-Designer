@@ -1,28 +1,29 @@
 /**
- * 环外引物标签（SnapGene 图谱视图口径）。
+ * 环外引物标签（按用户提供的 SnapGene 截图复刻）。
  *
- * 官方行为（Show or Hide Restriction Site or Primer Coordinates on a Map）：
- *   - 引物结合区在环上是细弧段，名字是环外的**洋红纯文字**，靠细引线连到弧段；
- *   - 坐标（`(97 .. 114)`）不是名字的一部分，由「位置」开关统一控制，
- *     关掉就只剩名字；
- *   - 拥挤时只隐藏放不下的那几条，**标出来的名字与坐标一定完整**——
- *     截断成 `(1434 .. 14…` 比不写更糟。
+ * 形态：**蓝底圆角名牌 + 白色引物名**，名字旁边跟一段普通文字的坐标
+ * `(280 .. 325)`；22 条 oligo 全部标出，沿环外堆成列、引线呈扇形展开。
  *
- * 这个模块只负责「一条引物 → 一个标签输入」，排布仍交给 core/labels。
+ * 与酶标签的差别：酶是裸文字，引物是色块名牌——用户明确要求按截图复刻，
+ * 因此不再套用「名字 + 小号灰坐标」的酶样式。
  */
 import { textWidth } from './text'
-import { featurePriority } from './labels'
 import type { CircularLabelInput } from './labels'
 
-/** 引物标签颜色（SnapGene 洋红） */
-export const PRIMER_LABEL_COLOR = '#a21caf'
+/** 名牌配色（SnapGene 引物蓝） */
+export const PRIMER_CHIP_FILL = '#4a90d9'
+export const PRIMER_CHIP_STROKE = '#2f6aa8'
+export const PRIMER_CHIP_INK = '#ffffff'
+/** 名牌左右内边距 */
+export const PRIMER_CHIP_PAD = 4
+/** 名牌与坐标之间的间隙 */
+export const PRIMER_POS_GAP = 4
 
 /**
- * 引物标签优先级（SnapGene：引物识别位点与普通特征同档，拥挤时按序隐藏但
- * 绝不整体吞掉——只要有一条放得下就标一条）。略高于 misc_feature，
- * 免得被同长度的杂项特征挤掉。
+ * 引物标签优先级：高于双切点酶、与单切点酶同档，保证设计里的引物不会被
+ * 拥挤规则先藏掉（用户要求 22 条全部标出）。
  */
-export const PRIMER_LABEL_PRIORITY = featurePriority('misc_feature', 9_999_999)
+export const PRIMER_LABEL_PRIORITY = 5e7
 
 export interface PrimerLabelSource {
   key: string
@@ -38,40 +39,40 @@ export interface PrimerLabelSource {
 export interface PrimerLabel {
   input: CircularLabelInput
   name: string
-  /** 渲染用的坐标片段（含前导空格）；放不下或关了「位置」时为空串 */
+  /** 坐标文本（含括号与前导空格）；关闭「位置」时为空串 */
   pos: string
+  /** 名牌文字宽（渲染时定 rect 宽度） */
+  nameW: number
 }
 
 /**
- * 构造引物外标签。
- * @param maxW  标签栏可用宽度（px）
- * @param font  名字字号
- * @param posFont 坐标字号（小一号）
- * @param showPos 是否显示坐标（「位置」开关 && 非窄屏）
- * @param rowH  行高
- * @param priority 标签优先级
+ * 构造引物外标签：名牌宽度只按名字算，坐标是名牌外的附加文字。
+ * 名字放不下（标签栏太窄）时整条返回 null，交给布局隐藏——绝不截断名字。
  */
 export function buildPrimerLabel(
   p: PrimerLabelSource,
-  opts: { maxW: number; font: number; posFont: number; showPos: boolean; rowH: number; priority: number },
+  opts: { maxW: number; font: number; posFont: number; showPos: boolean; rowH: number; priority?: number },
 ): PrimerLabel | null {
-  const { maxW, font, posFont, showPos, rowH, priority } = opts
-  const nameW = textWidth(p.name, font)
-  if (nameW > maxW) return null // 名字都放不下：不截名字，整条交给布局隐藏
+  const { maxW, font, posFont, showPos, rowH } = opts
+  const nameW = textWidth(p.name, font, true)
+  const chipW = nameW + 2 * PRIMER_CHIP_PAD
+  if (chipW > maxW) return null
   const posText = showPos ? ` (${p.pos})` : ''
   const posW = posText ? textWidth(posText, posFont) : 0
-  const fitsPos = !!posText && nameW + posW <= maxW
+  // 坐标放不下时整段省略（截断半个数字比不写更糟），名牌本身照样显示
+  const fitsPos = !!posText && chipW + PRIMER_POS_GAP + posW <= maxW
   return {
     input: {
       id: p.key,
-      text: fitsPos ? p.name + posText : p.name,
-      width: nameW + (fitsPos ? posW : 0),
+      text: p.name + (fitsPos ? posText : ''),
+      width: chipW + (fitsPos ? PRIMER_POS_GAP + posW : 0),
       height: rowH,
       angle: p.mid,
       radius: p.r + 6,
-      priority,
+      priority: opts.priority ?? PRIMER_LABEL_PRIORITY,
     },
     name: p.name,
     pos: fitsPos ? posText : '',
+    nameW,
   }
 }

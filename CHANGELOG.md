@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.6] - 2026-10-29
+
+### 修复
+- **环形图引物改为蓝底白字名牌 + 旁侧坐标，按用户提供的 SnapGene 截图直接
+  复刻**（v2.33.5 的洋红纯文字与用户预期形态不符）。名牌宽度只按名字计，
+  坐标作为名牌外的附加文字，关掉「位置」图层则只剩名牌；坐标放不下时整段
+  省略而不截断。含引物时标签栏宽度上限从 26% 放宽到 42%，使 22 条引物
+  **每条都带坐标**（此前只有 5 条），引线呈扇形展开。名牌渲染抽到
+  `map/components/PrimerLabel.vue`。
+
 ## [2.33.5] - 2026-10-29
 
 ### 修复
@@ -1651,7 +1661,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.5...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.6...HEAD
+[2.33.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.5...v2.33.6
 [2.33.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...v2.33.5
 [2.33.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...v2.33.4
 [2.33.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...v2.33.3
