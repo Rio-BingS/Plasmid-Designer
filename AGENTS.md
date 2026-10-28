@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-28 实测，v2.33.5）：pytest
+测试基线（本机 Windows，2026-10-28 实测，v2.33.6）：pytest
 **1819 passed / 43 skipped / 0 failed**（约 105 s），vitest **644 passed / 84 文件**，
 vue-tsc **0**。其中 5 项真实数据回归
 （`test_real_data_regression`）
@@ -298,7 +298,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 当前版本见 docs/HANDOVER.md §1（本文件不维护版本号，由 `scripts/check_docs_sync.py`
   门禁把守）；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
-- 测试基线（2026-10-29 复核，v2.33.5）：后端 **1819 passed / 43 skipped**（约 105 s）、前端 **84 文件 /
+- 测试基线（2026-10-29 复核，v2.33.6）：后端 **1819 passed / 43 skipped**（约 105 s）、前端 **84 文件 /
   644 passed**、`vue-tsc` 0 error、CI 绿；与基线不符先查原因，别直接改断言
 - 刚接手先读 docs/HANDOVER.md（现状、已修问题留档见 §7 索引、下一步）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」

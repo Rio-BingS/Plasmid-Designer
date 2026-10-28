@@ -28,9 +28,10 @@ import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn, tint } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { MAP_FONT, textWidth, truncateText } from '../core/text'
-import { buildPrimerLabel, PRIMER_LABEL_COLOR, PRIMER_LABEL_PRIORITY } from '../core/primer_labels'
+import { buildPrimerLabel, PRIMER_CHIP_PAD, PRIMER_POS_GAP } from '../core/primer_labels'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
+import PrimerLabel from './PrimerLabel.vue'
 
 const props = withDefaults(defineProps<{
   doc?: MapDocument
@@ -104,14 +105,16 @@ function groupParts(g: CutGroup) {
  * 固定按 26% 留白会让短标签的质粒环缩到很小（pET-28a 在 640 px 里半径仅 ~130）。
  */
 const labelMargin = computed(() => {
-  // 有引物标签时放宽上限：引物名 + 坐标（`C01_AS22 (1434 .. 1451)`）比酶名长，
-  // 按 26% 硬留会把坐标挤成 `(1434 .. 14…`（截断半个数字比不写更糟）。
-  // 宁可环小一点，也让标签写全——与 SnapGene 的取法一致
-  const cap = S.value * (compact.value ? 0.26 : store.primers.value.length ? 0.32 : 0.26)
+  // 有引物标签时放宽上限：引物是「名牌 + 坐标」，比酶名长得多；按 26% 硬留
+  // 会让坐标整段被省略（22 条里只剩 5 条带坐标）。宁可环小一点也让每条带坐标
+  const cap = S.value * (compact.value ? 0.30 : store.primers.value.length ? 0.42 : 0.26)
   if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
   let maxW = 0
   for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value) + 2 * CHIP_PAD)
-  for (const p of store.primers.value) maxW = Math.max(maxW, textWidth(p.name, FONT.value) + (showPos.value ? textWidth(` (${p.start} .. ${p.end})`, POS_FONT.value) : 0))
+  for (const p of store.primers.value) {
+    maxW = Math.max(maxW, textWidth(p.name, FONT.value, true) + 2 * PRIMER_CHIP_PAD
+      + (showPos.value ? PRIMER_POS_GAP + textWidth(` (${p.start} .. ${p.end})`, POS_FONT.value) : 0))
+  }
   for (const c of overview.value.shown) {
     maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1) + (showPos.value ? textWidth(` (${c.cut})`, POS_FONT.value) : 0))
   }
@@ -368,7 +371,7 @@ const cutGeoms = computed(() => overview.value.shown.map(cutGeomOf))
 type LabelInfo =
   | { kind: 'chip'; fill: string; stroke: string; ink: string; members: string[] }
   | { kind: 'enzyme'; parts: ReturnType<typeof groupParts>['parts']; extra: string; pos: string; members: string[] }
-  | { kind: 'primer'; name: string; pos: string; members: string[] }
+  | { kind: 'primer'; name: string; pos: string; nameW: number; members: string[] }
   | { kind: 'text'; color: string; members: string[] }
 const labelData = computed(() => {
   const info = new Map<string, LabelInfo>()
@@ -401,14 +404,14 @@ const labelData = computed(() => {
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
-  // 引物标签 = SnapGene 图谱视图画法（洋红名字 + 可关闭的位置坐标，见 core/primer_labels）
+  // 引物标签 = 用户给定 SnapGene 截图复刻：蓝底白字名牌 + 旁侧坐标（见 core/primer_labels）
   for (const p of primerGeoms.value) {
     const lab = buildPrimerLabel(p, {
-      maxW, font, posFont: POS_FONT.value, showPos: showPos.value, rowH: ROW_H.value, priority: PRIMER_LABEL_PRIORITY,
+      maxW, font, posFont: POS_FONT.value, showPos: showPos.value, rowH: ROW_H.value,
     })
     if (!lab) continue
     inputs.push(lab.input)
-    info.set(p.key, { kind: 'primer', name: lab.name, pos: lab.pos, members: [p.key] })
+    info.set(p.key, { kind: 'primer', name: lab.name, pos: lab.pos, nameW: lab.nameW, members: [p.key] })
   }
   return { info, inputs }
 })
@@ -902,11 +905,9 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
           <tspan v-if="l.inf.extra" fill="#8b929b" font-weight="400">{{ l.inf.extra }}</tspan>
           <tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan>
         </text>
-        <!-- 引物：洋红色名字，坐标同酶标签一样用小号灰字（SnapGene Show Locations） -->
-        <text v-else-if="l.inf.kind === 'primer'" :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central"
-              :text-anchor="l.anchor" class="cmap-label-text" :fill="PRIMER_LABEL_COLOR">
-          <tspan v-if="l.side === -1 && l.inf.pos" :font-size="POS_FONT" fill="#8b929b">{{ l.inf.pos }} </tspan>{{ l.inf.name }}<tspan v-if="l.side === 1 && l.inf.pos" :font-size="POS_FONT" fill="#8b929b">{{ l.inf.pos }}</tspan>
-        </text>
+        <!-- 引物：蓝底白字名牌 + 旁侧坐标（按用户提供的 SnapGene 截图复刻） -->
+        <PrimerLabel v-else-if="l.inf.kind === 'primer'" :name="l.inf.name" :pos="l.inf.pos" :name-w="l.inf.nameW"
+                     :box="l.box" :y="l.y" :side="l.side" :font-size="FONT" :pos-font="POS_FONT" :hot="l.hot" />
         <text v-else :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
               :fill="l.inf.color" class="cmap-label-text">{{ l.text }}</text>
       </g>
