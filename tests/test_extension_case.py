@@ -162,3 +162,34 @@ def test_zero_records_error_is_actionable():
     msg = str(ei.value)
     assert "my_vector" in msg
     assert "LOCUS" in msg or "FASTA" in msg or "重新导出" in msg
+
+
+def test_genbank_text_in_dna_extension_parses():
+    """.dna 扩展名但内容是 GenBank 文本：按内容解析，不再报 SnapGene 二进制错误。
+
+    真实故障（2026-10-28 16:55，VPS 日志 4 次 422）：用户的 .dna 是
+    SnapGene「导出 GenBank」产物（头部 LOCUS...），硬走二进制解析报
+    「Unexpected end of packet」完全误导。"""
+    from core.plasmid_map.parsers import parse_file
+
+    gb = (b"LOCUS       A01-1      6132 bp DNA     circular SYN 01-JAN-2026\n"
+          b"FEATURES             Location/Qualifiers\n"
+          b"     source          1..6132\n"
+          b"ORIGIN\n")
+    seq = b"".join(b"        %d atggctagca\n" % (i * 60 + 1) for i in range(2))
+    data = gb + seq + b"//\n"
+    rec = parse_file("A01-1.dna", data, None)
+    assert rec.source_format == "genbank"
+    assert rec.sequence.startswith("ATGGCTAGCA")
+
+
+def test_truncated_dna_still_reports_snapgene_error():
+    """损坏/截断的 SnapGene 二进制仍走 SnapGene 解析、报准确错误（不误判）"""
+    import struct
+    import pytest
+    from core.plasmid_map.parsers import parse_file, MapParseError
+
+    bad = bytes([0x09]) + b"SnapGene" + struct.pack(">HHH", 6, 6, 6) + b"\x0a\x00"
+    with pytest.raises(MapParseError) as ei:
+        parse_file("bad.dna", bad, None)
+    assert "SnapGene" in str(ei.value)

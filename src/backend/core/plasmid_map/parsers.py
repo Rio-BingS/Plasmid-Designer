@@ -97,7 +97,22 @@ def parse_file(filename: str, data: bytes, max_length: Optional[int] = None,
     fmt = detect_format(filename)
     stem = _stem(filename)
     if fmt == "snapgene" or (fmt is None and data[:1] == b"\x09" and b"SnapGene" in data[:16]):
-        return _parse_snapgene(data, stem, max_length, topology)
+        # .dna 扩展名 ≠ 一定是 SnapGene 二进制：真实案例（2026-10-28）用户
+        # 的 .dna 文件内容是 GenBank 文本（SnapGene「导出 GenBank」未改名），
+        # 硬走二进制解析报「Unexpected end of packet」完全误导。内容是文本
+        # （无 SnapGene 魔数且能嗅探出格式）时按真实内容解析
+        looks_binary = data[:1] == b"\x09" and b"SnapGene" in data[:16]
+        if looks_binary:
+            return _parse_snapgene(data, stem, max_length, topology)
+        text = _decode(data)
+        sniffed = _sniff_text(text)
+        if sniffed == "raw":
+            # 扩展名 .dna 但既非 SnapGene 二进制也非 GenBank/FASTA 文本：
+            # 多半是截断/损坏的 .dna，按 SnapGene 解析拿准确的报错
+            return _parse_snapgene(data, stem, max_length, topology)
+        return (_parse_genbank_text(text, stem, max_length, topology)
+                if sniffed == "genbank"
+                else _parse_fasta_text(text, stem, max_length, topology))
     if fmt is None:
         text = _decode(data)
         sniffed = _sniff_text(text)

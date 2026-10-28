@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.32.3] - 2026-10-28
+
+### 修复
+- **.dna 扩展名按内容而非扩展名解析**（用户提供的真实失败文件定案：
+  16:55 上传的 .dna 实际是 GenBank 文本——SnapGene「导出 GenBank」时
+  未改扩展名，硬走 SnapGene 二进制解析报「Unexpected end of packet」
+  完全误导）。现在 .dna 上传先看内容：SnapGene 魔数走二进制解析；
+  文本能嗅探出 GenBank/FASTA 就按真实格式解析；都不是才按 SnapGene
+  解析并报准确错误。用户该文件现可正常打开（6132 bp GenBank）。
+
 ## [2.32.2] - 2026-10-28
 
 ### 修复
@@ -1566,7 +1576,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...HEAD
+[2.32.3]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...v2.32.3
 [2.32.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...v2.32.2
 [2.32.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...v2.32.1
 [2.32.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...v2.32.0
