@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.32.0] - 2026-10-28
+
+### 新增
+- **输入酶切位点时显示该酶在构建体上的切点数量**：双酶切实时预览
+  响应带两把酶在成品构建体上的切点数（含插入片段/接头自带的位点，
+  与图谱同一口径）；设计页「酶切位点一/二」「线性化酶切位点一/二」
+  旁在**多切点时**显示橙色徽标（如「4 个切点」），预览摘要同步带上
+  切点数。起因：pcDNA3.1 的 NcoI 有 4 个切点，图谱克隆位点不止一处
+  曾让用户误读插入位置——现在选择时就能看见，不必等图谱。
+
 ## [2.31.6] - 2026-10-28
 
 ### 修复
@@ -1537,7 +1547,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...HEAD
+[2.32.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...v2.32.0
 [2.31.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...v2.31.6
 [2.31.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...v2.31.5
 [2.31.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.3...v2.31.4

@@ -459,6 +459,15 @@ def build_restriction_preview(request) -> Dict:
 
     five_at = max(0, asm.insert_start - 7)
     three_at = max(0, asm.insert_end - 6)
+    # 两把酶在**成品构建体**上的切点数：预览与图谱同一口径（构建体 = 骨
+    # 架 + 插入片段，含插入片段自带/接头自带的位点）。多切点酶在图谱上
+    # 可能产生多个切点（如 pcDNA3.1 的 NcoI 有 4 个），选择时就要看见
+    enzyme_counts: Dict[str, int] = {}
+    for e in (label5, label3):
+        if e and e not in enzyme_counts:
+            from core.construct_assembly import physical_sites
+
+            enzyme_counts[e] = len(physical_sites(construct, e, circular=circular))
     return {
         "vector": {"name": vector.name or "vector", "length": len(backbone),
                    "topology": "linear" if not circular else "circular"},
@@ -472,6 +481,7 @@ def build_restriction_preview(request) -> Dict:
         "ambiguous": ambiguous,
         "gene_5prime_enzyme": label5,
         "gene_3prime_enzyme": label3,
+        "enzyme_counts": enzyme_counts,
         "evidence": evidence,
         "features": features,
         "junctions": {

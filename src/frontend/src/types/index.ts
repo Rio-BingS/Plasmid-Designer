@@ -140,6 +140,9 @@ export interface RestrictionPreview {
   ambiguous: boolean
   gene_5prime_enzyme: string
   gene_3prime_enzyme: string
+  /** 两把酶在成品构建体上的切点数（含插入片段/接头自带的位点）：
+   * 多切点酶在图谱上会有多个切点，选择时就要看见 */
+  enzyme_counts: Record<string, number>
   evidence: RestrictionPreviewEvidence[]
   features: RestrictionPreviewFeature[]
   junctions: { five: string; three: string }
