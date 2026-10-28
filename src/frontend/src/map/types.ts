@@ -63,7 +63,11 @@ export interface MapEnzyme {
 
 export interface MapOrf { start: number; end: number; strand: 1 | -1; frame: 0 | 1 | 2; aa_length: number }
 
-export interface MapPrimer { id: string; name: string; start: number; end: number; strand: 1 | -1; sequence: string }
+export interface MapPrimer {
+  id: string; name: string; start: number; end: number; strand: 1 | -1; sequence: string
+  /** 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框用；缺省无突出 */
+  full_sequence?: string
+}
 
 export interface MapDocument {
   schema: 'plasmid-map/1'

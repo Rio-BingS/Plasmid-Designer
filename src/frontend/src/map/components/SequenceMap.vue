@@ -7,7 +7,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
-import type { MapDocument, Range } from '../types'
+import type { MapDocument, MapPrimer, Range } from '../types'
 import { useMapStore } from '../store'
 import { rangeFromBoundaries, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
@@ -15,6 +15,7 @@ import { enzymePriority, fitsInside, layoutLinearLabels, type LinearLabelLayout 
 import { cutStyle, type CutMark } from '../core/enzymes'
 import { complement, translateFeature } from '../core/seq'
 import { darken, featureColor, textOn } from '../core/palette'
+import { textWidth } from '../core/text'
 import { basesPerRow, rowAtY, rowOf, rowOffsets, visibleRowsVar } from '../core/virtual'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
@@ -49,6 +50,52 @@ const laneItems = computed(() => [
   ...store.primers.value.map((p) => ({ id: `p:${p.id}`, start: p.start, end: p.end })),
 ])
 const lanes = computed(() => stackLanes(laneItems.value, L.value, { circular: store.circular.value, gap: 2, maxLanes: MAX_LANES }))
+
+// ---------------- SnapGene 式引物框：正链框在序列上方、负链框在下方 ----------------
+// 与特征行里的紫色结合位点箭头是两回事：框 = 引物对象（完整序列含 5′ 突出 +
+// 名牌 + 5′ 折角），按用户提供的 SnapGene 截图复刻
+const BOX_H = 16
+const BOX_MAX_LANES = 6
+const boxedPrimers = computed(() => (store.show.primers ? store.primers.value : []))
+const fwdPrimers = computed(() => boxedPrimers.value.filter((p) => p.strand === 1))
+const revPrimers = computed(() => boxedPrimers.value.filter((p) => p.strand !== 1))
+/** 引物框区间：结合区 ± 5′ 突出（正链向左伸、负链向右伸）；跨原点引物不外伸 */
+function boxRange(p: MapPrimer): Range {
+  const full = p.full_sequence || p.sequence || ''
+  const spanLen = p.start <= p.end ? p.end - p.start + 1 : L.value - p.start + p.end + 1
+  const tail = Math.max(0, full.length - spanLen)
+  if (!tail) return { start: p.start, end: p.end }
+  return p.strand === 1
+    ? { start: Math.max(1, p.start - tail), end: p.end }
+    : { start: p.start, end: Math.min(L.value, p.end + tail) }
+}
+const boxLanes = computed(() => ({
+  fwd: stackLanes(fwdPrimers.value.map((p) => ({ id: p.id, ...boxRange(p) })), L.value, { circular: store.circular.value, gap: 2, maxLanes: BOX_MAX_LANES }),
+  rev: stackLanes(revPrimers.value.map((p) => ({ id: p.id, ...boxRange(p) })), L.value, { circular: store.circular.value, gap: 2, maxLanes: BOX_MAX_LANES }),
+}))
+/** 每行用到的引物框分道（正链/负链各一份位掩码） */
+const boxMasks = computed(() => {
+  const n = totalRows.value
+  const pr = perRow.value
+  const mf = new Uint8Array(n)
+  const mr = new Uint8Array(n)
+  const mark = (m: Uint8Array, r: Range, lane: number) => {
+    const parts = store.circular.value ? splitRange(r, L.value) : [{ start: Math.min(r.start, r.end), end: Math.max(r.start, r.end) }]
+    for (const p of parts) {
+      const b = Math.min(n - 1, rowOf(p.end, pr))
+      for (let i = Math.max(0, rowOf(p.start, pr)); i <= b; i++) m[i] |= 1 << lane
+    }
+  }
+  for (const p of fwdPrimers.value) {
+    const lane = boxLanes.value.fwd.lanes.get(p.id)
+    if (lane !== undefined) mark(mf, boxRange(p), lane)
+  }
+  for (const p of revPrimers.value) {
+    const lane = boxLanes.value.rev.lanes.get(p.id)
+    if (lane !== undefined) mark(mr, boxRange(p), lane)
+  }
+  return { mf, mr }
+})
 
 /** 每行用到的分道（位掩码）：没有特征的行不再为全局最大分道数留白 */
 const rowLaneMask = computed(() => {
@@ -128,13 +175,22 @@ const cutRows = computed(() => {
 })
 
 // ---------------- 行内纵向布局（每行按自身内容定高） ----------------
-interface RowGeo { enzTop: number; enzRows: number; seqY: number; compY: number; rulerY: number; laneTop: number; transY: number; rowH: number; mask: number }
+interface RowGeo {
+  enzTop: number; enzRows: number; fwdTop: number; fwdMask: number
+  seqY: number; compY: number; rulerY: number; laneTop: number; transY: number; revTop: number; revMask: number
+  rowH: number; mask: number
+}
 function rowGeo(row: number): RowGeo {
   const enzRows = cutRows.value.layouts.get(row)?.rows ?? 0
   const mask = rowLaneMask.value[row] ?? 0
+  const fwdMask = boxMasks.value.mf[row] ?? 0
+  const revMask = boxMasks.value.mr[row] ?? 0
   let y = 4
   const enzTop = y
   y += enzRows * ENZ_ROW + (enzRows ? 2 : 0)
+  // 正链引物框在酶名与序列之间；名牌骑在框上沿，留 5px 空隙给它
+  const fwdTop = y
+  y += popcount(fwdMask) * BOX_H + (fwdMask ? 5 : 0)
   const seqY = y
   y += 16
   const compY = y
@@ -146,7 +202,10 @@ function rowGeo(row: number): RowGeo {
   y += nl * LANE_H + (nl ? 2 : 0)
   const transY = y
   if (translation.value?.byRow.has(row)) y += 15
-  return { enzTop, enzRows, seqY, compY, rulerY, laneTop, transY, rowH: y + 8, mask }
+  // 负链引物框垫在最底下（SnapGene：反义引物在序列区最下方）；名牌下沿伸出 6px
+  const revTop = y + 2
+  y += popcount(revMask) * BOX_H + (revMask ? 7 : 0)
+  return { enzTop, enzRows, fwdTop, fwdMask, seqY, compY, rulerY, laneTop, transY, revTop, revMask, rowH: y + 8, mask }
 }
 const offsets = computed(() => {
   const n = totalRows.value
@@ -197,6 +256,21 @@ function rowSegs(r: Range, row: number): RowSeg[] {
     const b = Math.min(p.end, re)
     if (a > b) continue
     out.push({ x1: colX(a - rs), x2: colX(b - rs + 1), headR: b === p.end, headL: a === p.start })
+  }
+  return out
+}
+
+/** 区间与第 row 行相交的像素段（附行内列号，供引物框逐列对齐文字） */
+function boxSegs(r: Range, row: number): { x1: number; x2: number; c1: number; c2: number }[] {
+  const rs = row * perRow.value + 1
+  const re = Math.min(L.value, rs + perRow.value - 1)
+  const out: { x1: number; x2: number; c1: number; c2: number }[] = []
+  const parts = store.circular.value ? splitRange(r, L.value) : [{ start: Math.min(r.start, r.end), end: Math.max(r.start, r.end) }]
+  for (const p of parts) {
+    const a = Math.max(p.start, rs)
+    const b = Math.min(p.end, re)
+    if (a > b) continue
+    out.push({ x1: colX(a - rs), x2: colX(b - rs + 1), c1: a, c2: b })
   }
   return out
 }
@@ -267,15 +341,52 @@ const rows = computed(() => {
       if (lane === undefined) continue
       for (const s of rowSegs(p, row)) {
         const head = (p.strand === 1 && s.headR) || (p.strand === -1 && s.headL)
-        // SnapGene 蓝 + 名牌式白字（条内），条形放不下时名字省略（悬停可见）。
-        // v2.33.0 的悬空名牌会压住序列行，已回退
+        // 紫色结合位点箭头 = 程序导出的 primer_bind 注释（SnapGene 特征行样式）；
+        // 蓝色引物框（引物对象）另画在序列上/下方，见 pboxes
         const label = fitsInside(p.name, 10, s.x2 - s.x1 - 10) ? p.name : ''
         bars.push({
           key: `p:${p.id}`, k: `p${p.id}-${s.x1}`, x1: s.x1, x2: s.x2, y: laneY(lane),
-          color: '#4a90d9', stroke: '#2f6aa8',
+          color: '#a855f7', stroke: '#7c3aed',
           strand: head ? p.strand : 0, label, textColor: '#ffffff',
         })
       }
+    }
+    // SnapGene 式引物框：正链框在序列上方、负链框在最下方；框内逐列对齐印
+    // 引物序列，名牌骑在框沿，5′ 端一个折角
+    interface PBox { key: string; id: string; name: string; x1: number; x2: number; y: number; chars: string; badge: { x: number; y: number; w: number } | null; fold: string }
+    const pboxes: PBox[] = []
+    for (const p of visPrimers) {
+      const fwd = p.strand === 1
+      const lane = boxLanes.value[fwd ? 'fwd' : 'rev'].lanes.get(p.id)
+      if (lane === undefined) continue
+      const r = boxRange(p)
+      const full = (p.full_sequence || p.sequence || '').toUpperCase()
+      if (!full) continue
+      const boxText = fwd ? full : full.split('').reverse().join('')
+      const boxY = fwd ? g.fwdTop + compactLane(g.fwdMask, lane) * BOX_H : g.revTop + compactLane(g.revMask, lane) * BOX_H
+      const segs = boxSegs(r, row)
+      const anchorCol = fwd ? p.start : p.end
+      const end5 = fwd ? r.start : r.end
+      const badgeIdx = segs.findIndex((s) => s.c1 <= anchorCol && anchorCol <= s.c2)
+      const foldIdx = segs.findIndex((s) => s.c1 <= end5 && end5 <= s.c2)
+      const yMid = boxY + (BOX_H - 3) / 2
+      segs.forEach((s, si) => {
+        const chars = boxText.slice(s.c1 - r.start, s.c2 - r.start + 1)
+        if (!chars) return
+        const badgeW = textWidth(p.name, 9, true) + 8
+        pboxes.push({
+          key: `p:${p.id}`, id: `p:${p.id}`, name: p.name,
+          x1: s.x1, x2: s.x2, y: boxY, chars,
+          badge: si === badgeIdx || (badgeIdx < 0 && si === 0)
+            ? { x: (s.x1 + s.x2) / 2 - badgeW / 2, y: fwd ? boxY - 5 : boxY + BOX_H - 9, w: badgeW }
+            : null,
+          fold: si === foldIdx || (foldIdx < 0 && si === segs.length - 1)
+            ? (fwd
+                ? `M${s.x1} ${yMid - 4}L${s.x1 - 6} ${yMid}L${s.x1} ${yMid + 4}Z`
+                : `M${s.x2} ${yMid - 4}L${s.x2 + 6} ${yMid}L${s.x2} ${yMid + 4}Z`)
+            : '',
+        })
+      })
     }
     const cuts = (cutRows.value.by.get(row) ?? []).map((c) => {
       const st = cutStyle(c)
@@ -295,7 +406,7 @@ const rows = computed(() => {
       return { id: l.id, text: l.text, x: l.x, y, color: c?.color, weight: c?.weight, leader: Math.abs(mid - l.cx) > 3 ? { x1: l.cx, x2: mid, y1: g.seqY, y2: y + 2 } : null }
     })
     const aa = translation.value?.byRow.get(row) ?? []
-    out.push({ row, top: off[row], g, rs, re, n, text, comp: store.show.complement ? complement(text) : '', bars, cuts, enzLabels, aa })
+    out.push({ row, top: off[row], g, rs, re, n, text, comp: store.show.complement ? complement(text) : '', bars, pboxes, cuts, enzLabels, aa })
   }
   return out
 })
@@ -459,6 +570,21 @@ defineExpose({ scroller, perRow, offsets, totalHeight, rows })
             <text v-if="b.label" :x="(b.x1 + b.x2) / 2" :y="b.y + 8.5" text-anchor="middle" font-size="10" :fill="b.textColor" pointer-events="none">{{ b.label }}</text>
           </g>
 
+          <!-- SnapGene 式引物框：正链框在序列上方、负链框在最下方 -->
+          <g v-for="b in r.pboxes" :key="'pb' + b.key + b.x1" :data-hit="b.id" class="smap-pbox">
+            <rect :x="b.x1 - 1" :y="b.y" :width="b.x2 - b.x1 + 2" :height="BOX_H - 3" rx="3"
+                  fill="#ffffff" fill-opacity="0.75" stroke="#4a90d9" stroke-width="1" />
+            <text :x="b.x1" :y="b.y + 10" :font-size="FONT - 2" font-family="Consolas, Menlo, 'Courier New', monospace"
+                  :textLength="b.x2 - b.x1" lengthAdjust="spacing" fill="#2f6aa8" pointer-events="none">{{ b.chars }}</text>
+            <path v-if="b.fold" :d="b.fold" fill="#4a90d9" pointer-events="none" />
+            <g v-if="b.badge">
+              <rect :x="b.badge.x" :y="b.badge.y" :width="b.badge.w" height="12" rx="3"
+                    fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.8" />
+              <text :x="b.badge.x + b.badge.w / 2" :y="b.badge.y + 9" text-anchor="middle" font-size="9"
+                    font-weight="600" fill="#ffffff" pointer-events="none">{{ b.name }}</text>
+            </g>
+          </g>
+
           <!-- 选中 CDS 的翻译 -->
           <text v-for="a in r.aa" :key="'aa' + a.i" :x="gutter + (a.col + 0.5) * CHAR_W" :y="r.g.transY + 11" text-anchor="middle"
                 font-size="11" font-family="Consolas, Menlo, monospace" :fill="a.aa === '*' ? '#dc2626' : '#7c3aed'" class="smap-aa">{{ a.aa }}</text>
@@ -476,6 +602,6 @@ defineExpose({ scroller, perRow, offsets, totalHeight, rows })
 .smap-scroll { overflow-y: auto; overflow-x: hidden; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); }
 .smap-inner { position: relative; width: 100%; cursor: text; user-select: none; touch-action: pan-y; }
 .smap-row { position: absolute; left: 0; display: block; overflow: visible; }
-.smap-bar, .smap-enz, .smap-cut, .smap-search { cursor: pointer; }
+.smap-bar, .smap-enz, .smap-cut, .smap-search, .smap-pbox { cursor: pointer; }
 .smap-bar.is-selected path { stroke: #1e1b4b; stroke-width: 1.6; }
 </style>
