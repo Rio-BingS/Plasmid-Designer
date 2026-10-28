@@ -6,6 +6,19 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.32.2] - 2026-10-28
+
+### 修复
+- **上传「没有可读取的序列记录」类文件不再无从下手**（VPS 日志定案：
+  北京时间 16:52–16:59 连续 4 次上传 422 全是这个错）。两层修复：
+  - **缺 LOCUS 头行的 GenBank 宽容解析**：文本编辑器/其他工具另存的
+    「GenBank」常缺 LOCUS 行，Biopython 对其静默返回 0 条记录。文件其余
+    部分像 GenBank（有 ORIGIN/FEATURES）时自动补一行规范 LOCUS 重试，
+    并告知「已按 GenBank 宽容解析」。
+  - **零记录报错可操作化**：报错点名文件名、解释常见成因（缺 LOCUS 头
+    行/序列部分为空）并建议重新导出，替代原来一句「XX 中没有可读取的
+    序列记录」。
+
 ## [2.32.1] - 2026-10-28
 
 ### 修复
@@ -1553,7 +1566,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.2...HEAD
+[2.32.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...v2.32.2
 [2.32.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...v2.32.1
 [2.32.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...v2.32.0
 [2.31.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...v2.31.6

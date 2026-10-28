@@ -133,3 +133,32 @@ def test_batch_grouping_matches_naming_convention_end_to_end():
     slot = per_plasmid["10001 PNPM5"]
     assert slot["reference"]["file"]["name"] == "10001 PNPM5.DNA"
     assert slot["reads"][0]["file"]["name"] == "10001 PNPM5-F1.ab1"
+
+
+def test_genbank_without_locus_lenient_parse():
+    """缺 LOCUS 头行的「GenBank」宽容解析（真实故障：2026-10-28 16:55
+    用户上传这类文件连续 4 次 422——Biopython 对缺 LOCUS 的文件静默返回
+    0 条记录，报错只说「没有可读取的序列记录」无从下手）"""
+    from core.plasmid_map.parsers import parse_file
+
+    data = (b"FEATURES             Location/Qualifiers\n"
+            b"     source          1..9\n"
+            b"ORIGIN\n"
+            b"        1 atggctagc\n"
+            b"//\n")
+    rec = parse_file("whatever.gb", data, None)
+    assert rec.source_format == "genbank"
+    assert len(rec.sequence) == 9
+    assert any("LOCUS" in w for w in rec.warnings)
+
+
+def test_zero_records_error_is_actionable():
+    """零记录报错点名文件与格式、给可操作提示（不再只说「没有可读取的序列记录」）"""
+    from core.plasmid_map.parsers import parse_file, MapParseError
+    import pytest
+
+    with pytest.raises(MapParseError) as ei:
+        parse_file("my_vector.gb", b"hello world, not a sequence", None)
+    msg = str(ei.value)
+    assert "my_vector" in msg
+    assert "LOCUS" in msg or "FASTA" in msg or "重新导出" in msg

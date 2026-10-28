@@ -167,9 +167,19 @@ def _apply_topology(rec: ParsedRecord, file_topology: Optional[str],
         rec.warnings.append("文件未标明拓扑，已按环状质粒处理")
 
 
-def _first_record(records: list, rec_warnings: List[str], label: str):
+def _first_record(records: list, rec_warnings: List[str], label: str,
+                  fallback_name: str = ""):
     if not records:
-        raise MapParseError(f"{label} 中没有可读取的序列记录", 422)
+        # 「文件名 中没有可读取的序列记录」曾让用户完全无从下手（真实案例：
+        # 2026-10-28 16:55 连续 4 次上传失败全是这个）。零记录最常见成因是
+        # 文件内容其实不是该格式（如缺 LOCUS 行的「GenBank」）——提示要点名
+        # 文件与格式，并给可操作的下一步
+        name = f"「{fallback_name}」" if fallback_name else ""
+        raise MapParseError(
+            f"{name}{label}里没有可读取的序列记录：文件内容可能不是完整的"
+            f"{label}（如 GenBank 缺少 LOCUS 头行），或序列部分为空。"
+            "请确认导出时选择了正确的格式，或改用 FASTA/GenBank 重新导出",
+            422)
     if len(records) > 1:
         rec_warnings.append(f"文件含 {len(records)} 条记录，只打开第一条")
     return records[0]
@@ -182,16 +192,30 @@ def _parse_genbank_text(text: str, fallback_name: str, max_length, topology) -> 
 
     warns: List[str] = []
     _precheck_genbank_locations(text)
+    records = _genbank_records(text, _w, BiopythonParserWarning, SeqIO)
+    if not records and not text.lstrip().upper().startswith("LOCUS"):
+        # 缺 LOCUS 头行的「GenBank」（文本编辑器/其他工具另存常见）：解析器
+        # 会静默返回 0 条记录。文件其余部分像 GenBank（有 ORIGIN/FEATURES）
+        # 时补一行规范 LOCUS 再试一次——内容对头行错不该让用户失败
+        head = text.lstrip()[:200].upper()
+        if "ORIGIN" in head or "FEATURES" in head:
+            warns.append("文件缺少 LOCUS 头行，已按 GenBank 宽容解析")
+            patched = ("LOCUS       synthetic      1 bp    DNA     circular SYN 01-JAN-2026\n"
+                       + text.lstrip())
+            records = _genbank_records(patched, _w, BiopythonParserWarning, SeqIO)
+    record = _first_record(records, warns, "GenBank 文件", fallback_name)
+    return _from_seqrecord(record, "genbank", fallback_name, max_length, topology, warns)
+
+
+def _genbank_records(text: str, _w, BiopythonParserWarning, SeqIO) -> list:
     try:
         with _w.catch_warnings():
             # LOCUS 行不规范时 Biopython 只告警；对用户文件放行（pytest.ini
             # 把该告警升级为错误是为了守护本项目自己的导出）
             _w.simplefilter("ignore", BiopythonParserWarning)
-            records = list(SeqIO.parse(io.StringIO(text), "genbank"))
+            return list(SeqIO.parse(io.StringIO(text), "genbank"))
     except Exception as e:
         raise MapParseError(f"GenBank 文件解析失败：{e}", 422) from e
-    record = _first_record(records, warns, "GenBank 文件")
-    return _from_seqrecord(record, "genbank", fallback_name, max_length, topology, warns)
 
 
 _FEATURE_KEY_LINE = re.compile(r"^ {5}(\S+)\s+(.*)$")
@@ -246,7 +270,7 @@ def _parse_fasta_text(text: str, fallback_name: str, max_length, topology) -> Pa
         records = list(SeqIO.parse(io.StringIO(text), "fasta"))
     except Exception as e:  # pragma: no cover - fasta 解析极少抛错
         raise MapParseError(f"FASTA 文件解析失败：{e}", 422) from e
-    record = _first_record(records, warns, "FASTA 文件")
+    record = _first_record(records, warns, "FASTA 文件", fallback_name)
     rec = ParsedRecord(
         name=(record.id or fallback_name)[:80],
         topology="circular",
@@ -299,7 +323,7 @@ def _parse_snapgene(data: bytes, fallback_name: str, max_length, topology) -> Pa
         records = list(SeqIO.parse(io.BytesIO(data), "snapgene"))
     except Exception as e:
         raise MapParseError(f"SnapGene 文件解析失败：{e}", 422) from e
-    record = _first_record(records, warns, "SnapGene 文件")
+    record = _first_record(records, warns, "SnapGene 文件", fallback_name)
     colors = _snapgene_feature_colors(data)
     return _from_seqrecord(record, "snapgene", fallback_name, max_length, topology,
                            warns, snapgene_colors=colors)
