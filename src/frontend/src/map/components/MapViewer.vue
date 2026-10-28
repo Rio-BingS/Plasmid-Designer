@@ -78,7 +78,7 @@ const VIEWS: { id: ViewMode; label: string }[] = [
 const LAYERS = [
   { key: 'features', label: '特征' }, { key: 'enzymes', label: '酶切' }, { key: 'orfs', label: 'ORF' },
   { key: 'primers', label: '引物' }, { key: 'labels', label: '标签' }, { key: 'complement', label: '互补链' },
-  { key: 'translations', label: '翻译' },
+  { key: 'translations', label: '翻译' }, { key: 'locations', label: '位置' },
 ] as const
 
 // ---------------- 酶组 / 过滤 ----------------
