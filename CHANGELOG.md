@@ -6,6 +6,12 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.32.1] - 2026-10-28
+
+### 修复
+- 设计页酶切位点输入框限宽 240px：全宽输入框把切点数徽标推到行尾，
+  与输入内容视觉割裂（限宽后徽标紧跟输入框）。
+
 ## [2.32.0] - 2026-10-28
 
 ### 新增
@@ -1547,7 +1553,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.1...HEAD
+[2.32.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.0...v2.32.1
 [2.32.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.6...v2.32.0
 [2.31.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.5...v2.31.6
 [2.31.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.31.4...v2.31.5
