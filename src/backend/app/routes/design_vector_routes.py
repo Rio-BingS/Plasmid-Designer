@@ -105,6 +105,9 @@ async def upload_design_vector(file: UploadFile = File(...)) -> Dict[str, Any]:
     if not data:
         raise HTTPException(status_code=422, detail="上传的文件为空")
     name = (file.filename or "vector").replace("\\", "/").rsplit("/", 1)[-1]
+    # 显示名 = 文件名去扩展名（与批量载体池同一口径）：文件内部 LOCUS 名
+    # 常与文件名无关（如导出文件保留原质粒名），用户按文件名认自己的文件
+    display_name = name.rsplit(".", 1)[0] if "." in name else name
     try:
         record = await _call(parse_file, name, data, MAP_MAX_LENGTH)
     except HTTPException:
@@ -114,7 +117,8 @@ async def upload_design_vector(file: UploadFile = File(...)) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="文件解析失败，请确认格式正确") from exc
 
     source = "snapgene" if record.source_format == "snapgene" else "genbank"
-    return await _call(payload_from_record, record, source=source, max_length=MAP_MAX_LENGTH)
+    return await _call(payload_from_record, record, source=source,
+                       max_length=MAP_MAX_LENGTH, display_name=display_name)
 
 
 # ==================== 在线导入 ====================
