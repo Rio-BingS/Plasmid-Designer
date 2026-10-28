@@ -124,7 +124,14 @@ const threeX = computed(() => (strand.value === -1 ? geneX1.value : geneX2.value
 const summary = computed(() => {
   const p = props.preview
   if (!p) return ''
-  return `5′ 端接 ${p.gene_5prime_enzyme} · 3′ 端接 ${p.gene_3prime_enzyme} · ${strandText.value}`
+  // 切点数：多切点酶在成品图谱上会有多个切点（如 pcDNA3.1 的 NcoI 4 个），
+  // 选择时就看见，避免图谱上「插入看起来落在别的酶之间」的误读
+  const count = (name: string) => {
+    const n = p.enzyme_counts?.[name]
+    return n == null ? '' : n > 1 ? `（${n} 个切点）` : ''
+  }
+  return `5′ 端接 ${p.gene_5prime_enzyme}${count(p.gene_5prime_enzyme)}`
+    + ` · 3′ 端接 ${p.gene_3prime_enzyme}${count(p.gene_3prime_enzyme)} · ${strandText.value}`
 })
 
 const evidenceText = computed(() => {

@@ -71,6 +71,9 @@ const customArm3 = ref('')
 const vectorNamePrefix = ref(false)
 // 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
 const preview = ref<RestrictionPreview | null>(null)
+/** 酶在成品构建体上的切点数（预览响应带）：多切点酶在图谱上会有多个
+ * 切点（如 pcDNA3.1 的 NcoI 4 个），输入时就看见，别等图谱猜 */
+const enzymeCountBadges = computed<Record<string, number>>(() => preview.value?.enzyme_counts ?? {})
 const previewLoading = ref(false)
 const previewError = ref('')
 let previewTimer: ReturnType<typeof setTimeout> | null = null
@@ -776,11 +779,21 @@ function loadExample() {
           <template v-if="gibsonLinearization === 'double_digest'">
             <div class="form-group">
               <label class="form-label">线性化酶切位点一</label>
-              <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
+              <div class="enzyme-with-count">
+                <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
+                <span v-if="(enzymeCountBadges[enzyme5] ?? 1) > 1" class="cut-count-badge warn">
+                  {{ enzymeCountBadges[enzyme5] }} 个切点
+                </span>
+              </div>
             </div>
             <div class="form-group">
               <label class="form-label">线性化酶切位点二</label>
-              <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
+              <div class="enzyme-with-count">
+                <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
+                <span v-if="(enzymeCountBadges[enzyme3] ?? 1) > 1" class="cut-count-badge warn">
+                  {{ enzymeCountBadges[enzyme3] }} 个切点
+                </span>
+              </div>
             </div>
             <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
               ⚠️ 双酶切线性化请选择两种不同的限制酶
@@ -876,11 +889,21 @@ function loadExample() {
         <div v-if="cloningMethod === 'restriction'" class="method-params">
           <div class="form-group">
             <label class="form-label">酶切位点一</label>
-            <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
+            <div class="enzyme-with-count">
+              <EnzymeAutocomplete v-model="enzyme5" :enzymes="enzymeMap" placeholder="如 NdeI" />
+              <span v-if="(enzymeCountBadges[enzyme5] ?? 1) > 1" class="cut-count-badge warn">
+                {{ enzymeCountBadges[enzyme5] }} 个切点
+              </span>
+            </div>
           </div>
           <div class="form-group">
             <label class="form-label">酶切位点二</label>
-            <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
+            <div class="enzyme-with-count">
+              <EnzymeAutocomplete v-model="enzyme3" :enzymes="enzymeMap" placeholder="如 XhoI" />
+              <span v-if="(enzymeCountBadges[enzyme3] ?? 1) > 1" class="cut-count-badge warn">
+                {{ enzymeCountBadges[enzyme3] }} 个切点
+              </span>
+            </div>
           </div>
           <p v-if="enzyme5 === enzyme3" class="hint-text warning-text">
             ⚠️ 双酶切请选择两种不同的限制酶
@@ -1053,6 +1076,30 @@ h1 {
 
 .flank-second-label {
   margin-top: 0.75rem;
+}
+
+.enzyme-with-count {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.enzyme-with-count > :first-child {
+  flex: 1;
+}
+
+.cut-count-badge {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.cut-count-badge.warn {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fdba74;
 }
 
 .method-cards {
