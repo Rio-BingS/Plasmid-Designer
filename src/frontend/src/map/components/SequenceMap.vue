@@ -132,10 +132,6 @@ interface RowGeo { enzTop: number; enzRows: number; seqY: number; compY: number;
 function rowGeo(row: number): RowGeo {
   const enzRows = cutRows.value.layouts.get(row)?.rows ?? 0
   const mask = rowLaneMask.value[row] ?? 0
-  // 引物名牌悬在自己条形的上方（SnapGene 风格），含引物的行要在 lane 区
-  // 上方多留一段，名牌才不会压到序列/互补链
-  const primerRows = new Set(store.primers.value.map((p) => rowOf(p.start, perRow.value)))
-  const hasPrimer = primerRows.has(row)
   let y = 4
   const enzTop = y
   y += enzRows * ENZ_ROW + (enzRows ? 2 : 0)
@@ -145,9 +141,9 @@ function rowGeo(row: number): RowGeo {
   if (store.show.complement) y += 16
   const rulerY = y
   y += 10
-  const laneTop = y + 2 + (hasPrimer ? 12 : 0)
+  const laneTop = y + 2
   const nl = popcount(mask)
-  y += nl * LANE_H + (nl ? 2 : 0) + (hasPrimer ? 12 : 0)
+  y += nl * LANE_H + (nl ? 2 : 0)
   const transY = y
   if (translation.value?.byRow.has(row)) y += 15
   return { enzTop, enzRows, seqY, compY, rulerY, laneTop, transY, rowH: y + 8, mask }
@@ -271,14 +267,13 @@ const rows = computed(() => {
       if (lane === undefined) continue
       for (const s of rowSegs(p, row)) {
         const head = (p.strand === 1 && s.headR) || (p.strand === -1 && s.headL)
-        // SnapGene 风格：退火区条形 + 末端延伸箭头 + 条形上方蓝底白字名牌
-        const nameFits = fitsInside(p.name, 9, s.x2 - s.x1 - 8)
+        // SnapGene 蓝 + 名牌式白字（条内），条形放不下时名字省略（悬停可见）。
+        // v2.33.0 的悬空名牌会压住序列行，已回退
+        const label = fitsInside(p.name, 10, s.x2 - s.x1 - 10) ? p.name : ''
         bars.push({
           key: `p:${p.id}`, k: `p${p.id}-${s.x1}`, x1: s.x1, x2: s.x2, y: laneY(lane),
-          color: '#4a90d9', stroke: '#2f6aa8', kind: 'primer',
-          strand: head ? p.strand : 0,
-          name: p.name, nameX: (s.x1 + s.x2) / 2, nameY: laneY(lane) - 3, nameFits,
-          label: '', textColor: '#ffffff',
+          color: '#4a90d9', stroke: '#2f6aa8',
+          strand: head ? p.strand : 0, label, textColor: '#ffffff',
         })
       }
     }
@@ -462,14 +457,6 @@ defineExpose({ scroller, perRow, offsets, totalHeight, rows })
                       : `M${b.x1} ${b.y}H${b.x2}V${b.y + 11}H${b.x1}Z`"
                   :fill="b.color" :stroke="b.stroke" stroke-width="0.6" />
             <text v-if="b.label" :x="(b.x1 + b.x2) / 2" :y="b.y + 8.5" text-anchor="middle" font-size="10" :fill="b.textColor" pointer-events="none">{{ b.label }}</text>
-            <!-- 引物：SnapGene 风格蓝底白字名牌悬在退火区上方 -->
-            <template v-if="b.kind === 'primer' && b.nameFits">
-              <rect :x="b.nameX - (b.name.length * 5.6 + 8) / 2" :y="b.nameY - 9"
-                    :width="b.name.length * 5.6 + 8" height="12" rx="2.5"
-                    fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.6" />
-              <text :x="b.nameX" :y="b.nameY" text-anchor="middle" font-size="9.5"
-                    fill="#ffffff" font-weight="600" pointer-events="none">{{ b.name }}</text>
-            </template>
           </g>
 
           <!-- 选中 CDS 的翻译 -->
