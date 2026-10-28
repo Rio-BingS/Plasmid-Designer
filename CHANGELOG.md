@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.33.2] - 2026-10-28
+
+### 修复
+- **回退 v2.33.0/2.33.1 的引物呈现改动**（用户实测两张方案都不如原版）：
+  沿弧名牌把引物轨道撑宽、名放不下只余箭头块，线性图悬空名牌压住序
+  列行。恢复原版布局——环形图细弧带 + 外部标签、线性图条内白字——仅
+  保留两处无损改进：引物统一 SnapGene 蓝（#4a90d9）；环形图引物标签
+  用蓝底名牌样式但**优先级与普通特征同级、拥挤时自动隐藏**（悬停可
+  见），不再强制展开挤爆布局（v2.33.0 的引线飞图问题由此真正解决）。
+
 ## [2.33.1] - 2026-10-28
 
 ### 修复
@@ -1604,7 +1614,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.2...HEAD
+[2.33.2]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.1...v2.33.2
 [2.33.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.0...v2.33.1
 [2.33.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.4...v2.33.0
 [2.32.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.32.3...v2.32.4

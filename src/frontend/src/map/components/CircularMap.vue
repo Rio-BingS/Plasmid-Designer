@@ -115,10 +115,10 @@ const labelMargin = computed(() => {
 })
 /** 标签曲线半径（不拥挤时标签落在这个圆上） */
 const labelR = computed(() => S.value / 2 - labelMargin.value)
-/** 主链半径：标签圆向内留出 切线(10) + 引物环（2 道 13px 名牌弧带）+ 半行高 + 间隙 */
-const R0 = computed(() => labelR.value - (compact.value ? 24 : 28) - (hasPrimers.value ? 28 : 0))
+/** 主链半径：标签圆向内留出 切线(10) + 引物环 + 引线外伸(6) + 半行高 + 间隙 */
+const R0 = computed(() => labelR.value - (compact.value ? 24 : 28) - (hasPrimers.value ? 12 : 0))
 /** 环上所有图元的最外半径：引线从这里折向标签，且不再回到圈内 */
-const fanR = computed(() => R0.value + 12 + (hasPrimers.value ? 28 : 0))
+const fanR = computed(() => R0.value + 12 + (hasPrimers.value ? 12 : 0))
 const laneH = computed(() => Math.min(18, Math.max(10, S.value * 0.027)))
 /**
  * 主链两条线的间距（SnapGene 式双链）：随特征厚度缩放，约为其 0.4，
@@ -336,23 +336,12 @@ const orfInner = computed(() => featInner.value - 8 - (orfGeoms.value.length ? 3
 const primerGeoms = computed(() => {
   const items = store.primers.value.map((p) => ({ id: p.id, start: p.start, end: p.end }))
   const lanes = stackLanes(items, L.value, { circular: true, maxLanes: 2 })
-  const H = 13  // 弧带加高到能沿弧写名字（SnapGene 引物轨道样式）
   return store.primers.value.flatMap((p) => {
     const lane = lanes.lanes.get(p.id)
     if (lane === undefined) return []
-    const r1 = R0.value + 14 + lane * (H + 2)
+    const r1 = R0.value + 14 + lane * 6
     const u = unroll(p, L.value)
-    const a1 = ang(u.from)
-    const a2 = ang(Math.max(u.to, u.from + L.value / 1000))
-    const fit = store.show.labels
-      ? internalArcLabel(p.name, 9, a1, a2, r1, r1 + H, 5)
-      : null
-    return [{
-      id: p.id, name: p.name, key: `p:${p.id}`,
-      mid: (a1 + a2) / 2, r: r1 + H,
-      d: arcBandPath(cx.value, cy.value, r1, r1 + H, a1, a2, p.strand === 1 ? 1 : -1, 5 / r1),
-      internal: fit ? { path: arcPath(cx.value, cy.value, fit.r, a1, a2, fit.flip), text: p.name } : null,
-    }]
+    return [{ id: p.id, name: p.name, key: `p:${p.id}`, mid: (ang(u.from) + ang(u.to)) / 2, r: r1 + 4, d: arcBandPath(cx.value, cy.value, r1, r1 + 4, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)), p.strand === 1 ? 1 : -1, 5 / r1) }]
   })
 })
 
@@ -406,6 +395,15 @@ const labelData = computed(() => {
       angle: c0.a, radius: R0.value + 10, priority,
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
+  }
+  // 引物名用蓝底名牌（SnapGene 风格），但优先级与普通特征同级——
+  // 20+ oligo 的设计里放不下的自动隐藏（悬停可见），不强制展开挤爆布局。
+  // v2.33.0 曾标成「必显示」外挂全部展开，引线飞满全图（教训）
+  for (const p of primerGeoms.value) {
+    const text = truncateText(p.name, maxW, font)
+    if (!text) continue
+    inputs.push({ id: p.key, text, height: ROW_H.value, angle: p.mid, radius: p.r + 6, priority: featurePriority('misc_feature', 1) })
+    info.set(p.key, { kind: 'chip', fill: '#4a90d9', stroke: '#2f6aa8', ink: '#ffffff', members: [p.key] })
   }
   return { info, inputs }
 })
@@ -871,15 +869,6 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
       <!-- ORF / 引物 -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
       <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.7" class="cmap-primer" />
-      <!-- 引物名沿弧书写（SnapGene 引物轨道样式）；放不下的 oligo 只画弧带，悬停可见 -->
-      <template v-for="p in primerGeoms" :key="p.key + ':label'">
-        <template v-if="p.internal">
-          <path :id="`${uid}-tp-${p.key}`" :d="p.internal.path" fill="none" stroke="none" />
-          <text :font-size="9" fill="#ffffff" font-weight="600" letter-spacing="0.2" class="cmap-int-label" pointer-events="none">
-            <textPath :href="`#${uid}-tp-${p.key}`" startOffset="50%" text-anchor="middle" dominant-baseline="central">{{ p.internal.text }}</textPath>
-          </text>
-        </template>
-      </template>
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
