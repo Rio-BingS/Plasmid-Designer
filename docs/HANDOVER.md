@@ -20,6 +20,12 @@
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
+**进行中的分支**：`feature/snapgene-primer-view`（未合入 main、未部署）——序列视图引物按
+SnapGene 截图复刻为两类标签：紫色结合位点箭头（程序导出的 `primer_bind` 注释）+
+蓝色引物框（正链框在序列上方、负链框在最下方，框内逐列印完整引物序列、名牌骑框沿、
+5′ 折角）；图谱文档引物新增 `full_sequence`，`MAP_ALGO_VERSION` 升至 `7`。合并与
+部署等用户指令（见 CHANGELOG [Unreleased]）。
+
 **当前最大缺口是批量页体量**：`src/frontend/src/views/BatchDesignView.vue` 已 **1318 行**、
 连续两轮触发 CI 尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
 
@@ -27,13 +33,13 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.33.6`（2026-10-29：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=6；酶名大小写归一见 v2.31.3） |
+| 版本 / 标签 | `v2.33.6`（2026-10-29：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=7；酶名大小写归一见 v2.31.3） |
 | 后端测试 | **1819 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
 | 前端测试 | **84 个文件 / 644 passed**；`vue-tsc --noEmit` **0 error** |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
-| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="6"`（`app/routes/map_routes.py`）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
+| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="7"`（`app/routes/map_routes.py`）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
@@ -130,7 +136,7 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 ## 6. 一碰就容易出事的约束（Top 9）
 
 1. **改结果口径必须递增缓存版本**：`ANALYSIS_ENZYMES_VERSION`（分析/酶表，现 `v3`）、
-   `MAP_ALGO_VERSION`（图谱，现 `6`，在 `map_routes.py`）、`CODON_OPT_ALGO`（现 `v2.3`）。
+   `MAP_ALGO_VERSION`（图谱，现 `7`，在 `map_routes.py`）、`CODON_OPT_ALGO`（现 `v2.3`）。
    否则用户命中旧缓存、以为改动没生效。只改 `data/codon_tables/*.yaml` 时内容摘要自动变化。
 2. **载体 YAML 契约**：`features[]` 必须带 `name`；出处写结构化 `data_provenance`
    （描述里那句可读标注不算）；拓扑按真实值落 `topology`；落盘撞车 409，同 ID 重导入才覆盖。
