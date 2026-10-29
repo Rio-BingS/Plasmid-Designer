@@ -52,6 +52,34 @@ def test_genbank_export_round_trip():
     assert [(p["name"], p["start"], p["end"]) for p in again.primers] == [("fwd1", 230, 249)]
 
 
+def test_genbank_export_snapgene_primer_format():
+    """SnapGene「GenBank - SnapGene」格式防回潮：带 sequence 的 primer_bind
+    导入 SnapGene 时会被升级为引物对象，从而遵循其状态栏控制（Show Primers /
+    Show Locations）。三要素缺一不可（官方规范，大小写敏感）：
+    LOCUS 含 Exported、REFERENCE(TITLE=Direct Submission + JOURNAL 含
+    SnapGene)、引物 note 为单行键值对 `sequence: ...`。
+    """
+    import re as _re
+
+    primer = ("     primer_bind     230..260\n"
+              "                     /label=\"fwd1\"\n"
+              "                     /note=\"sequence: "
+              + SEQ300[229:260].lower() + SEQ300[260:275] + "\"\n")
+    rec = parse_file("p.gb", _gb(SEQ300, primer).encode())
+    doc = document_from_record(rec, annotate=False)
+    text = document_to_genbank(doc)
+    assert "Exported" in text.split("\n", 1)[0]                       # LOCUS 声明
+    ref = text[text.rfind("REFERENCE"):]
+    assert "Direct Submission" in ref and "SnapGene" in ref           # REFERENCE 声明
+    m = _re.search(r'/note="sequence: ([A-Za-z]+)"', text)            # 单行键值对
+    assert m, "引物 note 必须是单行 /note=\"sequence: ...\"（SnapGene 键值解析）"
+    seq_val = m.group(1)
+    # 小写 = 5′ 突出（不结合），大写 = 3′ 退火区；退火区应能与模板对齐
+    assert seq_val.lower() == seq_val.lower()                         # 仅 ASCII 碱基
+    again = parse_file("again.gb", text.encode())
+    assert [(p["name"], p["start"], p["end"]) for p in again.primers] == [("fwd1", 230, 260)]
+
+
 def test_build_document_shape_and_stable_ids():
     doc = build_document(name="t", sequence=SEQ300, topology="linear", source_format="raw",
                          features=[{"name": "a", "type": "cds", "start": 10, "end": 20,
