@@ -295,8 +295,16 @@ const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   const rev = isRevPrimer(p)
   const pal = rev ? PRIMER_REV : PRIMER_FWD
   // 3′ 端长锥渐收（primerBarPath）：正向朝右、反向朝左（模块 B）。
-  // 跨原点分段时只有含 3′ 端的段带锥头，其余段平收——曾每段都画箭头
-  const segList = visSegs(p)
+  // 跨原点分段时只有含 3′ 端的段带锥头，其余段平收——曾每段都画箭头。
+  // 最小渲染宽度：全长视野下短引物仅 ~10px，锥形被压成纯三角（一簇乱箭）；
+  // 保底 16px 让长锥有展示空间，同道重叠由 stackLanes 的 gap 保证不撞
+  const MIN_PRIMER_W = 16
+  const segList = visSegs(p).map((s) => {
+    const w = s.x2 - s.x1
+    if (w >= MIN_PRIMER_W) return s
+    const cx = (s.x1 + s.x2) / 2
+    return { ...s, x1: cx - MIN_PRIMER_W / 2, x2: cx + MIN_PRIMER_W / 2 }
+  })
   // 线性视图直接展示原坐标（环状拆段后段序即坐标序），3′ 端在正向末段/反向首段
   const headIdx = rev ? 0 : segList.length - 1
   return segList.map((s, i) => ({
