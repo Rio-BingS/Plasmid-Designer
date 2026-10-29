@@ -38,9 +38,14 @@ function barRect(d: string): { y: number; xMin: number; xMax: number } {
 }
 
 describe('LinearMap 引物分道', () => {
-  it('40 条密集短引物：同一车道内引物条两两不重叠', () => {
+  it('40 条密集短引物：同一车道内两两不重叠，且正向道全在反向道之上', () => {
     const w = mount(LinearMap, { props: { doc: docWithDensePrimers(), width: 1000 } })
-    const rects = w.findAll('.lmap-primer').map((p) => barRect(p.attributes('d')!))
+    const rects = w.findAll('.lmap-primer').map((p) => {
+      const d = barRect(p.attributes('d')!)
+      // primerBarPath：正向 numbers[0]=5′ 左端 < numbers[3]=3′ 尖；反向相反
+      const fwd = Number(p.attributes('d')!.match(/-?[\d.]+/g)![0]) < d.xMax
+      return { ...d, fwd }
+    })
     expect(rects.length).toBeGreaterThan(20)
     const byLane = new Map<number, typeof rects>()
     for (const r of rects) {
@@ -54,6 +59,14 @@ describe('LinearMap 引物分道', () => {
       for (let i = 1; i < rs.length; i++) {
         expect(rs[i].xMin, `车道 ${lane} 第 ${i} 条压到前一条`).toBeGreaterThanOrEqual(rs[i - 1].xMax - 0.5)
       }
+      // 同一车道方向必须一致（混排会首尾相接成毛虫）
+      expect(new Set(rs.map((r) => r.fwd)).size).toBe(1)
     }
+    // 正向道整体在反向道之上（与序列视图「正向框在上、负链框在下」一致）
+    const fwdYs = rects.filter((r) => r.fwd).map((r) => r.y)
+    const revYs = rects.filter((r) => !r.fwd).map((r) => r.y)
+    expect(fwdYs.length).toBeGreaterThan(0)
+    expect(revYs.length).toBeGreaterThan(0)
+    expect(Math.max(...fwdYs)).toBeLessThan(Math.min(...revYs))
   })
 })

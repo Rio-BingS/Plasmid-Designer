@@ -224,11 +224,16 @@ const FEAT_H = 14
 const FEAT_LANE = 18
 /** 引物条最小渲染宽度（px）：全长视野下短引物仅 ~10px，长锥被压成纯三角 */
 const MIN_PRIMER_W = 16
-// 分道前先把短引物的占位（bp）扩到最小渲染宽度——扩宽必须发生在分道之前，
-// 否则同道相邻引物在 px 级各自撑宽后会互相叠上（用户截图指正）
+/**
+ * 引物分道：先按 bp 把短引物占位扩到最小渲染宽度（扩宽必须在分道前，
+ * 否则同道相邻引物 px 级撑宽后互相叠上），再**按方向分组分道**——
+ * 正向（蓝）占上面的道、反向（紫）占下面的道，每道方向一致；
+ * 混排时正反箭头首尾相接成毛虫，方向语义也糊（与序列视图
+ * 「正向框在上、负链框在下」同一布局语言）。
+ */
 const primerLanes = computed(() => {
   const minWbp = MIN_PRIMER_W / scale.value
-  return stackLanes(store.primers.value.map((p) => {
+  const expand = (p: (typeof store.primers.value)[number]) => {
     if (p.start > p.end) return p // 跨原点引物足够长，不扩
     const len = p.end - p.start + 1
     if (len >= minWbp) return p
@@ -238,7 +243,14 @@ const primerLanes = computed(() => {
       start: Math.max(1, Math.round(p.start - extra)),
       end: Math.min(L.value, Math.round(p.end + extra)),
     }
-  }), L.value, { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 4 })
+  }
+  const opts = { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 2 }
+  const fwd = stackLanes(store.primers.value.filter((p) => !isRevPrimer(p)).map(expand), L.value, opts)
+  const rev = stackLanes(store.primers.value.filter((p) => isRevPrimer(p)).map(expand), L.value, opts)
+  const lanes = new Map<string, number>()
+  for (const [id, ln] of fwd.lanes) lanes.set(id, ln)
+  for (const [id, ln] of rev.lanes) lanes.set(id, ln + fwd.laneCount)
+  return { lanes, laneCount: fwd.laneCount + rev.laneCount, overflow: [...fwd.overflow, ...rev.overflow] }
 })
 const orfLanes = computed(() => stackLanes(store.orfs.value.map((o, i) => ({ id: String(i), start: o.start, end: o.end })), L.value,
   { circular: store.circular.value, maxLanes: 4 }))
