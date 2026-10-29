@@ -62,10 +62,10 @@ const FONT = computed(() => (compact.value ? 10 : 11))
 /** 酶标签里切点位置的字号（小一号、灰色）。坐标整体由「位置」开关控制（SnapGene 的 Show Locations） */
 const POS_FONT = computed(() => FONT.value - 1.5)
 const showPos = computed(() => !compact.value && store.show.locations)
-/** 纯文字标签行高 / 色块标签（环外特征名）行高与左右内边距 */
-const ROW_H = computed(() => FONT.value + 3)
-const CHIP_H = computed(() => FONT.value + 6)
-const CHIP_PAD = 5
+/** 标签行高/色块高：按**文字墨迹**取（≈1.35×字号）。SVG text 的字形盒含
+ *  上升/下降部，按 font+3 会让相邻标签上下沿溢出 1~3px 互相交叠。 */
+const ROW_H = computed(() => Math.ceil(FONT.value * 1.35))
+const CHIP_H = computed(() => ROW_H.value + 2), CHIP_PAD = 5
 /** 同一切点合并成一行时最多列出几个酶名，其余写 +N */
 const GROUP_MAX = 3
 /** 概览图最多画这么多个切点（超出时只保留少切点酶，见 overviewCuts） */
@@ -557,8 +557,8 @@ const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
 /** 悬停高亮：同名引物的所有结合位点一起亮（逻辑见 core/primer_hover） */
 const hoverPaths = computed(() => {
   const h = store.hoverTarget.value
-  const band = (a1: number, a2: number) => arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, a1, a2)
-  return hoverHighlightPaths(h?.id ?? '', h?.range ?? null, store.primers.value, { L: L.value, unroll: (r) => unroll(r, L.value), ang, arc: band })
+  const arc = (a1: number, a2: number) => arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, a1, a2)
+  return hoverHighlightPaths(h?.id ?? '', h?.range ?? null, store.primers.value, { L: L.value, unroll: (r) => unroll(r, L.value), ang, arc })
 })
 
 // ---------------- 指针交互 ----------------
