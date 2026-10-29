@@ -31,42 +31,27 @@ function docWithDensePrimers(): MapDocument {
   } as MapDocument
 }
 
-/** primerBarPath 的 d → { y, xMin, xMax }（正向/反向统一取 numbers[0] 与 numbers[3] 为两端） */
-function barRect(d: string): { y: number; xMin: number; xMax: number } {
-  const nums = (d.match(/-?[\d.]+/g) ?? []).map(Number)
-  return { y: nums[1], xMin: Math.min(nums[0], nums[3]), xMax: Math.max(nums[0], nums[3]) }
-}
-
-describe('LinearMap 引物分道', () => {
-  it('40 条密集短引物：同一车道内两两不重叠，且正向道全在反向道之上', () => {
+describe('LinearMap 引物行', () => {
+  it('40 条密集短引物：固定 2 行（正向 1 行 + 反向 1 行），全部渲染、正向在上', () => {
     const w = mount(LinearMap, { props: { doc: docWithDensePrimers(), width: 1000 } })
     const rects = w.findAll('.lmap-primer').map((p) => {
-      const d = barRect(p.attributes('d')!)
+      const d = p.attributes('d')!
+      const nums = d.match(/-?[\d.]+/g)!.map(Number)
+      const xs = [nums[0], nums[3]]
       // primerBarPath：正向 numbers[0]=5′ 左端 < numbers[3]=3′ 尖；反向相反
-      const fwd = Number(p.attributes('d')!.match(/-?[\d.]+/g)![0]) < d.xMax
-      return { ...d, fwd }
+      return { y: nums[1], xMin: Math.min(...xs), xMax: Math.max(...xs), fwd: nums[0] < nums[3] }
     })
-    expect(rects.length).toBeGreaterThan(20)
-    const byLane = new Map<number, typeof rects>()
-    for (const r of rects) {
-      const key = Math.round(r.y * 10) / 10
-      if (!byLane.has(key)) byLane.set(key, [])
-      byLane.get(key)!.push(r)
-    }
-    expect(byLane.size).toBeGreaterThanOrEqual(2)
-    for (const [lane, rs] of byLane) {
-      rs.sort((a, b) => a.xMin - b.xMin)
-      for (let i = 1; i < rs.length; i++) {
-        expect(rs[i].xMin, `车道 ${lane} 第 ${i} 条压到前一条`).toBeGreaterThanOrEqual(rs[i - 1].xMax - 0.5)
-      }
-      // 同一车道方向必须一致（混排会首尾相接成毛虫）
-      expect(new Set(rs.map((r) => r.fwd)).size).toBe(1)
-    }
-    // 正向道整体在反向道之上（与序列视图「正向框在上、负链框在下」一致）
+    // 行数优先：只有 2 行，全部引物都渲染（不为避让加行、不丢条目）
+    const laneYs = [...new Set(rects.map((r) => Math.round(r.y * 10) / 10))]
+    expect(rects.length).toBe(40)
+    expect(laneYs.length).toBe(2)
+    // 正向行整体在反向行之上（与序列视图「正向框在上、负链框在下」一致）
     const fwdYs = rects.filter((r) => r.fwd).map((r) => r.y)
     const revYs = rects.filter((r) => !r.fwd).map((r) => r.y)
-    expect(fwdYs.length).toBeGreaterThan(0)
-    expect(revYs.length).toBeGreaterThan(0)
+    expect(fwdYs.length).toBe(20)
+    expect(revYs.length).toBe(20)
     expect(Math.max(...fwdYs)).toBeLessThan(Math.min(...revYs))
+    // 同行内每条引物保持真实 3′ 尖（形状不被挤压成线）
+    for (const r of rects) expect(r.xMax).toBeGreaterThan(r.xMin)
   })
 })
