@@ -223,13 +223,13 @@ const featLanes = computed(() => stackLanes(
 const FEAT_H = 14
 const FEAT_LANE = 18
 /**
- * 引物条尺寸：带高 10px、最小宽 12px（只保证锥形可辨）、车道间距 18px。
- * 行数优先：每方向最多 2 道（典型全长视野各 1 道，共上下 2 行）。
- * 最小宽给太大（28px）会把密集区挤到每方向 3 道、共 6 行，更乱（用户指正）
+ * 引物条尺寸：带高 8px、最小宽 8px（只保锥形可辨）、车道间距 14px。
+ * 行数优先（用户明确要求）：每方向最多 2 道，全长视野典型各 1 道共 2 行；
+ * 同道放不下时半透明叠显（fill-opacity 0.8），绝不为此加行
  */
-const MIN_PRIMER_W = 12
-const PRIMER_H = 10
-const PRIMER_LANE = 18
+const MIN_PRIMER_W = 8
+const PRIMER_H = 8
+const PRIMER_LANE = 14
 /**
  * 引物分道：先按 bp 把短引物占位扩到最小渲染宽度（扩宽必须在分道前，
  * 否则同道相邻引物 px 级撑宽后互相叠上），再**按方向分组分道**——
@@ -635,7 +635,7 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
       <line v-if="caretX !== null" :x1="caretX" :x2="caretX" y1="0" :y2="H" stroke="#4f46e5" stroke-width="1.5" class="lmap-caret" />
 
       <!-- 引物 / 特征 / ORF -->
-      <path v-for="p in primerGeoms" :key="p.k" :data-hit="p.key" :d="p.d" :fill="p.fill" :stroke="p.stroke" stroke-width="0.6" class="lmap-primer" />
+      <path v-for="p in primerGeoms" :key="p.k" :data-hit="p.key" :d="p.d" :fill="p.fill" fill-opacity="0.8" :stroke="p.stroke" stroke-width="0.6" class="lmap-primer" />
       <!-- 引物名标签 + 引导线（AABB 避让后仍可能偏离块中心，用折线连回） -->
       <path v-for="l in primerLabels.leaders" :key="'pl' + l.id" :d="l.d" fill="none" stroke="#c5c9ce" stroke-width="0.7" pointer-events="none" />
       <text v-for="l in primerLabels.placed" :key="'pt' + l.id" :data-hit="l.id" :x="l.x" :y="l.y" font-size="10"
