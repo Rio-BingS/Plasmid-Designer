@@ -16,6 +16,7 @@ import { cutStyle, type CutMark } from '../core/enzymes'
 import { complement, translateFeature } from '../core/seq'
 import { darken, featureColor, textOn } from '../core/palette'
 import { textWidth } from '../core/text'
+import { PRIMER_FWD, PRIMER_REV, isRevPrimer } from '../core/primer_style'
 import { basesPerRow, rowAtY, rowOf, rowOffsets, visibleRowsVar } from '../core/virtual'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
@@ -57,15 +58,7 @@ const BOX_MAX_LANES = 6
 /** 引物名牌高（悬在框外，行高要为它留位） */
 const BADGE_H = 12
 const boxedPrimers = computed(() => (store.show.primers ? store.primers.value : []))
-/**
- * 反义引物判定：strand=-1，或名字带 AS/R/REV（SnapGene 按引物方向属性画在
- * 绑定链旁；GenBank 的 primer_bind 标注常不一致——同一批 AS 引物只有一部分
- * 标了 complement，故按名字补判，与参考图里 c01_ASxx 全在下方一致）
- */
-function isRevPrimer(p: MapPrimer): boolean {
-  if (p.strand === -1) return true
-  return /AS\d/i.test(p.name) || /(^|_)[Rr]\d/.test(p.name) || /REV/i.test(p.name)
-}
+// 反义引物判定统一走 core/primer_style（与环形图、导出同一口径）
 const fwdPrimers = computed(() => boxedPrimers.value.filter((p) => !isRevPrimer(p)))
 const revPrimers = computed(() => boxedPrimers.value.filter((p) => isRevPrimer(p)))
 /** 引物框区间：结合区 ± 5′ 突出（正链向左伸、负链向右伸）；跨原点引物不外伸 */
@@ -345,13 +338,22 @@ const rows = computed(() => {
         }
       }
     }
-    // 引物不再画在特征行里（第一类标签已移除），只画 SnapGene 式蓝框（见 pboxes）
-    // SnapGene 式引物框：正链框在序列上方、负链框在最下方；框内逐列对齐印
-    // 引物序列，名牌骑在框沿，5′ 端一个折角
-    interface PBox { key: string; id: string; name: string; x1: number; x2: number; y: number; chars: string; badge: { x: number; y: number; w: number } | null; fold: string }
+    // 引物不再画在特征行里（第一类标签已移除），只画 SnapGene 式引物框（见 pboxes）
+    // 引物框：正向框在序列上方、反向框在最下方；框内逐列对齐印引物序列，
+    // 名牌悬在框外、5′ 端一个折角、3′ 端一个延伸箭头（模块 B）
+    interface PBox {
+      key: string; id: string; name: string; x1: number; x2: number; y: number; chars: string
+      badge: { x: number; y: number; w: number } | null
+      fold: string
+      /** 3′ 延伸箭头路径 */
+      tip: string
+      /** 框描边/文字色（正/反向分色） */
+      color: string
+      dark: string
+    }
     const pboxes: PBox[] = []
     for (const p of visPrimers) {
-      const fwd = p.strand === 1
+      const fwd = !isRevPrimer(p)
       const lane = boxLanes.value[fwd ? 'fwd' : 'rev'].lanes.get(p.id)
       if (lane === undefined) continue
       const r = boxRange(p, !fwd)
@@ -362,19 +364,26 @@ const rows = computed(() => {
       const segs = boxSegs(r, row)
       if (!segs.length) continue
       const end5 = fwd ? r.start : r.end
-      // 名牌与折角都锚在 5′ 端所在段（该行内第一个含 5′ 端的段；跨行时为段 0）
+      // 3′ 端：正向在框右端、反向在框左端
+      const end3 = fwd ? r.end : r.start
       const foldSegIdx = Math.max(0, segs.findIndex((s) => s.c1 <= end5 && end5 <= s.c2))
+      const tipSegIdx = Math.max(0, segs.findIndex((s) => s.c1 <= end3 && end3 <= s.c2))
       const yMid = boxY + (BOX_H - 3) / 2
+      const pal = fwd ? PRIMER_FWD : PRIMER_REV
       segs.forEach((s, si) => {
         const chars = boxText.slice(s.c1 - r.start, s.c2 - r.start + 1)
         if (!chars) return
-        // 名牌悬在框外（正链在框上方、负链在框下方），锚在 5′ 端折角旁；
-        // 超出画布右缘时右对齐收进来
-        const badgeW = textWidth(p.name, 9, true) + 8
+        // 名牌悬在框外（正向在框上方、反向在框下方），锚在 5′ 端折角旁；
+        // 名牌文字带方向符号（正向 `名字 →`、反向 `← 名字`），冗余编码颜色
+        const badgeText = fwd ? `${p.name} →` : `← ${p.name}`
+        const badgeW = textWidth(badgeText, 9, true) + 8
         const bx = Math.min(foldSegIdx === si ? s.x1 : (s.x1 + s.x2) / 2 - badgeW / 2, W.value - badgeW - 4)
+        const tipX = fwd ? s.x2 : s.x1
+        const tipDir = fwd ? 1 : -1
         pboxes.push({
-          key: `p:${p.id}`, id: `p:${p.id}`, name: p.name,
+          key: `p:${p.id}`, id: `p:${p.id}`, name: badgeText,
           x1: s.x1, x2: s.x2, y: boxY, chars,
+          color: pal.base, dark: pal.dark,
           badge: si === foldSegIdx
             ? { x: Math.max(gutter.value - 2, bx), y: fwd ? boxY - BADGE_H - 1 : boxY + BOX_H + 1, w: badgeW }
             : null,
@@ -382,6 +391,12 @@ const rows = computed(() => {
             ? (fwd
                 ? `M${s.x1} ${yMid - 4}L${s.x1 - 6} ${yMid}L${s.x1} ${yMid + 4}Z`
                 : `M${s.x2} ${yMid - 4}L${s.x2 + 6} ${yMid}L${s.x2} ${yMid + 4}Z`)
+            : '',
+          // 3′ 端延伸箭头（小三角，紧贴框沿外侧）
+          tip: si === tipSegIdx
+            ? (tipDir === 1
+                ? `M${tipX + 6} ${yMid}L${tipX - 1} ${yMid - 4}L${tipX - 1} ${yMid + 4}Z`
+                : `M${tipX - 6} ${yMid}L${tipX + 1} ${yMid - 4}L${tipX + 1} ${yMid + 4}Z`)
             : '',
         })
       })
@@ -571,15 +586,22 @@ defineExpose({ scroller, perRow, offsets, totalHeight, rows })
           <!-- SnapGene 式引物框：正链框在序列上方、负链框在最下方 -->
           <g v-for="b in r.pboxes" :key="'pb' + b.key + b.x1" :data-hit="b.id" class="smap-pbox">
             <rect :x="b.x1 - 1" :y="b.y" :width="b.x2 - b.x1 + 2" :height="BOX_H - 3" rx="3"
-                  fill="#ffffff" fill-opacity="0.75" stroke="#4a90d9" stroke-width="1" />
+                  fill="#ffffff" fill-opacity="0.8" :stroke="b.color" stroke-width="1" />
             <text :x="b.x1" :y="b.y + 10" :font-size="FONT - 2" font-family="Consolas, Menlo, 'Courier New', monospace"
-                  :textLength="b.x2 - b.x1" lengthAdjust="spacing" fill="#2f6aa8" pointer-events="none">{{ b.chars }}</text>
-            <path v-if="b.fold" :d="b.fold" fill="#4a90d9" pointer-events="none" />
+                  :textLength="b.x2 - b.x1" lengthAdjust="spacing" :fill="b.dark" pointer-events="none"
+                  style="letter-spacing: -0.02em">{{ b.chars }}</text>
+            <path v-if="b.fold" :d="b.fold" :fill="b.color" pointer-events="none" />
+            <!-- 3′ 端延伸箭头（聚合酶沿此方向延伸） -->
+            <path v-if="b.tip" :d="b.tip" :fill="b.color" pointer-events="none" class="smap-pbox-tip" />
             <g v-if="b.badge">
+              <!-- 名牌到框沿的细引导线（模块 A）：名牌悬在框外，用 1px 线连回 5′ 端 -->
+              <line :x1="b.badge.x + (b.badge.w > 40 ? b.badge.w / 2 : 2)" :x2="b.badge.x + (b.badge.w > 40 ? b.badge.w / 2 : 2)"
+                    :y1="b.badge.y + (b.badge.y < b.y ? 12 : 0)" :y2="b.badge.y < b.y ? b.y : b.y + BOX_H - 3"
+                    :stroke="b.color" stroke-width="0.8" stroke-opacity="0.55" />
               <rect :x="b.badge.x" :y="b.badge.y" :width="b.badge.w" height="12" rx="3"
-                    fill="#4a90d9" stroke="#2f6aa8" stroke-width="0.8" />
+                    :fill="b.color" :stroke="b.dark" stroke-width="0.8" />
               <text :x="b.badge.x + b.badge.w / 2" :y="b.badge.y + 9" text-anchor="middle" font-size="9"
-                    font-weight="600" fill="#ffffff" pointer-events="none">{{ b.name }}</text>
+                    font-weight="600" fill="#ffffff" pointer-events="none" style="letter-spacing: -0.01em">{{ b.name }}</text>
             </g>
           </g>
 
