@@ -33,3 +33,10 @@ data/batch_uploads/
 
 # 图谱元件库重建脚本的 GenBank 下载缓存（scripts/build_feature_library.py）
 .feature-library-cache/
+
+# SQLite WAL/SHM 伴生文件（*.db 只覆盖主库文件）
+*.db-shm
+*.db-wal
+
+# 备份产物（backup.sh 默认输出到 data/backups/，含全库明文数据，严禁入库）
+data/backups/

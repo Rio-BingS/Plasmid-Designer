@@ -136,7 +136,9 @@ services:
         # 固定地址：后端 TRUSTED_PROXIES 只信这一个对端
         ipv4_address: ${FRONTEND_IPV4:-172.28.0.10}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      # nginx:alpine 无 curl（官方镜像运行时只装 envsubst/tzdata/openssl），
+      # 用 busybox 自带的 wget——curl 版本会让本容器永远 unhealthy
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/"]
       interval: 30s
       timeout: 10s
       retries: 3

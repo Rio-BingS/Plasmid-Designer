@@ -35,3 +35,5 @@ docs/
 tests/
 .git
 .github
+**/*.db-shm
+**/*.db-wal

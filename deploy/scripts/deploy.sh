@@ -158,7 +158,7 @@ FRONTEND_BIND_ADDR="${FRONTEND_BIND_ADDR:-127.0.0.1}"
 
 # 创建必要目录
 echo "创建数据目录..."
-mkdir -p "$PROJECT_ROOT/data/vectors" "$PROJECT_ROOT/data/codon_tables" "$PROJECT_ROOT/output" "$SCRIPT_DIR/../docker/ssl" 2>/dev/null || true
+mkdir -p "$PROJECT_ROOT/data/vectors" "$PROJECT_ROOT/data/codon_tables" "$PROJECT_ROOT/output" 2>/dev/null || true
 
 # 确认数据文件存在
 if [ ! -f "$PROJECT_ROOT/data/vectors/pET-28a.yaml" ]; then
