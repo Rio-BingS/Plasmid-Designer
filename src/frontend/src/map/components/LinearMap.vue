@@ -17,6 +17,7 @@ import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { MAP_FONT, textWidth } from '../core/text'
+import { PRIMER_FWD, PRIMER_REV, isRevPrimer } from '../core/primer_style'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import type { MapTrack, TrackItem } from '../tracks'
 import MapTooltip from './MapTooltip.vue'
@@ -228,13 +229,16 @@ const orfLanes = computed(() => stackLanes(store.orfs.value.map((o, i) => ({ id:
 
 const lower = computed(() => {
   let y = layout.value.afterAxis
+  // 引物标签在块上方最多 3 行（模块 A 避让），预留 3×12 px
+  const primerLabelRows = primerLanes.value.laneCount ? 3 : 0
+  y += primerLabelRows * 15
   const primerTop = y
   y += primerLanes.value.laneCount * 9 + (primerLanes.value.laneCount ? 4 : 0)
   const featTop = y
   y += featLanes.value.laneCount * FEAT_LANE
   const orfTop = y
   y += orfLanes.value.laneCount * 7 + (orfLanes.value.laneCount ? 4 : 0)
-  return { primerTop, featTop, orfTop, afterOrf: y }
+  return { primerTop, featTop, orfTop, afterOrf: y, primerLabelRows }
 })
 
 const featGeoms = computed(() => store.features.value.flatMap((f) => {
@@ -287,10 +291,60 @@ const H = computed(() => below.value.height)
 const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   const lane = primerLanes.value.lanes.get(p.id)
   if (lane === undefined) return []
+  const rev = isRevPrimer(p)
+  const pal = rev ? PRIMER_REV : PRIMER_FWD
+  // 3′ 端箭头由 barArrowPath 的 dir 决定：正向朝右、反向朝左（模块 B）
   return visSegs(p).map((s, i) => ({
-    key: `p:${p.id}`, k: `${p.id}-${i}`, d: barArrowPath(s.x1, s.x2, lower.value.primerTop + lane * 9, 6, p.strand),
+    key: `p:${p.id}`, k: `${p.id}-${i}`,
+    d: barArrowPath(s.x1, s.x2, lower.value.primerTop + lane * 9, 6, rev ? -1 : 1),
+    fill: pal.base, stroke: pal.dark,
+    x1: s.x1, x2: s.x2, lane,
   }))
 }))
+
+/**
+ * 线性视图的引物名标签 + 引导线（模块 A）：
+ *   - 文字宽度用 layoutLinearLabels 做 AABB 避让：同区域密集引物自动换行错位，
+ *     放不下才隐藏（计入「无法显示」），绝不叠字；
+ *   - 标签中心与引物块中心不一致时画一根细折线连回去，避免「标签飘在别处」。
+ */
+interface PrimerLabelGeom { id: string; text: string; x: number; y: number; color: string }
+const primerLabels = computed(() => {
+  const empty = { placed: [] as PrimerLabelGeom[], leaders: [] as { id: string; d: string }[] }
+  if (!store.show.labels || !primerGeoms.value.length) return empty
+  const inputs = primerGeoms.value.map((g) => {
+    const p = store.primers.value.find((x) => `p:${x.id}` === g.key)!
+    const rev = isRevPrimer(p)
+    const text = rev ? `← ${p.name}` : `${p.name} →`
+    return { id: g.key, text, bold: true, x: (g.x1 + g.x2) / 2, priority: 3e7, rev, g }
+  })
+  const lay = layoutLinearLabels(
+    inputs.map(({ id, text, bold, x, priority }) => ({ id, text, bold, x, priority })),
+    { width: W.value, fontSize: 10, maxRows: 3, gap: 4, left: 2, maxShift: 40, rowCost: 18 },
+  )
+  const byId = new Map(inputs.map((i) => [i.id, i]))
+  const placed: PrimerLabelGeom[] = []
+  const leaders: { id: string; d: string }[] = []
+  // 行高 = 实际文字行高（10px 字号 14px 框高），标签字号很小，行距略收
+  const ROW_PX = 15
+  for (const l of lay.placed) {
+    const src = byId.get(l.id)!
+    // y 只由布局分配的行号决定（同区域的引物已由 layoutLinearLabels 分行错开）；
+    // 再把整组标签整体上移到各自引物块上方——lane 只影响块，不参与标签分行，
+    // 否则同一 lane 的多条标签会挤在同一 y 上互相压字
+    const y = lower.value.primerTop - 4 - l.row * ROW_PX
+    const center = l.x + l.w / 2
+    placed.push({ id: l.id, text: l.text, x: l.x, y, color: src.rev ? PRIMER_REV.dark : PRIMER_FWD.dark })
+    // 标签中心离块中心 > 3px 就画引导线（折线：块中心 → 标签端点）
+    if (Math.abs(center - l.cx) > 3) {
+      const bx = l.cx
+      const by = y + 10
+      const tx = center < l.cx ? l.x + l.w : l.x
+      leaders.push({ id: l.id, d: `M${bx} ${by}L${bx} ${by - 5}L${tx} ${by - 5}` })
+    }
+  }
+  return { placed, leaders }
+})
 const orfGeoms = computed(() => store.orfs.value.flatMap((o, i) => {
   const lane = orfLanes.value.lanes.get(String(i))
   if (lane === undefined) return []
@@ -534,7 +588,11 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
       <line v-if="caretX !== null" :x1="caretX" :x2="caretX" y1="0" :y2="H" stroke="#4f46e5" stroke-width="1.5" class="lmap-caret" />
 
       <!-- 引物 / 特征 / ORF -->
-      <path v-for="p in primerGeoms" :key="p.k" :data-hit="p.key" :d="p.d" fill="#5aa0e0" stroke="#2f6aa8" stroke-width="0.6" class="lmap-primer" />
+      <path v-for="p in primerGeoms" :key="p.k" :data-hit="p.key" :d="p.d" :fill="p.fill" :stroke="p.stroke" stroke-width="0.6" class="lmap-primer" />
+      <!-- 引物名标签 + 引导线（AABB 避让后仍可能偏离块中心，用折线连回） -->
+      <path v-for="l in primerLabels.leaders" :key="'pl' + l.id" :d="l.d" fill="none" stroke="#c5c9ce" stroke-width="0.7" pointer-events="none" />
+      <text v-for="l in primerLabels.placed" :key="'pt' + l.id" :data-hit="l.id" :x="l.x" :y="l.y" font-size="10"
+            font-weight="600" :fill="l.color" class="lmap-primer-label" style="letter-spacing: -0.01em" pointer-events="none">{{ l.text }}</text>
       <g v-for="g in featGeoms" :key="g.key" :data-hit="g.key"
          :class="['lmap-feat', { 'is-hover': hoverKey === g.key, 'is-selected': store.selectedFeatureId.value === g.f.id }]">
         <line v-if="g.connector" :x1="g.connector.x1" :x2="g.connector.x2" :y1="g.connector.y" :y2="g.connector.y" :stroke="g.stroke" stroke-dasharray="2 2" />

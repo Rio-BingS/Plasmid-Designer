@@ -28,7 +28,9 @@ import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn, tint } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
 import { MAP_FONT, textWidth, truncateText } from '../core/text'
-import { buildPrimerLabel, PRIMER_CHIP_PAD, PRIMER_POS_GAP } from '../core/primer_labels'
+import { buildPrimerLabel, primerLabelInfo, primerLabelWidth, type PrimerLabelInfo } from '../core/primer_labels'
+import { buildPrimerArcs } from '../core/primer_arcs'
+import { hoverHighlightPaths } from '../core/primer_hover'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
 import MapTooltip from './MapTooltip.vue'
 import PrimerLabel from './PrimerLabel.vue'
@@ -111,10 +113,10 @@ const labelMargin = computed(() => {
   if (!store.show.labels) return Math.min(cap, compact.value ? 22 : 30)
   let maxW = 0
   for (const f of store.features.value) maxW = Math.max(maxW, textWidth(f.name, FONT.value) + 2 * CHIP_PAD)
-  for (const p of store.primers.value) {
-    maxW = Math.max(maxW, textWidth(p.name, FONT.value, true) + 2 * PRIMER_CHIP_PAD
-      + (showPos.value ? PRIMER_POS_GAP + textWidth(` (${p.start} .. ${p.end})`, POS_FONT.value) : 0))
-  }
+  // 引物名牌含方向符号 →/←，按实际显示文本量宽（单一实现见 core/primer_labels）
+  maxW = Math.max(maxW, primerLabelWidth(store.primers.value, {
+    font: FONT.value, posFont: POS_FONT.value, showPos: showPos.value,
+  }))
   for (const c of overview.value.shown) {
     maxW = Math.max(maxW, textWidth(c.name, FONT.value, c.enzyme.cut_count === 1) + (showPos.value ? textWidth(` (${c.cut})`, POS_FONT.value) : 0))
   }
@@ -340,17 +342,14 @@ const orfGeoms = computed(() => {
 })
 const orfInner = computed(() => featInner.value - 8 - (orfGeoms.value.length ? 3 * 6 : 0))
 
-const primerGeoms = computed(() => {
-  const items = store.primers.value.map((p) => ({ id: p.id, start: p.start, end: p.end }))
-  const lanes = stackLanes(items, L.value, { circular: true, maxLanes: 2 })
-  return store.primers.value.flatMap((p) => {
-    const lane = lanes.lanes.get(p.id)
-    if (lane === undefined) return []
-    const r1 = R0.value + 14 + lane * 6
-    const u = unroll(p, L.value)
-    return [{ id: p.id, name: p.name, key: `p:${p.id}`, pos: `${p.start} .. ${p.end}`, mid: (ang(u.from) + ang(u.to)) / 2, r: r1 + 4, d: arcBandPath(cx.value, cy.value, r1, r1 + 4, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)), p.strand === 1 ? 1 : -1, 5 / r1) }]
-  })
-})
+/** 引物弧带 + 3′ 端箭头（几何见 core/primer_arcs） */
+const primerGeoms = computed(() => buildPrimerArcs(store.primers.value, {
+  lanes: stackLanes(store.primers.value, L.value, { circular: true, maxLanes: 2 }).lanes,
+  L: L.value, baseR: R0.value, laneGap: 6, ang,
+  unroll: (r) => unroll(r, L.value),
+  arcBand: (r1, r2, a1, a2, dir, head) => arcBandPath(cx.value, cy.value, r1, r2, a1, a2, dir, head),
+  polar: (r, a) => polar(cx.value, cy.value, r, a),
+}))
 
 // ---------------- 酶切 ----------------
 type CutGeom = ReturnType<typeof cutGeomOf>
@@ -371,7 +370,7 @@ const cutGeoms = computed(() => overview.value.shown.map(cutGeomOf))
 type LabelInfo =
   | { kind: 'chip'; fill: string; stroke: string; ink: string; members: string[] }
   | { kind: 'enzyme'; parts: ReturnType<typeof groupParts>['parts']; extra: string; pos: string; members: string[] }
-  | { kind: 'primer'; name: string; pos: string; nameW: number; members: string[] }
+  | PrimerLabelInfo
   | { kind: 'text'; color: string; members: string[] }
 const labelData = computed(() => {
   const info = new Map<string, LabelInfo>()
@@ -404,14 +403,12 @@ const labelData = computed(() => {
     })
     info.set(g.key, { kind: 'enzyme', parts: gp.parts, extra: gp.extra, pos: gp.pos, members: g.members.map((c) => c.key) })
   }
-  // 引物标签 = 用户给定 SnapGene 截图复刻：蓝底白字名牌 + 旁侧坐标（见 core/primer_labels）
+  // 引物名牌：正反向分色 + 方向符号 + 旁侧坐标（见 core/primer_labels）
   for (const p of primerGeoms.value) {
-    const lab = buildPrimerLabel(p, {
-      maxW, font, posFont: POS_FONT.value, showPos: showPos.value, rowH: ROW_H.value,
-    })
+    const lab = buildPrimerLabel(p, { maxW, font, posFont: POS_FONT.value, showPos: showPos.value, rowH: ROW_H.value })
     if (!lab) continue
     inputs.push(lab.input)
-    info.set(p.key, { kind: 'primer', name: lab.name, pos: lab.pos, nameW: lab.nameW, members: [p.key] })
+    info.set(p.key, primerLabelInfo(lab, p.key))
   }
   return { info, inputs }
 })
@@ -557,11 +554,11 @@ const searchGeoms = computed(() => store.search.hits.slice(0, 500).map((h, i) =>
   return { key: `s:${i}`, current: i === store.search.index, d: arcBandPath(cx.value, cy.value, R0.value + 1, R0.value + 6, ang(u.from - pad), ang(u.to + pad)) }
 }))
 const hoverKey = computed(() => store.hoverTarget.value?.id ?? null)
-const hoverPath = computed(() => {
+/** 悬停高亮：同名引物的所有结合位点一起亮（逻辑见 core/primer_hover） */
+const hoverPaths = computed(() => {
   const h = store.hoverTarget.value
-  if (!h?.range || h.id.startsWith('f:')) return ''
-  const u = unroll(h.range, L.value)
-  return arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, ang(u.from), ang(Math.max(u.to, u.from + L.value / 1000)))
+  const band = (a1: number, a2: number) => arcBandPath(cx.value, cy.value, selInner.value, R0.value + 12, a1, a2)
+  return hoverHighlightPaths(h?.id ?? '', h?.range ?? null, store.primers.value, { L: L.value, unroll: (r) => unroll(r, L.value), ang, arc: band })
 })
 
 // ---------------- 指针交互 ----------------
@@ -834,7 +831,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
       </defs>
 
       <!-- 选区与悬停底色（画在最下层） -->
-      <path v-if="hoverPath" :d="hoverPath" fill="#f59e0b" fill-opacity="0.12" class="cmap-hover" />
+      <path v-for="(d, i) in hoverPaths" :key="'hv' + i" :d="d" fill="#f59e0b" fill-opacity="0.12" class="cmap-hover" />
       <path v-if="selectionPath" :d="selectionPath" fill="#4f46e5" fill-opacity="0.12" stroke="#4f46e5" stroke-opacity="0.45" stroke-width="0.8" class="cmap-selection" />
 
       <!-- 主链：SnapGene 式双线，特征骑在双链上，刻度画在两线之间 -->
@@ -874,9 +871,12 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
         </template>
       </g>
 
-      <!-- ORF / 引物 -->
+      <!-- ORF / 引物（正向蓝、反向紫，3′ 端带延伸箭头） -->
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
-      <path v-for="p in primerGeoms" :key="p.key" :d="p.d" :data-hit="p.key" fill="#68ace4" stroke="#2f6aa8" stroke-width="0.6" class="cmap-primer" />
+      <g v-for="p in primerGeoms" :key="p.key" :data-hit="p.key" class="cmap-primer">
+        <path :d="p.d" :fill="p.fill" :stroke="p.stroke" stroke-width="0.7" />
+        <path :d="p.arrow" :fill="p.stroke" stroke="none" />
+      </g>
 
       <!-- 光标 -->
       <line v-if="caretLine" :x1="caretLine.x1" :y1="caretLine.y1" :x2="caretLine.x2" :y2="caretLine.y2"
@@ -906,7 +906,7 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
           <tspan v-if="l.side === 1 && showPos" :font-size="POS_FONT" fill="#8b929b" font-weight="400"> ({{ l.inf.pos }})</tspan>
         </text>
         <!-- 引物：蓝底白字名牌 + 旁侧坐标（按用户提供的 SnapGene 截图复刻） -->
-        <PrimerLabel v-else-if="l.inf.kind === 'primer'" :name="l.inf.name" :pos="l.inf.pos" :name-w="l.inf.nameW"
+        <PrimerLabel v-else-if="l.inf.kind === 'primer'" :name="l.inf.name" :pos="l.inf.pos" :name-w="l.inf.nameW" :rev="l.inf.rev"
                      :box="l.box" :y="l.y" :side="l.side" :font-size="FONT" :pos-font="POS_FONT" :hot="l.hot" />
         <text v-else :x="l.tx" :y="l.y" :font-size="FONT" dominant-baseline="central" :text-anchor="l.anchor"
               :fill="l.inf.color" class="cmap-label-text">{{ l.text }}</text>

@@ -1,29 +1,19 @@
 /**
- * 环外引物标签（按用户提供的 SnapGene 截图复刻）。
+ * 环外引物标签（SnapGene 图谱视图口径，含正反向差异化）。
  *
- * 形态：**蓝底圆角名牌 + 白色引物名**，名字旁边跟一段普通文字的坐标
- * `(280 .. 325)`；22 条 oligo 全部标出，沿环外堆成列、引线呈扇形展开。
- *
- * 与酶标签的差别：酶是裸文字，引物是色块名牌——用户明确要求按截图复刻，
- * 因此不再套用「名字 + 小号灰坐标」的酶样式。
+ * 形态：圆角名牌（正/反向分色）+ 名牌内方向符号 + 旁侧坐标。
+ * 名牌宽度按「方向符号 + 名字」实测，坐标是否显示取决于剩余宽度。
  */
 import { textWidth } from './text'
+import { PRIMER_LABEL_PRIORITY, isRevPrimer } from './primer_style'
 import type { CircularLabelInput } from './labels'
 
-/** 名牌配色（SnapGene 引物蓝） */
-export const PRIMER_CHIP_FILL = '#4a90d9'
-export const PRIMER_CHIP_STROKE = '#2f6aa8'
-export const PRIMER_CHIP_INK = '#ffffff'
-/** 名牌左右内边距 */
+/** 名牌左右内边距（与 PrimerLabel.vue 保持一致） */
 export const PRIMER_CHIP_PAD = 4
 /** 名牌与坐标之间的间隙 */
 export const PRIMER_POS_GAP = 4
 
-/**
- * 引物标签优先级：高于双切点酶、与单切点酶同档，保证设计里的引物不会被
- * 拥挤规则先藏掉（用户要求 22 条全部标出）。
- */
-export const PRIMER_LABEL_PRIORITY = 5e7
+export { PRIMER_LABEL_PRIORITY }
 
 export interface PrimerLabelSource {
   key: string
@@ -34,29 +24,100 @@ export interface PrimerLabelSource {
   mid: number
   /** 弧段外沿半径（引线起点） */
   r: number
+  /** 反向引物（紫色 + ←）；缺省按名字推断 */
+  rev?: boolean
 }
 
 export interface PrimerLabel {
   input: CircularLabelInput
   name: string
-  /** 坐标文本（含括号与前导空格）；关闭「位置」时为空串 */
+  /** 坐标文本（含括号与前导空格）；关闭「位置」或放不下时为空串 */
   pos: string
-  /** 名牌文字宽（渲染时定 rect 宽度） */
+  /** 名牌文字宽（含方向符号，渲染时据此定 rect 宽度） */
   nameW: number
+  /** 是否反向引物 */
+  rev: boolean
 }
 
 /**
- * 构造引物外标签：名牌宽度只按名字算，坐标是名牌外的附加文字。
- * 名字放不下（标签栏太窄）时整条返回 null，交给布局隐藏——绝不截断名字。
+ * 引物标签所需的最大宽度（标签栏留白用）：取最长「名牌文字 + 坐标」。
+ * 单个引物可能放不下时会被降级为紧凑形式，这里按全名估算即可。
+ */
+export function primerLabelWidth(
+  primers: ReadonlyArray<{ name: string; start: number; end: number }>,
+  opts: { font: number; posFont: number; showPos: boolean },
+): number {
+  let w = 0
+  for (const p of primers) {
+    const rev = isRevPrimer({ name: p.name, strand: 1 })
+    const text = primerLabelText(p.name, rev)
+    const base = textWidth(text, opts.font, true) + 2 * PRIMER_CHIP_PAD
+    const pos = opts.showPos ? PRIMER_POS_GAP + textWidth(` (${p.start} .. ${p.end})`, opts.posFont) : 0
+    w = Math.max(w, base + pos)
+  }
+  return w
+}
+
+/** 环形图外置标签的渲染描述（CircularMap 的 LabelInfo.primer 分支） */
+export interface PrimerLabelInfo {
+  kind: 'primer'
+  name: string
+  pos: string
+  nameW: number
+  rev: boolean
+  members: string[]
+}
+
+/** 由标签结果生成渲染描述，视图层只做渲染 */
+export function primerLabelInfo(lab: PrimerLabel, key: string): PrimerLabelInfo {
+  return { kind: 'primer', name: lab.name, pos: lab.pos, nameW: lab.nameW, rev: lab.rev, members: [key] }
+}
+
+/** 名牌显示文本：`名字 →`（正向）/ `← 名字`（反向） */
+export function primerLabelText(name: string, rev: boolean): string {
+  return rev ? `← ${name}` : `${name} →`
+}
+
+/**
+ * 紧凑标签（模块 C 渐进式暴露）：名字太长放不下时退到「序号 + 方向」，
+ * 例如 `S09 →` / `← AS12`，把最后一段编号保留下来——同批引物靠编号就能
+ * 区分，完整名字交给 hover 提示。都放不下时返回空串（交给布局隐藏）。
+ */
+export function compactPrimerText(name: string, rev: boolean, maxW: number, font: number): string {
+  // 取名字末尾的「字母前缀 + 序号」段（C01_AS12 → AS12，D_03_AS → AS）
+  const tail = name.match(/([A-Za-z]+_?[A-Za-z]*\d*)$/)?.[1] || name
+  const text = rev ? `← ${tail}` : `${tail} →`
+  if (textWidth(text, font, true) <= maxW) return text
+  // 还放不下就只留方向符号（颜色+箭头仍可区分链向）
+  const arrowOnly = rev ? '←' : '→'
+  return textWidth(arrowOnly, font, true) <= maxW ? arrowOnly : ''
+}
+
+/**
+ * 构造引物外标签。
+ * @param maxW  标签栏可用宽度（px）
+ * @param font  名字字号
+ * @param posFont 坐标字号（小一号）
+ * @param showPos 是否显示坐标（「位置」开关 && 非窄屏）
+ * @param rowH  行高
  */
 export function buildPrimerLabel(
   p: PrimerLabelSource,
   opts: { maxW: number; font: number; posFont: number; showPos: boolean; rowH: number; priority?: number },
 ): PrimerLabel | null {
   const { maxW, font, posFont, showPos, rowH } = opts
-  const nameW = textWidth(p.name, font, true)
+  const rev = p.rev ?? isRevPrimer({ name: p.name, strand: 1 })
+  const full = primerLabelText(p.name, rev)
+  const fullW = textWidth(full, font, true)
+  // 名牌放不下全名 → 退到紧凑形式（保留编号），仍放不下才交给布局隐藏
+  let text = full
+  let nameW = fullW
+  if (fullW + 2 * PRIMER_CHIP_PAD > maxW) {
+    text = compactPrimerText(p.name, rev, maxW - 2 * PRIMER_CHIP_PAD, font)
+    if (!text) return null
+    nameW = textWidth(text, font, true)
+  }
   const chipW = nameW + 2 * PRIMER_CHIP_PAD
-  if (chipW > maxW) return null
   const posText = showPos ? ` (${p.pos})` : ''
   const posW = posText ? textWidth(posText, posFont) : 0
   // 坐标放不下时整段省略（截断半个数字比不写更糟），名牌本身照样显示
@@ -64,7 +125,7 @@ export function buildPrimerLabel(
   return {
     input: {
       id: p.key,
-      text: p.name + (fitsPos ? posText : ''),
+      text: text + (fitsPos ? posText : ''),
       width: chipW + (fitsPos ? PRIMER_POS_GAP + posW : 0),
       height: rowH,
       angle: p.mid,
@@ -74,5 +135,6 @@ export function buildPrimerLabel(
     name: p.name,
     pos: fitsPos ? posText : '',
     nameW,
+    rev,
   }
 }

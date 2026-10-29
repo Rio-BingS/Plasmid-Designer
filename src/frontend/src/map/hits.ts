@@ -9,6 +9,8 @@ import { normPos, rangeLength } from './core/coords'
 import { FEATURE_TYPE_LABELS } from './core/palette'
 import { blockedText } from './core/enzymes'
 import { cachedEnzymeDetail, enzymeDetailLines } from './enzymeMeta'
+import { gcPercent, meltingTemp } from './core/seq'
+import { isRevPrimer } from './core/primer_style'
 
 export interface HitInfo {
   kind: 'feature' | 'enzyme' | 'orf' | 'primer' | 'search'
@@ -77,8 +79,20 @@ export function resolveHit(store: MapStore, key: string | null | undefined): Hit
     const p = doc.primers.find((x) => x.id === id)
     if (!p) return null
     const r = { start: p.start, end: p.end }
+    const rev = isRevPrimer(p)
+    const seq = (p.full_sequence || p.sequence || '').toUpperCase()
+    const stats = seq ? `Tm ${meltingTemp(seq).toFixed(1)} °C · GC ${gcPercent(seq).toFixed(1)}%` : ''
+    const lines = [
+      `引物 · ${rev ? '反向 ←' : '正向 →'}`,
+      span(r),
+      ...(stats ? [stats] : []),
+      p.full_sequence && p.full_sequence !== p.sequence
+        ? `全长 ${p.full_sequence.length} nt（退火 ${p.sequence.length} nt）`
+        : (seq ? `${seq.length} nt` : ''),
+      seq,
+    ].filter(Boolean) as string[]
     return {
-      kind: 'primer', title: p.name, lines: [`引物 · ${strandText(p.strand)}`, span(r), p.sequence], range: r,
+      kind: 'primer', title: p.name, lines, range: r,
       select: () => store.select(r, { navigate: true }),
     }
   }
