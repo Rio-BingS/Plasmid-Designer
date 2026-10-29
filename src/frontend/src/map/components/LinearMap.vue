@@ -327,9 +327,15 @@ const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   const pal = rev ? PRIMER_REV : PRIMER_FWD
   // 3′ 端长锥渐收（primerBarPath）：正向朝右、反向朝左（模块 B）。
   // 跨原点分段时只有含 3′ 端的段带锥头，其余段平收——曾每段都画箭头。
-  // 最小渲染宽度已在 primerLanes 分道前按 bp 扩好（未裁剪的段 px 宽必然 ≥16px）；
-  // 视口边缘被裁剪的段如实显示剩余部分，不再二次撑宽（会在边缘越界压到邻条）
-  const segList = visSegs(p)
+  // 分道占位已按 MIN_PRIMER_W 的 bp 等效宽度扩过（primerLanes），这里把渲染
+  // 宽度扩到同一 footprint——分道看到的占位与渲染宽度一致，同道不会相撞。
+  // 视口边缘被裁剪的段按可见部分中心扩，可能略有出入（SVG 裁掉越界部分）
+  const segList = visSegs(p).map((s) => {
+    const w = s.x2 - s.x1
+    if (w >= MIN_PRIMER_W) return s
+    const cx = (s.x1 + s.x2) / 2
+    return { ...s, x1: cx - MIN_PRIMER_W / 2, x2: cx + MIN_PRIMER_W / 2 }
+  })
   // 线性视图直接展示原坐标（环状拆段后段序即坐标序），3′ 端在正向末段/反向首段
   const headIdx = rev ? 0 : segList.length - 1
   return segList.map((s, i) => ({
