@@ -19,6 +19,10 @@ describe('primer SnapGene style markers', () => {
     // 名牌悬空在框外，不压框内序列文字
     expect(src).toContain('fwd ? boxY - BADGE_H - 1 : boxY + BOX_H + 1')
     expect(src).not.toContain('nameFits')
+    // 5′ 端是竖直短线记号，绝不是实心三角——曾画成与 3′ 箭头对称的三角，
+    // 拼成「双向箭头」，方向语义全失（用户截图指正）
+    expect(src).not.toMatch(/foldSegIdx === si\s*\?\s*\(fwd\s*\?\s*`M\$\{s\.x1\}[^\n]*L\$\{s\.x1 - 6\}/)
+    expect(src).toContain('M${s.x1} ${yMid - 4}V${yMid + 4}')
   })
 
   it('CircularMap primers: sense/antisense colors + direction arrows + coordinates', async () => {
