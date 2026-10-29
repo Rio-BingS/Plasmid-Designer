@@ -120,6 +120,18 @@ def document_to_genbank(doc: Dict) -> str:
     rec.annotations["data_file_division"] = "SYN"
     today = datetime.date.today()
     rec.annotations["date"] = f"{today.day:02d}-{_MONTHS[today.month - 1]}-{today.year}"
+    has_primers = bool(doc.get("primers"))
+    if has_primers:
+        # SnapGene「GenBank - SnapGene」格式声明（官方规范，大小写敏感）：
+        # LOCUS 名含 Exported + REFERENCE 的 TITLE=Direct Submission 且 JOURNAL
+        # 含 SnapGene，导入时才解析附加 qualifier（引物对象、颜色等）。
+        # LOCUS 上限 16 字符，倒序截名字保证 "_Exported" 后缀完整
+        base = (_LOCUS_SAFE.sub("_", name).strip("_") or "sequence")[:7]
+        rec.name = f"{base}_Exported"
+        rec.id = rec.name
+        rec.annotations["comment"] = "Exported from Plasmid Designer (SnapGene GenBank format)"
+    # SnapGene 规范：最后一条 REFERENCE 的 TITLE=Direct Submission、JOURNAL 含 SnapGene
+    rec.annotations["references"] = [_snapgene_reference(len(seq), today)]
     for feat in doc.get("features") or []:
         loc = _location(feat["start"], feat["end"], feat.get("strand", 0), length,
                         feat.get("segments"))
@@ -128,9 +140,65 @@ def document_to_genbank(doc: Dict) -> str:
     for p in doc.get("primers") or []:
         loc = _location(p["start"], p["end"], p.get("strand", 1), length, None)
         q = {"label": [p.get("name") or "primer"]}
-        if p.get("sequence"):
-            q["note"] = [f"sequence: {p['sequence']}"]
+        # SnapGene 引物对象：带 sequence 的 primer_bind 导入时自动转为引物，
+        # 随后遵循其状态栏控制（Show Primers / Show Locations 等）。
+        # note 用键值对格式（官方规范）：sequence 区分大小写（小写=非结合部分）、
+        # 颜色必须小写颜色词、added 为 UTC 日期
+        full = (p.get("full_sequence") or p.get("sequence") or "").strip()
+        parts = _snapgene_primer_seq(full, int(p.get("start") or 1), int(p.get("end") or 1),
+                                     int(p.get("strand") or 1), seq)
+        note = f"sequence: {parts}" if parts else f"sequence: {p.get('sequence') or ''}"
+        q["note"] = [note]
         rec.features.append(SeqFeature(loc, type="primer_bind", qualifiers=q))
     buf = io.StringIO()
     SeqIO.write(rec, buf, "genbank")
-    return buf.getvalue()
+    return _unwrap_primer_sequence_notes(buf.getvalue())
+
+
+def _unwrap_primer_sequence_notes(text: str) -> str:
+    """把 `/note="sequence: ..."` 的折行合并回单行。
+
+    SnapGene 官方规范里引物 note 是单行键值对（`/note="sequence: GCTC..."`）；
+    Biopython 写出器按 80 列折行，折行后的键值对不一定被 SnapGene 的
+    GenBank-SnapGene 解析器识别。GenBank 允许长行，合并安全。
+    """
+    return re.sub(
+        r'/note="sequence:([\s]+[A-Za-z\s]+?)"',
+        lambda m: '/note="sequence: ' + re.sub(r"\s+", "", m.group(1)) + '"',
+        text,
+    )
+
+
+def _snapgene_reference(length: int, today: datetime.date) -> "object":
+    """构造 SnapGene 规范要求的 REFERENCE（TITLE=Direct Submission，JOURNAL 含 SnapGene）"""
+    from Bio.SeqFeature import Reference
+
+    ref = Reference()
+    ref.location = None
+    ref.authors = "."
+    ref.title = "Direct Submission"
+    ref.journal = (f"Exported {_MONTHS[today.month - 1].capitalize()} {today.day}, {today.year} "
+                   f"from Plasmid Designer, SnapGene GenBank format https://github.com/Rio-BingS/Plasmid-Designer")
+    return ref
+
+
+def _snapgene_primer_seq(full: str, start: int, end: int, strand: int, template: str) -> str:
+    """引物完整序列 → SnapGene note 的 sequence 值。
+
+    SnapGene 规范：大写部分 = 与模板结合的 3′ 退火区，小写部分 = 5′ 突出
+    （不结合模板）。绑定区取自图谱引物的 start..end（负链取模板该段的反向
+    互补再对齐）；无法对齐时整段按大写返回。
+    """
+    s = (full or "").upper().strip()
+    if not s:
+        return s
+    from core.seq_utils import revcomp
+
+    if start <= end and 1 <= start <= len(template) and end <= len(template):
+        bind = template[start - 1:end]
+        if strand == -1:
+            bind = revcomp(bind)
+        idx = s.rfind(bind.upper())
+        if idx >= 0:
+            return s[:idx].lower() + s[idx:]
+    return s
