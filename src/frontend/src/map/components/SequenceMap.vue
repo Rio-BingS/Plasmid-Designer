@@ -40,38 +40,47 @@ const gutter = computed(() => String(L.value).length * 7.5 + 14)
 const perRow = computed(() => basesPerRow(W.value, CHAR_W, gutter.value + 8))
 const totalRows = computed(() => Math.max(1, Math.ceil(L.value / perRow.value)))
 
-// ---------------- 分道（特征 + 引物，全序列统一分道，每行只占用到的分道） ----------------
+// ---------------- 分道（只特征；引物改画 SnapGene 式蓝框，不占特征道） ----------------
 const MAX_LANES = 8
 const LANE_H = 14
 const ENZ_ROW = 12
 const ENZ_MAX_ROWS = 3
-const laneItems = computed(() => [
-  ...store.features.value.map((f) => ({ id: `f:${f.id}`, start: f.start, end: f.end })),
-  ...store.primers.value.map((p) => ({ id: `p:${p.id}`, start: p.start, end: p.end })),
-])
-const lanes = computed(() => stackLanes(laneItems.value, L.value, { circular: store.circular.value, gap: 2, maxLanes: MAX_LANES }))
+const lanes = computed(() => stackLanes(
+  store.features.value.map((f) => ({ id: `f:${f.id}`, start: f.start, end: f.end })),
+  L.value, { circular: store.circular.value, gap: 2, maxLanes: MAX_LANES }))
 
 // ---------------- SnapGene 式引物框：正链框在序列上方、负链框在下方 ----------------
-// 与特征行里的紫色结合位点箭头是两回事：框 = 引物对象（完整序列含 5′ 突出 +
-// 名牌 + 5′ 折角），按用户提供的 SnapGene 截图复刻
+// 框 = 引物对象（完整序列含 5′ 突出 + 名牌 + 5′ 折角），按用户提供的
+// SnapGene 截图复刻；特征行里不再画引物条（第一类标签已按用户要求移除）
 const BOX_H = 16
 const BOX_MAX_LANES = 6
+/** 引物名牌高（悬在框外，行高要为它留位） */
+const BADGE_H = 12
 const boxedPrimers = computed(() => (store.show.primers ? store.primers.value : []))
-const fwdPrimers = computed(() => boxedPrimers.value.filter((p) => p.strand === 1))
-const revPrimers = computed(() => boxedPrimers.value.filter((p) => p.strand !== 1))
+/**
+ * 反义引物判定：strand=-1，或名字带 AS/R/REV（SnapGene 按引物方向属性画在
+ * 绑定链旁；GenBank 的 primer_bind 标注常不一致——同一批 AS 引物只有一部分
+ * 标了 complement，故按名字补判，与参考图里 c01_ASxx 全在下方一致）
+ */
+function isRevPrimer(p: MapPrimer): boolean {
+  if (p.strand === -1) return true
+  return /AS\d/i.test(p.name) || /(^|_)[Rr]\d/.test(p.name) || /REV/i.test(p.name)
+}
+const fwdPrimers = computed(() => boxedPrimers.value.filter((p) => !isRevPrimer(p)))
+const revPrimers = computed(() => boxedPrimers.value.filter((p) => isRevPrimer(p)))
 /** 引物框区间：结合区 ± 5′ 突出（正链向左伸、负链向右伸）；跨原点引物不外伸 */
-function boxRange(p: MapPrimer): Range {
+function boxRange(p: MapPrimer, rev = false): Range {
   const full = p.full_sequence || p.sequence || ''
   const spanLen = p.start <= p.end ? p.end - p.start + 1 : L.value - p.start + p.end + 1
   const tail = Math.max(0, full.length - spanLen)
   if (!tail) return { start: p.start, end: p.end }
-  return p.strand === 1
+  return !rev
     ? { start: Math.max(1, p.start - tail), end: p.end }
     : { start: p.start, end: Math.min(L.value, p.end + tail) }
 }
 const boxLanes = computed(() => ({
   fwd: stackLanes(fwdPrimers.value.map((p) => ({ id: p.id, ...boxRange(p) })), L.value, { circular: store.circular.value, gap: 2, maxLanes: BOX_MAX_LANES }),
-  rev: stackLanes(revPrimers.value.map((p) => ({ id: p.id, ...boxRange(p) })), L.value, { circular: store.circular.value, gap: 2, maxLanes: BOX_MAX_LANES }),
+  rev: stackLanes(revPrimers.value.map((p) => ({ id: p.id, ...boxRange(p, true) })), L.value, { circular: store.circular.value, gap: 2, maxLanes: BOX_MAX_LANES }),
 }))
 /** 每行用到的引物框分道（正链/负链各一份位掩码） */
 const boxMasks = computed(() => {
@@ -92,7 +101,7 @@ const boxMasks = computed(() => {
   }
   for (const p of revPrimers.value) {
     const lane = boxLanes.value.rev.lanes.get(p.id)
-    if (lane !== undefined) mark(mr, boxRange(p), lane)
+    if (lane !== undefined) mark(mr, boxRange(p, true), lane)
   }
   return { mf, mr }
 })
@@ -188,9 +197,9 @@ function rowGeo(row: number): RowGeo {
   let y = 4
   const enzTop = y
   y += enzRows * ENZ_ROW + (enzRows ? 2 : 0)
-  // 正链引物框在酶名与序列之间；名牌骑在框上沿，留 5px 空隙给它
-  const fwdTop = y
-  y += popcount(fwdMask) * BOX_H + (fwdMask ? 5 : 0)
+  // 正链引物框在酶名与序列之间；名牌悬在框上方，预留名牌高度 + 间隙
+  const fwdTop = y + (fwdMask ? BADGE_H + 1 : 0)
+  y += popcount(fwdMask) * BOX_H + (fwdMask ? BADGE_H + 2 : 0)
   const seqY = y
   y += 16
   const compY = y
@@ -202,9 +211,9 @@ function rowGeo(row: number): RowGeo {
   y += nl * LANE_H + (nl ? 2 : 0)
   const transY = y
   if (translation.value?.byRow.has(row)) y += 15
-  // 负链引物框垫在最底下（SnapGene：反义引物在序列区最下方）；名牌下沿伸出 6px
+  // 负链引物框垫在最底下（SnapGene：反义引物在序列区最下方）；名牌悬在框下方
   const revTop = y + 2
-  y += popcount(revMask) * BOX_H + (revMask ? 7 : 0)
+  y += popcount(revMask) * BOX_H + (revMask ? BADGE_H + 4 : 0)
   return { enzTop, enzRows, fwdTop, fwdMask, seqY, compY, rulerY, laneTop, transY, revTop, revMask, rowH: y + 8, mask }
 }
 const offsets = computed(() => {
@@ -336,21 +345,7 @@ const rows = computed(() => {
         }
       }
     }
-    for (const p of visPrimers) {
-      const lane = lanes.value.lanes.get(`p:${p.id}`)
-      if (lane === undefined) continue
-      for (const s of rowSegs(p, row)) {
-        const head = (p.strand === 1 && s.headR) || (p.strand === -1 && s.headL)
-        // 紫色结合位点箭头 = 程序导出的 primer_bind 注释（SnapGene 特征行样式）；
-        // 蓝色引物框（引物对象）另画在序列上/下方，见 pboxes
-        const label = fitsInside(p.name, 10, s.x2 - s.x1 - 10) ? p.name : ''
-        bars.push({
-          key: `p:${p.id}`, k: `p${p.id}-${s.x1}`, x1: s.x1, x2: s.x2, y: laneY(lane),
-          color: '#a855f7', stroke: '#7c3aed',
-          strand: head ? p.strand : 0, label, textColor: '#ffffff',
-        })
-      }
-    }
+    // 引物不再画在特征行里（第一类标签已移除），只画 SnapGene 式蓝框（见 pboxes）
     // SnapGene 式引物框：正链框在序列上方、负链框在最下方；框内逐列对齐印
     // 引物序列，名牌骑在框沿，5′ 端一个折角
     interface PBox { key: string; id: string; name: string; x1: number; x2: number; y: number; chars: string; badge: { x: number; y: number; w: number } | null; fold: string }
@@ -359,28 +354,31 @@ const rows = computed(() => {
       const fwd = p.strand === 1
       const lane = boxLanes.value[fwd ? 'fwd' : 'rev'].lanes.get(p.id)
       if (lane === undefined) continue
-      const r = boxRange(p)
+      const r = boxRange(p, !fwd)
       const full = (p.full_sequence || p.sequence || '').toUpperCase()
       if (!full) continue
       const boxText = fwd ? full : full.split('').reverse().join('')
       const boxY = fwd ? g.fwdTop + compactLane(g.fwdMask, lane) * BOX_H : g.revTop + compactLane(g.revMask, lane) * BOX_H
       const segs = boxSegs(r, row)
-      const anchorCol = fwd ? p.start : p.end
+      if (!segs.length) continue
       const end5 = fwd ? r.start : r.end
-      const badgeIdx = segs.findIndex((s) => s.c1 <= anchorCol && anchorCol <= s.c2)
-      const foldIdx = segs.findIndex((s) => s.c1 <= end5 && end5 <= s.c2)
+      // 名牌与折角都锚在 5′ 端所在段（该行内第一个含 5′ 端的段；跨行时为段 0）
+      const foldSegIdx = Math.max(0, segs.findIndex((s) => s.c1 <= end5 && end5 <= s.c2))
       const yMid = boxY + (BOX_H - 3) / 2
       segs.forEach((s, si) => {
         const chars = boxText.slice(s.c1 - r.start, s.c2 - r.start + 1)
         if (!chars) return
+        // 名牌悬在框外（正链在框上方、负链在框下方），锚在 5′ 端折角旁；
+        // 超出画布右缘时右对齐收进来
         const badgeW = textWidth(p.name, 9, true) + 8
+        const bx = Math.min(foldSegIdx === si ? s.x1 : (s.x1 + s.x2) / 2 - badgeW / 2, W.value - badgeW - 4)
         pboxes.push({
           key: `p:${p.id}`, id: `p:${p.id}`, name: p.name,
           x1: s.x1, x2: s.x2, y: boxY, chars,
-          badge: si === badgeIdx || (badgeIdx < 0 && si === 0)
-            ? { x: (s.x1 + s.x2) / 2 - badgeW / 2, y: fwd ? boxY - 5 : boxY + BOX_H - 9, w: badgeW }
+          badge: si === foldSegIdx
+            ? { x: Math.max(gutter.value - 2, bx), y: fwd ? boxY - BADGE_H - 1 : boxY + BOX_H + 1, w: badgeW }
             : null,
-          fold: si === foldIdx || (foldIdx < 0 && si === segs.length - 1)
+          fold: si === foldSegIdx
             ? (fwd
                 ? `M${s.x1} ${yMid - 4}L${s.x1 - 6} ${yMid}L${s.x1} ${yMid + 4}Z`
                 : `M${s.x2} ${yMid - 4}L${s.x2 + 6} ${yMid}L${s.x2} ${yMid + 4}Z`)
