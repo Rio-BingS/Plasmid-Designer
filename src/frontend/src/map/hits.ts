@@ -86,10 +86,17 @@ export function resolveHit(store: MapStore, key: string | null | undefined): Hit
     const tm = p.tm ?? (seq ? meltingTemp(seq) : undefined)
     const gc = p.gc ?? (seq ? gcPercent(seq) : undefined)
     const stats = tm !== undefined && gc !== undefined ? `Tm ${tm.toFixed(1)} °C · GC ${gc.toFixed(1)}%` : ''
+    // 同一引物多处结合（同名其它位点）时提示，与高亮联动（SnapGene 同款行为：
+    // 悬停即告知引物在序列上还有别的结合位置）
+    const others = doc.primers.filter((x) => x.name === p.name && x.id !== p.id)
+    const multiNote = others.length
+      ? `⚠ 另有 ${others.length} 处结合位点：${others.slice(0, 3).map((x) => `${x.start}..${x.end}`).join('、')}${others.length > 3 ? ' 等' : ''}`
+      : ''
     const lines = [
       `引物 · ${rev ? '反向 ←' : '正向 →'}`,
       span(r),
       ...(stats ? [stats] : []),
+      ...(multiNote ? [multiNote] : []),
       p.full_sequence && p.full_sequence !== p.sequence
         ? `全长 ${p.full_sequence.length} nt（退火 ${p.sequence.length} nt）`
         : (seq ? `${seq.length} nt` : ''),
