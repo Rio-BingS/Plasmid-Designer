@@ -6,20 +6,19 @@ import { submitBatchDesign, getBatchProgress, downloadBatchResults, downloadBatc
 import EnzymeAutocomplete from '@/components/EnzymeAutocomplete.vue'
 import DesignVectorPicker from '@/components/DesignVectorPicker.vue'
 import { parseBatchInput, validateParsed } from '@/utils/fastaParse'
-import { loadBatchHistory, recordBatch, type BatchHistoryEntry } from '@/utils/batchHistory'
+import { loadBatchHistory, recordBatch, storageGet, storageSet, type BatchHistoryEntry } from '@/utils/batchHistory'
 
 const router = useRouter()
 
 // ==================== 设计模式 ====================
-// 简单 = 之前的方案：粘贴/FASTA/Excel 上传 + 页面统一参数（行级参数忽略）；
-// 复杂 = 表格参数列逐行覆盖。选择记忆在 localStorage
+// 简单 = 粘贴/FASTA/Excel 上传 + 页面统一参数（行级参数忽略）；复杂 = 表格参数列逐行覆盖；选择记忆在 localStorage（经 storageGet/Set 兜底，存储不可用时访问即抛 → 整页白屏）
 const MODE_KEY = 'plasmid-batch-design-mode'
 const designMode = ref<'simple' | 'complex'>(
-  localStorage.getItem(MODE_KEY) === 'complex' ? 'complex' : 'simple')
+  storageGet(MODE_KEY) === 'complex' ? 'complex' : 'simple')
 
 function setDesignMode(mode: 'simple' | 'complex') {
   designMode.value = mode
-  try { localStorage.setItem(MODE_KEY, mode) } catch { /* 隐私模式等，忽略 */ }
+  storageSet(MODE_KEY, mode)
 }
 
 // ==================== 序列输入 ====================
@@ -236,6 +235,7 @@ let pollFailures = 0
 const MAX_POLL_FAILURES = 5  // 后端持续报错时停止无限轮询
 
 async function startPolling(id: string) {
+  stopPolling() // 先清旧轮询：提交后点「查看进度」/连点会叠加 interval，旧批次永远轮下去
   batchId.value = id
   pollFailures = 0
   const poll = async () => {

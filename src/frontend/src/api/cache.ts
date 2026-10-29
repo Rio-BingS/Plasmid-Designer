@@ -17,7 +17,7 @@ export async function clearCache(): Promise<CacheClearResult> {
   return response.data
 }
 
-// 综合序列分析
+// 设计结果缓存失效
 export async function invalidateDesignCache(designId: string): Promise<any> {
   const response = await api.post(`/cache/invalidate/design/${encodeURIComponent(designId)}`)
   return response.data
@@ -32,18 +32,6 @@ export async function invalidateVectorCache(vectorId: string): Promise<any> {
 // 缓存 — 健康检查
 export async function getCacheHealth(): Promise<any> {
   const response = await api.get('/cache/health')
-  return response.data
-}
-
-// 速率限制 — 状态
-export async function getRateLimitStatus(): Promise<any> {
-  const response = await api.get('/rate-limit/status')
-  return response.data
-}
-
-// 速率限制 — 配置
-export async function getRateLimitConfig(): Promise<any> {
-  const response = await api.get('/rate-limit/config')
   return response.data
 }
 

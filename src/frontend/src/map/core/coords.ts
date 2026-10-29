@@ -83,11 +83,6 @@ export function pointAngle(cx: number, cy: number, x: number, y: number): number
   return a < 0 ? a + TAU : a
 }
 
-/** 边界坐标 → 它右侧的碱基位置（1..L） */
-export function xToPos(x: number, L: number): number {
-  return normPos(Math.floor(x) + 1, L)
-}
-
 /**
  * 两个边界坐标之间的选区。b 可在 a 左侧（反向拖拽）或展开到 < 0 / > L
  * （环状拖过原点）。相等时返回 null（只是光标）。线性分子会被夹到 0..L。

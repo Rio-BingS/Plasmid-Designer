@@ -14,9 +14,19 @@ export interface BatchHistoryEntry {
 const KEY = 'plasmid-batch-history'
 const MAX_ITEMS = 10
 
+/** localStorage 访问兜底：隐私模式/被禁用/存储满时直接读写该属性即抛（未兜住的调用方整页白屏）。
+ * 读失败返回 null，写失败静默放弃——记忆/历史类便利功能可接受。 */
+export function storageGet(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+export function storageSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch { /* 同上：静默放弃 */ }
+}
+
 export function loadBatchHistory(): BatchHistoryEntry[] {
   try {
-    const raw = localStorage.getItem(KEY)
+    const raw = storageGet(KEY)
     if (!raw) return []
     const list = JSON.parse(raw)
     if (!Array.isArray(list)) return []
@@ -31,18 +41,10 @@ export function loadBatchHistory(): BatchHistoryEntry[] {
 
 export function recordBatch(entry: BatchHistoryEntry): void {
   const list = [entry, ...loadBatchHistory().filter((e) => e.batchId !== entry.batchId)]
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX_ITEMS)))
-  } catch {
-    // 存储满/隐私模式：历史是便利功能，静默放弃
-  }
+  storageSet(KEY, JSON.stringify(list.slice(0, MAX_ITEMS)))
 }
 
 export function removeFromBatchHistory(batchId: string): void {
   const list = loadBatchHistory().filter((e) => e.batchId !== batchId)
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list))
-  } catch {
-    // 同上
-  }
+  storageSet(KEY, JSON.stringify(list))
 }

@@ -735,7 +735,7 @@ function onPointerUp(e: PointerEvent) {
   if (mode === 'select' && !moved) {
     const info = resolveHit(store, downKey ?? hitKeyOf(e.target))
     if (info) info.select()
-    else store.setCaret(Math.round(anchorX) % L.value)
+    else if (L.value > 0) store.setCaret(Math.round(anchorX) % L.value) // 空序列时 L=0，取模得 NaN
   } else if (mode === 'select' && store.selection.value) {
     // 拖选结束：让序列/线性视图滚到选区（拖动过程中不滚，免得视图乱跳）
     store.navigateTo(store.selection.value)
