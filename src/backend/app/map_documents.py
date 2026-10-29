@@ -68,20 +68,22 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
             hit = _find_span(seq_rc, s, circular)
             strand = -1
         anneal = ""
+        anneal_len = 0
         if hit is None and len(s) > 20:
-            # PCR 引物：3′ 端退火区才结合模板，末 20nt 定位。退火序列落在
-            # 哪条链，引物延伸方向就在哪条链（F 引物=基因正义链片段，负链
+            # PCR 引物：3′ 端退火区才结合模板，末 20nt 定位，命中后**向 5′ 端
+            # 延伸**到引物与模板不再一致为止——完整退火区可能长于 20nt（用户
+            # 常直接设计 30nt+ 的长退火区），且重复序列里末 20nt 可能命中多处，
+            # 只有「命中 + 前缀也能对上」的那个位置才是真退火位点。退火序列落
+            # 在哪条链，引物延伸方向就在哪条链（F 引物=基因正义链片段，负链
             # 装配时命中互补链；R 引物=模板链片段，命中正链）——按命中链
             # 自然标注即箭头方向，无需按名字翻转
-            anneal = s[-20:]
-            hit = _find_span(seq, anneal, circular)
-            strand = 1
+            hit, strand, anneal_len = _extend_anneal_hit(seq, s, circular, 1)
             if hit is None:
-                hit = _find_span(seq_rc, anneal, circular)
-                strand = -1
+                hit, strand, anneal_len = _extend_anneal_hit(seq_rc, s, circular, -1)
         if hit is None:
             continue
-        i, span_len = hit
+        i, _ = hit
+        span_len = anneal_len or _span_of(hit)
         # 环状时 i 可能越出 [0, length)（跨原点命中），按环长取模换算；
         # 非环绕时与旧公式完全一致
         if strand == 1:
@@ -96,7 +98,7 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
             "id": f"primer-{getattr(p, 'name', '') or len(out)}",
             "name": getattr(p, "name", "") or f"primer {len(out) + 1}",
             "start": start, "end": end, "strand": strand,
-            "sequence": anneal or s,
+            "sequence": (s[-anneal_len:] if anneal_len else s),
             # 完整引物序列（含 5′ 突出）：序列视图按 SnapGene 式画出「名牌框 +
             # 引物序列」，突出部分悬在结合区外。与 span 等长时前端画不出差异
             "full_sequence": s,
@@ -104,6 +106,38 @@ def _locate_primer_spans(result, seq: str, circular: bool) -> List[Dict]:
         if len(out) >= 5000:
             break
     return out
+
+
+def _span_of(hit: tuple) -> int:
+    """_find_span 返回的 (起点, 长度) → 长度"""
+    return hit[1]
+
+
+def _extend_anneal_hit(text: str, primer: str, circular: bool, strand: int) -> tuple:
+    """末 20nt 定位 + 向 5′ 端延伸：返回 (hit, strand, 完整退火长度)。
+
+    在 text（正链或其反向互补）上找引物末 20nt 的命中，然后从命中点向引物
+    5′ 端逐基比较引物与模板，能对上就延伸（完整退火区可能远长于 20nt）。
+    重复序列里末 20nt 可能命中多处，只接受「命中 + 引物剩余 3′ 段也能对上」
+    的位置；都失败时回退到首个 20nt 命中（与旧口径一致）。
+    """
+    tail = primer[-20:]
+    hay = text + text[:19] if circular else text
+    first = hay.find(tail)
+    if first == -1:
+        return None, strand, 0
+    # 从首个命中位向左尝试所有可能的起点：完整退火区 = 引物尾部能在模板上
+    # 连续匹配的最长段。命中点 i 对应引物末 20nt 的起点，可能的完整退火起点
+    # 为 i - k（k = 额外延伸的碱基数）
+    best_i, best_k = first, 0
+    for k in range(1, len(primer) - 19):
+        i2 = first - k
+        if i2 < 0:
+            break
+        if primer[-20 - k].upper() != text[i2 % len(text)].upper():
+            break
+        best_i, best_k = i2, k
+    return (best_i, 20 + best_k), strand, 20 + best_k
 
 
 def _find_span(text: str, pattern: str, circular: bool = False) -> Optional[tuple]:

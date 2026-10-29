@@ -145,9 +145,15 @@ def document_to_genbank(doc: Dict) -> str:
         # note 用键值对格式（官方规范）：sequence 区分大小写（小写=非结合部分）、
         # 颜色必须小写颜色词、added 为 UTC 日期
         full = (p.get("full_sequence") or p.get("sequence") or "").strip()
-        parts = _snapgene_primer_seq(full, int(p.get("start") or 1), int(p.get("end") or 1),
-                                     int(p.get("strand") or 1), seq)
-        note = f"sequence: {parts}" if parts else f"sequence: {p.get('sequence') or ''}"
+        # 退火长度 = 图谱 span（start..end 含跨原点展开）；突出 = 全长 - span。
+        # 不重新对模板推断：重复序列上的重推断有歧义，设计边界以定位结果为准
+        start_i, end_i = int(p.get("start") or 1), int(p.get("end") or 1)
+        if start_i <= end_i:
+            span = end_i - start_i + 1
+        else:  # 跨原点
+            span = length - start_i + end_i + 1
+        parts = _snapgene_primer_seq(full, span)
+        note = f"sequence: {parts}" if parts else f"sequence: {full}"
         q["note"] = [note]
         rec.features.append(SeqFeature(loc, type="primer_bind", qualifiers=q))
     buf = io.StringIO()
@@ -182,23 +188,16 @@ def _snapgene_reference(length: int, today: datetime.date) -> "object":
     return ref
 
 
-def _snapgene_primer_seq(full: str, start: int, end: int, strand: int, template: str) -> str:
+def _snapgene_primer_seq(full: str, span_len: int) -> str:
     """引物完整序列 → SnapGene note 的 sequence 值。
 
-    SnapGene 规范：大写部分 = 与模板结合的 3′ 退火区，小写部分 = 5′ 突出
-    （不结合模板）。绑定区取自图谱引物的 start..end（负链取模板该段的反向
-    互补再对齐）；无法对齐时整段按大写返回。
+    SnapGene 规范：大写部分 = 与模板结合的 3′ 退火区，小写部分 = 5′ 突出。
+    退火长度取图谱定位的 span（`start..end`，含退火延伸），不重新对模板
+    推断——突出/退火的边界在设计时已定，重复序列上的模板重推断会有歧义。
+    span ≥ 引物全长时整段大写（无突出）。
     """
-    s = (full or "").upper().strip()
+    s = (full or "").strip().upper()
     if not s:
         return s
-    from core.seq_utils import revcomp
-
-    if start <= end and 1 <= start <= len(template) and end <= len(template):
-        bind = template[start - 1:end]
-        if strand == -1:
-            bind = revcomp(bind)
-        idx = s.rfind(bind.upper())
-        if idx >= 0:
-            return s[:idx].lower() + s[idx:]
-    return s
+    k = max(0, min(len(s), span_len))
+    return (s[:len(s) - k].lower() + s[len(s) - k:]) if k else s
