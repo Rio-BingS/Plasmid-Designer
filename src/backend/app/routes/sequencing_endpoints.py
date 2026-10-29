@@ -194,7 +194,8 @@ async def analyze_design_sequencing(
     from app.routes.models import DesignStatus
 
     zone = parse_zone_form(reliable_zone)
-    result = _ensure_design_access(_load(design_id), user)
+    # _load 走存储层（SQLite/PG），移交线程池避免阻塞事件循环（KNOWN_ISSUES 2.1 口径）
+    result = _ensure_design_access(await run_in_threadpool(_load, design_id), user)
 
     if result.status != DesignStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Design not completed")

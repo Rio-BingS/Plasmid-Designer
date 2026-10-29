@@ -22,7 +22,7 @@ from app.auth.jwt_auth import get_admin_user
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
-from app.filename import sanitize_filename
+from app.filename import content_disposition, sanitize_filename
 from core.seq_utils import gc_percent
 from app.routes.models import (
     VectorInfo, VectorUpdateRequest, VectorPreviewResponse,
@@ -144,21 +144,29 @@ async def get_vector(vector_id: str):
     return info
 
 
+def _yaml_files(vectors_dir: str) -> list:
+    """列出载体目录下的 YAML 文件；目录不存在（配置错误/未初始化）返回空，
+    而不是让删除/更新端点直接 FileNotFoundError → 500"""
+    try:
+        return [f for f in os.listdir(vectors_dir) if f.endswith('.yaml')]
+    except FileNotFoundError:
+        return []
+
+
 @router.delete("/{vector_id}")
 async def delete_vector(vector_id: str, _: object = Depends(get_admin_user)):
     """删除本地载体"""
     vectors_dir = config.settings.VECTORS_DIR
 
-    for file in os.listdir(vectors_dir):
-        if file.endswith('.yaml'):
-            file_path = os.path.join(vectors_dir, file)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f)
-            if data and data.get('id') == vector_id:
-                os.remove(file_path)
-                invalidate_vector_library_cache()
-                _invalidate_vector_cache(vector_id)
-                return {"deleted": True, "vector_id": vector_id}
+    for file in _yaml_files(vectors_dir):
+        file_path = os.path.join(vectors_dir, file)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        if data and data.get('id') == vector_id:
+            os.remove(file_path)
+            invalidate_vector_library_cache()
+            _invalidate_vector_cache(vector_id)
+            return {"deleted": True, "vector_id": vector_id}
 
     raise HTTPException(status_code=404, detail="Vector not found")
 
@@ -170,15 +178,14 @@ async def update_vector(vector_id: str, request: VectorUpdateRequest, _: object 
     vector_file = None
 
     # 查找载体文件
-    for file in os.listdir(vectors_dir):
-        if file.endswith('.yaml'):
-            file_path = os.path.join(vectors_dir, file)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f)
-            if data and data.get('id') == vector_id:
-                vector_file = file_path
-                data_orig = data
-                break
+    for file in _yaml_files(vectors_dir):
+        file_path = os.path.join(vectors_dir, file)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        if data and data.get('id') == vector_id:
+            vector_file = file_path
+            data_orig = data
+            break
 
     if not vector_file:
         raise HTTPException(status_code=404, detail="Vector not found")
@@ -245,7 +252,9 @@ async def get_vector_sequence(vector_id: str, format: str = "fasta"):
     return PlainTextResponse(
         content=content,
         media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename={vector_id}.{format.lower()}"}
+        # 与其余导出端点统一走 content_disposition（防头注入 + RFC 5987 非 ASCII）
+        headers={"Content-Disposition": content_disposition(
+            sanitize_filename(f"{vector_id}.{format.lower()}"))},
     )
 
 
@@ -283,7 +292,8 @@ async def get_vector_map_data(
 # ==================== NCBI 导入路由 ====================
 
 @router.post("/import/ncbi")
-async def import_vector_from_ncbi(query: str, limit: int = 5, _: object = Depends(get_admin_user)):
+async def import_vector_from_ncbi(query: str, limit: int = Query(default=5, ge=1, le=100),
+                                  _: object = Depends(get_admin_user)):
     """从 NCBI 搜索并导入载体
 
     NCBI 请求（单次超时 30s、限速间隔 0.6s）与 YAML 导出均为阻塞调用，
@@ -326,7 +336,7 @@ async def import_vector_by_ncbi_id(seq_id: str, _: object = Depends(get_admin_us
 
 
 @router.get("/search/ncbi")
-async def search_ncbi_vectors(query: str, limit: int = 10):
+async def search_ncbi_vectors(query: str, limit: int = Query(default=10, ge=1, le=100)):
     """搜索 NCBI 载体（不导入）"""
     from core.external_vector_importer import NCBIClient
 
@@ -386,23 +396,24 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
             status_code=400,
             detail="Unsupported file format. Use .gb, .gbk, .fasta or .dna")
 
-    # 保存临时文件：边写边计数，超限即中断（此前无大小限制，可被写满磁盘）
+    # 保存临时文件：边写边计数，超限即中断（此前无大小限制，可被写满磁盘）。
+    # tmp_path 在进入 with 时立即记录——此前只有正常写完才赋值，写入中途抛异常
+    # （磁盘满/客户端断连）会让 finally 的 os.unlink 触发 NameError 且残留临时文件
     max_upload = 20 * 1024 * 1024
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
-        copied = 0
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            copied += len(chunk)
-            if copied > max_upload:
-                tmp.close()
-                os.unlink(tmp.name)
-                raise HTTPException(status_code=400, detail="文件过大（>20MB）")
-            tmp.write(chunk)
-        tmp_path = tmp.name
-
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
+            tmp_path = tmp.name
+            copied = 0
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > max_upload:
+                    raise HTTPException(status_code=400, detail="文件过大（>20MB）")
+                tmp.write(chunk)
+
         with open(tmp_path, "rb") as fh:
             data = fh.read()
         # 解析为 CPU 密集操作，移交线程池（KNOWN_ISSUES 2.1）；序列长度与图谱同一上限
@@ -446,7 +457,11 @@ async def upload_vector_file(file: UploadFile = File(...), _: object = Depends(g
             "warnings": result["warnings"],
         }
     finally:
-        os.unlink(tmp_path)
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @router.post("/import/from-map")

@@ -29,7 +29,12 @@ async def list_codon_tables():
     tables_dir = settings.CODON_TABLES_DIR
 
     tables = []
-    for file in os.listdir(tables_dir):
+    try:
+        files = os.listdir(tables_dir)
+    except FileNotFoundError:
+        # 目录缺失（配置错误/未初始化）返回空清单，而不是 500
+        files = []
+    for file in files:
         if file.endswith('.yaml'):
             name = file.replace('.yaml', '')
             tables.append({
