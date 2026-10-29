@@ -132,3 +132,56 @@ describe('标签宽度计算（含方向符号与坐标）', () => {
     expect(w2).toBeLessThan(w)
   })
 })
+
+/**
+ * 名牌与坐标必须落在布局预留框**内**。
+ *
+ * 布局只保证「框」之间不重叠、框不越界；渲染层若把文字画出框外，布局层查不出来。
+ * 线上 40 条密集引物曾因此把左列坐标画到框左侧，整段溢出 SVG 被裁掉
+ * （9 条只剩后半截 `475 .. 494)`）。这里直接校验渲染几何与框的关系。
+ */
+describe('名牌/坐标渲染几何不越出预留框', () => {
+  const maxW = 300
+  const BOX_X = 100
+
+  it('左右两列的坐标与名牌都落在框内', async () => {
+    const { primerChipGeometry, PRIMER_CHIP_PAD } = await import('../src/map/core/primer_labels')
+    const { textWidth } = await import('../src/map/core/text')
+    for (const rev of [false, true]) {
+      const p = { key: 'p:1', name: rev ? 'C01_AS22' : 'C01_S01', pos: '1434 .. 1491', mid: 0, r: 210, rev }
+      const lab = buildPrimerLabel(p, { maxW, font: FONT, posFont: POS_FONT, showPos: true, rowH: ROW_H })!
+      expect(lab.pos, '前提：该宽度下坐标应显示').not.toBe('')
+      const chipW = lab.nameW + 2 * PRIMER_CHIP_PAD
+      const posW = textWidth(lab.pos, POS_FONT)
+      const box = { x: BOX_X, w: lab.input.width!, y: 0, h: ROW_H }
+      for (const side of [1, -1] as const) {
+        const g = primerChipGeometry(box, side, chipW, true)
+        const right = box.x + box.w
+        // 名牌完整落在框内
+        expect(g.chipX).toBeGreaterThanOrEqual(box.x - 1e-6)
+        expect(g.chipX + g.chipW).toBeLessThanOrEqual(right + 1e-6)
+        // 坐标完整落在框内（布局按「起点 + 实测宽度」预留，两者都要校验）
+        expect(g.posX).not.toBeNull()
+        expect(g.posX!).toBeGreaterThanOrEqual(box.x - 1e-6)
+        expect(g.posX! + posW).toBeLessThanOrEqual(right + 1e-6)
+        // 名牌与坐标不互相重叠
+        const posEnd = g.posX! + posW
+        expect(posEnd <= g.chipX + 1e-6 || g.chipX + g.chipW <= g.posX! + 1e-6).toBe(true)
+      }
+    }
+  })
+
+  it('无坐标时名牌仍完整落在框内', async () => {
+    const { primerChipGeometry, PRIMER_CHIP_PAD } = await import('../src/map/core/primer_labels')
+    const lab = buildPrimerLabel({ key: 'p:2', name: 'D_01', pos: '31 .. 50', mid: 0, r: 210, rev: false },
+      { maxW, font: FONT, posFont: POS_FONT, showPos: false, rowH: ROW_H })!
+    const chipW = lab.nameW + 2 * PRIMER_CHIP_PAD
+    const box = { x: BOX_X, w: lab.input.width!, y: 0, h: ROW_H }
+    for (const side of [1, -1] as const) {
+      const g = primerChipGeometry(box, side, chipW, false)
+      expect(g.posX).toBeNull()
+      expect(g.chipX).toBeGreaterThanOrEqual(box.x - 1e-6)
+      expect(g.chipX + chipW).toBeLessThanOrEqual(box.x + box.w + 1e-6)
+    }
+  })
+})
