@@ -78,6 +78,40 @@ export function primerLabelText(name: string, rev: boolean): string {
   return rev ? `← ${name}` : `${name} →`
 }
 
+/** 名牌内三个元素在用户空间的排布（渲染与校验共用同一份几何） */
+export interface PrimerChipGeometry {
+  /** 名牌矩形左沿 */
+  chipX: number
+  /** 名牌矩形宽度（含左右内边距） */
+  chipW: number
+  /** 坐标文字：左列 start 锚点 / 右列 start 锚点，null 表示不显示 */
+  posX: number | null
+}
+
+/**
+ * 计算名牌与坐标的位置。
+ *
+ * 布局给一列标签预留的框是 `[box.x, box.x + w]`，其中
+ * `w = chipW + PRIMER_POS_GAP + posW`（见 buildPrimerLabel）。因此两个方向的
+ * 元素都必须完整落在**框内**：
+ *   - 右列：名牌贴框左沿（靠环），坐标在名牌右侧；
+ *   - 左列：坐标贴框左沿（远离环），名牌贴框右沿（靠环）。
+ *
+ * 早前把左列坐标画在 `box.x` 左侧、名牌又多移一个内边距，坐标整段落在预留框
+ * 外并溢出画布被裁掉（40 条密集引物里 9 条只剩后半截）——布局层查不出这类
+ * 缺陷，因为框本身是合规的。
+ */
+export function primerChipGeometry(
+  box: { x: number; w: number },
+  side: 1 | -1,
+  chipW: number,
+  hasPos: boolean,
+): PrimerChipGeometry {
+  if (!hasPos) return { chipX: side === 1 ? box.x : box.x + box.w - chipW, chipW, posX: null }
+  if (side === 1) return { chipX: box.x, chipW, posX: box.x + chipW + PRIMER_POS_GAP }
+  return { chipX: box.x + box.w - chipW, chipW, posX: box.x }
+}
+
 /**
  * 紧凑标签（模块 C 渐进式暴露）：名字太长放不下时退到「序号 + 方向」，
  * 例如 `S09 →` / `← AS12`，把最后一段编号保留下来——同批引物靠编号就能
