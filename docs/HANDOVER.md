@@ -1,8 +1,10 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-29（`v2.33.6`；环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标，
-> v2.33.0–2.33.6 引物呈现六连改复盘见 CHANGELOG，下一步见 §8）。
+> **更新**：2026-10-29（`v2.33.6` + Unreleased；完成第二轮代码审计与终审修复批次——
+> 后端 12 项安全/健壮性 + 前端 4 项 + 部署配置 4 项 + 死代码 −180 行，索引见
+> KNOWN_ISSUES「2026-10-29」节、留档见 postmortems；环形图引物按用户提供的 SnapGene
+> 截图复刻等工作仍在 Unreleased 未发版，下一步见 §8）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -14,28 +16,30 @@
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.33.6**
 （2026-10-29 发布，标签与 `main` 均已推送，CI 绿）。功能完整可用、有持续的真实数据回归。
-2026-10-28 复核实测：后端 **1819 passed / 43 skipped / 0 failed**（CI 口径，含此前被
-尺寸预算挡住从未跑过的 `test_deploy_backup.py`），前端 **84 文件 / 644 passed**，
-`vue-tsc --noEmit` **0 error**。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
+2026-10-29 复核实测（审计修复批次完成后）：后端 **1823 passed / 43 skipped / 0 failed**，
+前端 **661 passed**，`vue-tsc --noEmit` **0 error**，build/npm audit/尺寸预算/文档同步
+门禁全绿。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
 **进行中的分支**：`feature/snapgene-primer-view`（未合入 main、未部署）——序列视图引物按
 SnapGene 截图复刻为两类标签：紫色结合位点箭头（程序导出的 `primer_bind` 注释）+
 蓝色引物框（正链框在序列上方、负链框在最下方，框内逐列印完整引物序列、名牌骑框沿、
-5′ 折角）；图谱文档引物新增 `full_sequence`，`MAP_ALGO_VERSION` 升至 `8`。合并与
-部署等用户指令（见 CHANGELOG [Unreleased]）。
+5′ 折角）；图谱文档引物新增 `full_sequence`，`MAP_ALGO_VERSION` 升至 `8`。本分支上
+另累积了 2026-10-29 第二轮审计修复批次（CHANGELOG [Unreleased]「修复」节）。合并与
+部署等用户指令。
 
-**当前最大缺口是批量页体量**：`src/frontend/src/views/BatchDesignView.vue` 已 **1318 行**、
-连续两轮触发 CI 尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
+**当前最大缺口是批量页体量**：`src/frontend/src/views/BatchDesignView.vue` 已 **1318 行**
+（预算顶格，本轮靠收敛 localStorage 读写到 batchHistory.ts 才保住）、连续两轮触发 CI
+尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
 
 ## 2. 事实清单（2026-10-26/27 实测，可直接引用）
 
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | `v2.33.6`（2026-10-29：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=8；酶名大小写归一见 v2.31.3） |
-| 后端测试 | **1819 passed / 43 skipped / 0 failed**（约 105 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
-| 前端测试 | **84 个文件 / 644 passed**；`vue-tsc --noEmit` **0 error** |
+| 后端测试 | **1823 passed / 43 skipped / 0 failed**（约 100 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 前端测试 | **661 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过、`npm audit --omit=dev` 0 漏洞（2026-10-29） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
@@ -172,6 +176,7 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 | 2026-10-18 | [snapgene-search-import-mismatch](postmortems/2026-10-18-snapgene-search-import-mismatch.md) | 「列出来」和「打开」两条路径的校验口径必须一致；ID 校验拿真实索引全量回归 |
 | 2026-10-26 | [ci-red-chain-and-backup](postmortems/2026-10-26-ci-red-chain-and-backup.md) | 本地绿 ≠ CI 绿；被 skip 的测试等于不存在的测试；连续红灯要有「推完看一眼 CI」的收尾 |
 | 2026-10-26 | [synthetic-oligo-orientation](postmortems/2026-10-26-synthetic-oligo-orientation.md) | 凡是「从既成结果反推」的场景，直接取既成结果的段落，别重建——簿记迟早左右互换 |
+| 2026-10-29 | [audit-round2-fixes](postmortems/2026-10-29-audit-round2-fixes.md) | 可控字符串进日志/头/路径前必须过白名单（4 处同型）；双层读取 `in`+`[]` 非原子一律 `get()`；静默降级必须留 warning |
 
 ## 8. 建议的下一步（按优先级）
 

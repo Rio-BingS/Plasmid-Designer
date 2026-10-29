@@ -57,6 +57,28 @@
   序列视图据此把突出部分画在结合区外；`MAP_ALGO_VERSION` 升至 `7`
   （旧图谱缓存自动失效重算）。
 
+### 修复
+- **安全（第二轮代码审计 + 终审修复）**：客户端可传的 `X-Request-ID` 消毒后才进
+  日志与响应头（此前可注入日志行，非 latin-1 字符致 500）；外部载体库导出文件名
+  只放行安全字符集（此前仅替换 `/`，Windows 上 `..\` 可越出目标目录）；console
+  邮件渠道验证码不再写入滚动日志文件（明文落盘=能读日志即可接管账号，正文改走
+  stdout 即看即弃）；载体序列下载 `Content-Disposition` 统一走
+  `content_disposition`（防头注入 + RFC 5987 非 ASCII）；NCBI 导入/搜索 `limit`
+  参数加 1–100 边界校验。
+- **健壮性**：设计/批量的内存镜像读改为 `get()` 持锁（`in` + `[]` 两步间条目可被
+  容量淘汰，BoundedMirror 竞态）；后台设计任务显式携带属主（镜像淘汰后重建的
+  结果不再落成「无属主公开」）；载体删除/更新与密码子表列举在目录缺失时返回空/
+  404 而非 500；测序记录读失败留 warning 留痕（不再静默当 404）；`REDIS_URL`
+  支持 `.env` 配置（此前 pydantic-settings 读到的值被静默忽略）；环形图空序列
+  点击取模得 NaN；Addgene 搜索/元数据加请求代次（迟到旧响应不再覆盖新结果）；
+  批量进度页重复进入不再叠加轮询 interval；localStorage 不可用（隐私模式）时
+  批量页不再白屏；载体上传临时文件在写入中途异常时不再残留。
+- **清理与部署**：删除死代码（Pinia store `design`/`vectors`、`exportAllFormats`、
+  rate-limit API、Ensembl lookup、图谱 `xToPos`/`PRIMER_FOCUS` 等，净 −180 行）；
+  compose 前端健康检查改用 wget（nginx:alpine 无 curl，原配置永远 unhealthy）；
+  `.gitignore` 补 SQLite WAL/SHM 伴生文件与 `data/backups/`；部署 README 端口
+  绑定说明与实际默认值对齐。
+
 ## [2.33.6] - 2026-10-29
 
 ### 修复

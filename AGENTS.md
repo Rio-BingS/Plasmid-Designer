@@ -76,9 +76,9 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-28 实测，v2.33.6）：pytest
-**1819 passed / 43 skipped / 0 failed**（约 105 s），vitest **644 passed / 84 文件**，
-vue-tsc **0**。其中 5 项真实数据回归
+测试基线（本机 Windows，2026-10-29 实测，v2.33.6 + Unreleased）：pytest
+**1823 passed / 43 skipped / 0 failed**（约 100 s），vitest **661 passed**，
+vue-tsc **0**、build/npm audit/尺寸预算/文档同步门禁全绿。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（[postmortems 索引](docs/HANDOVER.md#7-已修问题留档索引)）；v2.18.0→v2.29.2 的 CI 红灯链也已清零（[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
@@ -298,8 +298,8 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 当前版本见 docs/HANDOVER.md §1（本文件不维护版本号，由 `scripts/check_docs_sync.py`
   门禁把守）；远程 https://github.com/Rio-BingS/Plasmid-Designer
   （2026-10 用户改了 GitHub 用户名，旧地址 gui123a1/... 已失效，勿再引用）
-- 测试基线（2026-10-29 复核，v2.33.6）：后端 **1819 passed / 43 skipped**（约 105 s）、前端 **84 文件 /
-  644 passed**、`vue-tsc` 0 error、CI 绿；与基线不符先查原因，别直接改断言
+- 测试基线（2026-10-29 复核，v2.33.6 + Unreleased）：后端 **1823 passed / 43 skipped**（约 100 s）、前端
+  **661 passed**、`vue-tsc` 0 error、门禁全绿；与基线不符先查原因，别直接改断言
 - 刚接手先读 docs/HANDOVER.md（现状、已修问题留档见 §7 索引、下一步）
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
