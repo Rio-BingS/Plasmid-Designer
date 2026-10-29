@@ -222,9 +222,12 @@ const featLanes = computed(() => stackLanes(
 ))
 const FEAT_H = 14
 const FEAT_LANE = 18
-/** 引物条尺寸：带高 10px、最小宽 28px（锥形 ≈14px 才有展示空间）、车道间距 18px。
- *  曾用 6px 带 + 16px 最小宽，全长视野下小到无法辨认（用户多轮截图指正） */
-const MIN_PRIMER_W = 28
+/**
+ * 引物条尺寸：带高 10px、最小宽 12px（只保证锥形可辨）、车道间距 18px。
+ * 行数优先：每方向最多 2 道（典型全长视野各 1 道，共上下 2 行）。
+ * 最小宽给太大（28px）会把密集区挤到每方向 3 道、共 6 行，更乱（用户指正）
+ */
+const MIN_PRIMER_W = 12
 const PRIMER_H = 10
 const PRIMER_LANE = 18
 /**
@@ -247,7 +250,7 @@ const primerLanes = computed(() => {
       end: Math.min(L.value, Math.round(p.end + extra)),
     }
   }
-  const opts = { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 3 }
+  const opts = { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 2 }
   const fwd = stackLanes(store.primers.value.filter((p) => !isRevPrimer(p)).map(expand), L.value, opts)
   const rev = stackLanes(store.primers.value.filter((p) => isRevPrimer(p)).map(expand), L.value, opts)
   const lanes = new Map<string, number>()
