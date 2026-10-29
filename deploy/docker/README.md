@@ -166,7 +166,7 @@ docker compose ps
 
 ```
 NAME               STATUS          PORTS
-plasmid-frontend   Up (healthy)    0.0.0.0:80->80/tcp
+plasmid-frontend   Up (healthy)    127.0.0.1:80->80/tcp（默认 FRONTEND_BIND=127.0.0.1，仅本机可达）
 plasmid-backend    Up (healthy)    127.0.0.1:8000->8000/tcp（仅本机可达）
 plasmid-db         Up (healthy)    127.0.0.1:5432->5432/tcp（仅本机可达）
 plasmid-redis      Up (healthy)    127.0.0.1:6379->6379/tcp（仅本机可达）
