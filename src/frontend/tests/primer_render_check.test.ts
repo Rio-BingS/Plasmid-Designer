@@ -55,7 +55,13 @@ describe('primer SnapGene style markers', () => {
     expect(arcs).toContain('dir, 6 / r1')
     // 名牌降级不得到「只剩方向符号」——一排孤箭头没有辨识度
     expect(mod).not.toContain('arrowOnly')
-    // 不得回退到「整体隐藏」与更早的沿弧方案
+    // 线性视图引物条：长锥渐收（primerBarPath），不用 barArrowPath 的短大脑袋；
+    // 跨原点分段只有 3′ 段带头；车道间距 12px。曾漏改线性视图成「一簇乱箭」
+    const lin = readFileSync('src/map/components/LinearMap.vue', 'utf-8')
+    expect(lin).toContain('primerBarPath')
+    expect(lin).not.toMatch(/barArrowPath\([^)]*\n[^)]*primerTop/)
+    expect(lin).toContain('lane * 12')
+    expect(lin).toContain('i === headIdx')    // 不得回退到「整体隐藏」与更早的沿弧方案
     expect(src).not.toContain('MAX_PRIMER_LABELS')
     expect(src).not.toContain('internalArcLabel(p.name')
   })
