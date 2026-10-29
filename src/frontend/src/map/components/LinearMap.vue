@@ -222,8 +222,24 @@ const featLanes = computed(() => stackLanes(
 ))
 const FEAT_H = 14
 const FEAT_LANE = 18
-const primerLanes = computed(() => stackLanes(store.primers.value.map((p) => ({ id: p.id, start: p.start, end: p.end })), L.value,
-  { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 3 }))
+/** 引物条最小渲染宽度（px）：全长视野下短引物仅 ~10px，长锥被压成纯三角 */
+const MIN_PRIMER_W = 16
+// 分道前先把短引物的占位（bp）扩到最小渲染宽度——扩宽必须发生在分道之前，
+// 否则同道相邻引物在 px 级各自撑宽后会互相叠上（用户截图指正）
+const primerLanes = computed(() => {
+  const minWbp = MIN_PRIMER_W / scale.value
+  return stackLanes(store.primers.value.map((p) => {
+    if (p.start > p.end) return p // 跨原点引物足够长，不扩
+    const len = p.end - p.start + 1
+    if (len >= minWbp) return p
+    const extra = (minWbp - len) / 2
+    return {
+      id: p.id,
+      start: Math.max(1, Math.round(p.start - extra)),
+      end: Math.min(L.value, Math.round(p.end + extra)),
+    }
+  }), L.value, { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 4 })
+})
 const orfLanes = computed(() => stackLanes(store.orfs.value.map((o, i) => ({ id: String(i), start: o.start, end: o.end })), L.value,
   { circular: store.circular.value, maxLanes: 4 }))
 
@@ -296,15 +312,9 @@ const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   const pal = rev ? PRIMER_REV : PRIMER_FWD
   // 3′ 端长锥渐收（primerBarPath）：正向朝右、反向朝左（模块 B）。
   // 跨原点分段时只有含 3′ 端的段带锥头，其余段平收——曾每段都画箭头。
-  // 最小渲染宽度：全长视野下短引物仅 ~10px，锥形被压成纯三角（一簇乱箭）；
-  // 保底 16px 让长锥有展示空间，同道重叠由 stackLanes 的 gap 保证不撞
-  const MIN_PRIMER_W = 16
-  const segList = visSegs(p).map((s) => {
-    const w = s.x2 - s.x1
-    if (w >= MIN_PRIMER_W) return s
-    const cx = (s.x1 + s.x2) / 2
-    return { ...s, x1: cx - MIN_PRIMER_W / 2, x2: cx + MIN_PRIMER_W / 2 }
-  })
+  // 最小渲染宽度已在 primerLanes 分道前按 bp 扩好（未裁剪的段 px 宽必然 ≥16px）；
+  // 视口边缘被裁剪的段如实显示剩余部分，不再二次撑宽（会在边缘越界压到邻条）
+  const segList = visSegs(p)
   // 线性视图直接展示原坐标（环状拆段后段序即坐标序），3′ 端在正向末段/反向首段
   const headIdx = rev ? 0 : segList.length - 1
   return segList.map((s, i) => ({
