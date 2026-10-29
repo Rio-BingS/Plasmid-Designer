@@ -389,10 +389,12 @@ const rows = computed(() => {
             : null,
           fold: si === foldSegIdx
             ? (fwd
-                ? `M${s.x1} ${yMid - 4}L${s.x1 - 6} ${yMid}L${s.x1} ${yMid + 4}Z`
-                : `M${s.x2} ${yMid - 4}L${s.x2 + 6} ${yMid}L${s.x2} ${yMid + 4}Z`)
+                ? `M${s.x1} ${yMid - 4}V${yMid + 4}`
+                : `M${s.x2} ${yMid - 4}V${yMid + 4}`)
             : '',
-          // 3′ 端延伸箭头（小三角，紧贴框沿外侧）
+          // 3′ 端延伸箭头（小三角，紧贴框沿外侧）。5′ 端只有一条竖直短线
+          // 标记起头——之前画成对称的实心三角，与 3′ 箭头拼成「双向箭头」，
+          // 方向语义全失（SnapGene 5′ 端从不是箭头）
           tip: si === tipSegIdx
             ? (tipDir === 1
                 ? `M${tipX + 6} ${yMid}L${tipX - 1} ${yMid - 4}L${tipX - 1} ${yMid + 4}Z`
