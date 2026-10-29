@@ -8,8 +8,8 @@
  *   - 字重 600、字距 -0.01em，小字号下不发虚。
  */
 import { computed } from 'vue'
-import { textWidth } from '../core/text'
 import { primerPalette, type PrimerPalette } from '../core/primer_style'
+import { primerChipGeometry } from '../core/primer_labels'
 
 const props = defineProps<{
   /** 名牌名 */
@@ -32,8 +32,6 @@ const props = defineProps<{
 
 /** 名牌左右内边距 */
 const CHIP_PAD = 4
-/** 名牌与坐标之间的间隙 */
-const POS_GAP = 4
 
 const pal = computed<PrimerPalette>(() => (props.rev ? primerPalette({ name: 'AS', strand: -1 }) : primerPalette({ name: 'S', strand: 1 })))
 const arrow = computed(() => (props.rev ? '←' : '→'))
@@ -44,17 +42,21 @@ const label = computed(() => (props.rev ? `${arrow.value} ${props.name}` : `${pr
  * `← C01_AS2(`）。
  */
 const chipW = computed(() => props.nameW + 2 * CHIP_PAD)
-/** 左侧标签把坐标排在名牌左边，故名牌整体右移 */
-const chipX = computed(() => props.box.x + (props.side === -1 && props.pos ? CHIP_PAD + textWidth(props.pos, props.posFont) + POS_GAP : 0))
+/**
+ * 名牌/坐标的位置全部交给 core/primer_labels.primerChipGeometry：它保证两者都落在
+ * 布局预留的框内（间距常量与布局共用同一份，单测可直接断言不越界）。
+ */
+const geo = computed(() => primerChipGeometry(props.box, props.side, chipW.value, !!props.pos))
+const chipX = computed(() => geo.value.chipX)
 </script>
 
 <template>
-  <text v-if="pos && side === -1" :x="box.x - POS_GAP" :y="y" :font-size="posFont"
-        dominant-baseline="central" text-anchor="end" fill="#6b7280" class="cmap-label-text"
+  <text v-if="geo.posX !== null && side === -1" :x="geo.posX" :y="y" :font-size="posFont"
+        dominant-baseline="central" text-anchor="start" fill="#6b7280" class="cmap-label-text"
         style="letter-spacing: -0.01em">{{ pos }}</text>
   <rect :x="chipX" :y="box.y + 1" :width="chipW" :height="box.h - 2" rx="3"
         :fill="pal.base" :stroke="hot ? '#4f46e5' : pal.dark" :stroke-width="hot ? 1.4 : 0.8" />
-  <text v-if="pos && side === 1" :x="chipX + chipW + POS_GAP" :y="y" :font-size="posFont"
+  <text v-if="geo.posX !== null && side === 1" :x="geo.posX" :y="y" :font-size="posFont"
         dominant-baseline="central" text-anchor="start" fill="#6b7280" class="cmap-label-text"
         style="letter-spacing: -0.01em">{{ pos }}</text>
   <text :x="chipX + chipW / 2" :y="y" :font-size="fontSize" dominant-baseline="central" text-anchor="middle"
