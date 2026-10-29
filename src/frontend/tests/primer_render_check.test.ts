@@ -60,7 +60,7 @@ describe('primer SnapGene style markers', () => {
     const lin = readFileSync('src/map/components/LinearMap.vue', 'utf-8')
     expect(lin).toContain('primerBarPath')
     expect(lin).not.toMatch(/barArrowPath\([^)]*\n[^)]*primerTop/)
-    expect(lin).toContain('lane * 12')
+    expect(lin).toContain('lane * PRIMER_LANE')
     expect(lin).toContain('i === headIdx')    // 不得回退到「整体隐藏」与更早的沿弧方案
     expect(src).not.toContain('MAX_PRIMER_LABELS')
     expect(src).not.toContain('internalArcLabel(p.name')
