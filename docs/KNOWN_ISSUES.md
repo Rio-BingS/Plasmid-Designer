@@ -569,3 +569,37 @@ custom_arms、质粒命名）做的一轮专注逻辑审查，全部疑点先用
 
 
 
+
+### 2026-10-29 第二轮代码审计与终审（安全 + 健壮性批次）
+
+来源：对后端路由/基础设施与前端的一轮全面复审（安全视角为主），全部项均先复核
+代码路径确认可触发再修。提交列统一为本批次（2026-10-29，分支
+`feature/snapgene-primer-view`，见当日 git log）。
+
+| 项 | 结果 | 提交 |
+|---|---|---|
+| 客户端可控 `X-Request-ID` 原样进访问日志并回显响应头：可注入日志行；非 latin-1 字符使写响应头抛 `UnicodeEncodeError` → 500 | 白名单消毒（`[A-Za-z0-9._-]`，截断 64）后非空才采用，否则生成 UUID | 本批次 |
+| 外部载体库导出文件名仅替换 `/`：LOCUS 名来自外部 GenBank，Windows 上 `..\` 仍可越出目标目录 | 收敛到 `re.sub(r"[^A-Za-z0-9._-]+", "_")` + 去首尾点/空 + 兜底名 | 本批次 |
+| console 邮件渠道把含验证码的正文写进滚动日志（5×10MB 长期留存）——能读日志即可接管新注册账号 | 日志只记收件人/主题，正文（含验证码）走 stdout 即看即弃 | 本批次 |
+| 载体序列下载 `Content-Disposition` 手工拼接 vector_id（头注入 + 非 ASCII 乱码） | 统一走 `app/filename.content_disposition`（防回潮测试已锁定单实现） | 本批次 |
+| NCBI 导入/搜索 `limit` 无上界：可传 10⁹ 让外部请求与 YAML 序列化失控 | `Query(ge=1, le=100)` | 本批次 |
+| 载体上传临时文件：`tmp_path` 只在正常写完才赋值，写入中途异常时 `finally` 的 `os.unlink` 抛 `NameError` 且残留临时文件 | 进入 `with` 即记录路径 | 本批次 |
+| BoundedMirror 竞态：`_load`/`_load_batch` 用 `in` + `[]` 两步，条目可在两步间被容量/TTL 淘汰 → 落到存储层或误判缺失 | 改 `dict.get()` 一次持锁（design_routes、batch_routes） | 本批次 |
+| 后台设计任务属主丢失：镜像淘汰后重建的 result 不带 `user_id` → 落成「无属主公开」 | 创建端点显式把 `user_id` 传入 `run_design_task`（单任务与批量同口径） | 本批次 |
+| `REDIS_URL` 只读进程环境变量：pydantic-settings 从 `.env` 读到的值不导出 `os.environ`，裸机部署在 `.env` 单独配的 Redis 被静默忽略 | 环境变量 → `settings.REDIS_URL` → 本地默认 三级回退（与 KNOWN_ISSUES 2.4 的 DATABASE_URL 同型） | 本批次 |
+| 载体/密码子表目录缺失（配置错误/未初始化）时 `os.listdir` 直接 500 | 目录读取容错：返回空清单/404 | 本批次 |
+| 测序记录/峰图/列表读路径异常静默吞掉 → 用户见 404，无线索排查 | 读失败 `logger.warning(..., exc_info=True)` 留痕（终审 D-01 同型） | 本批次 |
+| `export_design` / 设计测序分析的 `_load` 在事件循环里同步走 SQLite/PG | 移交 `run_in_threadpool`（2.1 口径延伸） | 本批次 |
+| 前端：环形图空序列（L=0）点击取模得 NaN 进入 caret；Addgene 搜索/元数据迟到旧响应覆盖新结果；批量进度页重复 `startPolling` 叠加 interval；localStorage 不可用（隐私模式）读模式键即白屏 | NaN 加 `L>0` 守卫；Addgene 加请求代次（同 SnapGene `sgIndexGen` 口径）；`startPolling` 先 `stopPolling()`；localStorage 读写收敛到 `utils/batchHistory.storageGet/storageSet` | 本批次 |
+| 死代码堆积：Pinia store `design`/`vectors`、`exportAllFormats`、rate-limit API、Ensembl lookup、图谱 `xToPos`/`PRIMER_FOCUS`、config 死键 `UPLOAD_DIR`/`OUTPUT_DIR` 等 | 全量删除，净 −180 行；引用零残留（grep 复核） | 本批次 |
+| 部署配置：compose 前端健康检查用 curl（nginx:alpine 无 curl → 容器永远 unhealthy）；`.gitignore` 缺 SQLite WAL/SHM 与 `data/backups/`；README 端口绑定与 `FRONTEND_BIND` 默认值漂移；deploy.sh mkdir 不存在的 ssl 目录 | 健康检查改 busybox wget；忽略规则补齐；文档对齐；mkdir 修正 | 本批次 |
+
+**验证**：后端全量 1823 passed / 43 skipped；前端 vitest 661 passed、`vue-tsc` 0 error、
+build 通过、`npm audit --omit=dev` 0 漏洞；尺寸预算门禁与文档同步门禁通过。
+
+**教训（防回潮）**：①一切「客户端可控字符串」进日志/响应头/文件路径前都要过白名单——
+本批 4 处同型问题（X-Request-ID、LOCUS 文件名、Content-Disposition、NCBI limit）都是
+「能跑通正常输入」的代码，恶意/极端输入才显形；②内存镜像 + 持久层的双层读取，
+`in` + `[]` 两步访问在容量淘汰下不是原子操作，一律 `get()`；③后台任务重跑时不能依赖
+「镜像里还留着属主」——显式传参；④读路径的 `except: return None` 会把存储故障伪装成
+404，至少要留 warning。
