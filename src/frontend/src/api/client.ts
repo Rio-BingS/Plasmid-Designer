@@ -160,5 +160,3 @@ export function assertBlobIsGenbank(data: Blob, name: string): void {
     throw new Error(`无法获取 ${name} 的参考序列（请确认其仍然存在）`)
   }
 }
-
-/** 取载体库载体的 GenBank 文件（测序页深链自动带入参考序列用） */

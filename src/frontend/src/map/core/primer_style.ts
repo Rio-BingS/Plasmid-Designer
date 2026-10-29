@@ -37,9 +37,6 @@ export const PRIMER_REV: PrimerPalette = {
   ink: '#4C1D95',
 }
 
-/** 命中/选中高亮用的强调色 */
-export const PRIMER_FOCUS = '#F59E0B'
-
 /**
  * 引物标签优先级：高于双切点酶、与单切点酶同档，保证设计里的引物不会被
  * 拥挤规则先藏掉（22 条 oligo 全部标出的实测要求）。
@@ -61,11 +58,6 @@ export function isRevPrimer(p: Pick<MapPrimer, 'name' | 'strand'>): boolean {
 /** 该引物使用的配色 */
 export function primerPalette(p: Pick<MapPrimer, 'name' | 'strand'>) {
   return isRevPrimer(p) ? PRIMER_REV : PRIMER_FWD
-}
-
-/** 方向符号（放在名牌文字前后，冗余编码颜色） */
-export function primerArrow(p: Pick<MapPrimer, 'name' | 'strand'>): string {
-  return isRevPrimer(p) ? '←' : '→'
 }
 
 /**

@@ -38,9 +38,9 @@ export async function parseSpreadsheetFile(
 ): Promise<{ sequences: SpreadsheetRow[]; count: number }> {
   const form = new FormData()
   form.append('file', file)
+  // Content-Type 由浏览器生成（含 boundary），不硬编码（见 api/client.ts 约定）
   const response = await api.post(
     `/design/batch/parse-spreadsheet?sequence_type=${sequenceType}`, form,
-    { headers: { 'Content-Type': 'multipart/form-data' } }
   )
   return response.data
 }

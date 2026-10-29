@@ -84,28 +84,10 @@ export async function getEnzymes(): Promise<{
   const response = await api.get('/analysis/enzymes')
   return response.data
 }
-// 用户认证
+
 export async function getExportFormats(): Promise<any[]> {
   const response = await api.get('/analysis/export/formats')
   return response.data
-}
-
-// 导出所有格式为 ZIP
-export async function exportAllFormats(
-  sequence: string,
-  features: any[],
-  name: string,
-  description: string = '',
-  isCircular: boolean = true
-): Promise<void> {
-  const response = await api.post('/analysis/export/all', {
-    sequence,
-    features,
-    name,
-    description,
-    is_circular: isCircular
-  }, { responseType: 'blob' })
-  await saveBlobResponse(response, `${name}_exports.zip`)
 }
 
 // 克隆兼容性检查（JSON body，与后端 CompatibilityRequest 对齐）
