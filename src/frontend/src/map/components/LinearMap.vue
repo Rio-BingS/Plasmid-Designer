@@ -222,8 +222,11 @@ const featLanes = computed(() => stackLanes(
 ))
 const FEAT_H = 14
 const FEAT_LANE = 18
-/** 引物条最小渲染宽度（px）：全长视野下短引物仅 ~10px，长锥被压成纯三角 */
-const MIN_PRIMER_W = 16
+/** 引物条尺寸：带高 10px、最小宽 28px（锥形 ≈14px 才有展示空间）、车道间距 18px。
+ *  曾用 6px 带 + 16px 最小宽，全长视野下小到无法辨认（用户多轮截图指正） */
+const MIN_PRIMER_W = 28
+const PRIMER_H = 10
+const PRIMER_LANE = 18
 /**
  * 引物分道：先按 bp 把短引物占位扩到最小渲染宽度（扩宽必须在分道前，
  * 否则同道相邻引物 px 级撑宽后互相叠上），再**按方向分组分道**——
@@ -244,7 +247,7 @@ const primerLanes = computed(() => {
       end: Math.min(L.value, Math.round(p.end + extra)),
     }
   }
-  const opts = { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 2 }
+  const opts = { circular: store.circular.value, gap: 2 / scale.value, maxLanes: 3 }
   const fwd = stackLanes(store.primers.value.filter((p) => !isRevPrimer(p)).map(expand), L.value, opts)
   const rev = stackLanes(store.primers.value.filter((p) => isRevPrimer(p)).map(expand), L.value, opts)
   const lanes = new Map<string, number>()
@@ -261,8 +264,8 @@ const lower = computed(() => {
   const primerLabelRows = primerLanes.value.laneCount ? 3 : 0
   y += primerLabelRows * 15
   const primerTop = y
-  // 车道间距 12px（带厚 6 + 长锥头呼吸空间）；曾用 9px 挤成一簇乱箭
-  y += primerLanes.value.laneCount * 12 + (primerLanes.value.laneCount ? 4 : 0)
+  // 车道间距 = PRIMER_LANE（带高 10 + 呼吸空间）
+  y += primerLanes.value.laneCount * PRIMER_LANE + (primerLanes.value.laneCount ? 4 : 0)
   const featTop = y
   y += featLanes.value.laneCount * FEAT_LANE
   const orfTop = y
@@ -331,7 +334,7 @@ const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   const headIdx = rev ? 0 : segList.length - 1
   return segList.map((s, i) => ({
     key: `p:${p.id}`, k: `${p.id}-${i}`,
-    d: primerBarPath(s.x1, s.x2, lower.value.primerTop + lane * 12, 6, rev ? -1 : 1, i === headIdx),
+    d: primerBarPath(s.x1, s.x2, lower.value.primerTop + lane * PRIMER_LANE, PRIMER_H, rev ? -1 : 1, i === headIdx),
     fill: pal.base, stroke: pal.dark,
     x1: s.x1, x2: s.x2, lane,
   }))
