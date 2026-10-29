@@ -65,6 +65,52 @@ describe('文档下发 tm/gc 优先于前端计算', () => {
   })
 })
 
+describe('引物多处结合提示（SnapGene 同款行为）', () => {
+  const multiDoc = {
+    ...doc,
+    primers: [
+      { id: 'a', name: 'M13F', start: 10, end: 30, strand: 1, sequence: '' },
+      { id: 'b', name: 'M13F', start: 100, end: 120, strand: 1, sequence: '' },
+      { id: 'c', name: 'M13F', start: 200, end: 220, strand: 1, sequence: '' },
+      { id: 'd', name: 'M13R', start: 50, end: 70, strand: -1, sequence: '' },
+    ],
+  } as unknown as MapDocument
+
+  it('同名引物有其它结合位点时，Tooltip 显示警告行与位置', () => {
+    const store = createMapStore(ref(multiDoc))
+    const hit = resolveHit(store, 'p:a')!
+    const text = hit.lines.join('\n')
+    expect(text).toMatch(/⚠ 另有 2 处结合位点/)
+    expect(text).toContain('100..120')
+    expect(text).toContain('200..220')
+  })
+
+  it('只有一处结合时不显示警告行', () => {
+    const store = createMapStore(ref(multiDoc))
+    const hit = resolveHit(store, 'p:d')!
+    expect(hit.lines.join('\n')).not.toMatch(/另有/)
+  })
+
+  it('其余位点超过 3 处时截断展示并加「等」', () => {
+    const d5 = {
+      ...doc,
+      primers: [
+        { id: 'a', name: 'M13F', start: 10, end: 30, strand: 1, sequence: '' },
+        { id: 'b', name: 'M13F', start: 100, end: 120, strand: 1, sequence: '' },
+        { id: 'c', name: 'M13F', start: 200, end: 220, strand: 1, sequence: '' },
+        { id: 'e', name: 'M13F', start: 300, end: 320, strand: 1, sequence: '' },
+        { id: 'f', name: 'M13F', start: 400, end: 420, strand: 1, sequence: '' },
+      ],
+    } as unknown as MapDocument
+    const store = createMapStore(ref(d5))
+    const hit = resolveHit(store, 'p:a')!
+    const line = hit.lines.find((l) => l.includes('另有'))!
+    expect(line).toMatch(/另有 4 处/)
+    expect(line).toContain('等')
+    expect(line).not.toContain('400..420')
+  })
+})
+
 describe('Tooltip 渲染性能（模块 C「响应迅速」）', () => {
   it('hover 状态变更 → Tooltip DOM 更新在 1 帧内（<16.7ms）', async () => {
     const { mount } = await import('@vue/test-utils')
