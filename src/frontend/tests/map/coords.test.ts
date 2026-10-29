@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normPos, rangeLength, splitRange, rangeContains, rangesOverlap, rangeMid, xToAngle, angleToX,
-  polar, pointAngle, rangeFromBoundaries, unwrapNear, arcBandPath, barArrowPath, TAU,
+  polar, pointAngle, rangeFromBoundaries, unwrapNear, arcBandPath, barArrowPath, primerBarPath, TAU,
 } from '@/map/core/coords'
 import { stackLanes } from '@/map/core/lanes'
 import { niceStep, ticks, formatBp } from '@/map/core/ticks'
@@ -82,6 +82,18 @@ describe('coords：跨原点数学', () => {
     expect(arcBandPath(0, 0, 10, 20, 1, 1)).toBe('')
     expect(barArrowPath(0, 100, 0, 10, 1)).toMatch(/^M0 0H/)
     expect(barArrowPath(0, 100, 0, 10, 0)).not.toMatch(/L/)
+  })
+
+  it('primerBarPath：长锥渐收（≈2.5×带厚），5′ 平直；head=false 无锥', () => {
+    // 正向：右端收尖 (100,5)，锥根在 100-15=85（h=6 → 2.5h=15）
+    expect(primerBarPath(0, 100, 0, 6, 1)).toBe('M0 0H85L100 3L85 6H0Z')
+    // 反向：左端收尖 (0,3)
+    expect(primerBarPath(0, 100, 0, 6, -1)).toBe('M100 0H15L0 3L15 6H100Z')
+    // 跨原点非 3′ 段：平收矩形
+    expect(primerBarPath(0, 100, 0, 6, 1, false)).toBe('M0 0H100V6H0Z')
+    // 极短引物锥不超过半长
+    const d = primerBarPath(0, 4, 0, 6, 1)
+    expect(d).toBe('M0 0H2L4 3L2 6H0Z')
   })
 })
 

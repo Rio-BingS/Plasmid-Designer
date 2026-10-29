@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
-import { barArrowPath, headSegmentIndex, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
+import { barArrowPath, headSegmentIndex, primerBarPath, rangeFromBoundaries, rangeLength, splitRange } from '../core/coords'
 import { stackLanes } from '../core/lanes'
 import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from '../core/labels'
 import { cutStyle, overviewCuts } from '../core/enzymes'
@@ -233,7 +233,8 @@ const lower = computed(() => {
   const primerLabelRows = primerLanes.value.laneCount ? 3 : 0
   y += primerLabelRows * 15
   const primerTop = y
-  y += primerLanes.value.laneCount * 9 + (primerLanes.value.laneCount ? 4 : 0)
+  // 车道间距 12px（带厚 6 + 长锥头呼吸空间）；曾用 9px 挤成一簇乱箭
+  y += primerLanes.value.laneCount * 12 + (primerLanes.value.laneCount ? 4 : 0)
   const featTop = y
   y += featLanes.value.laneCount * FEAT_LANE
   const orfTop = y
@@ -293,10 +294,14 @@ const primerGeoms = computed(() => store.primers.value.flatMap((p) => {
   if (lane === undefined) return []
   const rev = isRevPrimer(p)
   const pal = rev ? PRIMER_REV : PRIMER_FWD
-  // 3′ 端箭头由 barArrowPath 的 dir 决定：正向朝右、反向朝左（模块 B）
-  return visSegs(p).map((s, i) => ({
+  // 3′ 端长锥渐收（primerBarPath）：正向朝右、反向朝左（模块 B）。
+  // 跨原点分段时只有含 3′ 端的段带锥头，其余段平收——曾每段都画箭头
+  const segList = visSegs(p)
+  // 线性视图直接展示原坐标（环状拆段后段序即坐标序），3′ 端在正向末段/反向首段
+  const headIdx = rev ? 0 : segList.length - 1
+  return segList.map((s, i) => ({
     key: `p:${p.id}`, k: `${p.id}-${i}`,
-    d: barArrowPath(s.x1, s.x2, lower.value.primerTop + lane * 9, 6, rev ? -1 : 1),
+    d: primerBarPath(s.x1, s.x2, lower.value.primerTop + lane * 12, 6, rev ? -1 : 1, i === headIdx),
     fill: pal.base, stroke: pal.dark,
     x1: s.x1, x2: s.x2, lane,
   }))

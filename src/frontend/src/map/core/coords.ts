@@ -178,6 +178,22 @@ export function barArrowPath(x1: number, x2: number, y: number, h: number, stran
   return `M${f(x1)} ${f(y)}H${f(x2)}V${f(y + h)}H${f(x1)}Z`
 }
 
+/**
+ * 线性引物条：5′ 端平直、3′ 端长锥渐收（与环形图弧带自收锥同语言）。
+ * barArrowPath 的锥形段上限 h*0.8≈5px，密集引物区每条都顶着短大脑袋，
+ * 排在一起像一簇乱箭；长锥头（≈2.5×带厚）读起来是一条「渐细的条」而非箭头簇。
+ */
+export function primerBarPath(x1: number, x2: number, y: number, h: number, dir: 1 | -1, head = true): string {
+  const w = Math.max(1, x2 - x1)
+  const taper = head ? Math.min(h * 2.5, w * 0.5) : 0
+  const yMid = y + h / 2
+  if (!head) return `M${f(x1)} ${f(y)}H${f(x2)}V${f(y + h)}H${f(x1)}Z`
+  if (dir === 1) {
+    return `M${f(x1)} ${f(y)}H${f(x2 - taper)}L${f(x2)} ${f(yMid)}L${f(x2 - taper)} ${f(y + h)}H${f(x1)}Z`
+  }
+  return `M${f(x2)} ${f(y)}H${f(x1 + taper)}L${f(x1)} ${f(yMid)}L${f(x1 + taper)} ${f(y + h)}H${f(x2)}Z`
+}
+
 function f(n: number): string {
   return (Math.round(n * 100) / 100).toString()
 }
