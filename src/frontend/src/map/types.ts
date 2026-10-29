@@ -67,6 +67,10 @@ export interface MapPrimer {
   id: string; name: string; start: number; end: number; strand: 1 | -1; sequence: string
   /** 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框用；缺省无突出 */
   full_sequence?: string
+  /** 退火区 Tm（°C，最近邻法）——后端算好下发，悬停卡片直接展示 */
+  tm?: number
+  /** 退火区 GC 含量（%） */
+  gc?: number
 }
 
 export interface MapDocument {
