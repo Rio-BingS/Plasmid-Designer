@@ -115,16 +115,15 @@ export function primerChipGeometry(
 /**
  * 紧凑标签（模块 C 渐进式暴露）：名字太长放不下时退到「序号 + 方向」，
  * 例如 `S09 →` / `← AS12`，把最后一段编号保留下来——同批引物靠编号就能
- * 区分，完整名字交给 hover 提示。都放不下时返回空串（交给布局隐藏）。
+ * 区分，完整名字交给 hover 提示。连「序号 + 方向」都放不下时返回空串
+ * （交给布局隐藏），不再降级到只剩方向符号——密集正反交替时一排孤箭头
+ * 没有辨识度，看起来就是一团乱码（c01 密集区实测教训）。
  */
 export function compactPrimerText(name: string, rev: boolean, maxW: number, font: number): string {
   // 取名字末尾的「字母前缀 + 序号」段（C01_AS12 → AS12，D_03_AS → AS）
   const tail = name.match(/([A-Za-z]+_?[A-Za-z]*\d*)$/)?.[1] || name
   const text = rev ? `← ${tail}` : `${tail} →`
-  if (textWidth(text, font, true) <= maxW) return text
-  // 还放不下就只留方向符号（颜色+箭头仍可区分链向）
-  const arrowOnly = rev ? '←' : '→'
-  return textWidth(arrowOnly, font, true) <= maxW ? arrowOnly : ''
+  return textWidth(text, font, true) <= maxW ? text : ''
 }
 
 /**

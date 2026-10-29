@@ -345,7 +345,7 @@ const orfInner = computed(() => featInner.value - 8 - (orfGeoms.value.length ? 3
 /** 引物弧带 + 3′ 端箭头（几何见 core/primer_arcs） */
 const primerGeoms = computed(() => buildPrimerArcs(store.primers.value, {
   lanes: stackLanes(store.primers.value, L.value, { circular: true, maxLanes: 2 }).lanes,
-  L: L.value, baseR: R0.value, laneGap: 6, ang,
+  L: L.value, baseR: R0.value, laneGap: 9, ang,
   unroll: (r) => unroll(r, L.value),
   arcBand: (r1, r2, a1, a2, dir, head) => arcBandPath(cx.value, cy.value, r1, r2, a1, a2, dir, head),
   polar: (r, a) => polar(cx.value, cy.value, r, a),
@@ -875,7 +875,6 @@ defineExpose({ svgEl, resetView, setZoom, zoomStep, zoom })
       <path v-for="o in orfGeoms" :key="o.key" :d="o.d" :data-hit="o.key" :fill="o.color" class="cmap-orf" />
       <g v-for="p in primerGeoms" :key="p.key" :data-hit="p.key" class="cmap-primer">
         <path :d="p.d" :fill="p.fill" :stroke="p.stroke" stroke-width="0.7" />
-        <path :d="p.arrow" :fill="p.stroke" stroke="none" />
       </g>
 
       <!-- 光标 -->

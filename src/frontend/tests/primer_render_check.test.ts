@@ -42,10 +42,15 @@ describe('primer SnapGene style markers', () => {
     // 坐标放不下整段省略，不截断
     expect(mod).toContain('fitsPos ? posText')
     expect(src).toContain('store.show.locations')
-    // 弧形轨道保持细弧带 + 3′ 端延伸箭头（几何在 core/primer_arcs）
-    expect(src).toContain('laneGap: 6')
+    // 弧带自身收成 3′ 锥形箭头（SnapGene 同款）；曾叠加悬浮小三角，在
+    // 密集正反交替区压住邻道弧带（一簇乱箭），已删——不得回潮
     expect(src).toContain('buildPrimerArcs')
-    expect(arcs).toContain('arcArrowPath')
+    expect(src).toContain('laneGap: 9')
+    expect(arcs).not.toContain('arcArrowPath')
+    // 箭头由弧带 head 收成（arcBandPath 的 dir/head 参数仍在用）
+    expect(arcs).toContain('dir, 6 / r1')
+    // 名牌降级不得到「只剩方向符号」——一排孤箭头没有辨识度
+    expect(mod).not.toContain('arrowOnly')
     // 不得回退到「整体隐藏」与更早的沿弧方案
     expect(src).not.toContain('MAX_PRIMER_LABELS')
     expect(src).not.toContain('internalArcLabel(p.name')
