@@ -157,13 +157,6 @@ export async function importFromSnapgene(setId: string, plasmidId: string): Prom
   return response.data
 }
 
-export async function lookupEnsembl(identifier: string, expand: boolean = false): Promise<any> {
-  const response = await api.get(`/vectors/import/ensembl/lookup/${encodeURIComponent(identifier)}`, {
-    params: { expand }
-  })
-  return response.data
-}
-
 export async function previewEnsembl(identifier: string, seqType: string = 'cds'): Promise<OnlinePreview> {
   const response = await api.get('/vectors/import/ensembl/preview', {
     params: { identifier, seq_type: seqType }

@@ -57,6 +57,7 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
   const addgeneMeta = ref<AddgeneMetadata | null>(null)
   const addgeneError = ref('')
   const addgeneLoading = ref(false)
+  let addgeneGen = 0 // 请求代次：慢响应不得覆盖新请求的结果（同 SnapGene 的 sgIndexGen）
   // Addgene 全长序列导入（需管理员 + 后端已配置用户自备会话）
   const addgeneImporting = ref(false)
   /** SnapGene / Ensembl 在线导入在途锁：防双击重复导入（或第二次得到 409） */
@@ -223,31 +224,38 @@ export function useOnlineImport(opts: { loggedIn: Ref<boolean>; reload: () => Pr
 
   async function doSearchAddgene() {
     if (!addgeneTerm.value.trim()) return
+    const gen = ++addgeneGen
     addgeneLoading.value = true
     addgeneError.value = ''
     addgeneRows.value = []
     addgeneMeta.value = null
     try {
       const res = await searchAddgeneIndex(addgeneTerm.value.trim())
+      if (gen !== addgeneGen) return // 已有更新的搜索，丢弃迟到的旧响应
       addgeneRows.value = res.results || []
       if (addgeneRows.value.length === 0) addgeneError.value = res.note || '本地索引无命中'
     } catch (e) {
+      if (gen !== addgeneGen) return
       addgeneError.value = errTextOf(e, 'Addgene 搜索失败')
     } finally {
-      addgeneLoading.value = false
+      if (gen === addgeneGen) addgeneLoading.value = false
     }
   }
 
   async function doAddgeneMetadata(id: string) {
+    const gen = ++addgeneGen
     addgeneLoading.value = true
     addgeneError.value = ''
     addgeneMeta.value = null
     try {
-      addgeneMeta.value = await getAddgeneMetadata(id, addgeneSession.value)
+      const meta = await getAddgeneMetadata(id, addgeneSession.value)
+      if (gen !== addgeneGen) return
+      addgeneMeta.value = meta
     } catch (e) {
+      if (gen !== addgeneGen) return
       addgeneError.value = errTextOf(e, 'Addgene 元数据查询失败')
     } finally {
-      addgeneLoading.value = false
+      if (gen === addgeneGen) addgeneLoading.value = false
     }
   }
 

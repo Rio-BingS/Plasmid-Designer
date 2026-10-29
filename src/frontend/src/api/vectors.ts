@@ -22,7 +22,6 @@ export async function getVector(vectorId: string): Promise<VectorInfo> {
   return response.data
 }
 
-// 密码子表
 export async function searchNcbi(query: string, limit: number = 10): Promise<NcbiSearchResult> {
   const response = await api.get('/vectors/search/ncbi', { params: { query, limit } })
   return response.data

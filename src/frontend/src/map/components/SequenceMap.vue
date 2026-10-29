@@ -116,10 +116,6 @@ const rowLaneMask = computed(() => {
     if (lane === undefined) continue
     for (const rr of f.segments?.length ? f.segments : [f]) mark(rr, lane)
   }
-  for (const p of store.primers.value) {
-    const lane = lanes.value.lanes.get(`p:${p.id}`)
-    if (lane !== undefined) mark(p, lane)
-  }
   return mask
 })
 function popcount(m: number): number {
