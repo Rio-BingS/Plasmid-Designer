@@ -51,8 +51,6 @@ class Settings(BaseSettings):
     DATA_DIR: str = os.environ.get("DATA_DIR", DATA_DIR_DEFAULT)
     VECTORS_DIR: str = os.environ.get("VECTORS_DIR", str(Path(DATA_DIR_DEFAULT) / "vectors"))
     CODON_TABLES_DIR: str = os.environ.get("CODON_TABLES_DIR", str(Path(DATA_DIR_DEFAULT) / "codon_tables"))
-    UPLOAD_DIR: str = "/tmp/plasmid_designer/uploads"
-    OUTPUT_DIR: str = "/tmp/plasmid_designer/output"
 
     # CORS — 支持 "*"、逗号分隔（"https://a.com,https://b.com"）或 JSON 数组（'["*"]'）三种写法，
     # 解析见 cors_origins_list。此处必须声明为 str：pydantic-settings 会对 list/dict 等

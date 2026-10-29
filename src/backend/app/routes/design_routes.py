@@ -56,8 +56,9 @@ def _persist(result: DesignResult) -> None:
 
 
 def _load(design_id: str) -> DesignResult | None:
-    if design_id in designs_db:
-        return designs_db[design_id]
+    result = designs_db.get(design_id)  # get() 持锁；in + [] 两步之间条目可能被淘汰（BoundedMirror 竞态）
+    if result is not None:
+        return result
     try:
         store = get_design_store()
         data = store.get(design_id)
@@ -97,7 +98,10 @@ async def create_design(request: DesignRequest, background_tasks: BackgroundTask
         user_id=user.id if user else None,
     )
     _persist(result)
-    background_tasks.add_task(run_design_task, design_id, request)
+    # 属主在创建时随参数传入：后台续跑前镜像可能已淘汰该条目（BoundedMirror
+    # 容量/TTL 淘汰），届时新建的 result 若不带 user_id 会落成「无属主公开」
+    background_tasks.add_task(run_design_task, design_id, request,
+                              user.id if user else None)
     return {
         "design_id": design_id,
         "status": "pending",
@@ -216,8 +220,11 @@ async def get_design_map_data(
                                  enzyme_set=enzyme_set, orf_min_aa=orf_min_aa)
 
 
-def run_design_task(design_id: str, request: DesignRequest):
-    """后台执行设计任务（单任务与批量共用 run_design）。"""
+def run_design_task(design_id: str, request: DesignRequest, user_id: Optional[str] = None):
+    """后台执行设计任务（单任务与批量共用 run_design）。
+
+    user_id 由创建端点随任务传入（批量路径同口径）：镜像淘汰时 pending 为 None，
+    显式参数保证属主不丢。"""
     pending = designs_db.get(design_id)
     if pending:
         pending.status = DesignStatus.RUNNING
@@ -227,7 +234,9 @@ def run_design_task(design_id: str, request: DesignRequest):
     # 保留创建时间与属主（后台续跑会重建 result 对象）
     if pending and pending.created_at:
         result.created_at = pending.created_at
-    if pending and pending.user_id:
+    if user_id:
+        result.user_id = user_id
+    elif pending and pending.user_id:
         result.user_id = pending.user_id
     _persist(result)
 

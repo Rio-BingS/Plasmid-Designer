@@ -49,8 +49,9 @@ def _persist_batch(job: BatchDesignStatus) -> None:
 
 
 def _load_batch(batch_id: str) -> BatchDesignStatus | None:
-    if batch_id in batch_jobs:
-        return batch_jobs[batch_id]
+    job = batch_jobs.get(batch_id)  # get() 持锁；in + [] 两步之间条目可能被淘汰（BoundedMirror 竞态）
+    if job is not None:
+        return job
     try:
         data = get_batch_store().get(batch_id)
         if data:

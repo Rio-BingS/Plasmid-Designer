@@ -323,8 +323,10 @@ class VectorLibraryManager:
         os.makedirs(output_dir, exist_ok=True)
         count = 0
         for vid, vector in self.vectors.items():
-            filename = f"{vector.name.replace('/', '_')}.yaml"
-            filepath = os.path.join(output_dir, filename)
+            # 文件名来自外部数据（GenBank LOCUS 行），只放行安全字符集——
+            # 此前仅替换 `/`，Windows 上 `\` 仍是路径分隔符，`..\` 可越出目标目录
+            safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", vector.name).strip("._") or "vector"
+            filepath = os.path.join(output_dir, f"{safe_stem}.yaml")
             features = []
             for f in vector.features or []:
                 item = dict(f)

@@ -13,8 +13,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Redis 连接配置
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Redis 连接配置：进程环境变量优先（Docker compose 注入），其次 .env——
+# pydantic-settings 读取的 .env 值不导出到 os.environ，此前只读环境变量会让
+# 裸机部署在 .env 单独配的 REDIS_URL 被静默忽略（与 DATABASE_URL 双真相源同类，
+# KNOWN_ISSUES 2.4 只修了 DB 那条）；两处都没配才用本地默认
+from app.config import settings as _app_settings  # noqa: E402  config 不依赖本模块，无循环
+
+REDIS_URL = os.getenv("REDIS_URL") or getattr(_app_settings, "REDIS_URL", "") \
+    or "redis://localhost:6379/0"
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 
 # 缓存默认 TTL (秒)
@@ -55,7 +61,7 @@ class CacheBackend:
 
 class RedisCache(CacheBackend):
     """Redis 缓存实现"""
-    
+
     def __init__(self, url: str = REDIS_URL):
         try:
             import redis

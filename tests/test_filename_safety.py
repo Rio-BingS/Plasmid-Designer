@@ -94,8 +94,18 @@ def test_filename_whitelist_regex_has_single_implementation():
     # 只匹配「否定字符类替换」签名（文件名清洗的形态）；
     # 锚定的 ^[A-Za-z0-9...] 是 ID/登录号校验器，不是文件名清洗
     pattern = _re.compile(r"\[\^A-Za-z0-9._\-]")
-    # LOCUS 名清洗在 core 层（GenBank 平面文件规范的名字，非下载文件名）
-    allowed = {"core" + chr(92) + "plasmid_map" + chr(92) + "genbank.py"}
+    # 豁免清单：
+    # - plasmid_map/genbank.py：LOCUS 名清洗在 core 层（GenBank 平面文件规范的名字，
+    #   非下载文件名）
+    # - external_vector_importer.py：NCBI 导出 YAML 的落盘名清洗同在 core 层
+    #   （core 不得反向 import app/filename），字符集与 app/filename 完全一致
+    # - middleware.py：X-Request-ID 消毒（日志注入/响应头编码安全），非文件名用途，
+    #   字符类撞车属形态巧合
+    allowed = {
+        "core" + chr(92) + "plasmid_map" + chr(92) + "genbank.py",
+        "core" + chr(92) + "external_vector_importer.py",
+        "app" + chr(92) + "middleware.py",
+    }
     offenders = []
     for py in backend.rglob("*.py"):
         rel = str(py.relative_to(backend))
