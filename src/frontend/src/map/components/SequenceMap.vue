@@ -345,8 +345,8 @@ const rows = computed(() => {
       key: string; id: string; name: string; x1: number; x2: number; y: number; chars: string
       badge: { x: number; y: number; w: number } | null
       fold: string
-      /** 3′ 延伸箭头路径 */
-      tip: string
+      /** 框体一体轮廓（3′ 端收成箭头尖，跨行非 3′ 段平收） */
+      outline: string
       /** 框描边/文字色（正/反向分色） */
       color: string
       dark: string
@@ -378,29 +378,35 @@ const rows = computed(() => {
         const badgeText = fwd ? `${p.name} →` : `← ${p.name}`
         const badgeW = textWidth(badgeText, 9, true) + 8
         const bx = Math.min(foldSegIdx === si ? s.x1 : (s.x1 + s.x2) / 2 - badgeW / 2, W.value - badgeW - 4)
-        const tipX = fwd ? s.x2 : s.x1
-        const tipDir = fwd ? 1 : -1
+        // SnapGene 式一体轮廓：圆角矩形在 3′ 端直接收成箭头尖，描边连续。
+        // 曾用「圆角矩形 + 框外贴小三角」，接缝生硬像掉出来的碎片（用户截图指正）。
+        // 跨行分段时只有含 3′ 端的段带箭头，其余段平收
+        const yTop = boxY
+        const yBot = boxY + BOX_H - 3
+        const flatClose = (l: number, r: number) =>
+          `M${l + 2} ${yTop}H${r - 2}Q${r} ${yTop} ${r} ${yTop + 2}V${yBot - 2}Q${r} ${yBot} ${r - 2} ${yBot}H${l}Z`
+        const arrowClose = (l: number, r: number, dir: 1 | -1) =>
+          dir === 1
+            ? `M${l + 2} ${yTop}H${r - 1}L${r + 6} ${yMid}L${r - 1} ${yBot}H${l + 2}`
+              + `Q${l} ${yBot} ${l} ${yBot - 2}V${yTop + 2}Q${l} ${yTop} ${l + 2} ${yTop}Z`
+            : `M${r - 2} ${yTop}H${l + 1}L${l - 6} ${yMid}L${l + 1} ${yBot}H${r - 2}`
+              + `Q${r} ${yBot} ${r} ${yBot - 2}V${yTop + 2}Q${r} ${yTop} ${r - 2} ${yTop}Z`
         pboxes.push({
-          key: `p:${p.id}`, id: `p:${p.id}`, name: badgeText,
-          x1: s.x1, x2: s.x2, y: boxY, chars,
-          color: pal.base, dark: pal.dark,
-          badge: si === foldSegIdx
-            ? { x: Math.max(gutter.value - 2, bx), y: fwd ? boxY - BADGE_H - 1 : boxY + BOX_H + 1, w: badgeW }
-            : null,
-          fold: si === foldSegIdx
-            ? (fwd
-                ? `M${s.x1} ${yMid - 4}V${yMid + 4}`
-                : `M${s.x2} ${yMid - 4}V${yMid + 4}`)
-            : '',
-          // 3′ 端延伸箭头（小三角，紧贴框沿外侧）。5′ 端只有一条竖直短线
-          // 标记起头——之前画成对称的实心三角，与 3′ 箭头拼成「双向箭头」，
-          // 方向语义全失（SnapGene 5′ 端从不是箭头）
-          tip: si === tipSegIdx
-            ? (tipDir === 1
-                ? `M${tipX + 6} ${yMid}L${tipX - 1} ${yMid - 4}L${tipX - 1} ${yMid + 4}Z`
-                : `M${tipX - 6} ${yMid}L${tipX + 1} ${yMid - 4}L${tipX + 1} ${yMid + 4}Z`)
-            : '',
-        })
+            key: `p:${p.id}`, id: `p:${p.id}`, name: badgeText,
+            x1: s.x1, x2: s.x2, y: boxY, chars,
+            color: pal.base, dark: pal.dark,
+            badge: si === foldSegIdx
+              ? { x: Math.max(gutter.value - 2, bx), y: fwd ? boxY - BADGE_H - 1 : boxY + BOX_H + 1, w: badgeW }
+              : null,
+            fold: si === foldSegIdx
+              ? (fwd
+                  ? `M${s.x1} ${yMid - 4}V${yMid + 4}`
+                  : `M${s.x2} ${yMid - 4}V${yMid + 4}`)
+              : '',
+            outline: si === tipSegIdx
+              ? (fwd ? arrowClose(s.x1 - 1, s.x2 + 1, 1) : arrowClose(s.x1 - 1, s.x2 + 1, -1))
+              : (fwd ? flatClose(s.x1 - 1, s.x2 + 1) : flatClose(s.x1 - 1, s.x2 + 1)),
+          })
       })
     }
     const cuts = (cutRows.value.by.get(row) ?? []).map((c) => {
@@ -587,14 +593,12 @@ defineExpose({ scroller, perRow, offsets, totalHeight, rows })
 
           <!-- SnapGene 式引物框：正链框在序列上方、负链框在最下方 -->
           <g v-for="b in r.pboxes" :key="'pb' + b.key + b.x1" :data-hit="b.id" class="smap-pbox">
-            <rect :x="b.x1 - 1" :y="b.y" :width="b.x2 - b.x1 + 2" :height="BOX_H - 3" rx="3"
-                  fill="#ffffff" fill-opacity="0.8" :stroke="b.color" stroke-width="1" />
+            <path :d="b.outline" fill="#ffffff" fill-opacity="0.8" :stroke="b.color" stroke-width="1" stroke-linejoin="round" />
             <text :x="b.x1" :y="b.y + 10" :font-size="FONT - 2" font-family="Consolas, Menlo, 'Courier New', monospace"
                   :textLength="b.x2 - b.x1" lengthAdjust="spacing" :fill="b.dark" pointer-events="none"
                   style="letter-spacing: -0.02em">{{ b.chars }}</text>
-            <path v-if="b.fold" :d="b.fold" :fill="b.color" pointer-events="none" />
-            <!-- 3′ 端延伸箭头（聚合酶沿此方向延伸） -->
-            <path v-if="b.tip" :d="b.tip" :fill="b.color" pointer-events="none" class="smap-pbox-tip" />
+            <!-- 5′ 端竖直短线起头记号 -->
+            <path v-if="b.fold" :d="b.fold" :stroke="b.color" stroke-width="1.5" pointer-events="none" />
             <g v-if="b.badge">
               <!-- 名牌到框沿的细引导线（模块 A）：名牌悬在框外，用 1px 线连回 5′ 端 -->
               <line :x1="b.badge.x + (b.badge.w > 40 ? b.badge.w / 2 : 2)" :x2="b.badge.x + (b.badge.w > 40 ? b.badge.w / 2 : 2)"

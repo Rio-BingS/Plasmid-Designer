@@ -12,8 +12,8 @@ describe('primer SnapGene style markers', () => {
     expect(src).toContain('class="smap-pbox"')           // 框渲染层
     expect(src).toContain('PRIMER_FWD')                  // 正向配色
     expect(src).toContain('PRIMER_REV')                  // 反向配色
-    expect(src).toContain('b.tip')                       // 3′ 延伸箭头
-    expect(src).toContain('smap-pbox-tip')
+    expect(src).toContain('b.outline')                   // 3′ 箭头并入框体轮廓
+    expect(src).toContain('smap-pbox')
     expect(src).toContain('.split(\'\').reverse()')      // 负链框 5′→3′ 反向排布
     expect(src).toContain('isRevPrimer')                 // AS 引物画在下方
     // 名牌悬空在框外，不压框内序列文字
