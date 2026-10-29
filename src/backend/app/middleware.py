@@ -3,6 +3,7 @@
 生成请求 ID、记录请求/响应、性能监控
 """
 
+import re
 import time
 import uuid
 from fastapi import Request, Response
@@ -13,6 +14,15 @@ from app.logging_config import get_logger
 
 logger = get_logger("request")
 
+# 客户端可控的 X-Request-ID 只放行安全字符集：该值会进访问日志并被原样
+# 回显到响应头——原始值可注入日志行，非 latin-1 字符会让写响应头时抛
+# UnicodeEncodeError → 500。合法 UUID 均在白名单内不受影响
+_REQUEST_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_request_id(raw: str) -> str:
+    return _REQUEST_ID_SAFE.sub("", raw)[:64]
+
 
 class RequestTrackingMiddleware(BaseHTTPMiddleware):
     """请求追踪中间件"""
@@ -21,8 +31,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
     
     async def dispatch(self, request: Request, call_next) -> Response:
-        # 生成请求 ID
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        # 生成请求 ID（客户端提供的值先消毒）
+        request_id = _sanitize_request_id(request.headers.get("X-Request-ID", "")) \
+            or str(uuid.uuid4())
         
         # 记录开始时间
         start_time = time.time()

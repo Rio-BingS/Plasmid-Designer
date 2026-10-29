@@ -201,6 +201,8 @@ def load_record_meta(analysis_id: str) -> Optional[Dict]:
         _hash_plaintext_token(record)  # 未迁移的旧行：读出即转摘要
         return record
     except Exception:
+        # 读路径失败不是「记录不存在」——静默吞掉会变成 404 且无线索（终审 D-01 同型）
+        logger.warning("读取测序分析记录 %s 失败", analysis_id, exc_info=True)
         return None
     finally:
         db.close()
@@ -220,6 +222,7 @@ def load_trace(analysis_id: str) -> Dict:
                .filter(SequencingAnalysisDB.id == analysis_id).first())
         return _decode_trace(row[0]) if row is not None else {}
     except Exception:
+        logger.warning("读取测序峰图 %s 失败", analysis_id, exc_info=True)
         return {}
     finally:
         db.close()
@@ -332,6 +335,8 @@ def list_records(user: Optional[object], is_admin: bool,
             for r in rows
         ]
     except Exception:
+        # 列表读失败返回空列表会掩盖存储层故障，必须留痕
+        logger.warning("测序分析记录列表读取失败", exc_info=True)
         return []
     finally:
         db.close()

@@ -85,7 +85,10 @@ def _send_console(to: str, subject: str, html: str) -> bool:
     import re as _re
     text = _re.sub(r"<[^>]+>", " ", html)
     text = _re.sub(r"\s+", " ", text).strip()
-    logger.info("[MAIL:console] to=%s subject=%s | %s", to, subject, text)
+    # 验证码含在正文里：滚动日志文件长期留存（5×10MB），明文落盘等于任何能读
+    # 日志的人可接管新注册账号——日志只记收件人/主题，正文（含验证码）走 stdout
+    # 供本地开发即看即弃；生产误配 console 渠道时已有启动告警兜底
+    logger.info("[MAIL:console] to=%s subject=%s | body 已略（验证码见 stdout）", to, subject)
     print(f"✉️ [MAIL:console] 收件人 {to} · {subject} · {text}")
     return True
 

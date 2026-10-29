@@ -548,10 +548,9 @@ async def export_design(design_id: str, format: str = "genbank",
     """
     from app.routes.design_routes import _ensure_design_access, _load
 
-    # 属主校验（终审 B-01：此前匿名可导出他人完整构建序列——IDOR）
-    result = _ensure_design_access(_load(design_id), user)
-    if not result:
-        raise HTTPException(status_code=404, detail="Design not found")
+    # 属主校验（终审 B-01：此前匿名可导出他人完整构建序列——IDOR）；
+    # _load 走存储层（SQLite/PG），移交线程池避免阻塞事件循环（同文件 2.1 口径）
+    result = _ensure_design_access(await run_in_threadpool(_load, design_id), user)
 
     data = create_export_data_from_design(result.model_dump(mode="json"))
     try:
