@@ -13,6 +13,8 @@ from core.plasmid_map.annotate import circular_overlap
 from core.plasmid_map.enzymes import find_map_enzymes, resolve_enzymes
 from core.plasmid_map.orfs import DEFAULT_MIN_AA, find_orfs
 from core.plasmid_map.parsers import ParsedRecord, extract_span
+from core.primer_base import calculate_tm
+from core.seq_utils import gc_percent
 from core.plasmid_map.types import (
     FEATURE_TYPE_SET, MAX_FEATURES, MAX_ORFS, MAX_PRIMER_SEQ, MAX_PRIMERS, MAX_QUALIFIERS,
     MAX_SEGMENTS, MAX_WARNINGS, SCHEMA, normalize_color,
@@ -189,11 +191,17 @@ def build_document(
         if _span_len(start, end, length) > MAX_PRIMER_SEQ:
             continue
         full_seq = str(p.get("full_sequence") or "").upper().strip()
+        bind_seq = str(p.get("sequence") or extract_span(sequence, start, end, strand)).upper()
         prims.append({
             "id": str(p.get("id") or f"primer-{i}")[:64],
             "name": str(p.get("name") or f"primer {i}")[:80],
             "start": start, "end": end, "strand": strand,
-            "sequence": str(p.get("sequence") or extract_span(sequence, start, end, strand)).upper(),
+            "sequence": bind_seq,
+            # Tm / GC：渲染层直接读（Step 1 要求引物对象自带这些字段）。
+            # Tm 用全库唯一实现 core.primer_base.calculate_tm（最近邻 + 缓冲液校正），
+            # GC 按退火区算——悬停提示展示的就是「这条引物结合片段的物理属性」
+            "tm": round(calculate_tm(bind_seq), 1),
+            "gc": round(gc_percent(bind_seq), 1),
             # 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框需要画出
             # 悬在结合区外的突出部分；缺省与 sequence 等长（无突出）
             **({"full_sequence": full_seq} if full_seq else {}),

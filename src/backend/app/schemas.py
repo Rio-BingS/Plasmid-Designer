@@ -688,6 +688,9 @@ class MapPrimer(BaseModel):
     sequence: Optional[str] = Field(default=None, max_length=_map_limits.MAX_PRIMER_SEQ)
     # 完整引物序列（含 5′ 突出）：序列视图 SnapGene 式名牌框用；缺省无突出
     full_sequence: Optional[str] = Field(default=None, max_length=_map_limits.MAX_PRIMER_SEQ)
+    # 退火区物理属性：渲染层直接读（悬停卡片展示），后端算出后下发
+    tm: Optional[float] = Field(default=None, description="最近邻法 Tm（°C）")
+    gc: Optional[float] = Field(default=None, ge=0, le=100, description="GC 含量（%）")
 
 
 class MapMeta(BaseModel):

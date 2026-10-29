@@ -81,7 +81,11 @@ export function resolveHit(store: MapStore, key: string | null | undefined): Hit
     const r = { start: p.start, end: p.end }
     const rev = isRevPrimer(p)
     const seq = (p.full_sequence || p.sequence || '').toUpperCase()
-    const stats = seq ? `Tm ${meltingTemp(seq).toFixed(1)} °C · GC ${gcPercent(seq).toFixed(1)}%` : ''
+    // Tm/GC 优先用文档自带字段（后端 core.primer_base 最近邻算法算出）；
+    // 旧缓存文档没有这两个字段时回退到前端同算法实现
+    const tm = p.tm ?? (seq ? meltingTemp(seq) : undefined)
+    const gc = p.gc ?? (seq ? gcPercent(seq) : undefined)
+    const stats = tm !== undefined && gc !== undefined ? `Tm ${tm.toFixed(1)} °C · GC ${gc.toFixed(1)}%` : ''
     const lines = [
       `引物 · ${rev ? '反向 ←' : '正向 →'}`,
       span(r),
