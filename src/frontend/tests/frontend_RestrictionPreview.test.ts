@@ -140,4 +140,36 @@ describe('RestrictionPreview 双酶切示意图', () => {
     const wrapper = mount(RestrictionPreview, { props: { preview: fixture() } })
     expect(wrapper.find('[data-testid="allow-backbone-cuts"]').exists()).toBe(false)
   })
+
+  it('多切点时显示片段选择器，选择项经 emit 回传切点对', async () => {
+    const wrapper = mount(RestrictionPreview, {
+      props: {
+        preview: fixture({
+          cut_options: [
+            { left_enzyme: 'EcoRI', left_cut: 952, right_enzyme: 'SphI', right_cut: 2669,
+              removed_bp: 1717, kept_bp: 3711, leftover_cuts: 0 },
+            { left_enzyme: 'EcoRI', left_cut: 952, right_enzyme: 'SphI', right_cut: 1228,
+              removed_bp: 276, kept_bp: 5152, leftover_cuts: 3 },
+          ],
+        }),
+        cutPair: null,
+      },
+    })
+    const picker = wrapper.find('[data-testid="cut-pair-picker"]')
+    expect(picker.exists()).toBe(true)
+    expect(wrapper.text()).toContain('骨架完整')
+    expect(wrapper.text()).toContain('骨架残留 3 切点')
+    await picker.find('select').setValue('952-1228')
+    expect(wrapper.emitted('update:cutPair')?.[0]).toEqual([[952, 1228]])
+  })
+
+  it('单一切点组合（唯一位点酶对）不显示片段选择器', () => {
+    const wrapper = mount(RestrictionPreview, {
+      props: { preview: fixture({ cut_options: [
+        { left_enzyme: 'NdeI', left_cut: 238, right_enzyme: 'XhoI', right_cut: 158,
+          removed_bp: 80, kept_bp: 5289, leftover_cuts: 0 },
+      ] }) },
+    })
+    expect(wrapper.find('[data-testid="cut-pair-picker"]').exists()).toBe(false)
+  })
 })

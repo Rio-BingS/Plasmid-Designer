@@ -254,7 +254,7 @@ def resolve_restriction_ends(
     direction: str = "auto",
     circular: bool = True,
     window: Optional[Tuple[int, int]] = None,
-    join: str = "sticky",
+    join: str = "sticky", cut_pair: Optional[Tuple[int, int]] = None,
 ) -> RestrictionEnds:
     """把「两把酶」解析成「接基因 5′ 端 / 3′ 端」的指派。
 
@@ -267,7 +267,7 @@ def resolve_restriction_ends(
     if not enzyme_a or not enzyme_b or enzyme_a == enzyme_b:
         return ends
     probe = plan_restriction(backbone, enzyme_a, enzyme_b, window=window,
-                             circular=circular, warnings=[], join=join)
+                             circular=circular, warnings=[], join=join, cut_pair=cut_pair)
     if probe is None or probe.left_cut == probe.right_cut:
         return ends
     left_owner, right_owner = (
@@ -319,8 +319,7 @@ def resolve_restriction_ends(
 
 
 def build_restriction_preview(request) -> Dict:
-    """限制性克隆的实时预览：占位基因跑一遍真实组装（assemble_construct），
-    返回的坐标/元件/连接处碱基与正式设计完全一致——画的就是成品构建体。"""
+    """限制性克隆实时预览：占位基因跑真实组装，坐标与正式设计完全一致。"""
     from core.construct_assembly import physical_sites
 
     inline = getattr(request, "vector", None)
@@ -346,7 +345,7 @@ def build_restriction_preview(request) -> Dict:
     is_gibson = getattr(request, "cloning_method", "restriction") == "gibson"
     arms_mode = getattr(request, "cloning_method", "restriction") == "custom_arms"
     custom_plan = None
-    backbone_risk = False
+    backbone_risk, pair, cut_options = False, None, []
 
     if arms_mode:
         # 自定义同源臂：臂序列即定位。plan_custom_arms 的 ValueError（无匹配/
@@ -374,20 +373,23 @@ def build_restriction_preview(request) -> Dict:
         if len(enzymes) < 2 or enzymes[0] == enzymes[1]:
             raise ValueError("预览需要两个不同的限制酶")
         keep_sites = not is_gibson or getattr(request, "keep_restriction_sites", True)
+        pair = tuple(map(int, _rp)) if (_rp := getattr(request, "cut_pair", None)) else None
         ends = resolve_restriction_ends(
             vector, backbone, enzymes[0], enzymes[1],
             direction=getattr(request, "direction", "auto"),
             circular=circular, window=_mcs_window(vector),
-            join="gibson" if is_gibson else "sticky")
+            join="gibson" if is_gibson else "sticky", cut_pair=pair)
         warnings.extend(ends.warnings)
+        from core.cut_pairs import enumerate_cut_pairs
+        cut_options = enumerate_cut_pairs(backbone, enzymes[0], enzymes[1],
+                                          window=_mcs_window(vector), circular=circular)
         backbone_risk = False
         if not is_gibson and ends.plan is not None:
-            # 骨架重切不阻断选择（决定权在用户）：预览展示警告，设计需知情确认
+            # 骨架重切不阻断（决定权在用户）：预览展示警告，设计需知情确认
             recut = _backbone_recut_warnings(
                 backbone, ends.plan.left_cut, ends.plan.right_cut,
                 [ends.enzyme_5, ends.enzyme_3], circular=circular)
-            backbone_risk = bool(recut)
-            warnings.extend(recut)
+            backbone_risk, _ = bool(recut), warnings.extend(recut)
         strand = ends.strand
         source = ends.source
         ambiguous = bool(ends.hint.get("ambiguous"))
@@ -402,9 +404,8 @@ def build_restriction_preview(request) -> Dict:
         check_cassette=True,
         extra_elements=(ends.detected if not arms_mode else None),
         join="gibson" if (is_gibson or arms_mode) else "sticky",
-        keep_sites=keep_sites if not arms_mode else True,
-        custom_plan=custom_plan,
-        allow_backbone_cuts=True)  # 预览只警告，risk 在响应里
+        keep_sites=keep_sites if not arms_mode else True, custom_plan=custom_plan,
+        allow_backbone_cuts=True, cut_pair=pair)
     warnings.extend(asm.warnings)
     construct = asm.sequence
 
@@ -420,8 +421,7 @@ def build_restriction_preview(request) -> Dict:
                 backbone, ends.enzyme_5, ends.enzyme_3, window=_mcs_window(vector),
                 circular=circular, warnings=[], join="gibson", keep_sites=False)
             removed = max(0, getattr(seamless_plan, "removed", removed) or removed)                 if seamless_plan is not None else removed
-    sites: List[Dict] = []
-    enzyme_counts: Dict[str, int] = {}
+    sites: List[Dict] = []; enzyme_counts: Dict[str, int] = {}
     if not arms_mode:  # custom_arms 无位点可画
         for role, enzyme, boundary in (("five", ends.enzyme_5, asm.insert_start),
                                        ("three", ends.enzyme_3, asm.insert_end)):
@@ -473,8 +473,8 @@ def build_restriction_preview(request) -> Dict:
         "ambiguous": ambiguous,
         "gene_5prime_enzyme": label5,
         "gene_3prime_enzyme": label3,
-        "enzyme_counts": enzyme_counts,
-        "backbone_cut_risk": backbone_risk,
+        "enzyme_counts": enzyme_counts, "backbone_cut_risk": backbone_risk,
+        "cut_options": cut_options, "cut_pair": list(pair) if pair else None,
         "evidence": evidence,
         "features": features,
         "junctions": {
@@ -569,7 +569,7 @@ def assemble_construct(
     join: str = "sticky",
     keep_sites: bool = True,
     custom_plan=None,
-    allow_backbone_cuts: bool = False,
+    allow_backbone_cuts: bool = False, cut_pair: Optional[Tuple[int, int]] = None,
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
@@ -605,18 +605,18 @@ def assemble_construct(
                         else len(backbone) // 2
                 plan = plan_gibson(backbone, pos)
             elif method == "restriction":
-                plan = plan_restriction(backbone, enzyme_5 or "", enzyme_3 or "",
-                                        window=window, circular=circular,
-                                        warnings=plan_warnings, join=join,
-                                        keep_sites=keep_sites)
+                plan = plan_restriction(backbone, enzyme_5 or "", enzyme_3 or "", window=window,
+                                        circular=circular, warnings=plan_warnings, join=join,
+                                        keep_sites=keep_sites, cut_pair=cut_pair)
                 # 骨架重切风险：警告始终给出（知情记录/建议改酶）；
-                # 有风险且未确认 allow_backbone_cuts 时回退 MCS 替换
+                # 自动选择下有风险且未确认 allow_backbone_cuts 时回退 MCS
+                # 替换——用户显式传 cut_pair 选片段本身即知情，不拦截
                 if plan is not None and join == "sticky":
                     recut = _backbone_recut_warnings(
                         backbone, plan.left_cut, plan.right_cut,
                         [enzyme_5 or "", enzyme_3 or ""], circular=circular)
                     plan_warnings.extend(recut)
-                    if recut and not allow_backbone_cuts:
+                    if recut and not allow_backbone_cuts and cut_pair is None:
                         plan = None
             else:
                 plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
@@ -1964,6 +1964,8 @@ def run_design(
                 result.cloned_sequence = optimized_dna
             # 按克隆方法建模切点：Gibson 单位点不切除碱基、双酶切（含 Gibson
             # 双酶切线性化）与 GG 切走两个切点之间的片段
+            _rp = getattr(request, "cut_pair", None)
+            _pair = tuple(_rp) if _rp and request.cloning_method == CloningMethod.RESTRICTION else None
             assembly = assemble_construct(
                 vector, optimized_dna, request.sequence_name or "insert",
                 method=("restriction" if (request.cloning_method
@@ -1989,6 +1991,7 @@ def run_design(
                             else getattr(request, "keep_restriction_sites", True)),
                 custom_plan=gibson_arms_plan,
                 allow_backbone_cuts=getattr(request, "allow_backbone_cuts", False),
+                cut_pair=_pair,
             )
             result.warnings.extend(assembly.warnings)
 

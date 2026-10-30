@@ -2,7 +2,7 @@
 
 import os
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Optional, Dict, Literal
+from typing import List, Optional, Dict, Literal, Tuple
 from enum import Enum
 from datetime import datetime
 
@@ -84,6 +84,9 @@ class DesignOptions(BaseModel):
     allow_backbone_cuts: bool = Field(
         default=False,
         description="知情确认：接受所选酶在保留骨架上的额外切点（多切点酶切）")
+    # 显式选择要胶回收的骨架片段（预览 cut_options 之一）；缺省 = 自动最外侧
+    cut_pair: Optional[Tuple[int, int]] = Field(default=None, min_length=2, max_length=2,
+                                                description="用户选择的切点对 (left_cut, right_cut)")
     # NdeI/NcoI 这类位点自带 ATG 且在连接处复原后充当起始密码子；插入序列
     # 再以 ATG 开头会让蛋白 N 端出现连续两个 Met。默认自动去掉插入序列开头
     # 的 ATG（第一个甲硫氨酸由位点提供，蛋白与输入氨基酸一致）
@@ -285,6 +288,10 @@ class RestrictionPreviewRequest(BaseModel):
     direction: Literal["auto", "reverse", "plus", "minus"] = "auto"
     cloning_method: Literal["restriction", "gibson", "custom_arms"] = "restriction"
     keep_restriction_sites: bool = True
+    # 显式选择要胶回收的骨架片段（切点对，多切点酶时预览的 cut_options 之一）；
+    # 缺省 = 自动选最外侧切点对（内部同酶位点吸进废片段）
+    cut_pair: Optional[Tuple[int, int]] = Field(default=None, min_length=2, max_length=2,
+                                                description="用户选择的切点对 (left_cut, right_cut)")
     homology_arm_5: Optional[str] = Field(default=None, max_length=200,
                                           description="5′ 重组臂（custom_arms 模式必填）")
     homology_arm_3: Optional[str] = Field(default=None, max_length=200,

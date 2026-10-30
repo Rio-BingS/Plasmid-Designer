@@ -27,6 +27,8 @@ export async function getRestrictionPreview(payload: {
   keep_restriction_sites?: boolean
   homology_arm_5?: string
   homology_arm_3?: string
+  /** 用户显式选择的骨架片段（切点对）；缺省 = 自动 */
+  cut_pair?: [number, number]
 }): Promise<RestrictionPreview> {
   const response = await api.post('/design/restriction-preview', payload)
   return response.data
