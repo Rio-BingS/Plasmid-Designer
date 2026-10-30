@@ -106,6 +106,9 @@ export interface DesignRequest {
 export interface RestrictionPreviewSite {
   role: 'five' | 'three'
   enzyme: string
+  /** 多切点酶的全部物理切点都返回；junction=true 是紧邻插入边界、
+   *  决定同源臂/粘性末端的那一个（渲染时强调） */
+  junction?: boolean
   position: number
   cut: number
   end: number

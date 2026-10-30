@@ -86,4 +86,27 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(wrapper.text()).toContain('预览失败')
     expect(wrapper.find('svg').exists()).toBe(false)
   })
+
+  it('多切点酶画出全部切点：junction 加酶名，次要切点只标坐标', () => {
+    // 2026-10-29 用户报告：SphI 摘要说 4 个切点、图上只画 1 个
+    const wrapper = mount(RestrictionPreview, {
+      props: { preview: fixture({
+        sites: [
+          { role: 'five', enzyme: 'EcoRI', position: 952, cut: 952, end: 957, junction: true },
+          { role: 'three', enzyme: 'SphI', position: 1562, cut: 1562, end: 1567, junction: true },
+          { role: 'three', enzyme: 'SphI', position: 2136, cut: 2136, end: 2141 },
+          { role: 'three', enzyme: 'SphI', position: 2208, cut: 2208, end: 2213 },
+          { role: 'three', enzyme: 'SphI', position: 3003, cut: 3003, end: 3008 },
+        ],
+        gene_5prime_enzyme: 'EcoRI', gene_3prime_enzyme: 'SphI',
+      }) },
+    })
+    const text = wrapper.text()
+    expect(text).toContain('SphI (1562)')   // junction：酶名 + 坐标
+    expect(text).toContain('EcoRI (952)')
+    expect(text).toContain('2136')          // 次要切点：只有坐标
+    expect(text).toContain('3003')
+    // 酶名只出现在 junction 标签上，次要切点不重复酶名
+    expect(text.match(/SphI \(/g)).toHaveLength(1)
+  })
 })
