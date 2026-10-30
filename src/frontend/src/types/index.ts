@@ -171,10 +171,10 @@ export interface CutPairOption {
   left_cut: number
   right_enzyme: string
   right_cut: number
+  /** 规划切走的补集长度（kept_bp 的补） */
   removed_bp: number
+  /** 用户回收的这条消化带的长度 */
   kept_bp: number
-  /** 保留骨架上残留的同酶位点数（0 = 骨架完整，推荐） */
-  leftover_cuts: number
 }
 
 /** 插入方向：auto=按载体表达盒；reverse=反义构建；plus/minus=用户手动指定 */

@@ -129,13 +129,21 @@ def enumerate_cut_pairs(
     sequence: str, enzyme_5: str, enzyme_3: str, *,
     window: Optional[Tuple[int, int]] = None, circular: bool = True,
 ) -> List[Dict]:
-    """某酶对在载体上的全部可行切点对（= 可胶回收的骨架片段清单）。
+    """双酶切完整消化的**真实片段清单**（= 胶上能回收的带）。
+
+    2026-10-31 按用户指出的酶切物理重建：完整消化在环状载体上把每个切点
+    都切开，产物是**相邻切点之间**的片段（n 个切点 = n 条带），不是任意
+    两切点围出的区间。可用于定向克隆的带 = 两端恰为一个 enzyme_5 + 一个
+    enzyme_3 位点的片段（两端同酶的带无法与基因两端配对）。pcDNA3.1
+    EcoRI(952)+SphI{1228,1802,1874,2669} 消化出 5 条带，其中只有 2 条
+    （3711 bp 主链、276 bp 小片段）两端异酶——与其余酶对选择无关的物理。
 
     每项 {left_enzyme, left_cut, right_enzyme, right_cut, removed_bp,
-    kept_bp, leftover_cuts}：removed = 被切走的废片段，kept = 胶回收的
-    骨架大片段（removed 的补集），leftover_cuts = 保留骨架上残留的同酶
-    位点数（0 = 骨架完整）。按自动评分升序（首位即规划器的默认选择），
-    供预览的「选择所需片段」下拉与用户指定 cut_pair 校验。"""
+    kept_bp}：removed = 该带长度（胶回收丢掉的部分，主链带 = kept），
+    kept = 补集。按自动评分升序，首位即规划器的默认几何。
+
+    用户显式 cut_pair 仍接受任意位点位点对（知情的多切点利用，如缺失/
+    亚克隆），不受此清单限制——清单描述的是「完整消化能提出什么」。"""
     sites5 = physical_sites(sequence, enzyme_5, circular=circular)
     sites3 = physical_sites(sequence, enzyme_3, circular=circular)
     if not sites5 or not sites3:
@@ -143,31 +151,46 @@ def enumerate_cut_pairs(
     cuts5 = sorted({s["cut_fwd"] for s in sites5})
     cuts3 = sorted({s["cut_fwd"] for s in sites3})
     length = len(sequence)
-    union = sorted(set(cuts5) | set(cuts3))
-    groups = ((cuts5, cuts3, enzyme_5), (cuts3, cuts5, enzyme_3))
+    if circular:
+        all_cuts = sorted(set(cuts5) | set(cuts3))
+    else:
+        all_cuts = sorted(set(cuts5) | set(cuts3))
+    # 每条消化带 = 相邻两切点 (a, b]；环状补上 (最后一刀, 第一刀] 的收尾带
+    bands: List[Tuple[int, int]] = []
+    for i, a in enumerate(all_cuts):
+        b = all_cuts[(i + 1) % len(all_cuts)]
+        if circular or i + 1 < len(all_cuts):
+            if b != a:
+                bands.append((a, b))
+    tag_of = {c: enzyme_5 for c in cuts5}
+    for c in cuts3:
+        tag_of[c] = enzyme_3  # 同坐标双位点（理论上罕见）按 3' 酶记
+
     out: List[Dict] = []
-    scored: List[Tuple[Tuple[int, int, int], int, int, str]] = []
-    for allow_long in (False, True):
-        for gi, (cuts_a, cuts_b, tag) in enumerate(groups):
-            for a, b in _candidate_pairs(cuts_a, cuts_b, length, circular, allow_long):
-                leftover = sum(c not in (a, b) and not _excised_between(c, a, b)
-                               for c in union)
-                score = _pair_score(a, b, window, length, circular, leftover)
-                if score is None:
-                    continue
-                scored.append((score, a, b, tag))
-        if scored:
-            break   # 短区间候选非空即停（与 _best_ordered_pair 同口径）
-    scored.sort(key=lambda t: t[0])
-    for score, a, b, tag in scored:
-        removed = _forward_dist(a, b, length, circular)
+    for a, b in bands:
+        ta, tb = tag_of[a], tag_of[b]
+        if ta == tb:
+            continue  # 两端同酶的带：无法与基因两端（一端接酶5一接酶3）配对
+        band_bp = _forward_dist(a, b, length, circular)
+        if band_bp <= 0 or band_bp >= length:
+            continue
+        # 回收这条带 = 基因插进带的两端 = 规划上切走**补集**。cut_pair 语义
+        # 是「切走 (l→r]」，故对带 (a→b] 取反向 (b, a)——补集才是被丢的。
         out.append({
-            "left_enzyme": tag, "left_cut": a, "right_enzyme":
-                enzyme_3 if tag == enzyme_5 else enzyme_5, "right_cut": b,
-            "removed_bp": removed, "kept_bp": length - removed,
-            "leftover_cuts": score[1],
+            "left_enzyme": tb, "left_cut": b,
+            "right_enzyme": ta, "right_cut": a,
+            "removed_bp": length - band_bp,   # 规划切走的补集
+            "kept_bp": band_bp,               # 用户回收的这条带
         })
-    return out
+    # 自动评分：与 _best_ordered_pair 同口径（首位 = 默认选择）
+    scored: List[Tuple[Tuple[int, int, int], Dict]] = []
+    for item in out:
+        sc = _pair_score(item["left_cut"], item["right_cut"], window,
+                         length, circular, 0)
+        if sc is not None:
+            scored.append((sc, item))
+    scored.sort(key=lambda t: t[0])
+    return [it for _, it in scored]
 
 
 def pick_flanking(
