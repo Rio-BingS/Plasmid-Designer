@@ -227,22 +227,36 @@ def test_run_design_multi_cut_enzyme_uses_outermost_sites():
 
 
 def test_preview_cut_pair_selection_roundtrip():
-    """「选择所需片段」（2026-10-29 用户需求）：预览枚举全部可胶回收片段
-    （cut_options 按推荐度排序，首位 = 自动最外侧），用户显式传 cut_pair
-    时按所选几何组装并回显；选骨架有残留的对时 risk 标记照常给出；非法
-    cut_pair（酶/载体变化后）422 说明。"""
+    """「选择所需片段」（2026-10-29 需求，2026-10-31 按用户酶切物理修正）：
+    cut_options 只列**物理可胶回收**的骨架片段——两端恰为一个 enzyme_5 +
+    一个 enzyme_3 位点、内部不含任一酶位点（消化会把内部位点也切开，含
+    内部位点的带在胶上被切碎，提不出完整片段；pcDNA3.1 EcoRI/SphI 四个
+    候选只有 (952,1228) 内部干净）。cut_options 为空 = 没有可回收片段，
+    只剩自动规划的多切点方案（走风险横幅）。用户显式 cut_pair 仍可指定
+    任意几何切点对（知情的多切点利用），非法 pair 422。"""
     pv = build_restriction_preview(RestrictionPreviewRequest(
         enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
     opts = pv["cut_options"]
-    assert [o["removed_bp"] for o in opts] == [1717, 922, 850, 276]   # 升序评分
-    assert opts[0]["leftover_cuts"] == 0                              # 推荐位骨架完整
+    # 完整消化 5 条带，两端异酶（EcoRI+SphI）的只有 2 条（2026-10-31 用户
+    # 指出的物理）：3711bp 主链带（回收=标准克隆，cut_pair (952,2669) 切走
+    # 1717 补集）与 276bp 小片段带（回收=以小片段为骨架的缺失场景）。
+    # 首位 = 评分推荐（主链，骨架完整）。
+    assert [(o["kept_bp"], o["removed_bp"]) for o in opts] == [(3711, 1717), (276, 5152)]
     assert pv["cut_pair"] is None                                     # 缺省自动
 
+    # 选小片段带：切走 5152 补集、保留 276 骨架（缺失载体场景）
     picked = build_restriction_preview(RestrictionPreviewRequest(
         enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
-        cut_pair=[952, 1802]))
-    assert picked["removed_bp"] == 850 and picked["cut_pair"] == [952, 1802]
-    assert picked["backbone_cut_risk"] is True                        # 骨架残留 2 切点
+        cut_pair=[1228, 952]))
+    assert picked["removed_bp"] == 5152 and picked["cut_pair"] == [1228, 952]
+    assert picked["backbone_cut_risk"] is False                       # 小片段带内部无切点
+
+    # 主链带 = 标准克隆几何，骨架完整无风险
+    picked_main = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+        cut_pair=[952, 2669]))
+    assert picked_main["removed_bp"] == 1717
+    assert picked_main["backbone_cut_risk"] is False
 
     import pytest
     with pytest.raises(ValueError, match="重新选择"):

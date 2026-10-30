@@ -16,7 +16,7 @@ const items = computed(() => props.options.map((o, i) => ({
   value: `${o.left_cut}-${o.right_cut}`,
   pair: [o.left_cut, o.right_cut] as [number, number],
   label: `回收 ${o.left_enzyme}(${o.left_cut}) × ${o.right_enzyme}(${o.right_cut})`
-    + ` · ${o.kept_bp} bp` + (o.leftover_cuts ? ` · ⚠ 骨架残留 ${o.leftover_cuts} 切点` : ' · 骨架完整'),
+    + ` · ${o.kept_bp} bp 片段`,
   recommended: i === 0,
 })))
 
@@ -36,7 +36,7 @@ const selected = computed({
   <div v-if="options.length > 1" class="cut-picker" data-testid="cut-pair-picker">
     <label class="cut-picker-label" for="cut-pair-select">回收片段</label>
     <select id="cut-pair-select" v-model="selected" class="cut-picker-select">
-      <option value="auto">自动（推荐：最外侧切点对，骨架完整）</option>
+      <option value="auto">自动（推荐：首位片段，骨架完整）</option>
       <option v-for="it in items" :key="it.value" :value="it.value">
         {{ it.label }}{{ it.recommended ? '（推荐）' : '' }}
       </option>

@@ -87,30 +87,33 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(wrapper.find('svg').exists()).toBe(false)
   })
 
-  it('多切点酶画出全部切点、全部带酶名，近距切点防重叠分行', () => {
-    // 2026-10-29 用户报告：SphI 4 个切点只画 1 个；修正后次要切点只标坐标，
-    // 用户再报告 2136/2208 数字重叠且没酶名——现在全部标「酶 (坐标)」并分行
+  it('多切点酶在分布图上全部标出、全部带酶名，近距切点防重叠分行', () => {
+    // 2026-10-29 用户报告：SphI 4 个切点只画 1 个；修正后全部标「酶 (坐标)」
+    // 并分行。2026-10-31 三图方案：全部切点在图②（分布图）标注，主图（构建
+    // 体）只画 junction——构建体上其它切点已随废片段消失。
     const wrapper = mount(RestrictionPreview, {
       props: { preview: fixture({
         sites: [
           { role: 'five', enzyme: 'EcoRI', position: 952, cut: 952, end: 957, junction: true },
           { role: 'three', enzyme: 'SphI', position: 1562, cut: 1562, end: 1567, junction: true },
-          { role: 'three', enzyme: 'SphI', position: 2136, cut: 2136, end: 2141 },
-          { role: 'three', enzyme: 'SphI', position: 2208, cut: 2208, end: 2213 },
-          { role: 'three', enzyme: 'SphI', position: 3003, cut: 3003, end: 3008 },
         ],
         gene_5prime_enzyme: 'EcoRI', gene_3prime_enzyme: 'SphI',
+        cut_marks: [
+          { enzyme: 'EcoRI', vector_cut: 952, in_excised: false, side: 'left' },
+          { enzyme: 'SphI', vector_cut: 1228, in_excised: true, side: 'excised' },
+          { enzyme: 'SphI', vector_cut: 2136, in_excised: true, side: 'excised' },
+          { enzyme: 'SphI', vector_cut: 2208, in_excised: true, side: 'excised' },
+          { enzyme: 'SphI', vector_cut: 3003, in_excised: false, side: 'right' },
+        ],
       }) },
     })
     const text = wrapper.text()
     expect(text).toContain('EcoRI (952)')
-    for (const cut of [1562, 2136, 2208, 3003]) {
+    for (const cut of [1228, 2136, 2208, 3003]) {
       expect(text).toContain(`SphI (${cut})`)
     }
-    // 每个切点都有酶名（4 个 SphI + 1 个 EcoRI = 5 个「酶 (」标签）
-    expect(text.match(/SphI \(/g)).toHaveLength(4)
-    expect(text.match(/EcoRI \(/g)).toHaveLength(1)
-    // 近距切点落在不同行（y 不同）：2136 与 2208 不再叠成一个数
+    expect(text.match(/SphI \(/g)!.length).toBeGreaterThanOrEqual(4)
+    // 近距切点分行（2136 与 2208 不同 y）
     const labels = wrapper.findAll('text').map((t) => ({
       y: t.attributes('y'), text: t.text(),
     })).filter((t) => t.text.includes('2136') || t.text.includes('2208'))
@@ -141,35 +144,41 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(wrapper.find('[data-testid="allow-backbone-cuts"]').exists()).toBe(false)
   })
 
-  it('多切点时显示片段选择器，选择项经 emit 回传切点对', async () => {
+  it('多切点时显示可回收片段带，点击带经 emit 回传补集切点对', async () => {
+    // 2026-10-31 三图方案：cut_options=完整消化的两端异酶带；点击带 = 回收
+    // 该带 = 补集切点对。回收主链(3711) → cutPair (952,2669)。
     const wrapper = mount(RestrictionPreview, {
       props: {
         preview: fixture({
           cut_options: [
             { left_enzyme: 'EcoRI', left_cut: 952, right_enzyme: 'SphI', right_cut: 2669,
-              removed_bp: 1717, kept_bp: 3711, leftover_cuts: 0 },
-            { left_enzyme: 'EcoRI', left_cut: 952, right_enzyme: 'SphI', right_cut: 1228,
-              removed_bp: 276, kept_bp: 5152, leftover_cuts: 3 },
+              removed_bp: 1717, kept_bp: 3711 },
+          ],
+          cut_marks: [
+            { enzyme: 'EcoRI', vector_cut: 952, in_excised: false, side: 'left' },
+            { enzyme: 'SphI', vector_cut: 2669, in_excised: false, side: 'right' },
           ],
         }),
         cutPair: null,
       },
     })
-    const picker = wrapper.find('[data-testid="cut-pair-picker"]')
-    expect(picker.exists()).toBe(true)
-    expect(wrapper.text()).toContain('骨架完整')
-    expect(wrapper.text()).toContain('骨架残留 3 切点')
-    await picker.find('select').setValue('952-1228')
-    expect(wrapper.emitted('update:cutPair')?.[0]).toEqual([[952, 1228]])
+    const band = wrapper.find('.rp-band')
+    expect(band.exists()).toBe(true)
+    expect(wrapper.text()).toContain('回收 3,711 bp')
+    await band.trigger('click')
+    expect(wrapper.emitted('update:cutPair')?.[0]).toEqual([[952, 2669]])
   })
 
-  it('单一切点组合（唯一位点酶对）不显示片段选择器', () => {
+  it('单条可回收带也显示片段热区（点击即选）', () => {
     const wrapper = mount(RestrictionPreview, {
       props: { preview: fixture({ cut_options: [
         { left_enzyme: 'NdeI', left_cut: 238, right_enzyme: 'XhoI', right_cut: 158,
-          removed_bp: 80, kept_bp: 5289, leftover_cuts: 0 },
+          removed_bp: 80, kept_bp: 5289 },
+      ], cut_marks: [
+        { enzyme: 'NdeI', vector_cut: 238, in_excised: false, side: 'left' },
+        { enzyme: 'XhoI', vector_cut: 158, in_excised: false, side: 'right' },
       ] }) },
     })
-    expect(wrapper.find('[data-testid="cut-pair-picker"]').exists()).toBe(false)
+    expect(wrapper.find('.rp-band').exists()).toBe(true)
   })
 })
