@@ -216,10 +216,12 @@ const vectorLength = computed(() => props.preview?.vector.length ?? 1)
 
 const cutMarks = computed(() => props.preview?.cut_marks ?? [])
 
-/** 当前所选片段（与下拉框同源：cut_pair，未选时取首个候选=自动推荐） */
-const activePair = computed(() => {
+/** 当前所选片段：用户选择（cutPair）优先，未选时取首个候选=自动推荐。
+ *  直接读用户的下拉选择，不等预览请求往返——切片段示意条立刻动 */
+const activePair = computed<[number, number] | null>(() => {
   const p = props.preview
   if (!p) return null
+  if (props.cutPair) return props.cutPair
   if (p.cut_pair) return p.cut_pair
   const first = p.cut_options?.[0]
   return first ? [first.left_cut, first.right_cut] : null
