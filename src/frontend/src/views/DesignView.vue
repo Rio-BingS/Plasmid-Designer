@@ -77,6 +77,11 @@ const previewError = ref('')
 const allowBackboneCuts = ref(false)  // 多切点知情确认（防抖 watch 里重置）
 const selectedCutPair = ref<[number, number] | null>(null)  // 回收片段（null=自动推荐）
 let previewTimer: ReturnType<typeof setTimeout> | null = null
+// 250ms 防抖取预览，别每次按键都打后端
+const schedulePreview = () => {
+  clearTimeout(previewTimer!)
+  previewTimer = setTimeout(() => { previewTimer = null; fetchPreview() }, 250)
+}
 
 /** 基因长度估计：氨基酸按 aa×3，DNA 按碱基数（提交后以优化结果为准） */
 const estimatedInsertLength = computed(() => {
@@ -107,32 +112,20 @@ const previewApplicable = computed(() => {
 
 async function fetchPreview() {
   if (!previewApplicable.value) {
-    preview.value = null
-    previewError.value = ''
+    preview.value = null; previewError.value = ''
     return
   }
-  previewLoading.value = true
-  previewError.value = ''
+  previewLoading.value = true; previewError.value = ''
   const isGibson = cloningMethod.value === 'gibson' && gibsonLinearization.value === 'double_digest'
   const isArms = cloningMethod.value === 'gibson' && gibsonLinearization.value === 'custom_arms'
   try {
     preview.value = await getRestrictionPreview({
       ...(selectedCutPair.value && { cut_pair: selectedCutPair.value }),
       ...(isArms
-        ? {
-            homology_arm_5: customArm5.value.trim(),
-            homology_arm_3: customArm3.value.trim(),
-          }
+        ? { homology_arm_5: customArm5.value.trim(), homology_arm_3: customArm3.value.trim() }
         : { enzymes: [enzyme5.value, enzyme3.value] }),
       ...(adhocVector.value
-        ? { vector: {
-            id: adhocVector.value.id,
-            name: adhocVector.value.name,
-            sequence: adhocVector.value.sequence,
-            topology: adhocVector.value.topology,
-            features: adhocVector.value.features,
-            source: adhocVector.value.source,
-          } }
+        ? { vector: { ...adhocVector.value } }  // 上传载体原样内联
         : { vector_id: vectorId.value }),
       insert_length: estimatedInsertLength.value,
       direction: insertDirection.value,
@@ -140,24 +133,28 @@ async function fetchPreview() {
       ...(isGibson ? { keep_restriction_sites: keepRestrictionSites.value } : {}),
     })
   } catch (e: any) {
-    preview.value = null
-    previewError.value = formatApiError(e, '预览失败，不影响提交')
+    preview.value = null; previewError.value = formatApiError(e, '预览失败，不影响提交')
   } finally {
     previewLoading.value = false
   }
 }
 
-// 改酶/换载体/改方向/改序列长度都会让图变——250ms 防抖，别每次按键都打后端
-watch(
-  [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
-   insertDirection, gibsonLinearization, keepRestrictionSites, customArm5, customArm3],
+// 改酶/换载体/改方向/改序列长度都会让图变；重置输入时顺手清掉片段选择
+// （标志位防止这次清空又触发下面的片段监听）
+let pairResetByInputs = false
+watch([cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
+       insertDirection, gibsonLinearization, keepRestrictionSites, customArm5, customArm3],
   () => {
     allowBackboneCuts.value = false   // 输入变了，旧的知情确认/片段选择不再成立
+    pairResetByInputs = selectedCutPair.value !== null
     selectedCutPair.value = null
-    if (previewTimer) clearTimeout(previewTimer)
-    previewTimer = setTimeout(() => { previewTimer = null; fetchPreview() }, 250)
-  },
-)
+    schedulePreview()
+  })
+// 选了别的回收片段 = 切除几何变了，预览必须重算（图/风险提示随片段变）
+watch(selectedCutPair, () => {
+  if (pairResetByInputs) { pairResetByInputs = false; return }
+  schedulePreview()
+})
 // Gibson：定位同源重组位置的酶切位点（缺省 MCS 起点）
 const gibsonSite = ref('')
 // 全基因合成：需从优化序列排除的限制酶（多选）
