@@ -437,14 +437,15 @@ def backbone_recut_warnings(
     跨原点）。边界切点本身不算：粘端连接后位点序列在构建体两端复原
     （plan 的 head/tail 补回残留）。
     """
+    from core.construct_assembly import _excised_between
+
     left, right = left_cut, right_cut
-    excised = (lambda c: left < c <= right) if left < right \
-        else (lambda c: c > left or c <= right)
     out: List[str] = []
     for enzyme in dict.fromkeys(e for e in enzymes if e):
         cuts = sorted({s["cut_fwd"] for s in find_enzyme_sites(
             backbone, [enzyme], circular=circular)})
-        kept = [c for c in cuts if c not in (left, right) and not excised(c)]
+        kept = [c for c in cuts
+                if c not in (left, right) and not _excised_between(c, left, right)]
         if kept:
             other = next((e for e in enzymes if e and e != enzyme), None)
             out.append(
