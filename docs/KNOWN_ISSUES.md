@@ -592,7 +592,7 @@ custom_arms、质粒命名）做的一轮专注逻辑审查，全部疑点先用
 | `export_design` / 设计测序分析的 `_load` 在事件循环里同步走 SQLite/PG | 移交 `run_in_threadpool`（2.1 口径延伸） | 本批次 |
 | 前端：环形图空序列（L=0）点击取模得 NaN 进入 caret；Addgene 搜索/元数据迟到旧响应覆盖新结果；批量进度页重复 `startPolling` 叠加 interval；localStorage 不可用（隐私模式）读模式键即白屏 | NaN 加 `L>0` 守卫；Addgene 加请求代次（同 SnapGene `sgIndexGen` 口径）；`startPolling` 先 `stopPolling()`；localStorage 读写收敛到 `utils/batchHistory.storageGet/storageSet` | 本批次 |
 | 死代码堆积：Pinia store `design`/`vectors`、`exportAllFormats`、rate-limit API、Ensembl lookup、图谱 `xToPos`/`PRIMER_FOCUS`、config 死键 `UPLOAD_DIR`/`OUTPUT_DIR` 等 | 全量删除，净 −180 行；引用零残留（grep 复核） | 本批次 |
-| 部署配置：compose 前端健康检查用 curl（nginx:alpine 无 curl → 容器永远 unhealthy）；`.gitignore` 缺 SQLite WAL/SHM 与 `data/backups/`；README 端口绑定与 `FRONTEND_BIND` 默认值漂移；deploy.sh mkdir 不存在的 ssl 目录 | 健康检查改 busybox wget；忽略规则补齐；文档对齐；mkdir 修正 | 本批次 |
+| 部署配置：`.gitignore` 缺 SQLite WAL/SHM 与 `data/backups/`；README 端口绑定与 `FRONTEND_BIND` 默认值漂移；deploy.sh mkdir 不存在的 ssl 目录 | 忽略规则补齐；文档对齐；mkdir 修正。**同批的 compose 健康检查 curl→wget 是误修**（「nginx:alpine 无 curl」前提错误，真机 wget 因 ::1 解析 + 301 反而 unhealthy），v2.34.1 已回滚 curl | 本批次 |
 
 **验证**：后端全量 1823 passed / 43 skipped；前端 vitest 661 passed、`vue-tsc` 0 error、
 build 通过、`npm audit --omit=dev` 0 漏洞；尺寸预算门禁与文档同步门禁通过。
