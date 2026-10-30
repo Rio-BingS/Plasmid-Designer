@@ -204,23 +204,24 @@ def cut_marks_for_preview(
     pair: Optional[Tuple[int, int]],
     plan: Optional["object"] = None, *, circular: bool = True,
 ) -> List[Dict]:
+    """预览图的候选切点标记（全部用**原载体**坐标，与 cut_options 的切点
+    数字同一口径——成品构建体图在原理上画不出正在选择的废片段）。
+
+    in_excised = 位点落在被切除的废片段里（该片段胶回收后不存在）；
+    side 描述位点相对所选片段的位置，前端据此在原载体示意条上摆放标签。
+    """
     exc_l = pair[0] if pair else (getattr(plan, "left_cut", None) if plan else None)
     exc_r = pair[1] if pair else (getattr(plan, "right_cut", None) if plan else None)
-    removed = getattr(plan, "removed_bp", 0) if plan else 0
-    """预览图的候选切点标记：两把酶在原载体上的全部位点。
-
-    in_excised = 位点落在被切除的废片段里（骨架上不存在，前端画最淡虚线）；
-    construct_cut = 映射到成品构建体上的坐标（切除区间右侧前移 removed；
-    跨原点切除时 apply_plan 会旋转坐标系、映射不准，返回 None 让前端跳过）。
-    """
     out: List[Dict] = []
     for e in dict.fromkeys(e for e in (enzyme_5, enzyme_3) if e):
         for hit in physical_sites(backbone, e, circular=circular):
             c = int(hit["cut_fwd"])
             in_exc = (exc_l is not None and c not in (exc_l, exc_r)
                       and _excised_between(c, exc_l, exc_r))
-            cc = c if (exc_l is None or c <= exc_l) else max(1, c - removed)
+            side = ("excised" if in_exc
+                    else "left" if (exc_l is not None and _forward_dist(c, exc_l, len(backbone), circular)
+                                    < _forward_dist(exc_r, c, len(backbone), circular))
+                    else "right")
             out.append({"enzyme": e, "vector_cut": c,
-                        "construct_cut": None if (exc_l and exc_l > exc_r) else cc,
-                        "in_excised": in_exc})
+                        "in_excised": in_exc, "side": side})
     return out
