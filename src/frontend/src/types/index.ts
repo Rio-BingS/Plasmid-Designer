@@ -82,6 +82,9 @@ export interface DesignRequest {
   exclude_enzymes?: string[]
   /** 双酶切插入方向：默认 auto（按载体启动子/RBS 判定） */
   insert_direction?: InsertDirection
+  /** 多切点酶切知情确认：接受所选酶在保留骨架上的额外切点（预览有
+   *  backbone_cut_risk 警告时，未勾选将拒绝按位点建模、回退 MCS 替换） */
+  allow_backbone_cuts?: boolean
   /** NdeI/NcoI 等位点自带起始密码子时自动去除插入序列开头的冗余 ATG（默认 true） */
   trim_redundant_start?: boolean
   /** Gibson 载体线性化方式：双酶切（默认）/ 单位点 / 自定义同源臂 */
@@ -145,6 +148,8 @@ export interface RestrictionPreview {
   /** 两把酶在成品构建体上的切点数（含插入片段/接头自带的位点）：
    * 多切点酶在图谱上会有多个切点，选择时就要看见 */
   enzyme_counts: Record<string, number>
+  /** true = 所选酶在保留骨架上还有切点（多切点酶切风险，见 warnings） */
+  backbone_cut_risk: boolean
   evidence: RestrictionPreviewEvidence[]
   features: RestrictionPreviewFeature[]
   junctions: { five: string; three: string }

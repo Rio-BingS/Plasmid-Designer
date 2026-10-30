@@ -117,4 +117,27 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(labels).toHaveLength(2)
     expect(labels[0].y).not.toBe(labels[1].y)
   })
+
+  it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
+    const wrapper = mount(RestrictionPreview, {
+      props: {
+        preview: fixture({
+          backbone_cut_risk: true,
+          warnings: ['SphI 在保留骨架上还有 3 个切点（1802、1874、2669）：酶切会把骨架切成 4 段'],
+        }),
+        allowBackboneCuts: false,
+      },
+    })
+    expect(wrapper.text()).toContain('保留骨架上还有 3 个切点')
+    expect(wrapper.text()).toContain('有意使用多切点酶切方案')
+    const box = wrapper.find('[data-testid="allow-backbone-cuts"]')
+    expect(box.exists()).toBe(true)
+    await box.setValue(true)
+    expect(wrapper.emitted('update:allowBackboneCuts')?.[0]).toEqual([true])
+  })
+
+  it('无骨架重切风险时不显示确认区', () => {
+    const wrapper = mount(RestrictionPreview, { props: { preview: fixture() } })
+    expect(wrapper.find('[data-testid="allow-backbone-cuts"]').exists()).toBe(false)
+  })
 })

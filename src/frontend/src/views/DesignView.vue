@@ -76,6 +76,11 @@ const preview = ref<RestrictionPreview | null>(null)
 const enzymeCountBadges = computed<Record<string, number>>(() => preview.value?.enzyme_counts ?? {})
 const previewLoading = ref(false)
 const previewError = ref('')
+// 多切点酶切知情确认：预览提示所选酶会把保留骨架切碎（backbone_cut_risk），
+// 用户勾选后请求带 allow_backbone_cuts，按位点多切点建模（决定权在用户）；
+// 换酶/换载体即失效重选
+const allowBackboneCuts = ref(false)
+watch(preview, () => { allowBackboneCuts.value = false })
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 基因长度估计：氨基酸按 aa×3，DNA 按碱基数（提交后以优化结果为准） */
@@ -469,6 +474,9 @@ async function handleSubmit() {
       request.enzyme_3 = enzyme3.value
       request.insert_direction = insertDirection.value
       request.trim_redundant_start = autoTrimStartCodon.value
+      if (preview.value?.backbone_cut_risk && allowBackboneCuts.value) {
+        request.allow_backbone_cuts = true
+      }
     }
     request.vector_name_prefix = vectorNamePrefix.value
     if (upstreamFlank.value.trim()) request.upstream_flank = upstreamFlank.value.trim()
@@ -803,6 +811,7 @@ function loadExample() {
               插入片段以同源臂与载体末端连接。方向由载体表达盒自动判定。
             </p>
             <RestrictionPreviewCard
+              v-model:allow-backbone-cuts="allowBackboneCuts"
               :preview="preview"
               :loading="previewLoading"
               :error="previewError"
@@ -855,6 +864,7 @@ function loadExample() {
               哪条链装配——定位失败或不唯一会直接给出原因，不必提交后再失败。
             </p>
             <RestrictionPreviewCard
+              v-model:allow-backbone-cuts="allowBackboneCuts"
               :preview="preview"
               :loading="previewLoading"
               :error="previewError"
