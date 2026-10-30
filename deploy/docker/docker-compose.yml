@@ -136,9 +136,10 @@ services:
         # 固定地址：后端 TRUSTED_PROXIES 只信这一个对端
         ipv4_address: ${FRONTEND_IPV4:-172.28.0.10}
     healthcheck:
-      # nginx:alpine 无 curl（官方镜像运行时只装 envsubst/tzdata/openssl），
-      # 用 busybox 自带的 wget——curl 版本会让本容器永远 unhealthy
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/"]
+      # 运行时镜像实际自带 curl（v2.34.0 曾改成 busybox wget：真机 unhealthy——
+      # wget 对 localhost 优先解析 ::1 而 nginx 仅听 IPv4 会 Connection refused，
+      # 且对 301 重定向退出码非 0）；curl -f 对 301 视为成功，与旧版行为一致
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
       interval: 30s
       timeout: 10s
       retries: 3

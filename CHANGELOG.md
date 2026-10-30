@@ -6,6 +6,16 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.34.1] - 2026-10-29
+
+### 修复
+- **回滚 v2.34.0 的前端健康检查改动**：v2.34.0 把 compose 健康检查从 curl 改成
+  busybox wget，理由（「nginx:alpine 无 curl」）经真机验证不成立——运行时镜像
+  实际自带 curl，原 curl 版检查一直 healthy；wget 版反而 unhealthy（busybox wget
+  对 `localhost` 优先解析 `::1`，而 nginx 仅监听 IPv4，Connection refused；即便
+  连通，对 301 重定向退出码也非 0）。改回 `curl -f`。教训：审计修复涉及运行时
+  环境假设时必须先在目标环境实测（`docker exec … which curl` 一条命令即可证伪）。
+
 ## [2.34.0] - 2026-10-29
 
 ### 变更
@@ -1735,6 +1745,7 @@
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
 [Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.34.0...HEAD
+[2.34.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.34.0...v2.34.1
 [2.34.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.6...v2.34.0
 [2.33.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.5...v2.33.6
 [2.33.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...v2.33.5
