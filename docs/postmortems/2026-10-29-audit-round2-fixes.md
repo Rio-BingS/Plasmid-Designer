@@ -57,9 +57,13 @@
    实现（filename.py、storageGet、`dict.get()`）并加防回潮测试。
 2. **「静默降级」必须留痕**：`except: return None` 三连（sequencing_store 3 处）
    让 404 有了第二种成因，排障时无从区分；降级可以，warning 不可省。
-3. **部署镜像里的默认工具不能假设**：nginx:alpine 没有 curl，健康检查配置在
-   「换了基础镜像」时就是死配置——健康检查失败会伪装成「服务不可用」，比没有
-   健康检查更误导。
+3. **运行时环境假设必须真机实测再动手**（v2.34.1 补记）：把前端健康检查从 curl
+   改成 wget 的依据（「nginx:alpine 无 curl」）在部署时被真机证伪——本项目镜像
+   运行时实际自带 curl，原检查一直 healthy；wget 版反而因 `localhost` 优先解析
+   `::1`（nginx 仅听 IPv4）Connection refused 而 unhealthy，即使连通对 301 的
+   退出码也非 0。`docker exec <容器> which curl` 一条命令就能避免这次误修；
+   涉及镜像内工具/网络行为（DNS 解析顺序、重定向语义）的判断，必须在目标容器里
+   验证而不是引用官方镜像的一般印象。
 4. **本地门禁全绿才叫绿**：本批次收尾按 [ci-red-chain 教训](2026-10-26-ci-red-chain-and-backup.md)
    把 pytest / vitest / vue-tsc / build / npm audit / 尺寸预算 / 文档同步七道
    全部本地预演后才提交。
