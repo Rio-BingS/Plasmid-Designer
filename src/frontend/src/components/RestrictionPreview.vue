@@ -284,11 +284,6 @@ const markLayout = computed(() => {
     <template v-if="preview && !error">
       <p class="rp-summary" :class="{ 'rp-summary-minus': strand === -1 }">{{ summary }}</p>
 
-      <CutPairPicker
-        :options="preview.cut_options ?? []"
-        v-model="localCutPair"
-      />
-
       <div v-if="preview.backbone_cut_risk" class="rp-recut" role="alert">
         <p v-for="w in preview.warnings.filter((x) => x.includes('保留骨架'))" :key="w" class="rp-warn rp-recut-text">⚠️ {{ w }}</p>
         <label class="rp-recut-ack">
@@ -382,6 +377,13 @@ const markLayout = computed(() => {
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
+
+      <!-- 回收片段选择放在图下方：原生 select 展开向下弹，放在图上方会
+           把预览图整个盖住（实测反馈），放在下方则弹开部分只压住 meta 文字 -->
+      <CutPairPicker
+        :options="preview.cut_options ?? []"
+        v-model="localCutPair"
+      />
 
       <p class="rp-meta">
         切除 {{ preview.removed_bp }} bp 载体片段 · 构建体 {{ preview.construct_length.toLocaleString() }} bp
