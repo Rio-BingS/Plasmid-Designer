@@ -6,7 +6,7 @@
  * 位点、启动子的位置与提交后拿到的结果一致；比例按真实 bp 换算。
  */
 import { computed } from 'vue'
-import type { RestrictionPreview, RestrictionPreviewSite } from '@/types'
+import type { RestrictionPreview } from '@/types'
 
 const props = defineProps<{
   preview: RestrictionPreview | null
@@ -48,11 +48,30 @@ function toX(pos: number): number {
 
 const markerTypes = ['promoter', 'terminator', 'rbs', 'regulatory']
 
-/** 该切点所属酶在成品构建体上的切点数（=1 时唯一，标签可写全「酶 (pos)」） */
-function countSameEnzyme(site: RestrictionPreviewSite): number {
+/** 切点标签防重叠：全部切点都标「酶 (坐标)」，按 x 排序贪心分行，最多两行
+ *  （近距切点如 2136/2208 单行会叠成 "230872"，实测不可读）；超两行的极端
+ *  密集场景挤最后一行，保底不省名 */
+const SITE_LABEL_MAX_ROWS = 2
+const SITE_LABEL_Y = [20, 9]
+const siteLabelLayout = computed(() => {
   const p = props.preview
-  return p ? p.sites.filter((s) => s.enzyme === site.enzyme).length : 1
-}
+  if (!p) return []
+  const items = p.sites.map((site) => {
+    const text = `${site.enzyme} (${site.cut})`
+    return { site, x: toX(site.cut), text, major: !!site.junction, width: text.length * 6.2 + 8 }
+  }).sort((a, b) => a.x - b.x)
+  const rowEnds: number[] = []
+  return items.map((it) => {
+    let row = rowEnds.findIndex((end) => it.x - it.width / 2 > end)
+    if (row === -1) {
+      row = rowEnds.length < SITE_LABEL_MAX_ROWS
+        ? rowEnds.push(it.x + it.width / 2) - 1
+        : SITE_LABEL_MAX_ROWS - 1
+    }
+    rowEnds[row] = it.x + it.width / 2
+    return { ...it, y: SITE_LABEL_Y[row] }
+  })
+})
 
 const markerFeatures = computed(() => {
   const p = props.preview
@@ -188,20 +207,16 @@ const rulerTicks = computed(() => {
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y + 4" :y2="BACKBONE_Y + 4"
               stroke="#cbd5e0" stroke-width="1" />
 
-        <!-- 切点：竖线 + 酶名/坐标。多切点酶全部画出；junction（紧邻插入
-             边界、决定末端的那一个）加粗，其余细线——都参与切割，权重不同 -->
-        <g v-for="(site, i) in preview.sites"
-           :key="`${site.role}-${site.enzyme}-${site.cut}-${i}`">
-          <line :x1="toX(site.cut)" :x2="toX(site.cut)" :y1="30" :y2="BACKBONE_Y - 2"
-                :stroke="site.junction ? '#2d3748' : '#a0aec0'"
-                :stroke-width="site.junction ? 1.5 : 1" />
-          <text v-if="site.junction || countSameEnzyme(site) === 1"
-                :x="toX(site.cut)" y="20" class="rp-site" text-anchor="middle">
-            {{ site.enzyme }} ({{ site.cut }})
-          </text>
-          <text v-else :x="toX(site.cut)" y="20" class="rp-site rp-site-minor"
-                text-anchor="middle">
-            {{ site.cut }}
+        <!-- 切点：竖线 + 酶名/坐标。多切点酶全部画出、全部带酶名（防重叠
+             分行）；junction（紧邻插入边界、决定末端的那一个）加粗强调 -->
+        <g v-for="(item, i) in siteLabelLayout"
+           :key="`${item.site.role}-${item.site.enzyme}-${item.site.cut}-${i}`">
+          <line :x1="item.x" :x2="item.x" y1="30" :y2="BACKBONE_Y - 2"
+                :stroke="item.major ? '#2d3748' : '#a0aec0'"
+                :stroke-width="item.major ? 1.5 : 1" />
+          <text :x="item.x" :y="item.y" class="rp-site"
+                :class="{ 'rp-site-minor': !item.major }" text-anchor="middle">
+            {{ item.text }}
           </text>
         </g>
 
