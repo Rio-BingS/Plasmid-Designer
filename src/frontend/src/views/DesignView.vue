@@ -67,20 +67,14 @@ const keepRestrictionSites = ref(true)
 // 自定义同源臂（custom_arms）：两条臂按同一方向粘贴，工具自动判取向
 const customArm5 = ref('')
 const customArm3 = ref('')
-// 质粒命名：序列名（默认）或加载体名前缀
+// 质粒命名：序列名（默认）或加载体名前缀；预览 = 占位基因跑真实组装画成品构建体
 const vectorNamePrefix = ref(false)
-// 双酶切实时预览：后端用占位基因跑真实组装，画的是成品构建体
 const preview = ref<RestrictionPreview | null>(null)
-/** 酶在成品构建体上的切点数（预览响应带）：多切点酶在图谱上会有多个
- * 切点（如 pcDNA3.1 的 NcoI 4 个），输入时就看见，别等图谱猜 */
+/** 酶在成品构建体上的切点数（预览响应带）：多切点酶输入时就看见，别等图谱猜 */
 const enzymeCountBadges = computed<Record<string, number>>(() => preview.value?.enzyme_counts ?? {})
 const previewLoading = ref(false)
 const previewError = ref('')
-// 多切点酶切知情确认：预览提示所选酶会把保留骨架切碎（backbone_cut_risk），
-// 用户勾选后请求带 allow_backbone_cuts，按位点多切点建模（决定权在用户）；
-// 换酶/换载体即失效重选
-const allowBackboneCuts = ref(false)
-watch(preview, () => { allowBackboneCuts.value = false })
+const allowBackboneCuts = ref(false)  // 多切点知情确认（防抖 watch 里重置）
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 基因长度估计：氨基酸按 aa×3，DNA 按碱基数（提交后以优化结果为准） */
@@ -156,11 +150,9 @@ watch(
   [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
    insertDirection, gibsonLinearization, keepRestrictionSites, customArm5, customArm3],
   () => {
+    allowBackboneCuts.value = false   // 输入变了，旧的知情确认不再成立
     if (previewTimer) clearTimeout(previewTimer)
-    previewTimer = setTimeout(() => {
-      previewTimer = null
-      fetchPreview()
-    }, 250)
+    previewTimer = setTimeout(() => { previewTimer = null; fetchPreview() }, 250)
   },
 )
 // Gibson：定位同源重组位置的酶切位点（缺省 MCS 起点）
@@ -474,9 +466,7 @@ async function handleSubmit() {
       request.enzyme_3 = enzyme3.value
       request.insert_direction = insertDirection.value
       request.trim_redundant_start = autoTrimStartCodon.value
-      if (preview.value?.backbone_cut_risk && allowBackboneCuts.value) {
-        request.allow_backbone_cuts = true
-      }
+      if (preview.value?.backbone_cut_risk && allowBackboneCuts.value) request.allow_backbone_cuts = true
     }
     request.vector_name_prefix = vectorNamePrefix.value
     if (upstreamFlank.value.trim()) request.upstream_flank = upstreamFlank.value.trim()
