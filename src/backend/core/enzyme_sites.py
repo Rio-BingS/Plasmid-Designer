@@ -421,15 +421,17 @@ def type_iis_enzymes() -> Tuple[str, ...]:
     return tuple(n for n in names if is_type_iis(get_enzyme(n)))
 
 
-def reject_extra_backbone_cuts(
+def backbone_recut_warnings(
     backbone: str, left_cut: int, right_cut: int, enzymes: Sequence[str],
     *, circular: bool = True,
-) -> None:
-    """双酶切可行性校验：选中的酶在**保留骨架**上还有切点时抛 ValueError。
+) -> List[str]:
+    """双酶切可行性警告：选中的酶在**保留骨架**上还有切点时给出说明。
 
     真实酶切不认「规划挑中的那一对」——酶在每处识别序列都切割，骨架上其余
-    同酶位点（如 pcDNA3.1 的 SphI 选 1/4）会把保留骨架再切成几段，连接产物
-    是碎片拼盘，预测的构建体得不到。
+    同酶位点（如 pcDNA3.1 的 SphI 选 1/4）会把保留骨架再切成几段。多切点
+    酶切在真实实验里有合理场景（知情接受骨架重切、或全部同酶位点都落在待
+    切除区间内），所以这里只产出警告文本、不替用户做决定；是否继续由用户
+    通过设计请求的 allow_backbone_cuts 知情确认。
 
     保留骨架 = 被切除区间 (left_cut, right_cut] 之外的部分（right < left
     跨原点）。边界切点本身不算：粘端连接后位点序列在构建体两端复原
@@ -438,15 +440,19 @@ def reject_extra_backbone_cuts(
     left, right = left_cut, right_cut
     excised = (lambda c: left < c <= right) if left < right \
         else (lambda c: c > left or c <= right)
+    out: List[str] = []
     for enzyme in dict.fromkeys(e for e in enzymes if e):
         cuts = sorted({s["cut_fwd"] for s in find_enzyme_sites(
             backbone, [enzyme], circular=circular)})
         kept = [c for c in cuts if c not in (left, right) and not excised(c)]
         if kept:
             other = next((e for e in enzymes if e and e != enzyme), None)
-            raise ValueError(
+            out.append(
                 f"{enzyme} 在保留骨架上还有 {len(kept)} 个切点"
                 f"（{'、'.join(map(str, kept))}）：酶切会把骨架切成 "
-                f"{len(kept) + 1} 段，得不到完整构建体。"
-                + (f"可换掉 {enzyme}（保留 {other}），改用骨架上只有唯一位点的酶对。"
-                   if other else "请改用骨架上只有唯一位点的酶对。"))
+                f"{len(kept) + 1} 段，预测的构建体只有在这些片段恰好不参与"
+                "连接的前提下才成立。"
+                + (f"若非有意利用多切点，可换掉 {enzyme}（保留 {other}），"
+                   "改用骨架上只有唯一位点的酶对。" if other else
+                   "若非有意利用多切点，请改用骨架上只有唯一位点的酶对。"))
+    return out

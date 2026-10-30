@@ -12,7 +12,11 @@ const props = defineProps<{
   preview: RestrictionPreview | null
   loading?: boolean
   error?: string
+  /** 多切点酶切知情确认（v-model）：骨架重切风险由用户决定是否接受 */
+  allowBackboneCuts?: boolean
 }>()
+
+const emit = defineEmits<{ 'update:allowBackboneCuts': [boolean] }>()
 
 const VB_W = 1000
 const VB_H = 176
@@ -200,6 +204,19 @@ const rulerTicks = computed(() => {
     <template v-if="preview && !error">
       <p class="rp-summary" :class="{ 'rp-summary-minus': strand === -1 }">{{ summary }}</p>
 
+      <div v-if="preview.backbone_cut_risk" class="rp-recut" role="alert">
+        <p v-for="w in preview.warnings.filter((x) => x.includes('保留骨架'))" :key="w" class="rp-warn rp-recut-text">⚠️ {{ w }}</p>
+        <label class="rp-recut-ack">
+          <input
+            type="checkbox"
+            :checked="allowBackboneCuts"
+            data-testid="allow-backbone-cuts"
+            @change="emit('update:allowBackboneCuts', ($event.target as HTMLInputElement).checked)"
+          />
+          我了解该酶会把载体骨架切成多段，有意使用多切点酶切方案
+        </label>
+      </div>
+
       <svg class="rp-svg" :viewBox="`0 0 ${VB_W} ${VB_H}`" role="img" :aria-label="summary">
         <!-- 载体骨架 -->
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y" :y2="BACKBONE_Y"
@@ -336,6 +353,25 @@ const rulerTicks = computed(() => {
   margin: 0.15rem 0 0;
   font-size: 0.78rem;
   color: #4a5568;
+}
+
+.rp-recut {
+  margin: 0.3rem 0 0.1rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #f6ad55;
+  border-radius: 0.375rem;
+  background: #fffaf0;
+}
+
+.rp-recut-ack {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: #7b341e;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .rp-evidence {
