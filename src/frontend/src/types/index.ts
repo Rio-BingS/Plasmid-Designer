@@ -156,8 +156,9 @@ export interface RestrictionPreview {
   cut_options: CutPairOption[]
   /** 用户显式选择的切点对；null = 自动（推荐 = 首个 cut_option） */
   cut_pair: [number, number] | null
-  /** 两把酶在原载体上的全部切点（含被切进废片段的）：预览图画淡色虚线用 */
-  cut_marks: { enzyme: string; vector_cut: number; construct_cut: number | null; in_excised: boolean }[]
+  /** 两把酶在原载体上的全部切点（原载体坐标，与 cut_options 同口径）：
+   * 原载体示意条画候选位点用；in_excised=落在废片段里 */
+  cut_marks: { enzyme: string; vector_cut: number; in_excised: boolean; side: 'left' | 'right' | 'excised' }[]
   evidence: RestrictionPreviewEvidence[]
   features: RestrictionPreviewFeature[]
   junctions: { five: string; three: string }

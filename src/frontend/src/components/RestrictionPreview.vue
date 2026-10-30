@@ -206,6 +206,72 @@ const rulerTicks = computed(() => {
   if (!w) return []
   return [w.start, w.end]
 })
+
+// ---- 原载体示意条：全部用原载体坐标（cut_marks / cut_options 同口径） ----
+const VEC_H = 74
+const VEC_Y = 40
+const VEC_X1 = 90
+const VEC_X2 = VB_W - 60
+const vectorLength = computed(() => props.preview?.vector.length ?? 1)
+
+const cutMarks = computed(() => props.preview?.cut_marks ?? [])
+
+/** 当前所选片段（与下拉框同源：cut_pair，未选时取首个候选=自动推荐） */
+const activePair = computed(() => {
+  const p = props.preview
+  if (!p) return null
+  if (p.cut_pair) return p.cut_pair
+  const first = p.cut_options?.[0]
+  return first ? [first.left_cut, first.right_cut] : null
+})
+
+const vecX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
+
+const excisedBp = computed(() => {
+  const pair = activePair.value
+  if (!pair || vectorLength.value <= 1) return 0
+  const d = pair[1] - pair[0]
+  return d > 0 ? d : d + vectorLength.value
+})
+
+/** 保留骨架在切点两侧各是一段；不跨原点时左段为空数组 */
+const keptSegments = computed(() => {
+  const pair = activePair.value
+  const L = vectorLength.value
+  if (!pair || L <= 1) return []
+  const [l, r] = pair
+  if (l < r) return [{ from: r, to: L, label: `${L - r} bp` }]
+  return [{ from: r, to: l, label: `${l - r} bp` }]
+})
+
+const segLeft = computed(() => {
+  const seg = keptSegments.value[0]
+  if (!seg) return null
+  return { x1: vecX(seg.from), x2: vecX(seg.to), label: seg.label }
+})
+
+/** 废片段区间（原载体上 (l, r]，跨原点时拆两段只画主段） */
+const segExcised = computed(() => {
+  const pair = activePair.value
+  if (!pair || vectorLength.value <= 1) return null
+  const [l, r] = pair
+  return l < r ? { x1: vecX(l), x2: vecX(r) } : { x1: vecX(l), x2: VEC_X2 }
+})
+
+/** 候选位点标签防重叠：按 x 排序贪心分行（多切点酶近距位点会叠） */
+const markLayout = computed(() => {
+  const items = cutMarks.value.map((m) => {
+    const text = `${m.enzyme} (${m.vector_cut})`
+    return { m, x: vecX(m.vector_cut), text, width: text.length * 6.2 + 6 }
+  }).sort((a, b) => a.x - b.x)
+  const rows = [{ end: -1, y: VEC_Y - 20 }, { end: -1, y: VEC_Y + 26 }]
+  return items.map((it) => {
+    let row = rows.findIndex((r) => it.x - it.width / 2 > r.end)
+    if (row === -1) row = 0
+    rows[row].end = it.x + it.width / 2
+    return { ...it, y: rows[row].y, in_excised: it.m.in_excised }
+  })
+})
 </script>
 
 <template>
@@ -240,15 +306,6 @@ const rulerTicks = computed(() => {
               stroke="#4a5568" stroke-width="2" />
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y + 4" :y2="BACKBONE_Y + 4"
               stroke="#cbd5e0" stroke-width="1" />
-
-        <!-- 候选切点（含被切进废片段的）：淡色细虚线 + 小坐标，用户选片段
-             时能看到每个候选位点的位置；废片段内的更淡（骨架上不存在） -->
-        <g v-for="(m, i) in (preview.cut_marks ?? [])" :key="`mark-${i}`">
-          <line v-if="m.construct_cut" :x1="toX(m.construct_cut)" :x2="toX(m.construct_cut)"
-                y1="34" :y2="BACKBONE_Y - 2"
-                :stroke="m.in_excised ? '#e2c4a0' : '#c3a6ff'"
-                stroke-width="1" :stroke-dasharray="m.in_excised ? '2,3' : '4,3'" />
-        </g>
 
         <!-- 切点：竖线 + 酶名/坐标。junction（决定末端的那一个）加粗强调 -->
         <g v-for="(item, i) in siteLabelLayout"
@@ -301,6 +358,27 @@ const rulerTicks = computed(() => {
           <text :x="PAD" y="164" class="rp-ruler" text-anchor="start">{{ rulerTicks[0] }}</text>
           <text :x="VB_W - PAD" y="164" class="rp-ruler" text-anchor="end">{{ rulerTicks[1] }}</text>
         </g>
+      </svg>
+
+      <!-- 原载体示意条（原载体坐标，与「回收片段」下拉同一套数字）：回收
+           片段 = 绿色线，被切除的废片段 = 橙色区间（内部候选位点可见），
+           两把酶的全部候选位点标「酶 (坐标)」。构建体主图是切完之后的图，
+           原理上画不出正在选择的废片段，所以这一条单独用原载体坐标画 -->
+      <svg v-if="cutMarks.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
+           role="img" aria-label="原载体候选切点示意">
+        <text :x="PAD" y="14" class="rp-ruler">原载体 {{ vectorLength.toLocaleString() }} bp · 废片段 {{ excisedBp.toLocaleString() }} bp（橙色区间，胶回收后丢弃）</text>
+        <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
+        <rect v-if="segLeft" :x="segLeft.x1" :y="VEC_Y - 4" :width="segLeft.x2 - segLeft.x1" height="8" rx="2" fill="#38a169" />
+        <text v-if="segLeft" :x="(segLeft.x1 + segLeft.x2) / 2" :y="VEC_Y + 22" class="rp-vec-kept" text-anchor="middle">回收 {{ segLeft.label }}</text>
+        <rect v-if="segExcised" :x="segExcised.x1" :y="VEC_Y - 9" :width="Math.max(segExcised.x2 - segExcised.x1, 3)" height="18" fill="#f6ad55" opacity="0.45" />
+        <text v-if="segExcised && segExcised.x2 - segExcised.x1 > 46" :x="(segExcised.x1 + segExcised.x2) / 2" :y="VEC_Y + 4" class="rp-vec-excised" text-anchor="middle">废片段</text>
+        <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
+                :stroke="m.in_excised ? '#dd6b20' : '#38a169'" stroke-width="1.5" />
+          <text :x="m.x" :y="m.y" class="rp-vec-mark" text-anchor="middle">{{ m.text }}</text>
+        </g>
+        <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
+        <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
 
       <p class="rp-meta">
@@ -372,6 +450,29 @@ const rulerTicks = computed(() => {
 .rp-ruler {
   font-size: 10px;
   fill: #718096;
+}
+
+.rp-vector-svg {
+  margin-top: 0.2rem;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.rp-vec-kept {
+  font-size: 10px;
+  fill: #276749;
+  font-weight: 600;
+}
+
+.rp-vec-excised {
+  font-size: 10px;
+  fill: #7b341e;
+  font-weight: 600;
+}
+
+.rp-vec-mark {
+  font-size: 9.5px;
+  fill: #2d3748;
+  font-weight: 600;
 }
 
 .rp-meta {
