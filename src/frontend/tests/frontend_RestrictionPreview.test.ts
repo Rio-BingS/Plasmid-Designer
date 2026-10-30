@@ -87,8 +87,9 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(wrapper.find('svg').exists()).toBe(false)
   })
 
-  it('多切点酶画出全部切点：junction 加酶名，次要切点只标坐标', () => {
-    // 2026-10-29 用户报告：SphI 摘要说 4 个切点、图上只画 1 个
+  it('多切点酶画出全部切点、全部带酶名，近距切点防重叠分行', () => {
+    // 2026-10-29 用户报告：SphI 4 个切点只画 1 个；修正后次要切点只标坐标，
+    // 用户再报告 2136/2208 数字重叠且没酶名——现在全部标「酶 (坐标)」并分行
     const wrapper = mount(RestrictionPreview, {
       props: { preview: fixture({
         sites: [
@@ -102,11 +103,18 @@ describe('RestrictionPreview 双酶切示意图', () => {
       }) },
     })
     const text = wrapper.text()
-    expect(text).toContain('SphI (1562)')   // junction：酶名 + 坐标
     expect(text).toContain('EcoRI (952)')
-    expect(text).toContain('2136')          // 次要切点：只有坐标
-    expect(text).toContain('3003')
-    // 酶名只出现在 junction 标签上，次要切点不重复酶名
-    expect(text.match(/SphI \(/g)).toHaveLength(1)
+    for (const cut of [1562, 2136, 2208, 3003]) {
+      expect(text).toContain(`SphI (${cut})`)
+    }
+    // 每个切点都有酶名（4 个 SphI + 1 个 EcoRI = 5 个「酶 (」标签）
+    expect(text.match(/SphI \(/g)).toHaveLength(4)
+    expect(text.match(/EcoRI \(/g)).toHaveLength(1)
+    // 近距切点落在不同行（y 不同）：2136 与 2208 不再叠成一个数
+    const labels = wrapper.findAll('text').map((t) => ({
+      y: t.attributes('y'), text: t.text(),
+    })).filter((t) => t.text.includes('2136') || t.text.includes('2208'))
+    expect(labels).toHaveLength(2)
+    expect(labels[0].y).not.toBe(labels[1].y)
   })
 })
