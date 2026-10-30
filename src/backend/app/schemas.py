@@ -78,6 +78,12 @@ class DesignOptions(BaseModel):
     # plus/minus=用户看预览图后手动指定基因落在哪条链
     insert_direction: Literal["auto", "reverse", "plus", "minus"] = Field(
         default="auto", description="插入方向：auto/reverse/plus/minus")
+    # 多切点酶切知情确认：所选酶在保留骨架上还有切点时（预览有
+    # backbone_cut_risk 警告），默认拒绝按位点建模；勾选后按用户的
+    # 有意选择正常组装（结果警告里明确记录该知情决定）
+    allow_backbone_cuts: bool = Field(
+        default=False,
+        description="知情确认：接受所选酶在保留骨架上的额外切点（多切点酶切）")
     # NdeI/NcoI 这类位点自带 ATG 且在连接处复原后充当起始密码子；插入序列
     # 再以 ATG 开头会让蛋白 N 端出现连续两个 Met。默认自动去掉插入序列开头
     # 的 ATG（第一个甲硫氨酸由位点提供，蛋白与输入氨基酸一致）

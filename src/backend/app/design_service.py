@@ -12,7 +12,7 @@ from app.config import settings  # 测试经 design_service.settings 打补丁�
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
-from core.enzyme_sites import reject_extra_backbone_cuts as _reject_extra_cuts
+from core.enzyme_sites import backbone_recut_warnings as _backbone_recut_warnings
 from core.primer_designer import screen_gg_overhang_pair
 from app.schemas import (
     MAP_MAX_LENGTH,
@@ -346,6 +346,7 @@ def build_restriction_preview(request) -> Dict:
     is_gibson = getattr(request, "cloning_method", "restriction") == "gibson"
     arms_mode = getattr(request, "cloning_method", "restriction") == "custom_arms"
     custom_plan = None
+    backbone_risk = False
 
     if arms_mode:
         # 自定义同源臂：臂序列即定位。plan_custom_arms 的 ValueError（无匹配/
@@ -372,18 +373,21 @@ def build_restriction_preview(request) -> Dict:
     else:
         if len(enzymes) < 2 or enzymes[0] == enzymes[1]:
             raise ValueError("预览需要两个不同的限制酶")
-        keep_sites = (True if not is_gibson
-                      else getattr(request, "keep_restriction_sites", True))
+        keep_sites = not is_gibson or getattr(request, "keep_restriction_sites", True)
         ends = resolve_restriction_ends(
             vector, backbone, enzymes[0], enzymes[1],
             direction=getattr(request, "direction", "auto"),
             circular=circular, window=_mcs_window(vector),
             join="gibson" if is_gibson else "sticky")
         warnings.extend(ends.warnings)
+        backbone_risk = False
         if not is_gibson and ends.plan is not None:
-            # 预览与正式设计同口径：骨架同酶位点切碎保留骨架，选择时就阻断
-            _reject_extra_cuts(backbone, ends.plan.left_cut, ends.plan.right_cut,
-                               [ends.enzyme_5, ends.enzyme_3], circular=circular)
+            # 骨架重切不阻断选择（决定权在用户）：预览展示警告，设计需知情确认
+            recut = _backbone_recut_warnings(
+                backbone, ends.plan.left_cut, ends.plan.right_cut,
+                [ends.enzyme_5, ends.enzyme_3], circular=circular)
+            backbone_risk = bool(recut)
+            warnings.extend(recut)
         strand = ends.strand
         source = ends.source
         ambiguous = bool(ends.hint.get("ambiguous"))
@@ -399,7 +403,8 @@ def build_restriction_preview(request) -> Dict:
         extra_elements=(ends.detected if not arms_mode else None),
         join="gibson" if (is_gibson or arms_mode) else "sticky",
         keep_sites=keep_sites if not arms_mode else True,
-        custom_plan=custom_plan)
+        custom_plan=custom_plan,
+        allow_backbone_cuts=True)  # 预览只警告，risk 在响应里
     warnings.extend(asm.warnings)
     construct = asm.sequence
 
@@ -409,17 +414,15 @@ def build_restriction_preview(request) -> Dict:
         # 切除长度取规划值：构建体两端补了位点残留，长度差反推会算错；
         # 无缝（Gibson 保留位点关）切点外扩到位点边界，按无缝 plan 重取
         removed = max(0, ends.removed_bp)
-        if is_gibson and not keep_sites:
+        if is_gibson and not keep_sites:   # 无缝：按外扩后的无缝 plan 重取
             from core.construct_assembly import plan_restriction as _plan_seamless
             seamless_plan = _plan_seamless(
-                backbone, ends.enzyme_5, ends.enzyme_3,
-                window=_mcs_window(vector), circular=circular,
-                warnings=[], join="gibson", keep_sites=False)
-            if seamless_plan is not None:
-                removed = max(0, seamless_plan.removed)
+                backbone, ends.enzyme_5, ends.enzyme_3, window=_mcs_window(vector),
+                circular=circular, warnings=[], join="gibson", keep_sites=False)
+            removed = max(0, getattr(seamless_plan, "removed", removed) or removed)                 if seamless_plan is not None else removed
     sites: List[Dict] = []
     enzyme_counts: Dict[str, int] = {}
-    if not arms_mode:
+    if not arms_mode:  # custom_arms 无位点可画
         for role, enzyme, boundary in (("five", ends.enzyme_5, asm.insert_start),
                                        ("three", ends.enzyme_3, asm.insert_end)):
             if not enzyme or enzyme in enzyme_counts:
@@ -427,15 +430,12 @@ def build_restriction_preview(request) -> Dict:
             hits = physical_sites(construct, enzyme, circular=circular)
             if not hits:
                 continue
-            # 能走到这里的方案每把酶在构建体上只有边界这一个切点（骨架多切点
-            # 已被 reject_extra_backbone_cuts 拒绝），取离插入边界最近者
+            # 构建体上每把酶只有边界这一个切点（骨架多切点已在校验里说明）
             best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
             enzyme_counts[enzyme] = len(hits)
-            sites.append({
-                "role": role, "enzyme": enzyme, "junction": True,
-                "position": int(best["position"]), "cut": int(best["cut_fwd"]),
-                "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
-            })
+            sites.append({"role": role, "enzyme": enzyme, "junction": True,
+                          "position": int(best["position"]), "cut": int(best["cut_fwd"]),
+                          "end": int(best["position"]) + len(best.get("recognition") or "") - 1})
 
     lo = asm.insert_start - 3000
     hi = asm.insert_end + 3000
@@ -443,8 +443,7 @@ def build_restriction_preview(request) -> Dict:
     for feat in asm.features:
         start = int(feat.get("start") or 0)
         end = int(feat.get("end") or 0)
-        # 占位基因本身不是元件：按起止都命中才跳过（只看 start 会把恰好
-        # 起点相同的载体元件一起吞掉）
+        # 占位基因不是元件：起止都命中才跳过（只看 start 会吞掉恰好同起点的元件）
         if (start == asm.insert_start and end == asm.insert_end
                 and str(feat.get("type") or "").upper() == "CDS"):
             continue
@@ -459,11 +458,8 @@ def build_restriction_preview(request) -> Dict:
     features.sort(key=lambda item: item["start"])
     features = features[:16]
 
-    five_at = max(0, asm.insert_start - 7)
-    three_at = max(0, asm.insert_end - 6)
-    # 两把酶在**成品构建体**上的切点数：预览与图谱同一口径（构建体 = 骨
-    # 架 + 插入片段，含插入片段自带/接头自带的位点）。多切点酶在图谱上
-    # 可能产生多个切点（如 pcDNA3.1 的 NcoI 有 4 个），选择时就要看见
+    five_at, three_at = max(0, asm.insert_start - 7), max(0, asm.insert_end - 6)
+    # 两把酶在成品构建体上的切点数（与图谱同口径：含插入片段自带的位点）
     return {
         "vector": {"name": vector.name or "vector", "length": len(backbone),
                    "topology": "linear" if not circular else "circular"},
@@ -478,6 +474,7 @@ def build_restriction_preview(request) -> Dict:
         "gene_5prime_enzyme": label5,
         "gene_3prime_enzyme": label3,
         "enzyme_counts": enzyme_counts,
+        "backbone_cut_risk": backbone_risk,
         "evidence": evidence,
         "features": features,
         "junctions": {
@@ -549,14 +546,9 @@ def _assemble_by_mcs(backbone: str, vector, insert: str, insert_name: str,
             }
         )
 
-    return ConstructAssembly(
-        sequence=full,
-        insert_start=insert_start,
-        insert_end=insert_end,
-        features=features,
-        warnings=warnings,
-        plan_used=False,
-    )
+    return ConstructAssembly(sequence=full, insert_start=insert_start,
+                             insert_end=insert_end, features=features,
+                             warnings=warnings, plan_used=False)
 
 
 def assemble_construct(
@@ -577,18 +569,14 @@ def assemble_construct(
     join: str = "sticky",
     keep_sites: bool = True,
     custom_plan=None,
+    allow_backbone_cuts: bool = False,
 ) -> ConstructAssembly:
     """按克隆方法把插入片段拼进载体，生成完整构建体序列与注释。
 
-    method 取 gibson / restriction / golden_gate 时按**真实切点**建模
-    （见 core/construct_assembly.py）：
-
-    * Gibson 只在一位点线性化，不切除载体碱基；
-    * 双酶切切走两个切点之间的片段，基因两端补回位点残留碱基；
-    * Golden Gate 切走两个 Type IIS 切点之间的片段，两端补 4 nt overhang。
-
-    取 mcs（或缺省）时沿用旧的「MCS 区间整段替换」——只在按切点建模做不了时
-    作回退，且由 warnings 说明原因，不静默退回。
+    gibson / restriction / golden_gate 按**真实切点**建模（见
+    core/construct_assembly.py：Gibson 一位点线性化、双酶切切走切点间片段、
+    GG 切走 Type IIS 切点间片段，两端补位点残留/overhang）；mcs（或缺省）
+    沿用「MCS 区间整段替换」——只在按切点建模做不了时回退并说明原因。
     """
     from core.construct_assembly import (
         apply_plan, cassette_direction, cassette_hint, plan_gibson,
@@ -602,10 +590,10 @@ def assemble_construct(
         warnings.append("载体骨架序列不完整，使用占位骨架组装")
 
     plan = None
+    plan_warnings: List[str] = []   # 单独收集，避免与 apply_plan 的返回重复
     if method in ("gibson", "restriction", "golden_gate") and backbone:
         circular = str(getattr(vector, "topology", "circular") or "circular").lower() != "linear"
         window = (anchor, anchor) if anchor is not None else _mcs_window(vector)
-        plan_warnings: List[str] = []   # 单独收集，避免与 apply_plan 的返回重复
         try:
             if method == "gibson" and custom_plan is not None:
                 # 自定义同源臂：边界由臂序列定位（plan 已在调用方算好）
@@ -621,10 +609,15 @@ def assemble_construct(
                                         window=window, circular=circular,
                                         warnings=plan_warnings, join=join,
                                         keep_sites=keep_sites)
-                # 粘端连接的可行性校验：骨架同酶位点会把保留骨架切碎
+                # 骨架重切风险：警告始终给出（知情记录/建议改酶）；
+                # 有风险且未确认 allow_backbone_cuts 时回退 MCS 替换
                 if plan is not None and join == "sticky":
-                    _reject_extra_cuts(backbone, plan.left_cut, plan.right_cut,
-                                       [enzyme_5 or "", enzyme_3 or ""], circular=circular)
+                    recut = _backbone_recut_warnings(
+                        backbone, plan.left_cut, plan.right_cut,
+                        [enzyme_5 or "", enzyme_3 or ""], circular=circular)
+                    plan_warnings.extend(recut)
+                    if recut and not allow_backbone_cuts:
+                        plan = None
             else:
                 plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
                                         overhang_3 or "", window=window,
@@ -703,6 +696,9 @@ def assemble_construct(
                 sequence=seq, insert_start=istart, insert_end=iend,
                 features=feats, warnings=warnings, junction=plan.junction)
 
+    # plan 被打掉（骨架重切未确认等）：plan_warnings 里的原因说明一并带出，
+    # 否则用户只看到「无法按双酶切建模」却不知道为什么
+    warnings.extend(plan_warnings)
     return _assemble_by_mcs(backbone, vector, insert, insert_name, warnings)
 
 
@@ -1992,6 +1988,7 @@ def run_design(
                 keep_sites=(True if request.cloning_method == CloningMethod.RESTRICTION
                             else getattr(request, "keep_restriction_sites", True)),
                 custom_plan=gibson_arms_plan,
+                allow_backbone_cuts=getattr(request, "allow_backbone_cuts", False),
             )
             result.warnings.extend(assembly.warnings)
 
