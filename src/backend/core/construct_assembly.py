@@ -196,9 +196,17 @@ def _overlaps_window(a: int, dist: int, window: Optional[Tuple[int, int]],
                for i in range(1, dist + 1))
 
 
-def _pair_score(a: int, b: int, window: Optional[Tuple[int, int]],
-                length: int, circular: bool) -> Optional[Tuple[int, int]]:
-    """(penalty, 切除长度)；a==b（纯插入）或方向不成立返回 None"""
+def _excised_between(c: int, a: int, b: int) -> bool:
+    """c 是否落在被切除区间 (a, b] 内（a < b 直接比；a >= b 跨原点）"""
+    return (a < c <= b) if a < b else (c > a or c <= b)
+
+
+def _pair_score(a: int, b: int, window: Optional[Tuple[int, int]], length: int, circular: bool,
+                leftover_cuts: int = 0) -> Optional[Tuple[int, int, int]]:
+    """(penalty, 保留骨架残留同酶位点数, 切除长度)；a==b 返回 None。
+
+    残留位点数升序：多切点按胶回收几何选最外侧对，把内部同酶位点吸进废
+    片段（选邻近对会残留同酶位点把骨架切碎，不可胶回收）。"""
     d = _forward_dist(a, b, length, circular)
     if d <= 0:
         return None
@@ -210,17 +218,15 @@ def _pair_score(a: int, b: int, window: Optional[Tuple[int, int]],
         penalty = 1
     else:
         penalty = 2
-    return (penalty, d)
+    return (penalty, leftover_cuts, d)
 
 
 def _candidate_pairs(cuts_a: Sequence[int], cuts_b: Sequence[int],
                      length: int, circular: bool, allow_long: bool):
-    """枚举候选切点对；allow_long=False 时先排除「切除区间超过半圈」的方向
+    """枚举候选切点对；allow_long=False 时先排除超过半圈的方向。
 
-    环状载体上要切掉的废片段一定比半圈短：反向的那一对切点算出来是
-    `长度 - 废片段`（pET-30a 实测 188 bp 的废片段被算成 5234 bp），按它组装
-    等于把整条主链当废片段扔掉。所以先只看短区间，实在没有短区间才放宽。
-    """
+    环状载体的废片段一定比半圈短：反向那对切点算出来是「长度-废片段」
+    （pET-30a 实测 188 bp 被算成 5234 bp），按它组装等于扔掉整条主链。"""
     for a in cuts_a:
         for b in cuts_b:
             d = _forward_dist(a, b, length, circular)
@@ -234,17 +240,21 @@ def _candidate_pairs(cuts_a: Sequence[int], cuts_b: Sequence[int],
 def _best_ordered_pair(
     groups: Sequence[Tuple[Sequence[int], Sequence[int], str]],
     window: Optional[Tuple[int, int]], length: int, circular: bool,
-) -> Optional[Tuple[Tuple[int, int], int, int, str]]:
-    """在若干 (cuts_a, cuts_b, tag) 组合里挑最优切点对 → (score, a, b, tag)
+    interior_sets: Optional[Sequence[Sequence[int]]] = None,
+) -> Optional[Tuple[Tuple[int, int, int], int, int, str]]:
+    """在若干 (cuts_a, cuts_b, tag) 组合里挑最优切点对 → (score, a, b, tag)。
 
-    先只考虑不超过半圈的切除区间，挑不出来再放宽到整圈——放宽意味着要把
-    载体大半条链当废片段切掉，调用方应据此告警。
-    """
+    interior_sets 与 groups 一一对应（该组合两把酶的全体切点并集），统计
+    保留骨架残留的同酶位点数（score 第二键）。先只考虑不超过半圈的切除
+    区间，挑不出来再放宽到整圈（调用方据此告警）。"""
     for allow_long in (False, True):
-        best: Optional[Tuple[Tuple[int, int], int, int, str]] = None
-        for cuts_a, cuts_b, tag in groups:
+        best: Optional[Tuple[Tuple[int, int, int], int, int, str]] = None
+        for gi, (cuts_a, cuts_b, tag) in enumerate(groups):
+            interior = interior_sets[gi] if interior_sets else ()
             for a, b in _candidate_pairs(cuts_a, cuts_b, length, circular, allow_long):
-                score = _pair_score(a, b, window, length, circular)
+                leftover = sum(c not in (a, b) and not _excised_between(c, a, b)
+                               for c in interior)
+                score = _pair_score(a, b, window, length, circular, leftover)
                 if score is None:
                     continue
                 if best is None or score < best[0]:
@@ -258,18 +268,13 @@ def pick_flanking(
     cuts_a: Sequence[int], cuts_b: Sequence[int], *,
     window: Optional[Tuple[int, int]] = None, length: int, circular: bool = True,
 ) -> Optional[Tuple[int, int, int]]:
-    """挑一对切点，返回 (left, right, penalty)
+    """挑一对切点，返回 (left, right, penalty)。
 
-    penalty 0 = 两个切点都落在 window（MCS 区间）内；1 = 切除区间与 window 相交；
-    2 = 完全在 window 之外（调用方据此告警）。
-
-    排序按 (penalty, 切除长度)：同 penalty 下取最短。**不能只看是不是「包住
-    MCS 中点」**——pET-28a 的 MCS 158–301 而 BamHI/XhoI 切点 159/199 并不包含
-    中点 229，只看中点会把 5329 bp 的主链当成要切掉的废片段。也**不能奖励
-    「MCS 点落在整圈长区间里」**：那方向正好是反的（见 _candidate_pairs）。
-
-    window 为 None（载体没有 MCS 注释）时按最短区间取。
-    """
+    penalty 0/1/2 = 两切点都在 MCS 区间内 / 区间与之相交 / 完全在外（调用方
+    据此告警）。排序 (penalty, 切除长度)。**不能只看「包住 MCS 中点」**——
+    pET-28a 的 BamHI/XhoI 切点 159/199 不包含 MCS 中点 229，只看中点会把
+    5329 bp 主链当废片段；也**不能奖励「MCS 点落在整圈长区间里」**（方向
+    正好是反的，见 _candidate_pairs）。window 为 None 时按最短区间取。"""
     best = _best_ordered_pair([(cuts_a, cuts_b, '')], window, length, circular)
     if best is not None:
         return best[1], best[2], best[0][0]
@@ -285,16 +290,13 @@ def plan_restriction(
     window: Optional[Tuple[int, int]] = None, circular: bool = True,
     warnings: List[str], join: str = "sticky", keep_sites: bool = True,
 ) -> Optional[AssemblyPlan]:
-    """双酶切：两个切点之间整段被切走，基因两端补回位点残留碱基
+    """双酶切：两个切点之间整段被切走，基因两端补回位点残留碱基。
 
-    载体上没有位点时返回 None（调用方回退到「按 MCS 区间替换」并保留告警）。
-    join="sticky"（粘端连接，默认）或 "gibson"（双酶切线性化 + Gibson 同源臂
-    连接）：两者几何完全一致，仅连接处的物理约束不同——粘端配对强制基因
-    取向，Gibson 取向由同源臂设计决定，反向排布的告警文案随之区分。
-    keep_sites=False 仅对 join="gibson" 有意义：同源臂越过位点、重组把位点
-    碱基消费掉（无缝连接），切点各向外扩到完整位点边界，构建体里不再出现
-    位点序列——此时位点无法充当起始密码子，起始密码子语义归基因自身。
-    """
+    载体上没有位点时返回 None（调用方回退 MCS 区间替换并保留告警）。
+    join="sticky"（默认）与 "gibson" 几何完全一致，仅连接处物理约束不同——
+    粘端配对强制基因取向，Gibson 取向由同源臂决定。keep_sites=False 仅对
+    gibson 有意义：同源臂越过位点、重组消费位点碱基（无缝连接），切点外扩
+    到完整位点边界，构建体不再含位点序列，起始密码子语义归基因自身。"""
     length = len(sequence)
     try:
         site5, k5, _ = _enzyme_cut(enzyme_5)
@@ -315,16 +317,14 @@ def plan_restriction(
     cuts5 = sorted({s["cut_fwd"] for s in sites5})
     cuts3 = sorted({s["cut_fwd"] for s in sites3})
 
-    # 两个方向都要试：废片段可能在 e5 之后、e3 之前，也可能反过来。
-    # 只按「e5 → e3」单向找，pET-28a 这类位点顺序与引物端指派相反的载体会
-    # 把 5.3 kb 主链当成要切掉的废片段（实测会把质粒删成 40 bp）。
-    # 同一对切点反着算就是「整圈减去废片段」，所以还要先排除超过半圈的方向：
-    # 一次性载体的推测 MCS 是个点，那个点正好落在某个切点上时，旧的 penalty
-    # 会让整圈长区间胜出（pET-30a 实测：188 bp 的废片段被算成 5234 bp，
-    # 再因「切点跨原点」回退成 MCS 整段替换，基因落在位点之外）。
+    # 两个方向都要试：废片段可能在 e5 之后、e3 之前。只按「e5 → e3」单向找，
+    # pET-28a 这类位点顺序与引物端指派相反的载体会把 5.3 kb 主链当废片段
+    # （实测把质粒删成 40 bp）；同一对切点反着算就是「整圈减废片段」，先排除
+    # 超半圈方向——推测 MCS 恰落在切点上时旧 penalty 会让整圈区间胜出
+    # （pET-30a 实测 188 bp 被算成 5234 bp 后回退 MCS 整段替换）。
     best = _best_ordered_pair(
         ((cuts5, cuts3, enzyme_5), (cuts3, cuts5, enzyme_3)),
-        window, length, circular)
+        window, length, circular, interior_sets=(cuts5 + cuts3, cuts3 + cuts5))
 
     if best is None:
         common = sorted(set(cuts5) & set(cuts3))
