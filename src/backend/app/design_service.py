@@ -346,6 +346,7 @@ def build_restriction_preview(request) -> Dict:
     arms_mode = getattr(request, "cloning_method", "restriction") == "custom_arms"
     custom_plan = None
     backbone_risk, pair, cut_options = False, None, []
+    ends = None
 
     if arms_mode:
         # 自定义同源臂：臂序列即定位。plan_custom_arms 的 ValueError（无匹配/
@@ -420,46 +421,44 @@ def build_restriction_preview(request) -> Dict:
             seamless_plan = _plan_seamless(
                 backbone, ends.enzyme_5, ends.enzyme_3, window=_mcs_window(vector),
                 circular=circular, warnings=[], join="gibson", keep_sites=False)
-            removed = max(0, getattr(seamless_plan, "removed", removed) or removed)                 if seamless_plan is not None else removed
-    sites: List[Dict] = []; enzyme_counts: Dict[str, int] = {}
+            if seamless_plan is not None:
+                removed = max(0, seamless_plan.removed)
+    sites: List[Dict] = []
     if not arms_mode:  # custom_arms 无位点可画
         for role, enzyme, boundary in (("five", ends.enzyme_5, asm.insert_start),
                                        ("three", ends.enzyme_3, asm.insert_end)):
-            if not enzyme or enzyme in enzyme_counts:
-                continue
-            hits = physical_sites(construct, enzyme, circular=circular)
+            hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
             if not hits:
                 continue
-            # 构建体上每把酶只有边界这一个切点（骨架多切点已在校验里说明）
-            best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
-            enzyme_counts[enzyme] = len(hits)
+            best = min(hits, key=lambda h: abs(int(h["cut_fwd"]) - boundary))
             sites.append({"role": role, "enzyme": enzyme, "junction": True,
                           "position": int(best["position"]), "cut": int(best["cut_fwd"]),
                           "end": int(best["position"]) + len(best.get("recognition") or "") - 1})
+    # 徽标口径=原始载体的位点数（多切点=多条带）；cut_marks=原载体全部候选
+    # 切点（用户选片段时可见位置）；arms/gibson 无废片段概念，不画
+    from core.cut_pairs import cut_marks_for_preview, vector_enzyme_counts
+    _e5, _e3 = (ends.enzyme_5, ends.enzyme_3) if ends else (label5, label3)
+    enzyme_counts = vector_enzyme_counts(backbone, (_e5, _e3), circular=circular)
+    cut_marks = ([] if (arms_mode or is_gibson or ends is None) else
+                 cut_marks_for_preview(backbone, _e5, _e3, pair, ends.plan, circular=circular))
 
-    lo = asm.insert_start - 3000
-    hi = asm.insert_end + 3000
-    features = []
+    lo, hi, features = asm.insert_start - 3000, asm.insert_end + 3000, []
     for feat in asm.features:
         start = int(feat.get("start") or 0)
         end = int(feat.get("end") or 0)
         # 占位基因不是元件：起止都命中才跳过（只看 start 会吞掉恰好同起点的元件）
-        if (start == asm.insert_start and end == asm.insert_end
+        if ((start, end) == (asm.insert_start, asm.insert_end)
                 and str(feat.get("type") or "").upper() == "CDS"):
             continue
         if end < lo or start > hi:
             continue
-        features.append({
-            "name": feat.get("name") or "feature",
-            "type": feat.get("type") or "other",
-            "start": start, "end": end,
-            "strand": feat.get("strand") or "+",
-        })
+        features.append({"name": feat.get("name") or "feature",
+                         "type": feat.get("type") or "other", "start": start,
+                         "end": end, "strand": feat.get("strand") or "+"})
     features.sort(key=lambda item: item["start"])
     features = features[:16]
 
     five_at, three_at = max(0, asm.insert_start - 7), max(0, asm.insert_end - 6)
-    # 两把酶在成品构建体上的切点数（与图谱同口径：含插入片段自带的位点）
     return {
         "vector": {"name": vector.name or "vector", "length": len(backbone),
                    "topology": "linear" if not circular else "circular"},
@@ -475,6 +474,7 @@ def build_restriction_preview(request) -> Dict:
         "gene_3prime_enzyme": label3,
         "enzyme_counts": enzyme_counts, "backbone_cut_risk": backbone_risk,
         "cut_options": cut_options, "cut_pair": list(pair) if pair else None,
+        "cut_marks": cut_marks,
         "evidence": evidence,
         "features": features,
         "junctions": {

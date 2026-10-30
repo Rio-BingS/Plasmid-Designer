@@ -241,8 +241,16 @@ const rulerTicks = computed(() => {
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y + 4" :y2="BACKBONE_Y + 4"
               stroke="#cbd5e0" stroke-width="1" />
 
-        <!-- 切点：竖线 + 酶名/坐标。多切点酶全部画出、全部带酶名（防重叠
-             分行）；junction（紧邻插入边界、决定末端的那一个）加粗强调 -->
+        <!-- 候选切点（含被切进废片段的）：淡色细虚线 + 小坐标，用户选片段
+             时能看到每个候选位点的位置；废片段内的更淡（骨架上不存在） -->
+        <g v-for="(m, i) in (preview.cut_marks ?? [])" :key="`mark-${i}`">
+          <line v-if="m.construct_cut" :x1="toX(m.construct_cut)" :x2="toX(m.construct_cut)"
+                y1="34" :y2="BACKBONE_Y - 2"
+                :stroke="m.in_excised ? '#e2c4a0' : '#c3a6ff'"
+                stroke-width="1" :stroke-dasharray="m.in_excised ? '2,3' : '4,3'" />
+        </g>
+
+        <!-- 切点：竖线 + 酶名/坐标。junction（决定末端的那一个）加粗强调 -->
         <g v-for="(item, i) in siteLabelLayout"
            :key="`${item.site.role}-${item.site.enzyme}-${item.site.cut}-${i}`">
           <line :x1="item.x" :x2="item.x" y1="30" :y2="BACKBONE_Y - 2"

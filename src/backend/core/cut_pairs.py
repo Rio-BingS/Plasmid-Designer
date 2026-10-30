@@ -7,7 +7,7 @@
 评分口径：(MCS penalty, 保留骨架残留同酶位点数, 切除长度) 升序。
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from core.enzyme_sites import find_enzyme_sites
 
@@ -189,3 +189,38 @@ def pick_flanking(
         if a in cuts_b:
             return a, a, 0
     return None
+
+
+def vector_enzyme_counts(backbone: str, enzymes: Iterable[str], *,
+                         circular: bool = True) -> Dict[str, int]:
+    """原载体口径的切点数：多切点 = 酶切后多条带，选择时就要看见；
+    构建体口径恒为 1，无信息量。"""
+    return {e: len(physical_sites(backbone, e, circular=circular))
+            for e in dict.fromkeys(e for e in enzymes if e)}
+
+
+def cut_marks_for_preview(
+    backbone: str, enzyme_5: str, enzyme_3: str,
+    pair: Optional[Tuple[int, int]],
+    plan: Optional["object"] = None, *, circular: bool = True,
+) -> List[Dict]:
+    exc_l = pair[0] if pair else (getattr(plan, "left_cut", None) if plan else None)
+    exc_r = pair[1] if pair else (getattr(plan, "right_cut", None) if plan else None)
+    removed = getattr(plan, "removed_bp", 0) if plan else 0
+    """预览图的候选切点标记：两把酶在原载体上的全部位点。
+
+    in_excised = 位点落在被切除的废片段里（骨架上不存在，前端画最淡虚线）；
+    construct_cut = 映射到成品构建体上的坐标（切除区间右侧前移 removed；
+    跨原点切除时 apply_plan 会旋转坐标系、映射不准，返回 None 让前端跳过）。
+    """
+    out: List[Dict] = []
+    for e in dict.fromkeys(e for e in (enzyme_5, enzyme_3) if e):
+        for hit in physical_sites(backbone, e, circular=circular):
+            c = int(hit["cut_fwd"])
+            in_exc = (exc_l is not None and c not in (exc_l, exc_r)
+                      and _excised_between(c, exc_l, exc_r))
+            cc = c if (exc_l is None or c <= exc_l) else max(1, c - removed)
+            out.append({"enzyme": e, "vector_cut": c,
+                        "construct_cut": None if (exc_l and exc_l > exc_r) else cc,
+                        "in_excised": in_exc})
+    return out
