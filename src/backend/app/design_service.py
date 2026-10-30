@@ -426,14 +426,14 @@ def build_restriction_preview(request) -> Dict:
             hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
             if not hits:
                 continue
+            # 全部物理切点都返回：多切点酶（如 SphI 4 个）在成品图谱上处处切割，
+            # 只画「离插入边界最近的一个」会与摘要的切点数矛盾
             best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
-            sites.append({
-                "role": role,
-                "enzyme": enzyme,
-                "position": int(best["position"]),
-                "cut": int(best["cut_fwd"]),
-                "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
-            })
+            sites.extend({
+                "role": role, "enzyme": enzyme, "junction": hit is best,
+                "position": int(hit["position"]), "cut": int(hit["cut_fwd"]),
+                "end": int(hit["position"]) + len(hit.get("recognition") or "") - 1,
+            } for hit in hits)
 
     lo = asm.insert_start - 3000
     hi = asm.insert_end + 3000

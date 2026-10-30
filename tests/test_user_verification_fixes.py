@@ -185,6 +185,24 @@ def test_restriction_preview_default_unchanged():
     assert pv["strand"] == "-"
 
 
+def test_restriction_preview_multi_cut_enzyme_returns_all_sites():
+    """多切点酶的预览要画出全部物理切点（2026-10-29 用户报告：pcDNA3.1 的
+    SphI 摘要说 4 个切点、图上只画 1 个——sites 此前只取离插入边界最近的）。
+    junction 标记 = 紧邻插入边界、决定末端的那一个，每把酶恰好一个。"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
+    assert pv["enzyme_counts"]["SphI"] == 4
+    sph = [s for s in pv["sites"] if s["enzyme"] == "SphI"]
+    assert len(sph) == 4
+    for enzyme in ("EcoRI", "SphI"):
+        marked = [s for s in pv["sites"] if s["enzyme"] == enzyme and s.get("junction")]
+        assert len(marked) == 1, f"{enzyme} junction 应恰好一个"
+        # junction 必须是该酶里离插入边界最近的切点（口径与 enzyme_counts 一致）
+        counts = pv["enzyme_counts"][enzyme]
+        all_for_e = [s for s in pv["sites"] if s["enzyme"] == enzyme]
+        assert len(all_for_e) == counts
+
+
 # ---------- 6. 自定义同源臂：预览与拼接定位判定 ----------
 
 ARM5 = "GGTGGTGGTACGTACTG"      # 17bp，锚在载体 21..37

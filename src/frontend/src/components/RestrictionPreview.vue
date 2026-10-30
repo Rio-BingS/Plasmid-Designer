@@ -6,7 +6,7 @@
  * 位点、启动子的位置与提交后拿到的结果一致；比例按真实 bp 换算。
  */
 import { computed } from 'vue'
-import type { RestrictionPreview } from '@/types'
+import type { RestrictionPreview, RestrictionPreviewSite } from '@/types'
 
 const props = defineProps<{
   preview: RestrictionPreview | null
@@ -47,6 +47,12 @@ function toX(pos: number): number {
 }
 
 const markerTypes = ['promoter', 'terminator', 'rbs', 'regulatory']
+
+/** 该切点所属酶在成品构建体上的切点数（=1 时唯一，标签可写全「酶 (pos)」） */
+function countSameEnzyme(site: RestrictionPreviewSite): number {
+  const p = props.preview
+  return p ? p.sites.filter((s) => s.enzyme === site.enzyme).length : 1
+}
 
 const markerFeatures = computed(() => {
   const p = props.preview
@@ -182,12 +188,20 @@ const rulerTicks = computed(() => {
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y + 4" :y2="BACKBONE_Y + 4"
               stroke="#cbd5e0" stroke-width="1" />
 
-        <!-- 切点：竖线 + 酶名/坐标 -->
-        <g v-for="site in preview.sites" :key="site.role + site.enzyme">
+        <!-- 切点：竖线 + 酶名/坐标。多切点酶全部画出；junction（紧邻插入
+             边界、决定末端的那一个）加粗，其余细线——都参与切割，权重不同 -->
+        <g v-for="(site, i) in preview.sites"
+           :key="`${site.role}-${site.enzyme}-${site.cut}-${i}`">
           <line :x1="toX(site.cut)" :x2="toX(site.cut)" :y1="30" :y2="BACKBONE_Y - 2"
-                stroke="#2d3748" stroke-width="1.5" />
-          <text :x="toX(site.cut)" y="20" class="rp-site" text-anchor="middle">
+                :stroke="site.junction ? '#2d3748' : '#a0aec0'"
+                :stroke-width="site.junction ? 1.5 : 1" />
+          <text v-if="site.junction || countSameEnzyme(site) === 1"
+                :x="toX(site.cut)" y="20" class="rp-site" text-anchor="middle">
             {{ site.enzyme }} ({{ site.cut }})
+          </text>
+          <text v-else :x="toX(site.cut)" y="20" class="rp-site rp-site-minor"
+                text-anchor="middle">
+            {{ site.cut }}
           </text>
         </g>
 
@@ -273,6 +287,12 @@ const rulerTicks = computed(() => {
   font-size: 11px;
   fill: #2d3748;
   font-weight: 600;
+}
+
+.rp-site-minor {
+  font-size: 10px;
+  fill: #718096;
+  font-weight: 400;
 }
 
 .rp-gene-label {
