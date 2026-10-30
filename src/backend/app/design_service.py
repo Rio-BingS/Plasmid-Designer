@@ -12,6 +12,7 @@ from app.config import settings  # 测试经 design_service.settings 打补丁�
 from core.genbank_format import (
     format_feature_line, format_locus_line, format_qualifier, render_origin_block,
 )
+from core.enzyme_sites import reject_extra_backbone_cuts as _reject_extra_cuts
 from core.primer_designer import screen_gg_overhang_pair
 from app.schemas import (
     MAP_MAX_LENGTH,
@@ -172,6 +173,8 @@ class RestrictionEnds:
     warnings: List[str] = field(default_factory=list)
     # 自动识别出来、载体本身没有注释的元件（预览要用它们画启动子）
     detected: List[Dict] = field(default_factory=list)
+    # 方向解析时跑过的切点对规划（plan_restriction 结果），校验复用免二次扫描
+    plan: Optional[object] = None
 
 
 _ANNOTATION_CACHE: Dict[str, List[Dict]] = {}
@@ -253,11 +256,10 @@ def resolve_restriction_ends(
     window: Optional[Tuple[int, int]] = None,
     join: str = "sticky",
 ) -> RestrictionEnds:
-    """把「两把酶」解析成「接基因 5′ 端 / 3′ 端」的指派
+    """把「两把酶」解析成「接基因 5′ 端 / 3′ 端」的指派。
 
-    方向按载体表达盒判定（cassette_hint）：启动子紧邻哪一端、RBS/终止子在
-    哪一端。direction 取 auto / forward / reverse：auto 听载体的，forward
-    与 reverse 是用户显式指定（反义构建），此时覆盖载体的判定。
+    方向按载体表达盒判定（cassette_hint）；direction=auto 听载体的，
+    plus/minus/reverse 是用户显式指定（覆盖载体的判定）。
     """
     from core.construct_assembly import cassette_hint, plan_restriction
 
@@ -290,8 +292,7 @@ def resolve_restriction_ends(
         ends.enzyme_5, ends.enzyme_3 = left_owner, right_owner
     else:
         ends.enzyme_5, ends.enzyme_3 = right_owner, left_owner
-    ends.strand = desired
-    ends.hint = hint
+    ends.strand, ends.hint, ends.plan = desired, hint, probe
     ends.removed_bp = probe.removed
     if direction in ("plus", "minus", "reverse"):
         ends.source = "user"
@@ -318,12 +319,8 @@ def resolve_restriction_ends(
 
 
 def build_restriction_preview(request) -> Dict:
-    """限制性克隆的实时预览：把两把酶解析成**成品构建体**的布局
-
-    做法是用占位基因跑一遍真实组装（assemble_construct），所以返回的坐标、
-    元件位置、连接处碱基与正式设计完全一致——示意图画的就是成品，被切走的
-    载体片段不在图上（真实质粒上它也不存在）。
-    """
+    """限制性克隆的实时预览：占位基因跑一遍真实组装（assemble_construct），
+    返回的坐标/元件/连接处碱基与正式设计完全一致——画的就是成品构建体。"""
     from core.construct_assembly import physical_sites
 
     inline = getattr(request, "vector", None)
@@ -383,6 +380,10 @@ def build_restriction_preview(request) -> Dict:
             circular=circular, window=_mcs_window(vector),
             join="gibson" if is_gibson else "sticky")
         warnings.extend(ends.warnings)
+        if not is_gibson and ends.plan is not None:
+            # 预览与正式设计同口径：骨架同酶位点切碎保留骨架，选择时就阻断
+            _reject_extra_cuts(backbone, ends.plan.left_cut, ends.plan.right_cut,
+                               [ends.enzyme_5, ends.enzyme_3], circular=circular)
         strand = ends.strand
         source = ends.source
         ambiguous = bool(ends.hint.get("ambiguous"))
@@ -405,9 +406,8 @@ def build_restriction_preview(request) -> Dict:
     if arms_mode:
         removed = max(0, custom_plan.removed)
     else:
-        # 切除长度取规划值：构建体两端还补了位点残留（head/tail），
-        # 用长度差反推会把补回的碱基算进切除量。无缝（Gibson 保留位点关）
-        # 时切点外扩到位点边界，切除量要按无缝 plan 重取
+        # 切除长度取规划值：构建体两端补了位点残留，长度差反推会算错；
+        # 无缝（Gibson 保留位点关）切点外扩到位点边界，按无缝 plan 重取
         removed = max(0, ends.removed_bp)
         if is_gibson and not keep_sites:
             from core.construct_assembly import plan_restriction as _plan_seamless
@@ -418,22 +418,24 @@ def build_restriction_preview(request) -> Dict:
             if seamless_plan is not None:
                 removed = max(0, seamless_plan.removed)
     sites: List[Dict] = []
+    enzyme_counts: Dict[str, int] = {}
     if not arms_mode:
-        for role, enzyme, boundary in (
-            ("five", ends.enzyme_5, asm.insert_start),
-            ("three", ends.enzyme_3, asm.insert_end),
-        ):
-            hits = physical_sites(construct, enzyme, circular=circular) if enzyme else []
+        for role, enzyme, boundary in (("five", ends.enzyme_5, asm.insert_start),
+                                       ("three", ends.enzyme_3, asm.insert_end)):
+            if not enzyme or enzyme in enzyme_counts:
+                continue
+            hits = physical_sites(construct, enzyme, circular=circular)
             if not hits:
                 continue
-            # 全部物理切点都返回：多切点酶（如 SphI 4 个）在成品图谱上处处切割，
-            # 只画「离插入边界最近的一个」会与摘要的切点数矛盾
+            # 能走到这里的方案每把酶在构建体上只有边界这一个切点（骨架多切点
+            # 已被 reject_extra_backbone_cuts 拒绝），取离插入边界最近者
             best = min(hits, key=lambda hit: abs(int(hit["cut_fwd"]) - boundary))
-            sites.extend({
-                "role": role, "enzyme": enzyme, "junction": hit is best,
-                "position": int(hit["position"]), "cut": int(hit["cut_fwd"]),
-                "end": int(hit["position"]) + len(hit.get("recognition") or "") - 1,
-            } for hit in hits)
+            enzyme_counts[enzyme] = len(hits)
+            sites.append({
+                "role": role, "enzyme": enzyme, "junction": True,
+                "position": int(best["position"]), "cut": int(best["cut_fwd"]),
+                "end": int(best["position"]) + len(best.get("recognition") or "") - 1,
+            })
 
     lo = asm.insert_start - 3000
     hi = asm.insert_end + 3000
@@ -462,12 +464,6 @@ def build_restriction_preview(request) -> Dict:
     # 两把酶在**成品构建体**上的切点数：预览与图谱同一口径（构建体 = 骨
     # 架 + 插入片段，含插入片段自带/接头自带的位点）。多切点酶在图谱上
     # 可能产生多个切点（如 pcDNA3.1 的 NcoI 有 4 个），选择时就要看见
-    enzyme_counts: Dict[str, int] = {}
-    for e in (label5, label3):
-        if e and e not in enzyme_counts:
-            from core.construct_assembly import physical_sites
-
-            enzyme_counts[e] = len(physical_sites(construct, e, circular=circular))
     return {
         "vector": {"name": vector.name or "vector", "length": len(backbone),
                    "topology": "linear" if not circular else "circular"},
@@ -625,6 +621,10 @@ def assemble_construct(
                                         window=window, circular=circular,
                                         warnings=plan_warnings, join=join,
                                         keep_sites=keep_sites)
+                # 粘端连接的可行性校验：骨架同酶位点会把保留骨架切碎
+                if plan is not None and join == "sticky":
+                    _reject_extra_cuts(backbone, plan.left_cut, plan.right_cut,
+                                       [enzyme_5 or "", enzyme_3 or ""], circular=circular)
             else:
                 plan = plan_golden_gate(backbone, enzyme or "", overhang_5 or "",
                                         overhang_3 or "", window=window,

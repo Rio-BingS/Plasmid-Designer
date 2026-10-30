@@ -19,7 +19,7 @@ from app.design_service import (  # noqa: E402
 )
 from app.map_documents import design_map_document  # noqa: E402
 from app.routes.models import DesignStatus  # noqa: E402
-from app.schemas import RestrictionPreviewRequest  # noqa: E402
+from app.schemas import DesignRequest, RestrictionPreviewRequest  # noqa: E402
 from core.construct_assembly import sticky_overhang  # noqa: E402
 from core.seq_utils import revcomp  # noqa: E402
 
@@ -185,22 +185,42 @@ def test_restriction_preview_default_unchanged():
     assert pv["strand"] == "-"
 
 
-def test_restriction_preview_multi_cut_enzyme_returns_all_sites():
-    """多切点酶的预览要画出全部物理切点（2026-10-29 用户报告：pcDNA3.1 的
-    SphI 摘要说 4 个切点、图上只画 1 个——sites 此前只取离插入边界最近的）。
-    junction 标记 = 紧邻插入边界、决定末端的那一个，每把酶恰好一个。"""
+def test_restriction_preview_rejects_multi_cut_enzyme_on_backbone():
+    """多切点酶在保留骨架上还有切点时预览直接 422（2026-10-29 用户两轮报告：
+    pcDNA3.1 的 SphI 4 个切点只画 1 个 → 画全后又暴露真问题——真实酶切会在
+    骨架 3 个位点照样切割，骨架碎成 4 段，预测的构建体根本得不到。绘图正确
+    不等于方案可行，可行性校验必须在选择时阻断）。边界切点本身不算：粘端
+    连接后位点在构建体两端复原。"""
+    import pytest
+
+    with pytest.raises(ValueError, match="SphI 在保留骨架上还有 3 个切点"):
+        build_restriction_preview(RestrictionPreviewRequest(
+            enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
+
+
+def test_restriction_preview_allows_unique_boundary_cuts():
+    """两把酶各唯一位点、其中一个 left_cut 在另一个酶切点上游 23bp（跨原点
+    旋转场景 pcDNA3.1 EcoRI/BamHI）：边界切点在构建体两端复原，不应误伤"""
     pv = build_restriction_preview(RestrictionPreviewRequest(
-        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
-    assert pv["enzyme_counts"]["SphI"] == 4
-    sph = [s for s in pv["sites"] if s["enzyme"] == "SphI"]
-    assert len(sph) == 4
-    for enzyme in ("EcoRI", "SphI"):
-        marked = [s for s in pv["sites"] if s["enzyme"] == enzyme and s.get("junction")]
-        assert len(marked) == 1, f"{enzyme} junction 应恰好一个"
-        # junction 必须是该酶里离插入边界最近的切点（口径与 enzyme_counts 一致）
-        counts = pv["enzyme_counts"][enzyme]
-        all_for_e = [s for s in pv["sites"] if s["enzyme"] == enzyme]
-        assert len(all_for_e) == counts
+        enzymes=["EcoRI", "BamHI"], vector_id="pcDNA3.1", insert_length=600))
+    assert pv["enzyme_counts"] == {"EcoRI": 1, "BamHI": 1}
+    assert len(pv["sites"]) == 2
+
+
+def test_run_design_warns_backbone_shredded_for_multi_cut_enzyme():
+    """正式设计路径同口径：多切点酶不再静默产出错误构建体——装配回退到
+    MCS 区间替换（保底出结果），但必须把「骨架会被切碎、连接无法复现」
+    讲清楚并建议改酶，用户不会拿着一个酶切做不出来的方案去订引物"""
+    result = run_design(
+        "test-multi-cut-warn",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI"))
+    joined = "\n".join(result.warnings)
+    assert "SphI 在保留骨架上还有 3 个切点" in joined
+    assert "得不到完整构建体" in joined
+    # 回退路径的既有强告警也在：按位点建模失败，MCS 替换不可复现
+    assert "无法按双酶切建模" in joined
 
 
 # ---------- 6. 自定义同源臂：预览与拼接定位判定 ----------

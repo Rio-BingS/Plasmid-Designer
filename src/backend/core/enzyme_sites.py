@@ -13,7 +13,7 @@ Bio.Restriction 首次导入会构建全部 REBASE 酶类（约 6 MB RSS / 0.1 s
 import re
 from collections.abc import Sequence as _SequenceABC
 from functools import lru_cache
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 from core.seq_utils import revcomp as _revcomp
 
@@ -419,3 +419,34 @@ def type_iis_enzymes() -> Tuple[str, ...]:
 
     names = sorted({e.__name__ for e in _R.CommOnly}, key=str.lower)
     return tuple(n for n in names if is_type_iis(get_enzyme(n)))
+
+
+def reject_extra_backbone_cuts(
+    backbone: str, left_cut: int, right_cut: int, enzymes: Sequence[str],
+    *, circular: bool = True,
+) -> None:
+    """双酶切可行性校验：选中的酶在**保留骨架**上还有切点时抛 ValueError。
+
+    真实酶切不认「规划挑中的那一对」——酶在每处识别序列都切割，骨架上其余
+    同酶位点（如 pcDNA3.1 的 SphI 选 1/4）会把保留骨架再切成几段，连接产物
+    是碎片拼盘，预测的构建体得不到。
+
+    保留骨架 = 被切除区间 (left_cut, right_cut] 之外的部分（right < left
+    跨原点）。边界切点本身不算：粘端连接后位点序列在构建体两端复原
+    （plan 的 head/tail 补回残留）。
+    """
+    left, right = left_cut, right_cut
+    excised = (lambda c: left < c <= right) if left < right \
+        else (lambda c: c > left or c <= right)
+    for enzyme in dict.fromkeys(e for e in enzymes if e):
+        cuts = sorted({s["cut_fwd"] for s in find_enzyme_sites(
+            backbone, [enzyme], circular=circular)})
+        kept = [c for c in cuts if c not in (left, right) and not excised(c)]
+        if kept:
+            other = next((e for e in enzymes if e and e != enzyme), None)
+            raise ValueError(
+                f"{enzyme} 在保留骨架上还有 {len(kept)} 个切点"
+                f"（{'、'.join(map(str, kept))}）：酶切会把骨架切成 "
+                f"{len(kept) + 1} 段，得不到完整构建体。"
+                + (f"可换掉 {enzyme}（保留 {other}），改用骨架上只有唯一位点的酶对。"
+                   if other else "请改用骨架上只有唯一位点的酶对。"))
