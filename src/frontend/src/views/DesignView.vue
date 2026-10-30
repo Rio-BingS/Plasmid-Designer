@@ -75,6 +75,7 @@ const enzymeCountBadges = computed<Record<string, number>>(() => preview.value?.
 const previewLoading = ref(false)
 const previewError = ref('')
 const allowBackboneCuts = ref(false)  // 多切点知情确认（防抖 watch 里重置）
+const selectedCutPair = ref<[number, number] | null>(null)  // 回收片段（null=自动推荐）
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 基因长度估计：氨基酸按 aa×3，DNA 按碱基数（提交后以优化结果为准） */
@@ -116,6 +117,7 @@ async function fetchPreview() {
   const isArms = cloningMethod.value === 'gibson' && gibsonLinearization.value === 'custom_arms'
   try {
     preview.value = await getRestrictionPreview({
+      ...(selectedCutPair.value && { cut_pair: selectedCutPair.value }),
       ...(isArms
         ? {
             homology_arm_5: customArm5.value.trim(),
@@ -150,7 +152,8 @@ watch(
   [cloningMethod, enzyme5, enzyme3, vectorId, adhocVector, estimatedInsertLength,
    insertDirection, gibsonLinearization, keepRestrictionSites, customArm5, customArm3],
   () => {
-    allowBackboneCuts.value = false   // 输入变了，旧的知情确认不再成立
+    allowBackboneCuts.value = false   // 输入变了，旧的知情确认/片段选择不再成立
+    selectedCutPair.value = null
     if (previewTimer) clearTimeout(previewTimer)
     previewTimer = setTimeout(() => { previewTimer = null; fetchPreview() }, 250)
   },
@@ -330,14 +333,11 @@ function clearForm() {
   preview.value = null
   gibsonSite.value = ''
   gibsonLinearization.value = 'double_digest'
-  customArm5.value = ''
-  customArm3.value = ''
+  customArm5.value = ''; customArm3.value = ''
   keepRestrictionSites.value = true
   vectorNamePrefix.value = false
   excludeEnzymes.value = []
-  oligoLengthMin.value = 40
-  oligoLengthMax.value = 80
-  overlapLength.value = 20
+  oligoLengthMin.value = 40; oligoLengthMax.value = 80; overlapLength.value = 20
   error.value = ''
 }
 
@@ -462,11 +462,11 @@ async function handleSubmit() {
       protocol_language: protocolLanguage.value
     }
     if (cloningMethod.value === 'restriction') {
-      request.enzyme_5 = enzyme5.value
-      request.enzyme_3 = enzyme3.value
+      request.enzyme_5 = enzyme5.value; request.enzyme_3 = enzyme3.value
       request.insert_direction = insertDirection.value
       request.trim_redundant_start = autoTrimStartCodon.value
       if (preview.value?.backbone_cut_risk && allowBackboneCuts.value) request.allow_backbone_cuts = true
+      if (selectedCutPair.value) request.cut_pair = selectedCutPair.value
     }
     request.vector_name_prefix = vectorNamePrefix.value
     if (upstreamFlank.value.trim()) request.upstream_flank = upstreamFlank.value.trim()
@@ -476,13 +476,11 @@ async function handleSubmit() {
       request.gibson_linearization = gibsonLinearization.value
       if (gibsonLinearization.value === 'double_digest') {
         request.keep_restriction_sites = keepRestrictionSites.value
-        request.enzyme_5 = enzyme5.value
-        request.enzyme_3 = enzyme3.value
+        request.enzyme_5 = enzyme5.value; request.enzyme_3 = enzyme3.value
       } else if (gibsonLinearization.value === 'single_site') {
         if (gibsonSite.value) request.gibson_site = gibsonSite.value
       } else {
-        request.homology_arm_5 = customArm5.value.trim()
-        request.homology_arm_3 = customArm3.value.trim()
+        request.homology_arm_5 = customArm5.value.trim(); request.homology_arm_3 = customArm3.value.trim()
       }
     }
     if (excludeEnzymesApplicable.value && excludeEnzymes.value.length) {
@@ -802,6 +800,7 @@ function loadExample() {
             </p>
             <RestrictionPreviewCard
               v-model:allow-backbone-cuts="allowBackboneCuts"
+              v-model:cut-pair="selectedCutPair"
               :preview="preview"
               :loading="previewLoading"
               :error="previewError"
@@ -855,6 +854,7 @@ function loadExample() {
             </p>
             <RestrictionPreviewCard
               v-model:allow-backbone-cuts="allowBackboneCuts"
+              v-model:cut-pair="selectedCutPair"
               :preview="preview"
               :loading="previewLoading"
               :error="previewError"

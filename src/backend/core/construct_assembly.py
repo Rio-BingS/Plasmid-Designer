@@ -31,6 +31,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from core.cut_pairs import (
+    _best_ordered_pair, _candidate_pairs, _excised_between, _forward_dist,
+    _pair_score, enumerate_cut_pairs, pick_flanking,
+)
 from core.enzyme_sites import find_enzyme_sites, get_enzyme, golden_gate_geometry
 from core.seq_utils import revcomp
 
@@ -167,128 +171,11 @@ def physical_sites(sequence: str, enzyme: str, *, circular: bool = True) -> List
     return out
 
 
-def _forward_dist(a: int, b: int, length: int, circular: bool) -> int:
-    """从切点 a 走到切点 b 的距离（即被切掉的 (a, b] 长度）"""
-    return (b - a) % length if circular else (b - a)
-
-
-def _contains(a: int, dist: int, anchor: int, length: int, circular: bool) -> bool:
-    off = (anchor - a - 1) % length if circular else (anchor - a - 1)
-    return 0 <= off < dist
-
-
-def _in_window(pos: int, window: Optional[Tuple[int, int]], length: int,
-               circular: bool) -> bool:
-    if not window:
-        return True
-    lo, hi = window
-    if circular and lo > hi:
-        return pos >= lo or pos <= hi
-    return lo <= pos <= hi
-
-
-def _overlaps_window(a: int, dist: int, window: Optional[Tuple[int, int]],
-                     length: int, circular: bool) -> bool:
-    if not window:
-        return True
-    lo, hi = window
-    return any(_in_window((a + i) % length if circular else a + i, window, length, circular)
-               for i in range(1, dist + 1))
-
-
-def _excised_between(c: int, a: int, b: int) -> bool:
-    """c 是否落在被切除区间 (a, b] 内（a < b 直接比；a >= b 跨原点）"""
-    return (a < c <= b) if a < b else (c > a or c <= b)
-
-
-def _pair_score(a: int, b: int, window: Optional[Tuple[int, int]], length: int, circular: bool,
-                leftover_cuts: int = 0) -> Optional[Tuple[int, int, int]]:
-    """(penalty, 保留骨架残留同酶位点数, 切除长度)；a==b 返回 None。
-
-    残留位点数升序：多切点按胶回收几何选最外侧对，把内部同酶位点吸进废
-    片段（选邻近对会残留同酶位点把骨架切碎，不可胶回收）。"""
-    d = _forward_dist(a, b, length, circular)
-    if d <= 0:
-        return None
-    both_in = (_in_window(a, window, length, circular)
-               and _in_window(b, window, length, circular))
-    if both_in:
-        penalty = 0
-    elif _overlaps_window(a, d, window, length, circular):
-        penalty = 1
-    else:
-        penalty = 2
-    return (penalty, leftover_cuts, d)
-
-
-def _candidate_pairs(cuts_a: Sequence[int], cuts_b: Sequence[int],
-                     length: int, circular: bool, allow_long: bool):
-    """枚举候选切点对；allow_long=False 时先排除超过半圈的方向。
-
-    环状载体的废片段一定比半圈短：反向那对切点算出来是「长度-废片段」
-    （pET-30a 实测 188 bp 被算成 5234 bp），按它组装等于扔掉整条主链。"""
-    for a in cuts_a:
-        for b in cuts_b:
-            d = _forward_dist(a, b, length, circular)
-            if d <= 0:
-                continue
-            if circular and not allow_long and d * 2 > length:
-                continue
-            yield a, b
-
-
-def _best_ordered_pair(
-    groups: Sequence[Tuple[Sequence[int], Sequence[int], str]],
-    window: Optional[Tuple[int, int]], length: int, circular: bool,
-    interior_sets: Optional[Sequence[Sequence[int]]] = None,
-) -> Optional[Tuple[Tuple[int, int, int], int, int, str]]:
-    """在若干 (cuts_a, cuts_b, tag) 组合里挑最优切点对 → (score, a, b, tag)。
-
-    interior_sets 与 groups 一一对应（该组合两把酶的全体切点并集），统计
-    保留骨架残留的同酶位点数（score 第二键）。先只考虑不超过半圈的切除
-    区间，挑不出来再放宽到整圈（调用方据此告警）。"""
-    for allow_long in (False, True):
-        best: Optional[Tuple[Tuple[int, int, int], int, int, str]] = None
-        for gi, (cuts_a, cuts_b, tag) in enumerate(groups):
-            interior = interior_sets[gi] if interior_sets else ()
-            for a, b in _candidate_pairs(cuts_a, cuts_b, length, circular, allow_long):
-                leftover = sum(c not in (a, b) and not _excised_between(c, a, b)
-                               for c in interior)
-                score = _pair_score(a, b, window, length, circular, leftover)
-                if score is None:
-                    continue
-                if best is None or score < best[0]:
-                    best = (score, a, b, tag)
-        if best is not None:
-            return best
-    return None
-
-
-def pick_flanking(
-    cuts_a: Sequence[int], cuts_b: Sequence[int], *,
-    window: Optional[Tuple[int, int]] = None, length: int, circular: bool = True,
-) -> Optional[Tuple[int, int, int]]:
-    """挑一对切点，返回 (left, right, penalty)。
-
-    penalty 0/1/2 = 两切点都在 MCS 区间内 / 区间与之相交 / 完全在外（调用方
-    据此告警）。排序 (penalty, 切除长度)。**不能只看「包住 MCS 中点」**——
-    pET-28a 的 BamHI/XhoI 切点 159/199 不包含 MCS 中点 229，只看中点会把
-    5329 bp 主链当废片段；也**不能奖励「MCS 点落在整圈长区间里」**（方向
-    正好是反的，见 _candidate_pairs）。window 为 None 时按最短区间取。"""
-    best = _best_ordered_pair([(cuts_a, cuts_b, '')], window, length, circular)
-    if best is not None:
-        return best[1], best[2], best[0][0]
-
-    for a in cuts_a:
-        if a in cuts_b:
-            return a, a, 0
-    return None
-
-
 def plan_restriction(
     sequence: str, enzyme_5: str, enzyme_3: str, *,
     window: Optional[Tuple[int, int]] = None, circular: bool = True,
     warnings: List[str], join: str = "sticky", keep_sites: bool = True,
+    cut_pair: Optional[Tuple[int, int]] = None,
 ) -> Optional[AssemblyPlan]:
     """双酶切：两个切点之间整段被切走，基因两端补回位点残留碱基。
 
@@ -296,7 +183,11 @@ def plan_restriction(
     join="sticky"（默认）与 "gibson" 几何完全一致，仅连接处物理约束不同——
     粘端配对强制基因取向，Gibson 取向由同源臂决定。keep_sites=False 仅对
     gibson 有意义：同源臂越过位点、重组消费位点碱基（无缝连接），切点外扩
-    到完整位点边界，构建体不再含位点序列，起始密码子语义归基因自身。"""
+    到完整位点边界，构建体不再含位点序列，起始密码子语义归基因自身。
+
+    cut_pair=(left_cut, right_cut)：用户在预览里显式挑选的片段（切点对）。
+    指定时跳过自动选择，直接按该对构建 plan——胶回收哪条带由用户决定；
+    坐标必须真实存在（多切点酶常见），无效时 ValueError 由调用方转 422。"""
     length = len(sequence)
     try:
         site5, k5, _ = _enzyme_cut(enzyme_5)
@@ -316,6 +207,22 @@ def plan_restriction(
 
     cuts5 = sorted({s["cut_fwd"] for s in sites5})
     cuts3 = sorted({s["cut_fwd"] for s in sites3})
+
+    if cut_pair is not None:
+        # 用户显式选片段：两坐标必须一个属于 e5、一个属于 e3（谁左谁右都行，
+        # 反向由粘端配对自动处理），区间必须围得出来
+        lc, rc = int(cut_pair[0]), int(cut_pair[1])
+        valid = ((lc in cuts5 and rc in cuts3) or (lc in cuts3 and rc in cuts5))
+        d = _forward_dist(lc, rc, length, circular)
+        if not valid or d <= 0:
+            raise ValueError(
+                f"所选片段切点 {lc}/{rc} 不属于 {enzyme_5}/{enzyme_3} 的位点"
+                f"（或区间不成立）：载体或酶可能已变化，请重新选择")
+        left_enzyme = enzyme_5 if lc in cuts5 else enzyme_3
+        return _plan_from_pair(sequence, enzyme_5, enzyme_3, lc, rc, left_enzyme,
+                               length=length, circular=circular,
+                               warnings=warnings, join=join, keep_sites=keep_sites,
+                               site5=site5, k5=k5, site3=site3, k3=k3)
 
     # 两个方向都要试：废片段可能在 e5 之后、e3 之前。只按「e5 → e3」单向找，
     # pET-28a 这类位点顺序与引物端指派相反的载体会把 5.3 kb 主链当废片段
@@ -363,80 +270,20 @@ def plan_restriction(
             junction=f"{enzyme_5} 单切点 {point}（纯插入）", warnings=warnings)
 
     score, left, right, left_enzyme = best
-    cut_length = _forward_dist(left, right, length, circular)
     if score[0] == 2:
         warnings.append(
             f"{enzyme_5}/{enzyme_3} 的两个切点都不在 MCS 区间内"
-            f"（将切除 {cut_length} bp），请核对酶切方案")
-    if circular and cut_length * 2 > length:
+            f"（将切除 {_forward_dist(left, right, length, circular)} bp），请核对酶切方案")
+    plan = _plan_from_pair(sequence, enzyme_5, enzyme_3, left, right, left_enzyme,
+                           length=length, circular=circular, warnings=warnings,
+                           join=join, keep_sites=keep_sites,
+                           site5=site5, k5=k5, site3=site3, k3=k3,
+                           auto_score=score)
+    if plan is not None and circular and plan.removed_bp * 2 > length:
         warnings.append(
-            f"切除区间 {cut_length} bp 超过载体一半（{length} bp）：只有当两个方向"
+            f"切除区间 {plan.removed_bp} bp 超过载体一半（{length} bp）：只有当两个方向"
             "都超过半圈时才会这样切，请核对酶切方案")
-
-    # 左切点属于哪把酶：引物把 enzyme_5 的位点放在基因 5' 端。左切点是
-    # enzyme_3 时，两个连接处的粘端是「反着」配的——基因只能以**反向互补**
-    # 的形式插进去（pET-28a 的表达盒在负链上，BamHI 5' / XhoI 3' 的基因
-    # 正是这种情况）。这不是可选的排布，是粘端配对的物理结果。
-    reverse = left_enzyme != enzyme_5
-    if not reverse:
-        head, tail = site5[k5:], site3[:k3]
-    else:
-        head, tail = site3[k3:], site5[:k5]
-        if join == "gibson":
-            warnings.append(
-                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
-                "负链（-）组装。Gibson 的基因取向由同源臂设计决定，请确认引物"
-                "同源臂使基因 5′ 端位于该端；如需反义构建请勾选「反向」重新设计")
-        else:
-            warnings.append(
-                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
-                "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
-                "请勾选「反向」后重新设计")
-
-    seamless = join == "gibson" and not keep_sites
-    if seamless:
-        # 无缝连接：同源臂越过位点、重组把位点碱基消费掉——切点各向外扩到
-        # 完整位点边界，构建体里不再出现位点序列（head/tail 置空）。
-        # 切点定义域是 [1..length]（0 ≡ length ≡ 原点），外扩是裸算术，
-        # 跨原点位点扩完会越界（负数 / 超过 length）；不归一的话 apply_plan
-        # 的 Python 切片会静默产出错误构建体（实测多出上百 bp）
-        k_left, site_left = (k5, site5) if not reverse else (k3, site3)
-        k_right, site_right = (k3, site3) if not reverse else (k5, site5)
-        left -= k_left
-        right += len(site_right) - k_right
-        if circular:
-            if length:
-                left = ((left - 1) % length) + 1
-                right = ((right - 1) % length) + 1
-        elif left < 0 or right > length:
-            warnings.append(
-                f"{enzyme_5}/{enzyme_3} 位点紧贴载体末端，无缝外扩越界："
-                "已按 MCS 区间替换构建体")
-            return None
-        head, tail = "", ""
-        cut_length = _forward_dist(left, right, length, circular)
-        warnings.append(
-            f"酶切位点已从构建体去除（无缝连接）：连接处不再保留 "
-            f"{enzyme_5}/{enzyme_3} 位点序列，位点无法再次酶切")
-
-    if seamless:
-        junction = (f"双酶切线性化（切除 {cut_length} bp，"
-                    f"{enzyme_5}/{enzyme_3} 位点已去除，无缝连接，Gibson 同源臂连接"
-                    + ("，插入片段在负链" if reverse else "") + "）")
-    else:
-        junction = (f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
-                    f"（切除 {cut_length} bp，位点在连接处复原"
-                    + ("，插入片段在负链" if reverse else "")
-                    + ("，Gibson 同源臂连接）" if join == "gibson" else "）"))
-
-    return AssemblyPlan(
-        "restriction", left, right, head=head, tail=tail,
-        insert_reverse=reverse, removed_bp=cut_length,
-        seamless=seamless,
-        junction=junction,
-        warnings=warnings,
-    )
-
+    return plan
 
 def plan_golden_gate(
     sequence: str, enzyme: str, overhang_5: str, overhang_3: str, *,
@@ -940,3 +787,84 @@ def cassette_direction(
 
 # ==================== 公开化别名（跨层契约原为私有名）====================
 _is_promoter = is_promoter  # 公开化前的私有名（历史引用兼容）
+
+
+def _plan_from_pair(
+    sequence: str, enzyme_5: str, enzyme_3: str,
+    left: int, right: int, left_enzyme: str, *,
+    length: int, circular: bool, warnings: List[str],
+    join: str, keep_sites: bool,
+    site5: str, k5: int, site3: str, k3: int,
+    auto_score: Optional[Tuple[int, int, int]] = None,
+) -> Optional[AssemblyPlan]:
+    """按既定切点对构建 AssemblyPlan（自动选择与用户指定片段共用）。
+
+    左切点属于哪把酶决定粘端配对方向：左切点是 enzyme_3 时两个连接处的
+    粘端「反着」配，基因只能以反向互补形式插入（pET-28a 的表达盒在负链上，
+    BamHI 5' / XhoI 3' 正是这种情况）——这不是可选排布，是物理结果。
+    auto_score 仅在自动选择路径传入，用于区间在 MCS 之外的告警判断。"""
+    cut_length = _forward_dist(left, right, length, circular)
+    # 左切点属于哪把酶：引物把 enzyme_5 的位点放在基因 5' 端。左切点是
+    # enzyme_3 时，两个连接处的粘端是「反着」配的——基因只能以**反向互补**
+    # 的形式插进去（pET-28a 的表达盒在负链上，BamHI 5' / XhoI 3' 的基因
+    # 正是这种情况）。这不是可选的排布，是粘端配对的物理结果。
+    reverse = left_enzyme != enzyme_5
+    if not reverse:
+        head, tail = site5[k5:], site3[:k3]
+    else:
+        head, tail = site3[k3:], site5[:k5]
+        if join == "gibson":
+            warnings.append(
+                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
+                "负链（-）组装。Gibson 的基因取向由同源臂设计决定，请确认引物"
+                "同源臂使基因 5′ 端位于该端；如需反义构建请勾选「反向」重新设计")
+        else:
+            warnings.append(
+                f"载体上 {enzyme_3} 的切点在前、{enzyme_5} 的切点在后：插入片段按"
+                "负链（-）插入构建体（粘端只在同一位点间互补）；如需反义构建，"
+                "请勾选「反向」后重新设计")
+
+    seamless = join == "gibson" and not keep_sites
+    if seamless:
+        # 无缝连接：同源臂越过位点、重组把位点碱基消费掉——切点各向外扩到
+        # 完整位点边界，构建体里不再出现位点序列（head/tail 置空）。
+        # 切点定义域是 [1..length]（0 ≡ length ≡ 原点），外扩是裸算术，
+        # 跨原点位点扩完会越界（负数 / 超过 length）；不归一的话 apply_plan
+        # 的 Python 切片会静默产出错误构建体（实测多出上百 bp）
+        k_left, site_left = (k5, site5) if not reverse else (k3, site3)
+        k_right, site_right = (k3, site3) if not reverse else (k5, site5)
+        left -= k_left
+        right += len(site_right) - k_right
+        if circular:
+            if length:
+                left = ((left - 1) % length) + 1
+                right = ((right - 1) % length) + 1
+        elif left < 0 or right > length:
+            warnings.append(
+                f"{enzyme_5}/{enzyme_3} 位点紧贴载体末端，无缝外扩越界："
+                "已按 MCS 区间替换构建体")
+            return None
+        head, tail = "", ""
+        cut_length = _forward_dist(left, right, length, circular)
+        warnings.append(
+            f"酶切位点已从构建体去除（无缝连接）：连接处不再保留 "
+            f"{enzyme_5}/{enzyme_3} 位点序列，位点无法再次酶切")
+
+    if seamless:
+        junction = (f"双酶切线性化（切除 {cut_length} bp，"
+                    f"{enzyme_5}/{enzyme_3} 位点已去除，无缝连接，Gibson 同源臂连接"
+                    + ("，插入片段在负链" if reverse else "") + "）")
+    else:
+        junction = (f"{left_enzyme} 切点 {left} / 另一端切点 {right}"
+                    f"（切除 {cut_length} bp，位点在连接处复原"
+                    + ("，插入片段在负链" if reverse else "")
+                    + ("，Gibson 同源臂连接）" if join == "gibson" else "）"))
+
+    return AssemblyPlan(
+        "restriction", left, right, head=head, tail=tail,
+        insert_reverse=reverse, removed_bp=cut_length,
+        seamless=seamless,
+        junction=junction,
+        warnings=warnings,
+    )
+
