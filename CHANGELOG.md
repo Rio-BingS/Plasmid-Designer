@@ -6,7 +6,7 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
-## [Unreleased]（分支 `feature/snapgene-primer-view`）
+## [2.34.0] - 2026-10-29
 
 ### 变更
 - **引物数据模型补齐物理属性**（Step 1）：图谱文档的每条引物现在自带
@@ -1735,6 +1735,7 @@
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
 [Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.6...HEAD
+[2.34.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.6...v2.34.0
 [2.33.6]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.5...v2.33.6
 [2.33.5]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.4...v2.33.5
 [2.33.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.3...v2.33.4
