@@ -7,6 +7,7 @@
  */
 import { computed } from 'vue'
 import type { RestrictionPreview } from '@/types'
+import CutPairPicker from '@/components/CutPairPicker.vue'
 
 const props = defineProps<{
   preview: RestrictionPreview | null
@@ -14,9 +15,14 @@ const props = defineProps<{
   error?: string
   /** 多切点酶切知情确认（v-model）：骨架重切风险由用户决定是否接受 */
   allowBackboneCuts?: boolean
+  /** 用户选择的骨架片段（v-model）：null = 自动推荐 */
+  cutPair?: [number, number] | null
 }>()
 
-const emit = defineEmits<{ 'update:allowBackboneCuts': [boolean] }>()
+const emit = defineEmits<{
+  'update:allowBackboneCuts': [boolean]
+  'update:cutPair': [[number, number] | null]
+}>()
 
 const VB_W = 1000
 const VB_H = 176
@@ -139,6 +145,12 @@ function arrowPath(x1: number, x2: number, y: number, h: number, dir: 1 | -1): s
   return `M${x2},${top} L${xh},${top} L${x1},${y} L${xh},${bottom} L${x2},${bottom} Z`
 }
 
+// 片段选择的双向中转：props 只读，经 emit 回写父组件
+const localCutPair = computed<[number, number] | null>({
+  get: () => props.cutPair ?? null,
+  set: (v) => emit('update:cutPair', v),
+})
+
 const strand = computed(() => (props.preview?.strand === '-' ? -1 : 1) as 1 | -1)
 const strandText = computed(() => (strand.value === -1 ? '负链（-）' : '正链（+）'))
 
@@ -203,6 +215,11 @@ const rulerTicks = computed(() => {
 
     <template v-if="preview && !error">
       <p class="rp-summary" :class="{ 'rp-summary-minus': strand === -1 }">{{ summary }}</p>
+
+      <CutPairPicker
+        :options="preview.cut_options ?? []"
+        v-model="localCutPair"
+      />
 
       <div v-if="preview.backbone_cut_risk" class="rp-recut" role="alert">
         <p v-for="w in preview.warnings.filter((x) => x.includes('保留骨架'))" :key="w" class="rp-warn rp-recut-text">⚠️ {{ w }}</p>

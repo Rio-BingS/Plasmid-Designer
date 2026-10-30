@@ -85,6 +85,8 @@ export interface DesignRequest {
   /** 多切点酶切知情确认：接受所选酶在保留骨架上的额外切点（预览有
    *  backbone_cut_risk 警告时，未勾选将拒绝按位点建模、回退 MCS 替换） */
   allow_backbone_cuts?: boolean
+  /** 显式选择要胶回收的骨架片段（预览 cut_options 之一）；缺省 = 自动最外侧 */
+  cut_pair?: [number, number]
   /** NdeI/NcoI 等位点自带起始密码子时自动去除插入序列开头的冗余 ATG（默认 true） */
   trim_redundant_start?: boolean
   /** Gibson 载体线性化方式：双酶切（默认）/ 单位点 / 自定义同源臂 */
@@ -150,10 +152,26 @@ export interface RestrictionPreview {
   enzyme_counts: Record<string, number>
   /** true = 所选酶在保留骨架上还有切点（多切点酶切风险，见 warnings） */
   backbone_cut_risk: boolean
+  /** 可胶回收的骨架片段清单（切点对，按推荐度排序；多切点酶时 >1 项） */
+  cut_options: CutPairOption[]
+  /** 用户显式选择的切点对；null = 自动（推荐 = 首个 cut_option） */
+  cut_pair: [number, number] | null
   evidence: RestrictionPreviewEvidence[]
   features: RestrictionPreviewFeature[]
   junctions: { five: string; three: string }
   warnings: string[]
+}
+
+/** 一个可胶回收的骨架片段：切点对 + 长度 + 骨架完整性 */
+export interface CutPairOption {
+  left_enzyme: string
+  left_cut: number
+  right_enzyme: string
+  right_cut: number
+  removed_bp: number
+  kept_bp: number
+  /** 保留骨架上残留的同酶位点数（0 = 骨架完整，推荐） */
+  leftover_cuts: number
 }
 
 /** 插入方向：auto=按载体表达盒；reverse=反义构建；plus/minus=用户手动指定 */

@@ -226,6 +226,49 @@ def test_run_design_multi_cut_enzyme_uses_outermost_sites():
     assert _fes(result.construct_sequence, ["EcoRI"])   # 连接处位点复原
 
 
+def test_preview_cut_pair_selection_roundtrip():
+    """「选择所需片段」（2026-10-29 用户需求）：预览枚举全部可胶回收片段
+    （cut_options 按推荐度排序，首位 = 自动最外侧），用户显式传 cut_pair
+    时按所选几何组装并回显；选骨架有残留的对时 risk 标记照常给出；非法
+    cut_pair（酶/载体变化后）422 说明。"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
+    opts = pv["cut_options"]
+    assert [o["removed_bp"] for o in opts] == [1717, 922, 850, 276]   # 升序评分
+    assert opts[0]["leftover_cuts"] == 0                              # 推荐位骨架完整
+    assert pv["cut_pair"] is None                                     # 缺省自动
+
+    picked = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+        cut_pair=[952, 1802]))
+    assert picked["removed_bp"] == 850 and picked["cut_pair"] == [952, 1802]
+    assert picked["backbone_cut_risk"] is True                        # 骨架残留 2 切点
+
+    import pytest
+    with pytest.raises(ValueError, match="重新选择"):
+        build_restriction_preview(RestrictionPreviewRequest(
+            enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+            cut_pair=[952, 9999]))
+
+
+def test_run_design_with_cut_pair_uses_user_geometry():
+    """正式设计同样接受 cut_pair：按用户所选切点对建模（做缺失/亚克隆等
+    非最外侧场景），构建体长度反映所选几何。"""
+    acked = run_design(
+        "test-cut-pair-design",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI", cut_pair=[952, 1802]))
+    assert "无法按双酶切建模" not in "\n".join(acked.warnings)
+    outer = run_design(
+        "test-cut-pair-auto",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI"))
+    # 850bp 方案的构建体比 1717bp 方案长 867bp
+    assert len(acked.construct_sequence) == len(outer.construct_sequence) + (1717 - 850)
+
+
 # ---------- 6. 自定义同源臂：预览与拼接定位判定 ----------
 
 ARM5 = "GGTGGTGGTACGTACTG"      # 17bp，锚在载体 21..37
