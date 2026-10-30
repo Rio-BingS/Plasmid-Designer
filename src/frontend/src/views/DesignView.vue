@@ -935,14 +935,12 @@ function loadExample() {
             两把酶的先后顺序不影响结果：基因接哪一端由载体自己的启动子/RBS 判定。
             下面这张图就是提交后拿到的构建体（被切走的片段已经不在里面）。
           </p>
-          <RestrictionPreviewCard
-            :preview="preview"
-            :loading="previewLoading"
-            :error="previewError"
-          />
+          <RestrictionPreviewCard v-model:allow-backbone-cuts="allowBackboneCuts"
+                                  v-model:cut-pair="selectedCutPair" :preview="preview"
+                                  :loading="previewLoading" :error="previewError" />
         </div>
       </div>
-      
+
       <!-- 密码子优化 -->
       <div v-if="sequenceType === 'amino_acid'" class="form-section">
         <h2>密码子优化</h2>
