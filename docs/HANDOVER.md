@@ -1,10 +1,9 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-29（`v2.33.6` + Unreleased；完成第二轮代码审计与终审修复批次——
-> 后端 12 项安全/健壮性 + 前端 4 项 + 部署配置 4 项 + 死代码 −180 行，索引见
-> KNOWN_ISSUES「2026-10-29」节、留档见 postmortems；环形图引物按用户提供的 SnapGene
-> 截图复刻等工作仍在 Unreleased 未发版，下一步见 §8）。
+> **更新**：2026-10-29（`v2.34.0`/`v2.34.1` 已发版并部署上线；内容 = SnapGene 引物视图
+> 复刻 + 第二轮审计修复批次；v2.34.1 为部署时真机纠正——v2.34.0 的健康检查
+> curl→wget 是误修已回滚，详见 CHANGELOG。审计索引见 KNOWN_ISSUES「2026-10-29」节）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -14,20 +13,19 @@
 
 ## 1. 一句话现状
 
-单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.33.6**
-（2026-10-29 发布，标签与 `main` 均已推送，CI 绿）。功能完整可用、有持续的真实数据回归。
+单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.34.1**
+（2026-10-29 发版并已部署上线：v2.34.0 = SnapGene 引物视图 + 审计修复批次，
+v2.34.1 = 部署时真机回滚健康检查误改；标签与 `main` 均已推送）。功能完整可用、有持续的真实数据回归。
 2026-10-29 复核实测（审计修复批次完成后）：后端 **1823 passed / 43 skipped / 0 failed**，
 前端 **661 passed**，`vue-tsc --noEmit` **0 error**，build/npm audit/尺寸预算/文档同步
 门禁全绿。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
-**进行中的分支**：`feature/snapgene-primer-view`（未合入 main、未部署）——序列视图引物按
-SnapGene 截图复刻为两类标签：紫色结合位点箭头（程序导出的 `primer_bind` 注释）+
-蓝色引物框（正链框在序列上方、负链框在最下方，框内逐列印完整引物序列、名牌骑框沿、
-5′ 折角）；图谱文档引物新增 `full_sequence`，`MAP_ALGO_VERSION` 升至 `8`。本分支上
-另累积了 2026-10-29 第二轮审计修复批次（CHANGELOG [Unreleased]「修复」节）。合并与
-部署等用户指令。
+`feature/snapgene-primer-view` 已快进合入 `main` 并随 v2.34.0 发版部署（序列视图引物
+按 SnapGene 截图复刻、`full_sequence`、`MAP_ALGO_VERSION=8`、审计修复批次全量上线）。
+注意：backend 横幅显示 `v2.34.0` 属正常——v2.34.1 仅改 compose 健康检查，backend
+代码两 tag 无差异。
 
 **当前最大缺口是批量页体量**：`src/frontend/src/views/BatchDesignView.vue` 已 **1318 行**
 （预算顶格，本轮靠收敛 localStorage 读写到 batchHistory.ts 才保住）、连续两轮触发 CI
@@ -37,7 +35,7 @@ SnapGene 截图复刻为两类标签：紫色结合位点箭头（程序导出�
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.33.6`（2026-10-29：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=8；酶名大小写归一见 v2.31.3） |
+| 版本 / 标签 | `v2.34.1`（2026-10-29：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。此前 v2.33.6：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=8；酶名大小写归一见 v2.31.3） |
 | 后端测试 | **1823 passed / 43 skipped / 0 failed**（约 100 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
 | 前端测试 | **661 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过、`npm audit --omit=dev` 0 漏洞（2026-10-29） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
