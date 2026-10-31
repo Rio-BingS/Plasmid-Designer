@@ -317,7 +317,8 @@ def list_records(user: Optional[object], is_admin: bool,
         q = q.order_by(SequencingAnalysisDB.created_at.desc())
         if offset:
             q = q.offset(int(offset))
-        if limit:
+        if limit and int(limit) > 0:
+            # 负数在 SQLite/PG 里等于不限行数，这里防御性钳到上限内
             q = q.limit(min(int(limit), 1000))
         rows = q.all()
         return [
