@@ -8,7 +8,7 @@ FRONTEND_DIR := src/frontend
 COMPOSE_DIR := deploy/docker
 VENV_PY := .venv/Scripts/python    # Windows；Linux/macOS 改为 .venv/bin/python
 
-.PHONY: help install dev-backend dev-frontend dev test test-cov clean \
+.PHONY: help install dev-backend dev-frontend dev test clean \
         docker-up docker-down docker-build docker-logs build build-frontend
 
 help:
@@ -45,9 +45,6 @@ dev-frontend:
 # 测试（conftest.py 已注入路径，无需额外 PYTHONPATH）
 test:
 	cd tests && ../$(VENV_PY) -m pytest -q
-
-test-cov:
-	cd tests && ../$(VENV_PY) -m pytest -q --cov=core --cov=app --cov-report=html
 
 # 清理
 clean:

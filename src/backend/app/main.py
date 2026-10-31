@@ -265,4 +265,7 @@ app.add_middleware(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # HOST/PORT 此前是 config 里的死键；直接运行分支改用它们（默认回环，
+    # 见 config.py 注释），部署路径不受影响
+    from app.config import settings
+    uvicorn.run(app, host=settings.HOST, port=settings.PORT)
