@@ -434,12 +434,12 @@ def build_restriction_preview(request) -> Dict:
             sites.append({"role": role, "enzyme": enzyme, "junction": True,
                           "position": int(best["position"]), "cut": int(best["cut_fwd"]),
                           "end": int(best["position"]) + len(best.get("recognition") or "") - 1})
-    # 徽标口径=原始载体的位点数（多切点=多条带）；cut_marks=原载体全部候选
-    # 切点（用户选片段时可见位置）；arms/gibson 无废片段概念，不画
+    # 徽标口径=原始载体的位点数；cut_marks=原载体全部切点（图①②用）。
+    # Gibson 双酶切几何与 restriction 相同，同样出三图；仅 arms_mode 不画
     from core.cut_pairs import cut_marks_for_preview, vector_enzyme_counts
     _e5, _e3 = (ends.enzyme_5, ends.enzyme_3) if ends else (label5, label3)
     enzyme_counts = vector_enzyme_counts(backbone, (_e5, _e3), circular=circular)
-    cut_marks = ([] if (arms_mode or is_gibson or ends is None) else
+    cut_marks = ([] if (arms_mode or ends is None) else
                  cut_marks_for_preview(backbone, _e5, _e3, pair, ends.plan, circular=circular))
 
     lo, hi, features = asm.insert_start - 3000, asm.insert_end + 3000, []
