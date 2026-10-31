@@ -1,9 +1,9 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-29（`v2.34.0`/`v2.34.1` 已发版并部署上线；内容 = SnapGene 引物视图
-> 复刻 + 第二轮审计修复批次；v2.34.1 为部署时真机纠正——v2.34.0 的健康检查
-> curl→wget 是误修已回滚，详见 CHANGELOG。审计索引见 KNOWN_ISSUES「2026-10-29」节）。
+> **更新**：2026-10-31（第三轮全量审计修复批次未发版：6 项 bug + 3 项加固 + 2 项配置
+> + 8 处死代码，净 -107 行，见 [audit-round3-fixes 留档](postmortems/2026-10-31-audit-round3-fixes.md)；
+> 另有 10-30/31 的限制性克隆预览三图分工一批前端提交已上线 main。均未打 tag）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -14,11 +14,11 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.34.1**
-（2026-10-29 发版并已部署上线：v2.34.0 = SnapGene 引物视图 + 审计修复批次，
-v2.34.1 = 部署时真机回滚健康检查误改；标签与 `main` 均已推送）。功能完整可用、有持续的真实数据回归。
-2026-10-29 复核实测（审计修复批次完成后）：后端 **1823 passed / 43 skipped / 0 failed**，
-前端 **661 passed**，`vue-tsc --noEmit` **0 error**，build/npm audit/尺寸预算/文档同步
-门禁全绿。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
+（2026-10-29 发版并已部署上线）+ **main 上未发版的两个批次**：10-30/31 限制性克隆
+预览三图分工（纯前端），10-31 第三轮审计修复（6 bug + 3 加固 + 2 配置 + 8 死代码，
+见 [留档](postmortems/2026-10-31-audit-round3-fixes.md)）。功能完整可用、有持续的真实数据回归。
+2026-10-31 复核实测（第三轮审计修复完成后）：后端 **1828 passed / 43 skipped / 0 failed**，
+前端 **666 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算门禁全绿。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
@@ -36,8 +36,8 @@ backend/frontend 容器（流程见 §2「线上部署」行）。
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | `v2.34.1`（2026-10-29：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。此前 v2.33.6：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=8；酶名大小写归一见 v2.31.3） |
-| 后端测试 | **1823 passed / 43 skipped / 0 failed**（约 100 秒；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
-| 前端测试 | **661 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过、`npm audit --omit=dev` 0 漏洞（2026-10-29） |
+| 后端测试 | **1828 passed / 43 skipped / 0 failed**（约 110 秒，2026-10-31；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 前端测试 | **666 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-10-31；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
@@ -175,6 +175,7 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 | 2026-10-26 | [ci-red-chain-and-backup](postmortems/2026-10-26-ci-red-chain-and-backup.md) | 本地绿 ≠ CI 绿；被 skip 的测试等于不存在的测试；连续红灯要有「推完看一眼 CI」的收尾 |
 | 2026-10-26 | [synthetic-oligo-orientation](postmortems/2026-10-26-synthetic-oligo-orientation.md) | 凡是「从既成结果反推」的场景，直接取既成结果的段落，别重建——簿记迟早左右互换 |
 | 2026-10-29 | [audit-round2-fixes](postmortems/2026-10-29-audit-round2-fixes.md) | 可控字符串进日志/头/路径前必须过白名单（4 处同型）；双层读取 `in`+`[]` 非原子一律 `get()`；静默降级必须留 warning |
+| 2026-10-31 | [audit-round3-fixes](postmortems/2026-10-31-audit-round3-fixes.md) | 审计报告逐条复核再动手（agent 自报 15 项有 4 项不成立）；死代码要查「有没有人用」不只「有没有错」；re-export 块是死导入重灾区 |
 
 ## 8. 建议的下一步（按优先级）
 
@@ -185,6 +186,7 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 | P2 | 批量二期候选：每条序列更多参数覆盖、服务端批量历史列表 API（现为 localStorage 本地恢复，换设备不可见） | 用户工作流可能需要 |
 | P2 | 白名单历史大文件拆分收敛（design_service.py 2235、primer_designer 1048 等） | 与 P1 同一轮重构做，白名单只减不增 |
 | P3 | 批量执行并发度（现为串行逐条，100 条上限） | 常规基因每条 ~1s，暂够用 |
+| P3 | 第三轮审计遗留观察项（2026-10-31，见[留档](postmortems/2026-10-31-audit-round3-fixes.md)末节）：设计缓存 `design:{id}` 键无算法版本号（口径漂移靠 model_validate 兜底）；`adhoc_vector.overhang_bases` 的 cut_fwd 越界需属性测试验证；`run_design_task` 的兜底 FAILED 不含 plasmid_name 等展示字段 | 静态无法确认真 bug，留观察；动到相关代码时顺手验证 |
 
 **明确不要主动做的事**（用户已表态或已定案）：扩展酶表（「不需要，已有在线导入」）、
 SnapGene 批量镜像/定时同步、Addgene 代登录、iGEM Registry 接入（用户未表态）、
