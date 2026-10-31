@@ -14,7 +14,7 @@ import time
 from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -201,11 +201,14 @@ async def analyze_design_sequencing(
         raise HTTPException(status_code=400, detail="Design not completed")
 
     reference = result.construct_sequence or result.optimized_sequence or ""
-    # 有构建体序列即环状质粒；仅优化序列（无载体）时是线性片段
+    # 有载体骨架参与组装才是环状质粒。空骨架回退（design_service：查不到载体时
+    # construct_sequence = 纯插入片段、insert_start=1）与仅有优化序列时都是
+    # 线性片段——按环状延长比对会在「原点」接缝上产生假环化坐标与错误覆盖合并
+    circular = bool(result.construct_sequence) and result.insert_start != 1
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,
-        circular=bool(result.construct_sequence), zone=zone,
+        circular=circular, zone=zone,
     )
 
 @router.post(
@@ -239,11 +242,11 @@ async def analyze_vector_sequencing(
     )
 
 @router.get("/sequencing/analyses")
-async def list_analyses(limit: int = 200, offset: int = 0,
+async def list_analyses(limit: int = Query(default=200, ge=0, le=1000), offset: int = Query(default=0, ge=0),
                         user: Optional[User] = Depends(get_current_user)):
     """历史分析列表（摘要，按时间倒序；不含 reads/变体明细）。
 
-    分页：limit（默认 200，0 不限）+ offset。属主校验：只返回自己创建的
+    分页：limit（默认 200，0 不限，上限 1000）+ offset。属主校验：只返回自己创建的
     （管理员全可见）。终审 B-02：列表不再把匿名记录的 ID 交出去——匿名
     记录凭创建响应下发的 access_token 访问，匿名列表返回空；改造前的
     无 token 遗留记录只对管理员可见。"""

@@ -523,16 +523,19 @@ def _export_response(data, format: str, filename_base: str):
         "sbol": ".json"
     }
     filename = f"{filename_base}{extensions.get(format, '.txt')}"
+    # 与 461/510 行同口径：文件名统一过消毒 + RFC 6266 头组装（filename_base
+    # 目前是服务端 ID，但此函数是通用出口，防未来调用方传入用户可控名）
+    disposition = content_disposition(sanitize_filename(filename))
     if isinstance(content, bytes):
         return StreamingResponse(
             io.BytesIO(content),
             media_type=mime_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": disposition}
         )
     return PlainTextResponse(
         content=content,
         media_type=mime_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": disposition}
     )
 
 
