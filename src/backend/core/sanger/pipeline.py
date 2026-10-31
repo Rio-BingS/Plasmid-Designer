@@ -31,9 +31,8 @@ from core.sanger.aligner import (
 from core.sanger.annotator import annotate_variants, summarize_severity
 from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
-    baseline_correct, property_maps, estimate_run_length, peak_heights,
+    baseline_correct, property_maps, estimate_run_length,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
-    DROPOUT_WINDOW_BASES,
 )
 from core.sanger.reliable_zone import (
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,

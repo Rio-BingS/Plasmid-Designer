@@ -151,10 +151,7 @@ def enumerate_cut_pairs(
     cuts5 = sorted({s["cut_fwd"] for s in sites5})
     cuts3 = sorted({s["cut_fwd"] for s in sites3})
     length = len(sequence)
-    if circular:
-        all_cuts = sorted(set(cuts5) | set(cuts3))
-    else:
-        all_cuts = sorted(set(cuts5) | set(cuts3))
+    all_cuts = sorted(set(cuts5) | set(cuts3))
     # 每条消化带 = 相邻两切点 (a, b]；环状补上 (最后一刀, 第一刀] 的收尾带
     bands: List[Tuple[int, int]] = []
     for i, a in enumerate(all_cuts):

@@ -95,9 +95,21 @@ class InMemoryRateLimiter:
         return not ts or ts[-1] <= now - window
 
     def _evict_locked(self, now: float) -> None:
-        """从表头（最久未活跃）淘汰超额 key。必须在持有 self._lock 时调用。"""
+        """从表头（最久未活跃）淘汰超额 key。必须在持有 self._lock 时调用。
+
+        普通 key 除容量上限外还按 TTL 回收：表头是 OrderedDict 最久未活跃的
+        key，其窗口已整体过期（时间戳全空）就从头部逐个清掉——容量未满时
+        历史 key 也能陆续释放，不会把 50k 配额慢慢吃满后挤掉活跃用户。"""
         general = self._requests.general
         while len(general) > self.MAX_TRACKED_KEYS:
+            general.popitem(last=False)
+        # 摊销 TTL 清理：每次调用至多清一小批，避免单请求承担整表扫描
+        for _ in range(16):
+            if len(general) <= self.MAX_TRACKED_KEYS // 2:
+                break
+            head = next(iter(general.values()), None)
+            if head is None or not self._expired(head, now):
+                break
             general.popitem(last=False)
 
         protected = self._requests.protected
@@ -164,41 +176,6 @@ class InMemoryRateLimiter:
                 return max_requests
             used = sum(1 for t in entry[1] if t > window_start)
             return max(0, max_requests - used)
-
-
-class RedisRateLimiter:
-    """Redis 速率限制器（分布式）"""
-    
-    def __init__(self, redis_client):
-        self.redis = redis_client
-    
-    async def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
-        """使用 Redis 滑动窗口算法"""
-        try:
-            now = time.time()
-            window_start = now - window_seconds
-            
-            pipe = self.redis.pipeline()
-            pipe.zremrangebyscore(key, 0, window_start)
-            pipe.zcard(key)
-            pipe.zadd(key, {str(now): now})
-            pipe.expire(key, window_seconds)
-            results = pipe.execute()
-            
-            count = results[1]
-            if count >= max_requests:
-                # 获取最早请求时间
-                oldest = self.redis.zrange(key, 0, 0, withscores=True)
-                if oldest:
-                    retry_after = int(oldest[0][1] + window_seconds - now) + 1
-                    return False, retry_after
-                return False, window_seconds
-            
-            return True, 0
-        except Exception as e:
-            logger.error(f"Redis rate limit error: {e}")
-            # Redis 失败时允许请求
-            return True, 0
 
 
 # 限制策略配置
@@ -651,45 +628,3 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """
         return classify_endpoint(request.method, request.url.path)
 
-
-# 依赖注入：用于单个路由的速率限制
-def rate_limit(endpoint: str = "default"):
-    """速率限制依赖"""
-    async def dependency(request: Request):
-        limit_config = RATE_LIMITS.get(endpoint, RATE_LIMITS["default"])
-        key = get_rate_limit_key(request, endpoint)
-        
-        allowed, retry_after = limiter.is_allowed(
-            key,
-            limit_config["requests"],
-            limit_config["window"]
-        )
-        
-        if not allowed:
-            raise RateLimitExceeded(retry_after)
-        
-        return True
-    
-    return dependency
-
-
-# 装饰器版本
-def rate_limited(endpoint: str = "default"):
-    """速率限制装饰器"""
-    def decorator(func):
-        async def wrapper(*args, request: Request = None, **kwargs):
-            limit_config = RATE_LIMITS.get(endpoint, RATE_LIMITS["default"])
-            key = get_rate_limit_key(request, endpoint)
-            
-            allowed, retry_after = limiter.is_allowed(
-                key,
-                limit_config["requests"],
-                limit_config["window"]
-            )
-            
-            if not allowed:
-                raise RateLimitExceeded(retry_after)
-            
-            return await func(*args, **kwargs)
-        return wrapper
-    return decorator

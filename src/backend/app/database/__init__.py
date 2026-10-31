@@ -25,7 +25,9 @@ from .crud import (
     add_primer, add_warning, add_error,
     # 批量
     create_batch_job, get_batch_job, update_batch_job, add_batch_design,
-    # 载体
+    # 载体（注意：载体库实际落盘 YAML，见 app/vector_import.py；下面这套
+    # VectorDB ORM CRUD 当前无路由调用，但 delete_user 的属主置空与既有
+    # 库表结构依赖这些模型，保留勿删——2026-10-31 审计确认）
     create_vector, get_vector, get_vectors, delete_vector, add_vector_feature
 )
 
