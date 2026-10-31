@@ -72,46 +72,59 @@ onMounted(async () => {
   } catch (e) { /* fallback */ }
 })
 
+// 各分析函数共享 loading/error/activeSection：连点不同按钮时乱序返回的
+// 慢响应不得覆盖后发请求的结果或把 loading 卡住（请求代次防竞态）
+let analysisGen = 0
+
 async function runAnalysis() {
   if (!sequence.value.trim()) return
+  const gen = ++analysisGen
   try {
     loading.value = true
     error.value = ''
-    result.value = await analyzeSequence(cleanSeq.value, sequenceType.value)
+    const res = await analyzeSequence(cleanSeq.value, sequenceType.value)
+    if (gen !== analysisGen) return
+    result.value = res
     activeSection.value = 'overview'
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message
+    if (gen === analysisGen) error.value = e.response?.data?.detail || e.message
   } finally {
-    loading.value = false
+    if (gen === analysisGen) loading.value = false
   }
 }
 
 async function runRestrictionAnalysis() {
   if (!sequence.value.trim() || isAminoAcid.value) return
+  const gen = ++analysisGen
   try {
     loading.value = true
-    restrictionResult.value = await findRestrictionSites(
+    const res = await findRestrictionSites(
       cleanSeq.value,
       selectedRestrictionEnzymes.value.length ? selectedRestrictionEnzymes.value : undefined
     )
+    if (gen !== analysisGen) return
+    restrictionResult.value = res
     activeSection.value = 'restriction'
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message
+    if (gen === analysisGen) error.value = e.response?.data?.detail || e.message
   } finally {
-    loading.value = false
+    if (gen === analysisGen) loading.value = false
   }
 }
 
 async function runORFPrediction() {
   if (!sequence.value.trim() || isAminoAcid.value) return
+  const gen = ++analysisGen
   try {
     loading.value = true
-    orfResult.value = await predictORFs(cleanSeq.value, orfMinLength.value)
+    const res = await predictORFs(cleanSeq.value, orfMinLength.value)
+    if (gen !== analysisGen) return
+    orfResult.value = res
     activeSection.value = 'orf'
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message
+    if (gen === analysisGen) error.value = e.response?.data?.detail || e.message
   } finally {
-    loading.value = false
+    if (gen === analysisGen) loading.value = false
   }
 }
 
@@ -139,14 +152,17 @@ async function runDigest() {
 
 async function runGCAnalysis() {
   if (!sequence.value.trim()) return
+  const gen = ++analysisGen
   try {
     loading.value = true
-    gcResult.value = await analyzeGC(cleanSeq.value)
+    const res = await analyzeGC(cleanSeq.value)
+    if (gen !== analysisGen) return
+    gcResult.value = res
     activeSection.value = 'gc'
   } catch (e: any) {
-    error.value = e.response?.data?.detail || e.message
+    if (gen === analysisGen) error.value = e.response?.data?.detail || e.message
   } finally {
-    loading.value = false
+    if (gen === analysisGen) loading.value = false
   }
 }
 

@@ -407,7 +407,7 @@ async function handleDownloadTemplate() {
 }
 
 async function fetchBatchReport() {
-  try { batchReport.value = await getBatchReport(batchId.value) }
+  try { const id = batchId.value, r = await getBatchReport(id); if (batchId.value === id) batchReport.value = r }  // 代次防竞态：切历史批次后旧响应不回填
   catch (e) { console.warn('Failed to fetch batch report:', e) }
 }
 
