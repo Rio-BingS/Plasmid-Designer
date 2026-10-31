@@ -278,16 +278,16 @@ const bandLabelLayout = computed(() => {
   })
 })
 
-/** 位点标签：上下两行就近排布（标签贴着自己的刻度），同排挤时左右让位，引线连回刻度 */
+/** 位点标签：轴上方阶梯式两排（近轴排 + 高一阶排），标签正对自家刻度，占位冲突才抬阶/让位 */
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
     return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0, y: 0 }
   }).sort((a, b) => a.x - b.x)
-  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 16 }, { cursor: VEC_X1 - 4, y: VEC_Y + 30 }]
+  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 16 }, { cursor: VEC_X1 - 4, y: VEC_Y - 34 }]
   return items.map((it) => {
     const want = it.x - it.width / 2
-    // 两行各算一次让位距离，位移小者优先；平手选上行（就近、引线短）
+    // 两排各算让位距离，位移小者优先；平手选近轴排
     const cands = rows
       .map((r, i) => ({ i, left: Math.max(want, r.cursor) }))
       .sort((a, b) => (a.left - want) - (b.left - want) || a.i - b.i)
@@ -329,7 +329,7 @@ const markLayout = computed(() => {
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-            <line :x1="m.x" :x2="m.cx" :y1="m.y < VEC_Y ? VEC_Y - 12 : VEC_Y + 12" :y2="m.y < VEC_Y ? m.y + 3 : m.y - 9"
+            <line :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 6"
                   :stroke="m.color" stroke-width="1" opacity="0.5" />
             <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
                   :stroke="m.color" stroke-width="2" />
