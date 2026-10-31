@@ -214,6 +214,20 @@ const bands = computed(() => props.preview?.cut_options ?? [])
 const activePair = computed<[number, number] | null>(() => props.cutPair ?? props.preview?.cut_pair ?? null)
 
 const vecX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
+/** 酶名 → 稳定配色（图①刻度/标签与图②带端刻度同色，便于对应） */
+const ENZYME_COLORS = ['#2b6cb0', '#2f855a', '#b7791f', '#c05621', '#6b46c1', '#2c7a7b', '#b83280', '#4a5568']
+const enzymeColorCache = new Map<string, string>()
+const enzymeColor = (name: string) => {
+  let c = enzymeColorCache.get(name)
+  if (!c) {
+    c = ENZYME_COLORS[enzymeColorCache.size % ENZYME_COLORS.length]
+    enzymeColorCache.set(name, c)
+  }
+  return c
+}
+
+/** 标注文本宽度估算：CJK 按 10px，其余按 6.4px */
+const textW = (t: string) => [...t].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e7f ? 10 : 6.4), 0) + 8
 
 /** 点了某条带：把带换算成补集切点对回写（回收=切走补集）；再点已选中的带 = 取消 */
 function pickBand(i: number) {
@@ -232,6 +246,13 @@ function bandSegs(o: { left_cut: number; right_cut: number; removed_bp: number; 
     ? [{ x1: vecX(r), x2: VEC_X2 }, { x1: VEC_X1, x2: vecX(l) }]
     : [{ x1: vecX(r), x2: vecX(l) }]
 }
+/** 带两端切点的着色刻度位置（与图①同色） */
+function bandTicks(o: { left_cut: number; right_cut: number; left_enzyme: string; right_enzyme: string }) {
+  return [
+    { x: vecX(o.right_cut), c: enzymeColor(o.right_enzyme) },
+    { x: vecX(o.left_cut), c: enzymeColor(o.left_enzyme) },
+  ]
+}
 
 const isActive = (o: { left_cut: number; right_cut: number }) => {
   const p = activePair.value
@@ -244,10 +265,11 @@ const bandLabelLayout = computed(() => {
   return bands.value.map((b) => {
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s) => (s.x2 - s.x1 > a.x2 - a.x1 ? s : a), segs[0])
+    const sites = `${b.left_enzyme}(${b.left_cut})–${b.right_enzyme}(${b.right_cut})`
     const text = isActive(b)
-      ? `插入位置 · 回收 ${b.kept_bp.toLocaleString()} bp`
-      : `回收 ${b.kept_bp.toLocaleString()} bp`
-    const width = text.length * 6.4 + 8
+      ? `插入位置 · ${sites} · 回收 ${b.kept_bp.toLocaleString()} bp`
+      : `${sites} · 回收 ${b.kept_bp.toLocaleString()} bp`
+    const width = textW(text)
     const x = Math.min(Math.max((widest.x1 + widest.x2) / 2, VEC_X1 + width / 2), VEC_X2 - width / 2)
     let row = rows.findIndex((r) => x - width / 2 > r.end)
     if (row === -1) row = 0
@@ -260,7 +282,7 @@ const bandLabelLayout = computed(() => {
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
-    return { m, x: vecX(m.vector_cut), text, width: text.length * 6.2 + 6 }
+    return { m, x: vecX(m.vector_cut), text, width: text.length * 6.2 + 6, color: enzymeColor(m.enzyme) }
   }).sort((a, b) => a.x - b.x)
   const rows = [{ end: -1, y: VEC_Y - 20 }, { end: -1, y: VEC_Y + 26 }]
   return items.map((it) => {
@@ -300,9 +322,11 @@ const markLayout = computed(() => {
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
-                stroke="#4a5568" stroke-width="1.5" />
-          <text :x="m.x" :y="m.y" class="rp-vec-mark" text-anchor="middle">{{ m.text }}</text>
+            <line :x1="m.x" :x2="m.x" :y1="m.y < VEC_Y ? VEC_Y - 12 : VEC_Y + 12" :y2="m.y < VEC_Y ? m.y + 4 : m.y - 10"
+                  :stroke="m.color" stroke-width="1" opacity="0.45" />
+            <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
+                  :stroke="m.color" stroke-width="2" />
+            <text :x="m.x" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
@@ -322,6 +346,9 @@ const markLayout = computed(() => {
           <rect v-for="(seg, si) in bandSegs(o)" :key="`bs-${i}-${si}`"
                 :x="seg.x1" :y="VEC_Y - 5" :width="Math.max(seg.x2 - seg.x1, 2)" height="10" rx="3"
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
+          <!-- 带两端切点着色刻度（与图①同色） -->
+          <line v-for="(t, ti) in bandTicks(o)" :key="`bt-${i}-${ti}`"
+                :x1="t.x" :x2="t.x" :y1="VEC_Y - 11" :y2="VEC_Y + 11" :stroke="t.c" stroke-width="2" />
           <text v-if="bandLabelLayout[i]" :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
                 :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
             {{ bandLabelLayout[i].text }}
