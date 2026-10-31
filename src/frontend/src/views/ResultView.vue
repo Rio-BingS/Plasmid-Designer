@@ -349,12 +349,12 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="primer in result.primers" :key="primer.name">
+            <tr v-for="(primer, i) in result.primers" :key="`${primer.name}-${i}`">
               <td class="name-cell">{{ primer.name }}</td>
               <td class="sequence-cell">{{ primer.full_sequence || primer.sequence }}</td>
               <td>{{ primer.length }} bp</td>
-              <td>{{ primer.tm.toFixed(1) }}°C</td>
-              <td>{{ primer.gc_content.toFixed(1) }}%</td>
+              <td>{{ primer.tm?.toFixed(1) ?? '—' }}°C</td>
+              <td>{{ primer.gc_content?.toFixed(1) ?? '—' }}%</td>
               <td class="notes-cell">{{ primer.notes || '' }}</td>
               <td>
                 <button
