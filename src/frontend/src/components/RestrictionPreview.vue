@@ -200,9 +200,9 @@ const rulerTicks = computed(() => {
   return [w.start, w.end]
 })
 
-// ---- 图② 片段选择图：原载体坐标，按消化带点击选择 ----
-const VEC_H = 92
-const VEC_Y = 52
+// ---- 片段选择图：原载体坐标，按消化带点击选择 ----
+const VEC_H = 104
+const VEC_Y = 62
 const VEC_X1 = 90
 const VEC_X2 = VB_W - 60
 const vectorLength = computed(() => props.preview?.vector.length ?? 1)
@@ -237,6 +237,24 @@ const isActive = (o: { left_cut: number; right_cut: number }) => {
   const p = activePair.value
   return !!p && p[0] === o.left_cut && p[1] === o.right_cut
 }
+
+/** 每条带的长度标注：常显，居中于带的最宽段，两行防重叠 */
+const bandLabelLayout = computed(() => {
+  const rows = [{ end: -1, y: VEC_Y - 16 }, { end: -1, y: VEC_Y - 30 }]
+  return bands.value.map((b) => {
+    const segs = bandSegs(b)
+    const widest = segs.reduce((a, s) => (s.x2 - s.x1 > a.x2 - a.x1 ? s : a), segs[0])
+    const text = isActive(b)
+      ? `插入位置 · 回收 ${b.kept_bp.toLocaleString()} bp`
+      : `回收 ${b.kept_bp.toLocaleString()} bp`
+    const width = text.length * 6.4 + 8
+    const x = Math.min(Math.max((widest.x1 + widest.x2) / 2, VEC_X1 + width / 2), VEC_X2 - width / 2)
+    let row = rows.findIndex((r) => x - width / 2 > r.end)
+    if (row === -1) row = 0
+    rows[row].end = x + width / 2
+    return { x, y: rows[row].y, text }
+  })
+})
 
 /** 全部位点标签（一行，防重叠两行） */
 const markLayout = computed(() => {
@@ -276,10 +294,10 @@ const markLayout = computed(() => {
       </div>
 
 
-      <!-- 图① 位点分布：两把酶在原载体上的全部位点（只看分布，不可点） -->
+      <!-- 位点分布：两把酶在原载体上的全部位点（只看分布，不可点） -->
       <svg v-if="cutMarks.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
            role="img" aria-label="酶切位点分布">
-        <text :x="PAD" y="14" class="rp-fig-title">图① 酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
+        <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
           <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
@@ -290,33 +308,32 @@ const markLayout = computed(() => {
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
 
-      <!-- 图② 插入位置选择：每条可回收消化带一条选择线，点击选中（再点取消），
-           选中只画该带的箭头与「插入位置」标注 -->
+      <!-- 插入位置选择：可回收的消化带常显（浅绿），点击选中（深绿+「插入位置」），再点取消 -->
       <svg v-if="bands.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
            role="img" aria-label="插入位置选择">
-        <text :x="PAD" y="14" class="rp-fig-title">图② 选择插入位置（点击选择要回收的片段，再点一次取消）</text>
+        <text :x="PAD" y="14" class="rp-fig-title">选择插入位置（点击要回收的片段，再点一次取消）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
         <g v-for="(o, i) in bands" :key="`band-${i}`" class="rp-band" @click="pickBand(i)">
           <title>回收 {{ o.kept_bp.toLocaleString() }} bp（{{ o.left_enzyme }}({{ o.left_cut }}) × {{ o.right_enzyme }}({{ o.right_cut }})）</title>
           <!-- 热区 = 该带自身区间（跨原点拆两段），两条带互不遮挡 -->
           <rect v-for="(seg, si) in bandSegs(o)" :key="`bh-${i}-${si}`"
                 :x="seg.x1" :y="VEC_Y - 16" :width="Math.max(seg.x2 - seg.x1, 6)" height="34" fill="transparent" />
-          <g v-if="isActive(o)">
-            <rect v-for="(seg, si) in bandSegs(o)" :key="`bs-${i}-${si}`"
-                  :x="seg.x1" :y="VEC_Y - 5" :width="Math.max(seg.x2 - seg.x1, 2)" height="10" rx="3"
-                  fill="#38a169" opacity="0.9" />
-            <text :x="VEC_X1 + 8" :y="VEC_Y - 9" class="rp-vec-kept">
-              插入位置 · 回收 {{ o.kept_bp.toLocaleString() }} bp
-            </text>
-          </g>
+          <!-- 带本体常显：浅绿 = 可选，深绿 = 已选中 -->
+          <rect v-for="(seg, si) in bandSegs(o)" :key="`bs-${i}-${si}`"
+                :x="seg.x1" :y="VEC_Y - 5" :width="Math.max(seg.x2 - seg.x1, 2)" height="10" rx="3"
+                :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
+          <text v-if="bandLabelLayout[i]" :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
+                :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
+            {{ bandLabelLayout[i].text }}
+          </text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
 
-      <!-- 图③ 拼接完成的构建体（提交后拿到的成品；被切走的片段已不在里面） -->
+      <!-- 拼接完成的构建体（提交后拿到的成品；被切走的片段已不在里面） -->
       <svg class="rp-svg" :viewBox="`0 0 ${VB_W} ${VB_H + 12}`" role="img" :aria-label="summary">
-        <text :x="PAD" y="12" class="rp-fig-title">图③ 插入后的构建体（{{ preview.construct_length.toLocaleString() }} bp）</text>
+        <text :x="PAD" y="12" class="rp-fig-title">插入后的构建体（{{ preview.construct_length.toLocaleString() }} bp）</text>
         <g transform="translate(0, 14)">
         <!-- 载体骨架 -->
         <line :x1="PAD - 8" :x2="VB_W - PAD + 8" :y1="BACKBONE_Y" :y2="BACKBONE_Y"
@@ -454,16 +471,15 @@ const markLayout = computed(() => {
   border-top: 1px dashed #e2e8f0;
 }
 
-.rp-vec-kept {
+.rp-band-label {
   font-size: 10px;
-  fill: #276749;
+  fill: #2f855a;
   font-weight: 600;
 }
 
-.rp-vec-excised {
-  font-size: 10px;
-  fill: #7b341e;
-  font-weight: 600;
+.rp-band-label-active {
+  fill: #22543d;
+  font-size: 10.5px;
 }
 
 .rp-band {
