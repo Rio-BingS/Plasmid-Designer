@@ -288,12 +288,6 @@ export type BatchDesignRequestPayload = Partial<Omit<DesignRequest, 'sequence' |
   row_params?: (Record<string, unknown> | null)[] | null
 }
 
-/** POST /vectors/import/ncbi（按关键词导入共享载体库） */
-export interface NcbiImportResult {
-  imported: number
-  query: string
-}
-
 /** POST /vectors/import/ncbi-id（按 ID 导入单条） */
 export interface NcbiIdImportResult {
   success: boolean

@@ -3,7 +3,7 @@
 
 import { api, assertBlobIsGenbank } from './client'
 import type {
-  BatchImportResult, DeleteVectorResult, NcbiIdImportResult, NcbiImportResult, NcbiSearchResult, VectorInfo, VectorPreview, VectorUploadResult
+  BatchImportResult, DeleteVectorResult, NcbiIdImportResult, NcbiSearchResult, VectorInfo, VectorPreview, VectorUploadResult
 } from '@/types'
 
 export async function getVectors(
@@ -24,12 +24,6 @@ export async function getVector(vectorId: string): Promise<VectorInfo> {
 
 export async function searchNcbi(query: string, limit: number = 10): Promise<NcbiSearchResult> {
   const response = await api.get('/vectors/search/ncbi', { params: { query, limit } })
-  return response.data
-}
-
-// NCBI 导入
-export async function importFromNcbi(query: string, limit: number = 5): Promise<NcbiImportResult> {
-  const response = await api.post('/vectors/import/ncbi', null, { params: { query, limit } })
   return response.data
 }
 

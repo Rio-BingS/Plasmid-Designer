@@ -42,7 +42,6 @@ const replacedAutoName = ref('')     // 被用户文件替换掉的深链参考�
 const reads = ref<File[]>([])
 const ignoredNames = ref<string[]>([])   // 既非参考也非 .ab1 的文件
 const conflictNames = ref<string[]>([])  // 多余的参考文件
-const fileError = ref('')
 
 function fileExt(name: string): string {
   const i = name.lastIndexOf('.')
@@ -54,7 +53,6 @@ function addFiles(list: File[] | FileList | null | undefined) {
   ignoredNames.value = []
   conflictNames.value = []
   replacedAutoName.value = ''
-  fileError.value = ''
   for (const f of Array.from(list)) {
     const ext = fileExt(f.name)
     if (ext === 'ab1') {
@@ -324,7 +322,6 @@ async function downloadConsensus(format: string) {
         <p v-if="ignoredNames.length" class="stage-note">已忽略无关文件：{{ ignoredNames.slice(0, 5).join('、') }}{{ ignoredNames.length > 5 ? ' 等' : '' }}</p>
       </div>
       <p v-else class="stage-empty">尚未选择文件：需要 1 个参考序列文件 + 至少 1 个 .ab1</p>
-      <p v-if="fileError" class="error-msg">{{ fileError }}</p>
 
       <details class="advanced">
         <summary>高级参数</summary>
