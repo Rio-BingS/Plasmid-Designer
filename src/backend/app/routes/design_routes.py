@@ -230,7 +230,19 @@ def run_design_task(design_id: str, request: DesignRequest, user_id: Optional[st
         pending.status = DesignStatus.RUNNING
         _persist(pending)
 
-    result = run_design(design_id, request)
+    try:
+        result = run_design(design_id, request)
+    except Exception:
+        # run_design 内部有 catch-all，这里兜的是它之外的意外（结果对象构造、
+        # 存储交互等）——不接住的话任务静默死亡，前端轮询永久 pending
+        logger.exception("design task %s crashed outside run_design", design_id)
+        result = DesignResult(
+            design_id=design_id, status=DesignStatus.FAILED,
+            input_sequence="", vector_id=request.vector_id,
+            cloning_method=request.cloning_method,
+            errors=["设计任务异常终止，请重试；详情见服务端日志"],
+            completed_at=datetime.now(),
+        )
     # 保留创建时间与属主（后台续跑会重建 result 对象）
     if pending and pending.created_at:
         result.created_at = pending.created_at
