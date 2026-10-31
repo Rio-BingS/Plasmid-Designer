@@ -278,28 +278,25 @@ const bandLabelLayout = computed(() => {
   })
 })
 
-/** 位点标签：一行内按 x 依次右推错开（相邻不叠），放不下落线下第二行，引线连回刻度 */
+/** 位点标签：上下两行就近排布（标签贴着自己的刻度），同排挤时左右让位，引线连回刻度 */
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
-    return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0 }
+    return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0, y: 0 }
   }).sort((a, b) => a.x - b.x)
   const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 16 }, { cursor: VEC_X1 - 4, y: VEC_Y + 30 }]
   return items.map((it) => {
-    let placed = rows.find((r) => {
-      const left = Math.max(it.x - it.width / 2, r.cursor)
-      if (left + it.width > VEC_X2 + 4) return false
-      r.cursor = left + it.width
-      it.cx = left + it.width / 2
-      return true
-    })
-    if (!placed) {
-      placed = rows[1]
-      const left = Math.max(it.x - it.width / 2, placed.cursor)
-      placed.cursor = left + it.width
-      it.cx = left + it.width / 2
-    }
-    return { ...it, y: placed.y, color: enzymeColor(it.m.enzyme) }
+    const want = it.x - it.width / 2
+    // 两行各算一次让位距离，位移小者优先；平手选上行（就近、引线短）
+    const cands = rows
+      .map((r, i) => ({ i, left: Math.max(want, r.cursor) }))
+      .sort((a, b) => (a.left - want) - (b.left - want) || a.i - b.i)
+    const pick = cands[0]
+    const left = Math.min(Math.max(pick.left, VEC_X1 - 4), VEC_X2 - it.width)
+    rows[pick.i].cursor = left + it.width
+    it.cx = left + it.width / 2
+    it.y = rows[pick.i].y
+    return { ...it, color: enzymeColor(it.m.enzyme) }
   })
 })
 </script>
