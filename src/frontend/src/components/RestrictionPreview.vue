@@ -278,18 +278,28 @@ const bandLabelLayout = computed(() => {
   })
 })
 
-/** 全部位点标签（一行，防重叠两行） */
+/** 位点标签：一行内按 x 依次右推错开（相邻不叠），放不下落线下第二行，引线连回刻度 */
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
-    return { m, x: vecX(m.vector_cut), text, width: text.length * 6.2 + 6, color: enzymeColor(m.enzyme) }
+    return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0 }
   }).sort((a, b) => a.x - b.x)
-  const rows = [{ end: -1, y: VEC_Y - 20 }, { end: -1, y: VEC_Y + 26 }]
+  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 16 }, { cursor: VEC_X1 - 4, y: VEC_Y + 30 }]
   return items.map((it) => {
-    let row = rows.findIndex((r) => it.x - it.width / 2 > r.end)
-    if (row === -1) row = 0
-    rows[row].end = it.x + it.width / 2
-    return { ...it, y: rows[row].y, in_excised: it.m.in_excised }
+    let placed = rows.find((r) => {
+      const left = Math.max(it.x - it.width / 2, r.cursor)
+      if (left + it.width > VEC_X2 + 4) return false
+      r.cursor = left + it.width
+      it.cx = left + it.width / 2
+      return true
+    })
+    if (!placed) {
+      placed = rows[1]
+      const left = Math.max(it.x - it.width / 2, placed.cursor)
+      placed.cursor = left + it.width
+      it.cx = left + it.width / 2
+    }
+    return { ...it, y: placed.y, color: enzymeColor(it.m.enzyme) }
   })
 })
 </script>
@@ -322,11 +332,11 @@ const markLayout = computed(() => {
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-            <line :x1="m.x" :x2="m.x" :y1="m.y < VEC_Y ? VEC_Y - 12 : VEC_Y + 12" :y2="m.y < VEC_Y ? m.y + 4 : m.y - 10"
-                  :stroke="m.color" stroke-width="1" opacity="0.45" />
+            <line :x1="m.x" :x2="m.cx" :y1="m.y < VEC_Y ? VEC_Y - 12 : VEC_Y + 12" :y2="m.y < VEC_Y ? m.y + 3 : m.y - 9"
+                  :stroke="m.color" stroke-width="1" opacity="0.5" />
             <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
                   :stroke="m.color" stroke-width="2" />
-            <text :x="m.x" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
+            <text :x="m.cx" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>

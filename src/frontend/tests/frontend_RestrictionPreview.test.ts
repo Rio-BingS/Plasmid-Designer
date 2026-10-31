@@ -113,12 +113,14 @@ describe('RestrictionPreview 双酶切示意图', () => {
       expect(text).toContain(`SphI (${cut})`)
     }
     expect(text.match(/SphI \(/g)!.length).toBeGreaterThanOrEqual(4)
-    // 近距切点分行（2136 与 2208 不同 y）
+    // 2026-10-31 用户反馈：近距切点不再上下分行，而是同行左右错开
+    // （单行右推布局）；两个标签 x 不同、都在线上方同一行
     const labels = wrapper.findAll('text').map((t) => ({
-      y: t.attributes('y'), text: t.text(),
+      x: t.attributes('x'), y: t.attributes('y'), text: t.text(),
     })).filter((t) => t.text.includes('2136') || t.text.includes('2208'))
     expect(labels).toHaveLength(2)
-    expect(labels[0].y).not.toBe(labels[1].y)
+    expect(labels[0].x).not.toBe(labels[1].x)
+    expect(labels[0].y).toBe(labels[1].y)
   })
 
   it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
