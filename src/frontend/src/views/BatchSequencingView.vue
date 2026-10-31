@@ -22,7 +22,6 @@ const readLimits = computed(() => authStore.siteConfig?.batch_read_limits ?? nul
 // ==================== 文件导入（支持整个文件夹拖入） ====================
 const files = ref<File[]>([])
 const excelFile = ref<File | null>(null)
-const ignoredNames = ref<string[]>([])
 const skippedNames = ref<string[]>([])
 const errorMsg = ref('')
 const dragOver = ref(false)
@@ -42,7 +41,6 @@ function isTempOrJunk(name: string): boolean {
 
 function addFiles(list: File[] | FileList | null | undefined) {
   if (!list) return
-  ignoredNames.value = []
   skippedNames.value = []
   errorMsg.value = ''
   for (const f of Array.from(list)) {
