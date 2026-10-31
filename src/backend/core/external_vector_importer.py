@@ -306,7 +306,8 @@ class VectorLibraryManager:
                 vector = self.genbank.import_file(path)
                 self.vectors[vector.id] = vector
                 return 1
-            except:
+            except Exception as e:  # noqa: BLE001 单文件失败只计数，不中断批量导入
+                logger.warning("GenBank 导入失败 %s: %s", path, e)
                 return 0
         else:
             vectors = self.genbank.import_directory(path)

@@ -31,8 +31,10 @@ class Settings(BaseSettings):
     # （容器 nginx 无法按来源限制，开启即对公网暴露全部接口结构，审查 10 L7）
     ENABLE_API_DOCS: bool = True
 
-    # 服务器配置
-    HOST: str = "0.0.0.0"
+    # 服务器配置（仅 `python -m app.main` 直接运行时生效；正式部署走
+    # uvicorn/systemd/compose 的显式 --host，见 deploy/。默认回环：直接运行
+    # 的开发场景不该意外对公网监听，需要放开时显式设 HOST=0.0.0.0）
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
 
     # 数据库配置 — 单一来源（database/models.py 引用本值）。

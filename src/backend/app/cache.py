@@ -21,7 +21,26 @@ from app.config import settings as _app_settings  # noqa: E402  config 不依赖
 
 REDIS_URL = os.getenv("REDIS_URL") or getattr(_app_settings, "REDIS_URL", "") \
     or "redis://localhost:6379/0"
-REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+# 开关缺省时跟随 REDIS_URL 是否被显式配置：只配了 REDIS_URL 却不写
+# REDIS_ENABLED 时不再静默回退内存缓存——f529dd1 修了 URL 的双真相源，
+# 这是同一坑的开关面。显式 REDIS_ENABLED=true/false 仍最优先。
+# config.REDIS_URL 自带默认值，判断「显式配置」看两处：进程环境变量，
+# 或 .env 文件里出现了 REDIS_URL 键（与上面 REDIS_URL 的读取口径一致）。
+def _redis_url_explicitly_configured() -> bool:
+    if os.getenv("REDIS_URL"):
+        return True
+    env_file = os.path.join(os.getcwd(), ".env")
+    try:
+        with open(env_file, encoding="utf-8") as fh:
+            return any(line.strip().startswith("REDIS_URL") for line in fh)
+    except OSError:
+        return False
+
+
+_redis_url_configured = _redis_url_explicitly_configured()
+REDIS_ENABLED = (
+    os.getenv("REDIS_ENABLED", str(_redis_url_configured)).lower() == "true"
+)
 
 # 缓存默认 TTL (秒)
 DEFAULT_CACHE_TTL = 3600  # 1 小时
@@ -218,6 +237,9 @@ class CacheManager:
         self._use_redis = use_redis
         self._backend: Optional[CacheBackend] = None
         self._redis_retry_at: Optional[float] = None
+        # backend 惰性初始化/升级在 FastAPI 线程池里并发触发：双检锁防重复
+        # 构造后端（多建的连接对象被 GC，且与终审 C-07 全路径加锁口径一致）
+        self._backend_lock = Lock()
 
     @property
     def backend(self) -> CacheBackend:
@@ -227,26 +249,32 @@ class CacheManager:
         会永久回退内存缓存直到重启。现改为首次使用时才连接；若届时 Redis
         仍不可用，先回退内存并按 REDIS_RETRY_SECONDS 周期重试升级。
         """
-        now = time.monotonic()
-        if self._backend is None:
-            if self._use_redis:
+        if self._backend is not None:
+            # 快路径：已初始化且不在重试窗口时不加锁
+            now = time.monotonic()
+            if self._redis_retry_at is None or now < self._redis_retry_at:
+                return self._backend
+        with self._backend_lock:
+            now = time.monotonic()
+            if self._backend is None:
+                if self._use_redis:
+                    redis_backend = RedisCache()
+                    if redis_backend.available:
+                        self._backend = redis_backend
+                    else:
+                        self._backend = MemoryCache()
+                        self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
+                else:
+                    self._backend = MemoryCache()
+            elif self._redis_retry_at is not None and now >= self._redis_retry_at:
                 redis_backend = RedisCache()
                 if redis_backend.available:
                     self._backend = redis_backend
+                    self._redis_retry_at = None
+                    logger.info("Redis 恢复可用，缓存后端已从内存切换回 Redis")
                 else:
-                    self._backend = MemoryCache()
                     self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
-            else:
-                self._backend = MemoryCache()
-        elif self._redis_retry_at is not None and now >= self._redis_retry_at:
-            redis_backend = RedisCache()
-            if redis_backend.available:
-                self._backend = redis_backend
-                self._redis_retry_at = None
-                logger.info("Redis 恢复可用，缓存后端已从内存切换回 Redis")
-            else:
-                self._redis_retry_at = now + self.REDIS_RETRY_SECONDS
-        return self._backend
+            return self._backend
     
     def _generate_key(self, prefix: str, *args, **kwargs) -> str:
         """生成缓存键"""
@@ -360,23 +388,6 @@ class CacheManager:
     def get_codon_tables(self, digest: str = "") -> Optional[List[Dict]]:
         """获取缓存的密码子表列表（键含目录内容指纹）"""
         return self.backend.get(f"codon_tables:list:{digest}")
-    
-    # ==================== 批量任务缓存 ====================
-    
-    def cache_batch_progress(self, batch_id: str, progress: Dict) -> bool:
-        """缓存批量任务进度"""
-        key = f"batch:{batch_id}"
-        return self.backend.set(key, progress, DESIGN_CACHE_TTL)
-    
-    def get_batch_progress(self, batch_id: str) -> Optional[Dict]:
-        """获取缓存的批量任务进度"""
-        key = f"batch:{batch_id}"
-        return self.backend.get(key)
-    
-    def invalidate_batch(self, batch_id: str) -> bool:
-        """使批量任务缓存失效"""
-        key = f"batch:{batch_id}"
-        return self.backend.delete(key)
     
     # ==================== 工具方法 ====================
     
