@@ -215,11 +215,12 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：中段每对相邻切点至少一张芯片宽（~96px，标签单行可排开），边缘段压缩让宽，总宽守恒 */
+/** 宽度比例：相邻位点等距（示意节奏均匀，不按 bp 线性——线性会让密集区标签挤成一团、
+ *  稀疏区大片留白），边缘段压缩让位，总宽守恒；切点过多时间距收敛到下限 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
-  const MIN_INTER = 96
+  const MIN_INTER = 56
   const total = vectorLength.value
   const mids = cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1], w: linX(cuts[i + 1]) - linX(c) }))
   const eL0 = linX(cuts[0]) - VEC_X1
@@ -233,14 +234,12 @@ const vecScale = computed(() => {
     eL = Math.min(eL0, Math.max(60, (rest * eL0) / (eL0 + eR0 || 1)))
     eR = Math.max(60, rest - eL)
   }
-  const extra = Math.max(0, sumW - eL - eR - minMids)
-  const bpTotal = mids.reduce((t, g) => t + (g.p1 - g.p0), 0) || 1
+  const gap = Math.max(24, (sumW - eL - eR) / mids.length)
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   breaks.push({ p0: 1, p1: cuts[0], q0: acc, q1: acc + eL }); acc += eL
   for (const g of mids) {
-    const w2 = Math.max(24, MIN_INTER + (extra * (g.p1 - g.p0)) / bpTotal)
-    breaks.push({ p0: g.p0, p1: g.p1, q0: acc, q1: acc + w2 }); acc += w2
+    breaks.push({ p0: g.p0, p1: g.p1, q0: acc, q1: acc + gap }); acc += gap
   }
   breaks.push({ p0: cuts[cuts.length - 1], p1: total, q0: acc, q1: VEC_X2 })
   const map = (pos: number) => {
