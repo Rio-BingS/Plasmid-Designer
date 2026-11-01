@@ -248,16 +248,6 @@ const vecScale = computed(() => {
 })
 
 const vecX = (pos: number) => vecScale.value.map(pos)
-/** 1kb 整数倍网格线：给准比例尺一个可读的长度参照（段长对着格子就能估），
- *  靠近两端标尺数字的跳过，避免文字打架 */
-const gridTicks = computed(() => {
-  const out: Array<{ k: number; x: number }> = []
-  for (let k = 1000; k < vectorLength.value; k += 1000) {
-    const x = vecX(k)
-    if (x > VEC_X1 + 24 && x < VEC_X2 - 44) out.push({ k, x })
-  }
-  return out
-})
 /** 酶名 → 稳定配色（图①刻度/标签与图②带端刻度同色，便于对应） */
 const ENZYME_COLORS = ['#2b6cb0', '#2f855a', '#b7791f', '#c05621', '#6b46c1', '#2c7a7b', '#b83280', '#4a5568']
 const enzymeColorCache = new Map<string, string>()
@@ -296,24 +286,6 @@ const isActive = (o: { left_cut: number; right_cut: number }) => {
 }
 
 /** 图②长度标签：带下方一行（彩色文字直排，无盒），居中于各自带 */
-/** 细刻度：100bp 小刻度、500bp 中刻度（>20kb 自动降为 500/2500），让光秃的轨道
- *  变成可读的标尺；与前一根保留刻度像素距 <8px 时抽稀，1kb 整数倍交给格线层 */
-const minorTicks = computed(() => {
-  const total = vectorLength.value
-  const step = total > 20000 ? 500 : 100
-  const out: Array<{ p: number; x: number; mid: boolean }> = []
-  let lastX = -1e9
-  for (let p = step; p < total; p += step) {
-    if (p % 1000 === 0) continue
-    const x = vecX(p)
-    if (x <= VEC_X1 + 8 || x >= VEC_X2 - 8) continue
-    if (x - lastX < 8) continue
-    out.push({ p, x, mid: p % (step * 5) === 0 })
-    lastX = x
-  }
-  return out
-})
-
 const bandLabels = computed(() => {
   const out = bands.value.map((b) => {
     const active = isActive(b)
@@ -382,16 +354,6 @@ const markLayout = computed(() => {
            role="img" aria-label="酶切位点分布">
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 3" :width="VEC_X2 - VEC_X1" height="6" rx="3" fill="#cbd5e0" />
-        <!-- 细刻度：100bp/500bp，轨道成标尺 -->
-        <g v-for="t in minorTicks" :key="`mt-${t.p}`">
-          <line :x1="t.x" :x2="t.x" :y1="VEC_Y - (t.mid ? 5 : 3)" :y2="VEC_Y + (t.mid ? 5 : 3)"
-                stroke="#b3bfcb" stroke-width="1" />
-        </g>
-        <!-- 1kb 网格：长度参照 -->
-        <g v-for="g in gridTicks" :key="`grid-${g.k}`">
-          <line :x1="g.x" :x2="g.x" :y1="VEC_Y - 9" :y2="VEC_Y + 9" stroke="#a9b6c4" stroke-width="1" />
-          <text :x="g.x" :y="VEC_Y + 44" class="rp-ruler" text-anchor="middle">{{ g.k / 1000 }}kb</text>
-        </g>
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
           <line v-if="m.lifted" :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 7"
                 :stroke="m.color" stroke-width="1.2" opacity="0.7" />
@@ -408,16 +370,6 @@ const markLayout = computed(() => {
            role="img" aria-label="插入位置选择">
         <text :x="PAD" y="14" class="rp-fig-title">选择插入位置（点击要回收的片段，再点一次取消）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 3" :width="VEC_X2 - VEC_X1" height="6" rx="3" fill="#cbd5e0" />
-        <!-- 细刻度：100bp/500bp（画在带后面） -->
-        <g v-for="t in minorTicks" :key="`mt2-${t.p}`">
-          <line :x1="t.x" :x2="t.x" :y1="VEC_Y - (t.mid ? 5 : 3)" :y2="VEC_Y + (t.mid ? 5 : 3)"
-                stroke="#b3bfcb" stroke-width="1" />
-        </g>
-        <!-- 1kb 网格：长度参照（画在带后面） -->
-        <g v-for="g in gridTicks" :key="`grid2-${g.k}`">
-          <line :x1="g.x" :x2="g.x" :y1="VEC_Y - 9" :y2="VEC_Y + 9" stroke="#a9b6c4" stroke-width="1" />
-          <text :x="g.x" :y="VEC_Y + 44" class="rp-ruler" text-anchor="middle">{{ g.k / 1000 }}kb</text>
-        </g>
         <g v-for="(o, i) in bands" :key="`band-${i}`" class="rp-band" @click="pickBand(i)">
           <title>回收 {{ o.kept_bp.toLocaleString() }} bp（{{ o.left_enzyme }}({{ o.left_cut }}) × {{ o.right_enzyme }}({{ o.right_cut }})）</title>
           <!-- 热区 = 该带自身区间（跨原点拆两段），两条带互不遮挡 -->
