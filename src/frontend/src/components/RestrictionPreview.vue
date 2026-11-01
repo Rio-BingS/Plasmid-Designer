@@ -201,8 +201,8 @@ const rulerTicks = computed(() => {
 })
 
 // ---- 片段选择图：原载体坐标，按消化带点击选择 ----
-const VEC_H = 126
-const VEC_Y = 78
+const VEC_H = 132
+const VEC_Y = 86
 const VEC_X1 = 90
 const VEC_X2 = VB_W - 60
 const vectorLength = computed(() => props.preview?.vector.length ?? 1)
@@ -298,7 +298,7 @@ const isActive = (o: { left_cut: number; right_cut: number }) => {
   return !!p && p[0] === o.left_cut && p[1] === o.right_cut
 }
 
-/** 图②标注：位点芯片贴各自的切点（去重），长度芯片居中于带；同一扫排互不重叠 */
+/** 图②标注：位点芯片贴轴排（酶色，与图①同款），长度芯片固定顶层各自居中于带，两层永不抢位 */
 const vecLabels = computed(() => {
   const labels: Array<{ text: string; color: string; fill: string; fillOp: number; strokeOp: number; active: boolean; anchorX: number; x: number; chipW: number; y: number }> = []
   const seen = new Set<string>()
@@ -311,24 +311,31 @@ const vecLabels = computed(() => {
       labels.push({ text, color: enzymeColor(enz), fill: enzymeColor(enz), fillOp: 0.08, strokeOp: 0.4, active: false, anchorX: vecX(cut), x: 0, chipW: textW(text) + 8, y: 0 })
     }
   }
+  const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 16 }, { end: VEC_X1 - 6, y: VEC_Y - 34 }]
+  for (const lb of labels.slice().sort((a, b2) => a.anchorX - b2.anchorX)) {
+    const want = lb.anchorX - lb.chipW / 2
+    const cands = siteRows
+      .map((r, ri) => ({ ri, left: Math.max(want, r.end) }))
+      .sort((a, b2) => ((a.left - want) - (a.ri === 0 ? 18 : 0)) - ((b2.left - want) - (b2.ri === 0 ? 18 : 0)) || a.ri - b2.ri)
+    const pick = cands[0]
+    const left = Math.min(Math.max(pick.left, VEC_X1 - 6), VEC_X2 - lb.chipW)
+    siteRows[pick.ri].end = left + lb.chipW + 6
+    lb.x = left + lb.chipW / 2
+    lb.y = siteRows[pick.ri].y
+  }
+  // 长度芯片：固定顶层一行，居中于各自带，互留间隙
   for (const b of bands.value) {
     const active = isActive(b)
     const text = active ? `插入位置 · ${b.kept_bp.toLocaleString()} bp` : `回收 ${b.kept_bp.toLocaleString()} bp`
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s2) => (s2.x2 - s2.x1 > a.x2 - a.x1 ? s2 : a), segs[0])
-    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 8, y: 0 })
+    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 8, y: VEC_Y - 54 })
   }
-  const rows = [{ end: VEC_X1 - 6, y: VEC_Y - 20 }, { end: VEC_X1 - 6, y: VEC_Y - 38 }]
-  for (const lb of labels.slice().sort((a, b2) => a.anchorX - b2.anchorX)) {
-    const want = lb.anchorX - lb.chipW / 2
-    const cands = rows
-      .map((r, ri) => ({ ri, left: Math.max(want, r.end) }))
-      .sort((a, b2) => ((a.left - want) - (a.ri === 0 ? 18 : 0)) - ((b2.left - want) - (b2.ri === 0 ? 18 : 0)) || a.ri - b2.ri)
-    const pick = cands[0]
-    const left = Math.min(Math.max(pick.left, VEC_X1 - 6), VEC_X2 - lb.chipW)
-    rows[pick.ri].end = left + lb.chipW
+  let cur = VEC_X1 - 6
+  for (const lb of labels.filter((l) => l.y === VEC_Y - 54).sort((a, b2) => a.anchorX - b2.anchorX)) {
+    const left = Math.min(Math.max(lb.anchorX - lb.chipW / 2, cur), VEC_X2 - lb.chipW)
+    cur = left + lb.chipW + 8
     lb.x = left + lb.chipW / 2
-    lb.y = rows[pick.ri].y
   }
   return labels
 })
@@ -348,7 +355,7 @@ const markLayout = computed(() => {
       .sort((a, b) => ((a.left - want) - (a.i === 0 ? 18 : 0)) - ((b.left - want) - (b.i === 0 ? 18 : 0)) || a.i - b.i)
     const pick = cands[0]
     const left = Math.min(Math.max(pick.left, VEC_X1 - 4), VEC_X2 - it.width)
-    rows[pick.i].cursor = left + it.width
+    rows[pick.i].cursor = left + it.width + 6
     it.cx = left + it.width / 2
     it.y = rows[pick.i].y
     return { ...it, color: enzymeColor(it.m.enzyme) }
