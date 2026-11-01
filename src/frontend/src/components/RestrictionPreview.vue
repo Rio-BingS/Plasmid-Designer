@@ -67,7 +67,7 @@ const siteLabelLayout = computed(() => {
   if (!p) return []
   const items = p.sites.map((site) => {
     const text = `${site.enzyme} (${site.cut})`
-    return { site, x: toX(site.cut), text, major: !!site.junction, width: text.length * 6.2 + 8 }
+    return { site, x: toX(site.cut), text, major: !!site.junction, width: text.length * 6.2 + 8, chipW: textW(text) + 6, color: enzymeColor(site.enzyme) }
   }).sort((a, b) => a.x - b.x)
   const rowEnds: number[] = []
   return items.map((it) => {
@@ -201,8 +201,8 @@ const rulerTicks = computed(() => {
 })
 
 // ---- 片段选择图：原载体坐标，按消化带点击选择 ----
-const VEC_H = 104
-const VEC_Y = 62
+const VEC_H = 114
+const VEC_Y = 68
 const VEC_X1 = 90
 const VEC_X2 = VB_W - 60
 const vectorLength = computed(() => props.preview?.vector.length ?? 1)
@@ -261,7 +261,7 @@ const isActive = (o: { left_cut: number; right_cut: number }) => {
 
 /** 每条带的长度标注：常显，居中于带的最宽段，两行防重叠 */
 const bandLabelLayout = computed(() => {
-  const rows = [{ end: -1, y: VEC_Y - 16 }, { end: -1, y: VEC_Y - 30 }]
+  const rows = [{ end: -1, y: VEC_Y - 22 }, { end: -1, y: VEC_Y - 40 }]
   return bands.value.map((b) => {
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s) => (s.x2 - s.x1 > a.x2 - a.x1 ? s : a), segs[0])
@@ -274,7 +274,7 @@ const bandLabelLayout = computed(() => {
     let row = rows.findIndex((r) => x - width / 2 > r.end)
     if (row === -1) row = 0
     rows[row].end = x + width / 2
-    return { x, y: rows[row].y, text }
+    return { x, y: rows[row].y, text, chipW: textW(text) + 6 }
   })
 })
 
@@ -282,9 +282,9 @@ const bandLabelLayout = computed(() => {
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
-    return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0, y: 0 }
+    return { m, x: vecX(m.vector_cut), text, width: textW(text), chipW: textW(text) + 6, cx: 0, y: 0 }
   }).sort((a, b) => a.x - b.x)
-  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 16 }, { cursor: VEC_X1 - 4, y: VEC_Y - 34 }]
+  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 20 }, { cursor: VEC_X1 - 4, y: VEC_Y - 40 }]
   return items.map((it) => {
     const want = it.x - it.width / 2
     // 两排各算让位距离，位移小者优先；平手选近轴排
@@ -327,13 +327,15 @@ const markLayout = computed(() => {
       <svg v-if="cutMarks.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
            role="img" aria-label="酶切位点分布">
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
-        <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
+        <rect :x="VEC_X1" :y="VEC_Y - 2.5" :width="VEC_X2 - VEC_X1" height="5" rx="2.5" fill="#e2e8f0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-            <line :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 6"
-                  :stroke="m.color" stroke-width="1" opacity="0.5" />
-            <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 12"
-                  :stroke="m.color" stroke-width="2" />
-            <text :x="m.cx" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
+          <line :x1="m.cx" :x2="m.x" :y1="m.y + 5" :y2="VEC_Y - 5"
+                :stroke="m.color" stroke-width="1" opacity="0.55" />
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 8" :y2="VEC_Y + 8"
+                :stroke="m.color" stroke-width="2.5" stroke-linecap="round" />
+          <rect :x="m.cx - m.chipW / 2" :y="m.y - 12" :width="m.chipW" height="16" rx="7"
+                :fill="m.color" fill-opacity="0.08" :stroke="m.color" stroke-opacity="0.4" />
+          <text :x="m.cx" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
@@ -343,7 +345,7 @@ const markLayout = computed(() => {
       <svg v-if="bands.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
            role="img" aria-label="插入位置选择">
         <text :x="PAD" y="14" class="rp-fig-title">选择插入位置（点击要回收的片段，再点一次取消）</text>
-        <rect :x="VEC_X1" :y="VEC_Y - 2" :width="VEC_X2 - VEC_X1" height="4" fill="#cbd5e0" />
+        <rect :x="VEC_X1" :y="VEC_Y - 2.5" :width="VEC_X2 - VEC_X1" height="5" rx="2.5" fill="#e2e8f0" />
         <g v-for="(o, i) in bands" :key="`band-${i}`" class="rp-band" @click="pickBand(i)">
           <title>回收 {{ o.kept_bp.toLocaleString() }} bp（{{ o.left_enzyme }}({{ o.left_cut }}) × {{ o.right_enzyme }}({{ o.right_cut }})）</title>
           <!-- 热区 = 该带自身区间（跨原点拆两段），两条带互不遮挡 -->
@@ -355,11 +357,16 @@ const markLayout = computed(() => {
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
           <!-- 带两端切点着色刻度（与图①同色） -->
           <line v-for="(t, ti) in bandTicks(o)" :key="`bt-${i}-${ti}`"
-                :x1="t.x" :x2="t.x" :y1="VEC_Y - 11" :y2="VEC_Y + 11" :stroke="t.c" stroke-width="2" />
-          <text v-if="bandLabelLayout[i]" :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
-                :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
-            {{ bandLabelLayout[i].text }}
-          </text>
+                :x1="t.x" :x2="t.x" :y1="VEC_Y - 10" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="2.5" stroke-linecap="round" />
+          <g v-if="bandLabelLayout[i]">
+            <rect :x="bandLabelLayout[i].x - bandLabelLayout[i].chipW / 2" :y="bandLabelLayout[i].y - 12"
+                  :width="bandLabelLayout[i].chipW" height="16" rx="7" fill="#38a169" fill-opacity="0.08"
+                  :stroke="isActive(o) ? '#38a169' : '#a2d5ab'" stroke-opacity="0.5" />
+            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
+                  :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
+              {{ bandLabelLayout[i].text }}
+            </text>
+          </g>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
         <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
@@ -379,9 +386,11 @@ const markLayout = computed(() => {
         <g v-for="(item, i) in siteLabelLayout"
            :key="`${item.site.role}-${item.site.enzyme}-${item.site.cut}-${i}`">
           <line :x1="item.x" :x2="item.x" y1="30" :y2="BACKBONE_Y - 2"
-                :stroke="item.major ? '#2d3748' : '#a0aec0'"
-                :stroke-width="item.major ? 1.5 : 1" />
-          <text :x="item.x" :y="item.y" class="rp-site"
+                :stroke="item.color" :stroke-width="item.major ? 2.5 : 1.5"
+                :opacity="item.major ? 1 : 0.55" stroke-linecap="round" />
+          <rect :x="item.x - item.chipW / 2" :y="item.y - 11" :width="item.chipW" height="15" rx="6"
+                :fill="item.color" fill-opacity="0.07" :stroke="item.color" :stroke-opacity="item.major ? 0.45 : 0.3" />
+          <text :x="item.x" :y="item.y" class="rp-site" :style="{ fill: item.color }"
                 :class="{ 'rp-site-minor': !item.major }" text-anchor="middle">
             {{ item.text }}
           </text>
