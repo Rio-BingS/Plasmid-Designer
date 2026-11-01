@@ -108,11 +108,12 @@ describe('RestrictionPreview 双酶切示意图', () => {
       }) },
     })
     const text = wrapper.text()
-    expect(text).toContain('EcoRI (952)')
+    // 2026-11-01 标签改为文字直排（无括号、无盒子）
+    expect(text).toContain('EcoRI 952')
     for (const cut of [1228, 2136, 2208, 3003]) {
-      expect(text).toContain(`SphI (${cut})`)
+      expect(text).toContain(`SphI ${cut}`)
     }
-    expect(text.match(/SphI \(/g)!.length).toBeGreaterThanOrEqual(4)
+    expect(text.match(/SphI \d/g)!.length).toBeGreaterThanOrEqual(4)
     // 2026-10-31 用户反馈：结合上下排布与左右错开——标签就近贴自己的刻度，
     // 近距切点落到不同行（或同行左右让位），两个标签位置必须错开
     const labels = wrapper.findAll('text').map((t) => ({
