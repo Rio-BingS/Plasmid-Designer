@@ -311,7 +311,7 @@ const vecLabels = computed(() => {
       labels.push({ text, color: enzymeColor(enz), fill: enzymeColor(enz), fillOp: 0.08, strokeOp: 0.4, active: false, anchorX: vecX(cut), x: 0, chipW: textW(text) + 8, y: 0 })
     }
   }
-  const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 16 }, { end: VEC_X1 - 6, y: VEC_Y - 34 }]
+  const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 14 }, { end: VEC_X1 - 6, y: VEC_Y - 32 }]
   for (const lb of labels.slice().sort((a, b2) => a.anchorX - b2.anchorX)) {
     const want = lb.anchorX - lb.chipW / 2
     const cands = siteRows
@@ -346,7 +346,7 @@ const markLayout = computed(() => {
     const text = `${m.enzyme} (${m.vector_cut})`
     return { m, x: vecX(m.vector_cut), text, width: textW(text), chipW: textW(text) + 6, cx: 0, y: 0 }
   }).sort((a, b) => a.x - b.x)
-  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 20 }, { cursor: VEC_X1 - 4, y: VEC_Y - 40 }]
+  const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 14 }, { cursor: VEC_X1 - 4, y: VEC_Y - 34 }]
   return items.map((it) => {
     const want = it.x - it.width / 2
     // 两排各算让位距离，位移小者优先；平手选近轴排
@@ -391,12 +391,12 @@ const markLayout = computed(() => {
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2.5" :width="VEC_X2 - VEC_X1" height="5" rx="2.5" fill="#e2e8f0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-          <line :x1="m.cx" :x2="m.x" :y1="m.y + 5" :y2="VEC_Y - 5"
-                :stroke="m.color" stroke-width="1" opacity="0.55" />
-          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 8" :y2="VEC_Y + 8"
-                :stroke="m.color" stroke-width="2.5" stroke-linecap="round" />
-          <rect :x="m.cx - m.chipW / 2" :y="m.y - 12" :width="m.chipW" height="16" rx="7"
-                :fill="m.color" fill-opacity="0.08" :stroke="m.color" stroke-opacity="0.4" />
+          <line v-if="m.y < VEC_Y - 25" :x1="m.cx" :x2="m.x" :y1="m.y + 4" :y2="VEC_Y - 11"
+                :stroke="m.color" stroke-width="1.2" opacity="0.7" />
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 8"
+                :stroke="m.color" stroke-width="3" stroke-linecap="round" />
+          <rect :x="m.cx - m.chipW / 2" :y="m.y - 11" :width="m.chipW" height="16" rx="8"
+                :fill="m.color" fill-opacity="0.13" :stroke="m.color" stroke-opacity="0.55" />
           <text :x="m.cx" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
@@ -419,15 +419,15 @@ const markLayout = computed(() => {
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
           <!-- 带两端切点着色刻度（与图①同色） -->
           <line v-for="(t, ti) in bandTicks(o)" :key="`bt-${i}-${ti}`"
-                :x1="t.x" :x2="t.x" :y1="VEC_Y - 10" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="2.5" stroke-linecap="round" />
+                :x1="t.x" :x2="t.x" :y1="VEC_Y - 12" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="3" stroke-linecap="round" />
         </g>
 
         <!-- 标注：位点芯片贴切点刻度，长度芯片居中于带 -->
         <g v-for="(lb, li) in vecLabels" :key="`lb-${li}`">
-          <line :x1="lb.x" :x2="lb.anchorX" :y1="lb.y + 5" :y2="VEC_Y - 5"
-                :stroke="lb.color" stroke-width="1" opacity="0.55" />
-          <rect :x="lb.x - lb.chipW / 2" :y="lb.y - 12" :width="lb.chipW" height="16" rx="7"
-                :fill="lb.fill" :fill-opacity="lb.fillOp" :stroke="lb.color" :stroke-opacity="lb.strokeOp" />
+          <line v-if="lb.y > VEC_Y - 40" :x1="lb.x" :x2="lb.anchorX" :y1="lb.y + 4" :y2="VEC_Y - 10"
+                :stroke="lb.color" stroke-width="1.2" opacity="0.7" />
+          <rect :x="lb.x - lb.chipW / 2" :y="lb.y - 11" :width="lb.chipW" height="16" rx="8"
+                :fill="lb.fill" :fill-opacity="0.13" :stroke="lb.color" :stroke-opacity="0.55" />
           <text :x="lb.x" :y="lb.y" :class="['rp-band-label', { 'rp-band-label-active': lb.active }]"
                 :style="{ fill: lb.color }" text-anchor="middle">{{ lb.text }}</text>
         </g>
@@ -451,8 +451,8 @@ const markLayout = computed(() => {
           <line :x1="item.x" :x2="item.x" y1="30" :y2="BACKBONE_Y - 2"
                 :stroke="item.color" :stroke-width="item.major ? 2.5 : 1.5"
                 :opacity="item.major ? 1 : 0.55" stroke-linecap="round" />
-          <rect :x="item.x - item.chipW / 2" :y="item.y - 11" :width="item.chipW" height="15" rx="6"
-                :fill="item.color" fill-opacity="0.07" :stroke="item.color" :stroke-opacity="item.major ? 0.45 : 0.3" />
+          <rect :x="item.x - item.chipW / 2" :y="item.y - 11" :width="item.chipW" height="16" rx="8"
+                :fill="item.color" fill-opacity="0.13" :stroke="item.color" :stroke-opacity="item.major ? 0.55 : 0.4" />
           <text :x="item.x" :y="item.y" class="rp-site" :style="{ fill: item.color }"
                 :class="{ 'rp-site-minor': !item.major }" text-anchor="middle">
             {{ item.text }}
