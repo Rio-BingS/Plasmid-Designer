@@ -201,8 +201,8 @@ const rulerTicks = computed(() => {
 })
 
 // ---- 片段选择图：原载体坐标，按消化带点击选择 ----
-const VEC_H = 132
-const VEC_Y = 86
+const VEC_H = 130
+const VEC_Y = 80
 const VEC_X1 = 90
 const VEC_X2 = VB_W - 60
 const vectorLength = computed(() => props.preview?.vector.length ?? 1)
@@ -266,7 +266,7 @@ const enzymeColor = (name: string) => {
 }
 
 /** 标注文本宽度估算：CJK 按 10px，其余按 6.4px */
-const textW = (t: string) => [...t].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e7f ? 10 : 6.4), 0) + 8
+const textW = (t: string) => [...t].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e7f ? 11 : 7.2), 0) + 8
 
 /** 点了某条带：把带换算成补集切点对回写（回收=切走补集）；再点已选中的带 = 取消 */
 function pickBand(i: number) {
@@ -297,7 +297,7 @@ const bandLabels = computed(() => {
     const text = active ? `插入位置 · ${b.kept_bp.toLocaleString()} bp` : `回收 ${b.kept_bp.toLocaleString()} bp`
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s2) => (s2.x2 - s2.x1 > a.x2 - a.x1 ? s2 : a), segs[0])
-    return { text, active, anchorX: (widest.x1 + widest.x2) / 2, width: textW(text), x: 0, y: VEC_Y + 24 }
+    return { text, active, anchorX: (widest.x1 + widest.x2) / 2, width: textW(text), x: 0, y: VEC_Y + 27 }
   })
   let cur = VEC_X1 - 6
   for (const lb of out.sort((a, b) => a.anchorX - b.anchorX)) {
@@ -314,7 +314,7 @@ const markLayout = computed(() => {
     const text = `${m.enzyme} ${m.vector_cut}`
     return { m, x: vecX(m.vector_cut), text, width: textW(text), cx: 0, y: 0, lifted: false }
   }).sort((a, b) => a.x - b.x)
-  const rows = [{ cursor: VEC_X1 - 6, y: VEC_Y - 16 }, { cursor: VEC_X1 - 6, y: VEC_Y - 32 }]
+  const rows = [{ cursor: VEC_X1 - 6, y: VEC_Y - 13 }, { cursor: VEC_X1 - 6, y: VEC_Y - 31 }]
   return items.map((it) => {
     const want = it.x - it.width / 2
     // 两排各算让位距离，位移小者优先；平手选近轴排
@@ -358,16 +358,16 @@ const markLayout = computed(() => {
       <svg v-if="cutMarks.length" class="rp-svg rp-vector-svg" :viewBox="`0 0 ${VB_W} ${VEC_H}`"
            role="img" aria-label="酶切位点分布">
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
-        <rect :x="VEC_X1" :y="VEC_Y - 1" :width="VEC_X2 - VEC_X1" height="2" rx="1" fill="#d3dce6" />
+        <rect :x="VEC_X1" :y="VEC_Y - 3" :width="VEC_X2 - VEC_X1" height="6" rx="3" fill="#cbd5e0" />
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
-          <line v-if="m.lifted" :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 5"
-                :stroke="m.color" stroke-width="1" opacity="0.6" />
-          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 5" :y2="VEC_Y + 5"
-                :stroke="m.color" stroke-width="2.5" stroke-linecap="round" />
+          <line v-if="m.lifted" :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 7"
+                :stroke="m.color" stroke-width="1.2" opacity="0.7" />
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 7" :y2="VEC_Y + 7"
+                :stroke="m.color" stroke-width="3" stroke-linecap="round" />
           <text :x="m.cx" :y="m.y" class="rp-vec-label" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
-        <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
-        <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
+        <text :x="VEC_X1" :y="VEC_Y + 44" class="rp-ruler" text-anchor="start">1</text>
+        <text :x="VEC_X2" :y="VEC_Y + 44" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
 
       <!-- 插入位置选择：可回收的消化带常显（浅绿），点击选中（深绿+「插入位置」），再点取消 -->
@@ -382,7 +382,7 @@ const markLayout = computed(() => {
                 :x="seg.x1" :y="VEC_Y - 16" :width="Math.max(seg.x2 - seg.x1, 6)" height="34" fill="transparent" />
           <!-- 带本体常显：浅绿 = 可选，深绿 = 已选中 -->
           <rect v-for="(seg, si) in bandSegs(o)" :key="`bs-${i}-${si}`"
-                :x="seg.x1" :y="VEC_Y - 4" :width="Math.max(seg.x2 - seg.x1, 2)" height="8" rx="4"
+                :x="seg.x1" :y="VEC_Y - 6" :width="Math.max(seg.x2 - seg.x1, 2)" height="12" rx="6"
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
         </g>
 
@@ -390,16 +390,16 @@ const markLayout = computed(() => {
         <g v-for="(m, i) in markLayout" :key="`vec2-mark-${i}`">
           <line v-if="m.lifted" :x1="m.cx" :x2="m.x" :y1="m.y + 3" :y2="VEC_Y - 5"
                 :stroke="m.color" stroke-width="1" opacity="0.6" />
-          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 5" :y2="VEC_Y + 5"
-                :stroke="m.color" stroke-width="2.5" stroke-linecap="round" />
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 7" :y2="VEC_Y + 7"
+                :stroke="m.color" stroke-width="3" stroke-linecap="round" />
           <text :x="m.cx" :y="m.y" class="rp-vec-label" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
 
         <!-- 长度：带下方彩色文字直排 -->
         <text v-for="(lb, i) in bandLabels" :key="`bl-${i}`" :x="lb.x" :y="lb.y"
               :class="['rp-band-len', { 'rp-band-len-active': lb.active }]" text-anchor="middle">{{ lb.text }}</text>
-        <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
-        <text :x="VEC_X2" :y="VEC_Y + 38" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
+        <text :x="VEC_X1" :y="VEC_Y + 44" class="rp-ruler" text-anchor="start">1</text>
+        <text :x="VEC_X2" :y="VEC_Y + 44" class="rp-ruler" text-anchor="end">{{ vectorLength.toLocaleString() }}</text>
       </svg>
 
       <!-- 拼接完成的构建体（提交后拿到的成品；被切走的片段已不在里面） -->
@@ -545,12 +545,12 @@ const markLayout = computed(() => {
 }
 
 .rp-vec-label {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .rp-band-len {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
   fill: #2f855a;
 }
