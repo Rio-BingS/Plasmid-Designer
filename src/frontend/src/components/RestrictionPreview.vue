@@ -311,7 +311,7 @@ const vecLabels = computed(() => {
       labels.push({ text, color: enzymeColor(enz), fill: enzymeColor(enz), fillOp: 0.08, strokeOp: 0.4, active: false, anchorX: vecX(cut), x: 0, chipW: textW(text) + 8, y: 0 })
     }
   }
-  const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 14 }, { end: VEC_X1 - 6, y: VEC_Y - 32 }]
+  const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 20 }, { end: VEC_X1 - 6, y: VEC_Y - 40 }]
   for (const lb of labels.slice().sort((a, b2) => a.anchorX - b2.anchorX)) {
     const want = lb.anchorX - lb.chipW / 2
     const cands = siteRows
@@ -329,10 +329,10 @@ const vecLabels = computed(() => {
     const text = active ? `插入位置 · ${b.kept_bp.toLocaleString()} bp` : `回收 ${b.kept_bp.toLocaleString()} bp`
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s2) => (s2.x2 - s2.x1 > a.x2 - a.x1 ? s2 : a), segs[0])
-    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 8, y: VEC_Y - 54 })
+    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 8, y: VEC_Y + 22 })
   }
   let cur = VEC_X1 - 6
-  for (const lb of labels.filter((l) => l.y === VEC_Y - 54).sort((a, b2) => a.anchorX - b2.anchorX)) {
+  for (const lb of labels.filter((l) => l.y === VEC_Y + 22).sort((a, b2) => a.anchorX - b2.anchorX)) {
     const left = Math.min(Math.max(lb.anchorX - lb.chipW / 2, cur), VEC_X2 - lb.chipW)
     cur = left + lb.chipW + 8
     lb.x = left + lb.chipW / 2
@@ -419,13 +419,11 @@ const markLayout = computed(() => {
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
           <!-- 带两端切点着色刻度（与图①同色） -->
           <line v-for="(t, ti) in bandTicks(o)" :key="`bt-${i}-${ti}`"
-                :x1="t.x" :x2="t.x" :y1="VEC_Y - 12" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="3" stroke-linecap="round" />
+                :x1="t.x" :x2="t.x" :y1="VEC_Y - 16" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="3" stroke-linecap="round" />
         </g>
 
         <!-- 标注：位点芯片贴切点刻度，长度芯片居中于带 -->
         <g v-for="(lb, li) in vecLabels" :key="`lb-${li}`">
-          <line v-if="lb.y > VEC_Y - 40" :x1="lb.x" :x2="lb.anchorX" :y1="lb.y + 4" :y2="VEC_Y - 10"
-                :stroke="lb.color" stroke-width="1.2" opacity="0.7" />
           <rect :x="lb.x - lb.chipW / 2" :y="lb.y - 11" :width="lb.chipW" height="16" rx="8"
                 :fill="lb.fill" :fill-opacity="0.13" :stroke="lb.color" :stroke-opacity="0.55" />
           <text :x="lb.x" :y="lb.y" :class="['rp-band-label', { 'rp-band-label-active': lb.active }]"
