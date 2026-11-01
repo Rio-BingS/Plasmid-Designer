@@ -213,7 +213,38 @@ const bands = computed(() => props.preview?.cut_options ?? [])
 /** 选中带：用户点击优先（cutPair=补集切点对），否则无高亮 */
 const activePair = computed<[number, number] | null>(() => props.cutPair ?? props.preview?.cut_pair ?? null)
 
-const vecX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
+const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
+
+/** 截断比例尺：相邻切点过近的区段拉伸到最小间距，稀疏区按比例让出宽度（总宽守恒），拥挤标签不再扎堆 */
+const vecScale = computed(() => {
+  const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
+  if (cuts.length < 2) return { map: linX, marks: [] as number[] }
+  const MIN = 64
+  const segs = cuts.slice(0, -1).map((c, i) => ({ a: c, b: cuts[i + 1], w: linX(cuts[i + 1]) - linX(c) }))
+  const deficit = segs.reduce((t, g) => t + Math.max(0, MIN - g.w), 0)
+  const surplus = segs.reduce((t, g) => t + Math.max(0, g.w - MIN), 0)
+  const f = surplus >= deficit && surplus > 0 ? 1 - deficit / surplus : 0
+  const g2 = surplus >= deficit ? 1 : (surplus > 0 ? surplus / deficit : 0)
+  let acc = linX(cuts[0])
+  const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
+  const marks: number[] = []
+  for (const g of segs) {
+    const w2 = g.w >= MIN ? MIN + (g.w - MIN) * f : MIN - (MIN - g.w) * g2
+    breaks.push({ p0: g.a, p1: g.b, q0: acc, q1: acc + w2 })
+    if (Math.abs(w2 - g.w) > 15) marks.push(acc, acc + w2)
+    acc += w2
+  }
+  const map = (pos: number) => {
+    if (pos <= cuts[0] || pos >= cuts[cuts.length - 1]) return linX(pos)
+    const seg = breaks.find((s2) => pos >= s2.p0 && pos <= s2.p1)
+    if (!seg) return linX(pos)
+    const t = (pos - seg.p0) / (seg.p1 - seg.p0 || 1)
+    return seg.q0 + t * (seg.q1 - seg.q0)
+  }
+  return { map, marks }
+})
+
+const vecX = (pos: number) => vecScale.value.map(pos)
 /** 酶名 → 稳定配色（图①刻度/标签与图②带端刻度同色，便于对应） */
 const ENZYME_COLORS = ['#2b6cb0', '#2f855a', '#b7791f', '#c05621', '#6b46c1', '#2c7a7b', '#b83280', '#4a5568']
 const enzymeColorCache = new Map<string, string>()
@@ -344,6 +375,10 @@ const markLayout = computed(() => {
            role="img" aria-label="酶切位点分布">
         <text :x="PAD" y="14" class="rp-fig-title">酶切位点分布（原载体 {{ vectorLength.toLocaleString() }} bp）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2.5" :width="VEC_X2 - VEC_X1" height="5" rx="2.5" fill="#e2e8f0" />
+        <g v-for="(mk, mi) in vecScale.marks" :key="`sb-${mi}`">
+          <line :x1="mk - 3" :y1="VEC_Y - 6" :x2="mk + 3" :y2="VEC_Y + 6" stroke="#a0aec0" stroke-width="1.2" />
+          <line :x1="mk + 3" :y1="VEC_Y - 6" :x2="mk + 9" :y2="VEC_Y + 6" stroke="#a0aec0" stroke-width="1.2" />
+        </g>
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
           <line :x1="m.cx" :x2="m.x" :y1="m.y + 5" :y2="VEC_Y - 5"
                 :stroke="m.color" stroke-width="1" opacity="0.55" />
@@ -362,6 +397,10 @@ const markLayout = computed(() => {
            role="img" aria-label="插入位置选择">
         <text :x="PAD" y="14" class="rp-fig-title">选择插入位置（点击要回收的片段，再点一次取消）</text>
         <rect :x="VEC_X1" :y="VEC_Y - 2.5" :width="VEC_X2 - VEC_X1" height="5" rx="2.5" fill="#e2e8f0" />
+        <g v-for="(mk, mi) in vecScale.marks" :key="`sb-${mi}`">
+          <line :x1="mk - 3" :y1="VEC_Y - 6" :x2="mk + 3" :y2="VEC_Y + 6" stroke="#a0aec0" stroke-width="1.2" />
+          <line :x1="mk + 3" :y1="VEC_Y - 6" :x2="mk + 9" :y2="VEC_Y + 6" stroke="#a0aec0" stroke-width="1.2" />
+        </g>
         <g v-for="(o, i) in bands" :key="`band-${i}`" class="rp-band" @click="pickBand(i)">
           <title>回收 {{ o.kept_bp.toLocaleString() }} bp（{{ o.left_enzyme }}({{ o.left_cut }}) × {{ o.right_enzyme }}({{ o.right_cut }})）</title>
           <!-- 热区 = 该带自身区间（跨原点拆两段），两条带互不遮挡 -->
