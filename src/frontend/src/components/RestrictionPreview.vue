@@ -215,33 +215,29 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：相邻位点等距（示意节奏均匀，不按 bp 线性——线性会让密集区标签挤成一团、
- *  稀疏区大片留白），边缘段压缩让位，总宽守恒；切点过多时间距收敛到下限 */
+/** 宽度比例：所有段（含两端臂）按碱基数准比例分配——每段保底 80px 放得下标签，
+ *  剩余宽度按 bp 占比分摊；保住「段越长画得越宽」的单调关系，不再出现 2759bp 的
+ *  臂比 795bp 中段还窄的倒挂；位点过多时保底收敛到 span/n，标签交给扫避让 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
-  const MIN_INTER = 56
   const total = vectorLength.value
-  const mids = cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1], w: linX(cuts[i + 1]) - linX(c) }))
-  const eL0 = linX(cuts[0]) - VEC_X1
-  const eR0 = VEC_X2 - linX(cuts[cuts.length - 1])
-  const sumW = eL0 + eR0 + mids.reduce((t, g) => t + g.w, 0)
-  const minMids = MIN_INTER * mids.length
-  let eL = Math.max(60, eL0 * 0.4)
-  let eR = Math.max(60, eR0 * 0.4)
-  if (sumW - eL - eR < minMids) {
-    const rest = Math.max(120, sumW - minMids)
-    eL = Math.min(eL0, Math.max(60, (rest * eL0) / (eL0 + eR0 || 1)))
-    eR = Math.max(60, rest - eL)
-  }
-  const gap = Math.max(24, (sumW - eL - eR) / mids.length)
+  const segs: Array<{ p0: number; p1: number }> = [
+    { p0: 1, p1: cuts[0] },
+    ...cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1] })),
+    { p0: cuts[cuts.length - 1], p1: total },
+  ]
+  const span = VEC_X2 - VEC_X1
+  const bpTotal = segs.reduce((t, s) => t + (s.p1 - s.p0), 0) || 1
+  const floor = Math.min(80, span / segs.length)
+  const extra = Math.max(0, span - floor * segs.length)
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
-  breaks.push({ p0: 1, p1: cuts[0], q0: acc, q1: acc + eL }); acc += eL
-  for (const g of mids) {
-    breaks.push({ p0: g.p0, p1: g.p1, q0: acc, q1: acc + gap }); acc += gap
+  for (const s of segs) {
+    const w = floor + (extra * (s.p1 - s.p0)) / bpTotal
+    breaks.push({ p0: s.p0, p1: s.p1, q0: acc, q1: acc + w })
+    acc += w
   }
-  breaks.push({ p0: cuts[cuts.length - 1], p1: total, q0: acc, q1: VEC_X2 })
   const map = (pos: number) => {
     if (pos <= 1 || pos >= total) return pos <= 1 ? VEC_X1 : VEC_X2
     const seg = breaks.find((s2) => pos >= s2.p0 && pos <= s2.p1) ?? breaks[breaks.length - 1]
