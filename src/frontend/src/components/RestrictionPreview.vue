@@ -267,14 +267,14 @@ const bandLabelLayout = computed(() => {
     const widest = segs.reduce((a, s) => (s.x2 - s.x1 > a.x2 - a.x1 ? s : a), segs[0])
     const sites = `${b.left_enzyme}(${b.left_cut})–${b.right_enzyme}(${b.right_cut})`
     const text = isActive(b)
-      ? `插入位置 · ${sites} · 回收 ${b.kept_bp.toLocaleString()} bp`
-      : `${sites} · 回收 ${b.kept_bp.toLocaleString()} bp`
+      ? `插入位置 · ${b.kept_bp.toLocaleString()} bp`
+      : `回收 ${b.kept_bp.toLocaleString()} bp`
     const width = textW(text)
     const x = Math.min(Math.max((widest.x1 + widest.x2) / 2, VEC_X1 + width / 2), VEC_X2 - width / 2)
     let row = rows.findIndex((r) => x - width / 2 > r.end)
     if (row === -1) row = 0
     rows[row].end = x + width / 2
-    return { x, y: rows[row].y, text, chipW: textW(text) + 6 }
+    return { x, y: rows[row].y, text, chipW: textW(text) + 6, sub: sites }
   })
 })
 
@@ -365,6 +365,9 @@ const markLayout = computed(() => {
             <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
                   :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
               {{ bandLabelLayout[i].text }}
+            </text>
+            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y + 11" class="rp-band-sub" text-anchor="middle">
+              {{ bandLabelLayout[i].sub }}
             </text>
           </g>
         </g>
@@ -512,6 +515,11 @@ const markLayout = computed(() => {
 .rp-vector-svg {
   margin-top: 0.2rem;
   border-top: 1px dashed #e2e8f0;
+}
+
+.rp-band-sub {
+  font-size: 8.5px;
+  fill: #a0aec0;
 }
 
 .rp-band-label {
