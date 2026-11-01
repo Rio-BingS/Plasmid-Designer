@@ -308,7 +308,7 @@ const vecLabels = computed(() => {
       if (seen.has(key)) continue
       seen.add(key)
       const text = `${enz} (${cut})`
-      labels.push({ text, color: enzymeColor(enz), fill: enzymeColor(enz), fillOp: 0.08, strokeOp: 0.4, active: false, anchorX: vecX(cut), x: 0, chipW: textW(text) + 8, y: 0 })
+      labels.push({ text, color: enzymeColor(enz), fill: enzymeColor(enz), fillOp: 0.08, strokeOp: 0.4, active: false, anchorX: vecX(cut), x: 0, chipW: textW(text) + 4, y: 0 })
     }
   }
   const siteRows = [{ end: VEC_X1 - 6, y: VEC_Y - 20 }, { end: VEC_X1 - 6, y: VEC_Y - 40 }]
@@ -329,7 +329,7 @@ const vecLabels = computed(() => {
     const text = active ? `插入位置 · ${b.kept_bp.toLocaleString()} bp` : `回收 ${b.kept_bp.toLocaleString()} bp`
     const segs = bandSegs(b)
     const widest = segs.reduce((a, s2) => (s2.x2 - s2.x1 > a.x2 - a.x1 ? s2 : a), segs[0])
-    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 8, y: VEC_Y + 22 })
+    labels.push({ text, color: active ? '#22543d' : '#2f855a', fill: '#38a169', fillOp: active ? 0.16 : 0.08, strokeOp: active ? 0.9 : 0.5, active, anchorX: (widest.x1 + widest.x2) / 2, x: 0, chipW: textW(text) + 4, y: VEC_Y + 22 })
   }
   let cur = VEC_X1 - 6
   for (const lb of labels.filter((l) => l.y === VEC_Y + 22).sort((a, b2) => a.anchorX - b2.anchorX)) {
@@ -344,7 +344,7 @@ const vecLabels = computed(() => {
 const markLayout = computed(() => {
   const items = cutMarks.value.map((m) => {
     const text = `${m.enzyme} (${m.vector_cut})`
-    return { m, x: vecX(m.vector_cut), text, width: textW(text), chipW: textW(text) + 6, cx: 0, y: 0 }
+    return { m, x: vecX(m.vector_cut), text, width: textW(text), chipW: textW(text) + 4, cx: 0, y: 0 }
   }).sort((a, b) => a.x - b.x)
   const rows = [{ cursor: VEC_X1 - 4, y: VEC_Y - 14 }, { cursor: VEC_X1 - 4, y: VEC_Y - 34 }]
   return items.map((it) => {
@@ -393,10 +393,10 @@ const markLayout = computed(() => {
         <g v-for="(m, i) in markLayout" :key="`vec-mark-${i}`">
           <line v-if="m.y < VEC_Y - 25" :x1="m.cx" :x2="m.x" :y1="m.y + 4" :y2="VEC_Y - 11"
                 :stroke="m.color" stroke-width="1.2" opacity="0.7" />
-          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 12" :y2="VEC_Y + 8"
-                :stroke="m.color" stroke-width="3" stroke-linecap="round" />
-          <rect :x="m.cx - m.chipW / 2" :y="m.y - 11" :width="m.chipW" height="16" rx="8"
-                :fill="m.color" fill-opacity="0.13" :stroke="m.color" stroke-opacity="0.55" />
+          <line :x1="m.x" :x2="m.x" :y1="VEC_Y - 11" :y2="VEC_Y + 5"
+                :stroke="m.color" stroke-width="2.5" stroke-linecap="round" />
+          <rect :x="m.cx - m.chipW / 2" :y="m.y - 10" :width="m.chipW" height="15" rx="7"
+                :fill="m.color" fill-opacity="0.14" :stroke="m.color" stroke-opacity="0.5" />
           <text :x="m.cx" :y="m.y" class="rp-vec-mark" :style="{ fill: m.color }" text-anchor="middle">{{ m.text }}</text>
         </g>
         <text :x="VEC_X1" :y="VEC_Y + 38" class="rp-ruler" text-anchor="start">1</text>
@@ -419,13 +419,13 @@ const markLayout = computed(() => {
                 :fill="isActive(o) ? '#38a169' : '#a2d5ab'" opacity="0.9" />
           <!-- 带两端切点着色刻度（与图①同色） -->
           <line v-for="(t, ti) in bandTicks(o)" :key="`bt-${i}-${ti}`"
-                :x1="t.x" :x2="t.x" :y1="VEC_Y - 16" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="3" stroke-linecap="round" />
+                :x1="t.x" :x2="t.x" :y1="VEC_Y - 16" :y2="VEC_Y + 6" :stroke="t.c" stroke-width="2.5" stroke-linecap="round" />
         </g>
 
         <!-- 标注：位点芯片贴切点刻度，长度芯片居中于带 -->
         <g v-for="(lb, li) in vecLabels" :key="`lb-${li}`">
-          <rect :x="lb.x - lb.chipW / 2" :y="lb.y - 11" :width="lb.chipW" height="16" rx="8"
-                :fill="lb.fill" :fill-opacity="0.13" :stroke="lb.color" :stroke-opacity="0.55" />
+          <rect :x="lb.x - lb.chipW / 2" :y="lb.y - 10" :width="lb.chipW" height="15" rx="7"
+                :fill="lb.fill" :fill-opacity="0.14" :stroke="lb.color" :stroke-opacity="0.5" />
           <text :x="lb.x" :y="lb.y" :class="['rp-band-label', { 'rp-band-label-active': lb.active }]"
                 :style="{ fill: lb.color }" text-anchor="middle">{{ lb.text }}</text>
         </g>
