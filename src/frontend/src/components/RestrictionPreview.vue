@@ -201,8 +201,8 @@ const rulerTicks = computed(() => {
 })
 
 // ---- 片段选择图：原载体坐标，按消化带点击选择 ----
-const VEC_H = 114
-const VEC_Y = 68
+const VEC_H = 126
+const VEC_Y = 78
 const VEC_X1 = 90
 const VEC_X2 = VB_W - 60
 const vectorLength = computed(() => props.preview?.vector.length ?? 1)
@@ -259,23 +259,39 @@ const isActive = (o: { left_cut: number; right_cut: number }) => {
   return !!p && p[0] === o.left_cut && p[1] === o.right_cut
 }
 
-/** 每条带的长度标注：常显，居中于带的最宽段，两行防重叠 */
+/** 每条带的信息卡：主行「回收 N bp」+ 位点行；按 x 排序扫排防重叠，结果映射回带顺序 */
+/** 带标注锚点：该带最宽段的中心 x */
+function bandCenterX(i: number) {
+  const b = bands.value[i]
+  if (!b) return VEC_X1
+  const segs = bandSegs(b)
+  const widest = segs.reduce((a, s2) => (s2.x2 - s2.x1 > a.x2 - a.x1 ? s2 : a), segs[0])
+  return (widest.x1 + widest.x2) / 2
+}
+
 const bandLabelLayout = computed(() => {
-  const rows = [{ end: -1, y: VEC_Y - 22 }, { end: -1, y: VEC_Y - 40 }]
-  return bands.value.map((b) => {
-    const segs = bandSegs(b)
-    const widest = segs.reduce((a, s) => (s.x2 - s.x1 > a.x2 - a.x1 ? s : a), segs[0])
+  const items = bands.value.map((b) => {
     const sites = `${b.left_enzyme}(${b.left_cut})–${b.right_enzyme}(${b.right_cut})`
     const text = isActive(b)
       ? `插入位置 · ${b.kept_bp.toLocaleString()} bp`
       : `回收 ${b.kept_bp.toLocaleString()} bp`
-    const width = textW(text)
-    const x = Math.min(Math.max((widest.x1 + widest.x2) / 2, VEC_X1 + width / 2), VEC_X2 - width / 2)
-    let row = rows.findIndex((r) => x - width / 2 > r.end)
-    if (row === -1) row = 0
-    rows[row].end = x + width / 2
-    return { x, y: rows[row].y, text, chipW: textW(text) + 6, sub: sites }
+    return { text, sites, sub: sites, x: 0, chipW: Math.max(textW(text), textW(sites)) + 8, y: 0 }
   })
+  const order = items.map((it, i) => ({ it, i, cx: bandCenterX(i) })).sort((a, b) => a.cx - b.cx)
+  const rows = [{ end: VEC_X1 - 6, y: VEC_Y - 30 }, { end: VEC_X1 - 6, y: VEC_Y - 48 }]
+  for (const { it, cx } of order) {
+    it.x = cx
+    const want = cx - it.chipW / 2
+    const cands = rows
+      .map((r, ri) => ({ ri, left: Math.max(want, r.end) }))
+      .sort((a, b) => (a.left - want) - (b.left - want) || a.ri - b.ri)
+    const pick = cands[0]
+    const left = Math.min(Math.max(pick.left, VEC_X1 - 6), VEC_X2 - it.chipW)
+    rows[pick.ri].end = left + it.chipW
+    it.x = left + it.chipW / 2
+    it.y = rows[pick.ri].y
+  }
+  return items
 })
 
 /** 位点标签：轴上方阶梯式两排（近轴排 + 高一阶排），标签正对自家刻度，占位冲突才抬阶/让位 */
@@ -360,13 +376,13 @@ const markLayout = computed(() => {
                 :x1="t.x" :x2="t.x" :y1="VEC_Y - 10" :y2="VEC_Y + 10" :stroke="t.c" stroke-width="2.5" stroke-linecap="round" />
           <g v-if="bandLabelLayout[i]">
             <rect :x="bandLabelLayout[i].x - bandLabelLayout[i].chipW / 2" :y="bandLabelLayout[i].y - 12"
-                  :width="bandLabelLayout[i].chipW" height="16" rx="7" fill="#38a169" fill-opacity="0.08"
-                  :stroke="isActive(o) ? '#38a169' : '#a2d5ab'" stroke-opacity="0.5" />
-            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y"
+                  :width="bandLabelLayout[i].chipW" height="28" rx="8" fill="#38a169" fill-opacity="0.08"
+                  :stroke="isActive(o) ? '#38a169' : '#a2d5ab'" :stroke-opacity="isActive(o) ? 0.9 : 0.5" />
+            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y - 2"
                   :class="['rp-band-label', { 'rp-band-label-active': isActive(o) }]" text-anchor="middle">
               {{ bandLabelLayout[i].text }}
             </text>
-            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y + 11" class="rp-band-sub" text-anchor="middle">
+            <text :x="bandLabelLayout[i].x" :y="bandLabelLayout[i].y + 10" class="rp-band-sub" text-anchor="middle">
               {{ bandLabelLayout[i].sub }}
             </text>
           </g>
@@ -518,8 +534,8 @@ const markLayout = computed(() => {
 }
 
 .rp-band-sub {
-  font-size: 8.5px;
-  fill: #a0aec0;
+  font-size: 9.5px;
+  fill: #4a5568;
 }
 
 .rp-band-label {
