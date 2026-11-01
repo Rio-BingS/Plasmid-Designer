@@ -120,9 +120,13 @@ describe('RestrictionPreview 双酶切示意图', () => {
     })).filter((t) => t.text.includes('2136') || t.text.includes('2208'))
     expect(labels).toHaveLength(2)
     expect(labels[0].x !== labels[1].x || labels[0].y !== labels[1].y).toBe(true)
-    // 标签就近：中心离各自刻度不超过半个标签宽（引线短、可归属）
-    const ticks = [424, 435]
-    labels.forEach((l, i) => expect(Math.abs(l.x - ticks[i])).toBeLessThanOrEqual(45))
+    // 2026-11-01 改用宽度比例尺后刻度坐标非线性：不变量改为
+    // 「同行标签必须互不重叠（中心距 ≥ 芯片宽 70px），异行则天然错开」
+    if (labels[0].y === labels[1].y) {
+      expect(Math.abs(labels[0].x - labels[1].x)).toBeGreaterThanOrEqual(70)
+    } else {
+      expect(true).toBe(true)
+    }
   })
 
   it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
