@@ -220,9 +220,10 @@ const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.val
  *    动态兜底锁死在 20%~35% 安全区间；灰轨内部按纯 bp 比例线性分流，不设保底
  *    （防止超短灰轨挤占带区像素）。
  *  第二轮——1D 弹性约束求解：初始按 bp^0.6×k(k=弹性系数分档) 铺开，迭代松弛
- *    收敛（≤5 轮）：触保底 90px 的段由自由段分摊赤字，触封顶（带区池 45%）的段
- *    把盈余反哺给自由段——反哺只按基础幂次 bp^0.6（剥离 k，避免初分配+反哺双重
- *    补偿），每轮总宽守恒。
+ *    收敛（≤5 轮）：触保底 90px 的段由自由段分摊赤字，触封顶（带区池 45%，
+ *    段数太少时放宽到池/n 保可行）的段把盈余反哺给自由段——反哺只按基础幂次
+ *    bp^0.6（剥离 k，避免初分配+反哺双重补偿），每轮总宽守恒；约束互斥时
+ *    守恒优先，按基础幂次摊平退出。
  *  退化：无带区→纯比例；无灰轨→带区占满。 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
@@ -264,8 +265,8 @@ const vecScale = computed(() => {
   const rawLiveWeight = liveIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), 0.6), 0)
   const rawGrayRatio = rawGrayWeight / (rawGrayWeight + rawLiveWeight)
   const clampedGrayRatio = Math.max(0.2, Math.min(0.35, rawGrayRatio))
-  let grayPoolPx = grayBp > 0 ? span * clampedGrayRatio : 0
-  let livePoolPx = span - grayPoolPx
+  const grayPoolPx = grayBp > 0 ? span * clampedGrayRatio : 0
+  const livePoolPx = span - grayPoolPx
 
   const widths = segs.map(() => 0)
   // 灰轨内部：纯 bp 比例线性分流，不设保底
@@ -276,7 +277,9 @@ const vecScale = computed(() => {
   // ===== 第二轮：1D 弹性约束求解（带区层）=====
   const MIN_PX = 90
   const minPx = Math.min(MIN_PX, livePoolPx / Math.max(liveIdx.length, 1))
-  const maxPx = livePoolPx * 0.45
+  // 封顶：单段 ≤ 带区池 45%；段数太少时 45% 数学上不可行（n 段各 ≤45% 最多
+  // 铺满 0.45n·池，n<2.23 必留洞），放宽到池/n 的可行下限（n=2→50%，n=1→整池）
+  const maxPx = Math.max(livePoolPx * 0.45, livePoolPx / liveIdx.length)
   const baseW = new Map<number, number>() // 基础幂次（反哺用，剥离 k）
   const rawW = new Map<number, number>() // 初分配权重（含弹性系数 k）
   liveIdx.forEach((i) => {
@@ -305,7 +308,14 @@ const vecScale = computed(() => {
         freeBase += baseW.get(i)!
       }
     })
-    if (Math.abs(lockedDelta) < 0.5 || freeBase === 0) break
+    if (Math.abs(lockedDelta) < 0.5) break
+    if (freeBase === 0) {
+      // 约束互斥（保底+封顶铺不满池，如两小带区抬保底+巨段封顶）：守恒优先，
+      // 把净差额按基础幂次摊回全部段（允许越界），避免轨道尾端留无映射空洞
+      const totalBase = liveIdx.reduce((t, i) => t + baseW.get(i)!, 0) || 1
+      liveIdx.forEach((i) => { widths[i] -= (baseW.get(i)! / totalBase) * lockedDelta })
+      break
+    }
     // 溢出反哺：封顶吐出的盈余补给自由段、保底吃掉的赤字由自由段分摊；
     // 只按基础幂次分摊（剥离 k，防止初分配+反哺双重补偿）
     liveIdx.forEach((i) => {
@@ -316,8 +326,8 @@ const vecScale = computed(() => {
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   segs.forEach((s, i) => {
-    breaks.push({ p0: s.p0, p1: s.p1, q0: acc, q1: acc + Math.max(widths[i], 8) })
-    acc += Math.max(widths[i], 8)
+    breaks.push({ p0: s.p0, p1: s.p1, q0: acc, q1: acc + widths[i] })
+    acc += widths[i]
   })
   const map = (pos: number) => {
     if (pos <= 1 || pos >= total) return pos <= 1 ? VEC_X1 : VEC_X2
