@@ -238,8 +238,8 @@ const vecScale = computed(() => {
     })
   }
   const span = VEC_X2 - VEC_X1
-  const BOOST = 1.25
-  const DAMP = 0.5
+  const BOOST = 1.7
+  const DAMP = 0.45
   const CAP = 0.3 // 单段封顶 30% 轨道：右臂再长也不许吞掉半边图
   const wSum = segs.reduce((t, s) => t + s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP), 0) || 1
   let w1 = segs.map((s) => (s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP) / wSum) * span)
@@ -254,8 +254,8 @@ const vecScale = computed(() => {
     const freeSum = freeIdx.reduce((t, i) => t + w1[i], 0) || 1
     w1 = capped.map((w, i) => (over[i] > 0.5 ? w : w + (pool * w) / freeSum))
   }
-  const MIN_EFF = 80
-  const MIN_DEAD = 40
+  const MIN_EFF = 120
+  const MIN_DEAD = 36
   const w2 = w1.map((w, i) => Math.max(w, Math.min(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, span / segs.length)))
   const debt = w2.reduce((t, w, i) => t + (w - w1[i]), 0)
   // 第二轮：从「超出保底」的段按权重占比扣回
