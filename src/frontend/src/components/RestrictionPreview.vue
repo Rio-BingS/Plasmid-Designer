@@ -215,9 +215,12 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：按「是否被回收带覆盖」加权——带覆盖段（可点击的有效区）加宽、
- *  无带灰轨压缩，两端短臂与窄缝保底；补偿量从宽段按权重扣回，总宽守恒。
- *  bp 数已在标签里，选择图优先突出可操作区域 */
+/** 宽度分配（两步，三个约束各归各位）：
+ *  ① 保底——每段先拿到「放得下自己标签」的固定份额（有效段=回收带覆盖，
+ *     保底更宽以突出可点击区；灰轨只保底可辨）；
+ *  ② 竞争——保底之外的全部像素严格按 bp 比例分，长短差异完全由真实碱基
+ *     数决定，无人为权重；唯一保险丝：单段超轨道 45% 截断（仅极端长臂触发）。
+ *  总宽守恒；bp 数同时写在标签里双通道呈现 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
@@ -238,33 +241,29 @@ const vecScale = computed(() => {
     })
   }
   const span = VEC_X2 - VEC_X1
-  const BOOST = 1.7
-  const DAMP = 0.45
-  const CAP = 0.3 // 单段封顶 30% 轨道：右臂再长也不许吞掉半边图
-  const wSum = segs.reduce((t, s) => t + s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP), 0) || 1
-  let w1 = segs.map((s) => (s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP) / wSum) * span)
-  // 超顶段封顶，余额按原权重回流给其余段（可能迭代数轮，封顶值不破）
-  for (let round = 0; round < 4; round++) {
-    const over = w1.map((w) => Math.max(0, w - span * CAP))
-    if (!over.some((o) => o > 0.5)) break
-    const capped = w1.map((w0) => Math.min(w0, span * CAP))
-    const pool = over.reduce((t, o) => t + o, 0)
-    const freeIdx: number[] = []
-    w1.forEach((_w0, i) => { if (over[i] <= 0.5) freeIdx.push(i) })
-    const freeSum = freeIdx.reduce((t, i) => t + w1[i], 0) || 1
-    w1 = capped.map((w, i) => (over[i] > 0.5 ? w : w + (pool * w) / freeSum))
-  }
-  const MIN_EFF = 120
-  const MIN_DEAD = 36
-  const w2 = w1.map((w, i) => Math.max(w, Math.min(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, span / segs.length)))
-  const debt = w2.reduce((t, w, i) => t + (w - w1[i]), 0)
-  // 第二轮：从「超出保底」的段按权重占比扣回
-  const freeW = segs.reduce((t, s, i) => t + (w2[i] > w1[i] + 0.01 ? 0 : s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP)), 0) || 1
-  const widths = w2.map((w, i) => {
-    if (w > w1[i] + 0.01) return w
-    const wt = segs[i].bp * (covered(segs[i].p0, segs[i].p1) ? BOOST : DAMP)
-    return w - (debt * wt) / freeW
+  const MIN_EFF = 110 // 有效段：放得下「回收 N bp」标签且醒目
+  const MIN_DEAD = 60 // 灰轨：可辨即可
+  const CAP = 0.45 // 保险丝：单段 ≤ 45% 轨道（防极端长臂吞图）
+
+  // ① 固定份额 = max(标签保底, 纯 bp 比例)；超出 CAP 的先砍到 CAP
+  let base = segs.map((s, i) => {
+    const proportional = (s.bp / (total - 1)) * span
+    return Math.max(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, proportional)
   })
+  const capPx = span * CAP
+  // ② 剩余像素（总宽 - 固定份额和）按 bp 比例分给所有段
+  const rest = Math.max(0, span - base.reduce((t, w) => t + w, 0))
+  let widths = segs.map((s, i) => base[i] + (s.bp / (total - 1)) * rest)
+  // 保险丝：单段超 45% 截断，截掉的按 bp 比例回流
+  for (let round = 0; round < 3; round++) {
+    const overSum = widths.reduce((t, w) => t + Math.max(0, w - capPx), 0)
+    if (overSum < 0.5) break
+    const capped = widths.map((w) => Math.min(w, capPx))
+    const freeIdx: number[] = []
+    widths.forEach((w, i) => { if (w <= capPx + 0.5) freeIdx.push(i) })
+    const freeBp = freeIdx.reduce((t, i) => t + segs[i].bp, 0) || 1
+    widths = capped.map((w, i) => (w >= capPx - 0.5 ? w : w + (overSum * segs[i].bp) / freeBp))
+  }
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   segs.forEach((s, i) => {
