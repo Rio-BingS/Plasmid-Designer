@@ -7,9 +7,18 @@
  * 自动判不出时提示用户手选。
  */
 import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import RestrictionPreview from '@/components/RestrictionPreview.vue'
 import type { RestrictionPreview as PreviewData } from '@/types'
+
+/** 图①（酶切位点分布）切点竖线的 x 坐标（viewBox 系；刻度线 y 固定 61→75） */
+function ticksOfFigure1(wrapper: VueWrapper): number[] {
+  const svg1 = wrapper.findAll('svg').find((s) => s.attributes('aria-label') === '酶切位点分布')
+  expect(svg1).toBeTruthy()
+  return svg1!.findAll('line')
+    .filter((l) => l.attributes('y1') === '61' && l.attributes('y2') === '75')
+    .map((l) => Number(l.attributes('x1')))
+}
 
 function fixture(over: Partial<PreviewData> = {}): PreviewData {
   return {
@@ -146,16 +155,65 @@ describe('RestrictionPreview 双酶切示意图', () => {
         ],
       }) },
     })
-    const svg1 = wrapper.findAll('svg').find((s) => s.attributes('aria-label') === '酶切位点分布')
-    expect(svg1).toBeTruthy()
-    const ticks = svg1!.findAll('line')
-      .filter((l) => l.attributes('y1') === '61' && l.attributes('y2') === '75')
-      .map((l) => Number(l.attributes('x1')))
+    const ticks = ticksOfFigure1(wrapper)
     expect(ticks).toHaveLength(2)
     // linX：VEC_X1=90 起，(cut-1)/5422 × 850px
     const lin = (cut: number) => 90 + ((cut - 1) / 5422) * 850
     expect(Math.abs(ticks[0] - lin(952))).toBeLessThan(1)
     expect(Math.abs(ticks[1] - lin(2669))).toBeLessThan(1)
+  })
+
+  it('仅一条跨原点带（2 个带区段）：封顶放宽到池/n，两段各半、无振荡', () => {
+    // 2026-11-04 审核发现：2 段带区各 ≤45% 数学上不可行（2×45%<100%），
+    // 旧实现两段互踢振荡耗尽 5 轮，终态 [374,306] 违反封顶 22%。
+    // 修复后封顶放宽到 池/2=340：初分配 [235,445] → 一轮收敛 [340,340]。
+    // 灰轨 1717bp → 占比 0.087 → 兜底 20% = 170px。
+    const wrapper = mount(RestrictionPreview, {
+      props: { preview: fixture({
+        sites: [
+          { role: 'five', enzyme: 'EcoRI', position: 952, cut: 952, end: 957, junction: true },
+          { role: 'three', enzyme: 'SphI', position: 2669, cut: 2669, end: 2674, junction: true },
+        ],
+        gene_5prime_enzyme: 'EcoRI', gene_3prime_enzyme: 'SphI',
+        cut_marks: [
+          { enzyme: 'EcoRI', vector_cut: 952, in_excised: false, side: 'left' },
+          { enzyme: 'SphI', vector_cut: 2669, in_excised: false, side: 'right' },
+        ],
+        cut_options: [
+          { left_enzyme: 'EcoRI', left_cut: 952, right_enzyme: 'SphI', right_cut: 2669, removed_bp: 1717, kept_bp: 3705 },
+        ],
+      }) },
+    })
+    const ticks = ticksOfFigure1(wrapper)
+    expect(ticks).toHaveLength(2)
+    expect(Math.abs(ticks[0] - 430)).toBeLessThan(0.6) // 90 + 340
+    expect(Math.abs(ticks[1] - 600)).toBeLessThan(0.6) // 430 + 170（灰）→ 右臂 340 到 850
+  })
+
+  it('仅一条内段带（1 个带区段）：封顶放宽到整池，占满带区池不留洞', () => {
+    // 2026-11-04 审核发现：唯一带区段初分配 552.5px 触 45% 封顶(248.6)后被
+    // 锁死且无自由段反哺 → 尾部留 ~300px 无映射空洞。修复后 n=1 封顶=整池。
+    // 灰轨 5145bp → 占比 0.469 → 上限 35% = 297.5px；带区池 552.5px。
+    const wrapper = mount(RestrictionPreview, {
+      props: { preview: fixture({
+        sites: [
+          { role: 'five', enzyme: 'EcoRI', position: 952, cut: 952, end: 957, junction: true },
+          { role: 'three', enzyme: 'SphI', position: 1228, cut: 1228, end: 1233, junction: true },
+        ],
+        gene_5prime_enzyme: 'EcoRI', gene_3prime_enzyme: 'SphI',
+        cut_marks: [
+          { enzyme: 'EcoRI', vector_cut: 952, in_excised: false, side: 'left' },
+          { enzyme: 'SphI', vector_cut: 1228, in_excised: false, side: 'right' },
+        ],
+        cut_options: [
+          { left_enzyme: 'SphI', left_cut: 1228, right_enzyme: 'EcoRI', right_cut: 952, removed_bp: 5146, kept_bp: 276 },
+        ],
+      }) },
+    })
+    const ticks = ticksOfFigure1(wrapper)
+    expect(ticks).toHaveLength(2)
+    expect(Math.abs(ticks[0] - 145)).toBeLessThan(0.6) // 90 + 55（左臂灰 951bp 线性份额）
+    expect(Math.abs(ticks[1] - 697.5)).toBeLessThan(0.6) // 145 + 552.5（唯一带区段拿满池）
   })
 
   it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
