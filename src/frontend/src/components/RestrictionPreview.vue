@@ -215,11 +215,41 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：线性比例尺——bp 越长画得越长，间隙长度直接反映真实碱基数
- *  （574bp 的间隙就是 72bp 的 8 倍宽）；位点过密时相邻标签由 markLayout
- *  的两行扫避让错开，不需要人为拉宽 */
+/** 宽度比例：带保底的线性比例尺——长段如实放大（bp 越长画得越长），窄段
+ *  拉到最小可读宽（标签/刻度放得下），补偿量从宽段按 bp 占比扣。长短关系
+ *  保持单调，窄缝不挤爆、长臂不吃亏 */
 const vecScale = computed(() => {
-  return { map: linX }
+  const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
+  if (cuts.length < 2) return { map: linX }
+  const total = vectorLength.value
+  const segs: Array<{ p0: number; p1: number; bp: number }> = [
+    { p0: 1, p1: cuts[0], bp: cuts[0] - 1 },
+    ...cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1], bp: cuts[i + 1] - c })),
+    { p0: cuts[cuts.length - 1], p1: total, bp: total - cuts[cuts.length - 1] },
+  ]
+  const span = VEC_X2 - VEC_X1
+  const MIN_W = 46
+  const bpTotal = segs.reduce((t, s) => t + s.bp, 0) || 1
+  // 第一轮：纯比例宽；不达保底的窄段补到保底，记下亏欠的像素
+  const w1 = segs.map((s) => (s.bp / bpTotal) * span)
+  const w2 = w1.map((w) => Math.max(w, Math.min(MIN_W, span / segs.length)))
+  const debt = w2.reduce((t, w, i) => t + (w - w1[i]), 0)
+  // 第二轮：从「超出保底」的宽段按剩余 bp 占比分摊扣回
+  const freeBp = segs.reduce((t, s, i) => t + (w2[i] > w1[i] + 0.01 ? 0 : s.bp), 0) || 1
+  const widths = w2.map((w, i) => (w > w1[i] + 0.01 ? w : w - (debt * segs[i].bp) / freeBp))
+  const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
+  let acc = VEC_X1
+  segs.forEach((s, i) => {
+    breaks.push({ p0: s.p0, p1: s.p1, q0: acc, q1: acc + Math.max(widths[i], 8) })
+    acc += Math.max(widths[i], 8)
+  })
+  const map = (pos: number) => {
+    if (pos <= 1 || pos >= total) return pos <= 1 ? VEC_X1 : VEC_X2
+    const seg = breaks.find((s2) => pos >= s2.p0 && pos <= s2.p1) ?? breaks[breaks.length - 1]
+    const t = (pos - seg.p0) / (seg.p1 - seg.p0 || 1)
+    return seg.q0 + t * (seg.q1 - seg.q0)
+  }
+  return { map }
 })
 
 const vecX = (pos: number) => vecScale.value.map(pos)
