@@ -216,6 +216,29 @@ describe('RestrictionPreview 双酶切示意图', () => {
     expect(Math.abs(ticks[1] - 697.5)).toBeLessThan(0.6) // 145 + 552.5（唯一带区段拿满池）
   })
 
+  it('图③基因段夹取 30%~70%：极小基因触下限，箭头永不越上限', () => {
+    // 2026-11-04 用户定案：图③是结构示意图不保比例，基因段显示占比
+    // 夹取 [30%,70%]。默认 fixture 基因 765bp / 窗口 ~8673bp（KanR 撑宽）
+    // 真实占比 ~9% → 抬到 30%；巨大基因构造验证箭头永不越过 70%。
+    const usable = 1000 - 28 * 2
+    const small = mount(RestrictionPreview, { props: { preview: fixture() } })
+    const vm1 = small.vm as unknown as { geneX1: number; geneX2: number }
+    expect(vm1.geneX2 - vm1.geneX1).toBeGreaterThanOrEqual(usable * 0.3 - 1)
+
+    const big = mount(RestrictionPreview, {
+      props: { preview: fixture({
+        gene: { start: 200, end: 4800, length: 4600, estimated: false },
+        sites: [
+          { role: 'five', enzyme: 'NdeI', position: 192, cut: 193, end: 198 },
+          { role: 'three', enzyme: 'XhoI', position: 4808, cut: 4801, end: 4806 },
+        ],
+      }) },
+    })
+    const vm2 = big.vm as unknown as { geneX1: number; geneX2: number }
+    expect(vm2.geneX2 - vm2.geneX1).toBeLessThanOrEqual(usable * 0.7 + 1)
+    expect(vm1.geneX1).toBeLessThan(vm1.geneX2)
+  })
+
   it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
     const wrapper = mount(RestrictionPreview, {
       props: {

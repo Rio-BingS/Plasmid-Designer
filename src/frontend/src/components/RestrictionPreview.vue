@@ -44,15 +44,37 @@ const window0 = computed(() => {
   return { start: lo - pad, end: hi + pad }
 })
 
-const windowSpan = computed(() => {
-  const w = window0.value
-  return w ? Math.max(1, w.end - w.start) : 1
-})
+/** 图③是结构示意图，不保真实比例：基因段显示占比夹取在 30%~70%——
+ *  极小插入不被画没（junction 芯片分得开、箭头看得清），巨大插入不霸场
+ *  （背景永远留得出标签位置）。左右背景按各自 bp 长度分摊剩余空间，
+ *  段内线性、整体连续；真值由切点坐标文字与标题长度承载 */
+const GENE_SHARE_MIN = 0.3
+const GENE_SHARE_MAX = 0.7
 
 function toX(pos: number): number {
+  const p = props.preview
   const w = window0.value
-  if (!w) return PAD
-  return PAD + ((pos - w.start) / windowSpan.value) * (VB_W - PAD * 2)
+  if (!p || !w) return PAD
+  const g0 = p.gene.start
+  const g1 = Math.max(p.gene.start + 1, p.gene.end)
+  const usable = VB_W - PAD * 2
+  const trueShare = (g1 - g0) / Math.max(1, w.end - w.start)
+  const genePx = usable * Math.min(GENE_SHARE_MAX, Math.max(GENE_SHARE_MIN, trueShare))
+  const leftBp = Math.max(0, g0 - w.start)
+  const rightBp = Math.max(0, w.end - g1)
+  const leftPx = (leftBp / Math.max(1, leftBp + rightBp)) * (usable - genePx)
+  const x1 = PAD + leftPx
+  const x2 = x1 + genePx
+  if (pos <= g0) {
+    const t = (pos - w.start) / Math.max(1, g0 - w.start)
+    return PAD + t * (x1 - PAD)
+  }
+  if (pos <= g1) {
+    const t = (pos - g0) / Math.max(1, g1 - g0)
+    return x1 + t * (x2 - x1)
+  }
+  const t = (pos - g1) / Math.max(1, w.end - g1)
+  return x2 + t * (PAD + usable - x2)
 }
 
 const markerTypes = ['promoter', 'terminator', 'rbs', 'regulatory']
