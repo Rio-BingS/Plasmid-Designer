@@ -215,43 +215,11 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：位点间隙等距、两端收成半格短臂（边缘 = 间隙一半）——节拍统一且
- *  明显宽于边缘，右臂不再压过位点间隙；bp 数已在标签里，示意图优先节奏。
- *  切点过多时边缘收到下限，间隙均摊剩余宽度 */
+/** 宽度比例：线性比例尺——bp 越长画得越长，间隙长度直接反映真实碱基数
+ *  （574bp 的间隙就是 72bp 的 8 倍宽）；位点过密时相邻标签由 markLayout
+ *  的两行扫避让错开，不需要人为拉宽 */
 const vecScale = computed(() => {
-  const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
-  if (cuts.length < 2) return { map: linX }
-  const total = vectorLength.value
-  const mids = cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1] }))
-  const span = VEC_X2 - VEC_X1
-  const n = mids.length
-  const unit = span / (n + 1)
-  let eL: number, gap: number
-  if (unit >= 72) {
-    eL = unit / 2
-    gap = unit
-  } else {
-    eL = 60
-    gap = (span - 2 * eL) / n
-    if (gap < 24) {
-      eL = Math.max(8, (span - 24 * n) / 2)
-      gap = 24
-    }
-  }
-  const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
-  let acc = VEC_X1
-  breaks.push({ p0: 1, p1: cuts[0], q0: acc, q1: acc + eL }); acc += eL
-  for (const g of mids) {
-    breaks.push({ p0: g.p0, p1: g.p1, q0: acc, q1: acc + gap }); acc += gap
-  }
-  breaks.push({ p0: cuts[cuts.length - 1], p1: total, q0: acc, q1: VEC_X2 })
-  const map = (pos: number) => {
-    if (pos <= 1 || pos >= total) return pos <= 1 ? VEC_X1 : VEC_X2
-    const seg = breaks.find((s2) => pos >= s2.p0 && pos <= s2.p1) ?? breaks[breaks.length - 1]
-    const t = (pos - seg.p0) / (seg.p1 - seg.p0 || 1)
-    return seg.q0 + t * (seg.q1 - seg.q0)
-  }
-  return { map }
+  return { map: linX }
 })
 
 const vecX = (pos: number) => vecScale.value.map(pos)
