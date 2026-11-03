@@ -215,9 +215,9 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：带保底的线性比例尺——长段如实放大（bp 越长画得越长），窄段
- *  拉到最小可读宽（标签/刻度放得下），补偿量从宽段按 bp 占比扣。长短关系
- *  保持单调，窄缝不挤爆、长臂不吃亏 */
+/** 宽度比例：按「是否被回收带覆盖」加权——带覆盖段（可点击的有效区）加宽、
+ *  无带灰轨压缩，两端短臂与窄缝保底；补偿量从宽段按权重扣回，总宽守恒。
+ *  bp 数已在标签里，选择图优先突出可操作区域 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
@@ -227,16 +227,32 @@ const vecScale = computed(() => {
     ...cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1], bp: cuts[i + 1] - c })),
     { p0: cuts[cuts.length - 1], p1: total, bp: total - cuts[cuts.length - 1] },
   ]
+  // 段中点落在任一回收带区间内 → 有效段（带端点都是切点，段内必一致）
+  const covered = (p0: number, p1: number) => {
+    const mid = (p0 + p1) / 2
+    return bands.value.some((o) => {
+      const l = Math.min(o.left_cut, o.right_cut)
+      const r = Math.max(o.left_cut, o.right_cut)
+      if (o.left_cut < o.right_cut) return mid <= l || mid > r // 跨原点带：(r,total]∪[1,l]
+      return mid > r && mid <= l
+    })
+  }
   const span = VEC_X2 - VEC_X1
-  const MIN_W = 46
-  const bpTotal = segs.reduce((t, s) => t + s.bp, 0) || 1
-  // 第一轮：纯比例宽；不达保底的窄段补到保底，记下亏欠的像素
-  const w1 = segs.map((s) => (s.bp / bpTotal) * span)
-  const w2 = w1.map((w) => Math.max(w, Math.min(MIN_W, span / segs.length)))
+  const BOOST = 1.25
+  const DAMP = 0.5
+  const wSum = segs.reduce((t, s) => t + s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP), 0) || 1
+  const w1 = segs.map((s) => (s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP) / wSum) * span)
+  const MIN_EFF = 80
+  const MIN_DEAD = 40
+  const w2 = w1.map((w, i) => Math.max(w, Math.min(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, span / segs.length)))
   const debt = w2.reduce((t, w, i) => t + (w - w1[i]), 0)
-  // 第二轮：从「超出保底」的宽段按剩余 bp 占比分摊扣回
-  const freeBp = segs.reduce((t, s, i) => t + (w2[i] > w1[i] + 0.01 ? 0 : s.bp), 0) || 1
-  const widths = w2.map((w, i) => (w > w1[i] + 0.01 ? w : w - (debt * segs[i].bp) / freeBp))
+  // 第二轮：从「超出保底」的段按权重占比扣回
+  const freeW = segs.reduce((t, s, i) => t + (w2[i] > w1[i] + 0.01 ? 0 : s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP)), 0) || 1
+  const widths = w2.map((w, i) => {
+    if (w > w1[i] + 0.01) return w
+    const wt = segs[i].bp * (covered(segs[i].p0, segs[i].p1) ? BOOST : DAMP)
+    return w - (debt * wt) / freeW
+  })
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   segs.forEach((s, i) => {
