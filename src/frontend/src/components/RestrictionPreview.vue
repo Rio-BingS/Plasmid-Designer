@@ -215,12 +215,12 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度分配（两步，三个约束各归各位）：
- *  ① 保底——每段先拿到「放得下自己标签」的固定份额（有效段=回收带覆盖，
- *     保底更宽以突出可点击区；灰轨只保底可辨）；
- *  ② 竞争——保底之外的全部像素严格按 bp 比例分，长短差异完全由真实碱基
- *     数决定，无人为权重；唯一保险丝：单段超轨道 45% 截断（仅极端长臂触发）。
- *  总宽守恒；bp 数同时写在标签里双通道呈现 */
+/** 宽度分配（按用户架构的两轮制）：
+ *  第一轮——划分「权重部分（回收带覆盖段）」与「非权重部分（灰轨）」：
+ *    灰轨按 bp×DAMP 的压缩比例直接拿走份额，剩余像素全部划给带区；
+ *  第二轮——带区内部按 bp^GAMMA 幂压缩分配（GAMMA<1：短带拉长、长带压缩，
+ *    10 倍 bp 差压成 ~4 倍视觉差），保底+封顶兜底。
+ *  无带时公式退化为纯比例；总宽守恒 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
@@ -241,29 +241,62 @@ const vecScale = computed(() => {
     })
   }
   const span = VEC_X2 - VEC_X1
-  const MIN_EFF = 78 // 有效段保底：仅托住「回收 N bp」标签（10px 字号约需 70px）
+  const DAMP = 0.45 // 灰轨只拿按比例 45% 的份额
+  const GAMMA = 0.6 // 带区内部压缩指数
   const MIN_DEAD = 44 // 灰轨保底：可辨即可
-  const CAP = 0.45 // 保险丝：单段 ≤ 45% 轨道（防极端长臂吞图）
+  const MIN_EFF = 90 // 带区保底：托住「回收 N bp」标签
+  const CAP = 0.45 // 带区封顶：单段 ≤ 45% 轨道
 
-  // ① 固定份额 = max(标签保底, 纯 bp 比例)；超出 CAP 的先砍到 CAP
-  let base = segs.map((s, i) => {
-    const proportional = (s.bp / (total - 1)) * span
-    return Math.max(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, proportional)
+  const isLive = segs.map((s) => covered(s.p0, s.p1))
+  const denom = segs.reduce((t, s, i) => t + s.bp * (isLive[i] ? 1 : DAMP), 0) || 1
+  const unit = span / denom
+
+  // 第一轮：灰轨先落位（不足保底抬到保底，差额从带区池里扣）
+  let widths = segs.map((s, i) => (isLive[i] ? 0 : s.bp * DAMP * unit))
+  let livePool = span
+  segs.forEach((_, i) => {
+    if (!isLive[i]) {
+      const w = Math.max(widths[i], MIN_DEAD)
+      livePool -= w
+      widths[i] = w
+    }
   })
-  const capPx = span * CAP
-  // ② 剩余像素（总宽 - 固定份额和）按 bp 比例分给所有段
-  const rest = Math.max(0, span - base.reduce((t, w) => t + w, 0))
-  let widths = segs.map((s, i) => base[i] + (s.bp / (total - 1)) * rest)
-  // 保险丝：单段超 45% 截断，截掉的按 bp 比例回流
-  for (let round = 0; round < 3; round++) {
-    const overSum = widths.reduce((t, w) => t + Math.max(0, w - capPx), 0)
-    if (overSum < 0.5) break
-    const capped = widths.map((w) => Math.min(w, capPx))
-    const freeIdx: number[] = []
-    widths.forEach((w, i) => { if (w <= capPx + 0.5) freeIdx.push(i) })
-    const freeBp = freeIdx.reduce((t, i) => t + segs[i].bp, 0) || 1
-    widths = capped.map((w, i) => (w >= capPx - 0.5 ? w : w + (overSum * segs[i].bp) / freeBp))
+
+  // 第二轮：带区按 bp^GAMMA 压缩差异分配 livePool
+  const liveIdx = segs.map((_, i) => i).filter((i) => isLive[i])
+  if (liveIdx.length) {
+    const wc = liveIdx.map((i) => Math.pow(Math.max(segs[i].bp, 1), GAMMA))
+    const wcSum = wc.reduce((t, w) => t + w, 0) || 1
+    liveIdx.forEach((i, k) => { widths[i] = (livePool * wc[k]) / wcSum })
+    // 保底 + 封顶迭代（截掉的超额按压缩权重回流）
+    const capPx = span * CAP
+    for (let round = 0; round < 4; round++) {
+      let changed = false
+      liveIdx.forEach((i) => {
+        if (widths[i] < MIN_EFF) { widths[i] = MIN_EFF; changed = true }
+      })
+      const overSum = liveIdx.reduce((t, i) => t + Math.max(0, widths[i] - capPx), 0)
+      if (overSum > 0.5) {
+        const freeIdx = liveIdx.filter((i) => widths[i] <= capPx + 0.5)
+        const freeWc = freeIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), GAMMA), 0) || 1
+        liveIdx.forEach((i) => {
+          if (widths[i] > capPx + 0.5) widths[i] = capPx
+          else widths[i] += (overSum * Math.pow(Math.max(segs[i].bp, 1), GAMMA)) / freeWc
+        })
+        changed = true
+      }
+      if (!changed) break
+      // 保底抬高后总宽可能超 span，按压缩权重从超出保底的段扣回
+      const sum = liveIdx.reduce((t, i) => t + widths[i], 0)
+      if (sum > livePool + 0.5) {
+        const excess = sum - livePool
+        const freeIdx = liveIdx.filter((i) => widths[i] > MIN_EFF + 1)
+        const freeWc = freeIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), GAMMA), 0) || 1
+        freeIdx.forEach((i) => { widths[i] -= (excess * Math.pow(Math.max(segs[i].bp, 1), GAMMA)) / freeWc })
+      }
+    }
   }
+
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   segs.forEach((s, i) => {
