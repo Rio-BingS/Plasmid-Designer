@@ -241,8 +241,8 @@ const vecScale = computed(() => {
     })
   }
   const span = VEC_X2 - VEC_X1
-  const MIN_EFF = 110 // 有效段：放得下「回收 N bp」标签且醒目
-  const MIN_DEAD = 60 // 灰轨：可辨即可
+  const MIN_EFF = 78 // 有效段保底：仅托住「回收 N bp」标签（10px 字号约需 70px）
+  const MIN_DEAD = 44 // 灰轨保底：可辨即可
   const CAP = 0.45 // 保险丝：单段 ≤ 45% 轨道（防极端长臂吞图）
 
   // ① 固定份额 = max(标签保底, 纯 bp 比例)；超出 CAP 的先砍到 CAP
