@@ -215,25 +215,29 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度比例：相邻位点等距——示意图优先节奏整齐（bp 数已在标签里），边缘段压缩
- *  让位，总宽守恒；切点过多时间距收敛下限，标签交给扫避让 */
+/** 宽度比例：位点间隙等距、两端收成半格短臂（边缘 = 间隙一半）——节拍统一且
+ *  明显宽于边缘，右臂不再压过位点间隙；bp 数已在标签里，示意图优先节奏。
+ *  切点过多时边缘收到下限，间隙均摊剩余宽度 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
   const total = vectorLength.value
   const mids = cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1] }))
   const span = VEC_X2 - VEC_X1
-  const eL0 = ((cuts[0] - 1) / Math.max(1, total)) * span
-  const eR0 = ((total - cuts[cuts.length - 1]) / Math.max(1, total)) * span
-  const MIN_INTER = 72
-  let eL = Math.max(60, eL0 * 0.4)
-  let eR = Math.max(60, eR0 * 0.4)
-  if (span - eL - eR < MIN_INTER * mids.length) {
-    const rest = Math.max(120, span - MIN_INTER * mids.length)
-    eL = Math.min(eL0 || 60, Math.max(60, (rest * eL0) / (eL0 + eR0 || 1)))
-    eR = Math.max(60, rest - eL)
+  const n = mids.length
+  const unit = span / (n + 1)
+  let eL: number, gap: number
+  if (unit >= 72) {
+    eL = unit / 2
+    gap = unit
+  } else {
+    eL = 60
+    gap = (span - 2 * eL) / n
+    if (gap < 24) {
+      eL = Math.max(8, (span - 24 * n) / 2)
+      gap = 24
+    }
   }
-  const gap = Math.max(24, (span - eL - eR) / mids.length)
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
   let acc = VEC_X1
   breaks.push({ p0: 1, p1: cuts[0], q0: acc, q1: acc + eL }); acc += eL
