@@ -130,6 +130,34 @@ describe('RestrictionPreview 双酶切示意图', () => {
     }
   })
 
+  it('无回收带（cut_options 为空）时分布图退化为纯线性比例', () => {
+    // 2026-11-04 goal 验证项：vecScale 的两轮分配只服务带区场景；
+    // 没有可选带区时切点位置必须平滑退化回纯 bp 线性映射，不许残留加权
+    const wrapper = mount(RestrictionPreview, {
+      props: { preview: fixture({
+        sites: [
+          { role: 'five', enzyme: 'EcoRI', position: 952, cut: 952, end: 957, junction: true },
+          { role: 'three', enzyme: 'SphI', position: 2669, cut: 2669, end: 2674, junction: true },
+        ],
+        gene_5prime_enzyme: 'EcoRI', gene_3prime_enzyme: 'SphI',
+        cut_marks: [
+          { enzyme: 'EcoRI', vector_cut: 952, in_excised: false, side: 'left' },
+          { enzyme: 'SphI', vector_cut: 2669, in_excised: false, side: 'right' },
+        ],
+      }) },
+    })
+    const svg1 = wrapper.findAll('svg').find((s) => s.attributes('aria-label') === '酶切位点分布')
+    expect(svg1).toBeTruthy()
+    const ticks = svg1!.findAll('line')
+      .filter((l) => l.attributes('y1') === '61' && l.attributes('y2') === '75')
+      .map((l) => Number(l.attributes('x1')))
+    expect(ticks).toHaveLength(2)
+    // linX：VEC_X1=90 起，(cut-1)/5422 × 850px
+    const lin = (cut: number) => 90 + ((cut - 1) / 5422) * 850
+    expect(Math.abs(ticks[0] - lin(952))).toBeLessThan(1)
+    expect(Math.abs(ticks[1] - lin(2669))).toBeLessThan(1)
+  })
+
   it('骨架重切风险：展示警告横幅与知情勾选，勾选向父组件发 update', async () => {
     const wrapper = mount(RestrictionPreview, {
       props: {
