@@ -240,8 +240,20 @@ const vecScale = computed(() => {
   const span = VEC_X2 - VEC_X1
   const BOOST = 1.25
   const DAMP = 0.5
+  const CAP = 0.3 // 单段封顶 30% 轨道：右臂再长也不许吞掉半边图
   const wSum = segs.reduce((t, s) => t + s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP), 0) || 1
-  const w1 = segs.map((s) => (s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP) / wSum) * span)
+  let w1 = segs.map((s) => (s.bp * (covered(s.p0, s.p1) ? BOOST : DAMP) / wSum) * span)
+  // 超顶段封顶，余额按原权重回流给其余段（可能迭代数轮，封顶值不破）
+  for (let round = 0; round < 4; round++) {
+    const over = w1.map((w) => Math.max(0, w - span * CAP))
+    if (!over.some((o) => o > 0.5)) break
+    const capped = w1.map((w0) => Math.min(w0, span * CAP))
+    const pool = over.reduce((t, o) => t + o, 0)
+    const freeIdx: number[] = []
+    w1.forEach((_w0, i) => { if (over[i] <= 0.5) freeIdx.push(i) })
+    const freeSum = freeIdx.reduce((t, i) => t + w1[i], 0) || 1
+    w1 = capped.map((w, i) => (over[i] > 0.5 ? w : w + (pool * w) / freeSum))
+  }
   const MIN_EFF = 80
   const MIN_DEAD = 40
   const w2 = w1.map((w, i) => Math.max(w, Math.min(covered(segs[i].p0, segs[i].p1) ? MIN_EFF : MIN_DEAD, span / segs.length)))
