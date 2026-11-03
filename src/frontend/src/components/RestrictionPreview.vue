@@ -215,12 +215,15 @@ const activePair = computed<[number, number] | null>(() => props.cutPair ?? prop
 
 const linX = (pos: number) => VEC_X1 + ((pos - 1) / Math.max(1, vectorLength.value)) * (VEC_X2 - VEC_X1)
 
-/** 宽度分配（按用户架构的两轮制）：
- *  第一轮——划分「权重部分（回收带覆盖段）」与「非权重部分（灰轨）」：
- *    灰轨按 bp×DAMP 的压缩比例直接拿走份额，剩余像素全部划给带区；
- *  第二轮——带区内部按 bp^GAMMA 幂压缩分配（GAMMA<1：短带拉长、长带压缩，
- *    10 倍 bp 差压成 ~4 倍视觉差），保底+封顶兜底。
- *  无带时公式退化为纯比例；总宽守恒 */
+/** 宽度分配（自适应分层 + 1D 弹性约束求解，移植自 V1.01 Iterative Relaxation Solver）：
+ *  第一轮——自适应灰轨底池：grayBp^0.38 弱幂基底与带区 bp^0.6 归一化得出灰轨占比，
+ *    动态兜底锁死在 20%~35% 安全区间；灰轨内部按纯 bp 比例线性分流，不设保底
+ *    （防止超短灰轨挤占带区像素）。
+ *  第二轮——1D 弹性约束求解：初始按 bp^0.6×k(k=弹性系数分档) 铺开，迭代松弛
+ *    收敛（≤5 轮）：触保底 90px 的段由自由段分摊赤字，触封顶（带区池 45%）的段
+ *    把盈余反哺给自由段——反哺只按基础幂次 bp^0.6（剥离 k，避免初分配+反哺双重
+ *    补偿），每轮总宽守恒。
+ *  退化：无带区→纯比例；无灰轨→带区占满。 */
 const vecScale = computed(() => {
   const cuts = [...new Set(cutMarks.value.map((m) => m.vector_cut))].sort((a, b) => a - b)
   if (cuts.length < 2) return { map: linX }
@@ -230,71 +233,84 @@ const vecScale = computed(() => {
     ...cuts.slice(0, -1).map((c, i) => ({ p0: c, p1: cuts[i + 1], bp: cuts[i + 1] - c })),
     { p0: cuts[cuts.length - 1], p1: total, bp: total - cuts[cuts.length - 1] },
   ]
-  // 段中点落在任一回收带区间内 → 有效段（带端点都是切点，段内必一致）
+  // 段中点落在任一回收带区间内 → 有效段（带端点都是切点，段内必一致）。
+  // 跨原点带（left<right）：kept = [1,left] ∪ (right,total]；内段带（left>right）：
+  // kept = (right, left]——必须用原始 left/right 判断方向，min/max 会把内段带判死
   const covered = (p0: number, p1: number) => {
     const mid = (p0 + p1) / 2
     return bands.value.some((o) => {
-      const l = Math.min(o.left_cut, o.right_cut)
-      const r = Math.max(o.left_cut, o.right_cut)
-      if (o.left_cut < o.right_cut) return mid <= l || mid > r // 跨原点带：(r,total]∪[1,l]
-      return mid > r && mid <= l
+      if (o.left_cut < o.right_cut) return mid <= o.left_cut || mid > o.right_cut
+      return mid > o.right_cut && mid <= o.left_cut
     })
   }
   const span = VEC_X2 - VEC_X1
-  const DAMP = 0.75 // 灰轨拿 75% 份额：压太狠会把 4 个刻度挤成一撮
-  const GAMMA = 0.75 // 带区内部压缩指数：差异保留更多，短带不虚胖
-  const MIN_DEAD = 44 // 灰轨保底：可辨即可
-  const MIN_EFF = 90 // 带区保底：托住「回收 N bp」标签
-  const CAP = 0.45 // 带区封顶：单段 ≤ 45% 轨道
-
   const isLive = segs.map((s) => covered(s.p0, s.p1))
-  const denom = segs.reduce((t, s, i) => t + s.bp * (isLive[i] ? 1 : DAMP), 0) || 1
-  const unit = span / denom
-
-  // 第一轮：灰轨先落位（不足保底抬到保底，差额从带区池里扣）
-  let widths = segs.map((s, i) => (isLive[i] ? 0 : s.bp * DAMP * unit))
-  let livePool = span
-  segs.forEach((_, i) => {
-    if (!isLive[i]) {
-      const w = Math.max(widths[i], MIN_DEAD)
-      livePool -= w
-      widths[i] = w
-    }
-  })
-
-  // 第二轮：带区按 bp^GAMMA 压缩差异分配 livePool
   const liveIdx = segs.map((_, i) => i).filter((i) => isLive[i])
-  if (liveIdx.length) {
-    const wc = liveIdx.map((i) => Math.pow(Math.max(segs[i].bp, 1), GAMMA))
-    const wcSum = wc.reduce((t, w) => t + w, 0) || 1
-    liveIdx.forEach((i, k) => { widths[i] = (livePool * wc[k]) / wcSum })
-    // 保底 + 封顶迭代（截掉的超额按压缩权重回流）
-    const capPx = span * CAP
-    for (let round = 0; round < 4; round++) {
-      let changed = false
-      liveIdx.forEach((i) => {
-        if (widths[i] < MIN_EFF) { widths[i] = MIN_EFF; changed = true }
-      })
-      const overSum = liveIdx.reduce((t, i) => t + Math.max(0, widths[i] - capPx), 0)
-      if (overSum > 0.5) {
-        const freeIdx = liveIdx.filter((i) => widths[i] <= capPx + 0.5)
-        const freeWc = freeIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), GAMMA), 0) || 1
-        liveIdx.forEach((i) => {
-          if (widths[i] > capPx + 0.5) widths[i] = capPx
-          else widths[i] += (overSum * Math.pow(Math.max(segs[i].bp, 1), GAMMA)) / freeWc
-        })
-        changed = true
+  const grayIdx = segs.map((_, i) => i).filter((i) => !isLive[i])
+  const grayBp = grayIdx.reduce((t, i) => t + segs[i].bp, 0)
+
+  // 弹性系数分档（V1.01 原型）：极短片段高弹性主动拉伸，巨型片段抗压阻尼
+  const getElasticityCoefficient = (bp: number) => {
+    if (bp < 300) return 1.35
+    if (bp <= 3000) return 1.0
+    return 0.75
+  }
+
+  // 无带区场景：平滑退化为纯比例
+  if (!liveIdx.length) return { map: linX }
+
+  // ===== 第一轮：自适应灰轨底池 =====
+  const rawGrayWeight = Math.pow(Math.max(grayBp, 1), 0.38)
+  const rawLiveWeight = liveIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), 0.6), 0)
+  const rawGrayRatio = rawGrayWeight / (rawGrayWeight + rawLiveWeight)
+  const clampedGrayRatio = Math.max(0.2, Math.min(0.35, rawGrayRatio))
+  let grayPoolPx = grayBp > 0 ? span * clampedGrayRatio : 0
+  let livePoolPx = span - grayPoolPx
+
+  const widths = segs.map(() => 0)
+  // 灰轨内部：纯 bp 比例线性分流，不设保底
+  if (grayPoolPx > 0 && grayBp > 0) {
+    grayIdx.forEach((i) => { widths[i] = (segs[i].bp / grayBp) * grayPoolPx })
+  }
+
+  // ===== 第二轮：1D 弹性约束求解（带区层）=====
+  const MIN_PX = 90
+  const minPx = Math.min(MIN_PX, livePoolPx / Math.max(liveIdx.length, 1))
+  const maxPx = livePoolPx * 0.45
+  const baseW = new Map<number, number>() // 基础幂次（反哺用，剥离 k）
+  const rawW = new Map<number, number>() // 初分配权重（含弹性系数 k）
+  liveIdx.forEach((i) => {
+    baseW.set(i, Math.pow(Math.max(segs[i].bp, 1), 0.6))
+    rawW.set(i, baseW.get(i)! * getElasticityCoefficient(segs[i].bp))
+  })
+  const rawSum = liveIdx.reduce((t, i) => t + rawW.get(i)!, 0) || 1
+  liveIdx.forEach((i) => { widths[i] = (rawW.get(i)! / rawSum) * livePoolPx })
+
+  const MAX_ITERATIONS = 5
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    // lockedDelta：锁定段净吸收的像素（触保底为正、触封顶为负）；自由段反向分摊保证总宽守恒
+    let lockedDelta = 0
+    let freeBase = 0
+    const locked = new Set<number>()
+    liveIdx.forEach((i) => {
+      if (widths[i] < minPx) {
+        lockedDelta += minPx - widths[i]
+        widths[i] = minPx
+        locked.add(i)
+      } else if (widths[i] > maxPx) {
+        lockedDelta -= widths[i] - maxPx
+        widths[i] = maxPx
+        locked.add(i)
+      } else {
+        freeBase += baseW.get(i)!
       }
-      if (!changed) break
-      // 保底抬高后总宽可能超 span，按压缩权重从超出保底的段扣回
-      const sum = liveIdx.reduce((t, i) => t + widths[i], 0)
-      if (sum > livePool + 0.5) {
-        const excess = sum - livePool
-        const freeIdx = liveIdx.filter((i) => widths[i] > MIN_EFF + 1)
-        const freeWc = freeIdx.reduce((t, i) => t + Math.pow(Math.max(segs[i].bp, 1), GAMMA), 0) || 1
-        freeIdx.forEach((i) => { widths[i] -= (excess * Math.pow(Math.max(segs[i].bp, 1), GAMMA)) / freeWc })
-      }
-    }
+    })
+    if (Math.abs(lockedDelta) < 0.5 || freeBase === 0) break
+    // 溢出反哺：封顶吐出的盈余补给自由段、保底吃掉的赤字由自由段分摊；
+    // 只按基础幂次分摊（剥离 k，防止初分配+反哺双重补偿）
+    liveIdx.forEach((i) => {
+      if (!locked.has(i)) widths[i] -= (baseW.get(i)! / freeBase) * lockedDelta
+    })
   }
 
   const breaks: Array<{ p0: number; p1: number; q0: number; q1: number }> = []
