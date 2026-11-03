@@ -241,8 +241,8 @@ const vecScale = computed(() => {
     })
   }
   const span = VEC_X2 - VEC_X1
-  const DAMP = 0.45 // 灰轨只拿按比例 45% 的份额
-  const GAMMA = 0.6 // 带区内部压缩指数
+  const DAMP = 0.75 // 灰轨拿 75% 份额：压太狠会把 4 个刻度挤成一撮
+  const GAMMA = 0.75 // 带区内部压缩指数：差异保留更多，短带不虚胖
   const MIN_DEAD = 44 // 灰轨保底：可辨即可
   const MIN_EFF = 90 // 带区保底：托住「回收 N bp」标签
   const CAP = 0.45 // 带区封顶：单段 ≤ 45% 轨道
