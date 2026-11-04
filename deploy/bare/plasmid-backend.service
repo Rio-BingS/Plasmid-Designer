@@ -1,0 +1,51 @@
+[Unit]
+Description=Plasmid Designer Backend API
+After=network.target
+Wants=network-online.target
+# 重启限流字段属于 [Unit] 段；放在 [Service] 会被 systemd 静默忽略
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=plasmid
+Group=plasmid
+WorkingDirectory=/opt/plasmid-designer/src/backend
+
+# Python 路径
+Environment=PYTHONPATH=/opt/plasmid-designer/src/backend
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+
+# 数据目录
+Environment=DATA_DIR=/opt/plasmid-designer/data
+Environment=VECTORS_DIR=/opt/plasmid-designer/data/vectors
+Environment=CODON_TABLES_DIR=/opt/plasmid-designer/data/codon_tables
+
+# 从 .env 文件加载额外环境变量
+EnvironmentFile=/opt/plasmid-designer/.env
+
+# 单 worker：进程内限流器/缓存/内存镜像均按单进程设计，
+# 多 worker 会导致限流与缓存计数不一致
+# 终审 H-04：只监听 127.0.0.1——对外统一走 Nginx（80/443），后端 8000
+# 直接暴露公网等于绕过 Nginx 的限速/体积/头部控制，且 /docs 对外可见
+ExecStart=/opt/plasmid-designer/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+
+# 重启策略
+Restart=on-failure
+RestartSec=5
+
+# 日志
+SyslogIdentifier=plasmid-backend
+StandardOutput=journal
+StandardError=journal
+
+# 安全限制
+NoNewPrivileges=true
+PrivateTmp=true
+# 后端新建的文件（SQLite 库及其 -journal/-wal、导出文件）只给服务用户；
+# 安装目录对 other 有 x 权限，默认 022 会让库文件按路径可读
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

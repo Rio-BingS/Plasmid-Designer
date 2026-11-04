@@ -1,0 +1,687 @@
+"""批量测序结果归组与一句话结论（网页端批量分析与离线脚本共用）
+
+测序公司交付常为「Excel 信息表 + 一堆 .ab1/.dna」：信息表的引物列填测序
+文件名（可多个，中英文分号/逗号均可分隔），质粒名称列对应参考图谱文件名主干。
+
+两种信息表形态：
+- 质粒模式（match_files）：无克隆号列，引物列填测序文件名主干；
+- 克隆模式（match_clone_files）：带「克隆号」列，一个质粒多个克隆每行一个，
+  引物列填引物名，ab1 文件名 = 「克隆号-引物」（如 S00012-M13F-75.ab1），
+  每个克隆独立成组、独立分析；质粒名称与图谱文件名支持两段式部分匹配
+  （"123-1 AB2C" 可只写 "123-1"、"AB2C" 或全名，候选唯一才采纳）。
+
+本模块只做与入口无关的纯逻辑：
+- 解析 Excel 信息表（路径或字节流均可）；
+- 按引物列/质粒名称/克隆号把扫描到的文件归组；
+- 从单样品分析结果生成一句话结论。
+
+逐组分析、整理包（归档、报告、MD5 清单）与 Excel 回填在 app 层
+（app/sequencing_batch.py、app/sequencing_report.py），同样由离线批处理
+scripts/batch_sequencing_report.py 与网页批量分析
+POST /api/sequencing/analyze-batch 共用。
+"""
+
+import io
+import re
+from typing import Dict, List, Optional, Tuple, Union
+
+READ_EXTS = {".ab1", ".ab"}
+REF_EXTS = {".dna", ".gb", ".gbk", ".genbank", ".fasta", ".fa", ".fna"}
+PRIMER_SPLIT = re.compile(r"[;；,，\n]+")
+
+
+def norm_stem(name) -> str:
+    """文件名/条目归一化：去空白、小写、去 .ab1 后缀，用于匹配。"""
+    t = re.sub(r"\s+", "", str(name)).lower()
+    for suf in (".ab1", ".ab"):
+        if t.endswith(suf):
+            t = t[: -len(suf)]
+    return t.strip('"')
+
+
+def squash_name(name) -> str:
+    """分隔符不敏感形式：小写并去掉空白与 -/_。'S00012-M13F-75' → 's00012m13f75'"""
+    return re.sub(r"[\s\-_]+", "", str(name).lower())
+
+
+def _cell_str(v) -> str:
+    """Excel 单元格 → 字符串；数值 123.0 → '123'（克隆号/编号不能带 .0）"""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+# 信息表解析上限（防 xlsx 解压炸弹）：.xlsx 是 zip，20 MB 的上传可解压出
+# GB 级 XML，openpyxl 全量模式会把每个单元格都建成对象。信息表通常只有几十
+# 行，以下上限远高于正常用量
+MAX_EXCEL_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
+MAX_EXCEL_ZIP_ENTRIES = 500
+MAX_EXCEL_ROWS = 5000
+MAX_EXCEL_COLS = 200
+
+
+def _check_xlsx_zip(fp) -> None:
+    """解析前检查 zip 目录：条目数与解压后总字节超限即拒绝（不解压）"""
+    import zipfile
+
+    with zipfile.ZipFile(fp) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_EXCEL_ZIP_ENTRIES:
+            raise ValueError(f"信息表结构异常（压缩条目 {len(infos)} 个），请检查文件")
+        total = sum(max(0, i.file_size) for i in infos)
+        if total > MAX_EXCEL_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                f"信息表解压后过大（>{MAX_EXCEL_UNCOMPRESSED_BYTES // (1024 * 1024)}MB），"
+                "请只保留信息表本身后重新上传")
+
+
+def _open_workbook(src: Union[str, "Path", bytes, bytearray], read_only: bool):
+    """zip 目录预检后打开工作簿（read_only=True 为流式只读，须 close）"""
+    import openpyxl
+
+    if isinstance(src, (bytes, bytearray)):
+        _check_xlsx_zip(io.BytesIO(src))
+        return openpyxl.load_workbook(io.BytesIO(src), read_only=read_only)
+    _check_xlsx_zip(src)
+    return openpyxl.load_workbook(src, read_only=read_only)
+
+
+def open_excel_for_write(src: Union[str, "Path", bytes, bytearray]):
+    """以可写的完整模式打开信息表（结论回填用；先经 parse_excel 校验过上限）"""
+    return _open_workbook(src, read_only=False)
+
+
+def _limit_error() -> ValueError:
+    return ValueError(
+        f"信息表行列数超过上限（{MAX_EXCEL_ROWS} 行 × {MAX_EXCEL_COLS} 列），请检查文件")
+
+
+def parse_excel(src: Union[str, "Path", bytes, bytearray]):
+    """流式解析信息表，返回 (header_row, {列名: 列号}, [数据行])
+
+    openpyxl read_only 模式逐行读取，不为每个单元格建对象；行列数边读边查，
+    超限立即中止（不信任文件自带的 dimension 声明）。表头行取前 20 行中第一个
+    含"质粒"的单元格所在行；找不到、或超过上限时抛 ValueError。
+    """
+    wb = _open_workbook(src, read_only=True)
+    try:
+        ws = wb.worksheets[0]
+        # dimension 可缺失或与实际不符：按实际内容逐行读取
+        ws.reset_dimensions()
+        header_row, cols, rows = None, {}, []
+        for r, values in enumerate(ws.iter_rows(values_only=True), start=1):
+            if r > MAX_EXCEL_ROWS or len(values) > MAX_EXCEL_COLS:
+                raise _limit_error()
+            if header_row is None:
+                if r > 20:
+                    raise ValueError("Excel 中找不到含'质粒'的表头行")
+                if not any(v and "质粒" in str(v) for v in values):
+                    continue
+                header_row = r
+                for col, v in enumerate(values, start=1):
+                    v = str(v or "")
+                    if "质粒" in v:
+                        cols["plasmid"] = col
+                    elif "引物" in v:
+                        cols["primer"] = col
+                    elif "结果" in v:
+                        cols["result"] = col
+                    elif "克隆" in v or "样品" in v:
+                        cols["clone"] = col
+                cols.setdefault("primer", cols["plasmid"] + 1)
+                cols.setdefault("result", cols["primer"] + 1)
+                continue
+
+            def cell(col: int):
+                return values[col - 1] if col - 1 < len(values) else None
+
+            name = _cell_str(cell(cols["plasmid"]))
+            prim = _cell_str(cell(cols["primer"]))
+            if not name and not prim:
+                continue
+            entries = [p.strip() for p in PRIMER_SPLIT.split(prim) if p.strip()]
+            rows.append({
+                "row": r,
+                "name": name,
+                "clone": _cell_str(cell(cols["clone"])) if "clone" in cols else "",
+                "primers": entries,
+                "existing_result": cell(cols["result"]),
+            })
+        if header_row is None:
+            raise ValueError("Excel 中找不到含'质粒'的表头行")
+        return header_row, cols, rows
+    finally:
+        wb.close()
+
+
+def load_excel(src: Union[str, "Path", bytes, bytearray]):
+    """解析信息表，返回 (workbook, header_row, {列名: 列号}, [数据行])
+
+    src：文件路径（脚本离线用）或字节流（网页上传用）。先经 parse_excel
+    流式解析并检查上限，再单独以可写模式打开 workbook 供结论回填；只需要
+    数据行的调用方请直接用 parse_excel（不构建整表对象）。
+    """
+    header_row, cols, rows = parse_excel(src)
+    return open_excel_for_write(src), header_row, cols, rows
+
+
+def match_files(rows: List[Dict], files: List[Dict]):
+    """按 Excel 引物列（=测序文件名）与质粒名称（=图谱文件名）匹配。
+
+    files 的每项为 {"ext": ".ab1"/".dna"/…, "stem": 归一化主干, "name"(可选):
+    显示文件名, "path"(可选): 离线脚本场景的完整路径}——至少有其一。
+
+    返回 (per_plasmid, unmatched)。per_plasmid: 质粒名 -> {"reference":…, "reads":[…]}
+    每个文件项为 {"file": 原文件项, "how": 匹配方式说明}
+    """
+
+    def fname(f: Dict) -> str:
+        return f.get("name") or str(f["path"].name)
+
+    primer_map = {}  # 归一化文件名主干 -> (质粒名, 匹配方式)
+    for row in rows:
+        for e in row["primers"]:
+            primer_map.setdefault(norm_stem(e), (row["name"], "Excel 引物列精确匹配"))
+
+    per_plasmid: Dict[str, Dict] = {row["name"]: {"reference": None, "reads": []} for row in rows}
+    unmatched: List[Dict] = []
+
+    for f in files:
+        if f["ext"] in READ_EXTS:
+            hit = primer_map.get(f["stem"])
+            if hit is None:
+                cands = {(p, how) for stem, (p, how) in primer_map.items() if stem in f["stem"]}
+                if len(cands) == 1:
+                    hit = next(iter(cands))
+                    hit = (hit[0], f"文件名包含引物条目（{f['stem']}）")
+            if hit is None:
+                unmatched.append({"file": f, "reason": "未出现在任何质粒的引物列中"})
+                continue
+            per_plasmid.setdefault(hit[0], {"reference": None, "reads": []})["reads"].append(
+                {"file": f, "how": hit[1]}
+            )
+        else:  # 图谱文件 → 按质粒名称匹配（与克隆模式同口径的多级匹配：
+            # 全名精确 > 忽略分隔符精确 > 与名称的某一段一致 > 双向包含）
+            names = {r["name"] for r in rows if r["name"]}
+            plasmid, how = _match_ref_name(f["stem"], names)
+            if plasmid is None:
+                unmatched.append({"file": f, "reason": how})
+                continue
+            slot = per_plasmid.setdefault(plasmid, {"reference": None, "reads": []})
+            if slot["reference"] is not None:
+                unmatched.append({"file": f,
+                                  "reason": f"质粒 {plasmid} 已有图谱 {fname(slot['reference']['file'])}，本文件未采用"})
+                continue
+            slot["reference"] = {"file": f, "how": how}
+    return per_plasmid, unmatched
+
+
+def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
+    """图谱文件名 → 质粒名称的多级匹配（match_files 与 match_clone_files
+    同一口径）：全名精确 > 忽略分隔符精确 > 与名称的某一段一致（"DEMOAB" ↔
+    "40008 DEMOAB"）> 双向包含（短侧 ≥4 字符，防 "MX" 命中 "MX2"）。
+    候选不唯一一律不猜，返回 (None, 原因)。"""
+    sq = squash_name(stem)
+    segs = lambda n: {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}
+    levels = (
+        ([n for n in names if norm_stem(n) == stem],
+         "文件名与质粒名称精确匹配"),
+        ([n for n in names if squash_name(n) == sq],
+         "文件名与质粒名称精确匹配（忽略分隔符）"),
+        ([n for n in names if sq in segs(n)],
+         f"文件名与质粒名称的组成部分一致（{{}}）"),
+    )
+    for cands, how in levels:
+        if len(cands) == 1:
+            return cands[0], (how.format(cands[0]) if "{}" in how else how)
+        if len(cands) > 1:
+            return None, ("文件名同时匹配多个质粒名称（"
+                          + "、".join(sorted(cands))[:80] + "），无法唯一确定")
+    cont = []
+    for n in names:
+        nsq = squash_name(n)
+        if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
+            cont.append(n)
+    if len(cont) == 1:
+        return cont[0], "文件名包含质粒名称（或反之）"
+    if len(cont) > 1:
+        return None, ("文件名同时匹配多个质粒名称（"
+                      + "、".join(sorted(cont))[:80] + "），无法唯一确定")
+    return None, "文件名不匹配任何质粒名称（支持全名或两段式名称的任一段）"
+
+
+def feature_alias_names(features: List[Dict]) -> List[str]:
+    """图谱内部可当质粒标识用的名称：CDS/gene 特征的名字。
+
+    只取 CDS/gene——启动子、复制起点之类的名称多是通用元件名
+    （"lac promoter"、"ori"），拿去反查质粒名只会制造歧义。名称按
+    norm_stem 去重，保持特征顺序。"""
+    out: List[str] = []
+    seen = set()
+    for f in features or ():
+        if str(f.get("type") or "").strip().lower() not in ("cds", "gene"):
+            continue
+        name = str(f.get("name") or "").strip()
+        key = norm_stem(name)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def match_reference_aliases(aliases: List[str],
+                            names: set) -> Tuple[Optional[str], str]:
+    """用图谱内部的 CDS/gene 名称反查质粒名称（文件名对不上时的兜底）。
+
+    每个别名走 _match_ref_name 同一套多级口径；多个别名指向不同质粒时
+    不猜。返回 (质粒名 或 None, 说明)。"""
+    hits: Dict[str, str] = {}
+    for alias in aliases or ():
+        plasmid, _how = _match_ref_name(norm_stem(alias), names)
+        if plasmid:
+            hits.setdefault(plasmid, alias)
+    if len(hits) == 1:
+        plasmid, alias = next(iter(hits.items()))
+        return plasmid, f"文件内 CDS 名称匹配质粒名称（{alias}）"
+    if len(hits) > 1:
+        return None, ("文件内 CDS 名称同时匹配多个质粒（"
+                      + "、".join(sorted(hits)[:5]) + "），无法唯一确定")
+    if aliases:
+        return None, "文件名不匹配任何质粒名称，文件内 CDS 名称也不匹配"
+    return None, "文件名不匹配任何质粒名称，文件内没有可用的 CDS 名称"
+
+
+def rows_have_clones(rows: List[Dict]) -> bool:
+    """信息表带「克隆号」列且至少一行有值 → 克隆模式（每行一个克隆，独立分析）"""
+    return any(r.get("clone") for r in rows)
+
+
+def match_clone_files(rows: List[Dict], files: List[Dict]):
+    """克隆号模式归组：一个质粒多个克隆，每行（克隆）独立成组、独立分析。
+
+    files 的每项为 {"ext", "stem", "name"(可选), "path"(可选)}（同 match_files）。
+
+    read 匹配优先级：
+    1. 「克隆号-引物」组合精确（含忽略分隔符形式，S00012_M13F-75 也能命中）；
+    2. 引物列条目本身精确（兼容引物列直接填完整文件名的旧表）；
+    3. 主干包含某期望组合（复制版后缀 -2/_copy 等）；
+    4. 主干以某克隆号开头（克隆号后是分隔符或结尾）——信息表漏填引物、
+       或一个克隆只有一个文件时兜底。
+    同一引物名出现在多个克隆行时，只写引物名的文件无法归属，判为未匹配。
+
+    图谱 → 质粒名称支持两段式部分匹配：全名精确 > 忽略分隔符精确 >
+    与名称的某一段一致（"DEMOAB" ↔ "40008 DEMOAB"）> 双向包含（短侧 ≥4 字符，
+    防 "MX" 命中 "MX2"）；候选不唯一一律不猜，判为未匹配。同一质粒的不同
+    克隆行可混用全名与单段名（'40008' / 'DEMOAB' / '40008 DEMOAB'）——只写
+    一段的名称按双向包含找唯一候选图谱共享（候选多于一张维持缺图谱）。
+    图谱文件名也可只写一段（'40008.fasta'）：与图谱共享该段的行直接命中；
+    只写另一段的行（'DEMOAB'）与之没有共同标识，仅当表内恰有一个以它为
+    组成段的质粒名且该名已确定图谱时，按表内别名共享；表中无全名行时
+    确实无法建立对应关系，维持缺图谱。
+
+    返回 (groups, unmatched)。groups 顺序 = 信息表行序，每项：
+    {"plasmid", "clone", "reference": {"file","how"}|None, "reads": [{"file","how"}]}
+    """
+    groups: Dict[Tuple[str, str], Dict] = {}
+    for r in rows:
+        key = (r["name"], r.get("clone", ""))
+        if key not in groups:
+            groups[key] = {"plasmid": r["name"], "clone": r.get("clone", ""),
+                           "reference": None, "reads": []}
+    names = {r["name"] for r in rows if r["name"]}
+
+    # ---- 图谱 → 质粒名称（返回 质粒名, 说明, 匹配强度 0=全名精确 1=忽略分隔符
+    #      精确 2=与名称某一段一致 3=双向包含）----
+    def _match_ref(f: Dict) -> Tuple[Optional[str], str, int]:
+        stem, sq = f["stem"], squash_name(f["stem"])
+        levels = (
+            ([n for n in names if norm_stem(n) == stem],
+             "文件名与质粒名称精确匹配"),
+            ([n for n in names if squash_name(n) == sq],
+             "文件名与质粒名称精确匹配（忽略分隔符）"),
+            ([n for n in names if sq in {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}],
+             None),
+        )
+        cont = []
+        for n in names:
+            nsq = squash_name(n)
+            if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
+                cont.append(n)
+        for level, (cands, how) in enumerate(levels):
+            if len(cands) == 1:
+                return cands[0], (how or f"文件名与质粒名称的组成部分一致（{cands[0]}）"), level
+            if len(cands) > 1:
+                return None, ("文件名同时匹配多个质粒名称（"
+                              + "、".join(sorted(cands))[:80] + "），无法唯一确定"), level
+        if len(cont) == 1:
+            return cont[0], "文件名包含质粒名称（或反之）", 3
+        if len(cont) > 1:
+            return None, ("文件名同时匹配多个质粒名称（"
+                          + "、".join(sorted(cont))[:80] + "），无法唯一确定"), 3
+        return None, "文件名不匹配任何质粒名称（支持全名或两段式名称的任一段）", 3
+
+    # ---- 期望 read 文件名主干：克隆号-引物 组合 + 引物条目本身 ----
+    composed: Dict[str, Tuple[str, str, str]] = {}   # 主干 -> (质粒, 克隆, 匹配方式)
+    composed_conflicts = set()                       # 同组合对应多行（如克隆号重复于不同质粒）
+    bare: Dict[str, List[Tuple[str, str]]] = {}      # 引物条目 -> [(质粒, 克隆)]
+    for r in rows:
+        plasmid, clone = r["name"], r.get("clone", "")
+        for e in r["primers"]:
+            ne = norm_stem(e)
+            if not ne:
+                continue
+            if clone:
+                ck = f"{norm_stem(clone)}-{ne}"
+                if composed.get(ck, (plasmid, clone))[:2] != (plasmid, clone):
+                    composed_conflicts.add(ck)
+                composed.setdefault(ck, (plasmid, clone, "克隆号+引物组合精确匹配"))
+            bare.setdefault(ne, []).append((plasmid, clone))
+    bare_unique = {k: v[0] for k, v in bare.items() if len(v) == 1}
+    bare_ambiguous = {k for k, v in bare.items() if len(v) > 1}
+
+    sq_pool: Dict[str, List[Tuple[str, str, str]]] = {}
+    for k, v in composed.items():
+        if k not in composed_conflicts:
+            sq_pool.setdefault(squash_name(k), []).append(v)
+    for k, (p, c) in bare_unique.items():
+        sq_pool.setdefault(squash_name(k), []).append((p, c, "引物列精确匹配"))
+
+    def _assign_read(f: Dict) -> Tuple[Optional[Tuple[str, str]], str]:
+        stem, sq = f["stem"], squash_name(f["stem"])
+        if stem in composed_conflicts:
+            return None, "「克隆号+引物」组合在信息表中对应多行，无法唯一归属"
+        hit = composed.get(stem)
+        if hit:
+            return (hit[0], hit[1]), hit[2]
+        b = bare_unique.get(stem)
+        if b:
+            return b, "引物列精确匹配"
+        hits = sq_pool.get(sq)
+        if hits and len(hits) == 1:
+            return (hits[0][0], hits[0][1]), hits[0][2]
+        if hits:
+            return None, "文件名同时匹配多个「克隆号+引物」组合，无法唯一归属"
+        # 兜底 1：主干包含某「克隆号+引物」组合（复制版/带额外后缀）。
+        # 裸引物条目只做精确匹配、不参与包含——含引物名但克隆号未知/不在表中
+        # 的文件（如 S00099-M13F-75）不能凭引物名吸收进某个克隆
+        cont = [(k, v) for k, v in composed.items()
+                if k not in composed_conflicts and len(squash_name(k)) >= 4 and squash_name(k) in sq]
+        if cont:
+            uniq = {(v[0], v[1]) for _, v in cont}
+            if len(uniq) == 1:
+                best = max(cont, key=lambda kv: len(kv[0]))[1]
+                return (best[0], best[1]), "文件名包含「克隆号+引物」组合"
+            return None, "文件名同时匹配多个克隆的引物组合，无法唯一归属"
+        if stem in bare_ambiguous:
+            return None, "该引物名出现在多个克隆行，无法确定克隆"
+        # 兜底 2：主干以某克隆号开头（分隔符或结尾边界），信息表漏填引物时兜底
+        for r in rows:
+            c = r.get("clone", "")
+            nc = norm_stem(c)
+            if len(nc) < 2 or not stem.startswith(nc):
+                continue
+            nxt = stem[len(nc):len(nc) + 1]
+            if nxt and nxt not in "-_ .":
+                continue
+            return (r["name"], c), f"文件名以克隆号 {c} 开头"
+        return None, "未在任何克隆行的引物列中，也匹配不到「克隆号+引物」组合"
+
+    unmatched: List[Dict] = []
+    ref_by_plasmid: Dict[str, Dict] = {}
+    # 同一质粒名可能被多张图谱文件声明：按匹配强度取最精确者；同强度并列时
+    # 仅"文件主干一致"（全名/忽略分隔符精确）视为同一图谱的重复副本取其一，
+    # 其余（如两段式部分匹配命中不同文件）无法确定采用哪张，全部不猜
+    ref_claims: Dict[str, List[Tuple[Dict, str, int]]] = {}
+    for f in files:
+        if f["ext"] in READ_EXTS:
+            key, how = _assign_read(f)
+            if key is None:
+                unmatched.append({"file": f, "reason": how})
+            else:
+                groups.setdefault(key, {"plasmid": key[0], "clone": key[1],
+                                        "reference": None, "reads": []})
+                groups[key]["reads"].append({"file": f, "how": how})
+        else:
+            plasmid, how, level = _match_ref(f)
+            if plasmid is None:
+                unmatched.append({"file": f, "reason": how})
+            else:
+                ref_claims.setdefault(plasmid, []).append((f, how, level))
+    for plasmid, claims in ref_claims.items():
+        claims.sort(key=lambda c: c[2])
+        best_f, best_how, best_level = claims[0]
+        tied = [c for c in claims if c[2] == best_level]
+        if len(tied) > 1 and best_level >= 2:
+            names_list = "、".join(c[0].get("name") or str(c[0]["path"].name) for c in claims)
+            for c in claims:
+                unmatched.append({"file": c[0],
+                                  "reason": f"同时匹配质粒 {plasmid} 的多张候选图谱（{names_list[:80]}），无法唯一确定"})
+            continue
+        ref_by_plasmid[plasmid] = {"file": best_f, "how": best_how}
+        for c in claims[1:]:
+            other = c[0].get("name") or str(c[0]["path"].name)
+            unmatched.append({"file": c[0],
+                              "reason": f"质粒 {plasmid} 已采用图谱 {best_f.get('name') or str(best_f['path'].name)}，本文件未采用"})
+
+    # 名称驱动兜底：表里同一质粒的不同克隆可能分别只写两段式名称的一段
+    # （'40008'/'DEMOAB' 与全名 '40008 DEMOAB' 混用）——只写一段的质粒名
+    # 在所有图谱文件中找唯一的双向包含候选，命中则共享该图谱；候选多于
+    # 一张（如 'AB2C' 同时命中 '123-1 AB2C' 与 '123-2 AB2C'）维持缺图谱不猜
+    ref_files = [f for f in files if f["ext"] not in READ_EXTS]
+    for (plasmid, _clone) in list(groups):
+        if not plasmid or plasmid in ref_by_plasmid:
+            continue
+        nsq = squash_name(plasmid)
+        if len(nsq) < 4:
+            continue
+        cands = [f for f in ref_files
+                 if min(len(nsq), len(squash_name(f["stem"]))) >= 4
+                 and (nsq in squash_name(f["stem"]) or squash_name(f["stem"]) in nsq)]
+        if len(cands) == 1:
+            ref_by_plasmid[plasmid] = {
+                "file": cands[0],
+                "how": "质粒名称与图谱文件名部分一致（唯一候选，共享全名质粒的图谱）",
+            }
+
+    # 表内别名兜底：图谱文件名只含两段式名称的一段时（如图谱叫 '40008'），
+    # 只写另一段的行（'DEMOAB'）与图谱没有共同标识——但信息表内若恰有一个
+    # 以它为组成段的质粒名且该名已确定图谱，说明两种写法指向同一质粒，共享
+    # 其图谱；这样的宿主名称多于一个（'DEMOAB' 同时是 40008/40009 的组成段）
+    # 或宿主本身缺图谱时维持不猜。表中完全没有全名行时（图谱 '40008' ↔
+    # 表 'DEMOAB'）确实无法建立对应，保持缺图谱
+    for (plasmid, _clone) in list(groups):
+        if not plasmid or plasmid in ref_by_plasmid:
+            continue
+        nsq = squash_name(plasmid)
+        if len(nsq) < 2:
+            continue
+        hosts = [n for n in names if n != plasmid and nsq in
+                 {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}]
+        if len(hosts) != 1:
+            continue
+        host_ref = ref_by_plasmid.get(hosts[0])
+        if host_ref:
+            ref_by_plasmid[plasmid] = {
+                "file": host_ref["file"],
+                "how": f"「{plasmid}」与「{hosts[0]}」为同一质粒的不同写法（表内互为别名），共享其图谱",
+            }
+
+    ordered = list(groups.values())
+    for g in ordered:
+        g["reference"] = ref_by_plasmid.get(g["plasmid"])
+    return ordered, unmatched
+
+
+def _count_range(ps: List[Dict]) -> str:
+    """read 间双峰位点数区间：相同只给一个数，不同给 min–max。"""
+    counts = sorted(p["count"] for p in ps)
+    return (str(counts[0]) if counts[0] == counts[-1]
+            else f"{counts[0]}–{counts[-1]}")
+
+
+def _frac_range(ps: List[Dict]) -> str:
+    """read 间次要克隆占比区间（minor_fraction = r/(1+r)），同 pipeline 口径。"""
+    fr = sorted(round(p["minor_fraction"] * 100) for p in ps
+                if p.get("minor_fraction"))
+    if not fr:
+        return ""
+    lo, hi = fr[0], fr[-1]
+    return f"约 {lo}%" if lo == hi else f"约 {lo}–{hi}%"
+
+
+def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
+    """双峰（疑似混合）结论要素：返回 (尾部提示行, widespread 列表)
+
+    widespread（≥5 个分散双峰位点或 ≥8 连续双峰段）= 疑似混合样品——整份
+    判读存疑，不再自动给 合格/不合格；scattered（2-4 个位点）只是提示。
+    多条 read 全部 widespread 时聚合一条，不逐 read 复读。
+    跨引物互检例外：唯一 widespread 的 read 若其双峰位点多数被其他引物
+    覆盖且峰形单一、无同报（与网页结论同口径），降级为尾部提示——
+    多半是该 read 自身信号问题（常见于引物首端），不影响整份判读。
+    """
+    profiles = (res or {}).get("mixed_profiles") or {}
+    widespread = [(fn, p) for fn, p in profiles.items()
+                  if p.get("class") == "widespread"]
+    tails: List[str] = []
+    by_read = ((res or {}).get("mixed_corroboration") or {}).get("by_read") or {}
+    n_reads = len((res or {}).get("reads") or [])
+    if len(widespread) == 1:
+        fn, p = widespread[0]
+        chk = by_read.get(fn) or {}
+        if n_reads >= 2 and chk.get("multi", 0) == 0 \
+                and chk.get("clean", 0) >= max(1, p["count"] // 2):
+            tails.append(f"{fn} 检出 {p['count']} 处双峰，互检倾向该 read 信号噪声")
+            return tails, []
+        tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰"
+                     "，建议重新挑单克隆复测")
+    elif widespread:
+        tails.append(f"疑似混合样品：{len(widespread)} 条 read 均检出双峰"
+                     f"（每条 {_count_range([p for _f, p in widespread])} 处）"
+                     "，建议重新挑单克隆复测")
+    scattered = [(fn, p) for fn, p in profiles.items()
+                 if p.get("class") == "scattered"]
+    if scattered:
+        n = sum(p["count"] for _fn, p in scattered)
+        names = "、".join(fn for fn, _p in scattered[:2])
+        tails.append(f"{names} 有 {n} 个双峰位点")
+    return tails, widespread
+
+
+# 给出 合格 所需的最少实测碱基数：没有任何 CDS 被完整覆盖、且共识实测
+# 不足此数时，测到的片段太短，连是不是目标质粒都无法确认（错质粒的
+# read 往往只有十几 bp 偶然比对上）——只给 无法判定，不给 合格
+MIN_VERDICT_COVERED_BP = 100
+
+
+def _covered_bp(res) -> Optional[int]:
+    """共识实测碱基数（缺 covered_ranges 时返回 None：口径未知不拦截）"""
+    rng = ((res or {}).get("consensus") or {}).get("covered_ranges")
+    if rng is None:
+        return None
+    return sum(int(e) - int(s) + 1 for s, e in rng)
+
+
+def _undetermined_reason(res) -> Optional[str]:
+    """合格前的覆盖闸门：部分比对或实测过少时返回 无法判定 的原因，否则 None
+
+    与网页 _conclusion_summary 的 △ 同口径：有 read 大段未比对上参考
+    （partial_alignment：错质粒、污染、载体外序列或参考有误）时，未比对
+    部分根本没有验证，不能给 合格。部分测序本身是常规策略，覆盖率低
+    不拦截；只有既无完整覆盖的 CDS、实测又不足 MIN_VERDICT_COVERED_BP
+    时才视为覆盖不足。"""
+    partial = [r for r in res.get("reads") or [] if r.get("partial_alignment")]
+    if partial:
+        if len(partial) == 1:
+            info = partial[0]["partial_alignment"]
+            who = (f"{partial[0].get('filename', 'read')} 仅 "
+                   f"{info.get('aligned_read_len', 0)}/"
+                   f"{info.get('trimmed_length', 0)}bp 比对上参考")
+        else:
+            who = f"{len(partial)} 条 read 大段未比对上参考"
+        return f"部分比对（{who}），未比对部分未验证，可能是错质粒、污染或参考有误"
+    full_cds = any(c.get("coverage_status") == "full"
+                   for c in res.get("cds_reports") or [])
+    bp = _covered_bp(res)
+    if not full_cds and bp is not None and bp < MIN_VERDICT_COVERED_BP:
+        return f"测序覆盖不足（仅 {bp}bp 实测），无法确认是否为目标质粒"
+    return None
+
+
+def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
+    """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。
+
+    表格单元格以简洁为先：合格/不合格/疑似混合/无法判定 前缀供批量筛选分拣，
+    差异细节与伪影鉴别解释一律不进表（互检矛盾与一般低置信合并为
+    "疑似伪影"，逐条证据在网页报告里）"""
+    if not has_ref:
+        return f"已整理 {n_reads} 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对"
+    if res is None:
+        return "分析失败"
+    if not res["reads"]:
+        errs = "；".join(e.get("error", "") for e in res["errors"][:2]) or "无可分析 read"
+        return f"分析失败：{errs}"
+    confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
+    pending = len(res["variants"]) - len(confirmed)
+    cov = res["consensus"]["coverage_percent"]
+    bad = [c for c in res["cds_reports"]
+           if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
+    mixed_tails, widespread = _mixed_tails(res)
+    undetermined = _undetermined_reason(res)
+
+    # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了，混合降为
+    # 提示）；否则疑似混合样品升级为结论主句——混合培养物无法自动判定
+    if bad:
+        names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
+        hint = "（移码）" if any(c.get("frameshift_count") for c in bad) else ""
+        out = f"不合格：{names} 蛋白与设计不一致{hint}"
+    elif widespread:
+        if len(widespread) == 1:
+            fn, p = widespread[0]
+            main = f"{fn} 检出 {p['count']} 处双峰"
+        else:
+            main = (f"{len(widespread)} 条 read 均检出双峰"
+                    f"（每条 {_count_range([p for _f, p in widespread])} 处）")
+        fr_txt = _frac_range([p for _f, p in widespread])
+        out = ("疑似混合：" + main
+               + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
+               + "，无法自动判定，建议重新挑单克隆复测")
+        if confirmed:
+            out += f"；按主峰判读蛋白与设计一致，另有 {len(confirmed)} 处确证差异"
+        return out
+    elif undetermined:
+        out = "无法判定：" + undetermined
+        if confirmed:
+            out += f"；已比对区域另有 {len(confirmed)} 处确证差异"
+    elif confirmed:
+        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
+        out = f"合格：编码区蛋白一致；编码区外 {len(confirmed)} 处确证差异（{feats}）"
+    else:
+        out = "合格：与设计一致"
+
+    tail = []
+    if pending:
+        tail.append(f"{pending} 处低置信差异疑似伪影")
+    # A4：poly 区峰图判读存疑——按 run_verdict 分态（contradictory 互证
+    # 矛盾对克隆批量筛查最致命，单独点名）
+    hp_bad = [e for e in (res.get("homopolymers") or [])
+              if e.get("tier", "poly") == "poly" and e.get("count_reliable") is False]
+    if hp_bad:
+        vt = {e.get("run_verdict") for e in hp_bad}
+        if "contradictory" in vt:
+            tail.append("poly 区计数互证矛盾")
+        elif "undetermined" in vt:
+            tail.append("poly 区计数不可判定")
+        else:
+            tail.append("poly 区计数存疑")
+    tail.extend(mixed_tails)
+    if cov < 95:
+        tail.append(f"测序覆盖 {cov:.0f}%")
+    if tail:
+        out += "；" + "；".join(tail)
+    return out
+
+
+# ==================== 公开化别名（跨层契约原为私有名）====================
+_squash = squash_name  # 公开化前的私有名（历史引用兼容）

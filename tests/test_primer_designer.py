@@ -1,0 +1,595 @@
+"""
+引物设计模块测试
+"""
+
+import random
+
+import pytest
+import sys
+sys.path.insert(0, '/root/.openclaw/workspace/plasmid-designer-v2/src/backend')
+
+from core.primer_designer import PrimerDesigner, PrimerPair, Primer, PrimerType
+
+
+def test_basic_primer_design():
+    """测试基本引物设计"""
+    designer = PrimerDesigner()
+    
+    # 测试模板序列
+    template = "ATGAAAGCTGCTGCTAAATAG" + "A" * 500 + "TTATTGA"
+    
+    pair = designer.design_pcr_primers(template, 0, len(template))
+    
+    assert pair is not None
+    assert pair.forward is not None
+    assert pair.reverse is not None
+    assert pair.product_size > 0
+
+
+def test_primer_tm_range():
+    """测试引物Tm在合理范围"""
+    designer = PrimerDesigner(tm_min=58, tm_max=62)
+    
+    template = "ATG" + "GCTAGCTAGCTAGCTAGCTA" * 20 + "TAA"  # Mixed base template
+    
+    pair = designer.design_pcr_primers(template)
+    
+    # 该回文重复模板自互补过强，走放宽回退路径，Tm 只做宽松检查
+    assert 40 <= pair.forward.tm <= 80
+    assert 40 <= pair.reverse.tm <= 80
+
+
+def test_primer_tm_window_enforced_with_nn():
+    """通过质量筛选的引物，其最近邻 Tm 必须落在默认 58-62°C 窗口内"""
+    designer = PrimerDesigner()
+    assert (designer.tm_min, designer.tm_max) == (58.0, 62.0)
+    random.seed(7)
+    checked = 0
+    for _ in range(40):
+        tpl = "".join(random.choice("ATGC") for _ in range(1500))
+        pair = designer.design_pcr_primers(tpl, 0, 1000)
+        for p in (pair.forward, pair.reverse):
+            if "Warning" in (p.notes or ""):
+                continue
+            checked += 1
+            assert 58.0 <= p.tm <= 62.0
+            assert p.tm == pytest.approx(designer._calculate_tm(p.sequence))
+    assert checked >= 30
+
+
+def test_primer_gc_content():
+    """测试引物GC含量"""
+    designer = PrimerDesigner(gc_min=40, gc_max=60)
+    
+    template = "ATG" + "GCTAGCTAGCTAGCTAGCT" * 50 + "TAA"
+    
+    pair = designer.design_pcr_primers(template)
+    
+    # GC含量应该在40-60%范围内
+    assert 35 <= pair.forward.gc_content <= 65
+    assert 35 <= pair.reverse.gc_content <= 65
+
+
+def test_gibson_primer_design():
+    """测试Gibson引物设计"""
+    designer = PrimerDesigner()
+    
+    insert = "ATG" + "A" * 100 + "TAA"
+    vector = "G" * 100 + "NNNN" + "C" * 100  # 简化载体
+    insert_pos = 100
+    
+    pair = designer.design_gibson_primers(
+        insert, vector, insert_pos, homology_arm=20
+    )
+    
+    # 检查引物有同源臂
+    assert pair.forward.overhang is not None
+    assert len(pair.forward.overhang) == 20
+
+
+def test_golden_gate_primer_design():
+    """测试Golden Gate引物设计"""
+    designer = PrimerDesigner()
+    
+    insert = "ATG" + "GCT" * 50 + "TAA"
+    
+    pair = designer.design_golden_gate_primers(
+        insert,
+        enzyme_name="BsaI",
+        overhang_seq_5="AATG",
+        overhang_seq_3="GCTT"
+    )
+    
+    # 检查引物包含酶切位点
+    assert "GGTCTC" in pair.forward.full_sequence  # BsaI位点
+    assert pair.forward.restriction_site == "BsaI"
+
+
+def test_golden_gate_unknown_enzyme_raises():
+    """回归：未知酶曾静默回退 BsaI——传错酶名会得到错误引物而不被察觉"""
+    import pytest as _pytest
+    designer = PrimerDesigner()
+    insert = "ATG" + "GCT" * 20 + "TAA"
+    with _pytest.raises(ValueError, match="不支持"):
+        designer.design_golden_gate_primers(
+            insert,
+            enzyme_name="EcoRI",  # 非 IIS 酶，不在支持列表
+            overhang_seq_5="AATG",
+            overhang_seq_3="GCTT"
+        )
+
+
+def test_primer_quality_check():
+    """测试引物质量检查
+
+    质量标准由 PrimerDesigner 的参数决定（Tm 58-62、GC 40-60、poly-X、
+    3'端稳定性、自互补等）。手写序列容易与公式细节脱节，这里用固定种子
+    在随机序列池中搜索合格/不合格样本做双向断言，保证测试与实现始终一致。
+    """
+    import random
+
+    random.seed(42)
+    designer = PrimerDesigner()
+
+    good_seq = None
+    for _ in range(10000):
+        cand = "".join(random.choice("ATGC") for _ in range(random.randint(18, 25)))
+        if designer._check_primer_quality(cand):
+            good_seq = cand
+            break
+
+    # 应能找到满足全部质量标准的序列
+    assert good_seq is not None, "随机池中未找到合格引物，质量检查可能过严"
+    assert designer._check_primer_quality(good_seq)
+
+    # 差的引物序列 - 高GC（GC=100%）
+    bad_gc = "GCGCGCGCGCGCGCGCGCGCG"
+    assert not designer._check_primer_quality(bad_gc)
+
+    # 差的引物序列 - Poly-X
+    bad_poly = "ATGAAAAAAAAAAAAAATAGC"
+    assert not designer._check_primer_quality(bad_poly)
+
+
+def test_tm_calculation():
+    """测试Tm计算（最近邻法）"""
+    designer = PrimerDesigner()
+
+    # 短序列（<14bp）
+    short_seq = "ATGCGATCGAT"
+    tm_short = designer._calculate_tm(short_seq)
+    assert tm_short > 0
+
+    # 长序列（>=14bp）
+    long_seq = "ATGCGATCGATCGATCGATC"
+    tm_long = designer._calculate_tm(long_seq)
+    assert tm_long > 0
+
+    # 同长同 GC 但上下文不同，最近邻必须给出不同的 Tm
+    # （旧经验公式只看长度和 GC，这两条会完全相同）
+    a = designer._calculate_tm("ATATATATATGCGCGCGCGC")
+    b = designer._calculate_tm("ATGCATGCATGCATGCATGC")
+    assert abs(a - b) > 1.0
+
+
+def test_tm_matches_biopython_nn_reference():
+    """Tm 必须等于指定缓冲条件下的 Bio.SeqUtils Tm_NN，而不是经验公式"""
+    from Bio.SeqUtils import MeltingTemp as mt
+    from core.primer_designer import (
+        calculate_tm, TM_NN_TABLE, TM_NA_MM, TM_MG_MM, TM_DNTPS_MM,
+        TM_PRIMER_NM, TM_TEMPLATE_NM, TM_SALTCORR,
+    )
+
+    random.seed(20261011)
+    worst = 0.0
+    for _ in range(200):
+        n = random.randint(18, 25)
+        seq = "".join(random.choice("ATGC") for _ in range(n))
+        ref = mt.Tm_NN(
+            seq, nn_table=TM_NN_TABLE, Na=TM_NA_MM, Mg=TM_MG_MM,
+            dNTPs=TM_DNTPS_MM, dnac1=TM_PRIMER_NM, dnac2=TM_TEMPLATE_NM,
+            saltcorr=TM_SALTCORR,
+        )
+        worst = max(worst, abs(calculate_tm(seq) - ref))
+    assert worst < 0.5, f"与最近邻参考最大偏差 {worst:.3f}°C"
+
+
+def test_tm_single_source_of_truth():
+    """sequence_validator.predict_tm 与引物设计用同一实现"""
+    from core.primer_designer import calculate_tm
+    from core.sequence_validator import predict_tm
+
+    designer = PrimerDesigner()
+    for seq in ("ATGCGATCGATCGATCGATC", "GCTAGCTAGGCTAGCTAGCC", "TGTAAAACGACGGCCAGT"):
+        assert predict_tm(seq) == calculate_tm(seq) == designer._calculate_tm(seq)
+
+
+def test_tm_degenerate_and_too_short_are_zero():
+    """无法定义最近邻 Tm 时返回 0.0，不抛异常"""
+    from core.primer_designer import calculate_tm
+
+    for seq in ("", "A", "N" * 20, "----"):
+        assert calculate_tm(seq) == 0.0
+
+
+def test_gc_calculation():
+    """测试GC含量计算"""
+    designer = PrimerDesigner()
+    
+    # 50% GC
+    seq_50 = "ATGCATGCATGC"
+    gc = designer._calculate_gc(seq_50)
+    assert 49 <= gc <= 51
+    
+    # 100% GC
+    seq_100 = "GCGCGCGC"
+    gc = designer._calculate_gc(seq_100)
+    assert gc == 100
+    
+    # 0% GC
+    seq_0 = "ATATATAT"
+    gc = designer._calculate_gc(seq_0)
+    assert gc == 0
+
+
+def test_reverse_complement():
+    """测试反向互补"""
+    designer = PrimerDesigner()
+    
+    seq = "ATGC"
+    rc = designer._reverse_complement(seq)
+    
+    assert rc == "GCAT"
+
+
+def test_primer_pair_output():
+    """测试引物对输出"""
+    forward = Primer(
+        name="test_F",
+        sequence="ATGCGATCGAT",
+        primer_type=PrimerType.PRIMER,
+        tm=60.0,
+        gc_content=50.0,
+        length=11
+    )
+    
+    reverse = Primer(
+        name="test_R",
+        sequence="ATCGATCGCAT",
+        primer_type=PrimerType.PRIMER,
+        tm=58.0,
+        gc_content=50.0,
+        length=11
+    )
+    
+    pair = PrimerPair(
+        forward=forward,
+        reverse=reverse,
+        product_size=500,
+        annealing_temp=55.0
+    )
+    
+    # 测试输出格式
+    order = pair.to_order_dict()
+    
+    assert 'name' in order
+    assert 'forward_seq' in order
+    assert 'reverse_seq' in order
+
+
+def test_synthesis_oligos_shifted_alternating():
+    """全基因合成寡核苷酸：错位交替、无完全互补对、偶数条、相邻 overlap 互补"""
+    designer = PrimerDesigner()
+
+    seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)  # 324bp
+    length_min, length_max, overlap = 40, 80, 20
+
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=length_min, oligo_length_max=length_max,
+        overlap_length=overlap, primer_name="t",
+    )
+
+    def rc(s: str) -> str:
+        return s.translate(str.maketrans("ATGC", "TACG"))[::-1]
+
+    # 偶数条，S/AS 交替，区域与序列一致
+    assert len(oligos) >= 2 and len(oligos) % 2 == 0, "应为偶数条"
+    for i, o in enumerate(oligos, start=1):
+        sense = seq[o.target_start:o.target_end]
+        if i % 2 == 1:
+            assert "Sense" in o.notes and o.sequence == sense
+            assert o.name.endswith(f"S{i:02d}")
+        else:
+            assert "Antisense" in o.notes and o.sequence == rc(sense)
+            assert o.name.endswith(f"AS{i:02d}")
+        assert o.length <= length_max, f"{o.name} 超过长度上限"
+
+    # 关键：任何两条寡核苷酸都不是完全互补（避免整对优先退火）
+    for i in range(len(oligos)):
+        for j in range(i + 1, len(oligos)):
+            assert oligos[i].sequence != rc(oligos[j].sequence), \
+                f"{oligos[i].name} 与 {oligos[j].name} 不应完全互补"
+
+    # 相邻寡核苷酸经 overlap 区域互补退火；overlap 长度按 Tm 均一化
+    # 在 18-25nt 内自适应，所以按目标坐标取实际重叠长度
+    for a, b in zip(oligos, oligos[1:]):
+        ov = a.target_end - b.target_start
+        assert 18 <= ov <= 25, f"{a.name}/{b.name} 重叠 {ov}nt 超出 18-25nt"
+        if "Sense" in a.notes:
+            assert rc(a.sequence[-ov:]) == b.sequence[-ov:]
+        else:
+            assert rc(a.sequence[:ov]) == b.sequence[:ov]
+
+    # 覆盖完整序列
+    assert oligos[0].target_start == 0
+    assert oligos[-1].target_end == len(seq)
+
+
+def _overlap_tms(designer, seq, oligos):
+    """相邻 oligo 的重叠双链 Tm（组装 PCR 真正退火的那一段）"""
+    from core.primer_designer import calculate_tm
+    return [
+        calculate_tm(seq[b.target_start:a.target_end])
+        for a, b in zip(oligos, oligos[1:])
+    ]
+
+
+def test_synthesis_oligos_tm_homogenized():
+    """DNAWorks 式均一化：均一的是重叠双链的 Tm，不是整条 oligo 的 Tm"""
+    designer = PrimerDesigner()
+    seq = ("ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTT"
+           "AAACCCGGGATTTAAAGGGCCCTTTAAAGGGCCCAAATTTGGGCCCCTAG" * 3)
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80, overlap_length=20, primer_name="t",
+    )
+    tms = _overlap_tms(designer, seq, oligos)
+    spread = max(tms) - min(tms)
+    assert spread <= 5, f"重叠双链 Tm 极差应 ≤5°C，实际 {spread:.1f}°C"
+    # 交叉杂交计数接口可用（信息性指标）
+    assert designer.cross_hybridization_count(oligos) >= 0
+
+
+@pytest.mark.parametrize("gc_bias", [None, 0.3, 0.7])
+def test_synthesis_oligos_overlap_tm_spread_property(gc_bias):
+    """性质测试：随机与 GC 偏斜的 1.2kb 基因，重叠 Tm 极差 ≤5°C
+
+    旧实现均一化的是整条 oligo 的 Tm、重叠长度钉死 20nt，同样的
+    1.2kb 基因重叠 Tm 极差中位数约 22°C。
+    """
+    designer = PrimerDesigner()
+    rnd = random.Random(20261011 + int((gc_bias or 0.5) * 100))
+
+    def gene(n=1200):
+        if gc_bias is None:
+            return "".join(rnd.choice("ATGC") for _ in range(n))
+        return "".join(
+            rnd.choice("GC") if rnd.random() < gc_bias else rnd.choice("AT")
+            for _ in range(n)
+        )
+
+    for _ in range(6):
+        seq = gene()
+        oligos = designer.design_synthesis_oligos(
+            seq, oligo_length_min=40, oligo_length_max=80,
+            overlap_length=20, primer_name="t",
+        )
+        # 不变量：偶数条、完整覆盖、无完全互补对
+        assert len(oligos) % 2 == 0
+        assert oligos[0].target_start == 0 and oligos[-1].target_end == len(seq)
+        rc_tbl = str.maketrans("ATGC", "TACG")
+        seqs = [o.sequence for o in oligos]
+        for i in range(len(seqs)):
+            for j in range(i + 1, len(seqs)):
+                assert seqs[i] != seqs[j].translate(rc_tbl)[::-1]
+        # 重叠长度在可变区间内，Tm 极差达标
+        for a, b in zip(oligos, oligos[1:]):
+            assert 18 <= a.target_end - b.target_start <= 25
+        tms = _overlap_tms(designer, seq, oligos)
+        spread = max(tms) - min(tms)
+        assert spread <= 5.0, f"重叠 Tm 极差 {spread:.1f}°C 超过 5°C"
+
+
+def test_synthesis_oligos_fixed_overlap_outside_range():
+    """调用方显式要求 18-25nt 区间外的重叠长度时，按固定长度处理"""
+    designer = PrimerDesigner()
+    rnd = random.Random(5)
+    seq = "".join(rnd.choice("ATGC") for _ in range(600))
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80,
+        overlap_length=30, primer_name="t",
+    )
+    for a, b in zip(oligos, oligos[1:]):
+        assert a.target_end - b.target_start == 30
+
+
+def test_synthesis_oligos_short_sequence_staggered_pair():
+    """短序列（≤上限）产生一对错位寡核苷酸（非完全互补）"""
+    designer = PrimerDesigner()
+    seq = "ATGAAAGGTTTTGGTAAACCGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTTAAACCCGGG"
+    oligos = designer.design_synthesis_oligos(
+        seq, oligo_length_min=40, oligo_length_max=80, overlap_length=20, primer_name="t",
+    )
+    assert len(oligos) == 2 and len(oligos) % 2 == 0
+    a, b = oligos
+    assert "Sense" in a.notes and "Antisense" in b.notes
+    # 错位设计：两条不是完全互补
+    assert b.sequence != a.sequence.translate(str.maketrans("ATGC", "TACG"))[::-1]
+
+
+def test_gg_overhang_screen_accepts_valid_pair():
+    """默认的 AATG/GCTT 是合规组合，不应报任何问题"""
+    from core.primer_designer import screen_gg_overhang_pair
+
+    assert screen_gg_overhang_pair("AATG", "GCTT") == []
+    assert screen_gg_overhang_pair("aatg", "gctt") == []
+
+
+@pytest.mark.parametrize("oh5,oh3,keyword", [
+    ("GATC", "AATG", "回文"),      # 回文 overhang 会与自身连接
+    ("AATG", "GATC", "回文"),
+    ("AATG", "AATC", "相差"),      # 仅 1 个碱基之差，两端互相错连
+    ("AATG", "CATT", "相差"),      # 互为反向互补，连接面完全相同
+    ("AAAA", "GCTT", "GC"),        # 0% GC
+    ("GGCC", "AATG", "GC"),        # 100% GC（同时也是回文）
+    ("AT", "GCTT", "4nt"),         # 非法长度
+])
+def test_gg_overhang_screen_rejects(oh5, oh3, keyword):
+    from core.primer_designer import screen_gg_overhang_pair
+
+    issues = screen_gg_overhang_pair(oh5, oh3)
+    assert issues, f"{oh5}/{oh3} 应被筛查出问题"
+    assert any(keyword in i for i in issues), issues
+
+
+def test_golden_gate_primers_warn_on_bad_overhangs_but_still_design():
+    """筛查不通过只告警、不拒绝设计（某些载体推不出合规组合）"""
+    designer = PrimerDesigner()
+    seq = "ATGAAAGCTGCTGCTAAAGGTTTCCCGGGAAATTTCCCGGTAAGGTTCCAAAGGGTTTTAA"
+
+    good = designer.design_golden_gate_primers(seq, "BsaI", "AATG", "GCTT", "gg")
+    assert "连接保真度" not in (good.forward.notes or "")
+
+    bad = designer.design_golden_gate_primers(seq, "BsaI", "GATC", "GATC", "gg")
+    assert bad.forward.sequence and bad.reverse.sequence
+    for p in (bad.forward, bad.reverse):
+        assert "连接保真度" in p.notes and "回文" in p.notes
+    # 引物结构本身不受筛查影响
+    assert bad.forward.overhang.startswith("GGGGTCTCA")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
+
+
+def test_cross_hybridization_detects_unexpected_match():
+    """回归：反向互补曾用错误的 maketrans("ATGC","TAGC")，交叉杂交检查恒为 0。
+    正确实现应检出非预期 oligo 间的 3' 端互补匹配。"""
+    designer = PrimerDesigner()
+    a = Primer("a", "ACGTACGTACGT" + "AAAAAAAAAAAA", PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 24, target_start=0, target_end=24)
+    tail = a.sequence[-12:]
+    rc_tail = tail.translate(str.maketrans("ATGC", "TACG"))[::-1]
+    b = Primer("b", rc_tail + "GGCGGCGGCGG", PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 24, target_start=100, target_end=124)
+    assert designer.cross_hybridization_count([a, b]) >= 1
+
+
+def test_cross_hybridization_ignores_designed_adjacent_overlap():
+    """相邻 oligo 的目标区域重叠，其 overlap 退火是预期配对，不应计入交叉杂交"""
+    designer = PrimerDesigner()
+    shared = "CCCCCCCCCCCC"
+    a = Primer("a", "A" * 20 + shared, PrimerType.SYNTHESIS_OLIGO,
+               60, 50, 32, target_start=0, target_end=32)
+    b = Primer("b", designer._reverse_complement("T" * 12 + shared + "G" * 8),
+               PrimerType.SYNTHESIS_OLIGO, 60, 50, 32, target_start=20, target_end=52)
+    assert designer.cross_hybridization_count([a, b]) == 0
+
+
+def test_clone_primer_annealing_anchored_to_insert_ends():
+    """终审 A-07 回归锁：克隆引物退火区曾被允许整体平移 0-4 nt，
+    静默截短插入片段首尾（实测 200 次 5' 端 52 次、3' 端 49 次，
+    示例删掉的正是 ATG）——Gibson/Golden Gate 退火区必须精确锚定
+    插入片段两端，且 target_start/end 回填真实坐标。"""
+    from core.primer_designer import PrimerDesigner
+
+    designer = PrimerDesigner()
+    # ATG 开头、GAATTC 富 GC 混合的插入片段
+    insert = "ATG" + "GCTAGCTTGAAGCTTGCAT" * 10 + "TAA"
+    vector = "ACGT" * 30
+
+    # Gibson
+    pair = designer.design_gibson_primers(insert, vector, 60, homology_arm=20)
+    f, r = pair.forward, pair.reverse
+    # 退火区必须从插入片段 5' 端第 0 位开始（含 ATG）、3' 端精确到末尾
+    assert f.target_start == 0, f"Gibson F 退火区起点 {f.target_start} != 0"
+    assert insert.startswith(f.sequence), "Gibson F 退火区不是插入片段前缀（ATG 被截短）"
+    assert r.target_end == len(insert), f"Gibson R 退火区终点 {r.target_end} != {len(insert)}"
+    from core.seq_utils import revcomp
+    assert insert[r.target_start:r.target_end] == revcomp(r.sequence)[: r.target_end - r.target_start] or \
+        insert[r.target_start:r.target_end] == r.sequence[-(r.target_end - r.target_start):][::-1] or \
+        revcomp(insert[r.target_start:r.target_end]) == r.sequence, (
+        "Gibson R 退火区不落在插入片段末尾")
+    # target 坐标完整回填（不再是 0/硬编码）
+    assert f.target_end == f.target_start + f.length
+    assert r.target_start == r.target_end - r.length
+
+    # Golden Gate
+    gg = designer.design_golden_gate_primers(insert, "BsaI", "AACC", "GGTT")
+    gf, gr = gg.forward, gg.reverse
+    assert gf.target_start == 0 and insert.startswith(gf.sequence)
+    assert gr.target_end == len(insert)
+    assert gr.target_start == gr.target_end - gr.length
+
+
+def test_pcr_primers_not_forced_into_relaxed_fallback():
+    """R1 回归：非锚定路径的偏移预扫描不得抬高全局 best_score，
+    否则每次都落入未校验的放宽回退（notes 以 Warning 开头）。"""
+    import random
+
+    designer = PrimerDesigner()
+    # 精心构造的 GC 均衡模板：必有满足全部条件的候选
+    template = ("ATGGCTAGCTTGAAGCTTGCATACGTCAGGCTAGCTTAGCACTTGCATGCATGC"
+                "TAGCTAGCATCGATCGTACGTAGCTAGCTTAGCA") * 3
+    pair = designer.design_pcr_primers(template)
+    assert not pair.forward.notes.startswith("Warning")
+    assert designer._check_primer_quality(pair.forward.sequence)
+
+    rng = random.Random(7)
+    fallback = 0
+    for _ in range(60):
+        t = "".join(rng.choice("ACGT") for _ in range(600))
+        if designer.design_pcr_primers(t).forward.notes.startswith("Warning"):
+            fallback += 1
+    # 8a95a3c 基线约 52%；回归时为 100%
+    assert fallback < 45
+
+
+def test_reverse_fallback_clamped_on_short_template():
+    """R2 回归：短模板不得负索引切片出过短引物与负 target_start。"""
+    designer = PrimerDesigner()
+    with pytest.raises(ValueError, match="模板过短"):
+        designer.design_pcr_primers("ACGTACGTCCGGAATT")
+
+    # 锚定克隆引物：退火区钳制为整个短插入片段，坐标非负
+    rp = designer._design_reverse_primer("ATGAAAGTGCTG", 12, "r", anchor=True)
+    assert rp.target_start == 0 and rp.target_end == 12
+    assert rp.length == 12
+
+
+def test_golden_gate_overhangs_released_by_in_silico_digest():
+    """回归：反向引物上的 IIS 识别位点若写成反向互补，会朝外切割，
+    3' 端 overhang 永远释放不出来。这里按 BsaI 的切割规则
+    （GGTCTC(1/5)）在体外模拟消化扩增产物，核对两端 overhang。"""
+    from core.seq_utils import revcomp as _rc
+
+    designer = PrimerDesigner()
+    insert = "ATG" + "ACGTCAGGCTAGCTTAGCAC" * 10 + "TAA"
+    oh5, oh3 = "AATG", "GCTT"
+    pair = designer.design_golden_gate_primers(
+        insert, enzyme_name="BsaI", overhang_seq_5=oh5, overhang_seq_3=oh3
+    )
+
+    # 扩增产物：正向引物全长 + 插入片段中段 + 反向引物全长的反向互补
+    body = insert[len(pair.forward.sequence):len(insert) - len(pair.reverse.sequence)]
+    amplicon = pair.forward.full_sequence + body + _rc(pair.reverse.full_sequence)
+
+    site, (top_off, bot_off) = "GGTCTC", (1, 5)
+
+    plus = [i for i in range(len(amplicon)) if amplicon.startswith(site, i)]
+    minus = [i for i in range(len(amplicon)) if amplicon.startswith(_rc(site), i)]
+    # 两端各一个位点，且方向相反（都朝内）
+    assert len(plus) == 1 and len(minus) == 1, (plus, minus)
+
+    # + 链位点：切点在识别序列下游，顶链留 4nt 5' 突出
+    a = plus[0]
+    top_nick, bot_nick = a + len(site) + top_off, a + len(site) + bot_off
+    assert amplicon[top_nick:bot_nick] == oh5
+
+    # - 链位点：识别序列反向阅读，切点在其上游（左侧）
+    b = minus[0]
+    top_nick_r, bot_nick_r = b - bot_off, b - top_off
+    assert amplicon[top_nick_r:bot_nick_r] == oh3
+
+    # 切下来的中间片段仍完整含有插入片段
+    assert insert in amplicon[top_nick:bot_nick_r]

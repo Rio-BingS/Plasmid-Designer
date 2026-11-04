@@ -1,0 +1,338 @@
+# Ubuntu 直接部署指南
+
+在 Ubuntu Focal (20.04) 上直接安装 Plasmid Designer，无需 Docker。
+
+## 环境要求
+
+- Ubuntu 20.04 LTS
+- 1GB+ RAM（依赖均为预编译 wheel，无需编译）
+- 10GB+ 磁盘空间
+- root 权限（sudo）
+
+## 一键安装
+
+### SQLite 模式（推荐，零外部依赖）
+
+```bash
+# 将项目复制到服务器后执行
+sudo bash deploy/bare/install.sh
+```
+
+### PostgreSQL 模式
+
+```bash
+sudo bash deploy/bare/install.sh --db postgresql
+```
+
+### 自定义安装目录
+
+```bash
+sudo bash deploy/bare/install.sh --project-dir /home/user/plasmid
+```
+
+安装脚本会自动完成：
+- 安装系统依赖（git、curl、gnupg 等；Python 依赖均为预编译 wheel，无需编译器）
+- 安装 Python 3.11（通过 deadsnakes PPA）
+- 安装 Node.js 22 LTS（通过 NodeSource）
+- 安装 Nginx
+- 创建 venv 并安装 Python 依赖
+- 构建前端
+- 配置数据库（SQLite 或 PostgreSQL）
+- 生成 `.env`（含随机 SECRET_KEY）
+- 配置 systemd 服务和 Nginx 反向代理
+- 健康检查验证
+
+安装完成后访问 `http://<服务器IP>` 即可使用。后端只监听 `127.0.0.1:8000`，对外统一经 Nginx；
+API 文档 `/docs` 仅对本机与内网地址开放。
+
+## 手动安装
+
+如果需要更多控制，可以按以下步骤手动安装：
+
+### 1. 安装系统依赖
+
+```bash
+sudo apt update
+sudo apt install -y git curl \
+    software-properties-common apt-transport-https ca-certificates gnupg
+```
+
+### 2. 安装 Python 3.11
+
+```bash
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils
+```
+
+### 3. 安装 Node.js 22 LTS
+
+```bash
+# 签名 apt 源（不要 curl | sudo bash）；公钥指纹应为
+# 6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4
+sudo apt install -y ca-certificates curl gnupg
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.key
+gpg --show-keys --with-fingerprint /tmp/nodesource.key
+sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+sudo apt update
+sudo apt install -y nodejs
+```
+
+### 4. 安装 Nginx
+
+```bash
+sudo apt install -y nginx
+```
+
+### 5. 设置项目目录
+
+```bash
+# 复制项目到安装目录
+sudo cp -r /path/to/plasmid-designer-v2 /opt/plasmid-designer
+
+# 创建系统用户
+sudo useradd -r -s /bin/false plasmid
+```
+
+### 6. 创建虚拟环境并安装依赖
+
+```bash
+sudo python3.11 -m venv /opt/plasmid-designer/venv
+sudo /opt/plasmid-designer/venv/bin/pip install --upgrade pip
+
+# 统一从项目锁文件 requirements.txt 安装（含传递依赖与哈希；全部有预编译 wheel）
+sudo /opt/plasmid-designer/venv/bin/pip install --require-hashes \
+    -r /opt/plasmid-designer/src/backend/requirements.txt
+```
+
+### 7. 构建前端
+
+```bash
+cd /opt/plasmid-designer/src/frontend
+sudo npm ci
+sudo npm run build
+```
+
+### 8. 配置环境变量
+
+```bash
+# 从模板复制（install -m 600：.env 含密钥，不经过 0644 的中间状态）
+sudo install -m 600 /opt/plasmid-designer/deploy/bare/.env.example /opt/plasmid-designer/.env
+
+# 模板中 SECRET_KEY 为空，必须写入随机值（留空/占位/过短/低熵后端拒绝启动）
+sudo sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(openssl rand -hex 32)/" /opt/plasmid-designer/.env
+```
+
+编辑 `/opt/plasmid-designer/.env`，根据需要调整配置（管理员引导、邮件渠道、
+`AUTH_COOKIE_SECURE`、`TRUSTED_PROXIES` 等，说明见模板内注释）。
+
+### 9. 配置 systemd 服务
+
+```bash
+sudo cp deploy/bare/plasmid-backend.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now plasmid-backend
+```
+
+### 10. 配置 Nginx
+
+```bash
+sudo cp deploy/bare/nginx.conf /etc/nginx/sites-available/plasmid-designer
+sudo ln -sf /etc/nginx/sites-available/plasmid-designer /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 11. 设置权限
+
+```bash
+sudo chown -R plasmid:plasmid /opt/plasmid-designer
+# 751：其他用户只能遍历不能列目录——nginx（www-data）需要穿过目录读取前端 dist
+sudo chmod 751 /opt/plasmid-designer
+sudo chmod 600 /opt/plasmid-designer/.env
+# SQLite 库目录只给服务用户（.env 模板的 DATABASE_URL 指向 db/ 下）。751 让任何
+# 本机用户都能按路径访问安装目录内文件，库文件不能放在 db/ 之外或设成 0644
+sudo install -d -m 700 -o plasmid -g plasmid /opt/plasmid-designer/db
+```
+
+service 文件设了 `UMask=0077`，后端新建的库文件、`-journal`/`-wal` 默认即 0600。
+从旧版升级、库仍在 `/opt/plasmid-designer/plasmid_designer.db` 的机器，重跑
+`install.sh` 会把该文件（及其 `-journal`/`-wal`/`-shm`）改为 0600；也可停服务后把它
+移到 `db/` 并同步修改 `.env` 的 `DATABASE_URL`。
+
+### 12. 验证
+
+```bash
+curl http://localhost:8000/health
+# 应返回: {"status":"healthy",...,"db":"ok"}（数据库不可达时 HTTP 503）
+```
+
+## 服务管理
+
+```bash
+# 查看状态
+sudo systemctl status plasmid-backend
+
+# 启动/停止/重启
+sudo systemctl start plasmid-backend
+sudo systemctl stop plasmid-backend
+sudo systemctl restart plasmid-backend
+
+# 查看日志
+sudo journalctl -u plasmid-backend -f
+
+# 查看最近 100 行日志
+sudo journalctl -u plasmid-backend -n 100
+
+# Nginx 日志
+sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/log/nginx/error.log
+```
+
+## 配置 HTTPS
+
+使用 Let's Encrypt 免费证书：
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+```
+
+certbot 会自动修改 Nginx 配置，添加 SSL 证书和 HTTP→HTTPS 重定向。Nginx 会把
+`X-Forwarded-Proto` 传给后端，`AUTH_COOKIE_SECURE=auto`（默认）即可自动为会话 Cookie
+置 Secure，无需改动。
+
+证书自动续期已由 certbot timer 处理，可通过以下命令确认：
+
+```bash
+sudo systemctl status certbot.timer
+sudo certbot renew --dry-run
+```
+
+## 更新部署
+
+```bash
+cd /opt/plasmid-designer
+
+# 拉取最新代码
+sudo -u plasmid git pull
+
+# 更新 Python 依赖（如有变化）
+sudo -u plasmid /opt/plasmid-designer/venv/bin/pip install --require-hashes \
+    -r src/backend/requirements.txt
+
+# 重新构建前端（如有变化）
+cd src/frontend
+sudo -u plasmid npm ci
+sudo -u plasmid npm run build
+cd /opt/plasmid-designer
+
+# 重启服务
+sudo systemctl restart plasmid-backend
+```
+
+## 卸载
+
+```bash
+sudo bash deploy/bare/install.sh --uninstall          # 需交互输入 yes 确认
+sudo bash deploy/bare/install.sh --uninstall --yes    # 跳过确认（自动化用）
+```
+
+这会停止服务、删除 systemd 配置、Nginx 配置、数据库（PostgreSQL 模式）、项目目录和系统用户。
+非交互环境不带 `--yes` 时拒绝执行。
+
+## PostgreSQL 配置详情
+
+使用 `--db postgresql` 安装时，脚本会自动：
+
+1. 安装 PostgreSQL 12
+2. 创建数据库用户 `plasmid` 和数据库 `plasmid_designer`
+3. 生成随机密码并写入 `.env`
+4. 初始化表结构
+
+如需手动配置 PostgreSQL：
+
+```bash
+sudo apt install -y postgresql-12
+
+sudo -u postgres createuser plasmid
+sudo -u postgres createdb plasmid_designer -O plasmid
+sudo -u postgres psql -c "ALTER USER plasmid PASSWORD 'your_password';"
+
+# 更新 .env
+# DATABASE_URL=postgresql://plasmid:your_password@localhost/plasmid_designer
+```
+
+## 故障排查
+
+### 后端启动失败
+
+```bash
+# 查看详细日志
+sudo journalctl -u plasmid-backend -n 50 --no-pager
+
+# 手动测试启动
+cd /opt/plasmid-designer/src/backend
+sudo -u plasmid /opt/plasmid-designer/venv/bin/python -c "from app.main import app; print('OK')"
+
+# 检查 .env 文件
+sudo cat /opt/plasmid-designer/.env
+```
+
+### 前端页面空白
+
+```bash
+# 确认前端构建产物存在
+ls /opt/plasmid-designer/src/frontend/dist/index.html
+
+# 重新构建
+cd /opt/plasmid-designer/src/frontend
+sudo -u plasmid npm run build
+```
+
+### Nginx 502 Bad Gateway
+
+后端服务未运行或端口不对：
+
+```bash
+sudo systemctl status plasmid-backend
+curl http://127.0.0.1:8000/health
+```
+
+### Python 依赖安装失败
+
+依赖全部有预编译 wheel，正常无需编译。若个别包安装失败，多为网络超时，可重试或配置 pip 镜像源：
+
+```bash
+sudo /opt/plasmid-designer/venv/bin/pip install --require-hashes \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    -r /opt/plasmid-designer/src/backend/requirements.txt
+```
+
+### 权限问题
+
+```bash
+# 修复项目目录权限
+sudo chown -R plasmid:plasmid /opt/plasmid-designer
+sudo chmod 751 /opt/plasmid-designer
+sudo chmod 600 /opt/plasmid-designer/.env
+sudo chmod 700 /opt/plasmid-designer/db
+```
+
+### 端口冲突
+
+默认使用 80（Nginx）和 8000（后端）。如需修改：
+
+- 后端端口：编辑 `/etc/systemd/system/plasmid-backend.service` 中 `ExecStart` 的 `--port` 参数，以及 `/etc/nginx/sites-available/plasmid-designer` 中 `proxy_pass` 的端口
+- Nginx 端口：编辑 `/etc/nginx/sites-available/plasmid-designer` 中 `listen` 的端口号
+
+修改后：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart plasmid-backend
+sudo nginx -t && sudo systemctl reload nginx
+```

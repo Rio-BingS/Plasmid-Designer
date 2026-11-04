@@ -1,0 +1,780 @@
+"""人工验证反馈（v2.21.1 之后）五项修复的内容级回归：
+
+1. 结果图谱名 = plasmid_name（载体名-序列名），不再硬编码「载体名 + insert」；
+2. 优化序列开头 ATG 去除有结构化标志（start_codon_removed），构建体编码区完整；
+3. 组装可行性自检：粘端兼容（SalI/XhoI 同为 TCGA）必须告警「方向不唯一」；
+   位点缺失走 MCS 回退时必须明确告警「酶切-连接无法复现该构建体」；
+4. 方向自动判定成功时结果层有一条用户能看见的「方向判定」说明；
+5. Gibson 双酶切线性化预览（保留位点 / 无缝两种模式）。
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from app.design_service import (  # noqa: E402
+    CloningMethod, build_restriction_preview, get_vector_library, run_design,
+)
+from app.map_documents import design_map_document  # noqa: E402
+from app.routes.models import DesignStatus  # noqa: E402
+from app.schemas import DesignRequest, RestrictionPreviewRequest  # noqa: E402
+from core.construct_assembly import sticky_overhang  # noqa: E402
+from core.seq_utils import revcomp  # noqa: E402
+
+AA = "M" + "EKT" * 12   # 37 aa，无终止符
+
+
+def _request(**over):
+    payload = {
+        "sequence": AA, "sequence_type": "amino_acid", "vector_id": "pET-28a",
+        "cloning_method": CloningMethod.RESTRICTION,
+        "enzyme_5": "NdeI", "enzyme_3": "XhoI", "sequence_name": "myGene",
+    }
+    payload.update(over)
+    from app.routes.models import DesignRequest
+    return DesignRequest(**payload)
+
+
+# ---------- 1. 图谱命名 ----------
+
+def test_map_document_uses_plasmid_name():
+    """开了载体名前缀后，结果图谱名必须是「载体名-序列名」。
+    修复前 map_documents 硬编码「载体名 + insert」，图谱名不随命名规则走"""
+    result = run_design("uvf_map", _request(vector_name_prefix=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert result.plasmid_name == "pET-28a(+)-myGene"
+    doc = design_map_document(result)
+    assert doc["name"] == "pET-28a(+)-myGene"
+
+
+def test_map_document_without_prefix_uses_sequence_name():
+    result = run_design("uvf_map2", _request())
+    doc = design_map_document(result)
+    assert doc["name"] == "myGene"
+
+
+# ---------- 2. 优化序列少 3 bp 的透明化 ----------
+
+def test_start_codon_removed_flag_and_full_protein_in_construct():
+    """NdeI 位点自带 ATG：克隆工作序列少 3bp 且置 start_codon_removed；
+    「优化后序列」保持完整 CDS 语义（含 ATG），构建体负链 CDS 翻译回
+    完整输入蛋白（一个氨基酸都不缺）"""
+    from core.seq_utils import CODON_TO_AA
+    result = run_design("uvf_trim", _request(optimize_codons=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert result.start_codon_removed is True
+    # 优化后序列 = 完整 CDS：37 个密码子、以 ATG 开头，与输入蛋白对应
+    assert result.optimized_sequence.upper().startswith("ATG")
+    assert len(result.optimized_sequence) == 3 * len(AA)
+    # 克隆工作序列 = 组装/引物退火用的：去掉开头 ATG，短 3bp
+    assert result.cloned_sequence is not None
+    assert not result.cloned_sequence.upper().startswith("ATG")
+    assert len(result.cloned_sequence) == 3 * (len(AA) - 1)
+    cds = next(f for f in result.construct_features
+               if "designed insert" in (f.get("description") or "").lower())
+    lo, hi = cds["start"], cds["end"]
+    region = result.construct_sequence[lo - 1:hi]
+    minus = revcomp(region)
+    prot = "".join(CODON_TO_AA.get(minus[i:i + 3], "?")
+                   for i in range(0, len(minus) - 2, 3))
+    assert prot == AA   # 构建体蛋白完整（含位点提供的 M）
+
+
+# ---------- 3. 组装可行性自检 ----------
+
+def test_sticky_overhang_values():
+    assert sticky_overhang("NdeI") == "TA"
+    assert sticky_overhang("XhoI") == "TCGA"
+    assert sticky_overhang("SalI") == "TCGA"    # 与 XhoI 兼容
+    assert sticky_overhang("EcoRI") == "AATT"
+    assert sticky_overhang("EcoRV") == ""       # 平末端
+
+
+def test_compatible_overhangs_trigger_direction_warning():
+    """SalI/XhoI 粘端同为 TCGA：连接方向不唯一，必须告警"""
+    result = run_design("uvf_sal", _request(enzyme_5="SalI", enzyme_3="XhoI",
+                                            optimize_codons=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("粘端相同" in w and "TCGA" in w and "测序确认" in w
+               for w in result.warnings)
+
+
+def test_missing_sites_fallback_warns_unreproducible():
+    """KpnI/PstI 不在 pET-28a 上：回退 MCS 替换后必须明确说明
+    「酶切-连接无法复现该构建体」——这正是用户人工验证踩到的
+    「限制性酶切生成的序列无法完成组装」场景"""
+    result = run_design("uvf_fb", _request(enzyme_5="KpnI", enzyme_3="PstI",
+                                           optimize_codons=False))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any("无法" in w and "复现该构建体" in w for w in result.warnings)
+    assert any("MCS 区间替换" in w for w in result.warnings)
+
+
+def test_standard_digest_design_has_no_feasibility_warnings():
+    """常规 NdeI/XhoI：位点复原、引物带位点、粘端不同——不得有自检告警"""
+    result = run_design("uvf_ok", _request(optimize_codons=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    for w in result.warnings:
+        assert "复现该构建体" not in w
+        assert "粘端相同" not in w
+        assert "引物 5′ 端未携带" not in w
+    # 位点复原（内容级）：XhoI 在基因 5′ 连接处、NdeI 在 3′ 连接处
+    assert result.construct_sequence[result.insert_start - 6:result.insert_start - 1] == "TCGAG"
+    assert result.construct_sequence[result.insert_end:result.insert_end + 6] == "CATATG"
+
+
+# ---------- 4. 方向判定可见 ----------
+
+def test_auto_direction_summary_is_visible():
+    result = run_design("uvf_dir", _request(optimize_codons=True))
+    summary = [w for w in result.warnings if w.startswith("方向判定")]
+    assert summary, "自动判定成功时结果层必须有方向判定说明"
+    assert "T7 promoter" in summary[0]
+    assert "负链" in summary[0]
+    assert summary[0].startswith("方向判定：基因 5′ 端接 NdeI、3′ 端接 XhoI")
+
+
+# ---------- 4b. 引物 5′ 保护碱基（PCR 产物末端位点等效平末端） ----------
+
+def test_restriction_primers_carry_protective_spacer():
+    """限制性引物 5′ 端必须带保护碱基（6nt）：位点贴着 PCR 产物末端时
+    酶几乎切不动；保护碱基在酶切后随小片段去除、不进构建体"""
+    from core.primer_designer import PrimerDesigner
+    result = run_design("uvf_pad", _request(optimize_codons=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    fwd, rev = result.primers[0], result.primers[1]
+    assert fwd.sequence.upper().startswith("TTTTTTCATATG")   # 6nt 保护碱基 + NdeI
+    assert rev.sequence.upper().startswith("TTTTTTCTCGAG")   # 6nt 保护碱基 + XhoI(rc)
+    # 拼在引物上的直接设计路径同样 6nt
+    pair = PrimerDesigner().design_restriction_primers(
+        result.cloned_sequence or result.optimized_sequence, "NdeI", "XhoI")
+    assert pair.forward.sequence.startswith("TTTTTTCATATG")
+
+
+# ---------- 5. Gibson 双酶切预览 ----------
+
+def test_gibson_preview_keep_sites():
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["NdeI", "XhoI"], vector_id="pET-28a", insert_length=111,
+        cloning_method="gibson", keep_restriction_sites=True))
+    assert pv["strand"] == "-"
+    assert len(pv["sites"]) == 2
+    assert pv["removed_bp"] == 80
+    assert pv["junctions"]["five"].startswith("CTCGAG")
+
+
+def test_gibson_preview_seamless_has_no_sites():
+    """无缝（保留位点关）：位点碱基被重组去除，预览图上不应再画切点"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["NdeI", "XhoI"], vector_id="pET-28a", insert_length=111,
+        cloning_method="gibson", keep_restriction_sites=False))
+    assert pv["sites"] == []
+    assert pv["removed_bp"] == 85   # 无缝外扩：80bp 废片段 + 位点边界 5bp
+    construct = pv["construct_length"]
+    # 无缝构建体不再含位点序列（用方向判定确认同一几何，removed 一致）
+    assert construct == 5369 - 85 + 111
+
+
+def test_restriction_preview_default_unchanged():
+    """不传 cloning_method 时保持旧行为（限制性克隆，保留位点）"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["NdeI", "XhoI"], vector_id="pET-28a", insert_length=111))
+    assert len(pv["sites"]) == 2
+    assert pv["strand"] == "-"
+
+
+def test_restriction_preview_multi_cut_enzyme_picks_outermost_pair():
+    """多切点酶按胶回收几何选最外侧切点对（2026-10-29 用户三轮反馈收敛）：
+    pcDNA3.1 EcoRI(952)/SphI{1228,1802,1874,2669} 应切走 (952,2669]=1717bp
+    （内部 SphI 全部吸进废片段，对应「胶回收两端恰为所选两酶的功能大片段、
+    与基因重组」的真实做法），保留骨架上零同酶残留、无骨架重切警告。"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
+    sph = [s for s in pv["sites"] if s["enzyme"] == "SphI"]
+    assert len(pv["sites"]) == 2 and len(sph) == 1
+    # sites 是成品构建体坐标：原载体 2669 处的 SphI 在构建体上落在 1562
+    # （5428 - 1717 废片段 + 600 基因 + 位点残留 - 2669 边界之前的部分）
+    assert sph[0]["cut"] == 1562
+    assert pv["removed_bp"] == 1717
+    assert pv.get("backbone_cut_risk") is False
+    assert not any("保留骨架" in w for w in pv["warnings"])
+
+
+def test_restriction_preview_allows_unique_boundary_cuts():
+    """两把酶各唯一位点、其中一个 left_cut 在另一个酶切点上游 23bp（跨原点
+    旋转场景 pcDNA3.1 EcoRI/BamHI）：边界切点在构建体两端复原，不应误伤"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "BamHI"], vector_id="pcDNA3.1", insert_length=600))
+    assert pv["enzyme_counts"] == {"EcoRI": 1, "BamHI": 1}
+    assert len(pv["sites"]) == 2
+
+
+def test_run_design_multi_cut_enzyme_uses_outermost_sites():
+    """正式设计与预览同口径：多切点酶选最外侧切点对按位点建模（不走 MCS
+    回退、无需 allow_backbone_cuts 确认——几何上已无骨架重切问题）。"""
+    result = run_design(
+        "test-multi-cut-outer",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI"))
+    joined = "\n".join(result.warnings)
+    assert "保留骨架" not in joined
+    assert "无法按双酶切建模" not in joined
+    from core.enzyme_sites import find_enzyme_sites as _fes
+    assert _fes(result.construct_sequence, ["EcoRI"])   # 连接处位点复原
+
+
+def test_preview_cut_pair_selection_roundtrip():
+    """「选择所需片段」（2026-10-29 需求，2026-10-31 按用户酶切物理修正）：
+    cut_options 只列**物理可胶回收**的骨架片段——两端恰为一个 enzyme_5 +
+    一个 enzyme_3 位点、内部不含任一酶位点（消化会把内部位点也切开，含
+    内部位点的带在胶上被切碎，提不出完整片段；pcDNA3.1 EcoRI/SphI 四个
+    候选只有 (952,1228) 内部干净）。cut_options 为空 = 没有可回收片段，
+    只剩自动规划的多切点方案（走风险横幅）。用户显式 cut_pair 仍可指定
+    任意几何切点对（知情的多切点利用），非法 pair 422。"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600))
+    opts = pv["cut_options"]
+    # 完整消化 5 条带，两端异酶（EcoRI+SphI）的只有 2 条（2026-10-31 用户
+    # 指出的物理）：3711bp 主链带（回收=标准克隆，cut_pair (952,2669) 切走
+    # 1717 补集）与 276bp 小片段带（回收=以小片段为骨架的缺失场景）。
+    # 首位 = 评分推荐（主链，骨架完整）。
+    assert [(o["kept_bp"], o["removed_bp"]) for o in opts] == [(3711, 1717), (276, 5152)]
+    assert pv["cut_pair"] is None                                     # 缺省自动
+
+    # 选小片段带：切走 5152 补集、保留 276 骨架（缺失载体场景）
+    picked = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+        cut_pair=[1228, 952]))
+    assert picked["removed_bp"] == 5152 and picked["cut_pair"] == [1228, 952]
+    assert picked["backbone_cut_risk"] is False                       # 小片段带内部无切点
+
+    # 主链带 = 标准克隆几何，骨架完整无风险
+    picked_main = build_restriction_preview(RestrictionPreviewRequest(
+        enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+        cut_pair=[952, 2669]))
+    assert picked_main["removed_bp"] == 1717
+    assert picked_main["backbone_cut_risk"] is False
+
+    import pytest
+    with pytest.raises(ValueError, match="重新选择"):
+        build_restriction_preview(RestrictionPreviewRequest(
+            enzymes=["EcoRI", "SphI"], vector_id="pcDNA3.1", insert_length=600,
+            cut_pair=[952, 9999]))
+
+
+def test_run_design_with_cut_pair_uses_user_geometry():
+    """正式设计同样接受 cut_pair：按用户所选切点对建模（做缺失/亚克隆等
+    非最外侧场景），构建体长度反映所选几何。"""
+    acked = run_design(
+        "test-cut-pair-design",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI", cut_pair=[952, 1802]))
+    assert "无法按双酶切建模" not in "\n".join(acked.warnings)
+    outer = run_design(
+        "test-cut-pair-auto",
+        DesignRequest(sequence="M" + "A" * 199, sequence_name="t",
+                      vector_id="pcDNA3.1", cloning_method=CloningMethod.RESTRICTION,
+                      enzyme_5="EcoRI", enzyme_3="SphI"))
+    # 850bp 方案的构建体比 1717bp 方案长 867bp
+    assert len(acked.construct_sequence) == len(outer.construct_sequence) + (1717 - 850)
+
+
+# ---------- 6. 自定义同源臂：预览与拼接定位判定 ----------
+
+ARM5 = "GGTGGTGGTACGTACTG"      # 17bp，锚在载体 21..37
+ARM3 = "TTATCCACAGGACTCAGT"     # 18bp，锚在载体 68..85
+ARMS_BB = "A" * 20 + ARM5 + "C" * 30 + ARM3 + "T" * 20
+
+
+def _arms_inline_vector():
+    from app.schemas import DesignVectorInput
+    return DesignVectorInput(id="armtest", name="armtest", sequence=ARMS_BB,
+                             topology="circular")
+
+
+def test_arms_preview_locates_and_shows_strand():
+    """同源臂预览：基因落在两臂之间（30bp C 区被替换），正链装配"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_inline_vector(), insert_length=120,
+        cloning_method="custom_arms", homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "+"
+    assert pv["gene"]["start"] == 38          # 臂5 末端 37 之后
+    assert pv["removed_bp"] == 30             # 中间的 C*30 被替换
+    assert pv["construct_length"] == len(ARMS_BB) - 30 + 120
+    assert pv["sites"] == []                  # 无切点几何，不画酶切线
+    assert pv["gene_5prime_enzyme"].startswith("臂5")
+    assert pv["gene_3prime_enzyme"].startswith("臂3")
+
+
+def test_arms_preview_reverse_orientation():
+    """臂按负链取向（反向互补匹配）：预览判为负链装配。
+    负链装配要求臂5 的锚点在右：镜像骨架（臂3 在左、臂5 在右）+ 臂取反向互补"""
+    from core.seq_utils import revcomp
+    mirrored = "A" * 20 + ARM3 + "C" * 30 + ARM5 + "T" * 20
+    from app.schemas import DesignVectorInput
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=DesignVectorInput(id="mir", name="mir", sequence=mirrored,
+                                 topology="circular"),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=revcomp(ARM5), homology_arm_3=revcomp(ARM3)))
+    assert pv["strand"] == "-"
+
+
+def test_arms_preview_swapped_fields_auto_swap():
+    """两臂栏位贴反：不再报错——按载体位置自动对调并说明（顺序无关）"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_inline_vector(), insert_length=120,
+        cloning_method="custom_arms", homology_arm_5=ARM3,
+        homology_arm_3=ARM5))
+    assert pv["strand"] == "+"
+    assert pv["gene"]["start"] == 38 and pv["removed_bp"] == 30
+    assert any("自动对调" in w for w in pv["warnings"])
+
+
+def test_arms_preview_direction_follows_promoter():
+    """负链启动子（表达盒读向右→左）+ 正向粘贴的臂：不再「生硬拼接」，
+    装配链向自动按启动子判成负链（臂取右端同源区的反向互补）"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "-"
+    notes = " ".join(pv["warnings"])
+    assert "装配方向按载体启动子判定" in notes
+    assert "负链" in notes
+    assert "自动纠正" in notes
+
+
+def test_arms_design_direction_follows_promoter():
+    """正式设计同样按启动子自动定链向：CDS 落负链、与启动子一致"""
+    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
+    result = run_design("uvf_arms_dir", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        cloning_method=CloningMethod.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    cds = next(f for f in result.construct_features
+               if "designed insert" in (f.get("description") or "").lower())
+    assert cds["strand"] == "-"
+    assert any("CDS 方向与启动子一致" in w and "负链" in w
+               for w in result.warnings)
+
+
+# ---------- 8. 全基因合成：oligo 直接包含克隆末端 ----------
+
+def _reconstruct_molecule(oligos):
+    """按 oligo 坐标与链向重建合成 oligo 覆盖的全长分子"""
+    from core.seq_utils import revcomp
+    spans = {}
+    for i, o in enumerate(oligos):
+        seg = o.sequence.upper() if i % 2 == 0 else revcomp(o.sequence.upper())
+        spans[(o.target_start, o.target_end)] = seg
+    lo = min(s for s, _ in spans)
+    hi = max(e for _, e in spans)
+    buf = [""] * (hi - lo)
+    for (s, e), seg in spans.items():
+        for j, ch in enumerate(seg):
+            buf[s - lo + j] = ch
+    return "".join(buf)
+
+
+def test_synthesis_restriction_oligos_include_sites_and_spacer():
+    """全基因合成 + 限制性克隆：oligo 覆盖的分子 = 构建体上「侧翼+位点残留
+    +基因+位点残留+侧翼」的现成段落（整条分子就是图谱上的一段，取向随
+    装配链向）；不再产出「组装后扩增」引物对——合成产物酶切即可连接"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_res", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene",
+        optimize_codons=True))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any(p.name.endswith(("_F", "_R")) for p in result.primers), \
+        "克隆末端已含在合成分子里，不应再产出扩增加末端的引物对"
+    oligos = [p for p in result.primers if p.name.startswith("myGene")]
+    assert len(oligos) >= 2
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    # 结构：两端各 6nt 载体侧翼 + 两个位点残留（分居两端，取向随链向）
+    # + 克隆工作序列（负链装配时为反向互补）
+    assert {molecule[6:12], molecule[-12:-6]} == {"CATATG", "CTCGAG"}
+    core = molecule[12:-12]
+    assert core in (cloned, revcomp(cloned)), molecule[:60]
+    assert len(molecule) == 12 + 6 + len(cloned) + 6
+    # 分子就是构建体上的现成段落：整条分子原样落在构建体顶链上
+    cons = (result.construct_sequence or "").upper()
+    assert molecule in cons, "合成分子必须整体落在构建体序列上"
+    assert any("已包含克隆末端" in w for w in result.warnings)
+
+
+def test_synthesis_gibson_arms_oligos_include_arms():
+    """全基因合成 + 同源臂：oligo 覆盖的分子 = 臂5+基因+臂3（解析后的臂），
+    不再产出扩增加臂的引物对"""
+    from app.routes.models import CloningMethod as CM, DesignRequest, DesignStatus
+    result = run_design("uvf_syn_arm", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any(p.name.endswith(("_F", "_R")) for p in result.primers)
+    oligos = [p for p in result.primers if p.name.startswith("myGene")]
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    assert molecule == ARM5 + cloned + ARM3
+
+
+def test_synthesis_golden_gate_keeps_cloning_pair():
+    """Golden Gate 末端语义不同（BsaI 位点+overhang）：保留合成后扩增的旧路径"""
+    from app.routes.models import CloningMethod as CM, DesignRequest, DesignStatus
+    result = run_design("uvf_syn_gg", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CM.GOLDEN_GATE, enzyme="BsaI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert any(p.name.endswith("_F") for p in result.primers), \
+        "Golden Gate 未把末端合进 oligo，应保留组装后扩增加末端的引物对"
+
+
+def test_synthesis_end_oligos_annotate_vector_flanks():
+    """首/尾 oligo 的 notes 写明两端成分：默认取载体连接点侧翼（与图谱
+    一致、可全序列核对）——位点在哪一端随装配链向而定，notes 不指名"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_note", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "载体连接点侧翼" in (first.notes or ""), first.notes
+    assert "可在图谱核对" in (first.notes or "")
+    assert "载体连接点侧翼" in (last.notes or ""), last.notes
+    assert "可在图谱核对" in (last.notes or "")
+
+
+def test_synthesis_end_oligos_fall_back_to_protective_spacer():
+    """载体侧翼取不到（位点不在载体上、回退 MCS 区间替换）时回退固定
+    保护碱基，notes 与结果层说明必须如实写明「不在构建体中」"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_pad", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="KpnI", enzyme_3="PstI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "保护碱基" in (first.notes or "") and "不在构建体中" in (first.notes or ""), first.notes
+    assert "保护碱基" in (last.notes or "") and "不在构建体中" in (last.notes or ""), last.notes
+    molecule = _reconstruct_molecule(
+        [p for p in result.primers if p.name.startswith("myGene")])
+    assert molecule.startswith("TTTTTT") and molecule.endswith("TTTTTT"), \
+        "侧翼不可用时应回退 6nt 固定保护碱基"
+
+
+def test_synthesis_gibson_end_oligos_annotate_arms():
+    """同源臂合成 oligo 的首尾 notes 写明「载体同源臂，组装后与载体序列
+    一致」——臂在图谱里，与限制性的保护碱基（不在图谱里）口径不同"""
+    from app.routes.models import CloningMethod as CM, DesignRequest
+    result = run_design("uvf_syn_arm_note", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    first, last = result.primers[0], result.primers[-1]
+    assert "同源臂" in (first.notes or "") and "一致" in (first.notes or ""), first.notes
+    assert "同源臂" in (last.notes or "") and "一致" in (last.notes or ""), last.notes
+
+
+def test_synthesis_arms_negative_strand_uses_construct_orientation():
+    """负链装配的自定义同源臂：合成分子必须取「构建体取向」的臂
+    （左臂正链 + rc(基因) + 右臂正链）。plan 的 arm_5_seq/arm_3_seq 是
+    基因取向（左右互换+各自反互补，供引物用），pET-21a 负链装配实测
+    把它们直接拼进分子导致首/尾 oligo 与图谱对不上——回归于此"""
+    from app.routes.models import CloningMethod as CM, DesignRequest
+    result = run_design("uvf_syn_arm_rev", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 90, "end": 95, "strand": "-"}),
+        cloning_method=CM.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    oligos = [p for p in result.primers if p.target_start is not None]
+    assert len(oligos) >= 2
+    molecule = _reconstruct_molecule(oligos)
+    cloned = result.cloned_sequence or result.optimized_sequence
+    # 分子 = 构建体取向：左臂正链 + 反向互补基因 + 右臂正链
+    assert molecule == ARM5 + revcomp(cloned) + ARM3, molecule[:60]
+    # 整条分子就是构建体的一个段落——每条 oligo 全序列可定位
+    cons = (result.construct_sequence or "").upper()
+    for p in oligos:
+        s = p.full_sequence.upper()
+        assert s in cons or s in revcomp(cons), p.name
+
+
+def test_synthesis_oligos_all_locate_on_construct():
+    """oligo↔构建体一致性：两端取载体侧翼后，每条合成 oligo 的**全序列**
+    （不用扣任何碱基）都必须能在构建体序列（顶链或反向互补）上定位；
+    正常设计不允许出现「无法在构建体序列上定位」告警"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_loc", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    assert not any("无法在构建体序列上定位" in w for w in result.warnings), result.warnings
+    cons = (result.construct_sequence or "").upper()
+    cons_rc = revcomp(cons)
+    for p in (x for x in result.primers if x.target_start is not None):
+        s = p.full_sequence.upper()
+        assert s in cons or s in cons_rc, \
+            f"{p.name} 全序列应可定位（载体侧翼核对）: {s[:30]}…"
+
+
+def test_map_document_annotates_synthesis_oligos_on_map():
+    """图谱引物轨道：合成 oligo 按**全序列**定位并画在图谱上（负链装配
+    画在负链）——用户在图谱上直接看到首位引物对上了，不用自己去序列里
+    搜反向互补（pET-21a 负链插入的实测反馈：首位 oligo 只在互补链命中）"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_syn_map", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        insert_source="gene_synthesis", sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    doc = design_map_document(result)
+    primers = {p["name"]: p for p in doc["primers"]}
+    oligos = [p for p in result.primers if p.target_start is not None]
+    assert len(primers) == len(oligos), doc["primers"]
+    doc_seq = doc["sequence"].upper()
+    for p in oligos:
+        mp = primers[p.name]
+        assert mp["start"] >= 1 and mp["end"] <= len(doc_seq)
+        span = doc_seq[mp["start"] - 1:mp["end"]]
+        if mp["strand"] == 1:
+            assert span == p.full_sequence.upper(), p.name
+        else:
+            assert revcomp(span) == p.full_sequence.upper(), p.name
+    # 合成分子 = 构建体顶链段落：首位 oligo 画在正链，末位（反义）在负链
+    assert primers[oligos[0].name]["strand"] == 1
+    assert primers[oligos[-1].name]["strand"] == -1
+
+
+def test_map_document_annotates_pcr_primer_anneal_spans():
+    """PCR 来源：引物全序列含保护碱基/位点不在构建体上，图谱按 3′ 端
+    退火区定位，F/R 都能上图且反链语义正确"""
+    from app.routes.models import DesignRequest
+    result = run_design("uvf_pcr_map", DesignRequest(
+        sequence=AA, sequence_type="amino_acid", vector_id="pET-28a",
+        cloning_method=CloningMethod.RESTRICTION,
+        enzyme_5="NdeI", enzyme_3="XhoI",
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    doc = design_map_document(result)
+    primers = {p["name"]: p for p in doc["primers"]}
+    assert any(n.endswith("_F") for n in primers), primers.keys()
+    assert any(n.endswith("_R") for n in primers), primers.keys()
+    fwd = next(v for k, v in primers.items() if k.endswith("_F"))
+    rev = next(v for k, v in primers.items() if k.endswith("_R"))
+    assert rev["strand"] == 1 and fwd["strand"] == -1, (fwd, rev)
+    # pET-28a 负链装配：F 引物（基因正义片段）延伸方向 = 负链，
+    # R 引物（模板链片段）延伸方向 = 正链；退火区序列与图谱跨度一致
+    doc_seq = doc["sequence"].upper()
+    for mp in (fwd, rev):
+        span = doc_seq[mp["start"] - 1:mp["end"]]
+        got = span if mp["strand"] == 1 else revcomp(span)
+        assert got == mp["sequence"].upper()
+
+
+def test_arms_preview_unknown_arm_fails_loudly():
+    import pytest
+    with pytest.raises(ValueError) as exc:
+        build_restriction_preview(RestrictionPreviewRequest(
+            vector=_arms_inline_vector(), insert_length=120,
+            cloning_method="custom_arms", homology_arm_5="ACGT" * 5,
+            homology_arm_3=ARM3))
+    assert "无精确匹配" in str(exc.value)
+
+
+def test_arms_design_reports_splice_position():
+    """正式设计结果里也有拼接定位说明（锚点、替换量、装配链向）"""
+    from app.routes.models import CloningMethod, DesignRequest, DesignStatus
+    result = run_design("uvf_arms", DesignRequest(
+        sequence=AA, sequence_type="amino_acid",
+        vector=_arms_inline_vector(),
+        cloning_method=CloningMethod.GIBSON,
+        gibson_linearization="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3,
+        sequence_name="myGene"))
+    assert result.status == DesignStatus.COMPLETED, result.errors
+    splice = [w for w in result.warnings if w.startswith("拼接定位")]
+    assert splice, "同源臂设计必须给出拼接定位说明"
+    assert "臂5 末端 37" in splice[0]
+    assert "正链" in splice[0]
+
+
+# ---------- 7. CDS 方向 = 启动子方向（同源臂预览/设计的判定） ----------
+
+def test_cassette_hint_promoter_gap_extended():
+    """启动子距切点 1600bp（>旧上限 1500）：必须仍能判定方向——
+    大标签/MCS 隔开启动子的载体此前方向判定失效、回落默认正链"""
+    from core.construct_assembly import cassette_hint
+    elements = [{"name": "T7 promoter", "type": "promoter",
+                 "start": 1, "end": 18, "strand": "+"}]
+    hint = cassette_hint(elements, 1700, 1750)   # gap = 1682
+    assert hint["strand"] == "+"
+    hint_far = cassette_hint(elements, 5000, 5050)   # 超过 3000：判不出
+    assert hint_far["strand"] is None
+
+
+def test_cassette_hint_nearby_promoter_beats_distant_opposite():
+    """邻近度加权：近处真表达盒（gap 100）必须压过 2000bp 外恰好朝插入区
+    读的无关反向启动子（否则窗口放宽后被别的表达盒带偏方向）"""
+    from core.construct_assembly import cassette_hint
+    elements = [
+        {"name": "T7 promoter", "type": "promoter",
+         "start": 100, "end": 118, "strand": "+"},          # 近处，gap 82 → 权重 3
+        {"name": "other cassette promoter", "type": "promoter",
+         "start": 4800, "end": 4818, "strand": "-"},        # 远处反向，gap 50 → 负链权重 3?
+    ]
+    # 远处启动子在 right_cut=1750 右侧 → gap = 4800-1750 = 3050 > 3000，不计入；
+    # 把它挪到 3700（gap 1950，权重 1）
+    elements[1]["start"] = 3700
+    elements[1]["end"] = 3718
+    hint = cassette_hint(elements, 200, 1750)
+    assert hint["strand"] == "+"
+    assert not hint["ambiguous"]
+    assert hint["promoter"]["name"] == "T7 promoter"
+
+
+def test_cassette_hint_equal_proximity_still_ambiguous():
+    """两侧都是贴邻的对立启动子（3 对 3）：仍判歧义，交给用户手选"""
+    from core.construct_assembly import cassette_hint
+    elements = [
+        {"name": "P_left", "type": "promoter", "start": 50, "end": 60, "strand": "+"},
+        {"name": "P_right", "type": "promoter", "start": 210, "end": 220, "strand": "-"},
+    ]
+    hint = cassette_hint(elements, 100, 180)   # 左 gap 40（权3），右 gap 30（权3）
+    assert hint["strand"] is None and hint["ambiguous"]
+
+
+def _arms_vector_with_promoter(feature: dict):
+    from app.schemas import DesignVectorInput
+    return DesignVectorInput(id="pdir", name="pdir", sequence=ARMS_BB,
+                             topology="circular", features=[feature])
+
+
+def test_arms_preview_direction_agreement_is_stated():
+    """正链启动子在插入区间上游 + 正向臂：预览明确说「方向一致」"""
+    pv = build_restriction_preview(RestrictionPreviewRequest(
+        vector=_arms_vector_with_promoter(
+            {"name": "T7 promoter", "type": "promoter",
+             "start": 1, "end": 18, "strand": "+"}),
+        insert_length=120, cloning_method="custom_arms",
+        homology_arm_5=ARM5, homology_arm_3=ARM3))
+    assert pv["strand"] == "+"
+    assert any("CDS 方向与启动子一致" in w and "正链" in w
+               for w in pv["warnings"])
+
+
+
+# ---------- 环状构建体的跨原点一致性（v2.26.3 核查补充） ----------
+# 切除区间跨原点时 apply_plan 会把载体旋转到切除区间不跨原点，旋转后右
+# 连接点就在构建体字符串末端——合成分子的右侧翼必然越界环绕。四件事必须
+# 在环绕语义下仍然自洽：取段、限制性取段、oligo↔构建体命中判定、图谱
+# 引物轨道。
+
+def _wrap_assembly(cons, i_s, i_e):
+    from types import SimpleNamespace
+    return SimpleNamespace(sequence=cons, insert_start=i_s, insert_end=i_e,
+                           plan_used=True)
+
+
+def test_construct_segment_molecule_wraps_right_flank():
+    """右侧翼越出构建体末端：环状取环绕段落（修复前 cons[:end1] 被切片
+    钳制成整条序列、长度校验必然失败而白走回退）；线性返回 None"""
+    from app.design_service import _construct_segment_molecule
+    from types import SimpleNamespace
+    cons = "ACGTTACAGGCTTGAACCGGTTAACTGAGC" * 16     # 480bp，仅 ATGC
+    gene_len = 30
+    i_s, i_e = len(cons) - gene_len + 1, len(cons)    # 基因贴字符串末端
+    plan = SimpleNamespace(head="", tail="")
+    seg = _construct_segment_molecule(_wrap_assembly(cons, i_s, i_e),
+                                      plan, 6, 6, circular=True)
+    assert seg == cons[i_s - 1 - 6:] + cons[:6]       # 尾段 + 首段环绕
+    assert len(seg) == 6 + gene_len + 6
+    assert _construct_segment_molecule(_wrap_assembly(cons, i_s, i_e),
+                                       plan, 6, 6, circular=False) is None
+
+
+def test_restriction_construct_molecule_wraps_and_linear_guard():
+    """位点残留贴基因、右端越出构建体：环状取环绕分子（首段=末尾侧翼），
+    线性载体不允许环绕、返回 None 回退保护碱基"""
+    from app.design_service import _restriction_construct_molecule
+    prefix = "ACGTTACAGGCTTGAACCGGTTAACTGAGC" * 4     # 120bp 无位点侧翼
+    gene = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGT"        # 36bp
+    cons = prefix + "CATATG" + gene + "CTCGAG"        # 位点复原贴基因两端
+    i_s = len(prefix) + 6 + 1
+    i_e = i_s + len(gene) - 1
+    asm = _wrap_assembly(cons, i_s, i_e)
+    mol = _restriction_construct_molecule(asm, "NdeI", "XhoI", 6, circular=True)
+    # 环绕分子 = 末 54nt（侧翼6+CATATG+基因+CTCGAG）+ 首 6nt 侧翼
+    assert mol == cons[len(prefix) - 6:] + cons[:6]
+    assert mol[6:12] == "CATATG" and mol[-12:-6] == "CTCGAG"
+    assert _restriction_construct_molecule(asm, "NdeI", "XhoI", 6,
+                                           circular=False) is None
+
+
+def test_oligo_hits_construct_allows_wrapping_hit():
+    """环绕 oligo（末段+首段拼成）不是线性子串——命中判定必须用环绕语义，
+    否则跨连接点的合法 oligo 被 4.1/4.1b 误报「无法在构建体上定位」"""
+    from app.design_service import _oligo_hits_construct
+    cons = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGTCCGGATTAAGCCTTAGGCATCGATTGCAAGGTC"   # 66bp 无周期环状
+    assert _oligo_hits_construct(cons[5:25], cons, revcomp(cons))
+    wrapped = cons[-10:] + cons[:10]
+    assert wrapped not in cons and wrapped not in revcomp(cons)
+    assert _oligo_hits_construct(wrapped, cons, revcomp(cons))
+
+
+def test_locate_primer_spans_wrapped_on_circular():
+    """环状构建体上跨原点的 oligo 要画出轨道（start>end 环绕表示），
+    线性图上跳过；非环绕负链命中坐标与旧公式一致（回归保护）"""
+    from types import SimpleNamespace
+    from app.map_documents import _locate_primer_spans
+    seq = "ATGGGCTTAAACCGGTTTAAGGCCTTAACCGGTCCGGATTAAGCCTTAGGCATCGATTGCAAGGTC"   # 66bp 无周期
+    wrapped = seq[-10:] + seq[:10]
+    p = SimpleNamespace(name="wrapS", full_sequence=wrapped,
+                        sequence=wrapped, target_start=0)
+    out = _locate_primer_spans(SimpleNamespace(primers=[p]), seq, True)
+    assert len(out) == 1
+    assert out[0]["strand"] == 1
+    assert out[0]["start"] == len(seq) - 10 + 1 and out[0]["end"] == 10
+    assert _locate_primer_spans(SimpleNamespace(primers=[p]),
+                                seq, False) == []
+    mid = seq[10:30]
+    prc = SimpleNamespace(name="negS", full_sequence=revcomp(mid),
+                          sequence=revcomp(mid), target_start=0)
+    out3 = _locate_primer_spans(SimpleNamespace(primers=[prc]), seq, True)
+    assert out3 and out3[0]["strand"] == -1
+    assert (out3[0]["start"], out3[0]["end"]) == (11, 30)

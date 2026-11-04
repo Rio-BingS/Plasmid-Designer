@@ -1,0 +1,495 @@
+"""
+用户认证 API 路由（数据库版本）
+统一使用数据库存储，prefix=/api/auth
+
+注册流程按站点设置（site_settings）分流：
+- registration_open=False                    → 403 拒绝注册
+- email_verification_required=False          → 注册即登录（历史行为）
+- email_verification_required=True           → 创建未验证账号 + 发送 6 位验证码，
+  凭 verify_token 完成 /verify-email 换取登录令牌（/resend-verification 可重发）
+"""
+
+import hashlib
+import secrets
+from datetime import timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from .jwt_auth import (
+    _DUMMY_HASH,
+    decode_token, extract_token,
+    UserCreate, UserLogin, User, Token,
+    verify_password, create_access_token, create_verify_token, decode_verify_token,
+    hash_password, get_current_user_soft, get_current_user_required, db_user_to_user,
+    set_auth_cookie, clear_auth_cookie,
+)
+from app.config import settings
+from app.rate_limit import acquire_login_attempt, login_account_too_many, reset_login_failures
+from app.timeutil import utcnow_naive
+from app.database import (
+    get_db, get_users, create_user as db_create_user, get_user_by_email, get_user_by_id,
+    get_site_settings_row, create_email_verification, get_latest_email_verification,
+    consume_email_verification, update_user, revoke_token, bump_token_version,
+    get_last_sent_email_verification, email_verification_stats_since,
+    reserve_email_verification_attempt,
+)
+from app.features import features_for_user, tier_for
+from app.mailer import send_email, verification_email_html
+
+router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+# 验证码防爆破（计数落库在 email_verifications.attempts，多 worker 共享、
+# 重启不归零）。单码次数之外再按用户设 24 小时总量：此前连错作废后
+# 重发冷却失效，每轮「5 次猜测 + 1 次重发」可持续爆破（审查 01 M-2）
+_VERIFY_MAX_ATTEMPTS = 5          # 每个验证码最多校验次数
+CODE_DAILY_MAX = 10               # 每用户 24 小时内最多发出的验证码数（含注册首发）
+VERIFY_DAILY_MAX_ATTEMPTS = 20    # 每用户 24 小时内最多校验次数（跨验证码累计）
+DAILY_WINDOW = timedelta(hours=24)
+
+CODE_TTL_MINUTES = 10
+RESEND_COOLDOWN_SECONDS = 60
+
+
+class RegisterResponse(BaseModel):
+    """注册响应：验证开启时返回 verify_token（无 access_token），关闭时等价 Token"""
+    access_token: Optional[str] = None
+    token_type: str = "bearer"
+    expires_in: int = 24 * 3600
+    user: Optional[User] = None
+    requires_verification: bool = False
+    verify_token: Optional[str] = None
+    email: Optional[str] = None
+    mail_sent: bool = False
+
+
+class VerifyEmailRequest(BaseModel):
+    verify_token: str
+    code: str
+
+
+class ResendVerificationRequest(BaseModel):
+    verify_token: str
+
+
+class SiteConfigResponse(BaseModel):
+    """公开站点配置：前端据此隐藏功能入口、控制注册表单"""
+    registration_open: bool
+    email_verification_required: bool
+    tier: str  # anonymous / user / admin
+    features: dict  # {"anonymous": [...], "user": [...]}
+    effective_features: list  # 按当前请求者层级（管理员全量）
+    # 当前请求者的批量测序上限（个人覆盖 → 分组 → 服务器默认已解析好）：
+    # {max_reads_per_group, max_total_reads, max_files, max_upload_mb,
+    #  chunk_max_files, chunk_max_mb, session_max_mb}
+    # max_files/max_upload_mb 为单请求入口的限制；批量页走分块上传，批次级
+    # 体积上限是 session_max_mb，文件数与 95 MB 只约束单个分块
+    batch_read_limits: Optional[dict] = None
+
+
+# ==================== 内部工具 ====================
+
+def _generate_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _hash_code(code: str, user_id: str) -> str:
+    return hashlib.sha256(f"{user_id}:{code}:{settings.SECRET_KEY}".encode()).hexdigest()
+
+
+async def _issue_verification_code(db: Session, user, is_resend: bool) -> bool:
+    """生成并（尝试）发送验证码，返回是否发送成功。
+
+    60 秒重发冷却按最近发出的一条计算，不论它是否已因连错被作废；
+    另有每用户 24 小时发送总量上限（防爆破续命与邮件轰炸）。"""
+    now = utcnow_naive()
+    latest = get_last_sent_email_verification(db, user.id)
+    if latest is not None and (now - latest.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
+        wait = RESEND_COOLDOWN_SECONDS - (now - latest.created_at).total_seconds()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"验证码发送过于频繁，请 {int(wait) + 1} 秒后再试",
+        )
+    sent_today, _ = email_verification_stats_since(db, user.id, now - DAILY_WINDOW)
+    if sent_today >= CODE_DAILY_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="今日验证码发送次数已达上限，请 24 小时后再试",
+        )
+    code = _generate_code()
+    create_email_verification(
+        db, user_id=user.id, email=user.email,
+        code_hash=_hash_code(code, user.id),
+        expires_at=utcnow_naive() + timedelta(minutes=CODE_TTL_MINUTES),
+    )
+    sent = await send_email(
+        user.email,
+        "Plasmid Designer 注册验证码",
+        verification_email_html(code, CODE_TTL_MINUTES),
+    )
+    if not sent:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="验证码邮件发送失败，请稍后重试或联系管理员检查邮件服务配置",
+        )
+    return True
+
+
+# ==================== 端点 ====================
+
+@router.post("/register", response_model=RegisterResponse)
+async def register(user_data: UserCreate, request: Request, response: Response,
+                   db: Session = Depends(get_db)):
+    """
+    用户注册
+
+    - 站点可关闭注册
+    - 开启邮箱验证时：创建未验证账号并发送 6 位验证码
+    - 未开启时：创建账号并直接返回认证令牌（历史行为）
+    """
+    site = _row_to_settings(get_site_settings_row(db))
+    if not site["registration_open"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="站点已关闭注册，请联系管理员")
+
+    # 检查邮箱是否已注册
+    existing_user = get_user_by_email(db, user_data.email)
+    if existing_user:
+        # 时差对齐：正常路径先跑一轮 bcrypt 再落库，重复邮箱立即 400 会以
+        # 响应时长区分「邮箱已存在」。比对一个固定哑哈希让两条路径等时。
+        # 内容上仍明示「已注册」——注册口让用户发现手滑输错邮箱比隐藏
+        # 存在性更有价值（自托管低风险取舍，枚举已被通用限流约束）
+        await run_in_threadpool(verify_password, user_data.password, _DUMMY_HASH)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该邮箱已注册"
+        )
+
+    # 验证密码
+    if user_data.password != user_data.confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="两次输入的密码不一致"
+        )
+
+    # 密码强度检查
+    if len(user_data.password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码长度至少8位"
+        )
+
+    # bcrypt（12 轮）单次约数百毫秒，放线程池避免阻塞事件循环
+    hashed_pw = await run_in_threadpool(hash_password, user_data.password)
+
+    def _duplicate_email_400(exc: Exception) -> HTTPException:
+        # 并发注册同邮箱时 unique 约束兜底（先查后插存在竞态窗口）
+        db.rollback()
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册")
+
+    if not site["email_verification_required"]:
+        try:
+            db_user = db_create_user(
+                db=db, email=user_data.email, username=user_data.username,
+                hashed_password=hashed_pw, email_verified=True,
+            )
+        except IntegrityError as e:
+            raise _duplicate_email_400(e) from e
+        user = db_user_to_user(db_user)
+        token = create_access_token(user, db_user.token_version)
+        set_auth_cookie(response, request, token)
+        return RegisterResponse(access_token=token, expires_in=24 * 3600, user=user)
+
+    # 开启邮箱验证：先建未验证账号，再发码
+    try:
+        db_user = db_create_user(
+            db=db, email=user_data.email, username=user_data.username,
+            hashed_password=hashed_pw, email_verified=False,
+        )
+    except IntegrityError as e:
+        raise _duplicate_email_400(e) from e
+    code = _generate_code()
+    create_email_verification(
+        db, user_id=db_user.id, email=db_user.email,
+        code_hash=_hash_code(code, db_user.id),
+        expires_at=utcnow_naive() + timedelta(minutes=CODE_TTL_MINUTES),
+    )
+    sent = await send_email(
+        db_user.email, "Plasmid Designer 注册验证码",
+        verification_email_html(code, CODE_TTL_MINUTES),
+    )
+    return RegisterResponse(
+        requires_verification=True,
+        verify_token=create_verify_token(db_user.id),
+        email=db_user.email,
+        mail_sent=sent,
+    )
+
+
+@router.post("/login", response_model=Token)
+async def login(credentials: UserLogin, request: Request, response: Response,
+                db: Session = Depends(get_db)):
+    """
+    用户登录
+
+    - 验证邮箱和密码
+    - 开启邮箱验证时，未验证账号返回 verify_token 引导补验证
+    - 成功时令牌写入 httpOnly 会话 Cookie（浏览器）；响应体仍返回
+      access_token，供 API / 脚本客户端以 Authorization: Bearer 使用
+    """
+    # 按账号的失败闸（不含 IP）：先于查库与 bcrypt，账号存在与否一视同仁
+    retry_after = acquire_login_attempt(credentials.email)
+    if retry_after:
+        return login_account_too_many(credentials.email, retry_after)
+
+    # 查找用户
+    user = get_user_by_email(db, credentials.email)
+    if not user:
+        # 时差对齐：不存在用户也跑一轮 bcrypt（哑哈希），否则「账号存在
+        # 与否」可用响应时长区分（存在的用户多 ~300ms 的 bcrypt 比对）
+        await run_in_threadpool(verify_password, credentials.password, _DUMMY_HASH)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="邮箱或密码错误"
+        )
+
+    # 验证密码
+    # bcrypt 校验放线程池：同步调用会让并发登录卡住整个事件循环
+    if not await run_in_threadpool(
+        verify_password, credentials.password, user.hashed_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="邮箱或密码错误"
+        )
+    reset_login_failures(credentials.email)
+
+    # 检查用户状态
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账户已被禁用"
+        )
+
+    # 邮箱验证开关打开时拦截未验证账号（带 verify_token 供前端引导补验证）
+    site = _row_to_settings(get_site_settings_row(db))
+    if site["email_verification_required"] and not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "EMAIL_NOT_VERIFIED",
+                "message": "邮箱尚未验证，请输入注册时收到的验证码完成验证",
+                "email": user.email,
+                "verify_token": create_verify_token(user.id),
+            },
+        )
+
+    # 生成令牌
+    user_response = db_user_to_user(user)
+    access_token = create_access_token(user_response, user.token_version)
+    set_auth_cookie(response, request, access_token)
+
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=24 * 3600,
+        user=user_response
+    )
+
+
+@router.post("/verify-email", response_model=Token)
+async def verify_email(payload: VerifyEmailRequest, request: Request, response: Response,
+                       db: Session = Depends(get_db)):
+    """校验验证码完成注册：成功即视为邮箱已验证并直接登录"""
+    user_id = decode_verify_token(payload.verify_token)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="验证链接已过期，请重新注册或登录后重发验证码")
+
+    user = get_user_by_id(db, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户不存在或已被禁用")
+
+    if user.email_verified:
+        # verify_token 单次有效：账号一旦验证，签发给它的验证令牌全部作废。
+        # 这里绝不能再签发登录令牌/下发 Cookie，否则泄露的旧 verify_token
+        # （30 分钟内）不需验证码就能换到会话
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "ALREADY_VERIFIED",
+                "message": "该账号已完成验证，请直接登录",
+            },
+        )
+
+    # 每用户 24 小时校验总量（含已作废验证码上的尝试）：重发换码也不续命
+    _, attempts_today = email_verification_stats_since(db, user_id, utcnow_naive() - DAILY_WINDOW)
+    if attempts_today >= VERIFY_DAILY_MAX_ATTEMPTS:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="验证码错误次数过多，请 24 小时后再试")
+
+    row = get_latest_email_verification(db, user_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先获取验证码")
+    if row.expires_at < utcnow_naive():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="验证码已过期，请重新发送")
+    # 防爆破：先原子占用一次校验机会再比对，并发请求也不能超额猜测
+    if not reserve_email_verification_attempt(db, row, _VERIFY_MAX_ATTEMPTS):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="错误次数过多，验证码已作废，请重新发送")
+    if _hash_code(payload.code.strip(), user_id) != row.code_hash:
+        if row.attempts >= _VERIFY_MAX_ATTEMPTS:
+            consume_email_verification(db, row)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="错误次数过多，验证码已作废，请重新发送")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误")
+
+    consume_email_verification(db, row)
+    update_user(db, user_id, email_verified=True)
+    db_user = get_user_by_id(db, user_id)
+    user_response = db_user_to_user(db_user)
+    token = create_access_token(user_response, db_user.token_version)
+    set_auth_cookie(response, request, token)
+    return Token(access_token=token, expires_in=24 * 3600, user=user_response)
+
+
+@router.post("/resend-verification")
+async def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+    """重发注册验证码（60 秒冷却）"""
+    user_id = decode_verify_token(payload.verify_token)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证链接已过期，请重新注册")
+    user = get_user_by_id(db, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户不存在或已被禁用")
+    if user.email_verified:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该账号已完成验证，请直接登录")
+    await _issue_verification_code(db, user, is_resend=True)
+    return {"message": "验证码已重新发送", "email": user.email,
+            "verify_token": create_verify_token(user.id)}
+
+
+@router.get("/site-config", response_model=SiteConfigResponse)
+async def site_config(current_user: Optional[User] = Depends(get_current_user_soft),
+                      db: Session = Depends(get_db)):
+    """公开站点配置：注册开关、邮箱验证开关、各级别可用功能（前端渲染依据）"""
+    site = _row_to_settings(get_site_settings_row(db))
+    tier = tier_for(current_user)
+    return SiteConfigResponse(
+        registration_open=site["registration_open"],
+        email_verification_required=site["email_verification_required"],
+        tier=tier,
+        features={
+            "anonymous": site["anonymous_features"],
+            "user": site["user_features"],
+        },
+        effective_features=features_for_user(site, current_user),
+        batch_read_limits=_batch_limits_for(site, current_user),
+    )
+
+
+def _batch_limits_for(site: dict, user) -> dict:
+    """批量测序页展示用：与 analyze-batch 实际执行同一套解析"""
+    from app import batch_read_limits as brl
+    from app import sequencing_upload_sessions as sessions
+    from app.routes import sequencing_routes as sr
+
+    eff = brl.effective_limits(
+        site, user, defaults=(sr.MAX_BATCH_READS_PER_GROUP, sr.MAX_BATCH_TOTAL_READS))
+    return {
+        brl.PER_GROUP: eff[brl.PER_GROUP]["value"],
+        brl.TOTAL: eff[brl.TOTAL]["value"],
+        "max_files": sr.MAX_BATCH_FILES,
+        "max_upload_mb": sr.MAX_BATCH_REQUEST_BYTES // (1024 * 1024),
+        "chunk_max_files": sessions.CHUNK_MAX_FILES,
+        "chunk_max_mb": sessions.CHUNK_MAX_BYTES // (1024 * 1024),
+        "session_max_mb": sessions.SESSION_MAX_BYTES // (1024 * 1024),
+    }
+
+
+def _row_to_settings(row) -> dict:
+    """site_settings 单行 → dict
+
+    功能清单与门控读侧（site_settings._fetch）同一语义：仅「从未初始化」
+    的行空清单回退默认；features_initialized 置位后空集就是空集——此前
+    这里无条件回退，管理员关闭全部功能后 site-config 仍下发默认清单，
+    前端照常显示入口（后端门控已正确拒绝，只是展示错误）。
+    """
+    import json as _json
+    from app.features import DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES, valid_features
+    from app.site_settings import parse_batch_read_limits
+
+    anon = valid_features(_json.loads(row.anonymous_features or "[]"))
+    user_f = valid_features(_json.loads(row.user_features or "[]"))
+    if not getattr(row, "features_initialized", False):
+        anon = anon or list(DEFAULT_ANONYMOUS_FEATURES)
+        user_f = user_f or list(DEFAULT_USER_FEATURES)
+    return {
+        "registration_open": bool(row.registration_open),
+        "email_verification_required": bool(row.email_verification_required),
+        "anonymous_features": anon,
+        "user_features": user_f,
+        "batch_read_limits": parse_batch_read_limits(getattr(row, "batch_read_limits", None)),
+    }
+
+
+@router.get("/me", response_model=User)
+async def get_me(current_user: User = Depends(get_current_user_required)):
+    """获取当前用户信息"""
+    return current_user
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """
+    用户登出：服务端吊销当前令牌并删除会话 Cookie。
+
+    - 令牌带 jti：记入黑名单（保留到令牌过期，过期行顺带清理），
+      只作废这一个会话，其他设备不受影响
+    - 旧版令牌无 jti：递增用户令牌版本，作废该用户全部令牌
+    幂等：会话已失效时同样成功——httpOnly Cookie 前端删不掉，
+    必须由服务端下发删除，不能因令牌过期而 401 把用户卡在半登录态。
+    """
+    token, _source = extract_token(request)
+    token_data = decode_token(token) if token else None
+    if token_data is not None and token_data.user_id:
+        if token_data.jti and token_data.expires_at is not None:
+            revoke_token(db, token_data.jti, token_data.expires_at, user_id=token_data.user_id)
+        else:
+            bump_token_version(db, token_data.user_id)
+    clear_auth_cookie(response, request)
+    return {"message": "登出成功"}
+
+
+@router.get("/verify")
+async def verify_token(current_user: Optional[User] = Depends(get_current_user_soft)):
+    """
+    验证令牌有效性
+
+    - 返回用户信息如果令牌有效
+    - 返回 null 如果令牌无效或未提供
+    """
+    if current_user:
+        return {"valid": True, "user": current_user}
+    return {"valid": False, "user": None}
+
+
+@router.get("/users", response_model=list[User])
+async def list_users(
+    current_user: User = Depends(get_current_user_required),
+    db: Session = Depends(get_db)
+):
+    """列出所有用户（管理员）"""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限"
+        )
+
+    users = get_users(db)
+    return [db_user_to_user(u) for u in users]
