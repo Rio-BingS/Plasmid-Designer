@@ -1,8 +1,9 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-10-31（`v2.35.0` 发版：限制性克隆预览三图分工 + 第三轮全量审计修复
-> 批次（6 bug + 3 加固 + 2 配置 + 8 死代码，[留档](postmortems/2026-10-31-audit-round3-fixes.md)）。
+> **更新**：2026-11-05（`v2.37.0-alpha.1`：单样品测序新增「目的基因模式」
+> （按文件名定位参考内目的 CDS 分析）+ 结论覆盖资格门 + 尺寸门禁约定放宽，
+> [留档](postmortems/2026-11-05-cds-mode-coverage-gate.md)）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -12,12 +13,17 @@
 
 ## 1. 一句话现状
 
-单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前 **v2.35.0**
-（2026-10-29 发版并已部署上线）+ **main 上未发版的两个批次**：10-30/31 限制性克隆
-预览三图分工（纯前端），10-31 第三轮审计修复（6 bug + 3 加固 + 2 配置 + 8 死代码，
-见 [留档](postmortems/2026-10-31-audit-round3-fixes.md)）。功能完整可用、有持续的真实数据回归。
-2026-10-31 复核实测（第三轮审计修复完成后）：后端 **1828 passed / 43 skipped / 0 failed**，
-前端 **666 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算门禁全绿。线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
+单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前分支
+`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.1**（2026-11-05）：单样品测序
+新增**目的基因模式**（按文件名从参考图谱定位目的 CDS 分析：候选下拉自动匹配、
+CDS±150bp 侧翼参考、read↔CDS 覆盖关系、结论覆盖资格门——引物没测到目标时
+结论头强制 △ 未能验证不给 ✓），两个正确性教训见
+[留档](postmortems/2026-11-05-cds-mode-coverage-gate.md)。此前该分支已发
+v2.36.0 / v2.36.1-alpha.1（限制性克隆预览三图分工、轨道宽度两轮弹性求解，已部署
+VPS 预览验收）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
+2026-11-05 实测：后端 **1850 passed / 43 skipped / 0 failed**（约 110 s），
+前端 **686 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步门禁全绿。
+线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
@@ -34,9 +40,9 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | `v2.35.0`（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1（2026-10-29）：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。此前 v2.33.6：环形图引物按用户提供的 SnapGene 截图复刻——蓝底白字名牌 + 旁侧坐标、22 条全部标出且每条带坐标；含引物时标签栏宽度上限放宽到 42%；名牌渲染抽到 `PrimerLabel.vue`。v2.33.3–2.33.5 的纯文字/整体省略/洋红版均已废弃，复盘见 CHANGELOG；切点数徽标见 v2.32.0/1、上传解析链见 v2.32.2–4、克隆酶高亮见 v2.31.5/6、MAP_ALGO_VERSION=8；酶名大小写归一见 v2.31.3） |
-| 后端测试 | **1828 passed / 43 skipped / 0 failed**（约 110 秒，2026-10-31；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
-| 前端测试 | **666 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-10-31；npm audit 2026-10-29 实测 0 漏洞） |
+| 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.1`（2026-11-05：目的基因模式 + 结论覆盖资格门）。此前 v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
+| 后端测试 | **1850 passed / 43 skipped / 0 failed**（约 110 秒，2026-11-05；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
+| 前端测试 | **686 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-05；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
@@ -175,13 +181,16 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 | 2026-10-26 | [synthetic-oligo-orientation](postmortems/2026-10-26-synthetic-oligo-orientation.md) | 凡是「从既成结果反推」的场景，直接取既成结果的段落，别重建——簿记迟早左右互换 |
 | 2026-10-29 | [audit-round2-fixes](postmortems/2026-10-29-audit-round2-fixes.md) | 可控字符串进日志/头/路径前必须过白名单（4 处同型）；双层读取 `in`+`[]` 非原子一律 `get()`；静默降级必须留 warning |
 | 2026-10-31 | [audit-round3-fixes](postmortems/2026-10-31-audit-round3-fixes.md) | 审计报告逐条复核再动手（agent 自报 15 项有 4 项不成立）；死代码要查「有没有人用」不只「有没有错」；re-export 块是死导入重灾区 |
+| 2026-11-05 | [cds-mode-coverage-gate](postmortems/2026-11-05-cds-mode-coverage-gate.md) | 截段当参考必须带边界上下文锚定（零侧翼吞边界变异）；结论头 ✓ 是资格判定不是默认值（目标没测到不给 ✓） |
 
 ## 8. 建议的下一步（按优先级）
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
 | **P1** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 连续两轮 CI 尺寸预算记账（900→1195→1318），再涨就要频繁动白名单；拆完白名单应只减不增 |
-| **P1** | CI 尺寸预算纪律：动代码后本地先跑 `python scripts/check_file_size.py`，超线先拆分或明确记账 | v2.30.0 又红过一次才记账；把预演纳入收尾动作可避免「本地绿 CI 红」复发 |
+| **P1** | CI 尺寸预算纪律：动代码后本地先跑 `python scripts/check_file_size.py`；白名单文件**有理由的小增量**（接线、新参数等）直接 `--refresh` 记账即可，**大增长/无意识增长**先拆分 | 2026-11-05 与所有者议定放宽：小增量记账不算欠账，不为 +15 行强制先重构；预演仍纳入收尾动作防「本地绿 CI 红」复发（v2.30.0 教训）。当日 refresh 顺带修正分支白名单滞后：construct_assembly.py 降到 900 以下掉出白名单，白名单 11→10 |
+| P2 | **目的基因模式推广到批量测序页**（讨论已定：缺图谱兜底优先，按名从参考/设计拉 CDS；`core/sanger/cds_extract.py` 的候选/匹配/提取可直接复用） | 单样品已随 v2.37.0-alpha.1 上线，批量工作流是自然延伸 |
+| P3 | 多段 CDS（GenBank join）在目的基因模式下暂不加侧翼（纯编码序列拼接），接缝边界效应留观察 | 真实多段 CDS 数据出现后再议 |
 | P2 | 批量二期候选：每条序列更多参数覆盖、服务端批量历史列表 API（现为 localStorage 本地恢复，换设备不可见） | 用户工作流可能需要 |
 | P2 | 白名单历史大文件拆分收敛（design_service.py 2235、primer_designer 1048 等） | 与 P1 同一轮重构做，白名单只减不增 |
 | P3 | 批量执行并发度（现为串行逐条，100 条上限） | 常规基因每条 ~1s，暂够用 |
