@@ -8,6 +8,32 @@
 
 ## [Unreleased]
 
+## [2.37.0-alpha.1] - 2026-11-05
+
+> 实验分支 `experiment/preview-visual-tuning` 预发布（未合并 main）；基于 2.36.1-alpha.1。
+
+### 新增
+- **单样品测序分析新增「目的基因模式」**（`/sequencing` 页开关，旧模式完整保留）：
+  根据参考文件名（.dna/.gb 等）从参考图谱自动识别目的片段（CDS/gene 特征，
+  嵌套小特征如 6xHis 不单列），以「CDS ± 150bp 参考侧翼」线性区段为比对参考；
+  候选不唯一一律不猜，转下拉手动选择（新端点 `POST /api/sequencing/parse-reference`
+  提供候选清单与自动匹配建议）。流程：识别目的片段 → 匹配引物（每条 read 与
+  目的 CDS 求交，Read 表新增「目的CDS」列与覆盖汇总行）→ 分析 → 报告结果。
+  载体通用引物（M13F/T7 等）的 read 无需与 CDS 同名即可参与验证。
+  匹配口径与批量归组同源（`batch._match_ref_name` 参数化 label）。
+- **结论覆盖资格门**（目的基因模式内生效）：目的 CDS 未被任何 read 覆盖时，
+  结论头强制降级为「△ 未被任何 read 覆盖，未能验证」，不再输出
+  「✓ 构建与设计一致」；部分覆盖时任何结论追加「目的 CDS 覆盖 X%
+  （未覆盖部分按参考填充、未验证）」。全质粒模式（无标记）结论文案逐字不变。
+  两个正确性前提（侧翼锚定、覆盖资格）见
+  [留档](docs/postmortems/2026-11-05-cds-mode-coverage-gate.md)。
+
+### 升级注意
+- 测试基线更新：后端 1850 passed / 前端 686 passed（HANDOVER §1/§2 与 AGENTS.md 已同步）。
+- 尺寸预算门禁使用约定放宽（2026-11-05 与所有者议定）：白名单文件**有理由的小增量**
+  可直接 `--refresh` 记账，大增长先拆分；本次 `pipeline.py` 2872→2894 按此记账，
+  `construct_assembly.py` 降到 900 以下掉出白名单（白名单 11→10）。
+
 ## [2.36.1-alpha.1] - 2026-11-04
 
 > 实验分支 `experiment/preview-visual-tuning` 预发布（未合并 main）；基于 2.36.0。
@@ -1809,7 +1835,10 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.34.1...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.37.0-alpha.1...HEAD
+[2.37.0-alpha.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.36.1-alpha.1...v2.37.0-alpha.1
+[2.36.1-alpha.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.36.0...v2.36.1-alpha.1
+[2.36.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.35.0...v2.36.0
 [2.35.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.34.1...v2.35.0
 [2.34.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.34.0...v2.34.1
 [2.34.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.33.6...v2.34.0
