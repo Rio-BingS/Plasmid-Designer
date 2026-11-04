@@ -1,0 +1,1248 @@
+{
+ "schema": "feature-library/1",
+ "name": "common",
+ "description": "Plasmid Designer 常见质粒元件库（图谱自动注释用）；由 scripts/build_feature_library.py 生成，勿手改",
+ "sources_policy": "仅收录仓库载体库（data/vectors，见 data_provenance）与 NCBI GenBank 公开记录中可核验的序列；每条记录来源与坐标",
+ "features": [
+  {
+   "id": "egfp",
+   "name": "EGFP",
+   "type": "cds",
+   "match": "dna",
+   "length": 720,
+   "sequence": "ATGGTGAGCAAGGGCGAGGAGCTGTTCACCGGGGTGGTGCCCATCCTGGTCGAGCTGGACGGCGACGTAAACGGCCACAAGTTCAGCGTGTCCGGCGAGGGCGAGGGCGATGCCACCTACGGCAAGCTGACCCTGAAGTTCATCTGCACCACCGGCAAGCTGCCCGTGCCCTGGCCCACCCTCGTGACCACCCTGACCTACGGCGTGCAGTGCTTCAGCCGCTACCCCGACCACATGAAGCAGCACGACTTCTTCAAGTCCGCCATGCCCGAAGGCTACGTCCAGGAGCGCACCATCTTCTTCAAGGACGACGGCAACTACAAGACCCGCGCCGAGGTGAAGTTCGAGGGCGACACCCTGGTGAACCGCATCGAGCTGAAGGGCATCGACTTCAAGGAGGACGGCAACATCCTGGGGCACAAGCTGGAGTACAACTACAACAGCCACAACGTCTATATCATGGCCGACAAGCAGAAGAACGGCATCAAGGTGAACTTCAAGATCCGCCACAACATCGAGGACGGCAGCGTGCAGCTCGCCGACCACTACCAGCAGAACACCCCCATCGGCGACGGCCCCGTGCTGCTGCCCGACAACCACTACCTGAGCACCCAGTCCGCCCTGAGCAAAGACCCCAACGAGAAGCGCGATCACATGGTCCTGCTGGAGTTCGTGACCGCCGCCGGGATCACTCTCGGCATGGACGAGCTGTACAAGTAA",
+   "notes": "enhanced GFP (pEGFP-N1 egfp CDS)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "U55762.1",
+     "location": "679..1398(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/U55762.1",
+     "definition": "Cloning vector pEGFP-N1, complete sequence, enhanced green fluorescent protein (egfp) and neomycin phosphotransferase ge"
+    }
+   ]
+  },
+  {
+   "id": "laci",
+   "name": "lacI",
+   "type": "cds",
+   "match": "dna",
+   "length": 1083,
+   "sequence": "GTGAAACCAGTAACGTTATACGATGTCGCAGAGTATGCCGGTGTCTCTTATCAGACCGTTTCCCGCGTGGTGAACCAGGCCAGCCACGTTTCTGCGAAAACGCGGGAAAAAGTGGAAGCGGCGATGGCGGAGCTGAATTACATTCCCAACCGCGTGGCACAACAACTGGCGGGCAAACAGTCGTTGCTGATTGGCGTTGCCACCTCCAGTCTGGCCCTGCACGCGCCGTCGCAAATTGTCGCGGCGATTAAATCTCGCGCCGATCAACTGGGTGCCAGCGTGGTGGTGTCGATGGTAGAACGAAGCGGCGTCGAAGCCTGTAAAGCGGCGGTGCACAATCTTCTCGCGCAACGCGTCAGTGGGCTGATCATTAACTATCCGCTGGATGACCAGGATGCCATTGCTGTGGAAGCTGCCTGCACTAATGTTCCGGCGTTATTTCTTGATGTCTCTGACCAGACACCCATCAACAGTATTATTTTCTCCCATGAAGACGGTACGCGACTGGGCGTGGAGCATCTGGTCGCATTGGGTCACCAGCAAATCGCGCTGTTAGCGGGCCCATTAAGTTCTGTCTCGGCGCGTCTGCGTCTGGCTGGCTGGCATAAATATCTCACTCGCAATCAAATTCAGCCGATAGCGGAACGGGAAGGCGACTGGAGTGCCATGTCCGGTTTTCAACAAACCATGCAAATGCTGAATGAGGGCATCGTTCCCACTGCGATGCTGGTTGCCAACGATCAGATGGCGCTGGGCGCAATGCGCGCCATTACCGAGTCCGGGCTGCGCGTTGGTGCGGATATCTCGGTAGTGGGATACGACGATACCGAAGACAGCTCATGTTATATCCCGCCGTTAACCACCATCAAACAGGATTTTCGCCTGCTGGGGCAAACCAGCGTGGACCGCTTGCTGCAACTCTCTCAGGGCCAGGCGGTGAAGGGCAATCAGCTGTTGCCCGTCTCACTGGTGAAAAGAAAAACCACCCTGGCGCCCAATACGCAAACCGCCTCTCCCCGCGCGTTGGCCGATTCATTAATGCAGCTGGCACGACAGGTTTCCCGACTGGAAAGCGGGCAGTGA",
+   "notes": "lac repressor",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "773..1855(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "laczalpha",
+   "name": "lacZα",
+   "type": "cds",
+   "match": "dna",
+   "length": 324,
+   "sequence": "ATGACCATGATTACGCCAAGCTTGCATGCCTGCAGGTCGACTCTAGAGGATCCCCGGGTACCGAGCTCGAATTCACTGGCCGTCGTTTTACAACGTCGTGACTGGGAAAACCCTGGCGTTACCCAACTTAATCGCCTTGCAGCACATCCCCCTTTCGCCAGCTGGCGTAATAGCGAAGAGGCCCGCACCGATCGCCCTTCCCAACAGTTGCGCAGCCTGAATGGCGAATGGCGCCTGATGCGGTATTTTCTCCTTACGCATCTGTGCGGTATTTCACACCGCATATGGTGCACTCTCAGTACAATCTGCTCTGATGCCGCATAG",
+   "notes": "LacZ alpha fragment (pUC19); blue/white screening",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "146..469(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
+     "kind": "ncbi_genbank",
+     "accession": "L09137.2",
+     "location": "146..469(-)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/L09137.2",
+     "definition": "Cloning vector pUC19c, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "mcherry",
+   "name": "mCherry",
+   "type": "cds",
+   "match": "dna",
+   "length": 711,
+   "sequence": "ATGGTGAGCAAGGGCGAGGAGGATAACATGGCCATCATCAAGGAGTTCATGCGCTTCAAGGTGCACATGGAGGGCTCCGTGAACGGCCACGAGTTCGAGATCGAGGGCGAGGGCGAGGGCCGCCCCTACGAGGGCACCCAGACCGCCAAGCTGAAGGTGACCAAGGGTGGCCCCCTGCCCTTCGCCTGGGACATCCTGTCCCCTCAGTTCATGTACGGCTCCAAGGCCTACGTGAAGCACCCCGCCGACATCCCCGACTACTTGAAGCTGTCCTTCCCCGAGGGCTTCAAGTGGGAGCGCGTGATGAACTTCGAGGACGGCGGCGTGGTGACCGTGACCCAGGACTCCTCCCTGCAGGACGGCGAGTTCATCTACAAGGTGAAGCTGCGCGGCACCAACTTCCCCTCCGACGGCCCCGTAATGCAGAAGAAGACCATGGGCTGGGAGGCCTCCTCCGAGCGGATGTACCCCGAGGACGGCGCCCTGAAGGGCGAGATCAAGCAGAGGCTGAAGCTGAAGGACGGCGGCCACTACGACGCTGAGGTCAAGACCACCTACAAGGCCAAGAAGCCCGTGCAGCTGCCCGGCGCCTACAACGTCAACATCAAGTTGGACATCACCTCCCACAACGAGGACTACACCATCGTGGAACAGTACGAACGCGCCGAGGGCCGCCACTCCACCGGCGGCATGGACGAGCTGTACAAGTAA",
+   "notes": "monomeric red fluorescent protein mCherry (Shaner et al. 2004)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "AY678264.1",
+     "location": "1..711(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/AY678264.1",
+     "definition": "Synthetic construct monomeric red fluorescent protein gene, complete cds"
+    }
+   ]
+  },
+  {
+   "id": "rop",
+   "name": "rop",
+   "type": "cds",
+   "match": "dna",
+   "length": 192,
+   "sequence": "GTGACCAAACAGGAAAAAACCGCCCTTAACATGGCCCGCTTTATCAGAAGCCAGACATTAACGCTTCTGGAGAAACTCAACGAGCTGGACGCGGATGAACAGGCAGACATCTGTGAATCGCTTCACGACCACGCTGATGAGCTTTACCGCAGCTGCCTCGCGCGTTTCGGTGATGACGGTGAAAACCTCTGA",
+   "notes": "Rop protein (ColE1 copy-number control)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "2664..2855(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "cmv-enhancer",
+   "name": "CMV enhancer",
+   "type": "enhancer",
+   "match": "dna",
+   "length": 380,
+   "sequence": "GACATTGATTATTGACTAGTTATTAATAGTAATCAATTACGGGGTCATTAGTTCATAGCCCATATATGGAGTTCCGCGTTACATAACTTACGGTAAATGGCCCGCCTGGCTGACCGCCCAACGACCCCCGCCCATTGACGTCAATAATGACGTATGTTCCCATAGTAACGCCAATAGGGACTTTCCATTGACGTCAATGGGTGGAGTATTTACGGTAAACTGCCCACTTGGCAGTACATCAAGTGTATCATATGCCAAGTACGCCCCCTATTGACGTCAATGACGGTAAATGGCCCGCCTGGCATTATGCCCAGTACATGACCTTATGGGACTTTCCTACTTGGCAGTACATCTACGTATTAGTCATCGCTATTACCATG",
+   "notes": "human cytomegalovirus immediate early enhancer",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "235..614(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "3p-ltr",
+   "name": "3' LTR",
+   "type": "ltr",
+   "match": "dna",
+   "length": 634,
+   "sequence": "TGGAAGGGCTAATTCACTCCCAACGAAGACAAGATATCCTTGATCTGTGGATCTACCACACACAAGGCTACTTCCCTGATTAGCAGAACTACACACCAGGGCCAGGGGTCAGATATCCACTGACCTTTGGATGGTGCTACAAGCTAGTACCAGTTGAGCCAGATAAGGTAGAAGAGGCCAATAAAGGAGAGAACACCAGCTTGTTACACCCTGTGAGCCTGCATGGGATGGATGACCCGGAGAGAGAAGTGTTAGAGTGGAGGTTTGACAGCCGCCTAGCATTTCATCACGTGGCCCGAGAGCTGCATCCGGAGTACTTCAAGAACTGCTGATATCGAGCTTGCTACAAGGGACTTTCCGCTGGGGACTTTCCAGGGAGGCGTGGCCTGGGCGGGACTGGGGAGTGGCGAGCCCTCAGATCCTGCATATAAGCAGCTGCTTTTTGCCTGTACTGGGTCTCTCTGGTTAGACCAGATCTGAGCCTGGGAGCTCTCTGGCTAACTAGGGAACCCACTGCTTAAGCCTCAATAAAGCTTGCCTTGAGTGCTTCAAGTAGTGTGTGCCCGTCTGTTGTGTGACTCTGGTAACTAGAGATCCCTCAGACCCTTTTAGTCAGTGTGGAAAATCTCTAGCA",
+   "notes": "HIV-1 3' long terminal repeat (pLVX)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "4857..5490(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "5p-ltr",
+   "name": "5' LTR",
+   "type": "ltr",
+   "match": "dna",
+   "length": 634,
+   "sequence": "TGGAAGGGCTAATTCACTCCCAAAGAAGACAAGATATCCTTGATCTGTGGATCTACCACACACAAGGCTACTTCCCTGATTAGCAGAACTACACACCAGGGCCAGGGGTCAGATATCCACTGACCTTTGGATGGTGCTACAAGCTAGTACCAGTTGAGCCAGATAAGGTAGAAGAGGCCAATAAAGGAGAGAACACCAGCTTGTTACACCCTGTGAGCCTGCATGGGATGGATGACCCGGAGAGAGAAGTGTTAGAGTGGAGGTTTGACAGCCGCCTAGCATTTCATCACGTGGCCCGAGAGCTGCATCCGGAGTACTTCAAGAACTGCTGATATCGAGCTTGCTACAAGGGACTTTCCGCTGGGGACTTTCCAGGGAGGCGTGGCCTGGGCGGGACTGGGGAGTGGCGAGCCCTCAGATCCTGCATATAAGCAGCTGCTTTTTGCCTGTACTGGGTCTCTCTGGTTAGACCAGATCTGAGCCTGGGAGCTCTCTGGCTAACTAGGGAACCCACTGCTTAAGCCTCAATAAAGCTTGCCTTGAGTGCTTCAAGTAGTGTGTGCCCGTCTGTTGTGTGACTCTGGTAACTAGAGATCCCTCAGACCCTTTTAGTCAGTGTGGAAAATCTCTAGCA",
+   "notes": "HIV-1 5' long terminal repeat",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "1..634(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "ampr",
+   "name": "AmpR",
+   "type": "marker",
+   "match": "dna",
+   "length": 861,
+   "sequence": "ATGAGTATTCAACATTTCCGTGTCGCCCTTATTCCCTTTTTTGCGGCATTTTGCCTTCCTGTTTTTGCTCACCCAGAAACGCTGGTGAAAGTAAAAGATGCTGAAGATCAGTTGGGTGCACGAGTGGGTTACATCGAACTGGATCTCAACAGCGGTAAGATCCTTGAGAGTTTTCGCCCCGAAGAACGTTTTCCAATGATGAGCACTTTTAAAGTTCTGCTATGTGGCGCGGTATTATCCCGTATTGACGCCGGGCAAGAGCAACTCGGTCGCCGCATACACTATTCTCAGAATGACTTGGTTGAGTACTCACCAGTCACAGAAAAGCATCTTACGGATGGCATGACAGTAAGAGAATTATGCAGTGCTGCCATAACCATGAGTGATAACACTGCGGCCAACTTACTTCTGACAACGATCGGAGGACCGAAGGAGCTAACCGCTTTTTTGCACAACATGGGGGATCATGTAACTCGCCTTGATCGTTGGGAACCGGAGCTGAATGAAGCCATACCAAACGACGAGCGTGACACCACGATGCCTGTAGCAATGGCAACAACGTTGCGCAAACTATTAACTGGCGAACTACTTACTCTAGCTTCCCGGCAACAATTAATAGACTGGATGGAGGCGGATAAAGTTGCAGGACCACTTCTGCGCTCGGCCCTTCCGGCTGGCTGGTTTATTGCTGATAAATCTGGAGCCGGTGAGCGTGGGTCTCGCGGTATCATTGCAGCACTGGGGCCAGATGGTAAGCCCTCCCGTATCGTAGTTATCTACACGACGGGGAGTCAGGCAACTATGGATGAACGAAATAGACAGATCGCTGAGATAGGTGCCTCACTGATTAAGCATTGGTAA",
+   "notes": "beta-lactamase; ampicillin/carbenicillin resistance",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "4432..5292(-)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    },
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "1626..2486(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    }
+   ]
+  },
+  {
+   "id": "bsd",
+   "name": "BSD",
+   "type": "marker",
+   "match": "dna",
+   "length": 393,
+   "sequence": "ATGCCTTTGTCTCAAGAAGAATCCACCCTCATTGAAAGAGCAACGGCTACAATCAACAGCATCCCCATCTCTGAAGACTACAGCGTCGCCAGCGCAGCTCTCTCTAGCGACGGCCGCATCTTCACTGGTGTCAATGTATATCATTTTACTGGGGGACCTTGTGCAGAACTCGTGGTGCTGGGCACTGCTGCTGCTGCGGCAGCTGGCAACCTGACTTGTATCGTCGCGATCGGAAATGAGAACAGGGGCATCTTGAGCCCCTGCGGACGGTGTCGACAGGTGCTTCTCGATCTGCATCCTGGGATCAAAGCGATAGTGAAGGACAGTGATGGACAGCCGACGGCAGTTGGGATTCGTGAATTGCTGCCCTCTGGTTATGTGTGGGAGGGCTAA",
+   "notes": "blasticidin S deaminase (Aspergillus terreus); blasticidin resistance",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "D83710.1",
+     "location": "50..442(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/D83710.1",
+     "definition": "Aspergillus terreus BSD mRNA for blasticidin S deaminase, complete cds"
+    }
+   ]
+  },
+  {
+   "id": "cmr",
+   "name": "CmR",
+   "type": "marker",
+   "match": "dna",
+   "length": 660,
+   "sequence": "ATGGAGAAAAAAATCACTGGATATACCACCGTTGATATATCCCAATGGCATCGTAAAGAACATTTTGAGGCATTTCAGTCAGTTGCTCAATGTACCTATAACCAGACCGTTCAGCTGGATATTACGGCCTTTTTAAAGACCGTAAAGAAAAATAAGCACAAGTTTTATCCGGCCTTTATTCACATTCTTGCCCGCCTGATGAATGCTCATCCGGAATTCCGTATGGCAATGAAAGACGGTGAGCTGGTGATATGGGATAGTGTTCACCCTTGTTACACCGTTTTCCATGAGCAAACTGAAACGTTTTCATCGCTCTGGAGTGAATACCACGACGATTTCCGGCAGTTTCTACACATATATTCGCAAGATGTGGCGTGTTACGGTGAAAACCTGGCCTATTTCCCTAAAGGGTTTATTGAGAATATGTTTTTCGTCTCAGCCAATCCCTGGGTGAGTTTCACCAGTTTTGATTTAAACGTGGCCAATATGGACAACTTCTTCGCCCCCGTTTTCACCATGGGCAAATATTATACGCAAGGCGACAAGGTGCTGATGCCGCTGGCGATTCAGGTTCATCATGCCGTCTGTGATGGCTTCCATGTCGGCAGAATGCTTAATGAATTACAACAGTACTGCGATGAGTGGCAGGGCGGGGCGTAA",
+   "notes": "chloramphenicol acetyltransferase (Tn9 cat); chloramphenicol resistance",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "V00622.1",
+     "location": "244..903(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/V00622.1",
+     "definition": "Transposon Tn9 (E. coli) with the reading frame for chloramphenicol resistance"
+    }
+   ]
+  },
+  {
+   "id": "gmr",
+   "name": "GmR",
+   "type": "marker",
+   "match": "dna",
+   "length": 534,
+   "sequence": "ATGTTACGCAGCAGCAACGATGTTACGCAGCAGGGCAGTCGCCCTAAAACAAAGTTAGGTGGCTCAAGTATGGGCATCATTCGCACATGTAGGCTCGGCCCTGACCAAGTCAAATCCATGCGGGCTGCTCTTGATCTTTTCGGTCGTGAGTTCGGAGACGTAGCCACCTACTCCCAACATCAGCCGGACTCCGATTACCTCGGGAACTTGCTCCGTAGTAAGACATTCATCGCGCTTGCTGCCTTCGACCAAGAAGCGGTTGTTGGCGCTCTCGCGGCTTACGTTCTGCCCAGGTTTGAGCAGCCGCGTAGTGAGATCTATATCTATGATCTCGCAGTCTCCGGCGAGCACCGGAGGCAGGGCATTGCCACCGCGCTCATCAATCTCCTCAAGCATGAGGCCAACGCGCTTGGTGCTTATGTGATCTACGTGCAAGCAGATTACGGTGACGATCCCGCAGTGGCTCTCTATACAAAGTTGGGCATACGGGAAGAAGTGATGCACTTTGATATCGACCCAAGTACCGCCACCTAA",
+   "notes": "gentamicin acetyltransferase; gentamicin resistance",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "2802..3335(-)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "hygr",
+   "name": "HygR",
+   "type": "marker",
+   "match": "dna",
+   "length": 1026,
+   "sequence": "ATGAAAAAGCCTGAACTCACCGCGACGTCTGTCGAGAAGTTTCTGATCGAAAAGTTCGACAGCGTCTCCGACCTGATGCAGCTCTCGGAGGGCGAAGAATCTCGTGCTTTCAGCTTCGATGTAGGAGGGCGTGGATATGTCCTGCGGGTAAATAGCTGCGCCGATGGTTTCTACAAAGATCGTTATGTTTATCGGCACTTTGCATCGGCCGCGCTCCCGATTCCGGAAGTGCTTGACATTGGGGAATTCAGCGAGAGCCTGACCTATTGCATCTCCCGCCGTGCACAGGGTGTCACGTTGCAAGACCTGCCTGAAACCGAACTGCCCGCTGTTCTGCAGCCGGTCGCGGAGGCCATGGATGCGATCGCTGCGGCCGATCTTAGCCAGACGAGCGGGTTCGGCCCATTCGGACCGCAAGGAATCGGTCAATACACTACATGGCGTGATTTCATATGCGCGATTGCTGATCCCCATGTGTATCACTGGCAAACTGTGATGGACGACACCGTCAGTGCGTCCGTCGCGCAGGCTCTCGATGAGCTGATGCTTTGGGCCGAGGACTGCCCCGAAGTCCGGCACCTCGTGCACGCGGATTTCGGCTCCAACAATGTCCTGACGGACAATGGCCGCATAACAGCGGTCATTGACTGGAGCGAGGCGATGTTCGGGGATTCCCAATACGAGGTCGCCAACATCTTCTTCTGGAGGCCGTGGTTGGCTTGTATGGAGCAGCAGACGCGCTACTTCGAGCGGAGGCATCCGGAGCTTGCAGGATCGCCGCGGCTCCGGGCGTATATGCTCCGCATTGGTCTTGACCAACTCTATCAGAGCTTGGTTGACGGCAATTTCGATGATGCAGCTTGGGCGCAGGGTCGATGCGACGCAATCGTCCGATCCGGAGCCGGGACTGTCGGGCGTACACAAATCGCCCGCAGAAGCGCGGCCGTCTGGACCGATGGCTGTGTAGAAGTACTCGCCGATAGTGGAAACCGACGCCCCAGCACTCGTCCGAGGGCAAAGGAATAG",
+   "notes": "hygromycin B phosphotransferase (hph); hygromycin resistance",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "K01193.1",
+     "location": "211..1236(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/K01193.1",
+     "definition": "Plasmid pJR225 (from E.coli) hygromycin B phosphotransferase (hgh) gene, complete cds"
+    }
+   ]
+  },
+  {
+   "id": "kanr",
+   "name": "KanR",
+   "type": "marker",
+   "match": "dna",
+   "length": 816,
+   "sequence": "ATGAGCCATATTCAACGGGAAACGTCTTGCTCTAGGCCGCGATTAAATTCCAACATGGATGCTGATTTATATGGGTATAAATGGGCTCGCGATAATGTCGGGCAATCAGGTGCGACAATCTATCGATTGTATGGGAAGCCCGATGCGCCAGAGTTGTTTCTGAAACATGGCAAAGGTAGCGTTGCCAATGATGTTACAGATGAGATGGTCAGACTAAACTGGCTGACGGAATTTATGCCTCTTCCGACCATCAAGCATTTTATCCGTACTCCTGATGATGCATGGTTACTCACCACTGCGATCCCCGGGAAAACAGCATTCCAGGTATTAGAAGAATATCCTGATTCAGGTGAAAATATTGTTGATGCGCTGGCAGTGTTCCTGCGCCGGTTGCATTCGATTCCTGTTTGTAATTGTCCTTTTAACAGCGATCGCGTATTTCGTCTCGCTCAGGCGCAATCACGAATGAATAACGGTTTGGTTGATGCGAGTGATTTTGATGACGAGCGTAATGGCTGGCCTGTTGAACAAGTCTGGAAAGAAATGCATAAACTTTTGCCATTCTCACCGGATTCAGTCGTCACTCATGGTGATTTCTCACTTGATAACCTTATTTTTGACGAGGGGAAATTAATAGGTTGTATTGATGTTGGACGAGTCGGAATCGCAGACCGATACCAGGATCTTGCCATCCTATGGAACTGCCTCGGTGAGTTTTCTCCTTCATTACAGAAACGGCTTTTTCAAAAATATGGTATTGATAATCCTGATATGAATAAATTGCAGTTTCATTTGATGCTCGATGAGTTTTTCTAA",
+   "notes": "aminoglycoside phosphotransferase (Tn903); kanamycin resistance",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "3995..4810(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "neor-kanr",
+   "name": "NeoR/KanR",
+   "type": "marker",
+   "match": "dna",
+   "length": 795,
+   "sequence": "ATGATTGAACAAGATGGATTGCACGCAGGTTCTCCGGCCGCTTGGGTGGAGAGGCTATTCGGCTATGACTGGGCACAACAGACAATCGGCTGCTCTGATGCCGCCGTGTTCCGGCTGTCAGCGCAGGGGCGCCCGGTTCTTTTTGTCAAGACCGACCTGTCCGGTGCCCTGAATGAACTGCAGGACGAGGCAGCGCGGCTATCGTGGCTGGCCACGACGGGCGTTCCTTGCGCAGCTGTGCTCGACGTTGTCACTGAAGCGGGAAGGGACTGGCTGCTATTGGGCGAAGTGCCGGGGCAGGATCTCCTGTCATCTCACCTTGCTCCTGCCGAGAAAGTATCCATCATGGCTGATGCAATGCGGCGGCTGCATACGCTTGATCCGGCTACCTGCCCATTCGACCACCAAGCGAAACATCGCATCGAGCGAGCACGTACTCGGATGGAAGCCGGTCTTGTCGATCAGGATGATCTGGACGAAGAGCATCAGGGGCTCGCGCCAGCCGAACTGTTCGCCAGGCTCAAGGCGCGCATGCCCGACGGCGAGGATCTCGTCGTGACCCATGGCGATGCCTGCTTGCCGAATATCATGGTGGAAAATGGCCGCTTTTCTGGATTCATCGACTGTGGCCGGCTGGGTGTGGCGGACCGCTATCAGGACATAGCGTTGGCTACCCGTGATATTGCTGAAGAGCTTGGCGGCGAATGGGCTGACCGCTTCCTCGTGCTTTACGGTATCGCCGCTCCCGATTCGCAGCGCATCGCCTTCTATCGCCTTCTTGACGAGTTCTTCTGA",
+   "notes": "aminoglycoside phosphotransferase (Tn5 aph(3')-II); neomycin/kanamycin/G418 resistance",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "2136..2930(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "puror",
+   "name": "PuroR",
+   "type": "marker",
+   "match": "dna",
+   "length": 600,
+   "sequence": "ATGACCGAGTACAAGCCCACGGTGCGCCTCGCCACCCGCGACGACGTCCCCCGGGCCGTACGCACCCTCGCCGCCGCGTTCGCCGACTACCCCGCCACGCGCCACACCGTCGACCCGGACCGCCACATCGAGCGGGTCACCGAGCTGCAAGAACTCTTCCTCACGCGCGTCGGGCTCGACATCGGCAAGGTGTGGGTCGCGGACGACGGCGCCGCGGTGGCGGTCTGGACCACGCCGGAGAGCGTCGAAGCGGGGGCGGTGTTCGCCGAGATCGGCCCGCGCATGGCCGAGTTGAGCGGTTCCCGGCTGGCCGCGCAGCAACAGATGGAAGGCCTCCTGGCGCCGCACCGGCCCAAGGAGCCCGCGTGGTTCCTGGCCACCGTCGGCGTCTCGCCCGACCACCAGGGCAAGGGTCTGGGCAGCGCCGTCGTGCTCCCCGGAGTGGAGGCGGCCGAGCGCGCCGGGGTGCCCGCCTTCCTGGAGACCTCCGCGCCCCGCAACCTCCCCTTCTACGAGCGGCTCGGCTTCACCGTCACCGCCGACGTCGAGGTGCCCGAAGGACCGCGCACCTGGTGCATGACCCGCAAGCCCGGTGCCTAG",
+   "notes": "puromycin N-acetyltransferase (pac); puromycin resistance",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "3449..4048(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "tcr",
+   "name": "TcR",
+   "type": "marker",
+   "match": "dna",
+   "length": 1191,
+   "sequence": "ATGAAATCTAACAATGCGCTCATCGTCATCCTCGGCACCGTCACCCTGGATGCTGTAGGCATAGGCTTGGTTATGCCGGTACTGCCGGGCCTCTTGCGGGATATCGTCCATTCCGACAGCATCGCCAGTCACTATGGCGTGCTGCTAGCGCTATATGCGTTGATGCAATTTCTATGCGCACCCGTTCTCGGAGCACTGTCCGACCGCTTTGGCCGCCGCCCAGTCCTGCTCGCTTCGCTACTTGGAGCCACTATCGACTACGCGATCATGGCGACCACACCCGTCCTGTGGATCCTCTACGCCGGACGCATCGTGGCCGGCATCACCGGCGCCACAGGTGCGGTTGCTGGCGCCTATATCGCCGACATCACCGATGGGGAAGATCGGGCTCGCCACTTCGGGCTCATGAGCGCTTGTTTCGGCGTGGGTATGGTGGCAGGCCCCGTGGCCGGGGGACTGTTGGGCGCCATCTCCTTGCATGCACCATTCCTTGCGGCGGCGGTGCTCAACGGCCTCAACCTACTACTGGGCTGCTTCCTAATGCAGGAGTCGCATAAGGGAGAGCGTCGACCGATGCCCTTGAGAGCCTTCAACCCAGTCAGCTCCTTCCGGTGGGCGCGGGGCATGACTATCGTCGCCGCACTTATGACTGTCTTCTTTATCATGCAACTCGTAGGACAGGTGCCGGCAGCGCTCTGGGTCATTTTCGGCGAGGACCGCTTTCGCTGGAGCGCGACGATGATCGGCCTGTCGCTTGCGGTATTCGGAATCTTGCACGCCCTCGCTCAAGCCTTCGTCACTGGTCCCGCCACCAAACGTTTCGGCGAGAAGCAGGCCATTATCGCCGGCATGGCGGCCGACGCGCTGGGCTACGTCTTGCTGGCGTTCGCGACGCGAGGCTGGATGGCCTTCCCCATTATGATTCTTCTCGCTTCCGGCGGCATCGGGATGCCCGCGTTGCAGGCCATGCTGTCCAGGCAGGTAGATGACGACCATCAGGGACAGCTTCAAGGATCGCTCGCGGCTCTTACCAGCCTAACTTCGATCACTGGACCGCTGATCGTCACGGCGATTTATGCCGCCTCGGCGAGCACATGGAACGGGTTGGCATGGATTGTAGGCGCCGCCCTATACCTTGTCTGCCTCCCCGCGTTGCGTCGCGGTGCATGGAGCCGGGCCACCTCGACCTGA",
+   "notes": "tetracycline efflux protein (pBR322 tet); tetracycline resistance",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "J01749.1",
+     "location": "86..1276(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/J01749.1",
+     "definition": "Cloning vector pBR322, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "ura3",
+   "name": "URA3",
+   "type": "marker",
+   "match": "dna",
+   "length": 804,
+   "sequence": "ATGTCGAAAGCTACATATAAGGAACGTGCTGCTACTCATCCTAGTCCTGTTGCTGCCAAGCTATTTAATATCATGCACGAAAAGCAAACAAACTTGTGTGCTTCATTGGATGTTCGTACCACCAAGGAATTACTGGAGTTAGTTGAAGCATTAGGTCCCAAAATTTGTTTACTAAAAACACATGTGGATATCTTGACTGATTTTTCCATGGAGGGCACAGTTAAGCCGCTAAAGGCATTATCCGCCAAGTACAATTTTTTACTCTTCGAAGACAGAAAATTTGCTGACATTGGTAATACAGTCAAATTGCAGTACTCTGCGGGTGTATACAGAATAGCAGAATGGGCAGACATTACGAATGCACACGGTGTGGTGGGCCCAGGTATTGTTAGCGGTTTGAAGCAGGCGGCAGAAGAAGTAACAAAGGAACCTAGAGGCCTTTTGATGTTAGCAGAATTGTCATGCAAGGGCTCCCTATCTACTGGAGAATATACTAAGGGTACTGTTGACATTGCGAAGAGCGACAAAGATTTTGTTATCGGCTTTATTGCTCAAAGAGACATGGGTGGAAGAGATGAAGGTTACGATTGGTTGATTATGACACCCGGTGTGGGTTTAGATGACAAGGGAGACGCATTGGGTCAACAGTATAGAACCGTGGATGATGTGGTCTCTACAGGATCTGACATTATTATTGTTGGAAGAGGACTATTTGCAAAGGGAAGGGATGCTAAGGTAGAGGGTGAACGTTACAGAAAAGCAGGCTGGGAAGCATATTTGAGAAGATGCGGCCAGCAAAACTAA",
+   "notes": "yeast auxotrophic marker",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pYES2.yaml",
+     "vector": "pYES2",
+     "location": "2812..3615(-)",
+     "upstream": "https://www.snapgene.com/plasmids/yeast_plasmids/pYES2"
+    }
+   ]
+  },
+  {
+   "id": "zeor",
+   "name": "ZeoR",
+   "type": "marker",
+   "match": "dna",
+   "length": 375,
+   "sequence": "ATGGCCAAGTTGACCAGTGCCGTTCCGGTGCTCACCGCGCGCGACGTCGCCGGAGCGGTCGAGTTCTGGACCGACCGGCTCGGGTTCTCCCGGGACTTCGTGGAGGACGACTTCGCCGGTGTGGTCCGGGACGACGTGACCCTGTTCATCAGCGCGGTCCAGGACCAGGTGGTGCCGGACAACACCCTGGCCTGGGTGTGGGTGCGCGGCCTGGACGAGCTGTACGCCGAGTGGTCGGAGGTCGTGTCCACGAACTTCCGGGACGCCTCCGGGCCGGCCATGACCGAGATCGGCGAGCAGCCGTGGGGGCGGGAGTTCGCCCTGCGCGACCCGGCCGGCAACTGCGTGCACTTCGTGGCCGAGGAGCAGGACTGA",
+   "notes": "Sh ble (Streptoalloteichus hindustanus); Zeocin/bleomycin resistance",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "X52869.1",
+     "location": "3..377(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/X52869.1",
+     "definition": "Streptoalloteichus hindustans ble gene"
+    }
+   ]
+  },
+  {
+   "id": "cppt-cts",
+   "name": "cPPT/CTS",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 117,
+   "sequence": "TTTAAAAGAAAAGGGGGGATTGGGGGGTACAGTGCAGGGGAAAGAATAGTAGACATAATAGCAACAGACATACAAACTAAAGAATTACAAAAACAAATTACAAAAATTCAAAATTTT",
+   "notes": "HIV-1 central polypurine tract / central termination sequence",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "2028..2144(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "emcv-ires",
+   "name": "EMCV IRES",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 574,
+   "sequence": "CCCCTCTCCCTCCCCCCCCCCTAACGTTACTGGCCGAAGCCGCTTGGAATAAGGCCGGTGTGCGTTTGTCTATATGTTATTTTCCACCATATTGCCGTCTTTTGGCAATGTGAGGGCCCGGAAACCTGGCCCTGTCTTCTTGACGAGCATTCCTAGGGGTCTTTCCCCTCTCGCCAAAGGAATGCAAGGTCTGTTGAATGTCGTGAAGGAAGCAGTTCCTCTGGAAGCTTCTTGAAGACAAACAACGTCTGTAGCGACCCTTTGCAGGCAGCGGAACCCCCCACCTGGCGACAGGTGCCTCTGCGGCCAAAAGCCACGTGTATAAGATACACCTGCAAAGGCGGCACAACCCCAGTGCCACGTTGTGAGTTGGATAGTTGTGGAAAGAGTCAAATGGCTCTCCTCAAGCGTATTCAACAAGGGGCTGAAGGATGCCCAGAAGGTACCCCATTGTATGGGATCTGATCTGGGGCCTCGGTGCACATGCTTTACATGTGTTTAGTCGAGGTTAAAAAAACGTCTAGGCCCCCCGAACCACGGGGACGTGGTTTTCCTTTGAAAAACACGATGATAA",
+   "notes": "encephalomyocarditis virus internal ribosome entry site",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "2843..3416(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "hiv-1-psi",
+   "name": "HIV-1 Psi",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 126,
+   "sequence": "CTCTCTCGACGCAGGACTCGGCTTGCTGAAGCGCGCACGGCAAGAGGCGAGGGGCGGCGACTGGTGAGTACGCCAAAAATTTTGACTAGCGGAGGCTAGAAGGAGAGAGATGGGTGCGAGAGCGTC",
+   "notes": "HIV-1 packaging signal",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "681..806(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "prescission-site",
+   "name": "PreScission site",
+   "type": "misc_feature",
+   "match": "peptide",
+   "length": 24,
+   "sequence": "CTGGAAGTTCTGTTCCAGGGGCCC",
+   "notes": "HRV 3C / PreScission protease cleavage site (LEVLFQ^GP)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "U78872.1",
+     "location": "918..941(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/U78872.1",
+     "definition": "Cloning vector pGEX-6P-1, complete sequence"
+    }
+   ],
+   "peptide": "LEVLFQGP"
+  },
+  {
+   "id": "rre",
+   "name": "RRE",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 234,
+   "sequence": "AGGAGCTTTGTTCCTTGGGTTCTTGGGAGCAGCAGGAAGCACTATGGGCGCAGCGTCAATGACGCTGACGGTACAGGCCAGACAATTATTGTCTGGTATAGTGCAGCAGCAGAACAATTTGCTGAGGGCTATTGAGGCGCAACAGCATCTGTTGCAACTCACAGTCTGGGGCATCAAGCAGCTCCAGGCAAGAATCCTGGCTGTGGAAAGATACCTAAAGGATCAACAGCTCCT",
+   "notes": "HIV-1 Rev response element",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "1303..1536(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "tev-site",
+   "name": "TEV site",
+   "type": "misc_feature",
+   "match": "peptide",
+   "length": 21,
+   "sequence": "GAGAATCTGTATTTCCAGGGC",
+   "notes": "TEV protease cleavage site (ENLYFQ^G)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "MK533800.1",
+     "location": "3435..3578(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/MK533800.1",
+     "definition": "Cloning vector pEEva2, complete sequence"
+    }
+   ],
+   "peptide": "ENLYFQG"
+  },
+  {
+   "id": "thrombin-site",
+   "name": "thrombin site",
+   "type": "misc_feature",
+   "match": "peptide",
+   "length": 18,
+   "sequence": "CTGGTGCCGCGCGGCAGC",
+   "notes": "thrombin cleavage site (LVPR^GS)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "243..260(-)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ],
+   "peptide": "LVPRGS"
+  },
+  {
+   "id": "tn7l",
+   "name": "Tn7L",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 166,
+   "sequence": "AACCAGATAAGTGAAATCTAGTTCCAAACTATTTTGTCATTTTTAATTTTCGTATTAGCTTACGACGCTACACCCAGTTCCCATCTATTTTGTCACTCTTCCCTAAATAATCCTTAAAAACTCCATTTCCACCCCTCCCAGTTCCCAACTATTTTGTCCGCCCACA",
+   "notes": "mini-Tn7 left end",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "4429..4594(+)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "tn7r",
+   "name": "Tn7R",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 225,
+   "sequence": "TGTGGGCGGACAATAAAGTCTTAAACTGAACAAAATAGATCTAAACTATGACAATAAAGTCTTAAACTAGACAGAATAGTTGTAAACTGAAATCAGTCCAGTTATGCTGTGAAAAAGCATACTGGACTTTTGTTATGGCTAAAGCAAACTCTTCATTTTCTGAAGTGCAAATTGCCCGTCGTATTAAAGAGGGGCGTGGCCAAGGGCATGGTAAAGACTATATTC",
+   "notes": "mini-Tn7 right end",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "2511..2735(+)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "wpre",
+   "name": "WPRE",
+   "type": "misc_feature",
+   "match": "dna",
+   "length": 589,
+   "sequence": "AATCAACCTCTGGATTACAAAATTTGTGAAAGATTGACTGGTATTCTTAACTATGTTGCTCCTTTTACGCTATGTGGATACGCTGCTTTAATGCCTTTGTATCATGCTATTGCTTCCCGTATGGCTTTCATTTTCTCCTCCTTGTATAAATCCTGGTTGCTGTCTCTTTATGAGGAGTTGTGGCCCGTTGTCAGGCAACGTGGCGTGGTGTGCACTGTGTTTGCTGACGCAACCCCCACTGGTTGGGGCATTGCCACCACCTGTCAGCTCCTTTCCGGGACTTTCGCTTTCCCCCTCCCTATTGCCACGGCGGAACTCATCGCCGCCTGCCTTGCCCGCTGCTGGACAGGGGCTCGGCTGTTGGGCACTGACAATTCCGTGGTGTTGTCGGGGAAGCTGACGTCCTTTCCATGGCTGCTCGCCTGTGTTGCCACCTGGATTCTGCGCGGGACGTCCTTCTGCTACGTCCCTTCGGCCCTCAATCCAGCGGACCTTCCTTCCCGCGGCCTGCTGCCGGCTCTGCGGCCTCTTCCGCGTCTTCGCCTTCGCCCTCAGACGAGTCGGATCTCCCTTTGGGCCGCCTCCCCGC",
+   "notes": "woodchuck hepatitis virus posttranscriptional regulatory element",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pLVX.yaml",
+     "vector": "pLVX",
+     "location": "4062..4650(+)",
+     "upstream": "https://www.snapgene.com/plasmids/viral_expression_and_packaging_vectors/pLVX-IRES-Puro"
+    }
+   ]
+  },
+  {
+   "id": "bgh-poly-a-signal",
+   "name": "bGH poly(A) signal",
+   "type": "polyA_signal",
+   "match": "dna",
+   "length": 225,
+   "sequence": "CTGTGCCTTCTAGTTGCCAGCCATCTGTTGTTTGCCCCTCCCCCGTGCCTTCCTTGACCCTGGAAGGTGCCACTCCCACTGTCCTTTCCTAATAAAATGAGGAAATTGCATCGCATTGTCTGAGTAGGTGTCATTCTATTCTGGGGGGTGGGGTGGGGCAGGACAGCAAGGGGGAGGATTGGGAAGACAATAGCAGGCATGCTGGGGATGCGGTGGGCTCTATGG",
+   "notes": "bovine growth hormone polyadenylation signal",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "1028..1252(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "sv40-poly-a-signal",
+   "name": "SV40 poly(A) signal",
+   "type": "polyA_signal",
+   "match": "dna",
+   "length": 122,
+   "sequence": "AACTTGTTTATTGCAGCTTATAATGGTTACAAATAAAGCAATAGCATCACAAATTTCACAAATAAAGCATTTTTTTCACTGCATTCTAGTTGTGGTTTGTCCAAACTCATCAATGTATCTTA",
+   "notes": "SV40 polyadenylation signal",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "3104..3225(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "sv40-poly-a-signal-2",
+   "name": "SV40 poly(A) signal",
+   "type": "polyA_signal",
+   "match": "dna",
+   "length": 135,
+   "sequence": "AACTTGTTTATTGCAGCTTATAATGGTTACAAATAAAGCAATAGCATCACAAATTTCACAAATAAAGCATTTTTTTCACTGCATTCTAGTTGTGGTTTGTCCAAACTCATCAATGTATCTTATCATGTCTGGATC",
+   "notes": "SV40 polyadenylation signal",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "4266..4400(+)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "ampr-promoter",
+   "name": "AmpR promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 105,
+   "sequence": "CGCGGAACCCCTATTTGTTTATTTTTCTAAATACATTCAAATATGTATCCGCTCATGAGACAATAACCCTGATAAATGCTTCAATAATATTGAAAAAGGAAGAGT",
+   "notes": "bla promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "5293..5397(-)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    },
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "2487..2591(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    }
+   ]
+  },
+  {
+   "id": "cmv-promoter",
+   "name": "CMV promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 204,
+   "sequence": "GTGATGCGGTTTTGGCAGTACATCAATGGGCGTGGATAGCGGTTTGACTCACGGGGATTTCCAAGTCTCCACCCCATTGACGTCAATGGGAGTTTGTTTTGGCACCAAAATCAACGGGACTTTCCAAAATGTCGTAACAACTCCGCCCCATTGACGCAAATGGGCGGTAGGCGTGTACGGTGGGAGGTCTATATAAGCAGAGCT",
+   "notes": "human cytomegalovirus immediate early promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "615..818(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "gal1-promoter",
+   "name": "GAL1 promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 443,
+   "sequence": "ACGGATTAGAAGCCGCCGAGCGGGTGACAGCCCTCCGAAGGAAGACTCTCCTCCGTGCGTCCTCGTCTTCACCGGTCGCGTTCCTGAAACGCAGATGTGCCTCGCGCCGCACTGCTCCGAACAATAAAGATTCTACAATACTAGCTTTTATGGTTATGAAGAGGAAAAATTGGCAGTAACCTGGCCCCACAAACCTTCAAATGAACGAATCAAATTAACAACCATAGGATGATAATGCGATTAGTTTTTTAGCCTTATTTCTGGGGTAATTAATCAGCGAAGCGATGATTTTTGATCTATTAACAGATATATAAATGCAAAAACTGCATAACCACTTTAACTAATACTTTCAACATTTTCGGTTTGTATTACTTCTTATTCAAATGTAATAAAAGTATCAACAAAAAATTGTTAATATACCTCTATACTTTAACGTCAAGGAG",
+   "notes": "yeast GAL1 inducible promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pYES2.yaml",
+     "vector": "pYES2",
+     "location": "1..443(+)",
+     "upstream": "https://www.snapgene.com/plasmids/yeast_plasmids/pYES2"
+    }
+   ]
+  },
+  {
+   "id": "lac-promoter",
+   "name": "lac promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 31,
+   "sequence": "TTTACACTTTATGCTTCCGGCTCGTATGTTG",
+   "notes": "E. coli lac promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "513..543(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
+     "kind": "ncbi_genbank",
+     "accession": "OM304286.1",
+     "location": "1127..1157(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/OM304286.1",
+     "definition": "Cloning vector pKF, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "laci-promoter",
+   "name": "lacI promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 78,
+   "sequence": "GACACCATCGAATGGCGCAAAACCTTTCGCGGTATGGCATGATAGCGCCCGGAAGAGAGTCAATTCAGGGTGGTGAAT",
+   "notes": "lacI promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "695..772(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "laciq-promoter",
+   "name": "lacIq promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 78,
+   "sequence": "GACACCATCGAATGGTGCAAAACCTTTCGCGGTATGGCATGATAGCGCCCGGAAGAGAGTCAATTCAGGGTGGTGAAT",
+   "notes": "lacIq allele promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pGEX-4T-1.yaml",
+     "vector": "pGEX-4T-1",
+     "location": "3240..3317(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pgex_vectors_(ge_healthcare)/pGEX-4T-1"
+    }
+   ]
+  },
+  {
+   "id": "pc-promoter",
+   "name": "Pc promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 29,
+   "sequence": "TTGACATAAGCCTGTTCGGTTCGTAAACT",
+   "notes": "class 1 integron promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "3524..3552(-)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "polyhedrin-promoter",
+   "name": "polyhedrin promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 92,
+   "sequence": "ATCATGGAGATAATTAAAATGATAACCATCTCGCAAATAAATAAGTATTTTACTGTTTTCGTAACAGTTTTGTAATAAAAAAACCTATAAAT",
+   "notes": "baculovirus polyhedrin promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pFastBac1.yaml",
+     "vector": "pFastBac1",
+     "location": "3904..3995(+)",
+     "upstream": "https://www.snapgene.com/plasmids/insect_cell_vectors/pFastBac1"
+    }
+   ]
+  },
+  {
+   "id": "sv40-promoter",
+   "name": "SV40 promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 330,
+   "sequence": "GTGTGTCAGTTAGGGTGTGGAAAGTCCCCAGGCTCCCCAGCAGGCAGAAGTATGCAAAGCATGCATCTCAATTAGTCAGCAACCAGGTGTGGAAAGTCCCCAGGCTCCCCAGCAGGCAGAAGTATGCAAAGCATGCATCTCAATTAGTCAGCAACCATAGTCCCGCCCCTAACTCCGCCCATCCCGCCCCTAACTCCGCCCAGTTCCGCCCATTCTCCGCCCCATGGCTGACTAATTTTTTTTATTTATGCAGAGGCCGAGGCCGCCTCTGCCTCTGAGCTATTCCAGAAGTAGTGAGGAGGCTTTTTTGGAGGCCTAGGCTTTTGCAAA",
+   "notes": "SV40 enhancer and early promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "1740..2069(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "t7-promoter",
+   "name": "T7 promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 19,
+   "sequence": "TAATACGACTCACTATAGG",
+   "notes": "promoter for bacteriophage T7 RNA polymerase",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "863..881(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "tac-promoter",
+   "name": "tac promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 29,
+   "sequence": "TTGACAATTAATCATCGGCTCGTATAATG",
+   "notes": "hybrid trp/lacUV5 promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pGEX-4T-1.yaml",
+     "vector": "pGEX-4T-1",
+     "location": "183..211(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pgex_vectors_(ge_healthcare)/pGEX-4T-1"
+    }
+   ]
+  },
+  {
+   "id": "ura3-promoter",
+   "name": "URA3 promoter",
+   "type": "promoter",
+   "match": "dna",
+   "length": 216,
+   "sequence": "TTCAATTCATCATTTTTTTTTTATTCTTTTTTTTGATTTCGGTTTCTTTGAAATTTTTTTGATTCGGTAATCTCCGAACAGAAGGAAGAACGAAGGAAGGAGCACAGACTTAGATTGGTATATATACGCATATGTAGTGTTGAAGAAACATGAAATTGCCCAGTATTCTTAACCCAACTGCACAGAACAAAAACCTGCAGGAAACGAAGATAAATC",
+   "notes": "URA3 promoter",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pYES2.yaml",
+     "vector": "pYES2",
+     "location": "3616..3831(-)",
+     "upstream": "https://www.snapgene.com/plasmids/yeast_plasmids/pYES2"
+    }
+   ]
+  },
+  {
+   "id": "attb1",
+   "name": "attB1",
+   "type": "protein_bind",
+   "match": "dna",
+   "length": 25,
+   "sequence": "ACAAGTTTGTACAAAAAAGCAGGCT",
+   "notes": "Gateway attB1 recombination site",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "PV983739.1",
+     "location": "2246..2270(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/PV983739.1",
+     "definition": "Cloning vector pBBR5pemIK-Purple, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "attb2",
+   "name": "attB2",
+   "type": "protein_bind",
+   "match": "dna",
+   "length": 25,
+   "sequence": "ACCACTTTGTACAAGAAAGCTGGGT",
+   "notes": "Gateway attB2 recombination site",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "PV983739.1",
+     "location": "3148..3172(-)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/PV983739.1",
+     "definition": "Cloning vector pBBR5pemIK-Purple, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "cap-binding-site",
+   "name": "CAP binding site",
+   "type": "protein_bind",
+   "match": "dna",
+   "length": 22,
+   "sequence": "TAATGTGAGTTAGCTCACTCAT",
+   "notes": "catabolite activator protein binding site",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "558..579(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
+     "kind": "ncbi_genbank",
+     "accession": "OM304286.1",
+     "location": "1091..1112(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/OM304286.1",
+     "definition": "Cloning vector pKF, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "lac-operator",
+   "name": "lac operator",
+   "type": "protein_bind",
+   "match": "dna",
+   "length": 25,
+   "sequence": "GGAATTGTTATCCGCTCACAATTCC",
+   "notes": "lac repressor binding site",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "343..367(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "lac-operator-2",
+   "name": "lac operator",
+   "type": "protein_bind",
+   "match": "dna",
+   "length": 17,
+   "sequence": "TTGTGAGCGGATAACAA",
+   "notes": "lac repressor binding site (17 bp)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "489..505(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    },
+    {
+     "kind": "ncbi_genbank",
+     "accession": "OM304286.1",
+     "location": "1165..1181(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/OM304286.1",
+     "definition": "Cloning vector pKF, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "2u-ori",
+   "name": "2μ ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 881,
+   "sequence": "AACGAAGCATCTGTGCTTCATTTTGTAGAACAAAAATGCAACGCGAGAGCGCTAATTTTTCAAACAAAGAATCTGAGCTGCATTTTTACAGAACAGAAATGCAACGCGAAAGCGCTATTTTACCAACGAAGAATCTGTGCTTCATTTTTGTAAAACAAAAATGCAACGCGACGAGAGCGCTAATTTTTCAAACAAAGAATCTGAGCTGCATTTTTACAGAACAGAAATGCAACGCGAGAGCGCTATTTTACCAACAAAGAATCTATACTTCTTTTTTGTTCTACAAAAATGCATCCCGAGAGCGCTATTTTTCTAACAAAGCATCTTAGATTACTTTTTTTCTCCTTTGTGCGCTCTATAATGCAGTCTCTTGATAACTTTTTGCACTGTAGGTCCGTTAAGGTTAGAAGAAGGCTACTTTGGTGTCTATTTTCTCTTCCATAAAAAAAGCCTGACTCCACTTCCCGCGTTTACTGATTACTAGCGAAGCTGCGGGTGCATTTTTTCAAGATAAAGGCATCCCCGATTATATTCTATACCGATGTGGATTGCGCATACTTTGTGAACAGAAAGTGATAGCGTTGATGATTCTTCATTGGTCAGAAAATTATGAACGGTTTCTTCTATTTTGTCTCTATATACTACGTATAGGAAATGTTTACATTTTCGTATTGTTTTCGATTCACTCTATGAATAGTTCTTACTACAATTTTTTTGTCTAAAGAGTAATACTAGAGATAAACATAAAAAATGTAGAGGTCGAGTTTAGATGCAAGTTCAAGGAGCGAAAGGTGGATGGGTAGGTTATATAGGGATATAGCACAGAGATATATAGCAAAGAGATACTTTTGAGCAATGTTTGTGGAAGCGGTATTCGCAAT",
+   "notes": "yeast 2μ plasmid origin",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pYES2.yaml",
+     "vector": "pYES2",
+     "location": "4435..5315(+)",
+     "upstream": "https://www.snapgene.com/plasmids/yeast_plasmids/pYES2"
+    }
+   ]
+  },
+  {
+   "id": "f1-ori",
+   "name": "f1 ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 429,
+   "sequence": "ACGCGCCCTGTAGCGGCGCATTAAGCGCGGCGGGTGTGGTGGTTACGCGCAGCGTGACCGCTACACTTGCCAGCGCCCTAGCGCCCGCTCCTTTCGCTTTCTTCCCTTCCTTTCTCGCCACGTTCGCCGGCTTTCCCCGTCAAGCTCTAAATCGGGGGCTCCCTTTAGGGTTCCGATTTAGTGCTTTACGGCACCTCGACCCCAAAAAACTTGATTAGGGTGATGGTTCACGTAGTGGGCCATCGCCCTGATAGACGGTTTTTCGCCCTTTGACGTTGGAGTCCACGTTCTTTAATAGTGGACTCTTGTTCCAAACTGGAACAACACTCAACCCTATCTCGGTCTATTCTTTTGATTTATAAGGGATTTTGCCGATTTCGGCCTATTGGTTAAAAAATGAGCTGATTTAACAAAAATTTAACGCGAATT",
+   "notes": "f1 bacteriophage origin of replication",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "1298..1726(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "ori",
+   "name": "ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 586,
+   "sequence": "TTGAGATCCTTTTTTTCTGCGCGTAATCTGCTGCTTGCAAACAAAAAAACCGCTACCAGCGGTGGTTTGTTTGCCGGATCAAGAGCTACCAACTCTTTTTCCGAAGGTAACTGGCTTCAGCAGAGCGCAGATACCAAATACTGTTCTTCTAGTGTAGCCGTAGTTAGGCCACCACTTCAAGAACTCTGTAGCACCGCCTACATACCTCGCTCTGCTAATCCTGTTACCAGTGGCTGCTGCCAGTGGCGATAAGTCGTGTCTTACCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGGCTGAACGGGGGGTTCGTGCACACAGCCCAGCTTGGAGCGAACGACCTACACCGAACTGAGATACCTACAGCGTGAGCTATGAGAAAGCGCCACGCTTCCCGAAGGGAGAAAGGCGGACAGGTATCCGGTAAGCGGCAGGGTCGGAACAGGAGAGCGCACGAGGGAGCTTCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCTCTGACTTGAGCGTCGATTTTTGTGATGCTCGTCAGGGGGGCGGAGCCTATGGAAA",
+   "notes": "high-copy-number ColE1/pMB1/pBR322/pUC origin of replication",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "3676..4261(-)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "ori-2",
+   "name": "ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 589,
+   "sequence": "TTGAGATCCTTTTTTTCTGCGCGTAATCTGCTGCTTGCAAACAAAAAAACCACCGCTACCAGCGGTGGTTTGTTTGCCGGATCAAGAGCTACCAACTCTTTTTCCGAAGGTAACTGGCTTCAGCAGAGCGCAGATACCAAATACTGTTCTTCTAGTGTAGCCGTAGTTAGGCCACCACTTCAAGAACTCTGTAGCACCGCCTACATACCTCGCTCTGCTAATCCTGTTACCAGTGGCTGCTGCCAGTGGCGATAAGTCGTGTCTTACCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGGCTGAACGGGGGGTTCGTGCACACAGCCCAGCTTGGAGCGAACGACCTACACCGAACTGAGATACCTACAGCGTGAGCTATGAGAAAGCGCCACGCTTCCCGAAGGGAGAAAGGCGGACAGGTATCCGGTAAGCGGCAGGGTCGGAACAGGAGAGCGCACGAGGGAGCTTCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCTCTGACTTGAGCGTCGATTTTTGTGATGCTCGTCAGGGGGGCGGAGCCTATGGAAA",
+   "notes": "high-copy-number ColE1/pMB1/pBR322/pUC origin of replication (589 bp, pUC19)",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pUC19.yaml",
+     "vector": "pUC19",
+     "location": "867..1455(-)",
+     "upstream": "https://www.ncbi.nlm.nih.gov/nuccore/L09137"
+    }
+   ]
+  },
+  {
+   "id": "p15a-ori",
+   "name": "p15A ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 546,
+   "sequence": "TTGAGATCGTTTTGGTCTGCGCGTAATCTCTTGCTCTGAAAACGAAAAAACCGCCTTGCAGGGCGGTTTTTCGAAGGTTCTCTGAGCTACCAACTCTTTGAACCGAGGTAACTGGCTTGGAGGAGCGCAGTCACCAAAACTTGTCCTTTCAGTTTAGCCTTAACCGGCGCATGACTTCAAGACTAACTCCTCTAAATCAATTACCAGTGGCTGCTGCCAGTGGTGCTTTTGCATGTCTTTCCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGACTGAACGGGGGGTTCGTGCATACAGTCCAGCTTGGAGCGAACTGCCTACCCGGAACTGAGTGTCAGGCGTGGAATGAGACAAACGCGGCCATAACAGCGGAATGACACCGGTAAACCGAAAGGCAGGAACAGGAGAGCGCACGAGGGAGCCGCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCACTGATTTGAGCGTCAGATTTCGTGATGCTTGTCAGGGGGGCGGAGCCTATGGAAA",
+   "notes": "medium-copy-number p15A origin of replication (pACYC184)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "X06403.1",
+     "location": "848..1393(-)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/X06403.1",
+     "definition": "Cloning vector pACYC184"
+    }
+   ]
+  },
+  {
+   "id": "sv40-ori",
+   "name": "SV40 ori",
+   "type": "rep_origin",
+   "match": "dna",
+   "length": 136,
+   "sequence": "ATCCCGCCCCTAACTCCGCCCAGTTCCGCCCATTCTCCGCCCCATGGCTGACTAATTTTTTTTATTTATGCAGAGGCCGAGGCCGCCTCTGCCTCTGAGCTATTCCAGAAGTAGTGAGGAGGCTTTTTTGGAGGCC",
+   "notes": "SV40 origin of replication",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pCDNA3.1.yaml",
+     "vector": "pcDNA3.1",
+     "location": "1920..2055(+)",
+     "upstream": "https://www.snapgene.com/plasmids/mammalian_expression_vectors/pcDNA3.1(%2B)"
+    }
+   ]
+  },
+  {
+   "id": "6xhis",
+   "name": "6xHis",
+   "type": "tag",
+   "match": "peptide",
+   "length": 18,
+   "sequence": "CACCACCACCACCACCAC",
+   "notes": "polyhistidine tag",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "140..157(-)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ],
+   "peptide": "HHHHHH"
+  },
+  {
+   "id": "acv5",
+   "name": "AcV5",
+   "type": "tag",
+   "match": "peptide",
+   "length": 27,
+   "sequence": "AGTTGGAAGGATGCCTCTGGATGGTCT",
+   "notes": "AcV5 epitope tag",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "MP192394.1",
+     "location": "1..27(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/MP192394.1",
+     "definition": "Sequence 64 from Patent EP3516068"
+    }
+   ],
+   "peptide": "SWKDASGWS"
+  },
+  {
+   "id": "flag",
+   "name": "FLAG",
+   "type": "tag",
+   "match": "peptide",
+   "length": 24,
+   "sequence": "GACTACAAGGACGACGATGACAAG",
+   "notes": "FLAG epitope tag (enterokinase site DDDDK^)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "PQ065984.1",
+     "location": "6984..7007(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/PQ065984.1",
+     "definition": "Cloning vector pBHg-2FLAG-EGFP, complete sequence"
+    }
+   ],
+   "peptide": "DYKDDDDK"
+  },
+  {
+   "id": "gst",
+   "name": "GST",
+   "type": "tag",
+   "match": "dna",
+   "length": 654,
+   "sequence": "ATGTCCCCTATACTAGGTTATTGGAAAATTAAGGGCCTTGTGCAACCCACTCGACTTCTTTTGGAATATCTTGAAGAAAAATATGAAGAGCATTTGTATGAGCGCGATGAAGGTGATAAATGGCGAAACAAAAAGTTTGAATTGGGTTTGGAGTTTCCCAATCTTCCTTATTATATTGATGGTGATGTTAAATTAACACAGTCTATGGCCATCATACGTTATATAGCTGACAAGCACAACATGTTGGGTGGTTGTCCAAAAGAGCGTGCAGAGATTTCAATGCTTGAAGGAGCGGTTTTGGATATTAGATACGGTGTTTCGAGAATTGCATATAGTAAAGACTTTGAAACTCTCAAAGTTGATTTTCTTAGCAAGCTACCTGAAATGCTGAAAATGTTCGAAGATCGTTTATGTCATAAAACATATTTAAATGGTGATCATGTAACCCATCCTGACTTCATGTTGTATGACGCTCTTGATGTTGTTTTATACATGGACCCAATGTGCCTGGATGCGTTCCCAAAATTAGTTTGTTTTAAAAAACGTATTGAAGCTATCCCACAAATTGATAAGTACTTGAAATCCAGCAAGTATATAGCATGGCCTTTGCAGGGCTGGCAAGCCACGTTTGGTGGTGGCGACCATCCTCCAAAA",
+   "notes": "glutathione S-transferase (Schistosoma japonicum) fusion tag",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pGEX-4T-1.yaml",
+     "vector": "pGEX-4T-1",
+     "location": "258..911(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pgex_vectors_(ge_healthcare)/pGEX-4T-1"
+    }
+   ]
+  },
+  {
+   "id": "ha",
+   "name": "HA",
+   "type": "tag",
+   "match": "peptide",
+   "length": 27,
+   "sequence": "TATCCGTATGACGTGCCTGACTACGCC",
+   "notes": "influenza hemagglutinin epitope tag",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "OR519721.1",
+     "location": "501..527(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/OR519721.1",
+     "definition": "Cloning vector pVY118, complete sequence"
+    }
+   ],
+   "peptide": "YPYDVPDYA"
+  },
+  {
+   "id": "mbp",
+   "name": "MBP",
+   "type": "tag",
+   "match": "dna",
+   "length": 1101,
+   "sequence": "ATGAAAATCGAAGAAGGTAAACTGGTAATCTGGATTAACGGCGATAAAGGCTATAACGGTCTCGCTGAAGTCGGTAAGAAATTCGAGAAAGATACCGGAATTAAAGTCACCGTTGAGCATCCGGATAAACTGGAAGAGAAATTCCCACAGGTTGCGGCAACTGGCGATGGCCCTGACATTATCTTCTGGGCACACGACCGCTTTGGTGGCTACGCTCAATCTGGCCTGTTGGCTGAAATCACCCCGGACAAAGCGTTCCAGGACAAGCTGTATCCGTTTACCTGGGATGCCGTACGTTACAACGGCAAGCTGATTGCTTACCCGATCGCTGTTGAAGCGTTATCGCTGATTTATAACAAAGATCTGCTGCCGAACCCGCCAAAAACCTGGGAAGAGATCCCGGCGCTGGATAAAGAACTGAAAGCGAAAGGTAAGAGCGCGCTGATGTTCAACCTGCAAGAACCGTACTTCACCTGGCCGCTGATTGCTGCTGACGGGGGTTATGCGTTCAAGTATGAAAACGGCAAGTACGACATTAAAGACGTGGGCGTGGATAACGCTGGCGCGAAAGCGGGTCTGACCTTCCTGGTTGACCTGATTAAAAACAAACACATGAATGCAGACACCGATTACTCCATCGCAGAAGCTGCCTTTAATAAAGGCGAAACAGCGATGACCATCAACGGCCCGTGGGCATGGTCCAACATCGACACCAGCAAAGTGAATTATGGTGTAACGGTACTGCCGACCTTCAAGGGTCAACCATCCAAACCGTTCGTTGGCGTGCTGAGCGCAGGTATTAACGCCGCCAGTCCGAACAAAGAGCTGGCAAAAGAGTTCCTCGAAAACTATCTGCTGACTGATGAAGGTCTGGAAGCGGTTAATAAAGACAAACCGCTGGGTGCCGTAGCGCTGAAGTCTTACGAGGAAGAGTTGGTGAAAGATCCGCGTATTGCCGCCACTATGGAAAACGCCCAGAAAGGTGAAATCATGCCGAACATCCCGCAGATGTCCGCTTTCTGGTATGCCGTGCGTACTGCGGTGATCAACGCCGCCAGCGGTCGTCAGACTGTCGATGAAGCCCTGAAAGACGCGCAGACT",
+   "notes": "maltose binding protein (E. coli malE) fusion tag",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "MZ215989.1",
+     "location": "2253..3353(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/MZ215989.1",
+     "definition": "Cloning Vector pHyp4s.MBP, complete sequence"
+    }
+   ]
+  },
+  {
+   "id": "myc",
+   "name": "Myc",
+   "type": "tag",
+   "match": "peptide",
+   "length": 30,
+   "sequence": "GAACAGAAACTGATCTCGGAGGAAGATCTG",
+   "notes": "c-Myc epitope tag",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "MZ215986.1",
+     "location": "2214..2246(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/MZ215986.1",
+     "definition": "Cloning Vector pHyp4s.Myc, complete sequence"
+    }
+   ],
+   "peptide": "EQKLISEEDL"
+  },
+  {
+   "id": "t7-tag",
+   "name": "T7 tag",
+   "type": "tag",
+   "match": "peptide",
+   "length": 33,
+   "sequence": "ATGGCTAGCATGACTGGTGGACAGCAAATGGGT",
+   "notes": "T7 gene 10 leader epitope tag",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "207..239(-)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ],
+   "peptide": "MASMTGGQQMG"
+  },
+  {
+   "id": "v5",
+   "name": "V5",
+   "type": "tag",
+   "match": "peptide",
+   "length": 42,
+   "sequence": "GGGAAGCCTATCCCGAACCCGCTCCTCGGACTCGACTCCACG",
+   "notes": "V5 epitope tag (simian virus 5)",
+   "sources": [
+    {
+     "kind": "ncbi_genbank",
+     "accession": "OQ547858.1",
+     "location": "470..511(+)",
+     "url": "https://www.ncbi.nlm.nih.gov/nuccore/OQ547858.1",
+     "definition": "Cloning vector pDP011, complete sequence"
+    }
+   ],
+   "peptide": "GKPIPNPLLGLDST"
+  },
+  {
+   "id": "cyc1-terminator",
+   "name": "CYC1 terminator",
+   "type": "terminator",
+   "match": "dna",
+   "length": 248,
+   "sequence": "TCATGTAATTAGTTATGTCACGCTTACATTCACGCCCTCCCCCCACATCCGCTCTAACCGAAAAGGAAGGAGTTAGACAACCTGAAGTCTAGGTCCCTATTTATTTTTTTATAGTTATGTTAGTATTAAGAACGTTATTTATATTTCAAATTTTTCTTTTTTTTCTGTACAGACGCGTGTACGCATGTAACATTATACTGAAAACCTTGCTTGAGAAGGTTTTGGGACGCTCGAAGGCTTTAATTTGC",
+   "notes": "yeast CYC1 terminator",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pYES2.yaml",
+     "vector": "pYES2",
+     "location": "609..856(+)",
+     "upstream": "https://www.snapgene.com/plasmids/yeast_plasmids/pYES2"
+    }
+   ]
+  },
+  {
+   "id": "t7-terminator",
+   "name": "T7 terminator",
+   "type": "terminator",
+   "match": "dna",
+   "length": 48,
+   "sequence": "CAAAAAACCCCTCAAGACCCGTTTAGAGGCCCCAAGGGGTTATGCTAG",
+   "notes": "transcription terminator for bacteriophage T7 RNA polymerase",
+   "sources": [
+    {
+     "kind": "vector_library",
+     "file": "data/vectors/pET-28a.yaml",
+     "vector": "pET-28a",
+     "location": "26..73(+)",
+     "upstream": "https://www.snapgene.com/plasmids/pet_and_duet_vectors_(novagen)/pET-28a(%2B)"
+    }
+   ]
+  }
+ ]
+}

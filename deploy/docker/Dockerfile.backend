@@ -1,0 +1,88 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies — curl: 健康检查 + tracy 下载。
+# 注意：Python 依赖只从锁文件 requirements.backend.txt 安装，不要在此手工罗列包名
+# （此前手工列表与清单脱节，缺 pyyaml 导致容器启动即崩）。
+# 全部依赖均有官方 wheel，无需 gcc 等编译工具链
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r plasmid && useradd -r -g plasmid plasmid
+
+# PyPI 镜像可覆盖：国内构建传 --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple。
+# 默认官方源——此前硬编码国内镜像，海外 VPS 构建频繁断流
+ARG PIP_INDEX_URL=https://pypi.org/simple/
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+
+# Install Python dependencies（唯一来源 = 锁文件 requirements.backend.txt）
+# 锁文件含全部传递依赖（含 biopython 及其 numpy）与 sha256，--require-hashes
+# 下任何未锁定或哈希不符的包都会让构建失败；源清单 requirements.backend.in
+# 改动后用 scripts/lock_requirements.sh 重新生成
+COPY deploy/docker/requirements.backend.txt ./requirements.txt
+RUN pip install --no-cache-dir --timeout=300 --retries=5 \
+    --require-hashes -r requirements.txt
+
+# Tracy（Sanger trace basecalling/比对/解卷积引擎，测序分析可选加速组件）
+# 下载预编译二进制并按固定 sha256 校验，不符或下载失败即中止构建——
+# 未经校验的二进制会以服务身份执行用户上传的 ab1。
+# 校验值取自 GitHub release API 的 asset digest（与本地下载计算结果一致）；
+# 升级 TRACY_VERSION 时须同步更新对应架构的 TRACY_SHA256_*。
+ARG TRACY_VERSION=v0.9.1
+ARG TRACY_SHA256_AMD64=df2dd5016f11aeb16d2df090e06d9fac713d4e74729b44e758165169161bc4d5
+ARG TRACY_SHA256_ARM64=02e091a53093a16fb3a0fdeac75a2ffa99e99a72d89a3c210301074d01c2a60d
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+      amd64) sha="$TRACY_SHA256_AMD64" ;; \
+      arm64) sha="$TRACY_SHA256_ARM64" ;; \
+      *) echo "ERROR: no tracy binary/checksum for arch $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/tracy \
+      "https://github.com/gear-genomics/tracy/releases/download/${TRACY_VERSION}/tracy-${TRACY_VERSION}-linux-${arch}"; \
+    echo "${sha}  /tmp/tracy" | sha256sum -c -; \
+    install -m 0755 /tmp/tracy /usr/local/bin/tracy; \
+    rm -f /tmp/tracy
+
+# Copy application code
+COPY src/backend/ ./backend/
+# 终审 H-01：只 COPY 需要随镜像分发的数据子目录（载体/密码子表），
+# 不再整目录 COPY data/ ——开发库 plasmid_designer.db（含用户邮箱与
+# bcrypt 哈希）曾随镜像层分发
+COPY data/vectors/ ./data/vectors/
+COPY data/codon_tables/ ./data/codon_tables/
+COPY data/features/ ./data/features/
+
+# 批量测序分块上传暂存目录：compose 挂具名卷到这里。具名卷首次挂载时继承
+# 镜像内该目录的属主，非 root 的 plasmid 才可写（宿主机 bind mount 的 data/
+# 常属 root，容器内不可写）
+RUN mkdir -p /app/batch_uploads && chmod 700 /app/batch_uploads
+
+# Set permissions
+RUN chown -R plasmid:plasmid /app
+
+# Python path: backend/ is the package root (contains app/ and core/)
+ENV PYTHONPATH=/app/backend
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DATA_DIR=/app/data
+ENV VECTORS_DIR=/app/data/vectors
+ENV CODON_TABLES_DIR=/app/data/codon_tables
+
+# Switch to non-root user
+USER plasmid
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Start command — shell 形式以在容器启动时读取 BACKEND_WORKERS（docker-compose.yml 已注入）。
+# 单核小机器建议单 worker：多 worker 会使进程内限流/缓存配额翻倍，
+# memory 模式下批量进度查询可能落到另一 worker 返回 404
+CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "${BACKEND_WORKERS:-1}"

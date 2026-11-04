@@ -1,0 +1,52 @@
+"""
+数据库模块
+"""
+
+from .models import (
+    Base, engine, SessionLocal, get_db, init_db, drop_db,
+    UserDB, DesignDB, PrimerDB, DesignWarningDB, DesignErrorDB,
+    BatchJobDB, BatchDesignDB, VectorDB, VectorFeatureDB,
+    SiteSettingsDB, EmailVerificationDB, RevokedTokenDB
+)
+from .crud import (
+    # 用户
+    create_user, get_user_by_email, get_user_by_id, get_users,
+    update_user, delete_user, count_admins,
+    # 令牌吊销
+    bump_token_version, prune_revoked_tokens, revoke_token, is_token_revoked,
+    # 站点设置
+    get_site_settings_row, save_site_settings_row,
+    # 邮箱验证码
+    create_email_verification, get_latest_email_verification, consume_email_verification,
+    get_last_sent_email_verification, email_verification_stats_since,
+    reserve_email_verification_attempt,
+    # 设计
+    create_design, get_design, get_designs_by_user, update_design,
+    add_primer, add_warning, add_error,
+    # 批量
+    create_batch_job, get_batch_job, update_batch_job, add_batch_design,
+    # 载体（注意：载体库实际落盘 YAML，见 app/vector_import.py；下面这套
+    # VectorDB ORM CRUD 当前无路由调用，但 delete_user 的属主置空与既有
+    # 库表结构依赖这些模型，保留勿删——2026-10-31 审计确认）
+    create_vector, get_vector, get_vectors, delete_vector, add_vector_feature
+)
+
+__all__ = [
+    # 模型
+    "Base", "engine", "SessionLocal", "get_db", "init_db", "drop_db",
+    "UserDB", "DesignDB", "PrimerDB", "DesignWarningDB", "DesignErrorDB",
+    "BatchJobDB", "BatchDesignDB", "VectorDB", "VectorFeatureDB",
+    "SiteSettingsDB", "EmailVerificationDB", "RevokedTokenDB",
+    # CRUD
+    "create_user", "get_user_by_email", "get_user_by_id", "get_users",
+    "update_user", "delete_user", "count_admins",
+    "bump_token_version", "prune_revoked_tokens", "revoke_token", "is_token_revoked",
+    "get_site_settings_row", "save_site_settings_row",
+    "create_email_verification", "get_latest_email_verification", "consume_email_verification",
+    "get_last_sent_email_verification", "email_verification_stats_since",
+    "reserve_email_verification_attempt",
+    "create_design", "get_design", "get_designs_by_user", "update_design",
+    "add_primer", "add_warning", "add_error",
+    "create_batch_job", "get_batch_job", "update_batch_job", "add_batch_design",
+    "create_vector", "get_vector", "get_vectors", "delete_vector", "add_vector_feature"
+]

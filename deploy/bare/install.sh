@@ -1,0 +1,559 @@
+#!/bin/bash
+# Plasmid Designer v2 — Ubuntu Focal (20.04) 直接部署脚本
+# 用法:
+#   sudo bash install.sh                    # 默认 SQLite
+#   sudo bash install.sh --db postgresql    # PostgreSQL 模式
+#   sudo bash install.sh --uninstall        # 卸载
+#   sudo bash install.sh --db postgresql --project-dir /home/user/plasmid  # 自定义路径
+#   sudo bash install.sh --uninstall --yes   # 卸载（跳过确认，自动化用）
+
+set -euo pipefail
+
+# ==================== 配置 ====================
+
+INSTALL_DIR="/opt/plasmid-designer"
+DB_MODE="sqlite"
+UNINSTALL=false
+ASSUME_YES=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# PostgreSQL 配置
+PG_USER="plasmid"
+PG_DB="plasmid_designer"
+PG_PASSWORD=""
+
+# SQLite 库放在服务用户独占的子目录：安装目录为让 nginx 穿过而给了
+# other 的 x 权限（751），库文件若留在可遍历路径上且为 0644，本机任意
+# 用户都能按固定路径读出用户表
+SQLITE_DIR_NAME="db"
+
+# 从 .env 的 DATABASE_URL 解析 SQLite 库文件路径；PostgreSQL 等为空。
+# 未配置 DATABASE_URL 时后端默认用 $DATA_DIR/plasmid_designer.db
+sqlite_db_path() {
+    local install_dir="$1" url path
+    # 只去掉首尾空白/CR 与包裹引号，路径中间的空格保留
+    url=$(grep -E '^DATABASE_URL=' "$install_dir/.env" 2>/dev/null | tail -n 1 \
+        | cut -d= -f2- | sed -E "s/^[[:space:]\"']+//; s/[[:space:]\"']+\$//" || true)
+    if [ -z "$url" ]; then
+        echo "$install_dir/data/plasmid_designer.db"
+        return 0
+    fi
+    case "$url" in
+        sqlite:///*) path="${url#sqlite:///}" ;;
+        *) return 0 ;;
+    esac
+    path="${path%%\?*}"
+    case "$path" in
+        ""|:memory:) return 0 ;;
+        /*) ;;
+        *) path="$install_dir/src/backend/$path" ;;  # 相对 WorkingDirectory
+    esac
+    echo "$path"
+}
+
+# 库目录 0700、库文件及其日志/WAL 0600，属主为服务用户；每次安装都执行，
+# 修正旧版留下的 0644 库文件（新文件由 service 的 UMask=0077 保证）
+secure_sqlite_files() {
+    local install_dir="$1" db f
+    mkdir -p "$install_dir/$SQLITE_DIR_NAME"
+    chown plasmid:plasmid "$install_dir/$SQLITE_DIR_NAME"
+    chmod 700 "$install_dir/$SQLITE_DIR_NAME"
+    db=$(sqlite_db_path "$install_dir")
+    [ -n "$db" ] || return 0
+    for f in "$db" "$db-journal" "$db-wal" "$db-shm"; do
+        if [ -e "$f" ]; then
+            chown plasmid:plasmid "$f"
+            chmod 600 "$f"
+        fi
+    done
+}
+
+# ==================== 参数解析 ====================
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --db)
+            DB_MODE="$2"
+            shift 2
+            ;;
+        --uninstall)
+            UNINSTALL=true
+            shift
+            ;;
+        --project-dir)
+            INSTALL_DIR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: sudo bash install.sh [选项]"
+            echo ""
+            echo "选项:"
+            echo "  --db sqlite|postgresql   数据库模式 (默认: sqlite)"
+            echo "  --project-dir PATH       安装目录 (默认: /opt/plasmid-designer)"
+            echo "  --uninstall              卸载 Plasmid Designer"
+            echo "  --yes                    跳过卸载确认（自动化/CI 用；交互卸载仍建议不加）"
+            echo "  -h, --help               显示帮助"
+            exit 0
+            ;;
+        --yes)
+            ASSUME_YES=1
+            shift
+            ;;
+        *)
+            echo "未知参数: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# ==================== 卸载 ====================
+
+if $UNINSTALL; then
+    echo "=== 卸载 Plasmid Designer ==="
+    echo ""
+    echo "即将执行以下破坏性操作:"
+    echo "  - 删除项目目录: $INSTALL_DIR（--project-dir 可指向任意目录，含你自己的工作副本）"
+    echo "  - 删除 PostgreSQL 数据库 $PG_DB 与用户 $PG_USER（若本机装有 psql，不区分当初是否用 PG）"
+    echo "  - 删除 systemd 服务 / Nginx 配置 / plasmid 系统用户"
+    echo ""
+
+    # 终审 H-05：卸载曾不经确认就 DROP DATABASE 并 rm -rf $INSTALL_DIR
+    #（--project-dir 任意指定，可能是用户自己的 git 克隆）。交互 TTY 下
+    # 必须显式输入 yes；--yes 跳过（自动化/CI 用）；非 TTY 且无 --yes 拒绝执行。
+    if [ -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
+        read -r -p "确认卸载？输入 yes 继续（其他任意输入取消）: " REPLY
+        if [ "$REPLY" != "yes" ]; then
+            echo "已取消，未做任何更改。"
+            exit 0
+        fi
+    elif [ "$ASSUME_YES" != "1" ]; then
+        echo "✗ 非交互环境且未指定 --yes，拒绝执行破坏性卸载（加 --yes 强制）。">&2
+        exit 1
+    fi
+
+    # 停止服务
+    if systemctl is-active --quiet plasmid-backend 2>/dev/null; then
+        echo "停止后端服务..."
+        systemctl stop plasmid-backend
+    fi
+    systemctl disable plasmid-backend 2>/dev/null || true
+
+    # 删除 systemd 服务文件
+    if [ -f /etc/systemd/system/plasmid-backend.service ]; then
+        echo "删除 systemd 服务文件..."
+        rm -f /etc/systemd/system/plasmid-backend.service
+        systemctl daemon-reload
+    fi
+
+    # 删除 Nginx 配置
+    if [ -L /etc/nginx/sites-enabled/plasmid-designer ] || [ -f /etc/nginx/sites-enabled/plasmid-designer ]; then
+        echo "删除 Nginx 配置..."
+        rm -f /etc/nginx/sites-enabled/plasmid-designer
+        rm -f /etc/nginx/sites-available/plasmid-designer
+        systemctl reload nginx 2>/dev/null || true
+    fi
+
+    # 删除 PostgreSQL 数据库和用户
+    if command -v psql &>/dev/null; then
+        echo "删除 PostgreSQL 数据库和用户..."
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS $PG_DB;" 2>/dev/null || true
+        sudo -u postgres psql -c "DROP USER IF EXISTS $PG_USER;" 2>/dev/null || true
+    fi
+
+    # 删除项目目录
+    if [ -d "$INSTALL_DIR" ]; then
+        echo "删除项目目录: $INSTALL_DIR"
+        rm -rf "$INSTALL_DIR"
+    fi
+
+    # 删除系统用户
+    if id "plasmid" &>/dev/null; then
+        echo "删除系统用户: plasmid"
+        userdel plasmid 2>/dev/null || true
+    fi
+
+    echo ""
+    echo "=== 卸载完成 ==="
+    exit 0
+fi
+
+# ==================== 安装 ====================
+
+echo "╔══════════════════════════════════════════════╗"
+echo "║  Plasmid Designer v2 — Ubuntu 直接部署      ║"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+echo "安装目录: $INSTALL_DIR"
+echo "数据库模式: $DB_MODE"
+echo ""
+
+# ---------- 前置检查 ----------
+
+if [[ $EUID -ne 0 ]]; then
+    echo "错误: 需要 root 权限，请使用 sudo 运行"
+    exit 1
+fi
+
+if [[ ! -f /etc/lsb-release ]] || ! grep -q "20.04" /etc/lsb-release 2>/dev/null; then
+    echo "警告: 此脚本为 Ubuntu 20.04 设计，当前系统可能不兼容"
+    echo "按 Enter 继续，Ctrl+C 取消..."
+    read -r
+fi
+
+# ---------- Step 1: 系统依赖 ----------
+
+echo ""
+echo "[1/9] 安装系统依赖..."
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Python 依赖全部有预编译 wheel，无需本地编译器
+apt-get update
+apt-get install -y --no-install-recommends \
+    git curl \
+    software-properties-common apt-transport-https \
+    ca-certificates gnupg
+
+echo "  ✓ 系统依赖已安装"
+
+# ---------- Step 2: Python 3.11 ----------
+
+echo ""
+echo "[2/9] 安装 Python 3.11..."
+
+if python3.11 --version &>/dev/null; then
+    echo "  ✓ Python 3.11 已安装: $(python3.11 --version)"
+else
+    # 添加 deadsnakes PPA
+    add-apt-repository -y ppa:deadsnakes/ppa
+    apt-get update
+
+    apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3.11-dev python3.11-distutils
+
+    echo "  ✓ Python 3.11 已安装: $(python3.11 --version)"
+fi
+
+# ---------- Step 3: Node.js 22 ----------
+
+echo ""
+echo "[3/9] 安装 Node.js 22..."
+
+# Vite 8 / Vitest 5 要求 Node >= 22.12，22.x 低于该小版本时同样走升级
+NODE_VER=$(node --version 2>/dev/null || true)
+if [[ "$NODE_VER" =~ ^v22\.([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 12 )); then
+    echo "  ✓ Node.js 22 已安装: $NODE_VER"
+else
+    # NodeSource 22.x：走签名 apt 源（keyring + signed-by），不再以 root
+    # 执行 curl | bash 下载的安装脚本；公钥指纹固定，不符即中止
+    NODE_MAJOR=22
+    NODESOURCE_KEY_FPR="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg
+    install -d -m 0755 /etc/apt/keyrings
+    NS_KEY_TMP=$(mktemp)
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$NS_KEY_TMP"
+    NS_KEY_FPR=$(gpg --show-keys --with-colons "$NS_KEY_TMP" | awk -F: '$1=="fpr"{print $10; exit}')
+    if [[ "$NS_KEY_FPR" != "$NODESOURCE_KEY_FPR" ]]; then
+        echo "  ✗ NodeSource 公钥指纹不符（得到 ${NS_KEY_FPR:-空}），中止安装"
+        rm -f "$NS_KEY_TMP"
+        exit 1
+    fi
+    gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg "$NS_KEY_TMP"
+    rm -f "$NS_KEY_TMP"
+    chmod 0644 /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+    apt-get update
+    apt-get install -y nodejs
+
+    echo "  ✓ Node.js 已安装: $(node --version), npm: $(npm --version)"
+fi
+
+# ---------- Step 4: Nginx ----------
+
+echo ""
+echo "[4/9] 安装 Nginx..."
+
+if nginx -v &>/dev/null; then
+    echo "  ✓ Nginx 已安装: $(nginx -v 2>&1)"
+else
+    apt-get install -y --no-install-recommends nginx
+    echo "  ✓ Nginx 已安装"
+fi
+
+# ---------- Step 5: PostgreSQL（可选） ----------
+
+if [[ "$DB_MODE" == "postgresql" ]]; then
+    echo ""
+    echo "[5/9] 配置 PostgreSQL..."
+
+    if ! command -v psql &>/dev/null; then
+        apt-get install -y --no-install-recommends postgresql-12 postgresql-client-12
+    fi
+
+    # 启动 PostgreSQL
+    systemctl start postgresql 2>/dev/null || true
+    systemctl enable postgresql 2>/dev/null || true
+
+    # 密码：重复运行时复用已有 .env 里的密码，否则 .env 被跳过而数据库
+    # 用户保留旧密码/新密码二者不一致，后端连不上库
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        PG_PASSWORD=$(sed -n "s#^DATABASE_URL=postgresql://$PG_USER:\([^@]*\)@.*#\1#p" "$INSTALL_DIR/.env" | head -n 1)
+    fi
+    if [ -z "$PG_PASSWORD" ]; then
+        PG_PASSWORD=$(openssl rand -base64 18 | tr -d '=/+' | head -c 24)
+    fi
+
+    # 创建用户；已存在时把密码同步为 .env 将使用的值
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$PG_USER'" | grep -q 1; then
+        sudo -u postgres psql -c "ALTER USER $PG_USER WITH PASSWORD '$PG_PASSWORD';" >/dev/null
+        echo "  用户 $PG_USER 已存在，已同步密码"
+    else
+        sudo -u postgres psql -c "CREATE USER $PG_USER WITH PASSWORD '$PG_PASSWORD';" >/dev/null
+    fi
+    sudo -u postgres psql -c "CREATE DATABASE $PG_DB OWNER $PG_USER;" 2>/dev/null || \
+        echo "  数据库 $PG_DB 已存在，跳过创建"
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB TO $PG_USER;"
+
+    # 表结构由应用启动时 init_db()（SQLAlchemy create_all）自动创建；
+    # 不再手动执行 init.sql——其手工 DDL 已与 ORM 模型漂移，会导致写库失败
+
+    echo "  ✓ PostgreSQL 已配置"
+    echo "    用户: $PG_USER"
+    echo "    数据库: $PG_DB"
+    # 不回显密码：终端回滚/录屏/CI 日志都会留存明文
+    echo "    密码: 已生成，稍后写入 $INSTALL_DIR/.env（权限 600）"
+else
+    echo ""
+    echo "[5/9] 跳过 PostgreSQL（使用 SQLite）"
+fi
+
+# ---------- Step 6: 项目目录和用户 ----------
+
+echo ""
+echo "[6/9] 设置项目目录..."
+
+# 创建系统用户
+if ! id "plasmid" &>/dev/null; then
+    useradd -r -s /bin/false plasmid
+    echo "  ✓ 创建系统用户: plasmid"
+fi
+
+# 创建安装目录
+if [[ "$INSTALL_DIR" == "/opt/plasmid-designer" ]] && [[ ! -d "$INSTALL_DIR" ]]; then
+    # 从项目源码复制
+    mkdir -p /opt
+    cp -r "$PROJECT_ROOT" "$INSTALL_DIR"
+    echo "  ✓ 项目文件已复制到 $INSTALL_DIR"
+elif [[ ! -d "$INSTALL_DIR" ]]; then
+    mkdir -p "$INSTALL_DIR"
+    cp -r "$PROJECT_ROOT/"* "$INSTALL_DIR/"
+    echo "  ✓ 项目文件已复制到 $INSTALL_DIR"
+else
+    echo "  ✓ 安装目录已存在: $INSTALL_DIR"
+fi
+
+# 创建 venv
+echo "  创建 Python 虚拟环境..."
+python3.11 -m venv "$INSTALL_DIR/venv"
+
+echo "  ✓ 项目目录就绪"
+
+# ---------- Step 7: 安装 Python 依赖 ----------
+
+echo ""
+echo "[7/9] 安装 Python 依赖..."
+
+VENV_PIP="$INSTALL_DIR/venv/bin/pip"
+
+# 升级 pip
+$VENV_PIP install --upgrade pip setuptools wheel
+
+# 统一从项目锁文件 requirements.txt 安装（单一来源，随主项目同步；含全部
+# 传递依赖与 sha256，按哈希校验；全部依赖有预编译 wheel，无需本地编译）
+$VENV_PIP install --no-cache-dir --timeout=120 --retries=5 --require-hashes \
+    -r "$INSTALL_DIR/src/backend/requirements.txt"
+
+echo "  ✓ Python 依赖安装完成"
+
+# ---------- Step 8: 构建前端 ----------
+
+echo ""
+echo "[8/9] 构建前端..."
+
+cd "$INSTALL_DIR/src/frontend"
+
+# npm ci 严格按 package-lock.json 安装，依赖与审计过的版本一致
+npm ci
+
+npm run build
+
+if [ -f "$INSTALL_DIR/src/frontend/dist/index.html" ]; then
+    echo "  ✓ 前端构建完成"
+else
+    echo "  ✗ 前端构建失败，dist/index.html 不存在"
+    exit 1
+fi
+
+cd "$INSTALL_DIR"
+
+# ---------- Step 9: 配置服务和环境 ----------
+
+echo ""
+echo "[9/9] 配置服务和环境..."
+
+# 生成 .env
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+    SECRET_KEY=$(openssl rand -hex 32)
+
+    if [[ "$DB_MODE" == "postgresql" ]]; then
+        DATABASE_URL="postgresql://$PG_USER:$PG_PASSWORD@localhost/$PG_DB"
+    else
+        DATABASE_URL="sqlite:///$INSTALL_DIR/$SQLITE_DIR_NAME/plasmid_designer.db"
+    fi
+
+    # 以 0600 创建（root 默认 umask 022 会先建成 0644，到下方 chmod 前密钥可被读）
+    (umask 077 && cat > "$INSTALL_DIR/.env") << ENVEOF
+# Plasmid Designer 环境配置 — 由 install.sh 自动生成
+
+# 存储模式
+STORAGE_MODE=database
+
+# 数据库
+DATABASE_URL=$DATABASE_URL
+
+# Redis（直接部署默认关闭）
+REDIS_ENABLED=false
+
+# 安全
+SECRET_KEY=$SECRET_KEY
+DEBUG=false
+LOG_LEVEL=INFO
+ENVEOF
+
+    echo "  ✓ .env 已生成"
+else
+    echo "  ✓ .env 已存在，跳过"
+    if [[ "$DB_MODE" == "postgresql" ]] && ! grep -q "^DATABASE_URL=postgresql://" "$INSTALL_DIR/.env"; then
+        echo "  ⚠ 现有 .env 未使用 PostgreSQL，请手动把 DATABASE_URL 改为 postgresql://$PG_USER:<密码>@localhost/$PG_DB"
+    fi
+fi
+
+# 设置目录权限
+chown -R plasmid:plasmid "$INSTALL_DIR"
+# 终审 H-03：750 只有 plasmid 能进——nginx worker（www-data）没有路径 x
+# 权限，前端静态资源 /src/frontend/dist 全部 403。补「其他用户仅目录
+# 遍历（x 不给 r）」：www-data 能穿过目录读到文件（文件权限由自身 644
+# 控制），但列不出目录内容，不泄露目录清单
+chmod 751 "$INSTALL_DIR"
+chmod 600 "$INSTALL_DIR/.env"
+# 751 只为 nginx 能穿过到前端 dist；SQLite 库收进 0700 子目录并设 0600
+secure_sqlite_files "$INSTALL_DIR"
+
+# 创建数据目录（载体库/密码子表随项目文件一同复制）
+mkdir -p "$INSTALL_DIR/data/vectors" "$INSTALL_DIR/data/codon_tables"
+
+# 安装 systemd 服务
+cp "$SCRIPT_DIR/plasmid-backend.service" /etc/systemd/system/
+
+# 更新服务文件中的路径（如果安装目录不是默认值）
+if [[ "$INSTALL_DIR" != "/opt/plasmid-designer" ]]; then
+    sed -i "s|/opt/plasmid-designer|$INSTALL_DIR|g" /etc/systemd/system/plasmid-backend.service
+fi
+
+systemctl daemon-reload
+systemctl enable plasmid-backend
+systemctl start plasmid-backend
+
+echo "  ✓ 后端服务已启动"
+
+# 配置 Nginx
+cp "$SCRIPT_DIR/nginx.conf" /etc/nginx/sites-available/plasmid-designer
+
+# 更新 Nginx 配置中的路径
+if [[ "$INSTALL_DIR" != "/opt/plasmid-designer" ]]; then
+    sed -i "s|/opt/plasmid-designer|$INSTALL_DIR|g" /etc/nginx/sites-available/plasmid-designer
+fi
+
+# 创建 symlink
+ln -sf /etc/nginx/sites-available/plasmid-designer /etc/nginx/sites-enabled/plasmid-designer
+
+# 终审 H-02：先校验再删默认站点——校验失败立即中止（set -e 不作用于
+# AND-OR 列表的非末位命令，"nginx -t && reload" 曾在 nginx -t 失败时
+# 继续执行并打印「部署完成」，且此时 default 站点已删、旧站也没了）
+if ! nginx -t; then
+    echo "  ✗ Nginx 配置校验失败，中止部署（默认站点未删除，可回滚 symlink）：">&2
+    echo "    nginx -t 的错误输出见上方">&2
+    exit 1
+fi
+
+# 校验通过后才删除默认站点（如果存在）
+if [ -L /etc/nginx/sites-enabled/default ]; then
+    rm -f /etc/nginx/sites-enabled/default
+fi
+
+systemctl reload nginx
+
+echo "  ✓ Nginx 已配置"
+
+# ==================== 健康检查 ====================
+
+echo ""
+echo "等待后端服务启动..."
+
+# /health 含数据库连通性（"db":"ok"），库不通时返回 503；未通过则安装失败，
+# 不再只打印警告后照样报告「部署完成」
+for i in $(seq 1 20); do
+    if curl -fsS --max-time 10 http://localhost:8000/health 2>/dev/null | grep -qE '"db" *: *"ok"'; then
+        echo "  ✓ 后端服务与数据库连接正常"
+        break
+    fi
+    if [ "$i" -eq 20 ]; then
+        echo "  ✗ 后端健康检查未通过（/health 未报告 db=ok）" >&2
+        echo "    当前响应: $(curl -sS --max-time 10 http://localhost:8000/health 2>&1 || true)" >&2
+        echo "    查看日志: journalctl -u plasmid-backend" >&2
+        echo "    数据库认证失败时，核对 $INSTALL_DIR/.env 的 DATABASE_URL 与库内口令" >&2
+        exit 1
+    fi
+    sleep 3
+done
+
+# ==================== 完成 ====================
+
+# 获取服务器 IP
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+
+echo ""
+echo "╔══════════════════════════════════════════════╗"
+echo "║           部署完成！                         ║"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+echo "访问地址:"
+echo "  前端/API: http://$SERVER_IP（Nginx 统一入口）"
+# 终审 H-04：后端只监听 127.0.0.1:8000（经 Nginx 反代），不再提示暴露公网
+echo "  后端:     仅 127.0.0.1:8000（Nginx 反代，不经公网直连）"
+echo ""
+
+if [[ "$DB_MODE" == "postgresql" ]]; then
+    echo "数据库连接信息:"
+    echo "  URL:    postgresql://$PG_USER:****@localhost/$PG_DB"
+    echo "  密码:   见 $INSTALL_DIR/.env 的 DATABASE_URL（仅 root/plasmid 可读）"
+    echo ""
+fi
+
+echo "服务管理命令:"
+echo "  查看状态: systemctl status plasmid-backend"
+echo "  查看日志: journalctl -u plasmid-backend -f"
+echo "  重启服务: systemctl restart plasmid-backend"
+echo "  停止服务: systemctl stop plasmid-backend"
+echo ""
+echo "更新部署:"
+echo "  cd $INSTALL_DIR && git pull"
+echo "  source venv/bin/activate && pip install --require-hashes -r src/backend/requirements.txt"
+echo "  cd src/frontend && npm ci && npm run build"
+echo "  sudo systemctl restart plasmid-backend"
+echo ""
+echo "配置 HTTPS:"
+echo "  sudo apt install certbot python3-certbot-nginx"
+echo "  sudo certbot --nginx -d your-domain.com"

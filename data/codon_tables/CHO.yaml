@@ -1,0 +1,119 @@
+# Cricetulus griseus（中国仓鼠，CHO 细胞亲本）密码子使用频率表（按 Kazusa 原始值重建）
+# 数据源: Kazusa Codon Usage Database (https://www.kazusa.or.jp/codon/)
+# 抓取日期: 2026-10-10；字段: per_thousand = 每千密码子次数, fraction = 同义家族内占比
+# CDS 统计: Cricetulus griseus [gbrod] 331 CDS / 153527 密码子
+# 注意: CHO 细胞来自中国仓鼠 Cricetulus griseus (10029)，
+# 不是叙利亚仓鼠 Mesocricetus auratus (10036)
+
+species: Cricetulus griseus (CHO 细胞亲本，中国仓鼠)
+taxonomy_id: 10029
+data_provenance: kazusa:10029 (fetched 2026-10-10, per-thousand originals preserved)
+
+# 苯丙氨酸 Phe (F)
+TTT: 0.47  # per_thousand=19.6
+TTC: 0.53  # per_thousand=22.0
+
+# 亮氨酸 Leu (L)
+TTA: 0.06  # per_thousand=6.4
+TTG: 0.14  # per_thousand=14.1
+CTT: 0.13  # per_thousand=13.2
+CTC: 0.19  # per_thousand=18.4
+CTA: 0.08  # per_thousand=7.6
+CTG: 0.39  # per_thousand=38.8
+
+# 异亮氨酸 Ile (I)
+ATT: 0.35  # per_thousand=17.4
+ATC: 0.51  # per_thousand=24.8
+ATA: 0.14  # per_thousand=6.9
+
+# 甲硫氨酸 Met (M)
+ATG: 1.00  # per_thousand=23.0
+
+# 缬氨酸 Val (V)
+GTT: 0.18  # per_thousand=11.6
+GTC: 0.24  # per_thousand=15.7
+GTA: 0.12  # per_thousand=7.8
+GTG: 0.46  # per_thousand=30.1
+
+# 丝氨酸 Ser (S)
+TCT: 0.22  # per_thousand=16.0
+TCC: 0.22  # per_thousand=16.5
+TCA: 0.14  # per_thousand=10.3
+TCG: 0.05  # per_thousand=3.4
+AGT: 0.15  # per_thousand=11.4
+AGC: 0.22  # per_thousand=16.4
+
+# 脯氨酸 Pro (P)
+CCT: 0.31  # per_thousand=16.7
+CCC: 0.32  # per_thousand=17.0
+CCA: 0.29  # per_thousand=15.6
+CCG: 0.08  # per_thousand=4.3
+
+# 苏氨酸 Thr (T)
+ACT: 0.26  # per_thousand=14.1
+ACC: 0.37  # per_thousand=20.3
+ACA: 0.29  # per_thousand=15.7
+ACG: 0.08  # per_thousand=4.5
+
+# 丙氨酸 Ala (A)
+GCT: 0.32  # per_thousand=22.4
+GCC: 0.37  # per_thousand=25.9
+GCA: 0.23  # per_thousand=16.3
+GCG: 0.07  # per_thousand=5.0
+
+# 酪氨酸 Tyr (Y)
+TAT: 0.44  # per_thousand=13.1
+TAC: 0.56  # per_thousand=16.4
+
+# 终止密码子 (Stop)
+TAA: 0.26  # per_thousand=0.6
+TAG: 0.24  # per_thousand=0.5
+TGA: 0.50  # per_thousand=1.2
+
+# 色氨酸 Trp (W)
+TGG: 1.00  # per_thousand=13.1
+
+# 组氨酸 His (H)
+CAT: 0.44  # per_thousand=10.2
+CAC: 0.56  # per_thousand=12.9
+
+# 谷氨酰胺 Gln (Q)
+CAA: 0.24  # per_thousand=10.3
+CAG: 0.76  # per_thousand=33.4
+
+# 天冬酰胺 Asn (N)
+AAT: 0.45  # per_thousand=17.4
+AAC: 0.55  # per_thousand=21.2
+
+# 赖氨酸 Lys (K)
+AAA: 0.39  # per_thousand=24.6
+AAG: 0.61  # per_thousand=38.4
+
+# 天冬氨酸 Asp (D)
+GAT: 0.47  # per_thousand=24.6
+GAC: 0.53  # per_thousand=28.1
+
+# 谷氨酸 Glu (E)
+GAA: 0.41  # per_thousand=28.4
+GAG: 0.59  # per_thousand=41.1
+
+# 半胱氨酸 Cys (C)
+TGT: 0.47  # per_thousand=9.1
+TGC: 0.53  # per_thousand=10.3
+
+# 精氨酸 Arg (R)
+CGT: 0.11  # per_thousand=5.6
+CGC: 0.18  # per_thousand=9.3
+CGA: 0.14  # per_thousand=7.2
+CGG: 0.19  # per_thousand=10.1
+AGA: 0.19  # per_thousand=10.1
+AGG: 0.19  # per_thousand=10.2
+
+# 甘氨酸 Gly (G)
+GGT: 0.20  # per_thousand=12.8
+GGC: 0.34  # per_thousand=21.3
+GGA: 0.25  # per_thousand=15.8
+GGG: 0.21  # per_thousand=13.4
+
+# 注：optimal_codons 段已移除（与频率行易自相矛盾且加载器不读取，
+# 最优密码子见各家族「最优」注释）

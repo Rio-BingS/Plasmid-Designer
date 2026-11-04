@@ -1,0 +1,39 @@
+# 终审 H-01：.dockerignore 规则以上下文根为锚点（不同于 .gitignore），
+# 不带 ** 的模式只匹配上下文根目录本身——子目录里的 node_modules、*.db、
+# .env 全部曾进入构建上下文/镜像层。统一改 **/ 递归规则。
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/*.egg-info
+**/dist
+**/build
+**/.env
+**/.env.*
+!**/.env.example
+**/.venv
+**/venv
+**/*.db
+**/*.db-journal
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite3-journal
+**/*.log
+**/*.tmp
+**/.DS_Store
+**/Thumbs.db
+**/*.pem
+**/*.key
+**/*.crt
+**/*.csr
+deploy/hf-*
+deploy/docker/ssl/
+docs/
+*.md
+!src/frontend/README.md
+tests/
+.git
+.github
+**/*.db-shm
+**/*.db-wal

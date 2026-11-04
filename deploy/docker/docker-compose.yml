@@ -1,0 +1,211 @@
+services:
+  # Backend API service
+  backend:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.backend
+    container_name: plasmid-backend
+    restart: unless-stopped
+    # 仅绑定本机回环供宿主机调试/直连后端；前端经 plasmid-network 内部网络访问 backend:8000，
+    # 公网无需暴露。宿主机 8000 常被其他应用占用，通过 BACKEND_PORT 可改
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ../../data:/app/data
+      # 批量测序分块上传暂存（会话过期/分析完成即清理；单批默认最多 2 GB）
+      - batch-uploads:/app/batch_uploads
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-plasmid}:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/plasmid_designer
+      # Redis 已启用 requirepass，连接串需携带密码（与 redis 服务保持同一默认值）
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
+      - REDIS_ENABLED=${REDIS_ENABLED:-true}
+      # 无默认值：未设置时 compose 直接报错，不再回退到公开占位值
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
+      - DEBUG=${DEBUG:-false}
+      # API 文档（/docs、/openapi.json）默认关闭：容器 nginx 无法按来源限制，
+      # 开启即对能访问前端端口的所有人公开，见 .env.example
+      - ENABLE_API_DOCS=${ENABLE_API_DOCS:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATA_DIR=/app/data
+      - VECTORS_DIR=/app/data/vectors
+      - CODON_TABLES_DIR=/app/data/codon_tables
+      - STORAGE_MODE=${STORAGE_MODE:-database}
+      - BACKEND_WORKERS=${BACKEND_WORKERS:-1}
+      # 批量测序 read 上限：服务器默认（管理面板未给分组设值时生效）与绝对安全上限，
+      # 见 .env.example；此前未透传，在 .env 里调整对容器不生效
+      - SEQUENCING_BATCH_MAX_READS_PER_GROUP=${SEQUENCING_BATCH_MAX_READS_PER_GROUP:-24}
+      - SEQUENCING_BATCH_MAX_TOTAL_READS=${SEQUENCING_BATCH_MAX_TOTAL_READS:-240}
+      - SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX=${SEQUENCING_BATCH_READS_PER_GROUP_HARD_MAX:-384}
+      - SEQUENCING_BATCH_READS_HARD_MAX=${SEQUENCING_BATCH_READS_HARD_MAX:-5000}
+      # 批次计算预算（Mbp·read）与墙钟软时限（秒），见 .env.example
+      - SEQUENCING_BATCH_COMPUTE_BUDGET_MBP=${SEQUENCING_BATCH_COMPUTE_BUDGET_MBP:-50}
+      - SEQUENCING_BATCH_SOFT_TIMEOUT=${SEQUENCING_BATCH_SOFT_TIMEOUT:-1800}
+      # 批量测序分块上传（见 .env.example）：暂存目录固定为上面的具名卷
+      - SEQUENCING_BATCH_SESSION_DIR=/app/batch_uploads
+      - SEQUENCING_BATCH_SESSION_MAX_MB=${SEQUENCING_BATCH_SESSION_MAX_MB:-2048}
+      - SEQUENCING_BATCH_SESSIONS_PER_OWNER=${SEQUENCING_BATCH_SESSIONS_PER_OWNER:-2}
+      - SEQUENCING_BATCH_SESSIONS_TOTAL=${SEQUENCING_BATCH_SESSIONS_TOTAL:-16}
+      - SEQUENCING_BATCH_FINALIZE_WAIT=${SEQUENCING_BATCH_FINALIZE_WAIT:-60}
+      # 质粒图谱序列长度 / 上传体积上限（见 .env.example）
+      - MAP_MAX_LENGTH=${MAP_MAX_LENGTH:-300000}
+      - MAP_MAX_UPLOAD_MB=${MAP_MAX_UPLOAD_MB:-5}
+      # 图谱请求体 / 自动注释 / 位点明细 / 缓存上限（见 .env.example 与 docs/MAP.md）
+      - MAP_MAX_JSON_MB=${MAP_MAX_JSON_MB:-16}
+      - MAP_AUTO_ANNOTATE_MAX_BP=${MAP_AUTO_ANNOTATE_MAX_BP:-50000}
+      - MAP_ANNOTATE_MAX_CELLS=${MAP_ANNOTATE_MAX_CELLS:-60000000}
+      - MAP_MAX_SITES_PER_ENZYME=${MAP_MAX_SITES_PER_ENZYME:-500}
+      - MAP_MAX_TOTAL_SITES=${MAP_MAX_TOTAL_SITES:-60000}
+      - MAP_CACHE_MAX_DOC_BYTES=${MAP_CACHE_MAX_DOC_BYTES:-1048576}
+      - MAP_CACHE_MAX_TOTAL_BYTES=${MAP_CACHE_MAX_TOTAL_BYTES:-67108864}
+      # NCBI accession 导入（可选）
+      - NCBI_EMAIL=${NCBI_EMAIL:-}
+      - NCBI_API_KEY=${NCBI_API_KEY:-}
+      - NCBI_TIMEOUT=${NCBI_TIMEOUT:-30}
+      - NCBI_MAX_CONCURRENCY=${NCBI_MAX_CONCURRENCY:-4}
+      # 在线序列来源导入（SnapGene 在线库 / Ensembl / UniProt / Addgene）：设 false 可整体关闭外呼
+      - ONLINE_IMPORT_ENABLED=${ONLINE_IMPORT_ENABLED:-true}
+      # SnapGene 在线库单独开关（默认开、仅登录可用；设 false 关闭，见 .env.example）
+      - SNAPGENE_ONLINE_ENABLED=${SNAPGENE_ONLINE_ENABLED:-true}
+      - ONLINE_TIMEOUT=${ONLINE_TIMEOUT:-25}
+      - ONLINE_MAX_BYTES=${ONLINE_MAX_BYTES:-8388608}
+      # Addgene 用户自备会话 Cookie（可选，仅适合单用户自托管；多用户实例启动时告警）：
+      # 仅管理员导入时以 https 发往 addgene.org。注意它会出现在容器环境（docker inspect）。
+      # 留空 = 不代登录、不绕登录墙（相关端点 403 + 指引；推荐浏览器下载后上传）
+      - ADDGENE_SESSION_COOKIE=${ADDGENE_SESSION_COOKIE:-}
+      # 可信反向代理：只信前端 nginx 容器的固定地址（FRONTEND_IPV4，见下方 networks），
+      # 不再信整个 172.16.0.0/12——同网段其它容器/主机可伪造 X-Real-IP 换限流桶。
+      # 改 PLASMID_SUBNET / FRONTEND_IPV4 时同步修改
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.28.0.10}
+      # 前端经 nginx 同源反代 /api，默认无需跨域；不再回退到通配 *。
+      # 前端另域部署时在 .env 设为实际来源（逗号分隔）
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      # 登录会话 Cookie 的 Secure 标记（auto/true/false，见 .env.example）。
+      # auto 依赖前置 nginx 发送 X-Forwarded-Proto；只走 HTTPS 的站点建议设 true
+      - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-auto}
+      # 管理员账号引导（启动时创建管理员，已被普通账号注册则不提升，见 .env.example）
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # 邮件发送（注册邮箱验证码，见 .env.example）
+      - MAIL_PROVIDER=${MAIL_PROVIDER:-console}
+      - MAIL_FROM=${MAIL_FROM:-Plasmid Designer <no-reply@localhost>}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_SSL=${SMTP_SSL:-true}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - BREVO_API_KEY=${BREVO_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - plasmid-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend web service
+  frontend:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.frontend
+    container_name: plasmid-frontend
+    restart: unless-stopped
+    # 默认只绑本机回环：Docker 发布的端口走自己的 iptables 链，ufw 拦不住，
+    # 绑 0.0.0.0 时宿主机 TLS 前置可被绕过。不经前置、直接对外服务时在 .env
+    # 设 FRONTEND_BIND=0.0.0.0
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-80}:80"
+    environment:
+      # 可信宿主机前置（nginx-host-proxy.sh）：auto = 只绑本机回环时信任网关，
+      # 对外发布时谁都不信——经 docker-proxy 直连的客户端也显示为网关，可伪造来源 IP
+      - FRONTEND_BIND=${FRONTEND_BIND:-127.0.0.1}
+      - PLASMID_GATEWAY=${PLASMID_GATEWAY:-172.28.0.1}
+      - HOST_PROXY_ADDRS=${HOST_PROXY_ADDRS:-auto}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      plasmid-network:
+        # 固定地址：后端 TRUSTED_PROXIES 只信这一个对端
+        ipv4_address: ${FRONTEND_IPV4:-172.28.0.10}
+    healthcheck:
+      # 运行时镜像实际自带 curl（v2.34.0 曾改成 busybox wget：真机 unhealthy——
+      # wget 对 localhost 优先解析 ::1 而 nginx 仅听 IPv4 会 Connection refused，
+      # 且对 301 重定向退出码非 0）；curl -f 对 301 视为成功，与旧版行为一致
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    container_name: plasmid-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-plasmid}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_DB: plasmid_designer
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # 表结构由 backend 启动时 init_db()（SQLAlchemy create_all）自动创建，
+    # 不挂载 init.sql——其手工 DDL 已与 ORM 模型漂移
+    # 安全：不对公网暴露，仅绑定本机回环供宿主机调试；
+    # backend 经 plasmid-network 内部网络访问 db:5432
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - plasmid-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-plasmid} -d plasmid_designer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis cache
+  redis:
+    image: redis:7-alpine
+    container_name: plasmid-redis
+    restart: unless-stopped
+    # 安全：启用 requirepass；REDIS_PASSWORD 无默认值，未设置时 compose 拒绝启动
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    # 安全：不对公网暴露，仅绑定本机回环供宿主机调试；backend 经内部网络访问 redis:6379
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - plasmid-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD:?REDIS_PASSWORD must be set}' ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+    driver: local
+  batch-uploads:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  plasmid-network:
+    driver: bridge
+    # 固定网段：前端容器地址与宿主机网关（172.28.0.1，宿主机前置 nginx 经发布端口
+    # 进入时的来源地址）可预知，可信代理才能收窄到单个地址。与宿主机已有网段
+    # 冲突时改 PLASMID_SUBNET，并同步 PLASMID_GATEWAY、FRONTEND_IPV4、TRUSTED_PROXIES
+    ipam:
+      config:
+        - subnet: ${PLASMID_SUBNET:-172.28.0.0/24}
+          gateway: ${PLASMID_GATEWAY:-172.28.0.1}

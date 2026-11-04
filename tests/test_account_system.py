@@ -1,0 +1,851 @@
+"""账号系统测试：站点设置 / 功能门控 / 管理员 API / 注册邮箱验证 / 管理员引导
+
+隔离策略：
+- 独立 SQLite 内存库 + FastAPI dependency_overrides[get_db]（认证/管理路由走会话注入）
+- site_settings.get_settings / update_settings 打桩（门控读侧走模块级连接，绕过会话注入）
+- 邮件发送打桩：从验证码邮件 HTML 中抠出 6 位数字用于后续校验
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+BACKEND = Path(__file__).resolve().parents[1] / "src" / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from app.database import Base, get_db  # noqa: E402
+from app.database.crud import (  # noqa: E402
+    create_user, get_site_settings_row, save_site_settings_row,
+)
+from app import site_settings  # noqa: E402
+from app.features import (
+    ALL_FEATURES, DEFAULT_ANONYMOUS_FEATURES, DEFAULT_USER_FEATURES,
+    valid_features,
+)  # noqa: E402
+
+engine = create_engine(
+    "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _create_tables():
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit(monkeypatch):
+    """限流中间件按 IP 计数（auth 桶 5 次/分钟），模块内大量认证请求会互相挤爆；
+    本模块把所有限流桶放大并清空既有计数（monkeypatch.setitem 修改的就是
+    中间件实际读取的同一份 RATE_LIMITS dict）"""
+    from app import rate_limit
+
+    for key in list(rate_limit.RATE_LIMITS):
+        monkeypatch.setitem(rate_limit.RATE_LIMITS, key, {"requests": 10 ** 9, "window": 60})
+    rate_limit.limiter._requests.clear()
+    yield
+    rate_limit.limiter._requests.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    """模块级共享的内存库在每个用例后清空（邮箱唯一约束会跨用例冲突）"""
+    yield
+    s = TestingSession()
+    try:
+        for t in reversed(Base.metadata.sorted_tables):
+            s.execute(t.delete())
+        s.commit()
+    finally:
+        s.close()
+
+
+@pytest.fixture()
+def db():
+    s = TestingSession()
+    yield s
+    s.rollback()
+    s.close()
+
+
+@pytest.fixture()
+def client(monkeypatch):
+    def override_get_db():
+        s = TestingSession()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    from app.main import app
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    # 门控读侧打桩：进程内可变设置副本
+    state = {"s": {
+        "registration_open": True,
+        "email_verification_required": False,
+        "anonymous_features": list(ALL_FEATURES),
+        "user_features": list(ALL_FEATURES),
+    }}
+    monkeypatch.setattr(site_settings, "get_settings",
+                        lambda force_refresh=False: json.loads(json.dumps(state["s"])))
+    monkeypatch.setattr(site_settings, "update_settings",
+                        lambda patch: (state["s"].update(patch), json.loads(json.dumps(state["s"])))[1])
+    client = TestClient(app)
+    yield client, state
+    app.dependency_overrides.pop(get_db, None)
+
+
+def _set_site_db(db, **fields):
+    """直接改测试库中的站点设置行（auth 路由读的是会话注入的这张表）"""
+    row = get_site_settings_row(db)
+    for k, v in fields.items():
+        setattr(row, k, v)
+    save_site_settings_row(db, row)
+    return row
+
+
+def _make_user(db, email="u@test.com", password="password123", is_admin=False, email_verified=True):
+    from app.auth.jwt_auth import hash_password
+    return create_user(db, email=email, username=email.split("@")[0],
+                       hashed_password=hash_password(password),
+                       is_admin=is_admin, email_verified=email_verified)
+
+
+def _login(client, email, password):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    # 本模块按 Bearer 头鉴权：丢弃登录下发的会话 Cookie，免得同一 client
+    # 之后发出的「匿名」请求被 Cookie 认证成已登录
+    client.cookies.clear()
+    return r.json()
+
+
+def _auth_header(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def captured_mail(monkeypatch):
+    sent = []
+
+    async def fake_send_email(to, subject, html):
+        m = re.search(r"\d{6}", html)
+        sent.append({"to": to, "code": m.group(0) if m else None})
+        return True
+
+    import app.auth.routes as auth_routes
+    monkeypatch.setattr(auth_routes, "send_email", fake_send_email)
+    return sent
+
+
+# ==================== site-config 与注册开关 ====================
+
+class TestSiteConfig:
+    def test_default_all_open(self, client):
+        c, _ = client
+        r = c.get("/api/auth/site-config")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["tier"] == "anonymous"
+        assert data["registration_open"] is True
+        assert data["email_verification_required"] is False
+        assert set(data["effective_features"]) == set(ALL_FEATURES)
+
+    def test_tier_follows_token(self, client, db):
+        c, _ = client
+        u = _make_user(db, is_admin=False)
+        db.commit()
+        token = _login(c, u.email, "password123")["access_token"]
+        data = c.get("/api/auth/site-config", headers=_auth_header(token)).json()
+        assert data["tier"] == "user"
+
+    def test_explicit_empty_features_shown_as_empty(self, client, db):
+        """管理员显式清空功能清单（已初始化）后，site-config 如实下发空集，
+        不回退默认（此前前端因此仍显示全部功能入口）"""
+        c, _ = client
+        _set_site_db(db, anonymous_features="[]", user_features="[]",
+                     features_initialized=True)
+        data = c.get("/api/auth/site-config").json()
+        assert data["features"] == {"anonymous": [], "user": []}
+        assert data["effective_features"] == []
+        u = _make_user(db)
+        db.commit()
+        token = _login(c, u.email, "password123")["access_token"]
+        data = c.get("/api/auth/site-config", headers=_auth_header(token)).json()
+        assert data["tier"] == "user"
+        assert data["effective_features"] == []
+
+    def test_uninitialized_empty_features_fall_back_to_defaults(self, client, db):
+        """从未初始化的空行仍按默认清单下发（与门控读侧语义一致）"""
+        c, _ = client
+        _set_site_db(db, anonymous_features="[]", user_features="[]",
+                     features_initialized=False)
+        data = c.get("/api/auth/site-config").json()
+        assert set(data["features"]["anonymous"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+        assert set(data["effective_features"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+
+
+class TestRegistrationToggle:
+    def test_closed_registration_rejected(self, client, db):
+        c, _ = client
+        _set_site_db(db, registration_open=False)
+        r = c.post("/api/auth/register", json={
+            "email": "new@test.com", "username": "new",
+            "password": "password123", "confirm_password": "password123"})
+        assert r.status_code == 403
+        assert "关闭注册" in r.json()["detail"]
+
+
+# ==================== 功能门控 ====================
+
+class TestFeatureGating:
+    def test_anonymous_blocked_when_closed(self, client):
+        c, state = client
+        state["s"]["anonymous_features"] = []
+        r = c.get("/api/codon-tables")
+        assert r.status_code == 403
+        assert "未对未登录访客开放" in r.json()["detail"]
+
+    def test_user_allowed_while_anonymous_blocked(self, client, db):
+        c, state = client
+        state["s"]["anonymous_features"] = []
+        u = _make_user(db)
+        db.commit()
+        token = _login(c, u.email, "password123")["access_token"]
+        r = c.get("/api/codon-tables", headers=_auth_header(token))
+        assert r.status_code == 200
+
+    def test_admin_bypasses_all(self, client, db):
+        c, state = client
+        state["s"]["anonymous_features"] = []
+        state["s"]["user_features"] = []
+        a = _make_user(db, email="root@test.com", is_admin=True)
+        db.commit()
+        token = _login(c, a.email, "password123")["access_token"]
+        assert c.get("/api/codon-tables", headers=_auth_header(token)).status_code == 200
+        assert c.get("/api/vectors").status_code == 403
+
+    def test_valid_features_cleans_unknown_keys(self):
+        assert valid_features(["codon", "bogus", "codon", "vectors"]) == ["vectors", "codon"]
+
+
+class TestFeatureListThreeState:
+    """终审 D-02：功能清单列是 nullable=False default="[]"，此前读取侧把
+    空集当「未初始化」强行补默认——管理员「关闭全部功能」保存后又被覆盖
+    回默认值（fail-open）。改用显式 features_initialized 标记后：
+    未初始化 → 补默认并置位；已初始化 → 空集就是空集。
+
+    注意：site_settings 读写走 app.database.SessionLocal（conftest 隔离的
+    文件库），不是本模块的内存库——这里必须用同一连接观察真实行为。
+    """
+
+    def _session(self):
+        from app.database import SessionLocal
+        return SessionLocal()
+
+    def _invalidate(self):
+        site_settings.invalidate_cache()
+
+    @pytest.fixture(autouse=True)
+    def _restore_settings(self):
+        """用例在共享文件库改写了 site_settings（初始化标记/空清单），
+        结束后恢复默认并失效缓存，避免污染同进程后续测试模块"""
+        yield
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps(DEFAULT_ANONYMOUS_FEATURES)
+            row.user_features = json.dumps(DEFAULT_USER_FEATURES)
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_explicit_empty_features_survive_read(self):
+        """管理员显式清空后重新读取，不再被默认值覆盖"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = json.dumps([])
+            row.user_features = json.dumps([])
+            row.features_initialized = True
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert data["anonymous_features"] == [], "显式空集被默认值覆盖（fail-open 复发）"
+        assert data["user_features"] == []
+        site_settings.invalidate_cache()
+
+    def test_uninitialized_row_gets_defaults_and_marks(self):
+        """未初始化（存量 "[]" 行 + FALSE 标记）首次读取补默认并置位"""
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            row.anonymous_features = "[]"
+            row.user_features = "[]"
+            row.features_initialized = False
+            save_site_settings_row(db, row)
+        finally:
+            db.close()
+        self._invalidate()
+        data = site_settings.get_settings(force_refresh=True)
+        assert set(data["anonymous_features"]) == set(DEFAULT_ANONYMOUS_FEATURES)
+        # 标记已置位：第二次读取不再改写（管理员后续清空能保住）
+        db = self._session()
+        try:
+            row2 = get_site_settings_row(db)
+            assert row2.features_initialized is True
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_admin_save_initializes_marker(self):
+        """update_settings 保存功能清单即置位（管理员保存的空集立即生效）"""
+        site_settings.update_settings({"anonymous_features": [], "user_features": []})
+        db = self._session()
+        try:
+            row = get_site_settings_row(db)
+            assert row.features_initialized is True
+            assert json.loads(row.anonymous_features) == []
+        finally:
+            db.close()
+        site_settings.invalidate_cache()
+
+    def test_migration_adds_initialized_column(self):
+        """存量库轻量迁移补 features_initialized 列（幂等）"""
+        from app.database.models import _migrate_site_settings_table
+        from app.database import engine
+        from sqlalchemy import inspect
+        _migrate_site_settings_table()
+        cols = {c["name"] for c in inspect(engine).get_columns("site_settings")}
+        assert "features_initialized" in cols
+
+
+# ==================== 注册邮箱验证 ====================
+
+class TestEmailVerification:
+    def _register(self, c, email="v@test.com"):
+        return c.post("/api/auth/register", json={
+            "email": email, "username": email.split("@")[0],
+            "password": "password123", "confirm_password": "password123"})
+
+    def test_register_without_verification_returns_token(self, client, db):
+        c, _ = client
+        r = self._register(c)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["access_token"] and not data["requires_verification"]
+        me = c.get("/api/auth/me", headers=_auth_header(data["access_token"]))
+        assert me.status_code == 200
+
+    def test_full_verification_flow(self, client, db, captured_mail):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+
+        r = self._register(c)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["requires_verification"] is True and data["access_token"] is None
+        assert data["mail_sent"] is True and captured_mail[0]["to"] == "v@test.com"
+        # 注册后未验证：登录被拦截并引导验证
+        r2 = c.post("/api/auth/login", json={"email": "v@test.com", "password": "password123"})
+        assert r2.status_code == 403
+        detail = r2.json()["detail"]
+        assert detail["code"] == "EMAIL_NOT_VERIFIED" and detail["verify_token"]
+
+        vtoken = data["verify_token"]
+        # 错误验证码
+        bad = c.post("/api/auth/verify-email", json={"verify_token": vtoken, "code": "000000"})
+        assert bad.status_code == 400 and "验证码错误" in bad.json()["detail"]
+        # 正确验证码 → 登录令牌
+        ok = c.post("/api/auth/verify-email", json={"verify_token": vtoken, "code": captured_mail[0]["code"]})
+        assert ok.status_code == 200, ok.text
+        token = ok.json()["access_token"]
+        assert c.get("/api/auth/me", headers=_auth_header(token)).json()["email_verified"] is True
+        # 验证后可正常登录
+        assert c.post("/api/auth/login", json={
+            "email": "v@test.com", "password": "password123"}).status_code == 200
+
+    def test_verify_token_single_use(self, client, db, captured_mail):
+        """验证成功后旧 verify_token 重放：拒绝且不下发会话 Cookie"""
+        from app.auth.jwt_auth import AUTH_COOKIE_NAME
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+
+        vtoken = self._register(c, "once@test.com").json()["verify_token"]
+        code = captured_mail[0]["code"]
+        ok = c.post("/api/auth/verify-email", json={"verify_token": vtoken, "code": code})
+        assert ok.status_code == 200, ok.text
+        assert AUTH_COOKIE_NAME in ok.cookies
+        c.cookies.clear()
+
+        # 原样重放（正确验证码）与任意验证码重放都必须失败
+        for replay_code in (code, "000000"):
+            again = c.post("/api/auth/verify-email",
+                           json={"verify_token": vtoken, "code": replay_code})
+            assert again.status_code == 400, again.text
+            assert again.json()["detail"]["code"] == "ALREADY_VERIFIED"
+            assert "access_token" not in again.json()
+            assert AUTH_COOKIE_NAME not in again.cookies
+            assert "set-cookie" not in again.headers
+            assert c.get("/api/auth/me").status_code == 401
+
+    def test_verify_token_rejected_for_already_verified_user(self, client, db):
+        """已验证账号（含关闭验证时注册的）凭任何 verify_token 都拿不到会话"""
+        from app.auth.jwt_auth import AUTH_COOKIE_NAME, create_verify_token
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        user = _make_user(db, "done@test.com", email_verified=True)
+        r = c.post("/api/auth/verify-email", json={
+            "verify_token": create_verify_token(user.id), "code": "123456"})
+        assert r.status_code == 400
+        assert r.json()["detail"]["code"] == "ALREADY_VERIFIED"
+        assert AUTH_COOKIE_NAME not in r.cookies
+        assert "set-cookie" not in r.headers
+
+    def test_resend_has_cooldown(self, client, db, captured_mail):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        data = self._register(c, "r@test.com").json()
+        r = c.post("/api/auth/resend-verification", json={"verify_token": data["verify_token"]})
+        assert r.status_code == 429
+
+    # ---- 审查 01 M-2：连错作废后重发冷却失效、计数在进程内 ----
+
+    def _verification_on(self, client, db):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        return c
+
+    @staticmethod
+    def _age_codes(db, seconds=61):
+        """把已发出的验证码 created_at 往前拨，越过 60 秒重发冷却"""
+        from datetime import timedelta
+        from app.database import EmailVerificationDB
+        for row in db.query(EmailVerificationDB).all():
+            row.created_at = row.created_at - timedelta(seconds=seconds)
+        db.commit()
+
+    @staticmethod
+    def _wrong(code):
+        return "000000" if code != "000000" else "111111"
+
+    def test_resend_cooldown_survives_lockout(self, client, db, captured_mail):
+        c = self._verification_on(client, db)
+        vt = self._register(c, "lock@test.com").json()["verify_token"]
+        wrong = self._wrong(captured_mail[-1]["code"])
+        for _ in range(5):
+            r = c.post("/api/auth/verify-email", json={"verify_token": vt, "code": wrong})
+            assert r.status_code == 400
+        assert "错误次数过多" in r.json()["detail"]
+        # 作废后立即重发：仍在 60 秒冷却内，不得发出新码
+        r = c.post("/api/auth/resend-verification", json={"verify_token": vt})
+        assert r.status_code == 429, r.text
+        assert len(captured_mail) == 1
+
+    def test_attempts_counted_in_db(self, client, db, captured_mail):
+        """校验次数落库（多 worker / 重启共享），作废后的码不能再试"""
+        from app.database import EmailVerificationDB
+        c = self._verification_on(client, db)
+        vt = self._register(c, "cnt@test.com").json()["verify_token"]
+        code = captured_mail[-1]["code"]
+        for _ in range(3):
+            c.post("/api/auth/verify-email", json={"verify_token": vt, "code": self._wrong(code)})
+        db.expire_all()
+        assert db.query(EmailVerificationDB).one().attempts == 3
+        for _ in range(2):
+            c.post("/api/auth/verify-email", json={"verify_token": vt, "code": self._wrong(code)})
+        # 第 5 次后作废：正确码也不再接受
+        r = c.post("/api/auth/verify-email", json={"verify_token": vt, "code": code})
+        assert r.status_code == 400
+
+    def test_daily_attempt_cap_spans_resends(self, client, db, captured_mail):
+        c = self._verification_on(client, db)
+        vt = self._register(c, "day@test.com").json()["verify_token"]
+        for _ in range(4):  # 4 轮 × 5 次 = 每日 20 次上限
+            wrong = self._wrong(captured_mail[-1]["code"])
+            for _ in range(5):
+                c.post("/api/auth/verify-email", json={"verify_token": vt, "code": wrong})
+            self._age_codes(db)
+            assert c.post("/api/auth/resend-verification",
+                          json={"verify_token": vt}).status_code == 200
+        # 已用满当日次数：即使拿到新码（且是正确码）也拒绝
+        r = c.post("/api/auth/verify-email",
+                   json={"verify_token": vt, "code": captured_mail[-1]["code"]})
+        assert r.status_code == 429, r.text
+
+    def test_daily_code_send_cap(self, client, db, captured_mail):
+        from app.auth.routes import CODE_DAILY_MAX
+        c = self._verification_on(client, db)
+        vt = self._register(c, "bomb@test.com").json()["verify_token"]
+        for _ in range(CODE_DAILY_MAX - 1):
+            self._age_codes(db)
+            assert c.post("/api/auth/resend-verification",
+                          json={"verify_token": vt}).status_code == 200
+        self._age_codes(db)
+        r = c.post("/api/auth/resend-verification", json={"verify_token": vt})
+        assert r.status_code == 429 and "上限" in r.json()["detail"]
+        assert len(captured_mail) == CODE_DAILY_MAX
+
+    def test_email_verifications_migration_adds_attempts(self, tmp_path, monkeypatch):
+        from sqlalchemy import create_engine as _ce, inspect, text
+        from app.database import models
+        eng = _ce(f"sqlite:///{tmp_path / 'old.db'}")
+        with eng.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE email_verifications (id INTEGER PRIMARY KEY, "
+                "user_id VARCHAR(50) NOT NULL, email VARCHAR(255) NOT NULL, "
+                "code_hash VARCHAR(128) NOT NULL, purpose VARCHAR(30) NOT NULL, "
+                "expires_at DATETIME NOT NULL, consumed BOOLEAN, created_at DATETIME)"))
+        monkeypatch.setattr(models, "engine", eng)
+        models._migrate_email_verifications_table()
+        cols = {c["name"] for c in inspect(eng).get_columns("email_verifications")}
+        assert "attempts" in cols
+
+    def test_verify_token_reuse_of_expired_or_bad(self, client, db, captured_mail):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+        r = c.post("/api/auth/verify-email", json={"verify_token": "not-a-token", "code": "123456"})
+        assert r.status_code == 400
+
+    def test_send_failure_returns_flag(self, client, db, monkeypatch):
+        c, state = client
+        state["s"]["email_verification_required"] = True
+        _set_site_db(db, email_verification_required=True)
+
+        async def failing_send(to, subject, html):
+            return False
+
+        import app.auth.routes as auth_routes
+        monkeypatch.setattr(auth_routes, "send_email", failing_send)
+        r = self._register(c, "f@test.com")
+        assert r.status_code == 200
+        assert r.json()["mail_sent"] is False and r.json()["verify_token"]
+
+
+
+# ==================== 设计/批量资源属主校验 ====================
+
+class TestDesignBatchOwnership:
+    _REQ = {
+        "sequence": "ATG" + "AAACAG" * 12 + "TAA",
+        "sequence_type": "dna",
+        "optimize_codons": False,
+        "cloning_method": "restriction",
+        "enzyme_5": "EcoRI",
+        "enzyme_3": "HindIII",
+        "sequence_name": "own",
+    }
+
+    def test_design_result_owner_scoped(self, client, db):
+        c, _ = client
+        ua = _make_user(db, email="design-a@test.com")
+        ub = _make_user(db, email="design-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        r = c.post("/api/design", json=self._REQ, headers=ha)
+        assert r.status_code == 200, r.text
+        design_id = r.json()["design_id"]
+
+        # B 不可读；A 本人可读；匿名不可读（有属主）
+        assert c.get(f"/api/design/{design_id}", headers=hb).status_code == 403
+        assert c.get(f"/api/design/{design_id}", headers=ha).status_code == 200
+        assert c.get(f"/api/design/{design_id}").status_code == 403
+        # 设计图谱/下载同样受限
+        assert c.get(f"/api/design/{design_id}/map", headers=hb).status_code == 403
+        assert c.get(f"/api/design/{design_id}/download/genbank", headers=hb).status_code == 403
+
+        # 匿名创建 → 无属主 → 公开（历史行为兼容）
+        r2 = c.post("/api/design", json=self._REQ)
+        assert c.get(f"/api/design/{r2.json()['design_id']}", headers=hb).status_code == 200
+
+    def test_batch_job_owner_scoped(self, client, db):
+        c, _ = client
+        ua = _make_user(db, email="batch-a@test.com")
+        ub = _make_user(db, email="batch-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        req = dict(self._REQ)
+        r = c.post("/api/design/batch", json={
+            "sequences": [self._REQ["sequence"]],
+            "sequence_names": ["own"],
+            "sequence_type": "dna",
+            "optimize_codons": False,
+            "cloning_method": "restriction",
+            "enzyme_5": "EcoRI",
+            "enzyme_3": "HindIII",
+        }, headers=ha)
+        assert r.status_code == 200, r.text
+        batch_id = r.json()["batch_id"]
+
+        assert c.get(f"/api/design/batch/{batch_id}", headers=hb).status_code == 403
+        assert c.get(f"/api/design/batch/{batch_id}", headers=ha).status_code == 200
+        assert c.get(f"/api/design/batch/{batch_id}/report", headers=hb).status_code == 403
+
+    def test_design_export_owner_scoped(self, client, db):
+        """终审 B-01 回归锁：/api/analysis/design/{id}/export 此前无属主校验，
+        匿名可导出他人完整构建序列（IDOR）——现与 /api/design/{id} 同口径"""
+        c, _ = client
+        ua = _make_user(db, email="export-a@test.com")
+        ub = _make_user(db, email="export-b@test.com")
+        db.commit()
+        ha = _auth_header(_login(c, ua.email, "password123")["access_token"])
+        hb = _auth_header(_login(c, ub.email, "password123")["access_token"])
+
+        r = c.post("/api/design", json=self._REQ, headers=ha)
+        assert r.status_code == 200, r.text
+        design_id = r.json()["design_id"]
+
+        # 匿名导出他人设计必须 403（修复前为 200 + 完整序列）
+        assert c.get(f"/api/analysis/design/{design_id}/export").status_code == 403
+        # 其他用户同样 403；属主本人与匿名创建的设计不受影响
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=hb).status_code == 403
+        assert c.get(f"/api/analysis/design/{design_id}/export", headers=ha).status_code == 200
+        r2 = c.post("/api/design", json=self._REQ)
+        anon_id = r2.json()["design_id"]
+        assert c.get(f"/api/analysis/design/{anon_id}/export", headers=hb).status_code == 200
+
+
+
+# ==================== 管理员 API ====================
+
+class TestAdminApi:
+    def test_admin_endpoints_require_admin(self, client, db):
+        c, _ = client
+        assert c.get("/api/admin/users").status_code in (401, 403)
+        u = _make_user(db)
+        db.commit()
+        token = _login(c, u.email, "password123")["access_token"]
+        r = c.get("/api/admin/users", headers=_auth_header(token))
+        assert r.status_code == 403
+
+    def test_cache_and_ratelimit_admin_endpoints_gated(self, client, db):
+        """全方位检查补漏：/api/cache/stats|invalidate 与 /api/rate-limit/status|config
+        曾匿名可达（缓存统计泄露 + 任何人可失效缓存），现收归管理员"""
+        c, _ = client
+        assert c.get("/api/cache/stats").status_code in (401, 403)
+        assert c.post("/api/cache/invalidate/design/x").status_code in (401, 403)
+        assert c.post("/api/cache/invalidate/vector/x").status_code in (401, 403)
+        assert c.get("/api/rate-limit/status").status_code in (401, 403)
+        assert c.get("/api/rate-limit/config").status_code in (401, 403)
+        # 健康检查保持公开
+        assert c.get("/api/cache/health").status_code == 200
+        assert c.get("/api/rate-limit/health").status_code == 200
+        a = _make_user(db, email="root2@test.com", is_admin=True)
+        db.commit()
+        h = _auth_header(_login(c, a.email, "password123")["access_token"])
+        assert c.get("/api/cache/stats", headers=h).status_code == 200
+        assert c.get("/api/rate-limit/status", headers=h).status_code == 200
+
+    def test_settings_roundtrip(self, client, db):
+        c, _ = client
+        a = _make_user(db, email="root@test.com", is_admin=True)
+        db.commit()
+        h = _auth_header(_login(c, a.email, "password123")["access_token"])
+        r = c.get("/api/admin/settings", headers=h)
+        assert r.status_code == 200
+        assert r.json()["feature_labels"]["design"] == "引物/序列设计"
+        r2 = c.put("/api/admin/settings", headers=h, json={
+            "registration_open": False,
+            "anonymous_features": ["vectors", "codon"]})
+        assert r2.status_code == 200
+        assert r2.json()["registration_open"] is False
+        assert r2.json()["anonymous_features"] == ["vectors", "codon"]
+
+    def test_user_management_guards(self, client, db):
+        c, _ = client
+        a = _make_user(db, email="root@test.com", is_admin=True)
+        b = _make_user(db, email="b@test.com")
+        db.commit()
+        h = _auth_header(_login(c, a.email, "password123")["access_token"])
+        users = {u["email"]: u for u in c.get("/api/admin/users", headers=h).json()}
+        assert set(users) == {"root@test.com", "b@test.com"}
+        # 降级自己 = 最后一位管理员 → 拒绝
+        r = c.put(f"/api/admin/users/{users['root@test.com']['id']}",
+                  headers=h, json={"is_admin": False})
+        assert r.status_code == 400
+        # 禁用自己 → 拒绝
+        r = c.put(f"/api/admin/users/{users['root@test.com']['id']}",
+                  headers=h, json={"is_active": False})
+        assert r.status_code == 400
+        # 删除自己 → 拒绝
+        r = c.delete(f"/api/admin/users/{users['root@test.com']['id']}", headers=h)
+        assert r.status_code == 400
+        # 正常操作：提升 b，然后禁用 b
+        r = c.put(f"/api/admin/users/{users['b@test.com']['id']}",
+                  headers=h, json={"is_admin": True, "email_verified": False})
+        assert r.json()["is_admin"] is True and r.json()["email_verified"] is False
+        # 删除 b 后用户列表只剩管理员
+        c.delete(f"/api/admin/users/{users['b@test.com']['id']}", headers=h)
+        rest = c.get("/api/admin/users", headers=h).json()
+        assert [u["email"] for u in rest] == ["root@test.com"]
+
+    def test_disabled_user_cannot_login(self, client, db):
+        c, _ = client
+        a = _make_user(db, email="root@test.com", is_admin=True)
+        b = _make_user(db, email="b@test.com")
+        db.commit()
+        h = _auth_header(_login(c, a.email, "password123")["access_token"])
+        bid = {u["email"]: u for u in c.get("/api/admin/users", headers=h).json()}["b@test.com"]["id"]
+        c.put(f"/api/admin/users/{bid}", headers=h, json={"is_active": False})
+        r = c.post("/api/auth/login", json={"email": "b@test.com", "password": "password123"})
+        assert r.status_code == 403 and "禁用" in r.json()["detail"]
+
+
+# ==================== 管理员引导 ====================
+
+class TestAdminBootstrap:
+    def test_bootstrap_creates_admin_from_env(self, monkeypatch, db):
+        from app.config import settings as app_settings
+        from app.database import SessionLocal as _unused  # noqa: F401 确认模块已加载
+        from app.auth import bootstrap
+
+        monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "boss@test.com")
+        monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "adminpass123")
+        monkeypatch.setattr(app_settings, "ADMIN_USERNAME", "boss")
+        monkeypatch.setattr("app.database.SessionLocal", TestingSession)
+        assert bootstrap.bootstrap_admin() == "created"
+        from app.database.crud import get_user_by_email
+        u = get_user_by_email(TestingSession(), "boss@test.com")
+        assert u is not None and u.is_admin and u.email_verified
+        # 幂等：已存在且已是管理员 → 不再动作
+        assert bootstrap.bootstrap_admin() is None
+
+    def test_bootstrap_noop_without_env(self, monkeypatch):
+        from app.config import settings as app_settings
+        from app.auth import bootstrap
+
+        monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "")
+        monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "")
+        assert bootstrap.bootstrap_admin() is None
+
+    def test_bootstrap_never_promotes_existing_account(self, monkeypatch, db):
+        """终审 B-05 回归锁：已存在的同邮箱普通账号曾被自动提升为管理员
+        并保留原密码、强制 email_verified=True——抢注 ADMIN_EMAIL 即可提权。
+        现在必须拒绝自动提升并保持账号原状。"""
+        from app.config import settings as app_settings
+        from app.auth import bootstrap
+        from app.auth.jwt_auth import hash_password
+        from app.database.crud import create_user, get_user_by_email
+
+        create_user(TestingSession(), email="hijack@test.com", username="hijack",
+                    hashed_password=hash_password("attacker-password"),
+                    is_admin=False, email_verified=False)
+        db.commit()
+
+        monkeypatch.setattr(app_settings, "ADMIN_EMAIL", "hijack@test.com")
+        monkeypatch.setattr(app_settings, "ADMIN_PASSWORD", "legit-admin-pass")
+        monkeypatch.setattr("app.database.SessionLocal", TestingSession)
+        assert bootstrap.bootstrap_admin() == "exists_non_admin"
+        u = get_user_by_email(TestingSession(), "hijack@test.com")
+        assert not u.is_admin, "抢注账号不得被自动提升"
+        assert not u.email_verified, "email_verified 不得被强制置真"
+
+
+class TestSecretKeyEnforcement:
+    """终审 B-04 回归锁：占位/弱 SECRET_KEY 一律拒绝启动，DEBUG 不再豁免；
+    校验同时在 jwt_auth 导入时执行，`--lifespan off` 也绕不过。"""
+
+    STRONG = "9f2c7e41b0d85a36c1e4f7a92b6d0c58e3a17f4b9d2c60e8"
+
+    def _run_lifespan(self, monkeypatch, key: str, debug: bool):
+        import asyncio
+        import app.main as app_main
+        from app.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "SECRET_KEY", key)
+        monkeypatch.setattr(app_settings, "DEBUG", debug)
+
+        async def _drive():
+            async with app_main.lifespan(app_main.app):
+                pass
+
+        return asyncio.run(_drive())
+
+    def test_placeholder_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "change_this_in_production", debug=False)
+
+    def test_short_secret_blocks_startup_when_not_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "a" * 31, debug=False)
+
+    def test_placeholder_secret_blocks_startup_even_in_debug(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            self._run_lifespan(monkeypatch, "dev-insecure-secret-key-change-me", debug=True)
+
+    def test_strong_secret_passes_when_not_debug(self, monkeypatch):
+        self._run_lifespan(monkeypatch, self.STRONG, debug=False)
+
+    @pytest.mark.parametrize("key", [
+        "",
+        "dev-insecure-secret-key-change-me",
+        "change_this_in_production",
+        "change_this_in_production_use_strong_random_string",
+        "short-key-31-chars-xxxxxxxxxxxx",
+        "a" * 32,
+        "0123456789abcdef" * 2,
+        "abababababababababababababababab",
+        "abcdabcdaabbccddabcdddccbbaabcda",  # 非周期但只有 4 种字符
+    ])
+    def test_validate_rejects_weak_keys(self, key):
+        from app.config import validate_secret_key
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            validate_secret_key(key)
+
+    @pytest.mark.parametrize("key", [
+        "9f2c7e41b0d85a36c1e4f7a92b6d0c58e3a17f4b9d2c60e8",
+        "s" * 16 + "0123456789abcdef0123456789abcdef",
+        # 真实的 token_hex(16) 输出：频率熵 94.9 bit，曾被旧阈值 96 误拒
+        "6e0c80a8a0c50c04e0a0407cf06805c6",
+    ])
+    def test_validate_accepts_random_keys(self, key):
+        from app.config import validate_secret_key
+        validate_secret_key(key)
+
+    def test_validate_accepts_generated_keys(self):
+        import secrets as _secrets
+        from app.config import validate_secret_key
+        for _ in range(200):
+            validate_secret_key(_secrets.token_hex(16))
+            validate_secret_key(_secrets.token_urlsafe(32))
+
+    @pytest.mark.parametrize("debug", ["true", "false"])
+    def test_import_refuses_placeholder_without_lifespan(self, debug):
+        """不进 lifespan（--lifespan off / 嵌入式 ASGI 宿主）也必须拒绝"""
+        import os
+        import subprocess
+        import sys as _sys
+        env = dict(os.environ, SECRET_KEY="dev-insecure-secret-key-change-me", DEBUG=debug)
+        # 中文 Windows 下子进程默认按 GBK 解码 stderr，而我们的报错文本是
+        # UTF-8（含中文与全角符号）——text=True 会抛 UnicodeDecodeError 并把
+        # stderr 整个置成 None（断言随之 TypeError）。改字节捕获 + 显式 UTF-8。
+        r = subprocess.run([_sys.executable, "-c", "import app.main"], cwd=str(BACKEND),
+                           env=env, capture_output=True, timeout=120)
+        err = (r.stderr or b"").decode("utf-8", errors="replace")
+        assert r.returncode != 0
+        assert "SECRET_KEY" in err

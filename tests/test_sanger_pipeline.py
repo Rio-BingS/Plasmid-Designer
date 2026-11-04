@@ -1,0 +1,2871 @@
+"""Sanger 测序分析管线测试 — 合成 ab1 全链路"""
+
+import logging
+import os
+import random
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from abif_utils import make_ab1  # noqa: E402
+from core.sanger.abif_reader import (  # noqa: E402
+    AbiParseError,
+    _extract_read_internal,
+    extract_read,
+    parse_abif,
+)
+from core.sanger.annotator import annotate_variant, summarize_severity  # noqa: E402
+from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
+from core.sanger.signal import (  # noqa: E402
+    baseline_correct,
+    continuous_read_length,
+    estimate_run_length,
+    fit_decay,
+    peak_heights,
+    property_maps,
+)
+from core.sanger.pipeline import (  # noqa: E402
+    analyze, _trim_by_quality, _build_consensus, _build_cds_reports,
+    _read_grade, _variant_confidence, _coverage_gaps, _gap_span_text,
+    _variant_peak_evidence,
+    _poly_peak_amplitude_ratio, _detect_mixed_positions,
+    _annotate_homopolymer, find_homopolymers, find_repeat_runs, _variant_key,
+)
+
+
+@pytest.fixture(scope="module")
+def reference() -> str:
+    random.seed(42)
+    return "".join(random.choice("ACGT") for _ in range(2000))
+
+
+def _flat_zone(n: int):
+    """全 Q40、无 trace 的 read 的可信区（默认 30/60/700/900 参数）"""
+    from core.sanger.reliable_zone import compute_reliable_zone
+    return compute_reliable_zone(n, 0, [40] * n)
+
+
+def test_find_homopolymers():
+    runs = find_homopolymers("AAAAACGTTTTTTACGT", 5)
+    assert runs == [
+        {"base": "A", "unit": "A", "period": 1, "start": 1, "end": 5, "length": 5,
+         "repeat_count": 5, "lus": 5, "tier": "poly"},
+        {"base": "T", "unit": "T", "period": 1, "start": 8, "end": 13, "length": 6,
+         "repeat_count": 6, "lus": 6, "tier": "poly"},
+    ]
+
+
+def test_find_repeat_runs_periods_and_tiers():
+    """B3：二/三核苷酸重复 + 8bp 观察级；TRF 式 period 冗余去重"""
+    seq = "ATATATAT" + "CAGCAGCAGCAG" + "A" * 20 + "GCA"
+    runs = find_repeat_runs(seq)
+    by = {(r["period"], r["unit"]): r for r in runs}
+    at = by[(2, "AT")]
+    assert at["start"] == 1 and at["length"] == 8 and at["repeat_count"] == 4
+    cag = by[(3, "CAG")]
+    assert cag["start"] == 9 and cag["repeat_count"] == 4
+    a = by[(1, "A")]
+    assert a["length"] == 20 and a["tier"] == "poly" and a["base"] == "A"
+    # 去重：A 同聚物 span 不再冗余报出 period 2 的 AA
+    assert all(not (r["period"] == 2 and r["unit"] == "AA") for r in runs)
+    assert len(runs) == 3
+
+    # 观察级：8-19bp 同聚物 tier=observed（入报告、不触发结论告警）
+    seq2 = "ACGT" + "A" * 10 + "T" * 20 + "GCA"
+    runs2 = find_repeat_runs(seq2)
+    a10 = next(r for r in runs2 if r["base"] == "A")
+    assert a10["tier"] == "observed" and a10["length"] == 10
+    t20 = next(r for r in runs2 if r["base"] == "T")
+    assert t20["tier"] == "poly" and t20["length"] == 20
+
+
+def test_annotate_repeat_unit_insertion_and_deletion():
+    """B3：插入/删除整倍重复单元归入重复结构——(CAG)n 加一个 CAG 旧逻辑
+    因 set(alt)=={alt[0]} 根本归不到结构上"""
+    ref = "ACGT" + "CAG" * 6 + "TTTT"
+    runs = find_repeat_runs(ref)
+    ins = {"ref_pos": 10, "type": "insertion", "alt_base": "CAG", "length": 3}
+    _annotate_homopolymer(ref, [ins], runs)
+    hp = ins["homopolymer"]
+    assert hp["unit"] == "CAG" and hp["period"] == 3
+    assert hp["ref_repeat_count"] == 6 and hp["observed_repeat_count"] == 7
+    # 归一化最左 anchor（插入点在 run 左缘之前）同样归属
+    ins2 = {"ref_pos": 4, "type": "insertion", "alt_base": "CAG", "length": 3}
+    _annotate_homopolymer(ref, [ins2], runs)
+    assert ins2["homopolymer"]["observed_repeat_count"] == 7
+    # 缺失一个单元（anchor 在 run 左缘，相位与单元一致——与 indel 左归一化一致）
+    del_v = {"ref_pos": 5, "type": "deletion", "length": 3}
+    _annotate_homopolymer(ref, [del_v], runs)
+    assert del_v["homopolymer"]["observed_repeat_count"] == 5
+
+
+def test_poly_indel_compression_caps_confidence():
+    """poly 区单 read indel：峰压缩明显时不给高置信（重复数计数不可靠）"""
+    v = {"ref_pos": 10, "type": "deletion", "length": 1, "read_q": 40,
+         "support_reads": 1,
+         "homopolymer": {"base": "A", "peak_amplitude_ratio": 0.3}}
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "medium"
+    v["homopolymer"]["peak_amplitude_ratio"] = 0.9
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "high"
+    v["read_q"] = 15
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "low"
+
+
+def test_homopolymer_poly_count_and_conclusion():
+    """poly 区缺失：识别结构、计算参考/测得重复数、结论给出 poly 判读"""
+    ref = "ACGT" * 20 + "A" * 20 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-100
+    read_bases = ref[20:180]
+    mutated = read_bases[:60] + read_bases[61:]  # 缺 1 个 A
+    blob = make_ab1(mutated, [40] * len(mutated))
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["ref_repeat_count"] == 20
+    assert hp["observed_repeat_count"] == 19
+    assert hp["count_reliable"] and hp["variant"]["type"] == "deletion"
+    v = next(x for x in result["variants"] if x.get("homopolymer"))
+    assert v["homopolymer"]["observed_repeat_count"] == 19
+    assert "poly(A)" in result["conclusion"]
+
+
+def _shaped_traces(bases, poly_span, real_peaks, channel="A", channel_order="ATGC", spb=4,
+                   decay=0.0, baseline_slope=0.0, crosstalk=0.0, stutter=None):
+    """构造 4 采样/碱基的三角峰 trace：poly 窗口内只放 real_peaks 个 A 峰
+
+    模拟长同聚物压缩：basecaller 按窗口碱基数调用，但峰图上只有
+    real_peaks 个可分辨峰（窗口 [start, end) 为 read 上的 poly 区间）。
+
+    注入开关（默认关闭，现有用例零改动；A2/B1/B4/B5 的验收依赖，真值已知）：
+    - decay：全通道几何衰减，峰值 ×(1−decay)^(采样位置/总采样点)
+    - baseline_slope：线性基线漂移（每采样点叠加 slope×位置 的本底）
+    - crosstalk：通道串扰（每通道混入相邻通道该比例的信号）
+    - stutter：poly 末端后的滑移 echo 序列（主峰高比例，如 (0.5, 0.2)）
+    """
+    traces = {ch: [] for ch in channel_order}
+    for i, b in enumerate(bases):
+        for ch in channel_order:
+            if ch == b and not (ch == "A" and poly_span[0] <= i < poly_span[1]):
+                traces[ch].extend([100, 100, 4, 4])
+            else:
+                traces[ch].extend([4, 4, 4, 4])
+    head = [4] * (poly_span[0] * spb)
+    body = [100, 100, 4, 4] * real_peaks
+    tail = [4] * ((len(bases) - poly_span[1]) * spb)
+    traces[channel] = head + body + tail
+    n = len(bases) * spb
+    if stutter:
+        for j, f in enumerate(stutter):
+            s0 = (poly_span[1] + j) * spb
+            if s0 + 1 < n:
+                traces[channel][s0] = int(round(100 * f))
+                traces[channel][s0 + 1] = int(round(100 * f))
+    if decay:
+        for ch in channel_order:
+            traces[ch] = [int(round(v * (1 - decay) ** (s / n)))
+                          for s, v in enumerate(traces[ch])]
+    if baseline_slope:
+        for ch in channel_order:
+            traces[ch] = [v + int(round(baseline_slope * s))
+                          for s, v in enumerate(traces[ch])]
+    if crosstalk:
+        order = list(channel_order)
+        mixed = {ch: [0] * n for ch in order}
+        for idx, ch in enumerate(order):
+            prev_ch = order[(idx - 1) % len(order)]
+            mixed[ch] = [int(round((1 - crosstalk) * traces[ch][s]
+                                   + crosstalk * traces[prev_ch][s]))
+                         for s in range(n)]
+        traces = mixed
+    return [traces[ch] for ch in channel_order]
+
+
+def test_poly_peak_count_and_cross_read_validation():
+    """峰图独立计数 < 调用碱基数：严格口径判不可靠并在结论给出峰图证据"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    spb = 4
+    traces = _shaped_traces(read_bases, poly_span=(40, 70), real_peaks=27)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=spb)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["ref_repeat_count"] == 30 and hp["observed_repeat_count"] == 30
+    assert hp["peak_count_estimate"] == 27
+    assert hp["count_reliable"] is False
+    assert hp["read_counts"][0]["peak_count"] == 27
+    assert hp["read_counts"][0]["coverage"] == "full"
+    assert hp["read_counts"][0]["called_count"] == 30
+    # B4：主判读以峰图为准——参考段 30 个、可分辨峰 27 → 缺失 3、实测 27
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
+    # B2：宽度法交叉值同时输出（峰数法可用时 method=peaks，两者应一致）
+    assert hp["length_estimate"] == 27
+    assert hp["length_method"] == "peaks"
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+    assert "以峰图可分辨峰为准" in result["conclusion"]
+
+
+def test_poly_peak_count_agrees_is_reliable():
+    """峰图计数与调用一致：维持可靠判定（正常 polyA）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    blob = make_ab1(read_bases, [40] * len(read_bases), samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["count_reliable"] is True
+    assert hp["peak_count_estimate"] == 30
+    assert hp["peak_missing"] == 0 and hp["peak_measured"] == 30
+    assert "峰图判读" not in result["conclusion"]
+
+
+def test_poly_partial_read_participates_and_peak_verdict():
+    """B4：截断在 poly 内的部分覆盖 read 不整体舍弃——照常数覆盖段峰并与
+    覆盖段参考长度比较；主判读以峰图为准：整段缺失取各覆盖段缺失最大值，
+    实测 = 参考 − 缺失（人工核对会综合两条 read，不随意丢数据）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read1 = ref[40:170]   # 完整跨过 poly：调用 30 个 A，峰图只有 27 个可分辨峰
+    traces1 = _shaped_traces(read1, poly_span=(40, 70), real_peaks=27)
+    read2 = ref[94:170]   # 从 poly 中段起始（95-170）：覆盖段 16 个 A，峰图 16 个
+    traces2 = _shaped_traces(read2, poly_span=(0, 16), real_peaks=16)
+    reads = [
+        ("f1.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
+        ("f2.ab1", make_ab1(read2, [40] * len(read2), traces=traces2, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["f1.ab1"]["coverage"] == "full"
+    assert by_file["f1.ab1"]["called_count"] == 30
+    assert by_file["f1.ab1"]["peak_count"] == 27
+    assert by_file["f2.ab1"]["coverage"] == "partial"
+    assert by_file["f2.ab1"]["covered_span"] == [95, 110]
+    assert by_file["f2.ab1"]["called_count"] == 16
+    assert by_file["f2.ab1"]["peak_count"] == 16
+    # f2 内部一致、f1 峰数与调用有出入 → 整体判不可靠（不设容差）
+    assert hp["count_reliable"] is False
+    # 主判读：f1 段缺 3、f2 段完整 → 整段缺失 3、实测 27
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
+    assert hp["run_covered"] == 30
+    # 无变体（两条 read 调用都与参考一致）→ 结论走 poly 告警分支，给出峰图判读
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+
+
+def test_poly_trimmed_tail_recovered_from_raw_read():
+    """B4：质量修剪剪掉 poly 末端低 Q 压缩区（SnapGene 显示原始 read，人工
+    看到的覆盖更长）——峰窗沿原始 read 的连续同碱基外扩越出修剪边界，两侧
+    侧翼可见时判完整对应参考整段；调用数（basecaller 补齐值）与峰数出入
+    即标记矛盾，主判读按峰图给缺失数"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    # poly 区峰图只有 27 个可分辨峰（basecaller 仍调用 30 个 A——补齐）
+    traces = _shaped_traces(read_bases, poly_span=(40, 70), real_peaks=27)
+    # read 末端低 Q：Mott 修剪剪进 polyA（保留 27 个 A，剪掉末尾 3 个）
+    quality = [40] * 67 + [5] * (len(read_bases) - 67)
+    blob = make_ab1(read_bases, quality, traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    rc = hp["read_counts"][0]
+    assert rc["coverage"] == "full"            # 原始 read 两侧侧翼可见
+    assert rc["covered_span"] == [81, 110]     # 不再止于修剪边界 107
+    assert rc["called_count"] == 30            # 原始 read 的补齐调用数
+    assert rc["peak_count"] == 27
+    assert hp["count_reliable"] is False       # 调用 30 vs 峰 27 → 矛盾
+    assert hp["peak_missing"] == 3
+    assert hp["peak_measured"] == 27
+    assert hp["run_covered"] == 30
+    assert "缺失 3 个 A：实测 27 个，参考 30 个" in result["conclusion"]
+
+
+def test_poly_reverse_read_called_count_via_complement():
+    """反向 read 的调用数按参考方向对齐列统计（互补碱基正确折算）——修复
+    线性映射把反向覆盖段调用数记成 0 的缺陷；部分覆盖照常参与核对"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # 反向 read 覆盖参考 90-170：polyA 的 90-110 段在 read 坐标 60-80（polyT）
+    read_bases = ref[89:170].translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    traces = _shaped_traces(read_bases, poly_span=(60, 81), real_peaks=21, channel="T")
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("r.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    rc = hp["read_counts"][0]
+    assert rc["direction"] == "-"
+    assert rc["coverage"] == "partial"
+    assert rc["covered_span"] == [90, 110]
+    assert rc["called_count"] == 21   # 互补折算正确，不再是 0
+    assert rc["peak_count"] == 21
+    # 覆盖段内峰数与参考段一致 → 不构成缺失证据；整段实测维持参考值
+    assert hp["peak_missing"] == 0
+    assert hp["peak_measured"] == 30
+    assert hp["count_reliable"] is True
+    assert hp["run_covered"] == 21    # 两条合并覆盖不足整段时如实统计
+
+
+def test_abif_parser_matches_biopython():
+    blob = make_ab1("ACGT" * 25, [40] * 100)
+    bio = extract_read(blob)
+    internal = extract_read.__globals__["_extract_read_internal"](blob)
+    assert bio["bases"] == internal["bases"] == "ACGT" * 25
+    assert bio["quality"] == internal["quality"] == [40] * 100
+    assert set(bio["trace"].keys()) == {"A", "T", "G", "C"}
+
+
+def test_abif_rejects_invalid():
+    with pytest.raises((AbiParseError, ValueError, Exception)):
+        extract_read(b"not an abif file at all........")
+
+
+def test_align_read_exact_forward(reference):
+    r = align_read(reference[500:1100], reference)
+    assert r["direction"] == "+"
+    assert r["ref_start"] == 501 and r["ref_end"] == 1100
+    assert r["identity"] == 1.0
+    assert r["variants"] == []
+
+
+def test_align_read_reverse_strand(reference):
+    r = align_read(revcomp(reference[700:1300]), reference)
+    assert r["direction"] == "-"
+    assert r["ref_start"] == 701 and r["ref_end"] == 1300
+    assert r["identity"] == 1.0
+
+
+def test_align_read_substitution_and_indel(reference):
+    mutated = list(reference[500:1000])
+    mutated[100] = "A" if mutated[100] != "A" else "G"
+    mutated[250:250] = ["G", "G", "G"]  # 中段 3bp 插入（局部比对末端 clipping 不计）
+    mutated = "".join(mutated)
+    r = align_read(mutated, reference)
+    subs = [v for v in r["variants"] if v["type"] == "substitution"]
+    ins = [v for v in r["variants"] if v["type"] == "insertion"]
+    assert len(subs) == 1 and subs[0]["ref_pos"] == 601
+    assert len(ins) == 1 and ins[0]["length"] == 3
+
+
+def test_align_read_ambiguous_calls_not_compared(reference):
+    """审计 #7：read 中的 N/IUPAC 调用不比较——零变体、identity 只按确定列计"""
+    seg = list(reference[500:1100])
+    for i in range(40, 600, 56):          # 10 个 N，均在对齐内部
+        seg[i] = "N"
+    r = align_read("".join(seg), reference)
+    assert r["ref_start"] == 501 and r["ref_end"] == 1100
+    assert r["variants"] == []
+    assert r["identity"] == 1.0
+    assert r["ambiguous"] == 10
+    # 逐列视图仍原样展示 N（人工核对需要看到 basecaller 的原始调用）
+    assert r["aligned"]["read_aligned"].count("N") == 10
+
+
+def test_align_read_ambiguous_reverse_and_iupac(reference):
+    """反向 read 与 IUPAC 码同样不比较；真实错配照常检出"""
+    seg = list(reference[700:1300])
+    seg[100] = "R"
+    seg[200] = "Y"
+    seg[300] = "A" if seg[300] != "A" else "G"   # 真实替换
+    r = align_read(revcomp("".join(seg)), reference)
+    assert r["direction"] == "-"
+    assert r["ambiguous"] == 2
+    subs = [v for v in r["variants"] if v["type"] == "substitution"]
+    assert len(subs) == 1 and subs[0]["ref_pos"] == 1001
+    assert r["identity"] == round(597 / 598, 4)
+
+
+def test_trim_by_quality():
+    bases = "ACGT" * 20
+    quality = [5] * 10 + [40] * 60 + [3] * 10
+    s, e = _trim_by_quality(bases, quality, 20)
+    assert s == 10 and e == 70
+
+
+def test_trim_by_quality_sporadic_good_base_in_bad_ends():
+    """坏末端里夹着零星高 Q 碱基：逐碱基法剪不动，Mott 累积法应整段剪掉"""
+    bases = "ACGT" * 15
+    quality = ([3, 3, 45, 4, 4, 4, 5]       # 坏首端，夹一个 Q45
+               + [40] * 40                   # 干净中段
+               + [4, 50, 4, 4, 3])           # 坏尾端，夹一个 Q50
+    s, e = _trim_by_quality(bases, quality, 20)
+    # 中段 40 个干净碱基整体保留；首端 Q45 零星碱基（其后紧跟 -16 分）不把保留区拖到前端
+    assert (s, e) == (7, 49)
+    assert quality[s] >= 20 and quality[e - 1] >= 20
+
+
+def test_merge_coverage():
+    merged = merge_coverage([(1, 100), (90, 200), (300, 350)], 1000)
+    assert merged == [(1, 200), (300, 350)]
+
+
+def test_analyze_perfect_read(reference):
+    blob = make_ab1(reference[100:600], [40] * 500)
+    result = analyze([("ok.ab1", blob)], reference, [])
+    assert result["reads"], "应成功解析至少一条 read"
+    assert result["variants"] == []
+    assert "一致" in result["conclusion"]
+    assert result["consensus"]["sequence"] == reference.upper()
+    assert result["consensus"]["coverage_percent"] == pytest.approx(25.0, abs=0.5)
+
+
+def test_analyze_detects_mutation_with_annotation(reference):
+    features = [{"name": "GFP", "type": "CDS", "start": 501, "end": 1100, "strand": "+"}]
+    seg = list(reference[500:1000])
+    seg[50] = "A" if seg[50] != "A" else "G"  # ref_pos 551, CDS 内
+    seg = "".join(seg) + "NNNN"  # 低质量尾部应被修剪
+    blob = make_ab1(seg, [40] * 500 + [5] * 4)
+    result = analyze([("mut.ab1", blob)], reference, features)
+    assert len(result["variants"]) == 1
+    v = result["variants"][0]
+    assert v["ref_pos"] == 551 and v["type"] == "substitution"
+    assert v["features"][0]["name"] == "GFP"
+    assert v["aa_change"]  # 氨基酸变化已注释
+    # 修剪生效：NNNN 不产生假突变
+    assert all(v2["ref_pos"] < 1000 for v2 in result["variants"])
+
+
+def test_analyze_end_noise_not_confirmed(reference):
+    """read 首尾 20bp 内的单 read 差异是信号爬升/下降区噪声：
+    判低置信、不写入共识、不影响 CDS 结论；中段同 Q 差异照常确证"""
+    seg = list(reference[100:600])
+    end_noise = "A" if seg[9] != "A" else "G"      # read_pos 10 → ref_pos 110
+    mid_real = "A" if seg[249] != "A" else "G"     # read_pos 250 → ref_pos 350
+    seg[9], seg[249] = end_noise, mid_real
+    blob = make_ab1("".join(seg), [40] * 500)
+    features = [{"name": "GFP", "type": "CDS", "start": 101, "end": 700, "strand": "+"}]
+    result = analyze([("end.ab1", blob)], reference, features)
+
+    by_pos = {v["ref_pos"]: v for v in result["variants"]}
+    noise, real = by_pos[110], by_pos[350]
+    assert noise["confidence"] == "low"
+    assert real["confidence"] != "low"
+    # 噪声不进共识：consensus 该位仍是参考碱基
+    assert result["consensus"]["sequence"][109] == reference[109].upper()
+    assert result["consensus"]["sequence"][349] == mid_real
+    # CDS 判定只计入确证变体：verdict 提到中段差异而非首端噪声
+    gfp = next(cr for cr in result["cds_reports"] if cr["name"] == "GFP")
+    assert "110" not in gfp["verdict"]
+
+
+def test_reverse_read_variant_read_pos_in_original_coords(reference):
+    """反向 read 的 read_pos 必须镜像回原始电泳顺序：Q 值/峰证据按真实位点取样，
+    而不是拿到镜像位置（往往是另一端的坏区）——真实突变不被误判低置信"""
+    seg = list(reference[700:1300])
+    seg[50] = "A" if seg[50] != "A" else "G"   # ref_pos 751；revcomp 后位于 read 尾部附近
+    rc = revcomp("".join(seg))                  # 原始 read（电泳顺序）：突变靠近 read 末端
+    q = [40] * len(rc)
+    q[3] = 5                                    # read 首端的坏碱基（与突变无关）
+    result = analyze([("rev.ab1", make_ab1(rc, q))], reference, [])
+    v = result["variants"][0]
+    assert v["ref_pos"] == 751
+    assert v["read_q"] == 40                   # 取突变真实位点的 Q，而非镜像位（Q5）
+    assert v["confidence"] != "low"
+
+
+def test_ab1_channel_autodetect_nonstandard_tag_and_order(reference):
+    """真实仪器染料组各异：通道不在 DATA9-12 / 顺序非 A-T-G-C 时必须自动检测。
+
+    映射错了，突变峰被记到错误通道（mutant_pct 假性 0/50%），真实突变被
+    误判低置信（线上实例：正向 read C→A，Q31，tracy 印证，仍判 low）。
+    """
+    seg = list(reference[500:1000])
+    seg[100] = "A" if seg[100] != "A" else "G"  # ref_pos 601
+    mutated = "".join(seg)
+    q = [40] * len(mutated)
+    # 通道存 DATA1-4，顺序 T/A/G/C（即 DATA2 是 A 通道）
+    blob = make_ab1(mutated, q, channel_start=1, channel_order="TAGC")
+    r = extract_read(blob)
+    expected_a0 = 100 if mutated[0] == "A" else 4
+    assert r["trace"]["A"][0] == expected_a0
+    result = analyze([("f.ab1", blob)], reference, [])
+    v = next(x for x in result["variants"] if x["ref_pos"] == 601)
+    assert v["confidence"] != "low"
+    ev = v.get("peak_evidence") or {}
+    assert ev.get("mutant_pct", 0) >= 80
+
+
+def test_ab1_channel_default_mapping_still_works(reference):
+    """标准 DATA9-12/ATGC 文件不受自动检测影响"""
+    blob = make_ab1(reference[200:700], [40] * 500)
+    r = extract_read(blob)
+    assert r["trace"]["A"][:5] == [100 if reference[200 + i] == "A" else 4 for i in range(5)]
+
+
+def test_analyze_multi_read_consensus(reference):
+    """两条不同区段的 read 拼接后覆盖范围合并"""
+    b1 = make_ab1(reference[200:700], [40] * 500)
+    b2 = make_ab1(revcomp(reference[600:1100]), [40] * 500)
+    result = analyze([("r1.ab1", b1), ("r2.ab1", b2)], reference, [])
+    assert result["consensus"]["coverage_percent"] == pytest.approx(45.0, abs=1.0)
+    assert result["reads"][0]["alignment"]["direction"] == "+"
+    assert result["reads"][1]["alignment"]["direction"] == "-"
+
+
+def test_analyze_reports_errors():
+    result = analyze([("bad.ab1", b"junk")], "ACGT" * 100, [])
+    assert result["reads"] == []
+    assert result["errors"][0]["filename"] == "bad.ab1"
+
+
+def test_analyze_over_aggressive_trim_reports_error():
+    """阈值高于全部碱基 Q 值：修剪后为空，报错误条目而非比对崩溃"""
+    blob = make_ab1("ACGT" * 50, [40] * 200)
+    result = analyze([("q.ab1", blob)], "ACGT" * 100, [], min_q=50)
+    assert result["reads"] == []
+    assert result["errors"] and "修剪后仅 0bp" in result["errors"][0]["error"]
+
+
+# ==================== 逐列对齐视图（人工核对证据） ====================
+
+def test_aligner_aligned_strings_forward(reference):
+    """正向 read：逐列字符串无 gap，Q 与原始质量一一对应"""
+    seg = list(reference[500:1100])
+    seg[20] = "A" if seg[20] != "A" else "G"
+    q = list(range(10, 10 + 600))
+    r = align_read("".join(seg), reference, q)
+    a = r["aligned"]
+    assert a["ref_start"] == 501
+    assert "-" not in a["ref_aligned"] and "-" not in a["read_aligned"]
+    assert len(a["ref_aligned"]) == len(a["read_aligned"]) == len(a["q_aligned"]) == 600
+    assert a["ref_aligned"] == reference[500:1100]
+    mismatches = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if rb != qb]
+    assert len(mismatches) == 1
+    # 正向：Q 逐列对应原始质量
+    assert a["q_aligned"] == q
+
+
+def test_aligner_aligned_strings_reverse(reference):
+    """反向 read：以参考方向展示（反向互补），Q 随碱基一起反转"""
+    seg = reference[700:1300]
+    q = list(range(10, 10 + len(seg)))
+    r = align_read(revcomp(seg), reference, q)
+    assert r["direction"] == "-"
+    a = r["aligned"]
+    assert a["read_aligned"] == seg  # 完美匹配：展示串即参考片段
+    assert a["q_aligned"] == q[::-1]
+
+
+def test_aligner_aligned_strings_deletion_gap(reference):
+    """缺失列：read 侧为 gap，Q = 0"""
+    seg = reference[500:1100]
+    mutated = seg[:100] + seg[105:]  # 删除参考 601-605
+    r = align_read(mutated, reference, [40] * len(mutated))
+    dels = [v for v in r["variants"] if v["type"] == "deletion"]
+    assert len(dels) == 1 and dels[0]["length"] == 5
+    a = r["aligned"]
+    assert a["ref_aligned"].replace("-", "") == reference[500:1100]
+    gaps = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if qb == "-"]
+    assert len(gaps) == 5
+    assert all(a["q_aligned"][i] == 0 for i in gaps)
+
+
+def test_aligner_aligned_strings_insertion_gap(reference):
+    """插入列：参考侧为 gap"""
+    seg = list(reference[500:1100])
+    seg[250:250] = ["T", "T", "T"]
+    r = align_read("".join(seg), reference, [40] * 603)
+    a = r["aligned"]
+    gaps = [i for i, (rb, qb) in enumerate(zip(a["ref_aligned"], a["read_aligned"])) if rb == "-"]
+    assert len(gaps) == 3
+    assert all(a["read_aligned"][i] == "T" for i in gaps)
+
+
+def test_pipeline_alignment_view_and_consensus_diffs(reference):
+    """端到端：每条 read 带对齐视图；共识差异位恰好等于真突变"""
+    features = [{"name": "GFP", "type": "CDS", "start": 501, "end": 1100, "strand": "+"}]
+    seg = list(reference[500:1000])
+    seg[50] = "A" if seg[50] != "A" else "G"  # ref_pos 551
+    b1 = make_ab1("".join(seg), [40] * 500)
+    b2 = make_ab1(revcomp(reference[900:1400]), [40] * 500)
+    result = analyze([("f.ab1", b1), ("r.ab1", b2)], reference, features)
+    assert len(result["variants"]) == 1
+
+    for r in result["reads"]:
+        a = r["alignment"]["aligned"]
+        assert len(a["ref_aligned"]) == len(a["read_aligned"]) == len(a["q_aligned"])
+        assert a["ref_aligned"].replace("-", "") == reference[a["ref_start"] - 1:r["alignment"]["ref_end"]]
+
+    diffs = result["consensus"]["diffs"]
+    assert len(diffs) == 1
+    d = diffs[0]
+    assert d["ref_pos"] == 551
+    assert d["cons_base"] == result["variants"][0]["alt_base"]
+    assert result["consensus"]["sequence"][d["cons_index"]] == d["cons_base"]
+
+
+# ==================== 酶切位点注释（indel 位移配对） ====================
+
+def _base_variant(**kw):
+    v = {"ref_pos": 1, "read_pos": 1, "type": "substitution",
+         "ref_base": "A", "alt_base": "T", "length": 1}
+    v.update(kw)
+    return v
+
+
+def test_deletion_shifts_downstream_site_not_reported():
+    """缺失使下游 BsaHI(GRCGYC) 位点整体平移：不应误报为 破坏+新增"""
+    ref = "A" * 15 + "GACG" + "C" * 15   # BsaHI 位于 16-19
+    v = _base_variant(ref_pos=13, type="deletion", length=3, ref_base="AAA", alt_base="-")
+    annotate_variant(v, [], ref)
+    assert v["enzyme_sites_lost"] == []
+    assert v["enzyme_sites_gained"] == []
+
+
+def test_deletion_spanning_site_reported_lost():
+    """删除覆盖识别序列本体：正确报破坏，且不误报新增"""
+    ref = "A" * 15 + "GACG" + "C" * 15
+    v = _base_variant(ref_pos=17, type="deletion", length=3, ref_base="ACG", alt_base="-")
+    annotate_variant(v, [], ref)
+    assert v["enzyme_sites_lost"] == ["BsaHI"]
+    assert v["enzyme_sites_gained"] == []
+
+
+# ==================== 共识插入保留右侧碱基 ====================
+
+def test_consensus_insertion_keeps_following_reference_base():
+    """插入位点的共识序列必须保留紧跟其后的参考碱基（长度 = 参考长度 + 插入长度）"""
+    ref = "ACGTACGTAC" * 5
+    read = {
+        "mean_q": 40,
+        "alignment": {
+            "ref_start": 5, "ref_end": 20,
+            "variants": [{"ref_pos": 7, "type": "insertion", "ref_base": "-", "alt_base": "GGG", "length": 3}],
+        },
+    }
+    c = _build_consensus(ref, [read])
+    assert len(c["sequence"]) == len(ref) + 3
+    d = c["diffs"][0]
+    assert d["cons_base"] == "GGG"
+    assert c["sequence"][d["cons_index"]:d["cons_index"] + 3] == "GGG"
+    assert c["sequence"][d["cons_index"] + 3] == ref[7]  # 参考位置 8 的碱基仍在
+
+
+# ==================== CDS 级别测序结论 ====================
+
+def _cds_reference():
+    """40bp 前导 + 150bp CDS（ATG + 48 个无终止密码子 + TAA）+ 40bp 尾部"""
+    cds = "ATG" + "GCTTTCGGATAC" * 12 + "TAA"
+    return "ACGT" * 10 + cds + "ACGT" * 10, 41, 190
+
+
+def test_cds_report_identical(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["coverage_status"] == "full"
+    assert cr["protein_identical"] is True
+    assert cr["ref_protein_length"] == 49  # ATG..TAA 去掉终止后 49 aa
+    assert cr["frameshift_count"] == 0
+    assert "与设计一致" in cr["verdict"]
+
+
+def test_cds_report_frameshift(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    # 缺失放在 read 第 40 位：read 首 30bp 为硬不可信区
+    seg = ref[30:190]
+    mutated = seg[:39] + seg[40:]  # 删 CDS 内 1bp（ref pos 70）→ 移码
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is False
+    assert cr["frameshift_count"] == 1
+    # 主句：变异位置 + 移码起点，一条因果链（该合成序列移码后无内部终止）
+    assert "70 处的缺失" in cr["verdict"]
+    assert "自第 11 位起移码" in cr["verdict"]
+    # 移码区的“替换”属于噪声，不应列出
+    assert cr["aa_changes"] == []
+
+
+def test_cds_report_insertion_boundaries():
+    """边界插入语义：CDS 起点前的插入不改变 CDS 自身（判一致）；CDS 内部 1bp 插入为移码"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+
+    # 紧贴起点之前的插入：CDS 序列不变，翻译产物一致
+    seg_before = ref[:40] + "T" + ref[40:190]
+    cr1 = analyze([("f.ab1", make_ab1(seg_before, [40] * len(seg_before)))], ref, feats)["cds_reports"][0]
+    assert cr1["frameshift_count"] == 0
+    assert cr1["protein_identical"] is True
+    assert "与设计一致" in cr1["verdict"]
+
+    # CDS 首碱基之后的 1bp 插入：移码，HGVS fs 描述
+    seg_in = ref[:41] + "T" + ref[41:190]
+    cr2 = analyze([("f.ab1", make_ab1(seg_in, [40] * len(seg_in)))], ref, feats)["cds_reports"][0]
+    assert cr2["frameshift_count"] == 1
+    assert cr2["protein_identical"] is False
+    assert "移码" in cr2["verdict"]
+    assert "41 处的插入" in cr2["verdict"]  # 主句直接给出变异位置
+    assert cr2["aa_changes"] == []  # 移码区不列错义清单
+
+
+def test_cds_report_premature_stop(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[54] = "G"  # 第 5 个编码子 TAC→TAG（ref pos 55）：无义突变
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is False
+    assert cr["premature_stop_aa"] == 5
+    assert "提前终止" in cr["verdict"]
+
+
+def test_cds_report_partial_coverage(reference):
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref[:120], [40] * 120))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["coverage_status"] == "partial"
+    assert "未验证" in cr["verdict"]
+
+
+def test_cds_report_uncovered_and_reverse_strand():
+    ref, start, end = _cds_reference()
+    # 未覆盖：CDS 无 read 覆盖
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref[:40], [40] * 40))], ref, feats)
+    assert result["cds_reports"][0]["coverage_status"] == "uncovered"
+
+    # 反向链 CDS：read 覆盖且干净 → 翻译一致
+    feats_rev = [{"name": "R", "type": "CDS", "start": start, "end": end, "strand": "-"}]
+    result2 = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats_rev)
+    cr = result2["cds_reports"][0]
+    assert cr["protein_identical"] is True
+    assert cr["verdict"].startswith("CDS 已完整覆盖")
+
+
+def test_cds_report_synonymous_mutation(reference):
+    """CDS 内同义突变：蛋白一致但要点名 synonymous_variant 与同义计数"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[45] = "C"  # GCT→GCC（codon2）：Ala→Ala 同义
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["protein_identical"] is True
+    assert "synonymous_variant" in cr["consequences"]
+    assert cr["synonymous_count"] == 1
+    assert "同义突变" in cr["verdict"]
+
+
+def test_cds_report_inframe_deletion(reference):
+    """整密码子 3bp 缺失：inframe_deletion，不移码，蛋白短一个氨基酸"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    mutated = ref[:46] + ref[49:190]  # 删 codon3 TTC（pos 47-49）
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "inframe_deletion" in cr["consequences"]
+    assert cr["frameshift_count"] == 0
+    assert cr["protein_identical"] is False
+    assert cr["alt_protein_length"] == cr["ref_protein_length"] - 1
+    assert "框内缺失 3 bp" in cr["verdict"]
+
+
+def test_cds_report_start_lost(reference):
+    """起始密码子 ATG→ACG：start_lost"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[41] = "C"  # ATG→ACG（codon1）
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "start_lost" in cr["consequences"]
+    assert "起始密码子改变" in cr["verdict"]
+
+
+def test_cds_report_stop_lost(reference):
+    """终止密码子 TAA→CAA：stop_lost，翻译读穿"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = list(ref)
+    seg[187] = "C"  # TAA→CAA（codon50，pos 188-190）
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert "stop_lost" in cr["consequences"]
+    assert "终止密码子丢失" in cr["verdict"]
+
+
+# ==================== read 质量评级 / 变异置信度 / 覆盖缺口 ====================
+
+def test_read_grade_levels():
+    q40 = [40] * 500
+    assert _read_grade("ACGT" * 125, q40)[0] == "A"
+    seg = "ACGT" * 30 + "N" * 4           # 含 N：降为 B
+    grade, _, _ = _read_grade(seg, [40] * len(seg))
+    assert grade == "B"
+    low_q = [18] * 100                     # Q20 比例 0 → C
+    assert _read_grade("ACGT" * 25, low_q)[0] == "C"
+    assert _read_grade("ACGT" * 5, [40] * 20)[0] == "C"  # 过短
+    assert _read_grade("ACGT" * 25, [40] * 80 + [15] * 20)[0] == "B"  # Q20 比例 0.8
+
+
+def test_continuous_read_length():
+    """B5：CRL = QV>20 最长连续段（测序服务商常用口径）"""
+    assert continuous_read_length([40, 40, 10, 40, 41, 42, 5, 40]) == 3
+    assert continuous_read_length([19, 20, 21]) == 1   # Q20 本身不算（严格 >20）
+    assert continuous_read_length([]) == 0
+
+
+def test_variant_confidence_levels():
+    base = {"read_pos": 10, "read_q": 42, "support_reads": 1}
+    assert _variant_confidence(dict(base), set()) == "high"
+    assert _variant_confidence(dict(base, read_q=30), set()) == "medium"
+    assert _variant_confidence(dict(base, read_q=15), set()) == "low"
+    assert _variant_confidence(dict(base, support_reads=2, read_q=30), set()) == "high"
+    assert _variant_confidence(dict(base, support_reads=2, read_q=15), set()) == "medium"
+    # 变异位有混合峰信号：无条件降为低
+    assert _variant_confidence(dict(base), {10}) == "low"
+
+
+def test_variant_confidence_indel_floor():
+    """indel 假阳性率高于替换（同聚物滑移/错配区补偿）：单 read 低质量
+    indel 的置信门槛为 Q30（替换为 Q25），多 read 支持可托底"""
+    base = {"read_pos": 10, "read_q": 42, "support_reads": 1, "type": "deletion"}
+    assert _variant_confidence(dict(base, read_q=28), set()) == "low"
+    assert _variant_confidence(dict(base, read_q=30), set()) == "medium"
+    ins = {"read_pos": 10, "read_q": 42, "support_reads": 1, "type": "insertion"}
+    assert _variant_confidence(dict(ins, read_q=25), set()) == "low"
+    assert _variant_confidence(dict(ins, read_q=15, support_reads=2), set()) == "medium"
+
+
+def test_coverage_gaps_complement():
+    gaps = _coverage_gaps([(150, 300), (350, 500)], 700, min_len=50)
+    spans = [(g["start"], g["end"]) for g in gaps]
+    # 301-349 仅 49bp < min_len 50，被过滤
+    assert (1, 149) in spans and (501, 700) in spans and (301, 349) not in spans
+    assert all(g["length"] >= 50 for g in gaps)
+    # 不足 min_len 的缺口被过滤，且按长度降序
+    assert gaps[0]["length"] >= gaps[-1]["length"]
+
+
+def test_coverage_gaps_circular_merges_across_origin_before_filter():
+    # 尾部 951-1000（50bp）与头部 1-60（60bp）各自 < 100，合并后 110bp
+    gaps = _coverage_gaps([(61, 950)], 1000, circular=True)
+    assert gaps == [{
+        "start": 951, "end": 60, "length": 110,
+        "wraps_origin": True, "ref_segments": [[951, 1000], [1, 60]],
+    }]
+    # 同样覆盖按线性处理：两段分别过滤，全部丢弃（线性行为不变）
+    assert _coverage_gaps([(61, 950)], 1000) == []
+
+
+def test_coverage_gaps_circular_merged_still_filtered_by_min_len():
+    # 合并后 30+40=70bp 仍不足 100：整体过滤
+    assert _coverage_gaps([(41, 970)], 1000, circular=True) == []
+
+
+def test_coverage_gaps_circular_wrapped_sorted_with_inner_gaps():
+    gaps = _coverage_gaps([(101, 300), (601, 900)], 1000, circular=True)
+    # 内部缺口 301-600（300bp）不跨原点、不带新字段；跨原点缺口 901-100 共 200bp
+    assert gaps[0] == {"start": 301, "end": 600, "length": 300}
+    assert gaps[1]["wraps_origin"] is True
+    assert (gaps[1]["start"], gaps[1]["end"], gaps[1]["length"]) == (901, 100, 200)
+    assert gaps[1]["ref_segments"] == [[901, 1000], [1, 100]]
+
+
+def test_coverage_gaps_circular_one_side_covered_not_wrapped():
+    # 覆盖到原点前的末端：只有头部缺口，无从合并
+    assert _coverage_gaps([(201, 1000)], 1000, circular=True) == [
+        {"start": 1, "end": 200, "length": 200}]
+    # 覆盖从 1 开始：只有尾部缺口
+    assert _coverage_gaps([(1, 700)], 1000, circular=True) == [
+        {"start": 701, "end": 1000, "length": 300}]
+    # 完全无覆盖：整条参考一段缺口，不标跨原点
+    assert _coverage_gaps([], 1000, circular=True) == [
+        {"start": 1, "end": 1000, "length": 1000}]
+
+
+def test_coverage_gaps_linear_unchanged_head_and_tail():
+    # 线性参考头尾缺口独立判定，不合并
+    gaps = _coverage_gaps([(151, 850)], 1000)
+    assert gaps == [{"start": 1, "end": 150, "length": 150},
+                    {"start": 851, "end": 1000, "length": 150}]
+
+
+def test_gap_span_text_wrapped_and_linear():
+    assert _gap_span_text({"start": 5, "end": 9, "length": 5}) == "5-9"
+    assert _gap_span_text({"start": 951, "end": 60, "length": 110,
+                           "ref_segments": [[951, 1000], [1, 60]]}) == "951-1000、1-60"
+
+
+def _real_traces(bases, main=1000, minor=30):
+    """带主次峰落差的四通道信号，避免平峰被混合检测整条标记"""
+    return [[main if b == ch else minor for b in bases] for ch in "ATGC"]
+
+
+def test_analyze_reports_grade_confidence_and_gaps(reference):
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"
+    seq = "".join(seg)
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400, _real_traces(seq)))], reference, [])
+    r = result["reads"][0]
+    assert r["grade"] in ("A", "B", "C")
+    assert 0 <= r["q20_ratio"] <= 1
+    # 合成平峰 trace 会把大量位置标记为混合峰，这里只验证字段与分级合法性
+    assert result["variants"][0]["confidence"] in ("high", "medium", "low")
+    # 参考 2000bp 只测了 100-500：应有长缺口
+    assert result["coverage_gaps"]
+    assert result["coverage_gaps"][0]["length"] >= 100
+
+
+# ---------- 峰级证据与置信度融合（Mutation Surveyor 要素） ----------
+
+def test_peak_window_coordinate_semantics():
+    """PLOC 峰坐标是 trace 采样点坐标：稀疏峰取半间距窗口，单点峰退化单点窗口"""
+    from core.sanger.pipeline import _peak_window
+    dense = list(range(50))                       # 每碱基 1 个采样点（合成数据）
+    assert _peak_window(dense, 10, 50) == (10, 11)
+    sparse = [4 * i for i in range(50)]           # 每碱基 4 个采样点（真实 ab1）
+    lo, hi = _peak_window(sparse, 10, 200)
+    assert (lo, hi) == (38, 43)                   # 半峰间距 2 点
+    assert _peak_window(sparse, 0, 200)[0] == 0   # 首峰不越界
+
+
+def test_variant_peak_evidence_and_confidence_fusion():
+    """峰强比 mutant_pct / 信噪比 snr 计算及其对置信度分级的融合"""
+    from core.sanger.pipeline import _variant_peak_evidence
+    bases = "ACGTTACGTAGCAATGGTCA"   # index10='G'（1-based 位 11）
+    pos = 11
+    read = extract_read(make_ab1(bases, [45] * len(bases)))  # 主通道 100 / 本底 4
+    # 真实替换的峰形：alt 通道为主峰、参考通道仅剩本底 → mutant_pct ≈100%
+    tr = {b: list(v) for b, v in read["trace"].items()}
+    tr["A"][10], tr["G"][10] = 1000, 4
+    ev = _variant_peak_evidence(tr, read["peak_indices"], pos, "G", "A")
+    assert ev["mutant_pct"] == pytest.approx(100 * 1000 / 1004, abs=0.5)
+    assert ev["snr"] is not None and ev["snr"] >= 10
+    assert _variant_confidence({"read_pos": pos, "read_q": 45, "support_reads": 1}, set(), ev) == "high"
+    # 双峰：alt 与 ref 通道各占一半 → 疑似混合 → 低置信
+    tr2 = {b: list(v) for b, v in read["trace"].items()}
+    tr2["A"][10] = tr2["G"][10] = 500
+    ev2 = _variant_peak_evidence(tr2, read["peak_indices"], pos, "G", "A")
+    assert ev2["mutant_pct"] == 50.0
+    assert _variant_confidence({"read_pos": pos, "read_q": 45, "support_reads": 1}, set(), ev2) == "low"
+    # 突变通道远弱于参考通道（疑似误读）→ 低置信
+    assert _variant_confidence(
+        {"read_pos": pos, "read_q": 45, "support_reads": 1}, set(), {"mutant_pct": 10.0, "snr": 50.0}
+    ) == "low"
+    # 突变峰淹没在本底附近（低信噪比）→ 低置信
+    assert _variant_confidence(
+        {"read_pos": pos, "read_q": 45, "support_reads": 1}, set(), {"mutant_pct": 98.0, "snr": 2.0}
+    ) == "low"
+    # 峰证据干净但 Q 中等 → 中置信
+    assert _variant_confidence(
+        {"read_pos": pos, "read_q": 30, "support_reads": 1}, set(), {"mutant_pct": 98.0, "snr": 50.0}
+    ) == "medium"
+    # indel / 缺 trace 无峰级证据
+    assert _variant_peak_evidence(read["trace"], read["peak_indices"], pos, "A", "-") is None
+    assert _variant_peak_evidence(read["trace"], [], pos, "G", "A") is None
+
+
+# ---------- CDS 编码区自动校正（ORF 对齐）与嵌套去重 ----------
+
+def test_find_orf_realignment_forward():
+    """特征起点多含上游碱基（MX.dna 场景）：ORF 对齐回真实编码区"""
+    from core.sanger.pipeline import _find_orf
+    ref, start, end = _cds_reference()  # CDS 41..190
+    orf = _find_orf(ref, start - 1, end, "+")   # 特征 40..190
+    assert (orf["orf_start"], orf["orf_end"]) == (start, end)
+    # 特征与编码区一致时原样返回
+    orf2 = _find_orf(ref, start, end, "+")
+    assert (orf2["orf_start"], orf2["orf_end"]) == (start, end)
+
+
+def test_find_orf_realignment_reverse():
+    """负链特征边界偏差同样按 ORF 对齐（坐标换算回参考方向）"""
+    from core.sanger.pipeline import _find_orf
+    from core.sanger.aligner import revcomp
+    cds_fwd = "ATG" + "GCTTTCGGATAC" * 12 + "TAA"
+    ref_neg = "ACGT" * 10 + revcomp(cds_fwd) + "ACGT" * 10  # 负链 CDS 位于 41..190
+    # 特征两端各多含 1bp：仍应对齐回真实编码区
+    orf = _find_orf(ref_neg, 40, 191, "-")
+    assert (orf["orf_start"], orf["orf_end"]) == (41, 190)
+
+
+def test_cds_report_orf_realignment_end_to_end():
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start - 1, "end": end, "strand": "+"}]
+    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats)
+    cr = result["cds_reports"][0]
+    assert cr["start"] == start and cr["end"] == end
+    assert cr["ref_protein_length"] == 49
+    assert cr["protein_identical"] is True
+    assert "已按编码区翻译" in cr["verdict"]
+
+
+def test_cds_report_skips_nested_cds():
+    """被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论"""
+    ref, start, end = _cds_reference()
+    feats = [
+        {"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"},
+        {"name": "6xHis", "type": "CDS", "start": start + 3, "end": start + 20, "strand": "+"},
+    ]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    reports = _build_cds_reports(ref, feats, [], consensus)
+    assert [r["name"] for r in reports] == ["MX"]
+
+
+def test_cds_report_empty_protein_no_crash(monkeypatch):
+    """终审 C-08 回归锁：起始密码子突变为终止 → alt 蛋白截断为空串，
+    _protein_alignment 曾抛 ValueError: sequence has zero length 使整份
+    分析 500——空侧比对必须短路为退化结果"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    # 变体：ATG → TGA（起始密码子变终止）
+    variants = [{
+        "ref_pos": start, "type": "substitution",
+        "ref_base": "A", "alt_base": "T", "length": 1, "confidence": "high",
+    }]
+    reports = _build_cds_reports(ref, feats, variants, consensus)
+    cr = reports[0]
+    # 不抛异常即通过；alt 蛋白为空时逐位比对无可比内容
+    assert cr["ref_protein_length"] is not None
+
+
+def test_cds_report_pipeline_survives_internal_error(monkeypatch):
+    """终审 C-08 回归锁：CDS 判读内部异常降级为「CDS 判读失败」占位报告，
+    一条畸形特征不得拖垮整份分析（analyze 全链路验证）"""
+    from core.sanger import pipeline as pl
+
+    def boom(*a, **kw):
+        raise RuntimeError("synthetic internal error")
+
+    monkeypatch.setattr(pl, "_find_orf", boom)
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    blob = make_ab1(ref, [40] * len(ref))
+    result = pl.analyze([("t.ab1", blob)], ref, feats)
+    assert len(result["cds_reports"]) == 1
+    assert result["cds_reports"][0]["verdict"].startswith("CDS 判读失败")
+    # 原始异常细节不外泄给终端用户
+    assert "synthetic" not in result["cds_reports"][0]["verdict"]
+    # 分析本体照常完成（run_verdict/共识不受牵连）
+    assert result.get("run_verdict") is not None or result.get("consensus") is not None
+
+
+def test_tracy_cross_basecall_short_trimmed_guard(monkeypatch):
+    """终审 C-09 回归锁：tracy 交叉 basecall 修剪后不足 MIN_WINDOW 时
+    不得送进 align_read（曾按修剪前长度守卫，空串照样比对 → ValueError）"""
+    from core.sanger import pipeline as pl
+
+    seen_lens: list = []
+    real_align = pl.align_read
+
+    def spy_align(seq, *a, **kw):
+        seen_lens.append(len(seq))
+        return real_align(seq, *a, **kw)
+
+    monkeypatch.setattr(pl, "align_read", spy_align)
+    # 桩 tracy：返回一段全部低 Q（修剪后为空）的交叉 basecall
+    monkeypatch.setattr(pl, "_try_tracy_basecall", lambda blob: ("ATGAAATTAGTAAA", [1] * 14))
+    ref = "ACGT" * 20 + "ATGAAATTAGTAAA" + "ACGT" * 20
+    blob = make_ab1(ref, [40] * len(ref))
+    result = pl.analyze([("t.ab1", blob)], ref)
+    # 所有送进比对的序列（主 read 与交叉 basecall）都必须 ≥ MIN_WINDOW
+    assert seen_lens, "主 read 比对应正常发生"
+    assert all(n >= pl.MIN_WINDOW for n in seen_lens), seen_lens
+    # 低质量交叉 basecall 不产生交叉变体（used_tracy=True 但修剪后为空 → 空列表）
+    assert result["reads"][0].get("cross_variants") in ([], None)
+
+
+def test_cds_report_ignores_low_confidence_variants():
+    """低置信 indel（测序噪声）不推翻 CDS 结论；verdict 附待复核提示"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    variants = [
+        {"ref_pos": 60, "type": "deletion", "ref_base": "C", "alt_base": "-",
+         "length": 1, "read_q": 9, "confidence": "low"},
+        {"ref_pos": 70, "type": "insertion", "ref_base": "-", "alt_base": "G",
+         "length": 1, "read_q": 3, "confidence": "low"},
+        {"ref_pos": 53, "type": "substitution", "ref_base": "T", "alt_base": "C",
+         "length": 1, "read_q": 59, "confidence": "high"},  # TAC→CAC 错义（Tyr→His）
+    ]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    cr = _build_cds_reports(ref, feats, variants, consensus)[0]
+    assert cr["protein_identical"] is False
+    assert cr["frameshift_count"] == 0
+    assert cr["pending_low_confidence"] == 2
+    assert "未计入判定" in cr["verdict"] and "核对峰图" in cr["verdict"]
+    assert "Y5H" in "".join(cr["aa_changes"])  # 错义来自确证替换（第 5 aa Tyr→His）
+
+
+# ---------- 低质量 indel 全链路（共识与结论的噪声过滤） ----------
+
+def test_low_quality_indel_not_in_verdict_nor_consensus(reference):
+    """单 read 低质量 indel（Q<30）：不进入 CDS 结论、不写入共识序列，
+    仅保留在变体清单并标注低置信度——高质量证据才改变结论（MX.dna 实测场景）"""
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    seg = ref[40:190]
+    mutated = seg[:29] + seg[30:]  # 删 CDS 内 1bp（ref pos 70）
+    # 缺失点落在 69-71 的 T 同聚区内，把可能的归因位都设为低质量（Q10）
+    quality = [40] * 29 + [10] * 3 + [40] * (len(mutated) - 32)
+    result = analyze([("f.ab1", make_ab1(mutated, quality))], ref, feats)
+
+    v = result["variants"][0]
+    assert v["type"] == "deletion" and v["confidence"] == "low"
+    # 共识序列不固化该缺失：仍是完整参考
+    assert result["consensus"]["sequence"] == ref.upper()
+
+    cr = result["cds_reports"][0]
+    assert cr["frameshift_count"] == 0
+    assert cr["protein_identical"] is True
+    assert cr["pending_low_confidence"] == 1
+    assert "另有 1 处低置信差异" in cr["verdict"]
+    assert "核对峰图" in cr["verdict"]
+    # 自动结论的差异行也带低置信度提示
+    assert any("低置信度" in line for line in result["conclusion"].splitlines())
+
+
+def test_consensus_skips_low_confidence_keys():
+    """skip_keys 机制：指定变体（按 ref_pos/type/alt 匹配）不写入共识"""
+    ref = "ACGTACGTAC" * 5
+    read = {
+        "mean_q": 40,
+        "alignment": {
+            "ref_start": 5, "ref_end": 20,
+            "variants": [{"ref_pos": 7, "type": "insertion", "ref_base": "-", "alt_base": "GGG", "length": 3}],
+        },
+    }
+    c = _build_consensus(ref, [read])
+    assert len(c["sequence"]) == len(ref) + 3
+    c2 = _build_consensus(ref, [read], skip_keys={_variant_key(read["alignment"]["variants"][0])})
+    assert c2["sequence"] == ref.upper()
+    assert c2["diffs"] == []
+
+
+# ---------- 注释显示：同义突变与低置信度标注 ----------
+
+def test_synonymous_substitution_not_labeled_aa_change():
+    """CDS 内同义替换：不再误标为“氨基酸改变”，改标 synonymous"""
+    ref = "A" * 15 + "TAT" + "C" * 15   # CDS 16-18 = TAT（Tyr）
+    feats = [{"name": "X", "type": "CDS", "start": 16, "end": 18, "strand": "+"}]
+    v = _base_variant(ref_pos=18, type="substitution", ref_base="T", alt_base="C")
+    annotate_variant(v, feats, ref)
+    assert v.get("aa_change") is None
+    assert v.get("synonymous") is True
+    assert v["codon_change"] == "TAT>TAC"
+    notes = summarize_severity([v])
+    assert "同义突变" in notes[0] and "氨基酸改变" not in notes[0]
+
+
+def test_summarize_marks_low_confidence():
+    """低置信度变体在结论行附人工核对提示"""
+    v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v["confidence"] = "low"
+    v["features"] = []
+    note = summarize_severity([v])[0]
+    assert "低置信度" in note and "人工核对" in note
+    v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v2["features"] = []
+    assert "低置信度" not in summarize_severity([v2])[0]
+
+
+# ---------- 插入峰强度比（真实单碱基插入 vs caller 伪影的判别） ----------
+
+def test_insertion_peak_evidence_grades():
+    """插入峰强度比：峰接近邻峰时升档（Q 在压缩区偏低不一票否决），无峰判低"""
+    prefix = "ACGTTACGTAGCAATGGTCA"          # 20bp 稳定区前导
+    ins_read = prefix + "C" + "CAATGGTCA"    # read_pos 21 = 插入 C（前导区外）
+    read = extract_read(make_ab1(ins_read, [45] * len(ins_read)))  # 主通道 100 / 本底 4
+    # 默认 trace 下插入 C 的 C 通道与邻峰同为 100 → ratio ≈ 1
+    ev = _variant_peak_evidence(
+        read["trace"], read["peak_indices"], 21, "-", "C", "insertion")
+    assert ev is not None and ev["insertion_peak_ratio"] == pytest.approx(1.0, abs=0.15)
+    v = {"read_pos": 21, "read_q": 3, "support_reads": 1}
+    # 峰清晰但单 read + 极低 Q：中置信（峰压缩区 Q 偏低不否决真实峰）
+    assert _variant_confidence(v, set(), ev) == "medium"
+    # 多 read 支持或 Q 达标 → 高置信
+    assert _variant_confidence(dict(v, read_q=30), set(), ev) == "high"
+    assert _variant_confidence(dict(v, support_reads=2), set(), ev) == "high"
+    # 峰很弱（<0.3）：疑似伪影 → 低
+    tr = {b: list(x) for b, x in read["trace"].items()}
+    tr["C"][20] = 4  # 插入位点 C 通道压到本底
+    ev_weak = _variant_peak_evidence(tr, read["peak_indices"], 21, "-", "C", "insertion")
+    assert ev_weak["insertion_peak_ratio"] < 0.3
+    assert _variant_confidence(v, set(), ev_weak) == "low"
+
+
+def test_insertion_peak_evidence_requires_stable_region():
+    """read 前导 ~20bp 峰形未稳定：不产出插入峰证据（走 Q + 支持数口径）"""
+    bases = "ACGT" * 10
+    read = extract_read(make_ab1(bases, [45] * len(bases)))
+    assert _variant_peak_evidence(read["trace"], read["peak_indices"], 10, "-", "C", "insertion") is None
+    assert _variant_peak_evidence(read["trace"], read["peak_indices"], None, "-", "C", "insertion") is None
+
+
+def test_mixed_signal_yields_to_clear_insertion_peak():
+    """插入位点的压缩拖尾（次级峰 30-40%）不按混合样品一票否决：峰清晰时按插入规则升档"""
+    ins_read = "ACGTTACGTAGCAATGGTCA" + "C" + "CAATGGTCA"  # read_pos 21 = 插入 C
+    read = extract_read(make_ab1(ins_read, [45] * len(ins_read)))
+    ev = _variant_peak_evidence(
+        read["trace"], read["peak_indices"], 21, "-", "C", "insertion")
+    v = {"read_pos": 21, "read_q": 3, "support_reads": 1}
+    # 同位点被判 mixed：峰清晰（ratio≥0.6）→ 仍按插入规则给中置信而非低
+    assert _variant_confidence(v, {21}, ev) == "medium"
+    # 无峰证据的 mixed 位点依旧低置信
+    assert _variant_confidence(v, {21}, None) == "low"
+
+
+# ---------- indel 归一化（Tan 2015）与 tracy basecall 交叉印证 ----------
+
+def test_normalize_indel_left_aligns_homopolymer():
+    """同聚物/重复区的等价 indel 归一化到最左表示：不同 anchor 聚合为同一事件"""
+    from core.sanger.pipeline import _normalize_indel, _variant_key
+    ref = "ACGT" * 100 + "AAAA" + "ACGT" * 100          # 同聚物 AAAA 在 401-404
+    base = 401
+    # 同聚物内任意位置的 1bp 缺失/插入都是同一事件
+    for pos in (401, 402, 403, 404):
+        d = _normalize_indel(ref, {"ref_pos": pos, "type": "deletion",
+                                   "ref_base": "A", "alt_base": "-", "length": 1})
+        assert d["ref_pos"] == base
+        i = _normalize_indel(ref, {"ref_pos": pos, "type": "insertion",
+                                   "ref_base": "-", "alt_base": "A", "length": 1})
+        assert i["ref_pos"] == base - 1  # 插入 anchor：最左 A 之前
+        assert _variant_key(d) == _variant_key(
+            _normalize_indel(ref, {"ref_pos": 403, "type": "deletion",
+                                   "ref_base": "A", "alt_base": "-", "length": 1}))
+    # 重复区多碱基插入：相位对齐的等价 anchor（B 后）左移到最左（T 后）并循环移位；
+    # 相位错开的 anchor（A 后，如 9）不等价于 4，保持原位
+    ref2 = "ACGT" + "ABABAB" + "TTTT"
+    ins = _normalize_indel(ref2, {"ref_pos": 6, "type": "insertion",
+                                  "ref_base": "-", "alt_base": "AB", "length": 2})
+    assert (ins["ref_pos"], ins["alt_base"]) == (4, "AB")
+    ins9 = _normalize_indel(ref2, {"ref_pos": 9, "type": "insertion",
+                                   "ref_base": "-", "alt_base": "AB", "length": 2})
+    assert ins9["ref_pos"] == 9  # 相位错开：插入 AABBA... 不等价于 T-ABABAB...，不左移
+    # 非重复区变体原样保留
+    same = _normalize_indel(ref, {"ref_pos": 100, "type": "substitution",
+                                  "ref_base": "A", "alt_base": "G", "length": 1})
+    assert same["ref_pos"] == 100
+
+
+def test_tracy_basecall_corroboration(monkeypatch, reference):
+    """独立 basecaller 报出同一（归一化后）变体：低置信升中并打印证标记"""
+    import core.sanger.pipeline as P
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"             # read 内替换 → 低 Q 判低
+    seq = "".join(seg)
+    q = [45] * 400
+    q[50] = 12                                            # 变异位低 Q
+    result = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    v = result["variants"][0]
+    assert v["confidence"] == "low" and "corroborated_by_basecall" not in v
+
+    # tracy 重 basecall 输出同一序列 → 报出同一变体（跨 caller 印证）
+    cross = P._try_tracy_basecall  # 保留引用防误删
+    monkeypatch.setattr(P, "_try_tracy_basecall", lambda blob: (seq, [40] * len(seq)))
+    result2 = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    v2 = result2["variants"][0]
+    assert v2.get("corroborated_by_basecall") is True
+    # 印证仅标记、不改置信度：两个 caller 读同一信号，错误相关不构成独立证据
+    assert v2["confidence"] == "low"
+    assert result2["engine"] == "internal+biopython+tracy-basecall"
+
+
+def test_tracy_unavailable_degrades_gracefully(reference):
+    """无 tracy 环境：不做交叉印证，管线照常（其余行为与现状一致）"""
+    seg = list(reference[99:499])
+    seg[50] = "A" if seg[50] != "A" else "G"
+    seq = "".join(seg)
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400))], reference, [])
+    assert result["engine"] == "internal+biopython"
+    assert result["variants"]
+
+
+def test_fwo1_direct_mapping():
+    """第 0 步：FWO_1 是权威通道映射，Biopython 与内置解析器都直接采用"""
+    bases = "ACGT" * 8
+    blob = make_ab1(bases, [40] * len(bases), channel_order="GATC", fwo="GATC")
+    expected = {b: [100 if c == b else 4 for c in bases] for b in "GATC"}
+    assert extract_read(blob)["trace"] == expected                 # Biopython 主路径
+    assert _extract_read_internal(blob)["trace"] == expected       # 内置解析器兜底路径
+
+
+def test_fwo1_overrides_content_detection(caplog):
+    """第 0 步：FWO_1 与内容检测冲突时以 FWO_1 为准，并记 warning 不静默"""
+    bases = "ACGT" * 8
+    # 通道内容按旧惯例摆放（DATA9=A 主峰），文件却声明 GATC（DATA9=G）→ 冲突
+    blob = make_ab1(bases, [40] * len(bases), channel_order="ATGC", fwo="GATC")
+    with caplog.at_level(logging.WARNING):
+        read = extract_read(blob)
+    # FWO_1 胜出：G ← DATA9（其内容实为 A 主峰），交叉校验告警可见
+    assert read["trace"]["G"] == [100 if c == "A" else 4 for c in bases]
+    assert "FWO_1" in caplog.text and "不一致" in caplog.text
+
+
+def test_fwo1_ignored_without_data9_12():
+    """FWO_1 只描述 DATA9-12；通道不在 9-12 时回落内容检测"""
+    bases = "ACGT" * 8
+    blob = make_ab1(bases, [40] * len(bases), channel_start=1,
+                    channel_order="TAGC", fwo="GATC")
+    read = extract_read(blob)
+    # 检测命中 group(1-4) 的 TAGC 排列：T ← DATA1、A ← DATA2
+    assert read["trace"]["T"] == [100 if c == "T" else 4 for c in bases]
+    assert read["trace"]["A"] == [100 if c == "A" else 4 for c in bases]
+
+
+def test_default_fallback_gatc_convention():
+    """第 0 步：无 FWO_1 且检测不可靠时，兜底为 DATA9-12 → G/A/T/C
+
+    旧兜底 A/T/G/C 与真实文件权威顺序（FWO_1=GATC）交叉错位，本测试锁定修正。
+    碱基全 N 时内容检测无采样位点，必然走兜底。
+    """
+    traces = [[1] * 6, [2] * 6, [3] * 6, [4] * 6]  # DATA9..12 互不相同
+    blob = make_ab1("NNNNNN", [40] * 6, traces=traces)
+    read = extract_read(blob)
+    assert read["trace"]["G"] == [1] * 6  # DATA9
+    assert read["trace"]["A"] == [2] * 6  # DATA10
+    assert read["trace"]["T"] == [3] * 6  # DATA11
+    assert read["trace"]["C"] == [4] * 6  # DATA12
+
+
+# ==================== A1：窗口峰高（抗 PLOC 抖动） ====================
+
+def test_poly_ratio_window_height_resists_ploc_jitter():
+    """A1：峰高在峰窗内取 max——PLOC 系统性偏 1 采样点时，run 内峰全被
+    单点采样读成爬坡值 4，正常 poly 被误判为压缩（4/100）；窗口取峰后为 1.0"""
+    trace = {b: [4] * 64 for b in "ACGT"}
+    peaks = []
+    for k in range(16):
+        trace["A"][4 * k + 1] = 100   # 峰顶在 PLOC+1
+        peaks.append(4 * k)           # PLOC 全部偏在峰顶前 1 个采样点
+    ratio = _poly_peak_amplitude_ratio(trace, peaks, 5, 8)
+    assert ratio == 1.0
+
+
+# ==================== A2：基线校正 ====================
+
+def test_baseline_correction_prevents_mixed_false_positives():
+    """A2：线性基线漂移抬高本底——不校正时 read 后段本底接近峰高，
+    _detect_mixed_positions 大面积误报；校正后本底扣除、零误报"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30, baseline_slope=0.10)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    raw = analyze([("f.ab1", blob)], ref, [], signal_correct=False)
+    assert raw["mixed_detected"] and any(raw["mixed_detected"].values()), \
+        "注入应先复现误报（基线漂移 → 假混合峰）"
+    corrected = analyze([("f.ab1", blob)], ref, [], signal_correct=True)
+    assert corrected["mixed_detected"] == {}
+
+
+def test_baseline_correct_preserves_merged_plateau():
+    """A2 平台护栏：合并峰平台（信号自身就是局部最低值）不得被当本底扣平。
+    本底是四通道共有的加性量，信号是通道特异的——跨通道共模判据兜底"""
+    tr = {ch: [4] * 400 for ch in "ATGC"}
+    tr["A"][100:300] = [100] * 200          # 200 采样点连续 A 平台
+    bc = baseline_correct(tr)
+    assert max(bc["A"][100:300]) >= 90, "平台被扣平"
+    assert max(bc["T"]) == 0 and min(bc["A"][:100]) == 0
+
+
+# ==================== A4：报告层 ====================
+
+def test_summarize_slippage_wording():
+    """A4：带滑移标记的低置信变异点名“poly 下游疑似滑移伪影”（B4 落地后接入）"""
+    v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v["confidence"] = "low"
+    v["features"] = []
+    v["slippage_artifact"] = True
+    note = summarize_severity([v])[0]
+    assert "滑移伪影" in note and "混合峰" not in note
+    # 无标记的低置信变异维持原口径
+    v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
+    v2["confidence"] = "low"
+    v2["features"] = []
+    assert "疑似测序噪声或混合峰" in summarize_severity([v2])[0]
+
+
+def test_excel_conclusion_flags_poly_count_mismatch():
+    """A4：批量 Excel 一句话结论补回 poly 区峰图计数告警（此前是真丢失）"""
+    from core.sanger.batch import excel_conclusion
+    res = {
+        "reads": [{}], "errors": [], "variants": [],
+        "consensus": {"coverage_percent": 99.0},
+        "cds_reports": [],
+        "homopolymers": [{"tier": "poly", "count_reliable": False}],
+    }
+    out = excel_conclusion("p", res, 1, True)
+    assert "poly 区计数存疑" in out and "详见报告" not in out
+    # 观察级 run 不触发该告警
+    res2 = {**res, "homopolymers": [{"tier": "observed", "count_reliable": False}]}
+    assert "poly 区计数" not in excel_conclusion("p", res2, 1, True)
+
+
+# ==================== B1：property map 与局部压缩比 ====================
+
+def test_property_maps_h_and_w():
+    """B1：H(x)/W(x) property map——每峰 (height, width@半高) 滑动中位数插值"""
+    ref = "ACGT" * 10 + "A" * 30 + "TGCACGTT" + "ACGT" * 10
+    traces = _shaped_traces(ref, (40, 70), 30)
+    tr = {ch: traces[i] for i, ch in enumerate("ATGC")}
+    peaks = [i * 4 for i in range(len(ref))]
+    maps = property_maps(tr, peaks)
+    assert maps is not None
+    assert abs(maps["H"][peaks[50]] - 100) < 5      # poly 区峰高包络
+    assert maps["peaks_w"][0] == pytest.approx(2)   # 正常单峰半高宽 2 采样点
+
+
+def test_local_ratio_removes_position_bias():
+    """B1：信号沿 read 衰减时全局分母把后段正常 poly 误判压缩；
+    局部分母 H(run) 下前/后段同 poly 的比值无系统性位置差"""
+    bases = "ACGT" * 5 + "A" * 20 + "CGTACGTA" + "A" * 20 + "ACGT" * 5
+    n = len(bases)
+    ns = n * 4
+    traces = {ch: [] for ch in "ATGC"}
+    for i, b in enumerate(bases):
+        for ch in "ATGC":
+            traces[ch].extend([100 if ch == b else 4] * 4)
+    for ch in "ATGC":
+        traces[ch] = [int(v * (0.05 ** (s / ns))) for s, v in enumerate(traces[ch])]
+    peaks = [i * 4 for i in range(n)]
+    early = _poly_peak_amplitude_ratio(traces, peaks, 21, 20, local=True)
+    late = _poly_peak_amplitude_ratio(traces, peaks, n - 25, 20, local=True)
+    assert 0.8 <= early <= 1.2, early
+    assert 0.8 <= late <= 1.2, late
+    late_global = _poly_peak_amplitude_ratio(traces, peaks, n - 25, 20, local=False)
+    assert late_global < 0.6, late_global   # 全局口径的位置偏差（本改动动机）
+
+
+def test_fit_decay_recovers_rate():
+    """B1：log 空间衰减拟合从注入的几何衰减中恢复 α（Andrade & Manolakos）"""
+    import math
+    bases = "ACGT" * 40
+    traces = {ch: [] for ch in "ATGC"}
+    for i, b in enumerate(bases):
+        for ch in "ATGC":
+            traces[ch].extend([100 if ch == b else 4] * 4)
+    ns = len(bases) * 4
+    decay_frac = 0.05
+    for ch in "ATGC":
+        traces[ch] = [int(v * (decay_frac ** (s / ns))) for s, v in enumerate(traces[ch])]
+    peaks = [i * 4 for i in range(len(bases))]
+    fd = fit_decay(traces, peaks, skip_start=5, skip_end=5)
+    assert fd is not None and fd["n"] > 20
+    expect_alpha = -math.log(decay_frac) / ns   # ln h = β − α·t
+    assert fd["alpha"] == pytest.approx(expect_alpha, rel=0.25)
+
+
+# ==================== B2：宽度法救合并峰 ====================
+
+def test_estimate_run_length_rescues_merged_peaks():
+    """B2：峰完全合并（连续高台）时峰数法失效（count≈0），宽度法给出
+    长度估计 ∈ [28,32]（真值 30）；count_reliable 维持不可靠判定"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道（"ATGC" 第 1 路）连续高台
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["peak_count_estimate"] is None  # 合并 read 的 pc=0 是"无可分辨峰"非真实计数，不进估计（2026-10-08 起）
+    assert hp["count_reliable"] is False
+    assert 28 <= hp["length_estimate"] <= 32
+    assert hp["length_method"] == "width"
+    assert hp["length_ci"] and hp["length_ci"][0] <= 30 <= hp["length_ci"][1]
+
+
+# ==================== B3：二/三核苷酸重复进报告 ====================
+
+def test_repeat_runs_report_and_observed_tier_end_to_end():
+    """B3：(CAG)6 参考进 homopolymer_report；8-20bp A run 出现在观察级；
+    观察级与单元重复不触发“碱基调用偏差”结论告警"""
+    ref = "ACGT" * 10 + "CAG" * 6 + "ACGT" * 5 + "A" * 12 + "TGCACGTT" + "ACGT" * 20
+    read_bases = ref[20:150]
+    result = analyze([("f.ab1", make_ab1(read_bases, [40] * len(read_bases)))], ref, [])
+    cag = next(h for h in result["homopolymers"] if h["period"] == 3)
+    assert cag["unit"] == "CAG" and cag["ref_repeat_count"] == 6
+    obs = next(h for h in result["homopolymers"]
+               if h["tier"] == "observed" and h["period"] == 1)
+    assert obs["base"] == "A" and 8 <= obs["length"] < 20
+    assert "碱基调用存在整段偏差风险" not in result["conclusion"]
+
+
+# ==================== B4：滑移 echo 先于 mixed 判定 ====================
+
+def test_slippage_echoes_not_flagged_as_mixed():
+    """B4：poly 下游滑移 echo（n−1/n−2 几何衰减次峰）不进 mixed_positions，
+    不再连带降级该区真实变异；P17 顺序要求 stutter 检测先于 merge"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30, stutter=(0.5, 0.4))
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    read = extract_read(blob)
+    unfiltered = _detect_mixed_positions(read_bases, read["trace"], read["peak_indices"])
+    assert 71 in unfiltered and 72 in unfiltered, "注入应先复现误报（echo 峰 → 假混合）"
+    result = analyze([("f.ab1", blob)], ref, [])
+    mixed = result["mixed_detected"].get("f.ab1", [])
+    assert 71 not in mixed and 72 not in mixed
+    assert result["reads"][0]["slippage_positions"] == [71, 72]
+
+
+def test_slippage_ignores_full_height_continuation():
+    """B4 红线：poly 后真实同碱基延续（全高峰）不是 echo——不打滑移标记；
+    等高次级峰（真实混合的形态，非衰减序列）也不误判为滑移"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    assert result["reads"][0]["slippage_positions"] == []
+
+
+# ==================== B5：poly 后骤降 + CRL ====================
+
+def test_post_poly_dropout_reported_and_end_truncation_not_alarmed():
+    """B5：read 中段 poly 下游信号骤降（塌陷后恢复）进结论并区分“未覆盖”；
+    read 末端塌陷记 end_truncation、不触发骤降告警；护栏：骤降只标记不修补"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    for i in range(70, 85):                    # 中段塌陷 15 碱基后恢复
+        for ch_i in range(4):
+            row = traces[ch_i]
+            row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    drops = result["reads"][0]["post_poly_dropouts"]
+    assert drops and drops[0]["base"] == "A"
+    assert drops[0]["end_truncation"] is False and drops[0]["recovered"] is True
+    assert "信号骤降" in result["conclusion"] and "区别于未覆盖" in result["conclusion"]
+
+    # read 末端塌陷：end_truncation，结论不告警
+    traces2 = _shaped_traces(read_bases, (40, 70), 30)
+    for i in range(100, len(read_bases)):      # 距 read 末端 < 2×END_MARGIN
+        for ch_i in range(4):
+            row = traces2[ch_i]
+            row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
+    blob2 = make_ab1(read_bases, [40] * len(read_bases), traces=traces2, samples_per_base=4)
+    result2 = analyze([("f.ab1", blob2)], ref, [])
+    drops2 = result2["reads"][0]["post_poly_dropouts"]
+    assert drops2 and drops2[0]["end_truncation"] is True
+    assert "信号骤降" not in result2["conclusion"]
+
+
+def test_read_crl_in_output():
+    """B5：CRL 进 read QC 输出"""
+    ref = "ACGT" * 30
+    blob = make_ab1(ref[10:130], [40] * 110)
+    result = analyze([("f.ab1", blob)], ref, [])
+    assert result["reads"][0]["crl"] == 110
+    q = [40] * 60 + [3] * 5 + [40] * 45
+    blob2 = make_ab1(ref[10:130], q)
+    result2 = analyze([("f.ab1", blob2)], ref, [])
+    assert result2["reads"][0]["crl"] == 60
+
+
+
+# ---------- 回归测试：共识投票与变体合并（隐藏 bug 修复） ----------
+
+def test_consensus_insertion_votes_accumulate_across_reads():
+    """两条 read 支持同一插入：插入票必须累加，不能被参考碱基票淹没（此前为赋值）"""
+    ref = "ACGTACGTAC" * 5
+    def _read(q):
+        return {
+            "mean_q": q,
+            "alignment": {
+                "ref_start": 5, "ref_end": 20,
+                "variants": [{"ref_pos": 7, "type": "insertion", "ref_base": "-",
+                              "alt_base": "GGG", "length": 3}],
+            },
+        }
+    c = _build_consensus(ref, [_read(40), _read(40)])
+    assert len(c["sequence"]) == len(ref) + 3
+    assert c["sequence"][7:10] == "GGG"
+
+
+def _cons_read(ref, start, end, mean_q, col_q, subs=None, dels=None):
+    """构造带逐列对齐视图的 read 结果：subs {ref_pos: alt}，dels {ref_pos}，
+    col_q {ref_pos: Q}（其余列 Q 取 mean_q）"""
+    subs, dels = subs or {}, dels or set()
+    ref_al, read_al, q_al, variants = [], [], [], []
+    for p in range(start, end + 1):
+        rb = ref[p - 1]
+        ref_al.append(rb)
+        if p in dels:
+            read_al.append("-")
+            q_al.append(0)
+            variants.append({"ref_pos": p, "type": "deletion", "ref_base": rb,
+                             "alt_base": "-", "length": 1})
+            continue
+        qb = subs.get(p, rb)
+        read_al.append(qb)
+        q_al.append(col_q.get(p, int(mean_q)))
+        if qb != rb:
+            variants.append({"ref_pos": p, "type": "substitution", "ref_base": rb,
+                             "alt_base": qb, "length": 1, "quality": q_al[-1]})
+    return {"mean_q": mean_q, "alignment": {
+        "ref_start": start, "ref_end": end, "variants": variants,
+        "aligned": {"ref_start": start, "ref_aligned": "".join(ref_al),
+                    "read_aligned": "".join(read_al), "q_aligned": q_al}}}
+
+
+def test_consensus_column_quality_beats_mean_quality():
+    """审计 #9：两 read 在一位点分歧，按该列 Q 定胜负而非 read 平均 Q"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[49] != "A" else "C"
+    # 变体 read 该列 Q40、平均 Q 低；参考 read 该列 Q8（读长末段）、平均 Q 高
+    var_read = _cons_read(ref, 1, 100, 25, {50: 40}, subs={50: alt})
+    ref_read = _cons_read(ref, 1, 100, 45, {50: 8})
+    c = _build_consensus(ref, [ref_read, var_read])
+    assert c["sequence"][49] == alt
+    assert [d["ref_pos"] for d in c["diffs"]] == [50]
+    # 反过来：变体 read 该列低 Q，参考碱基胜出（旧版按平均 Q 也压不住）
+    var_read = _cons_read(ref, 1, 100, 45, {50: 8}, subs={50: alt})
+    ref_read = _cons_read(ref, 1, 100, 25, {50: 40})
+    c = _build_consensus(ref, [var_read, ref_read])
+    assert c["sequence"] == ref
+    assert c["diffs"] == []
+
+
+def test_consensus_low_q_majority_vs_single_high_q():
+    """两条该列 Q8 的 read 敌不过一条 Q40：对数似然比相加而非概率相加"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[29] != "A" else "C"
+    lows = [_cons_read(ref, 1, 100, 40, {30: 8}) for _ in range(2)]
+    high = _cons_read(ref, 1, 100, 30, {30: 40}, subs={30: alt})
+    c = _build_consensus(ref, lows + [high])
+    assert c["sequence"][29] == alt
+
+
+def test_consensus_single_read_wins_even_low_q():
+    """单 read 覆盖：该 read 的调用直接胜出，与其 Q 无关（显式规则）"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[59] != "A" else "C"
+    r = _cons_read(ref, 40, 80, 30, {60: 2}, subs={60: alt}, dels={70})
+    c = _build_consensus(ref, [r])
+    assert c["sequence"][59] == alt
+    assert any(d["ref_pos"] == 70 and d["cons_base"] == "-" for d in c["diffs"])
+    assert len(c["sequence"]) == len(ref) - 1
+
+
+def test_consensus_deletion_weighted_by_flanking_q():
+    """缺失列无 read Q：取左右相邻碱基 Q 的较小者，低 Q 区的缺失让位"""
+    from core.sanger.pipeline import _column_quality
+    ref = "ACGTTGCAAC" * 10
+    d = _cons_read(ref, 1, 100, 40, {54: 6, 56: 30}, dels={55})
+    bq, iq = _column_quality(d["alignment"], len(ref), False)
+    assert bq[54] == 6 and iq == {}
+    keep = _cons_read(ref, 1, 100, 20, {55: 35})
+    c = _build_consensus(ref, [d, keep])
+    assert c["sequence"] == ref
+
+
+def test_consensus_falls_back_to_mean_q_without_view():
+    """无逐列视图（旧记录/精简结果）时按 mean_q 加权"""
+    ref = "ACGTTGCAAC" * 10
+    alt = "A" if ref[19] != "A" else "C"
+    hi = {"mean_q": 50, "alignment": {"ref_start": 1, "ref_end": 100, "variants": [
+        {"ref_pos": 20, "type": "substitution", "ref_base": ref[19], "alt_base": alt,
+         "length": 1}]}}
+    lo = {"mean_q": 15, "alignment": {"ref_start": 1, "ref_end": 100, "variants": []}}
+    assert _build_consensus(ref, [lo, hi])["sequence"][19] == alt
+    hi["mean_q"], lo["mean_q"] = 15, 50
+    assert _build_consensus(ref, [lo, hi])["sequence"][19] == ref[19]
+
+
+def test_consensus_insertion_after_reference_end():
+    """参考末端之后的插入：不再因右侧无锚定位而静默丢失"""
+    ref = "ACGTACGTAC" * 5
+    read = {
+        "mean_q": 40,
+        "alignment": {
+            "ref_start": 5, "ref_end": len(ref),
+            "variants": [{"ref_pos": len(ref), "type": "insertion", "ref_base": "-",
+                          "alt_base": "TT", "length": 2}],
+        },
+    }
+    c = _build_consensus(ref, [read])
+    assert len(c["sequence"]) == len(ref) + 2
+    assert c["sequence"].endswith("TT")
+
+
+def test_variant_key_distinguishes_deletion_lengths():
+    """同一位点长度不同的删除是不同的构建体：合并 key 必须包含长度"""
+    d2 = _base_variant(ref_pos=10, type="deletion", alt_base="-", length=2)
+    d3 = _base_variant(ref_pos=10, type="deletion", alt_base="-", length=3)
+    from core.sanger.pipeline import _variant_key
+    assert _variant_key(d2) != _variant_key(d3)
+
+
+def test_boundary_deletion_partial_overlap_counts_as_frameshift():
+    """跨 CDS 边界的删除：只有部分碱基落在 CDS 内时按实际碱基数取模
+
+    3bp 删除仅 2bp 在 CDS 内 → 实际移码（此前按全长 3 判 inframe）。
+    """
+    ref, start, end = _cds_reference()
+    feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
+    # 删除起点在 CDS 起点前 1 位、长度 3 → 2bp 落入 CDS
+    variants = [{"ref_pos": start - 1, "type": "deletion", "ref_base": "A",
+                 "alt_base": "-", "length": 3, "read_q": 40, "confidence": "high"}]
+    consensus = {"diffs": [], "covered_ranges": [(start, end)], "coverage_percent": 100.0}
+    cr = _build_cds_reports(ref, feats, variants, consensus)[0]
+    assert cr["frameshift_count"] == 1
+
+
+def test_negative_strand_cds_codon_annotation():
+    """负链 CDS 的密码子/氨基酸注释按编码方向（反向互补）计算
+
+    此前直接用正向链序列翻译，负链 CDS 的 aa_change 全错。
+    """
+    # 正向参考：特征区间 6-10 为 TACGT；负链编码序列 = revcomp = ACGTA
+    # 编码第 1 个密码子 ACG (Thr)；参考链位置 8 的 C 对应编码偏移 e-8=2
+    ref = "AAAAA" + "TACGT" + "AAAAA"
+    feats = [{"name": "N", "type": "CDS", "start": 6, "end": 10, "strand": "-"}]
+    v = _base_variant(ref_pos=8, type="substitution", ref_base="C", alt_base="T")
+    annotate_variant(v, feats, ref)
+    # 编码序列 ACGTA，cpos=2 → 密码子 ACG，第 3 位 C→G（互补）→ ACG→ACG?
+    # T 的互补是 A：ACG→ACA（Thr→Thr），同义
+    assert v["codon_change"] == "ACG>ACA"
+    assert v.get("synonymous") is True
+    assert v.get("aa_change") is None
+
+    # 错义：alt=A（互补 T）→ ACG→ACT（Thr→Thr）仍是同义；换位置 6：
+    v2 = _base_variant(ref_pos=10, type="substitution", ref_base="T", alt_base="C")
+    annotate_variant(v2, feats, ref)
+    # cpos = 0 → 密码子 ACG 第 1 位，C 的互补 G → GCG（Ala）错义
+    assert v2["codon_change"] == "ACG>GCG"
+    assert v2.get("aa_change") == "N:T1A"
+
+
+def test_duplicate_cds_names_annotate_correct_feature():
+    """重名 CDS（如多个无 label 特征都叫 CDS）：注释取变体实际命中的特征"""
+    ref = "A" * 12 + "TAT" + "A" * 15 + "TAC" + "A" * 12
+    feats = [
+        {"name": "CDS", "type": "CDS", "start": 13, "end": 15, "strand": "+"},
+        {"name": "CDS", "type": "CDS", "start": 31, "end": 33, "strand": "+"},
+    ]
+    # 变体落在第二个 CDS 的 TAC（Tyr）：第 2 位 A→G → TGC（Cys）错义
+    v = _base_variant(ref_pos=32, type="substitution", ref_base="A", alt_base="G")
+    annotate_variant(v, feats, ref)
+    assert v["codon_change"] == "TAC>TGC"
+    assert v["aa_change"] == "CDS:Y1C"
+
+
+# ==================== C1：双峰（疑似混合样品）read 级分级 ====================
+
+_ALT_OF = {"A": "G", "C": "T", "G": "A", "T": "C"}
+
+
+def _mixed_ab1(seq, mix_sites, minor_level=60, sat_sites=None):
+    """合成混合样品 ab1：called 碱基 = seq（多数克隆），mix_sites 位点在
+    次级通道叠加 minor_level 信号（次要克隆）；sat_sites 模拟饱和峰拖影
+    （主通道 350、另一通道同期 120——pull-up 伪影）"""
+    traces = {ch: [] for ch in "ATGC"}
+    for b in seq:
+        for ch in "ATGC":
+            traces[ch].append(100 if ch == b else 4)
+    for pos, alt in mix_sites.items():
+        traces[alt][pos] = minor_level
+    for pos, alt in (sat_sites or {}).items():
+        for ch in "ATGC":
+            traces[ch][pos] = 4
+        traces[seq[pos]][pos] = 350
+        traces[alt][pos] = 120
+    return make_ab1(seq, [40] * len(seq), traces=[traces[c] for c in "ATGC"])
+
+
+def test_classify_mixed_levels_and_minor_fraction():
+    """read 级分级：widespread/scattered/none 与次要克隆占比 f=r/(1+r)"""
+    from core.sanger.pipeline import _classify_mixed
+    entries = [{"pos": i + 1, "ratio": 0.5, "secondary_base": "G", "pullup": False}
+               for i in range(5)]
+    p = _classify_mixed(entries, 600)
+    assert p["class"] == "widespread" and p["count"] == 5
+    assert p["median_ratio"] == 0.5 and p["minor_fraction"] == pytest.approx(1 / 3, abs=1e-3)
+    # pull-up 位点不计数、单独记录
+    entries[0]["pullup"] = True
+    p2 = _classify_mixed(entries, 600)
+    assert p2["count"] == 4 and p2["pullup_excluded"] == 1
+    assert p2["class"] == "scattered" and 1 not in p2["positions"]
+    # 连续段 ≥ MIXED_STRETCH_MIN 也算 widespread（indel 介导的混合）
+    entries3 = [{"pos": 100 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
+                for i in range(4)]
+    p3 = _classify_mixed(entries3, 600)
+    assert p3["class"] == "scattered" and p3["longest_stretch"] == 4
+    entries3 += [{"pos": 104 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
+                 for i in range(4)]
+    assert _classify_mixed(entries3, 600)["class"] == "widespread"
+    # 空与单点
+    assert _classify_mixed([], 600)["class"] == "none"
+    one = _classify_mixed([{"pos": 9, "ratio": 0.8, "secondary_base": "C", "pullup": False}], 600)
+    assert one["class"] == "none" and one["count"] == 1
+
+
+def test_pos_ranges_str_compresses_and_caps():
+    """位点列表压缩成连续区段：相邻合并、超出上限截断并注明总段数"""
+    from core.sanger.pipeline import _pos_ranges_str
+    assert _pos_ranges_str([]) == ""
+    assert _pos_ranges_str([5]) == "5"
+    assert _pos_ranges_str([81, 82, 83, 130, 131, 200]) == "81–83、130–131、200"
+    long_list = list(range(81, 141)) + list(range(201, 261))
+    assert _pos_ranges_str(long_list) == "81–140、201–260"
+    many = [[10 * i] for i in range(1, 9)]
+    out = _pos_ranges_str([p for seg in many for p in seg])
+    assert out.endswith("等 8 段") and out.count("、") == 5
+
+
+def test_mixed_sample_widespread_end_to_end():
+    """两个克隆的混合培养物：多个分散双峰位点 → read 级判疑似混合样品，
+    结论显式提示（此前 mixed_positions 只进结构化字段，结论完全不可见）"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["m.ab1"]
+    assert prof["class"] == "widespread" and prof["count"] == 8
+    assert prof["positions"] == [p + 1 for p in sorted(sites)]
+    assert "疑似混合样品" in result["conclusion"]
+    assert "重新挑单克隆" in result["conclusion"]
+    # 逐 read 位点范围子行（前端默认折叠）：给具体范围供核对首尾；
+    # 孤立位点超过 6 段时截断并注明总段数
+    assert ("↳ m.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段"
+            "（read 坐标；可信区 31–600 以外未计入）") in result["conclusion"]
+    assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
+    # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 1, True)
+    assert out.startswith("疑似混合：")
+    assert "8 处双峰" in out and "无法自动判定" in out
+
+
+def test_mixed_equal_ratio_sites_not_shielded():
+    """终审 A-19 回归锁：退化窗口护栏曾用「次峰 >= 0.9 主峰 → 整体屏蔽」，
+    最典型的 1:1 杂合/混合（ratio 0.92/0.95/1.00）被整体判无——这是最危险
+    的假阴性（批量归入「正确」文件夹）。护栏改判第四名通道后，ratio≈1
+    的真双峰必须全部检出；同时 called=次要碱基（次要克隆占多数）的位点
+    不再因 areas[base]!=主峰 被丢掉。"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+
+    def _mix(level, equal=False):
+        traces = {ch: [] for ch in "ATGC"}
+        for b in ref:
+            for ch in "ATGC":
+                traces[ch].append(100 if ch == b else 4)
+        for pos, alt in sites.items():
+            traces[alt][pos] = 100 if equal else level
+        return make_ab1(ref, [40] * len(ref), traces=[traces[c] for c in "ATGC"])
+
+    for label, level, equal in (("ratio 0.92", 92, False), ("ratio 0.96", 96, False),
+                                ("1:1 equal", 0, True)):
+        r = analyze([("m.ab1", _mix(level, equal))], ref, [])
+        prof = r.get("mixed_profiles", {}).get("m.ab1", {})
+        assert prof.get("class") == "widespread", f"{label}: {prof}"
+        assert prof.get("count") == 8, f"{label}: {prof}"
+
+    # 无信号窗口（四通道全 4）仍被护栏屏蔽——不因放宽而整段误报
+    flat = {ch: [4] * 600 for ch in "ATGC"}
+    from core.sanger.pipeline import _detect_mixed_detail
+    detail = _detect_mixed_detail(ref, flat, list(range(600)))
+    assert detail == []
+
+
+def test_soft_clip_query_offset_in_ref_maps():
+    """终审 A-20 回归锁：局部比对软剪切（junk/低质量端）的 query 偏移
+    曾被丢弃——read2ref 用对齐内相对列号当 trimmed 坐标整体错位
+    （t1 实测 read2ref[130]→230 应为 200）。aligner 现输出 query_start/
+    query_end，映射按块首偏移换算，正反向 read 均精确。"""
+    random.seed(42)
+    from core.sanger.aligner import align_read, revcomp
+    from core.sanger.pipeline import _read_ref_maps
+
+    ref = "".join(random.choice("ACGT") for _ in range(300))
+    read = ref[99:249]  # 真实片段对应 ref 100..249（1-based）
+    junk = "A" * 40 + "TTTTTTTTTT"
+
+    # 正向 + junk 前缀
+    aln = align_read(junk + read, ref)
+    assert aln["query_start"] == 51 and aln["query_end"] == 200
+    assert aln["ref_start"] == 100
+    m, _ = _read_ref_maps({"alignment": aln, "trimmed_bases": junk + read})
+    assert m[51] == 100 and m[130] == 179 and m[200] == 249
+
+    # 无软剪切：块首=1，坐标不回归
+    aln2 = align_read(read, ref)
+    assert aln2["query_start"] == 1
+    m2, _ = _read_ref_maps({"alignment": aln2, "trimmed_bases": read})
+    assert m2[1] == 100 and m2[150] == 249
+
+    # 反向 read：电泳坐标 p ↔ ref 300-p（junk 在电泳前端）
+    full_rev = junk + revcomp(read)
+    aln3 = align_read(full_rev, ref)
+    assert aln3["direction"] == "-"
+    m3, _ = _read_ref_maps({"alignment": aln3, "trimmed_bases": full_rev})
+    assert m3[200] == 100 and m3[51] == 249 and m3[130] == 170
+
+
+def test_traces_payload_trim_start_and_mixed_detail():
+    """前端比对峰图融合视图的数据契约：traces 载荷带 trim_start（peak_indices
+    按原始 read 碱基索引，前端换算采样窗需要修剪偏移）；per-read mixed_detail
+    逐位给出 ratio/次级碱基（pullup 已剔除），供双峰标注与点选证据行"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260)}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    read = result["reads"][0]
+    # mixed_detail：逐位次级峰证据，pos 与触发位点一致
+    md = read["mixed_detail"]
+    assert [d["pos"] for d in md] == [p + 1 for p in sorted(sites)]
+    assert all(d["secondary_base"] == sites[d["pos"] - 1] for d in md)
+    # ratio = 次峰/主峰面积比（0 < r < 1；前端按 r/(1+r) 折算次要克隆占比）
+    assert all(0 < d["ratio"] < 1 for d in md)
+    # traces 载荷：peak_indices 覆盖整条原始 read，trim_start 为修剪偏移
+    tr = result["traces"][0]
+    assert tr["filename"] == "m.ab1"
+    assert isinstance(tr["trim_start"], int) and tr["trim_start"] >= 0
+    assert len(tr["peak_indices"]) >= tr["trim_start"] + len(tr["bases"])
+    assert tr["bases"] == read["trimmed_bases"]
+    assert tr["channels"].keys() == {"A", "T", "G", "C"}
+
+
+def test_mixed_sample_scattered_stays_qualified():
+    """个别双峰位点（2 个）：只提示不升级——结论保持合格前缀"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {80: _ALT_OF[ref[80]], 260: _ALT_OF[ref[260]]}
+    result = analyze([("s.ab1", _mixed_ab1(ref, sites))], ref, [])
+    assert result["mixed_profiles"]["s.ab1"]["class"] == "scattered"
+    assert "疑似混合样品" not in result["conclusion"]
+    assert "双峰位点" in result["conclusion"]
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 1, True)
+    assert out.startswith("合格") and "双峰位点" in out
+
+
+def test_pullup_saturated_bleed_suppressed():
+    """饱和峰拖影（pull-up）：主峰 ≥3× 中位且次级同期小峰 → 剔除不按混合计"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    result = analyze([("p.ab1", _mixed_ab1(
+        ref, {80: _ALT_OF[ref[80]]},
+        sat_sites={200: _ALT_OF[ref[200]], 330: _ALT_OF[ref[330]]}))], ref, [])
+    prof = result["mixed_profiles"]["p.ab1"]
+    assert prof["pullup_excluded"] == 2
+    assert prof["count"] == 1 and prof["class"] == "none"
+
+
+def test_mixed_contiguous_stretch_widespread():
+    """连续双峰段（两个克隆相差插入/缺失时交界下游逐位双峰）→ 疑似混合"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in range(300, 309)}
+    result = analyze([("c.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["c.ab1"]
+    assert prof["class"] == "widespread" and prof["longest_stretch"] == 9
+    assert "连续双峰段" in result["conclusion"]
+
+
+def test_mixed_cross_read_corroboration_downgrades_noise():
+    """跨引物互检：混合 read 的双峰位点全部被另一条干净引物覆盖且峰形
+    单一、判读一致 → 措辞降级为"倾向该 read 信号问题"而非疑似混合样品
+    （用户视角：另一条引物测过基本就没问题，结论要体现多引物对比）"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    result = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
+                      ("clean.ab1", _mixed_ab1(ref, {}))], ref, [])
+    # 分级本身不变（widespread 由该 read 位点数决定），但结论措辞按互检改写
+    assert result["mixed_profiles"]["mx.ab1"]["class"] == "widespread"
+    assert "疑似混合样品" not in result["conclusion"]
+    assert "跨引物互检：多数双峰位点被其他引物测过且峰形单一" in result["conclusion"]
+    assert "更倾向该 read 自身信号问题" in result["conclusion"]
+    assert "倾向真实混合" not in result["conclusion"]
+    chk = result["mixed_corroboration"]["by_read"]["mx.ab1"]
+    assert chk["clean"] == 8 and chk["multi"] == 0 and chk["uncovered"] == 0
+    # 批量一句话结论同口径：不升级"疑似混合"主句，降为尾部提示
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 2, True)
+    assert not out.startswith("疑似混合")
+    assert "倾向该 read 信号噪声" in out
+    # 反例：干净引物不覆盖（换个短 read 只测前 100bp）→ 维持疑似混合措辞
+    result2 = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
+                       ("short.ab1", _mixed_ab1(ref[:100], {}))], ref, [])
+    assert "疑似混合样品" in result2["conclusion"]
+
+
+def test_mixed_overhang_sites_cross_checked_by_approx_position():
+    """局部比对在 read 端部留悬空（poly-A 区两端尤其常见）时，悬空段的
+    双峰位点按比对块两端锚点线性外推定位参考坐标，再正常参与互检——
+    不再一律"无其他引物覆盖待核"（用户实测：待核位点实际有邻居覆盖）。
+    反向 read + 原始 read 头部 100bp 悬空 junk：块内位点精确映射、悬空
+    位点外推，一个落在邻居覆盖内（clean）、一个落在覆盖外（待核带 ref）"""
+    random.seed(11)
+    ref = "".join(random.choice("ACGT") for _ in range(1000))
+    rng = random.Random(9)
+    junk_head = "".join(rng.choice("ACGT") for _ in range(100))
+    comp = str.maketrans("ACGT", "TGCA")
+    read_bases = junk_head + ref[149:500].translate(comp)[::-1]
+    sec_of = lambda i: "A" if read_bases[i] != "A" else "G"
+    mix = {39: sec_of(39), 139: sec_of(139)}   # pos40 悬空→外推561；pos140 块内→461（首 30bp 硬不可信）
+    result = analyze([("rev.ab1", _mixed_ab1(read_bases, mix)),
+                      ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [])
+    chk = result["mixed_corroboration"]["by_read"]["rev.ab1"]
+    assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
+    assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
+    assert chk["uncovered_ref"] == [561]   # 悬空位点外推到邻居覆盖之外
+    # 待核短语带参考位置，用户可直接对照图谱核对"这个位置真的没人测过吗"
+    assert "无其他引物覆盖待核（参考位置 561）" in result["conclusion"]
+    assert "无法互检（参考位置 561）" in result["conclusion"]
+
+
+def test_mixed_multi_read_aggregated_conclusion():
+    """多条 read 全部 widespread：结论聚合成一条综合判读（逐 read 复读把
+    "重新挑克隆"这个唯一建议淹没），只保留次要克隆占比一个百分比口径；
+    批量一句话结论同样聚合"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(600))
+    full = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
+    part = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330)}
+    result = analyze([("a.ab1", _mixed_ab1(ref, full)),
+                      ("b.ab1", _mixed_ab1(ref, part))], ref, [])
+    # 头部总结行（△ 结论：…）之外，mixed_lines 聚合行不重复报
+    lines = [x for x in result["conclusion"].splitlines()
+             if "疑似混合" in x and not x.startswith("△")]
+    assert len(lines) == 1
+    assert "2 条 read 均疑似混合样品" in lines[0]
+    assert "每条双峰位点 5–8 处" in lines[0]
+    assert "估计次要克隆占比" in lines[0]
+    assert "次峰占比中位数" not in lines[0]
+    assert "重新挑单克隆" in lines[0]
+    # 聚合行下仍逐 read 给位点范围子行 + 跨引物互检汇总（前端默认折叠）
+    detail = [x for x in result["conclusion"].splitlines()
+              if x.strip().startswith("↳") and "双峰" in x]
+    assert len(detail) == 3
+    assert ("↳ a.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段") in detail[0]
+    assert "↳ b.ab1：双峰 5 处，位于 read 81、131、201、261、331" in detail[1]
+    # 互检：a 的 5 个位点 b 也同报双峰、3 个位点被 b 峰形单一覆盖；b 全部同报
+    assert "互检：5 处其他引物同报双峰" in detail[0] and "3 处其他引物覆盖且峰形单一" in detail[0]
+    assert "互检：5 处其他引物同报双峰" in detail[1]
+    # 汇总行：同报双峰的参考位置是真实混合的最强信号
+    assert "双峰位点跨引物互检：5 处参考位点被多条引物同报双峰（参考位置" in detail[2]
+    assert "倾向真实混合" in detail[2]
+    # 结构化字段：互检汇总随结果下发（批量口径复用）
+    chk = result["mixed_corroboration"]
+    assert chk["by_read"]["a.ab1"]["multi"] == 5 and chk["by_read"]["a.ab1"]["clean"] == 3
+    assert chk["by_read"]["b.ab1"]["multi"] == 5 and chk["by_read"]["b.ab1"]["clean"] == 0
+    assert [rp for rp, _fs in chk["multi_sites"]] == [81, 131, 201, 261, 331]
+    from core.sanger.batch import excel_conclusion
+    out = excel_conclusion("P", result, 2, True)
+    assert out.startswith("疑似混合：")
+    assert "2 条 read 均检出双峰（每条 5–8 处）" in out
+    assert "估计次要克隆占比" in out
+
+
+def test_mixed_end_margin_positions_ignored():
+    """read 可信区之外的次级峰是信号爬升/衰减噪声：不进双峰分级，否则末端
+    拖尾会凭空触发"疑似混合/连续双峰段"（与变体置信度同一条边界）——
+    首 30bp 硬不可信区与 700bp 之后的尾端区都不计"""
+    random.seed(7)
+    ref = "".join(random.choice("ACGT") for _ in range(800))
+    sites = {p: _ALT_OF[ref[p]] for p in (10, 25, 80, 130, 200, 260, 330, 750)}
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    prof = result["mixed_profiles"]["m.ab1"]
+    assert prof["count"] == 5
+    assert prof["positions"] == [81, 131, 201, 261, 331]
+    # 逐 read 范围子行同样只含可信区位点（11/26/751 不出现）
+    assert "↳ m.ab1：双峰 5 处，位于 read 81、131、201、261、331" in result["conclusion"]
+
+
+def test_n_call_variants_always_low_confidence():
+    """N/模糊调用恒低置信：basecaller 拿不准才给 N，Q 再高也不是"与参考不同"的证据"""
+    v = {"ref_pos": 100, "type": "substitution", "ref_base": "A", "alt_base": "N",
+         "read_q": 50, "support_reads": 1}
+    assert _variant_confidence(v, set(), None, zone=_flat_zone(800)) == "low"
+    v2 = {"ref_pos": 100, "type": "insertion", "ref_base": "-", "alt_base": "AN",
+          "read_q": 50, "support_reads": 2}
+    assert _variant_confidence(v2, set(), None, zone=_flat_zone(800)) == "low"
+
+
+def test_poly_variant_and_peak_conflict_single_conclusion_line():
+    """结论合并口径（C2）：poly 区 indel 变体 + 峰图矛盾 → 只出一条峰图判读行
+    （变体锚点 + 逐 read 调用/峰数明细），不再变体行/峰图行各说一遍"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    read_bases = ref[40:170]
+    mutated = read_bases[:65] + read_bases[66:]   # poly 内缺 1 个 A（调用 29）
+    traces = _shaped_traces(mutated, poly_span=(40, 69), real_peaks=26)  # 峰 26
+    blob = make_ab1(mutated, [40] * len(mutated), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    poly_lines = [ln for ln in result["conclusion"].splitlines()
+                  if "poly(A)" in ln and ln.strip().startswith("↳")]
+    assert len(poly_lines) == 1, result["conclusion"]
+    assert "峰图判读" in poly_lines[0] and "位置" in poly_lines[0]
+    assert "正向调用29/峰" in poly_lines[0]   # 逐 read 明细并入同一条线
+    assert "以峰图可分辨峰为准" in poly_lines[0]
+
+
+# ==================== Step A/B：同聚物落点歧义——先单条分析再综合评判 ====================
+
+def test_poly_merged_reverse_does_not_veto_resolvable_forward():
+    """真实难例（用户两链峰图）：正向 read 峰可分辨、反向 read 合并成压缩
+    山丘——旧口径任一 read 峰数≠调用数即整体判不可靠，反向合并（该 read 的
+    信号极限）否决了正向完整证据。新口径：只有 resolvable read 有投票权，
+    正向计数互证 → accepted；反向 resolution=merged 不投票、只标不可判定；
+    结论措辞按 verdict 给出（不出现旧的一票否决文案）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    fwd = ref[40:170]
+    t_fwd = _shaped_traces(fwd, poly_span=(40, 70), real_peaks=30)   # 正向：30 峰可分辨
+    # 反向覆盖同一 run：polyT 段完全合并成高台（无独立可辨峰）。
+    # 反向 read 读向坐标：ref p → 读向 130-p（ref[40:170] 反向互补），
+    # polyT（ref 110..81）在读向 60..89；T 通道在 "ATGC" 顺序中为第 2 路
+    rev = ref[40:170].translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    t_rev = _shaped_traces(rev, poly_span=(60, 90), real_peaks=30, channel="T")
+    t_rev[1][60 * 4:90 * 4] = [100] * 120   # T 通道连续高台（合并形态）
+    reads = [
+        ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
+        ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["fwd.ab1"]["resolution"] == "resolvable"
+    assert by_file["rev.ab1"]["resolution"] == "merged"
+    assert hp["run_verdict"] == "accepted"
+    assert hp["count_reliable"] is True
+    assert hp["observed_repeat_count"] == 30
+    # verdict_votes 只含投票 read（正向）
+    assert [v["filename"] for v in hp["verdict_votes"]] == ["fwd.ab1"]
+    assert "互证矛盾" not in result["conclusion"]
+
+
+def test_poly_resolvable_reads_conflict_is_contradictory():
+    """两条可分辨 read 计数互证矛盾（如真嵌合/两克隆）：contradictory——
+    与 merged 不可判定明确区分，结论不可信措辞"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read1 = ref[40:170]
+    traces1 = _shaped_traces(read1, poly_span=(40, 70), real_peaks=30)
+    # read2 同区间，poly 内真实缺 2 个 A 且峰可分辨（29 调用 vs 28 峰？
+    # ——构造调用 30 峰 28 的可分辨缺口：调用补齐 30，峰图 28 峰）
+    # 用缺 2A 的调用序列 + 28 峰 → called=28, pc=28 → resolvable 且与 read1 的 30 矛盾
+    mutated = read1[:68] + read1[70:]     # 缺 2 个 A（调用 28）
+    traces2 = _shaped_traces(mutated, poly_span=(40, 68), real_peaks=28)
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
+        ("b.ab1", make_ab1(mutated, [40] * len(mutated), traces=traces2, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "contradictory"
+    assert hp["count_reliable"] is False
+    assert "互证矛盾" in result["conclusion"]
+
+
+def test_poly_all_merged_reads_undetermined_not_conclusion_conflict():
+    """全部 read 均合并（无任何可分辨证据）：undetermined——宽度法估计仅
+    仅供参考，结论明确「不可判定」而非笼统「不可靠」"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道连续高台
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "undetermined"
+    assert hp["count_reliable"] is False
+    assert "不可判定" in result["conclusion"]
+
+
+def test_poly_edge_hits_exempt_when_verdict_accepted():
+    """端点歧义标注按 verdict 豁免：歧义端点 read（起点落在 run 内、必然
+    partial 不投票）+ 另一条完整覆盖 read 互证 accepted 时，比对端点滑动
+    不再影响判定——端点歧义注意行不出现；verdict 存疑（undetermined，
+    如歧义 read 自己合并成高台且无完整 read 旁证）时照常提示"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    # read1 起点落在 poly 内（reference[85:170]）→ 比对端点在 run 内部
+    mid = ref[85:170]
+    t_mid = _shaped_traces(mid, poly_span=(0, 25), real_peaks=25)
+    # read2 完整跨过 run、峰可分辨 → resolvable 投票
+    full = ref[40:170]
+    t_full = _shaped_traces(full, poly_span=(40, 70), real_peaks=30)
+    reads = [
+        ("mid.ab1", make_ab1(mid, [40] * len(mid), traces=t_mid, samples_per_base=4)),
+        ("full.ab1", make_ab1(full, [40] * len(full), traces=t_full, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "accepted"
+    assert "比对端点落在同聚物区内部" not in result["conclusion"]
+    # 对照：歧义端点 read 自己合并成高台、无完整 read 旁证 → undetermined，
+    # 端点歧义照常提示
+    t_mid2 = _shaped_traces(mid, (0, 25), 25)
+    t_mid2[1][0:25 * 4] = [100] * 100
+    blob2 = make_ab1(mid, [40] * len(mid), traces=t_mid2, samples_per_base=4)
+    result2 = analyze([("g.ab1", blob2)], ref, [])
+    hp2 = next(h for h in result2["homopolymers"] if h["base"] == "A")
+    assert hp2["run_verdict"] == "undetermined"
+    assert "比对端点落在同聚物区内部" in result2["conclusion"]
+
+
+def test_poly_merged_zone_suppresses_pseudo_mixed():
+    """Step A 抑制：合并压缩 run 窗内次级峰结构不可分辨——压缩高台 + 次级
+    通道小峰会把合并段切成一串伪双峰位点；抑制后该区 mixed_positions 不
+    出现，且 read 记录 poly_merged_zones（变异强制低置信的依据）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read_bases = ref[40:170]
+    traces = _shaped_traces(read_bases, (40, 70), 30)
+    traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道（"ATGC" 第 1 路）连续高台
+    # G 通道（第 2 路）在 run 内 3 处叠加 45% 次级信号——若该区可判读，
+    # 次级/主峰 0.45 > 0.3 会逐位判双峰（压缩区强行判读的伪差异形态）
+    for j in (12, 24, 36):
+        traces[2][40 * 4 + j * 4] = 45
+        traces[2][40 * 4 + j * 4 + 1] = 45
+    blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
+    result = analyze([("f.ab1", blob)], ref, [])
+    read = result["reads"][0]
+    # 峰窗 41-70 对应 run 窗：窗内无伪双峰位点
+    in_zone = [p for p in (read["mixed_positions"] or []) if 38 <= p <= 72]
+    assert in_zone == []
+    assert read.get("poly_merged_zones"), "压缩 run 应记录 merged zone"
+
+
+# ==================== Step B 扩展：联合覆盖判定 + 锚压缩检测 ====================
+
+def test_poly_joint_coverage_partial_reads_accepted():
+    """联合覆盖判定：无完整覆盖 read 时，两条部分覆盖、段内自洽的 read
+    恰好拼接盖满整段 run → joint accepted，联合观测数 = 各段调用数之和；
+    与无旁证时的 caller_only / undetermined 明确区分"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # read1 覆盖 ref 41-100：run 段 81-100（20 个 A），截断在 run 内
+    read1 = ref[40:100]
+    # read2 从 ref 101 开始：run 段 101-110（10 个 A），起点在 run 内
+    read2 = ref[100:170]
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    by_file = {x["filename"]: x for x in hp["read_counts"]}
+    assert by_file["a.ab1"]["coverage"] == "partial"
+    assert by_file["a.ab1"]["resolution"] == "resolvable"
+    assert by_file["b.ab1"]["resolution"] == "resolvable"
+    assert hp["run_verdict"] == "accepted"
+    assert hp.get("joint_coverage") is True
+    assert hp["observed_repeat_count"] == 30
+    assert hp["count_reliable"] is True
+    assert {v["filename"] for v in hp["verdict_votes"]} == {"a.ab1", "b.ab1"}
+
+
+def test_poly_accepted_with_unreliable_anchor_notes_position_doubt():
+    """锚定分级「只标注、不把关」的补强（2026-10-08）：accepted 只确证
+    「重复数」不确证「位置」——投票 read 的锚定路标踩在信号异常区
+    （read 边缘）时，结论必须显式写明「计数确证但定位存疑」；
+    锚可靠时不出现该注记（零回归）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30  # poly-A 81-110
+    # 边缘 read（54bp，过最短读长门槛）：左右路标都落在 read 首尾 20bp
+    # 信号爬升/下降区 → anchor_grade=marginal，投票 accepted 照旧成立
+    edge = ref[60:114]
+    traces = _shaped_traces(edge, poly_span=(20, 50), real_peaks=30)
+    blob = make_ab1(edge, [40] * len(edge), traces=traces, samples_per_base=4)
+    result = analyze([("edge.ab1", blob)], ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "accepted"
+    assert hp.get("vote_anchor_grade") in ("marginal", "unreliable")
+    assert "计数确证但定位存疑" in result["conclusion"]
+
+    # 对照：完整 read、锚可靠 → 无注记
+    full = ref[40:170]
+    t_full = _shaped_traces(full, poly_span=(40, 70), real_peaks=30)
+    r2 = analyze([("f.ab1", make_ab1(full, [40] * len(full),
+                                     traces=t_full, samples_per_base=4))], ref, [])
+    assert "计数确证但定位存疑" not in r2["conclusion"]
+
+
+def test_poly_peak_count_estimate_ignores_merged_zero_counts():
+    """peak_count_estimate 潜伏污染回归锁（2026-10-08）：合并 read 的
+    peak_count=0 是「无可分辨峰」不是真实计数——极端 [30,0,0] 旧口径
+    中位数为 0，把可分辨 read 的 30 压没；新口径只聚合 >0 的计数。
+    混合场景：正向可分辨 30 峰 + 反向合并高台（pc=0）→ estimate=30"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    fwd = ref[40:170]
+    t_fwd = _shaped_traces(fwd, poly_span=(40, 70), real_peaks=30)
+    rev = fwd.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    t_rev = _shaped_traces(rev, poly_span=(60, 90), real_peaks=30, channel="T")
+    t_rev[1][60 * 4:90 * 4] = [100] * 120   # 反向 polyT 高台 → pc=0
+    reads = [
+        ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
+        ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["peak_count_estimate"] == 30   # 旧口径会算出 0
+
+
+def test_poly_joint_coverage_gap_falls_back():
+    """段间有缺口（两条 partial 之间隔了一段未覆盖）→ 联合不成立，
+    回退 caller_only（各自自洽、无矛盾证据）"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    read1 = ref[40:100]                     # 81-100
+    read2 = ref[105:170]                    # 106-110（缺口 101-105）
+    reads = [
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "caller_only"
+    assert hp.get("joint_coverage") is None
+
+
+def test_poly_joint_conflicts_with_full_resolvable():
+    """联合覆盖读数与完整覆盖 read 冲突（一段 partial 各自自洽但隐含
+    缺失，与完整 read 的 30 矛盾）→ contradictory——两克隆混合的典型形态"""
+    ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
+    # 完整 read 带 1 个 A 缺失（两侧侧翼可见 → full，调用 29 = 峰 29）
+    full = ref[40:170]
+    full_del = full[:41] + full[42:]        # 删 run 内第 2 个 A
+    # 两条干净 partial 拼满整段（各段自洽）→ 联合观测 30
+    read1 = ref[40:100]                     # 81-100，20 个 A
+    read2 = ref[100:170]                    # 101-110，10 个 A
+    reads = [
+        ("full.ab1", make_ab1(full_del, [40] * len(full_del), samples_per_base=4)),
+        ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
+        ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
+    ]
+    result = analyze(reads, ref, [])
+    hp = next(h for h in result["homopolymers"] if h["base"] == "A")
+    assert hp["run_verdict"] == "contradictory"
+    assert hp["count_reliable"] is False
+    joint = [v for v in hp["verdict_votes"] if v.get("joint")]
+    assert joint and joint[0]["observed_total"] == 30
+    assert "互证矛盾" in result["conclusion"]
+
+
+def test_anchor_spacing_compression_flags_unreliable():
+    """锚压缩检测：路标峰与相邻峰间距显著小于中位峰距（同通道合并形态）
+    → anchor unreliable；正常等距峰路标保持 reliable"""
+    from core.sanger.pipeline import _anchor_quality
+    bases = "ACGT" * 10 + "C" + "A" * 20 + "C" + "G" * 5 + "T" * 30
+    r = {
+        "trimmed_bases": bases,
+        "raw_bases": bases,
+        "trim_start": 0,
+        "trimmed_quality": [40] * len(bases),
+        "mixed_detail": [],
+        "post_poly_dropouts": [],
+        # 正常区等距峰（每碱基 4 采样点）：路标间距 4 —— reliable
+        "trimmed_peaks": [i * 4 + 1 for i in range(len(bases))],
+    }
+    grade, issues = _anchor_quality(r, 41)    # run 前路标（run 42-61）
+    assert grade == "reliable", issues
+    grade, issues = _anchor_quality(r, 62)    # run 后路标
+    assert grade == "reliable", issues
+    # 路标与邻峰合并：run 后路标（pos 62 → 峰 idx 61）峰距骤减为 1
+    r2 = dict(r)
+    tp = list(r["trimmed_peaks"])
+    tp[61] = tp[60] + 1
+    r2["trimmed_peaks"] = tp
+    grade2, issues2 = _anchor_quality(r2, 62)
+    assert grade2 == "unreliable", issues2
+    assert any("合并" in x for x in issues2)
+
+
+def test_excel_conclusion_verdict_specific_wording():
+    """批量 Excel 一句话结论按 run_verdict 分态：矛盾/不可判定单独点名，
+    无 verdict 字段（旧记录）回退一般措辞"""
+    from core.sanger.batch import excel_conclusion
+    base = {
+        "reads": [{}], "errors": [], "variants": [],
+        "consensus": {"coverage_percent": 99.0},
+        "cds_reports": [],
+    }
+    res_c = {**base, "homopolymers": [
+        {"tier": "poly", "count_reliable": False, "run_verdict": "contradictory"}]}
+    out_c = excel_conclusion("p", res_c, 1, True)
+    assert "计数互证矛盾" in out_c and "详见报告" not in out_c
+    res_u = {**base, "homopolymers": [
+        {"tier": "poly", "count_reliable": False, "run_verdict": "undetermined"}]}
+    out_u = excel_conclusion("p", res_u, 1, True)
+    assert "不可判定" in out_u and "详见报告" not in out_u
+
+
+def test_single_read_insertion_vetoed_by_clean_other_read():
+    """跨 read 反证（Step B 推广到非 poly 区）：短同聚物（3×A）边缘的 1bp
+    插入仅单 read 报告、反向 read 干净跨过同一位点 → 降为低置信，CDS 结论
+    不再断言蛋白不一致、改为点名互检矛盾（用户实测：7241 处插入伪影仅单
+    read 支持却改写了结论；poly 机制只覆盖 ≥20bp run，更短的 run 落空白区）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25  # AAA 在 106-108
+    seg = ref[50:150]                       # 覆盖 51-150
+    fwd = seg[:58] + "A" + seg[58:]         # 108 后多 1 个 A（run 边缘伪影）
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert ins[0]["confidence"] == "low"
+    assert ins[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"]
+    # 互检已定案：不再作为"互检矛盾/待核对"塞进 CDS 结论
+    assert ins[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
+    # 顶层结论只一句话交代互检排除，总结为确定的 ✓
+    lines = result["conclusion"].splitlines()
+    assert lines[0].startswith("✓ 结论：构建与设计一致")
+    assert sum("互检排除" in x for x in lines) == 2  # 总结行 + 明细一句
+    assert not any("低置信度（" in x for x in lines)
+    # 低置信不进共识：构建体序列回到参考
+    assert result["consensus"]["sequence"] == ref.upper()
+
+
+def test_single_read_deletion_vetoed_by_clean_other_read():
+    """同上，缺失方向：单 read 缺 1 个 T（短 run 边缘）、反向 read 干净
+    跨过 junction（左翼-右翼相邻）→ 低置信 + 互检矛盾点名"""
+    ref = "ACGT" * 25 + "GGATGTTTCCAACCTGACCGGTTAC" + "ACGT" * 25  # TTT 在 106-108
+    seg = ref[50:150]
+    fwd = seg[:55] + seg[56:]               # 删 ref 106（run 首 T）
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    dele = [v for v in result["variants"] if v["type"] == "deletion"]
+    assert len(dele) == 1
+    assert dele[0]["confidence"] == "low"
+    assert dele[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"]
+    assert dele[0]["cross_read_resolved"] is True
+    assert "互检矛盾" not in cds["verdict"]
+
+
+def test_single_read_low_q_substitution_resolved_by_clean_other_read():
+    """用户反馈 #4：不同引物交叉验证无问题时应给出确定答案——单 read 低 Q
+    替换、另一条引物在可靠区读出设计碱基 → 互检排除，结论不再罗列为低置信"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["ref_pos"] == 121
+    assert sub[0]["cross_read_resolved"] is True
+    assert sub[0]["cross_read_conflict"]["reads"] == ["rev.ab1"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert cds["pending_low_confidence"] == 0
+    assert "低置信" not in cds["verdict"]
+    lines = result["conclusion"].splitlines()
+    assert lines[0] == "✓ 结论：构建与设计一致（1 处单条 read 差异已被其他引物互检排除）"
+    assert not any("低置信度（" in x for x in lines)
+
+
+def test_single_read_substitution_without_cross_cover_stays_pending():
+    """无其他引物覆盖时互检无从谈起：低 Q 替换仍按低置信待核对"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze([("fwd.ab1", make_ab1(fwd, q))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1 and sub[0]["confidence"] == "low"
+    assert "cross_read_resolved" not in sub[0]
+    assert "互检排除" not in result["conclusion"]
+
+
+def test_indel_backed_by_both_reads_stays_confirmed():
+    """双 read 独立报同一 indel → 互证确证，不触发反证，结论照常断言
+    （真实变异会被覆盖该位的每条 read 独立报出）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(fwd), [40] * len(fwd)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1 and ins[0]["support_reads"] == 2
+    assert ins[0]["confidence"] == "high"
+    assert "cross_read_conflict" not in ins[0]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" in cds["verdict"]
+
+
+def test_single_coverage_indel_keeps_peak_evidence_grading():
+    """只有一条 read 覆盖（无其他 read 可反证）→ 维持原有峰证据分级，
+    单覆盖区域不回退（用户明确：一般没必要测全，单 read 区域照旧判读）"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze([("fwd.ab1", make_ab1(fwd, [40] * len(fwd)))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert ins[0]["confidence"] == "high"
+    assert "cross_read_conflict" not in ins[0]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" in cds["verdict"]
+
+
+def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
+    """覆盖区优先：未覆盖 CDS 措辞中性（不再建议补引物——部分测序是常规
+    策略），结论首行给出实测区间（回答"测的是哪段、结果如何"）"""
+    feats = [
+        {"name": "COVERED", "type": "CDS", "start": 101, "end": 200, "strand": "+"},
+        {"name": "UNTOUCHED", "type": "CDS", "start": 401, "end": 450, "strand": "+"},
+    ]
+    blob = make_ab1(reference[100:200], [40] * 100)  # 覆盖 101-200
+    result = analyze([("r.ab1", blob)], reference, feats)
+    unc = next(c for c in result["cds_reports"] if c["name"] == "UNTOUCHED")
+    assert unc["coverage_status"] == "uncovered"
+    assert "补充" not in unc["verdict"] and "不参与判读" in unc["verdict"]
+    cov = next(c for c in result["cds_reports"] if c["name"] == "COVERED")
+    assert cov["coverage_status"] != "uncovered"
+    assert "实测区间 101-200" in result["conclusion"]
+    # 未覆盖 CDS 不占结论篇幅（既有口径：自动结论只列有覆盖的 CDS）
+    assert "UNTOUCHED" not in result["conclusion"]
+
+
+def test_variants_branch_conclusion_shows_covered_ranges(reference):
+    """有差异时结论以一句话总结开头（空两行），详细首行携带实测区间"""
+    seg = list(reference[100:200])
+    seg[30] = "A" if seg[30] != "A" else "G"
+    blob = make_ab1("".join(seg), [40] * 100)
+    result = analyze([("r.ab1", blob)], reference, [])
+    assert result["variants"]
+    lines = result["conclusion"].splitlines()
+    # 头部结构：总结行 + 两个空行 + 详细段落
+    assert lines[0].startswith("✗") and "结论" in lines[0]
+    assert lines[1] == "" and lines[2] == ""
+    assert "实测区间 101-200" in lines[3]
+
+
+def test_conclusion_summary_headline():
+    """一句话总结三态：确认差异→✗、全低置信→✓（带伪影注记）、
+    混合样品→△；混合优先级最高，蛋白不一致信息不丢"""
+    from core.sanger.pipeline import _conclusion_summary
+    cds_bad = [{"name": "CSQ", "protein_identical": False}]
+    cds_ok = [{"name": "Kan", "protein_identical": True}]
+    conf = [{"confidence": "high"}]
+    low = [{"confidence": "low"}]
+    # 确认差异 + 蛋白不一致：两者都报，蛋白在前
+    head = _conclusion_summary(conf, cds_bad, has_mixed=False)
+    assert head.startswith("✗") and "CSQ蛋白与设计不一致" in head
+    assert "1 处确认差异" in head
+    # 蛋白一致但有 CDS 外确认差异
+    head = _conclusion_summary(conf, cds_ok, has_mixed=False)
+    assert head.startswith("✗") and "1 处确认差异" in head and "不一致" not in head
+    # 仅低置信差异：判一致但点名伪影
+    head = _conclusion_summary(low, cds_ok, has_mixed=False)
+    assert head.startswith("✓") and "低置信" in head and "未计入判定" in head
+    # 无变体
+    assert _conclusion_summary([], [], has_mixed=False).startswith("✓")
+    # 混合优先；混有蛋白不一致时不丢
+    head = _conclusion_summary(low, cds_ok, has_mixed=True)
+    assert head.startswith("△") and "重新挑单克隆" in head
+    head = _conclusion_summary(conf, cds_bad, has_mixed=True)
+    assert head.startswith("△") and "CSQ蛋白与设计不一致" in head
+
+
+def _circ_case(seed: int = 7, L: int = 1000, left: int = 150, right: int = 250,
+               subs=(950, 100)):
+    """合成环状参考 + 跨原点 read：read = ref[L-left:] + ref[:right]，
+    subs 为参考坐标（1-based）上的单碱基替换（原点两侧各一处）。"""
+    rng = random.Random(seed)
+    ref = "".join(rng.choice("ACGT") for _ in range(L))
+    read = list(ref[L - left:] + ref[:right])
+    alts = {}
+    for p in subs:
+        i = (p - (L - left) - 1) if p > L - left else left + p - 1
+        alt = "A" if ref[p - 1] != "A" else "C"
+        read[i] = alt
+        alts[p] = alt
+    return ref, "".join(read), alts
+
+
+def _run(read: str, ref: str, **kw):
+    logging.disable(logging.WARNING)
+    try:
+        return analyze([("r.ab1", make_ab1(read, [40] * len(read)))], ref, **kw)
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+def test_circular_analyze_reports_wrapped_coverage_gap():
+    """环状参考只测中段：原点两侧各不足 100bp 的缺口合并成一段跨原点缺口
+    报出（结论文本按两段写位置）；同一数据按线性分析两侧分别被过滤"""
+    rng = random.Random(11)
+    ref = "".join(rng.choice("ACGT") for _ in range(1000))
+    read = list(ref[60:950])
+    read[400] = "A" if read[400] != "A" else "C"   # 参考 461：有差异时结论才写缺口提示
+    read = "".join(read)
+    circ = _run(read, ref, circular=True)
+    assert circ["coverage_ranges"] == [(61, 950)]
+    assert circ["coverage_gaps"] == [{
+        "start": 951, "end": 60, "length": 110,
+        "wraps_origin": True, "ref_segments": [[951, 1000], [1, 60]],
+    }]
+    assert "最大 951-1000、1-60，110bp" in circ["conclusion"]
+    lin = _run(read, ref)
+    assert lin["coverage_ranges"] == [(61, 950)]
+    assert lin["coverage_gaps"] == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_circular_origin_spanning_read_folds_positions(reverse):
+    """环状参考：跨原点 read 整条比对，原点两侧各一处替换都按折回坐标报出，
+    覆盖为跨原点拆开的两段且盖满整条 read（此前线性比对静默丢掉较短一侧）"""
+    ref, read, alts = _circ_case()
+    r = _run(revcomp(read) if reverse else read, ref, circular=True)
+    got = sorted((v["ref_pos"], v["type"], v["ref_base"], v["alt_base"])
+                 for v in r["variants"])
+    assert got == [(100, "substitution", ref[99], alts[100]),
+                   (950, "substitution", ref[949], alts[950])]
+    assert all(v["support_reads"] == 1 for v in r["variants"])
+    assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
+    assert r["consensus"]["coverage_percent"] == 40.0
+    assert r["consensus"]["covered_ranges"] == [(1, 250), (851, 1000)]
+    cons = r["consensus"]["sequence"]
+    assert cons[99] == alts[100] and cons[949] == alts[950]
+    assert sorted(d["ref_pos"] for d in r["consensus"]["diffs"]) == [100, 950]
+    aln = r["reads"][0]["alignment"]
+    assert aln["direction"] == ("-" if reverse else "+")
+    assert aln["wraps_origin"] is True
+    assert aln["ref_start"] == 851 and aln["ref_end"] == 1250
+    assert aln["ref_segments"] == [[851, 1000], [1, 250]]
+    assert aln["aligned_read_len"] == 400
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["circular"] is True
+    head = r["conclusion"].splitlines()[0]
+    assert not head.startswith("✓"), head
+    assert "100" in r["conclusion"] and "950" in r["conclusion"]
+    assert "1-250" in r["conclusion"] and "851-1000" in r["conclusion"]
+
+
+def test_circular_clean_origin_spanning_read_is_consistent():
+    """跨原点 read 与参考一致时：环状参考给出干净的 ✓，不再有截断提示"""
+    ref, read, _ = _circ_case(seed=11, subs=())
+    r = _run(read, ref, circular=True)
+    assert r["variants"] == []
+    assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["conclusion"].startswith("✓")
+
+
+def test_linear_reference_does_not_wrap():
+    """线性参考（默认）：不做环状展开——跨原点 read 只比对较长一侧，
+    较短一侧的差异不报、覆盖不拆段，并保留截断提示与 △ 结论"""
+    ref, read, alts = _circ_case()
+    r = _run(read, ref)
+    aln = r["reads"][0]["alignment"]
+    assert (aln["ref_start"], aln["ref_end"]) == (1, 250)
+    assert "circular" not in aln and "wraps_origin" not in aln
+    assert r["coverage_ranges"] == [(1, 250)]
+    assert [(v["ref_pos"], v["alt_base"]) for v in r["variants"]] == [(100, alts[100])]
+    pa = r["reads"][0]["partial_alignment"]
+    assert pa == {"aligned_read_len": 250, "trimmed_length": 400, "circular": False}
+    assert "请按环状参考分析" in r["conclusion"]
+    assert r["circular"] is False
+
+
+def test_read_wholly_inside_unchanged_by_circular_flag():
+    """不跨原点的 read：环状与线性分析结果逐项一致（坐标不平移、不拆段）"""
+    rng = random.Random(3)
+    ref = "".join(rng.choice("ACGT") for _ in range(800))
+    read = list(ref[100:500])
+    read[200] = "A" if read[200] != "A" else "C"   # 参考 301
+    read = "".join(read)
+    lin = _run(read, ref)
+    circ = _run(read, ref, circular=True)
+    for key in ("variants", "coverage_ranges", "consensus",
+                "cds_reports", "homopolymers"):
+        assert lin[key] == circ[key], key
+    # 覆盖缺口是唯一按拓扑区别对待的项：环状参考的尾部 501-800 与头部
+    # 1-100 在原点处相连，合并为一段跨原点缺口（线性仍是独立两段）
+    assert lin["coverage_gaps"] == [{"start": 501, "end": 800, "length": 300},
+                                    {"start": 1, "end": 100, "length": 100}]
+    assert circ["coverage_gaps"] == [{
+        "start": 501, "end": 100, "length": 400,
+        "wraps_origin": True, "ref_segments": [[501, 800], [1, 100]],
+    }]
+    assert lin["conclusion"].replace("共 2 段未覆盖缺口（最大 501-800，300bp）",
+                                     "共 1 段未覆盖缺口（最大 501-800、1-100，400bp）") \
+        == circ["conclusion"]
+    assert "最大 501-800、1-100，400bp" in circ["conclusion"]
+    la, ca = lin["reads"][0]["alignment"], circ["reads"][0]["alignment"]
+    for key in ("ref_start", "ref_end", "variants", "aligned", "query_start", "query_end"):
+        assert la[key] == ca[key], key
+    assert ca["wraps_origin"] is False and ca["ref_segments"] == [[101, 500]]
+    assert [v["ref_pos"] for v in circ["variants"]] == [301]
+
+
+def test_circular_read_in_doubled_head_reported_once():
+    """read 落在参考头部（延长参考里有两份拷贝）：只按 1..L 坐标报一次"""
+    rng = random.Random(5)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    read = list(ref[0:300])
+    read[150] = "A" if read[150] != "A" else "C"
+    r = _run("".join(read), ref, circular=True)
+    aln = r["reads"][0]["alignment"]
+    assert (aln["ref_start"], aln["ref_end"]) == (1, 300)
+    assert aln["wraps_origin"] is False
+    assert r["coverage_ranges"] == [(1, 300)]
+    assert [v["ref_pos"] for v in r["variants"]] == [151]
+
+
+def test_fold_helpers():
+    from core.sanger.aligner import fold_pos, aln_segments
+    assert [fold_pos(p, 10) for p in (1, 10, 11, 20, 23)] == [1, 10, 1, 10, 3]
+    assert aln_segments({"ref_start": 5, "ref_end": 8}) == [(5, 8)]
+    assert aln_segments({"ref_start": 8, "ref_end": 13, "circular": True,
+                         "ref_length": 10}) == [(8, 10), (1, 3)]
+    assert aln_segments({"ref_start": 0, "ref_end": 0, "circular": True,
+                         "ref_length": 10}) == []
+    from core.sanger.pipeline import alignment_span_text
+    assert alignment_span_text({"ref_start": 5, "ref_end": 8}) == "5–8"
+    assert alignment_span_text({"ref_start": 8, "ref_end": 13, "circular": True,
+                                "ref_length": 10}) == "8–10、1–3"
+    assert aln_segments({"ref_start": 12, "ref_end": 14, "circular": True,
+                         "ref_length": 10}) == [(2, 4)]
+
+
+def test_partial_alignment_still_flagged_on_circular():
+    """环状参考下仍截断（如载体外序列）：保留截断提示，结论不给 ✓"""
+    rng = random.Random(13)
+    ref = "".join(rng.choice("ACGT") for _ in range(1000))
+    junk = "".join(rng.choice("ACGT") for _ in range(200))
+    read = ref[300:500] + junk
+    r = _run(read, ref, circular=True)
+    pa = r["reads"][0]["partial_alignment"]
+    assert pa and pa["circular"] is True and pa["aligned_read_len"] < 0.8 * len(read)
+    assert not r["conclusion"].startswith("✓")
+    assert "请按环状参考分析" not in r["conclusion"]
+def test_fully_aligned_read_has_no_partial_flag():
+    rng = random.Random(3)
+    ref = "".join(rng.choice("ACGT") for _ in range(800))
+    read = ref[100:500]
+    logging.disable(logging.WARNING)
+    try:
+        r = analyze([("ok.ab1", make_ab1(read, [40] * len(read)))], ref)
+    finally:
+        logging.disable(logging.NOTSET)
+    assert r["reads"][0]["partial_alignment"] is None
+    assert r["conclusion"].startswith("✓")
+
+
+def test_cross_check_requires_high_region_quality_not_single_base():
+    """用户反馈 #5/#6：用另一条引物验证时看该区域整体质量，不只看单碱基 Q——
+    验证 read 在该位点 ±2bp Q40、但 ±25bp 区域信号塌陷（Q15）→ 不足以互检，
+    差异保留为低置信，并写清具体原因与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
+    i = 70                                   # ref 121
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    # ref 96-146（位点 ±25bp）整体偏弱（Q22），只有位点及紧邻 ±2bp 为 Q40
+    for p in range(96, 147):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 119 <= p <= 123 else 22
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert len(sub) == 1
+    v = sub[0]
+    assert "cross_read_resolved" not in v and v["confidence"] == "low"
+    assert v["cross_read_weak"][0]["read"] == "rev.ab1"
+    assert v["cross_read_weak"][0]["region_min_q"] == 22
+    assert v["cross_read_weak"][0]["core_min_q"] == 40     # 单碱基/核心区都很好
+    assert "质量不足以互检" in v["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "替换" in cds["verdict"] and "Q12" in cds["verdict"]
+
+
+def test_resolved_lines_spell_out_error_type_and_verifier_quality():
+    """互检排除明细逐条写清错误类型（替换 X>Y / 插入 / 缺失）与验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
+    i = 70
+    alt = "A" if seg[i] != "A" else "C"
+    fwd = seg[:i] + alt + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [])
+    lines = result["conclusion"].splitlines()
+    det = [x for x in lines if x.strip().startswith("↳ 位置 121")]
+    assert det and f"替换 {seg[i]}>{alt}" in det[0]
+    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0] \
+        and "≥Q20 占 100%" in det[0]
+
+
+def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
+    """窗口放宽到 ±25bp 后，验证 read 区域里个别低 Q 碱基不该一票否决"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
+    i = 70
+    fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
+    q = [40] * len(fwd)
+    q[i] = 12
+    qr = [40] * len(seg)
+    qr[len(seg) - 1 - (110 - 51)] = 12        # ref 110 单个低 Q
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, q)),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, [])
+    sub = [v for v in result["variants"] if v["type"] == "substitution"]
+    assert sub and sub[0].get("cross_read_resolved") is True
+    ev = sub[0]["cross_read_conflict"]["evidence"][0]
+    assert ev["region_cols"] >= 30 and ev["region_min_q"] == 12
+
+
+def test_low_confidence_reason_names_concrete_error_type():
+    from core.sanger.pipeline import _low_confidence_reason, variant_type_text
+    assert variant_type_text({"type": "substitution", "ref_base": "C", "alt_base": "A"}) == "替换 C>A"
+    assert variant_type_text({"type": "insertion", "alt_base": "G", "length": 1}) == "插入 1bp（G）"
+    assert variant_type_text({"type": "deletion", "ref_base": "AT", "length": 2}) == "缺失 2bp（AT）"
+    base = {"type": "substitution", "ref_base": "C", "read_q": 30, "read_pos": 100}
+    assert "N/模糊" in _low_confidence_reason({**base, "alt_base": "N"}, set())
+    assert "首端" in _low_confidence_reason({**base, "alt_base": "A", "read_pos": 5}, set(), zone=_flat_zone(500))
+    assert "双峰" in _low_confidence_reason({**base, "alt_base": "A"}, {100}, zone=_flat_zone(500))
+    assert "占比 50" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 50.0, "snr": 20}, zone=_flat_zone(500))
+    assert "信噪比" in _low_confidence_reason(
+        {**base, "alt_base": "A"}, set(), {"mutant_pct": 90.0, "snr": 3}, zone=_flat_zone(500))
+
+
+def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
+    """验证 read 读出设计序列、但 ±25bp 区域质量不够定案：不排除，但单 read
+    indel 也不得独自改写蛋白结论——保持低置信并写明验证 read 的区域质量"""
+    ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
+    seg = ref[50:150]
+    fwd = seg[:58] + "A" + seg[58:]
+    qr = [40] * len(seg)
+    for p in range(81, 132):
+        qr[len(seg) - 1 - (p - 51)] = 40 if 104 <= p <= 111 else 22
+    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    result = analyze(
+        [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+    ins = [v for v in result["variants"] if v["type"] == "insertion"]
+    assert len(ins) == 1
+    assert "cross_read_resolved" not in ins[0]
+    assert ins[0]["confidence"] == "low"
+    assert "质量不足以互检" in ins[0]["low_reason"]
+    cds = next(c for c in result["cds_reports"] if c["name"] == "CSQ")
+    assert "不一致" not in cds["verdict"] and "插入 1bp" in cds["verdict"]
+
+
+def test_tail_gray_zone_single_read_variant_low_with_reason():
+    """尾端灰区 701–900bp 默认不可信：单 read 差异即使 Q40 也按低置信，原因写明"""
+    random.seed(21)
+    ref = "".join(random.choice("ACGT") for _ in range(1200))
+    seg = list(ref[:1000])
+    for i in (399, 749, 949):                  # read 400 / 750 / 950
+        seg[i] = "A" if seg[i] != "A" else "C"
+    result = analyze([("long.ab1", make_ab1("".join(seg), [40] * 1000))], ref, [])
+    by_pos = {v["ref_pos"]: v for v in result["variants"] if v["type"] == "substitution"}
+    assert by_pos[400]["confidence"] != "low"
+    assert by_pos[750]["confidence"] == "low"
+    assert "尾端灰区 701–900bp" in by_pos[750]["low_reason"]
+    assert "900bp 之后" in by_pos[950]["low_reason"]
+    assert "↳ long.ab1：可信区 31–700bp" in result["conclusion"]
