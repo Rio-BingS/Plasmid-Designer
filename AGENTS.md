@@ -76,14 +76,17 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-10-31 实测）：pytest
-**1828 passed / 43 skipped / 0 failed**（约 110 s），vitest **666 passed**，
+测试基线（本机 Windows，2026-11-05 实测，分支 `experiment/preview-visual-tuning`）：
+pytest
+**1850 passed / 43 skipped / 0 failed**（约 110 s），vitest **686 passed**，
 vue-tsc **0**、build/npm audit/尺寸预算/文档同步门禁全绿。其中 5 项真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（[postmortems 索引](docs/HANDOVER.md#7-已修问题留档索引)）；v2.18.0→v2.29.2 的 CI 红灯链也已清零（[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，
-另有**尺寸预算门禁** `scripts/check_file_size.py`（新文件 ≤900 行、白名单只许变小，`scripts/size_budgets.json` 记账）。
+另有**尺寸预算门禁** `scripts/check_file_size.py`（新文件 ≤900 行，白名单文件超线即红，
+`scripts/size_budgets.json` 记账；白名单文件**有理由的小增量**（接线、新参数等）可直接
+`--refresh` 记账通过，**大增长/无意识增长**先拆分——2026-11-05 与所有者议定）。
 **本地只跑测试不够，动代码后要把门禁本地预演一遍**（v2.18.0→v2.29.2 连续红灯的教训，[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
