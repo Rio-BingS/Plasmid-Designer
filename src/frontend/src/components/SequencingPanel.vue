@@ -7,7 +7,8 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import {
   analyzeSequencingFiles, exportConsensus, formatApiError,
-  type SequencingAnalysis
+  parseSequencingReference,
+  type SequencingAnalysis, type SequencingReferenceParse
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
 import { shortName } from '@/utils/seqPanelModel'
@@ -21,6 +22,7 @@ import ConsensusCard from '@/components/sequencing/ConsensusCard.vue'
 import MatchMap from '@/components/sequencing/MatchMap.vue'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
+import { cdsCoverageSummary, findCdsTarget } from '@/utils/cdsMode'
 
 const props = defineProps<{
   /** 深链预填的参考序列文件（如从设计结果页跳转时自动带入） */
@@ -165,7 +167,73 @@ function normalizeMinQ() {
 }
 
 const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0
-  && !validateReliableZone(reliableZone.value))
+  && !validateReliableZone(reliableZone.value)
+  && (!cdsMode.value || !!cdsSelected.value))
+
+// ==================== 目的基因模式（CDS 对比） ====================
+// 开关打开且参考暂存后调 parse-reference：候选 CDS 下拉 + 文件名自动匹配
+// 预选。所有 read 照常参与比对（载体通用引物 read 直接可用，无需与 CDS
+// 同名），参考替换为选中 CDS 的编码序列——报告坐标即 CDS 内坐标。
+// 用户手动改过下拉后 read 增减不再自动重解析（不顶掉手动选择）；
+// 换参考或关掉开关才重置。
+const cdsMode = ref(false)
+const cdsCandidates = ref<SequencingReferenceParse['candidates']>([])
+const cdsSelected = ref('')
+const cdsAutoNote = ref('')
+const cdsManual = ref(false)
+const cdsLoading = ref(false)
+const cdsError = ref('')
+const cdsLastRefName = ref('')
+
+const cdsReadsKey = computed(() => reads.value.map((f) => f.name).join('\n'))
+
+// 报告侧的 read↔CDS 关系（匹配引物）：目标 CDS 特征与覆盖汇总从分析结果
+// 推导——伪 CDS 特征 description 以「目的基因模式」开头（见 utils/cdsMode.ts），
+// 非该模式/旧记录为 null，列与汇总行自动隐藏
+const cdsTargetFeature = computed(() => findCdsTarget(analysis.value?.features))
+const cdsCoverageLine = computed(() => analysis.value && cdsTargetFeature.value
+  ? cdsCoverageSummary(analysis.value.reads, cdsTargetFeature.value) : '')
+
+async function loadCdsCandidates() {
+  const ref = referenceFile.value
+  if (!ref) return
+  cdsLoading.value = true
+  cdsError.value = ''
+  try {
+    const parsed = await parseSequencingReference(ref, reads.value.map((f) => f.name))
+    cdsCandidates.value = parsed.candidates
+    cdsSelected.value = parsed.auto_match?.name || ''
+    cdsAutoNote.value = parsed.auto_match?.note || ''
+    if (!parsed.candidates.length) {
+      cdsError.value = parsed.note || '参考内没有可作目标的 CDS/gene 特征'
+    }
+  } catch (e: any) {
+    cdsCandidates.value = []
+    cdsSelected.value = ''
+    cdsError.value = formatApiError(e, '参考解析失败')
+  } finally {
+    cdsLoading.value = false
+  }
+}
+
+watch([cdsMode, () => referenceFile.value, cdsReadsKey], async ([on, rf]) => {
+  if (!on || !rf) {
+    cdsCandidates.value = []
+    cdsSelected.value = ''
+    cdsAutoNote.value = ''
+    cdsError.value = ''
+    cdsManual.value = false
+    cdsLastRefName.value = ''
+    return
+  }
+  // 参考文件换人 → 候选全部重来（手动选择自然失效）
+  if (rf.name !== cdsLastRefName.value) {
+    cdsManual.value = false
+    cdsLastRefName.value = rf.name
+  }
+  if (cdsManual.value && cdsSelected.value) return
+  await loadCdsCandidates()
+})
 
 async function runAnalysis() {
   if (!referenceFile.value || !reads.value.length) return
@@ -175,7 +243,8 @@ async function runAnalysis() {
   try {
     analysis.value = await analyzeSequencingFiles(
       referenceFile.value, reads.value, minQ.value, allowDecompose.value,
-      reliableZoneFormValue(reliableZone.value)
+      reliableZoneFormValue(reliableZone.value),
+      { mode: cdsMode.value, name: cdsSelected.value || undefined }
     )
     resetSeqViz()
     if (analysis.value.reads.length) {
@@ -323,6 +392,30 @@ async function downloadConsensus(format: string) {
       </div>
       <p v-else class="stage-empty">尚未选择文件：需要 1 个参考序列文件 + 至少 1 个 .ab1</p>
 
+      <div class="cds-mode">
+        <label class="cds-toggle">
+          <input type="checkbox" v-model="cdsMode" />
+          <b>目的基因模式</b>
+        </label>
+        <span class="cds-hint">流程：按参考文件名（.dna/.gb 等）识别目的片段（CDS）→ 匹配引物（每条 read 与目的 CDS 求交，报告覆盖关系）→ 分析 → 报告结果。参考两侧各保留 150bp 侧翼作比对上下文（标注为 5′/3′侧翼）；通用引物（M13F/T7 等）无需与 CDS 同名，未覆盖目的 CDS 的 read 会明确标注</span>
+        <template v-if="cdsMode">
+          <p v-if="!referenceFile" class="stage-note">选择参考序列后自动列出候选 CDS</p>
+          <p v-else-if="cdsLoading" class="stage-note">正在解析参考特征…</p>
+          <template v-else-if="cdsCandidates.length">
+            <label class="cds-pick">
+              目的 CDS
+              <select v-model="cdsSelected" @change="cdsManual = true">
+                <option v-for="c in cdsCandidates" :key="c.name + c.start" :value="c.name">
+                  {{ c.name }}（{{ c.start }}-{{ c.end }}，{{ c.length }} bp{{ c.strand === '-' ? '，负链' : '' }}）
+                </option>
+              </select>
+            </label>
+            <span v-if="cdsAutoNote" class="stage-note">自动匹配：{{ cdsAutoNote }}</span>
+          </template>
+          <p v-if="cdsError" class="error-msg">{{ cdsError }}</p>
+        </template>
+      </div>
+
       <details class="advanced">
         <summary>高级参数</summary>
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
@@ -355,9 +448,14 @@ async function downloadConsensus(format: string) {
                 :reference-length="analysis.reference_length" :circular="analysis.circular"
                 @open-read="openReadInSeqviz" @jump-variant="jumpToVariant" />
 
-      <!-- Read 摘要（子组件；查看按钮回传给峰图联动） -->
+      <!-- Read 摘要（子组件；查看按钮回传给峰图联动）。
+           目的基因模式下额外展示 read↔CDS 覆盖关系（匹配引物） -->
+      <p v-if="cdsTargetFeature" class="cds-coverage-line">
+        🎯 {{ cdsCoverageLine }}；未覆盖的 read 不参与目的 CDS 结论
+      </p>
       <ReadTable v-if="analysis.reads.length"
                  :reads="analysis.reads" :errors="analysis.errors"
+                 :cds-feature="cdsTargetFeature"
                  @view="openReadInSeqviz" />
 
       <!-- 突变表（子组件；低置信折叠态与结论卡共享，点击行跳峰图） -->
@@ -443,6 +541,19 @@ async function downloadConsensus(format: string) {
 .clear-btn:hover { background: #FDE8E8; border-color: #E8A5A5; }
 .advanced { margin-top: 0.75rem; font-size: 0.85rem; text-align: left; display: inline-block; }
 .advanced label { display: block; margin: 0.35rem 0; }
+.cds-mode {
+  margin-top: 0.9rem; padding: 0.6rem 0.75rem; border: 1px dashed var(--border-color, #ddd);
+  border-radius: 8px; font-size: 0.82rem; text-align: left; display: flex;
+  flex-direction: column; gap: 0.3rem;
+}
+.cds-toggle { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+.cds-hint { color: var(--text-secondary, #999); font-size: 0.78rem; }
+.cds-pick { display: inline-flex; align-items: center; gap: 0.5rem; }
+.cds-pick select { font-size: 0.82rem; padding: 0.15rem 0.4rem; max-width: 420px; }
+.cds-coverage-line {
+  margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--primary-color, #4E79C7);
+  background: var(--bg-secondary, #F5F8FC); border-radius: 8px; padding: 0.45rem 0.75rem;
+}
 .analyze-btn {
   display: block; margin: 1rem auto 0; padding: 0.6rem 2rem; border: none;
   background: #2E9E44; color: #fff; border-radius: 6px; cursor: pointer; font-size: 1rem;
