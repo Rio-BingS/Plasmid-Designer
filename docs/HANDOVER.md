@@ -23,7 +23,7 @@ v2.36.0 / v2.36.1-alpha.1（限制性克隆预览三图分工、轨道宽度两�
 VPS 预览验收）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
 2026-11-05 实测：后端 **1850 passed / 43 skipped / 0 failed**（约 110 s），
 前端 **686 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步门禁全绿。
-线上为 Docker Compose 部署（VPS，ssh 别名 `myvps`，
+线上为 Docker Compose 部署（VPS，ssh 别名 `vps-direct`（直连 23.95.78.18；旧别名 myvps 已不存在；ControlMaster 残留时加 `-o ControlMaster=no -o ControlPath=none`），
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
 
@@ -50,7 +50,7 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
-| 线上部署 | **Docker Compose on VPS**（`ssh myvps`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出） |
+| 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出） |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
 
 ## 3. 版本主线（v2.12 之后）
@@ -131,7 +131,7 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 
 **部署**（细节见 `deploy/*/README.md`；线上现状见 §2「线上部署」行）：
 
-- 线上是 **Docker Compose on VPS**（`ssh myvps`，`/opt/plasmid-designer`）。发版：
+- 线上是 **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）。发版：
   `git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose
   build backend frontend` → `up -d --force-recreate backend frontend`（前端必须
   force-recreate）；验 `docker logs plasmid-backend | grep 'Plasmid Designer API'`。

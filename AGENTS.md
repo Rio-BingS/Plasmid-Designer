@@ -307,5 +307,5 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 - 功能演进历史看 `git log`；审计修复看 docs/KNOWN_ISSUES.md「修复历史」
 - 未竟事项见 docs/KNOWN_ISSUES.md「未解决 / 挂账」
 - 暂缓的算法增强见 docs/ALGORITHM_ROADMAP.md（用户明确要求短期不做）
-- 线上：Docker Compose on VPS（`ssh myvps`，/opt/plasmid-designer），发版流程见
+- 线上：Docker Compose on VPS（`ssh vps-direct`，/opt/plasmid-designer），发版流程见
   HANDOVER §2「线上部署」行
