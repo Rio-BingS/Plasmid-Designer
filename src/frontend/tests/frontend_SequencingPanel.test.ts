@@ -6,10 +6,12 @@ import type { SequencingAnalysis, AlignmentView, ReadTrace } from '@/api'
 vi.mock('@/api', () => ({
   analyzeSequencingFiles: vi.fn(),
   getReadTrace: vi.fn(),
-  exportConsensus: vi.fn()
+  exportConsensus: vi.fn(),
+  parseSequencingReference: vi.fn(),
+  formatApiError: vi.fn((_e: unknown, fallback: string) => fallback)
 }))
 
-import { analyzeSequencingFiles, getReadTrace } from '@/api'
+import { analyzeSequencingFiles, getReadTrace, parseSequencingReference } from '@/api'
 
 const mockAnalysis: SequencingAnalysis = {
   analysis_id: 'seq_test1',
@@ -785,5 +787,124 @@ describe('SequencingPanel', () => {
     expect(chip.text()).toBe('中')
     expect(chip.attributes('title')).toContain('插入峰强度为邻峰的 69%')
     expect(chip.attributes('title')).toContain('真实存在')
+  })
+
+  // ==================== 目的基因模式（CDS 对比） ====================
+
+  const mockParse = {
+    reference_length: 7039,
+    circular: true,
+    candidates: [
+      { name: 'KanR', start: 559, end: 1374, strand: '+', length: 816 },
+      { name: 'MX', start: 5075, end: 6877, strand: '+', length: 1803 },
+      { name: '6xHis', start: 6884, end: 6901, strand: '+', length: 18 }
+    ],
+    auto_match: { name: 'MX', note: '参考文件名匹配（文件名与CDS精确匹配）' },
+    note: ''
+  }
+
+  it('目的基因模式默认关闭：提示文案在但不显示下拉，分析入口不受影响', async () => {
+    const wrapper = mount(SequencingPanel)
+    expect(wrapper.text()).toContain('目的基因模式')
+    expect(wrapper.find('.cds-pick').exists()).toBe(false)
+    ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
+    await flushPromises()
+    expect(parseSequencingReference).not.toHaveBeenCalled()
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeUndefined()
+  })
+
+  it('打开开关：解析候选 CDS、自动匹配预选、提交带 CDS 参数', async () => {
+    vi.mocked(parseSequencingReference).mockResolvedValue(mockParse)
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
+    await flushPromises()
+    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
+    await flushPromises()
+
+    expect(parseSequencingReference).toHaveBeenCalledTimes(1)
+    const [refFile, readNames] = vi.mocked(parseSequencingReference).mock.calls[0]
+    expect(refFile.name).toBe('MX.dna')
+    expect(readNames).toEqual(['r1.ab1'])
+
+    const select = wrapper.find('.cds-pick select')
+    expect((select.element as HTMLSelectElement).value).toBe('MX')
+    expect(wrapper.text()).toContain('自动匹配')
+    expect(wrapper.text()).toContain('KanR')
+    expect(wrapper.text()).toContain('1803 bp')
+
+    vi.mocked(analyzeSequencingFiles).mockResolvedValue(mockAnalysis)
+    ;(wrapper.vm as any).runAnalysis()
+    await flushPromises()
+    const cdsOpts = vi.mocked(analyzeSequencingFiles).mock.calls.at(-1)![5]
+    expect(cdsOpts).toEqual({ mode: true, name: 'MX' })
+  })
+
+  it('手动改选 CDS 后新增 read 不重解析、不顶掉选择', async () => {
+    vi.mocked(parseSequencingReference).mockResolvedValue(mockParse)
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
+    await flushPromises()
+    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
+    await flushPromises()
+    await wrapper.find('.cds-pick select').setValue('KanR')
+
+    ;(wrapper.vm as any).addFiles([makeFile('r2.ab1')])
+    await flushPromises()
+    expect(parseSequencingReference).toHaveBeenCalledTimes(1)
+    expect((wrapper.vm as any).cdsSelected).toBe('KanR')
+  })
+
+  it('参考无候选：显示后端提示且分析按钮禁用', async () => {
+    vi.mocked(parseSequencingReference).mockResolvedValue({
+      ...mockParse,
+      candidates: [],
+      auto_match: null,
+      note: '参考内没有可作目标的 CDS/gene 特征'
+    })
+    const wrapper = mount(SequencingPanel)
+    ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
+    await flushPromises()
+    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有可作目标')
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeDefined()
+  })
+
+  it('目的基因模式报告：read↔CDS 覆盖关系列与汇总行（匹配引物）', async () => {
+    const cdsAnalysis: SequencingAnalysis = {
+      ...mockAnalysis,
+      reference_length: 2103,
+      features: [
+        { name: '5′侧翼', type: 'misc_feature', start: 1, end: 150, strand: '+' },
+        { name: 'MX', type: 'CDS', start: 151, end: 1953, strand: '+',
+          description: '目的基因模式：分析目标为「MX」（参考内 5075-6877，参考文件名匹配）。两端各保留 150bp 参考侧翼作比对上下文，本特征区间即目标 CDS' },
+        { name: '3′侧翼', type: 'misc_feature', start: 1954, end: 2103, strand: '+' }
+      ],
+      reads: [
+        { ...mockAnalysis.reads[0], index: 0, filename: 'r1-seqF1.ab1',
+          ref_start: 100, ref_end: 900 },
+        { ...mockAnalysis.reads[0], index: 1, filename: 'r2-other.ab1',
+          ref_start: 1, ref_end: 150 }
+      ],
+      variants: []
+    }
+    const wrapper = mount(SequencingPanel, { props: { preset: cdsAnalysis } })
+    await wrapper.vm.$nextTick()
+
+    // 汇总行：覆盖条数统计
+    expect(wrapper.text()).toContain('1/2 条 read 覆盖目的 CDS「MX」')
+    // ReadTable 新列：覆盖 read 显示百分比徽章，未覆盖 read 明确标注
+    const chips = wrapper.findAll('.cds-chip')
+    expect(chips.length).toBe(2)
+    expect(chips[0].text()).toContain('覆盖')
+    expect(chips[0].text()).not.toBe('未覆盖')
+    expect(chips[1].text()).toBe('未覆盖')
+  })
+
+  it('非目的基因模式的普通分析：不显示覆盖列与汇总行', async () => {
+    const wrapper = mount(SequencingPanel, { props: { preset: mockAnalysis } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.cds-coverage-line').exists()).toBe(false)
+    expect(wrapper.find('.cds-chip').exists()).toBe(false)
   })
 })

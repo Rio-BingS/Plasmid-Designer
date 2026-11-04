@@ -202,7 +202,7 @@ export interface SequencingAnalysis {
   decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
   errors: { filename: string; error: string }[]
   reference_length: number
-  features: { name: string; type: string; start: number; end: number; strand: string; description?: string }[]
+  features: { name: string; type: string; start: number; end: number; strand: string; description?: string; analysis_target?: boolean }[]
 }
 
 export interface ReadTrace {
@@ -222,7 +222,9 @@ export async function analyzeSequencingFiles(
   minQ = 20,
   allowDecompose = true,
   /** read 可信区边界 "30,60,700,900"；空串用后端默认 */
-  reliableZone = ''
+  reliableZone = '',
+  /** 目的基因模式：以参考内指定 CDS 的编码序列为参考分析（坐标即 CDS 内坐标） */
+  cdsOptions?: { mode: boolean; name?: string }
 ): Promise<SequencingAnalysis> {
   const form = new FormData()
   form.append('reference', reference, reference.name)
@@ -230,6 +232,10 @@ export async function analyzeSequencingFiles(
   form.append('min_q', String(minQ))
   form.append('allow_decompose', String(allowDecompose))
   if (reliableZone) form.append('reliable_zone', reliableZone)
+  if (cdsOptions?.mode) {
+    form.append('cds_mode', 'true')
+    if (cdsOptions.name) form.append('cds_name', cdsOptions.name)
+  }
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   const data = response.data as SequencingAnalysis
   // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
@@ -238,6 +244,28 @@ export async function analyzeSequencingFiles(
     rememberAnalysisToken(data.analysis_id, data.access_token)
   }
   return data
+}
+
+/** 目的基因模式前置解析：参考图谱内候选 CDS 清单 + 自动匹配建议 */
+export interface SequencingReferenceParse {
+  reference_length: number
+  circular: boolean
+  candidates: { name: string; start: number; end: number; strand: string; length: number }[]
+  /** 文件名自动匹配命中的候选（唯一命中才有）；note 为匹配依据 */
+  auto_match: { name: string; note: string } | null
+  note: string
+}
+
+/** 解析参考文件特征，供「目的基因模式」下拉预选（轻量只读，不落库不分析） */
+export async function parseSequencingReference(
+  reference: File,
+  readNames: string[] = []
+): Promise<SequencingReferenceParse> {
+  const form = new FormData()
+  form.append('reference', reference, reference.name)
+  readNames.forEach((n) => form.append('read_names', n))
+  const response = await api.post('/sequencing/parse-reference', form)
+  return response.data as SequencingReferenceParse
 }
 
 export function rememberAnalysisToken(analysisId: string, token: string): void {
