@@ -47,13 +47,20 @@ async def analyze_sequencing_upload(
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
+    cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，仅以其编码序列为参考分析（所有 read 照常参与）"),
+    cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
 
     样品名取参考文件名主干，特征注释直接来自参考文件（GenBank/SnapGene 特征表）。
+    cds_mode=True 时启用目的基因模式（core.sanger.cds_extract）：从参考特征
+    定位目的 CDS（cds_name 显式指定优先，否则按文件名自动匹配），以其编码
+    序列为比对参考——坐标即 CDS 内坐标，蛋白结论由 cds_reports 按伪全长
+    特征自动产出。
     """
     from core.sanger.reference_parser import ReferenceParseError
+    from core.sanger import cds_extract
 
     zone = parse_zone_form(reliable_zone)
     ref_name = reference.filename or "reference.gb"
@@ -65,6 +72,20 @@ async def analyze_sequencing_upload(
             parse_reference_topology, ref_name, ref_bytes)
     except ReferenceParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if cds_mode:
+        # 目的基因模式：参考替换为 CDS 编码序列（先提取后校验——大质粒超
+        # MAX_REF_BP 但 CDS 本身不超时仍可分析）；提取出的片段恒为线性
+        ref_stem = os.path.splitext(os.path.basename(ref_name))[0]
+        try:
+            ref_seq, features = cds_extract.resolve_reference(
+                ref_seq, features, ref_stem,
+                [r.filename or "" for r in reads], cds_name.strip() or None)
+        except cds_extract.CdsResolveError as e:
+            detail = str(e)
+            if e.candidates:
+                detail += "；可选 CDS：" + "、".join(c["name"] for c in e.candidates[:10])
+            raise HTTPException(status_code=400, detail=detail)
+        topology = False
     if len(ref_seq) < 50:
         raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
     # 终审 C-01：长度上限（见 _analyze_endpoint 同款校验）
@@ -77,6 +98,48 @@ async def analyze_sequencing_upload(
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
                                    allow_decompose, user=user,
                                    circular=_reference_circular(topology), zone=zone)
+
+
+@router.post(
+    "/sequencing/parse-reference",
+    dependencies=[Depends(require_feature("sequencing"))],
+)
+async def parse_sequencing_reference(
+    reference: UploadFile = File(..., description="参考序列文件（.gb/.gbk/.genbank/.fasta/.fa/.fna/.dna）"),
+    read_names: List[str] = Form(default=[], description="已暂存 read 的文件名（自动匹配的辅助线索，可省略）"),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """目的基因模式的前置解析：候选 CDS 清单 + 按文件名的自动匹配建议。
+
+    轻量只读端点（不落库、不分析）：解析参考特征 → 嵌套去重后的 CDS/gene
+    候选列表 → 参考文件名与 read 文件名的自动匹配建议。前端在「目的基因
+    模式」开关打开且参考暂存后调用，渲染 CDS 下拉并预选 auto_match。"""
+    from core.sanger.reference_parser import ReferenceParseError
+    from core.sanger import cds_extract
+
+    ref_name = reference.filename or "reference.gb"
+    ref_bytes = await _read_limited(reference)
+    if not ref_bytes:
+        raise HTTPException(status_code=400, detail="参考文件为空")
+    try:
+        ref_seq, features, topology = await _run_heavy(
+            parse_reference_topology, ref_name, ref_bytes)
+    except ReferenceParseError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    candidates = cds_extract.cds_candidates(features)
+    ref_stem = os.path.splitext(os.path.basename(ref_name))[0]
+    cand, note = cds_extract.resolve_auto(candidates, ref_stem, read_names)
+    return {
+        "reference_length": len(ref_seq),
+        "circular": _reference_circular(topology),
+        "candidates": [
+            {"name": c["name"], "start": c["start"], "end": c["end"],
+             "strand": c["strand"], "length": c["length"]}
+            for c in candidates
+        ],
+        "auto_match": ({"name": cand["name"], "note": note} if cand else None),
+        "note": note,
+    }
 
 
 @router.post(

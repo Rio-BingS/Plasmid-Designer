@@ -358,13 +358,27 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致。
     partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
     有误，或线性参考上跨原点的 read）时不得给出干净的 ✓——未比对部分
-    根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。"""
+    根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。
+
+    目的基因模式的覆盖资格门（cds_extract 伪特征带 analysis_target 标记）：
+    分析目标零覆盖时结论头必须降级为 △ 未能验证——「引物没测到目的 CDS」
+    不许因为所测区域（侧翼/骨架）恰好一致而报 ✓；部分覆盖时任何结论都要
+    追加覆盖提示。全质粒模式的 CDS 无此标记，行为逐字不变（部分测序是
+    常规策略，见 _build_cds_reports 的未测 verdict）。"""
+    target = next((c for c in cds_reports if c.get("analysis_target")), None)
+    tail = ""
+    if target and not has_mixed:
+        if target.get("coverage_status") == "uncovered":
+            tail = f"目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证"
+        elif target.get("coverage_status") == "partial":
+            tail = (f"目的 CDS 覆盖 {target.get('covered_percent') or 0:.0f}%"
+                    "（未覆盖部分按参考填充、未验证）")
     if partial_reads and not has_mixed:
         confirmed0 = [v for v in variants if v.get("confidence") != "low"]
         bad0 = [c for c in cds_reports if c.get("protein_identical") is False]
         if not confirmed0 and not bad0:
             return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
-                    "有大段未比对上参考，该部分未验证")
+                    "有大段未比对上参考，该部分未验证" + (f"；{tail}" if tail else ""))
     confirmed = [v for v in variants if v.get("confidence") != "low"]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
@@ -379,15 +393,21 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             bits.append(f"{names}蛋白与设计不一致")
         if confirmed:
             bits.append(f"检出 {len(confirmed)} 处确认差异")
-        return "✗ 结论：" + "，".join(bits)
+        return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
+    # 无确认差异且目标零覆盖：△ 未能验证（✓ 会让没测到的目标隐身）
+    if target and target.get("coverage_status") == "uncovered":
+        low_note = (f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）"
+                    if variants else "（已比对区域与设计一致）")
+        return f"△ 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
     if variants:
         return (f"✓ 结论：构建与设计一致"
-                f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）")
+                f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）"
+                + (f"；{tail}" if tail else ""))
     if resolved:
         # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
         return (f"✓ 结论：构建与设计一致（{resolved} 处单条 read 差异"
-                "已被其他引物互检排除）")
-    return "✓ 结论：构建与设计一致，未检出差异"
+                "已被其他引物互检排除）" + (f"；{tail}" if tail else ""))
+    return "✓ 结论：构建与设计一致，未检出差异" + (f"；{tail}" if tail else "")
 
 
 # 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
@@ -1376,6 +1396,9 @@ def _build_cds_reports(
             "strand": strand,
             "covered_percent": cov_pct,
             "coverage_status": "full" if cov_pct >= 99 else ("uncovered" if cov_pct <= 0 else "partial"),
+            # 目的基因模式的分析目标标记（cds_extract 伪特征）；结论头据此做
+            # 覆盖资格判定（_conclusion_summary）。全质粒模式的 CDS 无此键
+            **({"analysis_target": True} if f.get("analysis_target") else {}),
         }
         if cov_pct <= 0:
             reports.append({

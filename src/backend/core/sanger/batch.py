@@ -218,26 +218,28 @@ def match_files(rows: List[Dict], files: List[Dict]):
     return per_plasmid, unmatched
 
 
-def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
+def _match_ref_name(stem: str, names: set,
+                    label: str = "质粒名称") -> Tuple[Optional[str], str]:
     """图谱文件名 → 质粒名称的多级匹配（match_files 与 match_clone_files
     同一口径）：全名精确 > 忽略分隔符精确 > 与名称的某一段一致（"MBYSTC" ↔
     "17648 MBYSTC"）> 双向包含（短侧 ≥4 字符，防 "MX" 命中 "MX2"）。
-    候选不唯一一律不猜，返回 (None, 原因)。"""
+    候选不唯一一律不猜，返回 (None, 原因)。label 是说明文案里的对象称呼
+    （默认「质粒名称」；目的基因模式复用本口径时传「CDS 名称」）。"""
     sq = squash_name(stem)
     segs = lambda n: {squash_name(t) for t in re.split(r"\s+", n.strip()) if t}
     levels = (
         ([n for n in names if norm_stem(n) == stem],
-         "文件名与质粒名称精确匹配"),
+         f"文件名与{label}精确匹配"),
         ([n for n in names if squash_name(n) == sq],
-         "文件名与质粒名称精确匹配（忽略分隔符）"),
+         f"文件名与{label}精确匹配（忽略分隔符）"),
         ([n for n in names if sq in segs(n)],
-         f"文件名与质粒名称的组成部分一致（{{}}）"),
+         f"文件名与{label}的组成部分一致（{{}}）"),
     )
     for cands, how in levels:
         if len(cands) == 1:
             return cands[0], (how.format(cands[0]) if "{}" in how else how)
         if len(cands) > 1:
-            return None, ("文件名同时匹配多个质粒名称（"
+            return None, (f"文件名同时匹配多个{label}（"
                           + "、".join(sorted(cands))[:80] + "），无法唯一确定")
     cont = []
     for n in names:
@@ -245,11 +247,11 @@ def _match_ref_name(stem: str, names: set) -> Tuple[Optional[str], str]:
         if min(len(nsq), len(sq)) >= 4 and (nsq in sq or sq in nsq):
             cont.append(n)
     if len(cont) == 1:
-        return cont[0], "文件名包含质粒名称（或反之）"
+        return cont[0], f"文件名包含{label}（或反之）"
     if len(cont) > 1:
-        return None, ("文件名同时匹配多个质粒名称（"
+        return None, (f"文件名同时匹配多个{label}（"
                       + "、".join(sorted(cont))[:80] + "），无法唯一确定")
-    return None, "文件名不匹配任何质粒名称（支持全名或两段式名称的任一段）"
+    return None, f"文件名不匹配任何{label}（支持全名或两段式名称的任一段）"
 
 
 def feature_alias_names(features: List[Dict]) -> List[str]:
