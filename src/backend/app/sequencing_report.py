@@ -145,12 +145,20 @@ def _md5(data: bytes) -> str:
 
 
 def _conclusion_bucket(conclusion: str) -> str:
-    """按一句话结论把组归入质粒文件夹下的子文件夹：合格→正确，不合格→错误；
-    其余（分析失败、缺参考图谱、没匹配到 reads 等）无法自动判定 → 无法判定"""
+    """按一句话结论把组归入质粒文件夹下的子文件夹（T2 出口统一）：
+    合格→正确，不合格→错误，疑似混合→混合，待定→待定，待定·读取失败→
+    读取失败（T4）；其余（分析失败、缺参考图谱、没匹配到 reads 等）
+    无法自动判定 → 无法判定"""
     if conclusion.startswith("合格"):
         return "正确"
     if conclusion.startswith("不合格"):
         return "错误"
+    if conclusion.startswith("待定·读取失败"):
+        return "读取失败"
+    if conclusion.startswith("待定"):
+        return "待定"
+    if conclusion.startswith("疑似混合"):
+        return "混合"
     return "无法判定"
 
 

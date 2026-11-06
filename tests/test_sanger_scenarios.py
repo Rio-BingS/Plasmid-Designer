@@ -372,14 +372,10 @@ XFAIL_BY_TASK = {
     "test_s1_tail_zone_q50_missense_not_silent": "T12",
     "test_s2_cds_mixed_35_detected": "T7",
     "test_s3_cds_mixed_5050_detected": "T7",
-    "test_s4_mixed_65pct_main_never_pass": "T7",
     "test_s5_front_hq_clip_flagged": "T6",
     "test_s6_tail_hq_clip_flagged": "T6",
     "test_s7_promoter_variant_fails_everywhere": "T5",
     "test_s8_partial_cds_never_qualified": "T3",
-    "test_s9_front_hard_zone_variant_unresolved": "T1",
-    "test_s10_n_call_listed_and_blocks": "T1",
-    "test_s11_n_in_cds_blocks_protein_verdict": "T1",
     "test_s12_failed_reads_block_qualified": "T4",
     "test_s13_coverage_by_untrusted_not_verified": "T3",
     "test_s14_true_mixed_not_flipped_by_weak_corroboration": "T8",
@@ -400,7 +396,6 @@ XFAIL_BY_TASK = {
     "test_m10_resolved_primer_coord_with_clip": "T9",
     "test_m11_precheck_rejects_broken_reference": "T18",
     "test_m12_ploc_shorter_than_pbas_warns": "T24",
-    "test_m13_structured_verdict_in_payload": "T2",
     "test_m15_enzyme_site_pending_hint": "T25",
 }
 

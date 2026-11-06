@@ -139,11 +139,13 @@ def test_excel_conclusion不合格_点名CDS():
 
 
 def test_excel_conclusion_编码区外差异():
+    """T2 三出口统一：确证差异 = verdict fail——编码区外不再「合格」
+    （判定区域 T5 收窄为 ROI 前按整参考口径）"""
     cds = [{"name": "MX", "coverage_status": "full", "protein_identical": True, "verdict": "x"}]
     v = {"confidence": "medium", "features": [{"name": "lac operator", "type": "other"}]}
     res = _res([v], cds, coverage=42.0)
     out = batch.excel_conclusion("MX", res, 1, True)
-    assert out.startswith("合格：编码区蛋白一致")
+    assert out.startswith("不合格：检出 1 处确证差异")
     assert "lac operator" in out and "测序覆盖 42%" in out
 
 
@@ -176,10 +178,10 @@ def test_excel_conclusion_部分比对不给合格():
     out = batch.excel_conclusion("MX", res, 1, True)
     assert out.startswith("无法判定：部分比对（x.ab1 仅 11/700bp 比对上参考）")
     assert _conclusion_bucket(out) == "无法判定"
-    # 有确证差异也不升级为 合格；确证 CDS 不一致仍是 不合格
+    # T2 status 机：确证差异 = fail 优先于 insufficient（部分比对）——不合格
     res["variants"] = [{"confidence": "high"}]
     out = batch.excel_conclusion("MX", res, 1, True)
-    assert out.startswith("无法判定：") and "1 处确证差异" in out
+    assert out.startswith("不合格：检出 1 处确证差异") and "部分比对" in out
     res["cds_reports"] = [{"name": "MX", "coverage_status": "partial",
                            "protein_identical": False}]
     assert batch.excel_conclusion("MX", res, 1, True).startswith("不合格：MX")
@@ -422,8 +424,8 @@ _EXPECTED_CONCLUSIONS = {
 
 _EXPECTED_FILES = {
     "MX/MX.gb", "MX/错误/M1.ab1", "MX/错误/测序分析报告.md", "MX/错误/分析结果.json",
-    "MIX/MIX.gb", "MIX/无法判定/X1.ab1", "MIX/无法判定/测序分析报告.md",
-    "MIX/无法判定/分析结果.json",
+    "MIX/MIX.gb", "MIX/混合/X1.ab1", "MIX/混合/测序分析报告.md",
+    "MIX/混合/分析结果.json",
     "PX/PX.fasta", "PX/正确/P1.ab1", "PX/正确/P2.ab1", "PX/正确/测序分析报告.md",
     "PX/正确/分析结果.json",
     "NOREF/无法判定/Q1.ab1", "NOREF/无法判定/测序分析报告.md",
@@ -490,7 +492,7 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
             "MX 蛋白与设计不一致：1 处氨基酸替换（K11E）\n") in mx_md
     assert "| 31 | substitution | A>G | 高 | 40 | 1 | 峰强比 100% | MX | MX:K11E |" in mx_md
     assert "| M1.ab1 | 测序 read | Excel 引物列精确匹配 |" in mx_md
-    mix_md = off["MIX/无法判定/测序分析报告.md"].decode("utf-8")
+    mix_md = off["MIX/混合/测序分析报告.md"].decode("utf-8")
     assert "## 双峰（疑似混合）检测" in mix_md and "**疑似混合样品**" in mix_md
     noref_md = off["NOREF/无法判定/测序分析报告.md"].decode("utf-8")
     assert "- 未运行序列分析" in noref_md and "- 参考图谱：缺失" in noref_md
@@ -513,7 +515,7 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
             for c in mx["cds_reports"]] == [("MX", "full", False)]
     px = json.loads(off["PX/正确/分析结果.json"])
     assert px["variants"] == [] and [r["filename"] for r in px["reads"]] == ["P1.ab1", "P2.ab1"]
-    assert json.loads(off["MIX/无法判定/分析结果.json"])["mixed_detected"] == {
+    assert json.loads(off["MIX/混合/分析结果.json"])["mixed_detected"] == {
         "X1.ab1": [31, 46, 61, 76, 91]}
 
     # 5) 整理清单：除离线独有的「原始路径」列外逐行一致，并与期望值吻合
@@ -527,7 +529,7 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
         ("MX", "MX.gb", "参考图谱", "MX/MX.gb", md5["MX.gb"]),
         ("MX", "M1.ab1", "测序 read", "MX/错误/M1.ab1", md5["M1.ab1"]),
         ("MIX", "MIX.gb", "参考图谱", "MIX/MIX.gb", md5["MIX.gb"]),
-        ("MIX", "X1.ab1", "测序 read", "MIX/无法判定/X1.ab1", md5["X1.ab1"]),
+        ("MIX", "X1.ab1", "测序 read", "MIX/混合/X1.ab1", md5["X1.ab1"]),
         ("PX", "PX.fasta", "参考图谱", "PX/PX.fasta", md5["PX.fasta"]),
         ("PX", "P1.ab1", "测序 read", "PX/正确/P1.ab1", md5["P1.ab1"]),
         ("PX", "P2.ab1", "测序 read", "PX/正确/P2.ab1", md5["P2.ab1"]),

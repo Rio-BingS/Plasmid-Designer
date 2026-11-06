@@ -2578,11 +2578,13 @@ def test_conclusion_summary_headline():
     assert head.startswith("△") and "2 处未决位点" in head
     # 无变体、无未决位点
     assert _conclusion_summary([], [], has_mixed=False).startswith("✓")
-    # 混合优先；混有蛋白不一致时不丢
+    # 混合优先于未决/一致，但让位确证差异（T2 三出口统一：确证损伤不再
+    # 被混合提示抢占结论头，混合降为 ✗ 主句内的提示）
     head = _conclusion_summary(low, cds_ok, has_mixed=True)
     assert head.startswith("△") and "重新挑单克隆" in head
     head = _conclusion_summary(conf, cds_bad, has_mixed=True)
-    assert head.startswith("△") and "CSQ蛋白与设计不一致" in head
+    assert head.startswith("✗") and "CSQ蛋白与设计不一致" in head
+    assert "疑似混合样品" in head
 
 
 def _circ_case(seed: int = 7, L: int = 1000, left: int = 150, right: int = 250,

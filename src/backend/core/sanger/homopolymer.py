@@ -549,6 +549,28 @@ def _clean_cover_reads_sub(v: Dict, read_results: List[Dict],
     return hits
 
 
+def mixed_sample_confirmed(read_results: List[Dict],
+                           mixed_corroboration: Optional[Dict]) -> bool:
+    """疑似混合样品的机器判定（goal T2；A 5.2 判定逻辑不靠文案匹配）。
+
+    ≥2 条 widespread read，或唯一 widespread 且互检未能把它降级为
+    「倾向该 read 自身信号问题」（无其他引物同报、且多数双峰位点被其他
+    引物干净读出）——与结论文本/Excel `_mixed_tails` 的分叉条件一一对应，
+    三处共用本函数避免口径漂移。"""
+    wide = [r for r in read_results
+            if (r.get("mixed_profile") or {}).get("class") == "widespread"]
+    if len(wide) >= 2:
+        return True
+    if len(wide) == 1:
+        crossable = len(read_results) >= 2
+        chk = ((mixed_corroboration or {}).get("by_read") or {}).get(
+            wide[0]["filename"], {})
+        downgraded = (crossable and chk.get("multi", 0) == 0
+                      and chk.get("clean", 0) >= max(1, wide[0]["mixed_profile"]["count"] // 2))
+        return not downgraded
+    return False
+
+
 def _corroborate_mixed(read_results: List[Dict]) -> Dict:
     """跨 read 双峰互检：一条引物的双峰位点映射到参考坐标后，看其他引物
     在同一位点的表现——用户视角的关键一层：另一条引物测过且峰形单一、

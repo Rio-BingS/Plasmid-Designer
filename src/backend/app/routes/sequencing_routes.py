@@ -824,10 +824,8 @@ def _summary(record: Dict) -> Dict:
             "alignment_view": r["alignment"].get("aligned"),
         })
     return {
-        "analysis_id": record["analysis_id"],
-        "sample_name": record.get("sample_name", ""),
-        "created_at": record["created_at"],
-        "engine": record["engine"],
+        "analysis_id": record["analysis_id"], "sample_name": record.get("sample_name", ""),
+        "created_at": record["created_at"], "engine": record["engine"],
         "conclusion": record["conclusion"],
         "reads": reads,
         "variants": record["variants"],
@@ -838,10 +836,12 @@ def _summary(record: Dict) -> Dict:
         "circular": bool(record.get("circular", False)),
         "cds_reports": record.get("cds_reports", []),
         "homopolymers": record.get("homopolymers", []),
-        "mixed_detected": record.get("mixed_detected", {}),
-        "mixed_profiles": record.get("mixed_profiles", {}),
+        "mixed_detected": record.get("mixed_detected", {}), "mixed_profiles": record.get("mixed_profiles", {}),
         "decomposed_alleles": record.get("decomposed_alleles", {}),
-        "errors": record["errors"],
+        # 结构化判定与未决证据（goal T2；B P1-8）；旧记录缺省 None/[]
+        "verdict": record.get("verdict"), "algo_version": record.get("algo_version"),
+        "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []),
+        "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"],
         "reference_length": len(record["reference"]),
         "features": record["features"],
     }
