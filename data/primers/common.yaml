@@ -1,0 +1,38 @@
+# 常用通用测序引物库（goal T17；A 1.5）
+#
+# 来源：分子克隆通用测序引物（Addgene/SnapGene 载体页与各合成公司引物
+# 列表惯用序列，公有领域序列）。名称小写匹配（resolve_primer 按 name
+# 查库），seq 缺省时上传参数只需给 name。可按需追加 yaml 文件。
+primers:
+  T7:
+    seq: TAATACGACTCACTATAGGG
+    direction: "+"
+    source: "T7 启动子通用引物（Addgene/SnapGene 惯用）"
+  T7term:
+    seq: GCTAGTTATTGCTCAGCGG
+    direction: "+"
+    source: "T7 终止子区反向引物（pET 系列惯用）"
+  T7ter:
+    seq: GCTAGTTATTGCTCAGCGG
+    direction: "+"
+    source: "T7 终止子引物别名"
+  SP6:
+    seq: ATTTAGGTGACACTATAGAA
+    direction: "+"
+    source: "SP6 启动子通用引物"
+  M13F:
+    seq: GTAAAACGACGGCCAGT
+    direction: "+"
+    source: "M13/pUC 正向通用引物（-20 位）"
+  M13R:
+    seq: CAGGAAACAGCTATGAC
+    direction: "-"
+    source: "M13/pUC 反向通用引物"
+  CMV-F:
+    seq: CGCAAATGGGCGGTAGGCGTG
+    direction: "+"
+    source: "CMV 启动子正向测序引物（pcDNA 系列惯用）"
+  BGH-R:
+    seq: TAGAAGGCACAGTCGAGG
+    direction: "-"
+    source: "BGH polyA 反向测序引物（pcDNA 系列惯用）"

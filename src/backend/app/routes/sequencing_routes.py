@@ -364,12 +364,11 @@ def _run_full_analysis(
     allow_decompose: bool,
     circular: bool = True,
     zone: Optional[ZoneParams] = None,
+    primer: Optional[Dict] = None,
 ) -> Dict:
-    """同步执行全自动分析（调用方负责移交线程池）
-
-    circular：参考是否按环状比对（跨原点 read 整条比对、坐标折回）。"""
+    """同步执行全自动分析（调用方负责移交线程池）；primer 为可选引物（T17）"""
     result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular,
-                     zone_params=zone)
+                     zone_params=zone, primer=primer)
 
     # 解卷积只对 read 级「疑似混合样品」（widespread）执行（tracy 可用时）
     # ——scattered 多为噪声，decompose 只会产出无意义等位
@@ -447,8 +446,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     with _STORE_LOCK:  # 终审 C-07：登记 + 容量淘汰整体串行
         _ANALYSES[analysis_id] = record
         _enforce_caps_locked()
-    # 持久化：database 模式下重启/内存过期后记录仍可回看（峰图一并压缩落库）
-    sequencing_store.persist_record(record)
+    sequencing_store.persist_record(record)  # 持久化：重启/过期后仍可回看（峰图压缩落库）
     return analysis_id, access_token, record
 
 
@@ -457,10 +455,12 @@ def _analyze_and_register(
     ab1_blobs: List[Tuple[str, bytes]], min_q: int, allow_decompose: bool,
     circular: bool, owner_id: Optional[str],
     zone: Optional[ZoneParams] = None,
+    primer: Optional[Dict] = None,
 ) -> Tuple[Dict, Optional[str]]:
     """同步：全自动分析 + 登记落库 + 摘要（调用方负责并发闸与线程池）"""
     result = _run_full_analysis(reference, sample_name, features, ab1_blobs,
-                                min_q, allow_decompose, circular, zone)
+                                min_q, allow_decompose, circular, zone,
+                                primer=primer)
     _aid, access_token, record = _register_analysis(
         sample_name, reference, features, result, owner_id=owner_id)
     return _summary(record), access_token
@@ -476,12 +476,12 @@ async def _analyze_endpoint(
     user: Optional[User] = None,
     circular: bool = True,
     zone: Optional[ZoneParams] = None,
+    primer: Optional[Dict] = None,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
-    # 终审 C-01：此前只校验 ≥50bp 无上限——局部比对是 O(len(ref)×len(read))
-    # 且正反向各做一次完整回溯，实测 300 kb 参考 × 1 条 read = 11 s / 1.09 GB，
-    # 单个匿名请求即可打满内存与线程池。质粒/病毒基因组 200 kb 足够覆盖。
+    # 终审 C-01：局部比对 O(len(ref)×len(read))，300kb×1read 实测 11s/1.09GB，
+    # 匿名请求可打满线程池；质粒/病毒 200kb 足够（同款校验见 _analyze_endpoint）
     if len(reference) > MAX_REF_BP:
         raise HTTPException(
             status_code=413,
@@ -489,13 +489,13 @@ async def _analyze_endpoint(
                    "请截取待验证区段后重新分析（局部比对开销随参考长度线性增长）")
     if not files or len(files) > MAX_FILES:  # 数量校验先于占槽
         raise HTTPException(status_code=400, detail=f"请上传 1-{MAX_FILES} 个 .ab1 文件")
-    # 审查 02 M5：读入（最多 24×20MB）、比对、登记落库（json+zlib+DB 提交）
-    # 全部在同一个并发槽内；同步部分移交线程池，不阻塞事件循环
+    # 审查 02 M5：读入/比对/登记落库同一并发槽；同步部分移交线程池
     async with _heavy_slot():
         ab1_blobs = await _read_ab1_files(files)
         summary, access_token = await run_in_threadpool(
             _analyze_and_register, reference, sample_name, features, ab1_blobs,
-            min_q, allow_decompose, circular, user.id if user else None, zone)
+            min_q, allow_decompose, circular, user.id if user else None, zone,
+            primer)
     if access_token:
         # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
         summary["access_token"] = access_token
