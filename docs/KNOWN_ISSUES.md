@@ -19,6 +19,13 @@
    负链臂落进 minus CDS 时不做融合判定，起始密码子按载体 ATG 常规处理。
 4. **custom_arms 模式不产出载体线性化引物**（背靠背引物）：默认用户自行
    双酶切/购买线性化载体，引物只覆盖插入片段两端。
+5. **tracy decompose 产物格式未在真实环境核对**（2026-11-07，goal T10）：
+   本机无 tracy，解析按官方文档（v0.9.1：`outprefix.json` 优先，退回
+   `.align1`/`.align2`）实现并以文档格式 fixtures 锁定
+   （`core/sanger/decompose.py`、`tests/fixtures/tracy/`）。需在生产镜像内
+   `tracy --version` 确认版本并用真实混合样品跑一次 decompose，核对产物
+   字段形状；若与文档不符按实际格式修正 `_parse_decompose_output`（goal §7
+   停止条件「tracy 实际输出格式与文档都对不上」届时由人取舍）。
 
 ---
 
