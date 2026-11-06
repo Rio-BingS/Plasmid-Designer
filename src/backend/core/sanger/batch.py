@@ -628,11 +628,13 @@ def _variant_status_of(v: Dict) -> str:
 def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。
 
-    表格单元格以简洁为先：合格/不合格/待定/疑似混合/无法判定 前缀供批量
-    筛选分拣，差异细节与伪影鉴别解释一律不进表（逐条证据在网页报告里）。
-    三态口径（goal T1；A 3.3 / B P0-1、P0-2）：rejected（互检定案）不算
-    待定；unresolved 变体或未决位点（N/模糊调用、poly 不可判定、dropout、
-    无法互检的双峰）触发「待定：」前缀——不得因证据不足而报「合格」。"""
+    表格单元格以简洁为先：合格/不合格/待定（含部分验证与读取失败）/
+    疑似混合/无法判定 前缀供批量筛选分拣，差异细节与伪影鉴别解释一律
+    不进表（逐条证据在网页报告里）。三态口径（goal T1；A 3.3 / B P0-1、
+    P0-2）：rejected（互检定案）不算待定；unresolved 变体或未决位点
+    （N/模糊调用、poly 不可判定、dropout、无法互检的双峰）触发「待定：」
+    前缀——不得因证据不足而报「合格」。同义突变单列（T5），ROI 覆盖
+    分级（partial/insufficient）读 verdict，Excel 端不重复推导。"""
     if not has_ref:
         return f"已整理 {n_reads} 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对"
     if res is None:
@@ -651,18 +653,53 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     n_sites = res.get("unresolved_sites") or []
     mixed_tails, widespread = _mixed_tails(res)
     undetermined = _undetermined_reason(res)
+    # 同义突变单列（goal T5；A 4.1）：DNA 变、蛋白不变的确证替换不并入
+    # 「蛋白不一致/确证差异」计数——克隆筛选最常问的就是「这个差异动不动
+    # 蛋白」。判据：替换落在 CDS 内且该 CDS 蛋白判定为一致（蛋白一致却
+    # 有确证替换 ⇒ 只能是同义；错义/移码会使 protein_identical 翻 False）
+    _cds_by_name = {c["name"]: c for c in res.get("cds_reports") or []}
+
+    def _is_synonymous(v) -> bool:
+        if v.get("type") != "substitution":
+            return False
+        names = {f.get("name") for f in v.get("features") or []
+                 if f.get("type") == "CDS"}
+        return bool(names) and all(
+            (_cds_by_name.get(n) or {}).get("protein_identical") is True
+            for n in names)
+
+    _syn_flags = [_is_synonymous(v) for v in confirmed]
+    syn = [v for v, s in zip(confirmed, _syn_flags) if s]
+    hard = [v for v, s in zip(confirmed, _syn_flags) if not s]
+    # verdict 驱动的覆盖分级（goal T5；A 4.2）：partial/insufficient 由
+    # ROI 覆盖推导、Excel 端不重复算（ROI 需要 features 参与判定，结果
+    # 里没有；旧记录无 verdict → 走原分支，历史口径不变）
+    vd = res.get("verdict") or {}
+    vd_partial = vd.get("status") == "partial"
+    vd_insufficient = (vd.get("status") == "insufficient"
+                       and any(b.get("kind") in ("roi_uncovered", "roi_unverified")
+                               for b in vd.get("blocking") or []))
 
     # 分支序 = verdict.status 优先级（T2 三出口统一）：fail（蛋白不一致/
-    # 确证差异）> mixed > pending > insufficient > pass。确证差异不再让
-    # 位给混合提示（多数克隆确实错了，混合降为正文），也不再报「合格」
+    # 确证差异）> failed_reads > mixed > pending > partial > insufficient
+    # > pass。确证差异不再让位给混合提示（多数克隆确实错了，混合降为
+    # 正文），也不再报「合格」
     if bad:
         names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
         hint = "（移码）" if any(c.get("frameshift_count") for c in bad) else ""
         out = f"不合格：{names} 蛋白与设计不一致{hint}"
-    elif confirmed:
-        # 编码区外的确证差异也判不合格（判定区域 T5 收窄为 ROI 前按整参考口径）
-        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
-        out = f"不合格：检出 {len(confirmed)} 处确证差异（{feats}）"
+        if syn:
+            out += f"；另有 {len(syn)} 处同义突变（蛋白不变）"
+    elif hard:
+        # 编码区外的确证差异也判不合格（「合格：编码区外 N 处确证差异」
+        # 旧分支已在 T2 三出口统一时删除；T5 保持整参考差异判定口径，
+        # ROI 收窄只用于覆盖分级，不缩小差异判定范围）
+        feats = "、".join(sorted({f["name"] for v in hard for f in v.get("features", [])})) or "无特征区"
+        out = f"不合格：检出 {len(hard)} 处确证差异（{feats}）"
+        if syn:
+            out += f"；另有 {len(syn)} 处同义突变（蛋白不变）"
+    elif syn:
+        out = f"不合格：{len(syn)} 处同义突变（DNA 变、蛋白不变）"
     elif n_err:
         # 解析失败的 read（goal T4；B P0-3）：不再隐身——「待定·读取失败」
         # 前缀点名，分拣进 读取失败/；全部失败已在上面按 分析失败 返回
@@ -700,6 +737,21 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         return out
     elif undetermined:
         out = "无法判定：" + undetermined
+    elif vd_insufficient:
+        out = ("无法判定："
+               + (next((b.get("detail") or "" for b in vd.get("blocking") or []
+                        if b.get("kind") in ("roi_uncovered", "roi_unverified")),
+                       "") or "实测数据不足以确认是否为目标质粒"))
+    elif vd_partial:
+        out = ("待定：部分验证——"
+               + (next((b.get("detail") or "" for b in vd.get("blocking") or []
+                        if b.get("kind") == "roi_uncovered"),
+                       "判定区域未完全覆盖")))
+        if mixed_tails:
+            out += "；" + "；".join(mixed_tails)
+        if cov < 95:
+            out += f"；测序覆盖 {cov:.0f}%"
+        return out
     else:
         out = "合格：与设计一致"
 
