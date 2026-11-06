@@ -29,6 +29,7 @@ from core.sanger.noise import peak_snr
 from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
+from core.sanger.split_read import classify_segment
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
@@ -1351,8 +1352,12 @@ def _analyze_one_read(
     aln = align_fn(trimmed, ref, trimmed_q)
     # 截断提示：环状参考的跨原点 read 已整条比对，仍截断即另有原因
     partial = _check_partial_alignment(trimmed, aln, circular)
-    # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常，不再静默成"没测到"
+    # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常，不再静默成"没测到"；
+    # split-read 二次定位（goal T19）：命中→结构断点坐标，未命中→未知序列
     hq_segments = check_unaligned_hq_segment(aln, trimmed_q)
+    for seg in hq_segments:
+        seg["split_read"] = classify_segment(
+            trimmed[seg["start"] - 1:seg["end"]], ref, circular)
 
     # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
     # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
