@@ -113,7 +113,17 @@ def test_real_analysis_mixed_baseline_and_corroboration():
         assert all(z["start"] <= p <= z["end"] for p in positions), _fname
         counts.append(len(positions))
     assert sorted(counts) == [4, 9, 10]
-    assert "疑似混合样品" in res["conclusion"]
+    # T11 口径基线（goal T11；A 3.1，先取证再改断言，快照 work/after_T11.json）：
+    # read 级「疑似混合样品」升级改走证据形态学（mixed_model.classify_mixed）——
+    # seqF/pET-Up 的 9/10 处双峰集中在各自 read 前 1–4%（thirds [9,0,0]、
+    # span 0.04/0.01）且比值 CV 0.39/0.44 ≥0.35、站点 Q 中位仅 read 中位的
+    # 0.5 倍，不满足「离散一致散布 + 低 CV + 高 Q」的混合升级条件，降为
+    # local（局部信号异常，info）。位点级证据原样保留：21 处待核位点与
+    # 17 处 mixed_variant 阻断逐项不变（verdict 仅少 mixed_sample 一条），
+    # 待核行逐字不变（下方断言）；verdict 仍 fail（确证变异驱动）。
+    assert "疑似混合样品" not in res["conclusion"]
+    assert "双峰 9 处中 8 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 10 处中 9 处无其他引物覆盖待核" in res["conclusion"]
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
     assert "同报双峰" not in res["conclusion"]

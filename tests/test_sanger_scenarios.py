@@ -13,6 +13,7 @@ from core.sanger.batch import excel_conclusion
 from core.sanger.homopolymer import _aligned_run_window, _read_ref_maps
 from core.sanger.pipeline import analyze
 from tests.sanger_scenarios import SCENARIOS
+from tests.abif_utils import make_trace_ab1
 
 S = {sc.id: sc for sc in SCENARIOS}
 
@@ -219,6 +220,41 @@ def test_f2_3100_decay_segment_not_mixed():
     assert _status(res) != "mixed"
 
 
+def test_t11_uniform30_mixed_sample_detected():
+    """T11 规格：全 read 均匀 30% 混合 → mixed_sample（widespread）。
+
+    均匀混合会让自适应背景模型「把背景学到手上」而站点层自熄（局部中位
+    ≈ 信号本身），兜底路径按 floor 位点密度（≈96/100bp）+ 低 CV + 三段
+    散布升级——这是 floor 密度路径存在的意义。"""
+    import random as _r
+    rng = _r.Random("t11u30")
+    ref = "".join(rng.choice("ACGT") for _ in range(1200))
+    sec = {p: (next(b for b in "ACGT" if b != ref[p - 1]), 0.30 / 0.70)
+           for p in range(1, 701)}
+    blob = make_trace_ab1(ref[:700], q=50, secondary=sec)
+    res = analyze([("u30.ab1", blob)], ref[:700], [])
+    prof = res["reads"][0]["mixed_profile"]
+    assert prof["class"] == "widespread", prof
+    assert res["verdict"]["status"] == "mixed"
+    assert "疑似混合样品" in res["conclusion"]
+
+
+def test_t11_local_cluster_not_mixed_sample():
+    """T11：同样 5 处双峰但集中单一区段 → local（局部信号异常），不升级
+    mixed_sample；位点仍逐个进待核（2026-11-06 定稿：个别双峰不升级）"""
+    import random as _r
+    rng = _r.Random("t11loc")
+    ref = "".join(rng.choice("ACGT") for _ in range(1200))
+    sec = {p: (next(b for b in "ACGT" if b != ref[p - 1]), 0.45 / 0.55)
+           for p in (100, 108, 116, 124, 132)}
+    blob = make_trace_ab1(ref[:800], q=50, secondary=sec)
+    res = analyze([("loc.ab1", blob)], ref[:800], [])
+    prof = res["reads"][0]["mixed_profile"]
+    assert prof["class"] == "local" and prof["class_reason"] == "concentrated_segment"
+    assert res["verdict"]["status"] != "mixed"
+    assert "疑似混合样品" not in res["conclusion"]
+
+
 def test_f3_no_pcon_still_analyzed():
     """F3：310.ab1 无 PCON → 可分析并注明 quality_source"""
     spec, res = _run("F3")
@@ -373,15 +409,16 @@ def test_m15_enzyme_site_pending_hint():
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
     "test_s1_tail_zone_q50_missense_not_silent": "T12",
-    "test_f1_3730_dye_shoulders_not_mixed": "T11",
-    "test_f2_3100_decay_segment_not_mixed": "T11",
+    # F1/F2 已随 T11 转绿（mixed_model 自适应背景 + 证据形态学分级）；
+    # M7 的 secondary_base 部分：新检测对「调用碱基非最高通道」的位点取
+    # 最高次级通道为 secondary_base（旧实现返回 None），该断言转绿；
+    # call_disagrees_with_trace 字段仍归 T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
     "test_m1_same_codon_subs_annotated_as_mnv": "T25",
     "test_m2_upload_order_independent_evidence": "T14",
     "test_m3_overlap_discordance_reported": "T21",
     "test_m4_orf_correction_bounded": "T16",
     "test_m5_primer_mismatch_detected": "T17",
-    "test_m7_secondary_base_when_call_not_top": "T24",
     "test_m9_core_analyze_requires_topology": "T25",
     "test_m11_precheck_rejects_broken_reference": "T18",
     "test_m12_ploc_shorter_than_pbas_warns": "T24",
