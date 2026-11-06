@@ -141,7 +141,7 @@ function reasonBadges(v: SequencingVariant) {
             </span>
             <span v-else>-</span>
             <!-- 机器可读原因码明示（goal T1/T3）：out-of-zone 证据、互检定案等 -->
-            <span v-for="c in reasonBadges(v)" :key="c" class="badge reason" :class="{ warn: c.warn }"
+            <span v-for="c in reasonBadges(v)" :key="c.label" class="badge reason" :class="{ warn: c.warn }"
                   :title="c.tip">{{ c.label }}</span>
           </td>
         </tr>
