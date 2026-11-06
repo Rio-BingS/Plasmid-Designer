@@ -458,9 +458,9 @@ async function downloadConsensus(format: string) {
                  :cds-feature="cdsTargetFeature"
                  @view="openReadInSeqviz" />
 
-      <!-- 突变表（子组件；低置信折叠态与结论卡共享，点击行跳峰图） -->
-      <VariantTable v-model:show-low-conf="showLowConf"
-                    :variants="analysis.variants" @jump="jumpToVariant" />
+      <!-- 突变表（子组件；点击行跳峰图。T15：只折叠 exclude，低置信未决行
+           常显——待办工作不再折叠；结论文本的低置信折叠仍在结论卡） -->
+      <VariantTable :variants="analysis.variants" @jump="jumpToVariant" />
 
       <!-- 比对峰图：参考行 + 各 read 碱基行 + 四通道峰图画在同一参考坐标轴上
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->

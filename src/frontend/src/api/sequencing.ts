@@ -77,6 +77,10 @@ export interface SequencingVariant {
   confidence?: string
   /** 证据三态（goal T1；旧记录缺省）：rejected 仅互检定案，unresolved=证据不足 */
   status?: 'rejected' | 'confirmed' | 'unresolved'
+  /** 校准概率 P(真实)（goal T15；旧记录缺省） */
+  p_real?: number
+  /** 四档行动（goal T15；旧记录缺省）：采信/排除/核对峰图/建议重测 */
+  action?: 'accept' | 'exclude' | 'review_trace' | 'resequence'
   /** 机器可读原因码（goal T1/T3）：cross_check_clean/front_hard_zone/
    *  tail_zone/all_evidence_out_of_zone/poly_compressed 等 */
   reason_codes?: string[]

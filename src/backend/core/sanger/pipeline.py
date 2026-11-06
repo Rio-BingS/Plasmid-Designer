@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.noise import peak_snr
+from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
@@ -81,7 +82,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v4"
+SANGER_ALGO_VERSION = "v5"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -1648,7 +1649,9 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         # 证据三态 + 机器可读原因码（goal T1；A 3.3 / B P0-1）：在定案与
         # 全部降级之后计算——rejected 仅当互检定案，confirmed=中高置信，
         # 其余（低置信）=unresolved。放前面会拿到滞后的 status
-        v["status"] = _variant_status(v)
+        # T15 校准评分（A 5.3）：p_real + 四档 action + 三态/confidence 由
+        # p_real 分档回填（T23 前与既有规则逐位等价，行为不倒退）
+        attach_score(v, evidence, src.get("reliable_zone") if src is not None else None)
         v["reason_codes"] = _variant_reason_codes(
             v, evidence,
             src.get("reliable_zone") if src is not None else None,
