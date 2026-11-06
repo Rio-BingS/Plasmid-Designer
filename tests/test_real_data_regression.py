@@ -117,12 +117,19 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
     assert "同报双峰" not in res["conclusion"]
-    # 双峰位点全被互检归为噪声的 read 不单独成行；含待核位点的 read 一行带参考位置
+    # T8 口径基线（goal T8；B P0-5，先取证再改断言）：clean 与变异互检
+    # 同一标准（对应列在验证 read 可信区内、±25bp 区域质量达标、邻近无
+    # 其他差异）。旧口径「单列 base 一致 + Q≥20」过宽：MX 23 处双峰中
+    # 21 处实为无法互检（验证 read 可信区外/邻近有差异报道）——seqF 的
+    # 8 处（5709、5735–5741）与 pET-Up 的 9 处由「clean」转入待核，
+    # 仅 seqF 1 处真 clean；待核行从 1 条变 2 条，逐字锁新基线
     concl_lines = res["conclusion"].splitlines()
-    assert "SZ15674-10570-2-seqF.ab1：双峰" not in res["conclusion"]
     pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
-    assert len(pending) == 1 and "SZ15674-pET-Up.ab1" in pending[0]
-    assert "参考位置" in pending[0]
+    assert len(pending) == 2
+    assert any("SZ15674-10570-2-seqF.ab1" in x and "9 处中 8 处" in x
+               and "5709、5735–5741" in x for x in pending)
+    assert any("SZ15674-pET-Up.ab1" in x and "10 处中 9 处" in x
+               and "5075–5079、5082–5085" in x for x in pending)
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
