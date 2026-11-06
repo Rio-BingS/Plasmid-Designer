@@ -79,7 +79,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v3"
+SANGER_ALGO_VERSION = "v4"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -216,7 +216,10 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT" for c in alt_up):
         return "low"
-    if zone and rp and support < 2 and not in_zone(zone, rp):
+    if zone and rp and support < 2 and not in_zone(zone, rp) \
+            and rp < zone.get("start", 0):
+        # T12：位置对置信度的强制仅保留首端（front_hard 硬区 + 首端未稳定
+        # 段——引物 3′ 端信号固有不可靠）；尾端由信号证据决定（S1 确证口径）
         return "low"
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:

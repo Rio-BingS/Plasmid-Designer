@@ -2047,7 +2047,9 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     双峰位点按比对块两端锚点线性外推定位参考坐标，再正常参与互检——
     不再一律"无其他引物覆盖待核"（用户实测：待核位点实际有邻居覆盖）。
     反向 read + 原始 read 头部 100bp 悬空 junk：块内位点精确映射、悬空
-    位点外推，一个落在邻居覆盖内（clean）、一个落在覆盖外（待核带 ref）"""
+    位点外推，一个落在邻居覆盖内（clean）、一个落在覆盖外（待核带 ref）。
+    T12 起 junk 头部信号差（不可信）——悬空位点改放块边界前仍可信的
+    read 95（block 起点 read 101 ↔ ref 500，外推 ref 505）"""
     random.seed(11)
     ref = "".join(random.choice("ACGT") for _ in range(1000))
     rng = random.Random(9)
@@ -2055,16 +2057,16 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     comp = str.maketrans("ACGT", "TGCA")
     read_bases = junk_head + ref[149:500].translate(comp)[::-1]
     sec_of = lambda i: "A" if read_bases[i] != "A" else "G"
-    mix = {39: sec_of(39), 139: sec_of(139)}   # pos40 悬空→外推561；pos140 块内→461（首 30bp 硬不可信）
+    mix = {95: sec_of(95), 139: sec_of(139)}   # pos96 悬空→外推506；pos140 块内→461
     result = analyze([("rev.ab1", _mixed_ab1(read_bases, mix)),
                       ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [])
     chk = result["mixed_corroboration"]["by_read"]["rev.ab1"]
     assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
     assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
-    assert chk["uncovered_ref"] == [561]   # 悬空位点外推到邻居覆盖之外
+    assert chk["uncovered_ref"] == [505]   # 悬空位点外推到邻居覆盖之外
     # 端部悬空位点（2026-11-06 定稿）：与区间裁决行同款表述，参考位置随行，
     # 无其他引物覆盖写明——不再喊「建议核对峰图」
-    assert "差异区间 561：rev.ab1 报出 1 处双峰" in result["conclusion"]
+    assert "差异区间 505：rev.ab1 报出 1 处双峰" in result["conclusion"]
     assert "无其他引物覆盖" in result["conclusion"]
     assert "建议核对峰图" not in result["conclusion"]
 
@@ -2118,10 +2120,11 @@ def test_mixed_end_margin_positions_ignored():
     sites = {p: _ALT_OF[ref[p]] for p in (10, 25, 80, 130, 200, 260, 330, 750)}
     result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
     prof = result["mixed_profiles"]["m.ab1"]
-    assert prof["count"] == 5
-    assert prof["positions"] == [81, 131, 201, 261, 331]
-    # 逐 read 范围子行同样只含可信区位点（11/26/751 不出现）
-    assert "↳ m.ab1：双峰 5 处，位于 read 81、131、201、261、331" in result["conclusion"]
+    # 首 30bp 硬区与首端未稳定段的双峰（11/26）不计——T12 保留；750 处信号
+    # 良好 → 可信区延伸覆盖（旧口径 700 封顶不计，T12 取消硬顶）
+    assert prof["count"] == 6
+    assert prof["positions"] == [81, 131, 201, 261, 331, 751]
+    assert "↳ m.ab1：双峰 6 处，位于 read 81、131、201、261、331、751" in result["conclusion"]
 
 
 def test_n_call_variants_always_low_confidence():
@@ -2926,8 +2929,10 @@ def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
     assert "不一致" not in cds["verdict"] and "插入 1bp" in cds["verdict"]
 
 
-def test_tail_gray_zone_single_read_variant_low_with_reason():
-    """尾端灰区 701–900bp 默认不可信：单 read 差异即使 Q40 也按低置信，原因写明"""
+def test_tail_position_no_longer_forces_low():
+    """T12（goal；A 1.1）：位置不再直接把变体判 low——尾端单 read 差异
+    Q40 峰证据齐全按证据定置信（旧口径 700bp 外强制 low）；位置只作为
+    reason_codes/T15 特征。front 硬区强制保留（S9 覆盖）"""
     random.seed(21)
     ref = "".join(random.choice("ACGT") for _ in range(1200))
     seg = list(ref[:1000])
@@ -2936,9 +2941,8 @@ def test_tail_gray_zone_single_read_variant_low_with_reason():
     result = analyze([("long.ab1", make_ab1("".join(seg), [40] * 1000))], ref, [])
     by_pos = {v["ref_pos"]: v for v in result["variants"] if v["type"] == "substitution"}
     assert by_pos[400]["confidence"] != "low"
-    assert by_pos[750]["confidence"] == "low"
-    assert "尾端灰区 701–900bp" in by_pos[750]["low_reason"]
-    assert "900bp 之后" in by_pos[950]["low_reason"]
+    assert by_pos[750]["confidence"] != "low"
+    assert by_pos[950]["confidence"] != "low"
     # 结论教育行删（2026-11-06 定稿）：默认边界的「首尾不可信区按低置信」
     # 提示是噪声，变体的 low_reason 已写明具体灰区依据
     assert "read 首尾不可信区的差异按低置信处理" not in result["conclusion"]

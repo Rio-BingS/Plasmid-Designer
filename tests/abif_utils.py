@@ -87,7 +87,8 @@ def make_ab1(bases, quals, traces=None, channel_start=9, channel_order="ATGC",
 
 def make_trace_ab1(seq, *, spacing=12, amp_jitter=(0.8, 1.2), noise=(0, 3),
                    secondary=None, q=50, n_at=(), ploc_base=0, seed=7,
-                   channel_start=9, fwo="GATC"):
+                   channel_start=9, fwo="GATC", tail_width=None,
+                   amp_override=None):
     """高斯峰合成 ab1（真实形态：多采样点、峰幅抖动、本底噪声）
 
     seq：真实分子序列（决定四通道峰形）；调用碱基 = seq，n_at 中的位置
@@ -100,6 +101,11 @@ def make_trace_ab1(seq, *, spacing=12, amp_jitter=(0.8, 1.2), noise=(0, 3),
     （0 基，与真实文件一致——解析端的 −1 口径是已知挂账 T24.1）。
     ploc_base：首峰采样点偏移。seed：随机种子（默认 7，保证用例可复现）。
     fwo：通道→碱基顺序（DATA{start}..{start+3}），默认真实惯例 "GATC"。
+    tail_width：(起始位置, 倍数)——该位置（1-based）起峰宽 ×倍数（模拟
+    真实 read 尾端峰展宽/分辨率下降而 Q 未必掉；T12 信号驱动可信区的
+    场景依赖峰形而非 Q 单独刻画尾端退化）。
+    amp_override：{pos(1-based): 倍率}——指定位点的主峰幅乘数（<1 模拟
+    弱信号/无独立插入峰，M14 的单 low 票前提）。
     """
     rng = random.Random(seed)
     seq = seq.upper()
@@ -108,25 +114,30 @@ def make_trace_ab1(seq, *, spacing=12, amp_jitter=(0.8, 1.2), noise=(0, 3),
     centers = [ploc_base + i * spacing for i in range(n)]
     n_samples = centers[-1] + int(3 * sigma) + 2 if n else spacing
     amps = [rng.uniform(*amp_jitter) for _ in range(n)]
+    amp_override = amp_override or {}
 
     channels = list(fwo)
     trace = {ch: [0.0] * n_samples for ch in channels}
 
-    def _add_peak(ch, center, height):
+    def _sigma_at(i: int) -> float:
+        return sigma * tail_width[1] if tail_width and i + 1 >= tail_width[0] else sigma
+
+    def _add_peak(ch, center, height, sg):
         if ch not in trace or height <= 0:
             return
-        lo = max(0, center - int(3 * sigma) - 1)
-        hi = min(n_samples, center + int(3 * sigma) + 2)
+        lo = max(0, center - int(3 * sg) - 1)
+        hi = min(n_samples, center + int(3 * sg) + 2)
         for x in range(lo, hi):
-            trace[ch][x] += height * math.exp(-0.5 * ((x - center) / sigma) ** 2)
+            trace[ch][x] += height * math.exp(-0.5 * ((x - center) / sg) ** 2)
 
     for i, b in enumerate(seq):
         if b in channels:
-            _add_peak(b, centers[i], 100.0 * amps[i])
+            _add_peak(b, centers[i], 100.0 * amps[i] * amp_override.get(i + 1, 1.0),
+                      _sigma_at(i))
     for pos, sbase, frac in _secondary_items(secondary):
         i = pos - 1
         if 0 <= i < n:
-            _add_peak(sbase, centers[i], 100.0 * amps[i] * frac)
+            _add_peak(sbase, centers[i], 100.0 * amps[i] * frac, _sigma_at(i))
 
     for ch in channels:
         base_line = trace[ch]

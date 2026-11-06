@@ -417,7 +417,9 @@ def test_analyze_reliable_zone_param_applied_and_validated(client):
                     data={"reliable_zone": "10,20,200,250"})
     assert r.status_code == 200, r.text
     z = r.json()["reads"][0]["reliable_zone"]
-    assert (z["raw_start"], z["raw_end"]) == (11, 200)
+    # T12 信号驱动口径：有峰图时 tail_gray/tail_hard 不再封顶（全窗信号可信
+    # → 延伸至 read 末端 300）；front_hard=10 → 起点 11 仍然生效
+    assert (z["raw_start"], z["raw_end"]) == (11, 300)
     r2 = client.post("/api/sequencing/analyze", files=files)
     assert r2.json()["reads"][0]["reliable_zone"]["raw_start"] == 31
     bad = client.post("/api/sequencing/analyze", files=files,

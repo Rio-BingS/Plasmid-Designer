@@ -157,7 +157,9 @@ def _s13():
     ref = _rand_seq(rng, 2000)
     subs = [(15, "G" if ref[14] != "G" else "T"),
             (950, "G" if ref[949] != "G" else "T")]
-    blob = _read_from_ref(ref, 1, 1000, subs=subs, q=50)
+    # T12 起可信由信号决定：700bp 后峰宽 ×3（真实尾端退化形态，Q 仍在），
+    # 使「覆盖靠不可信碱基凑满」的前提在信号口径下成立
+    blob = _read_from_ref(ref, 1, 1000, subs=subs, q=50, tail_width=(700, 3.0))
     feats = [dict(name="Solo", type="CDS", start=1, end=1000, strand="+")]
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats)
 
@@ -209,8 +211,10 @@ def _s17():
     rng = _rng("s17")
     ref = _rand_seq(rng, 1500)
     sub = (800, "G" if ref[799] != "G" else "T")
-    r1 = _read_from_ref(ref, 1, 1100, subs=[sub], q=50)
-    r2 = _read_from_ref(ref, 1, 1100, subs=[sub], q=50)
+    # T12 起可信由信号决定：750bp 后峰宽 ×3（真实尾端峰展宽，Q 保持 50），
+    # 变异位于可信区之外但峰证据齐全——多 read 支持确证 ✗，注记 out_of_zone
+    r1 = _read_from_ref(ref, 1, 1100, subs=[sub], q=50, tail_width=(750, 3.0))
+    r2 = _read_from_ref(ref, 1, 1100, subs=[sub], q=50, tail_width=(750, 3.0))
     return dict(ab1_files=[("a.ab1", r1), ("b.ab1", r2)],
                 reference=ref, features=[])
 
@@ -319,13 +323,14 @@ def _m6():
 
 
 def _m7():
-    raw = (BENCH_DIR / "3100.ab1").read_bytes()
+    """A 3.7：调用碱基为第二高通道（basecaller 拾取次峰）。T12 起 3100 的
+    609 位落在信号衰减段（可信区外，双峰不记录——尾端不可信是本意），
+    改确定性合成：位点 300 次级峰 1.2 倍于 called 峰（调用碱基非最高通道）"""
     rng = _rng("m7")
-    from core.sanger.abif_reader import extract_read
-    seq = str(extract_read(raw)["bases"])
-    ref = _rand_seq(rng, 170) + seq + _rand_seq(rng, 170)
-    return dict(ab1_files=[("3100.ab1", raw)], reference=ref, features=[],
-                kwargs=dict(circular=True))
+    ref = _rand_seq(rng, 700)
+    alt = next(b for b in "ACGT" if b != ref[299])
+    blob = make_trace_ab1(ref[:600], q=50, secondary={300: (alt, 1.2)})
+    return dict(ab1_files=[("m7.ab1", blob)], reference=ref, features=[])
 
 
 def _m8():
@@ -391,8 +396,10 @@ def _m12():
 
 def _m14():
     """参考末端（原点前）插入：环状 read 跨原点，TTTT 插在 ref 999/1000 之间
-    （插入变体最左归一化停在 999 → idx==L → end_insert_votes），电泳位置
-    800-803 落尾端灰区 → 单 low 票——现行口径仍按最大权重定插"""
+    （插入变体最左归一化停在 999 → idx==L → end_insert_votes）。T12 起位置
+    不再强制 low，单 low 票前提改由信号证据承担：插入段 Q 降至 28（indel
+    置信地板 30 之下、单票 → low）且峰幅压到 5%（无独立插入峰）——现行
+    口径仍按最大权重定插"""
     rng = _rng("m14")
     ref = list(_rand_seq(rng, 1000))
     if ref[998] == "T":                     # 999 位非 T：最左归一化停在 999
@@ -400,7 +407,8 @@ def _m14():
     ref[997] = "A" if ref[997] != "A" else "G"   # 998 位非 T，防继续左移
     ref = "".join(ref)
     mol = ref[200:999] + "TTTT" + ref[999:] + ref[0:120]
-    blob = make_trace_ab1(mol, q=40)
+    blob = make_trace_ab1(mol, q=[40] * 799 + [28] * (len(mol) - 799),
+                          amp_override={p: 0.05 for p in range(800, 804)})
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[],
                 kwargs=dict(circular=True))
 
