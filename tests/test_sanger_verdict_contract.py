@@ -23,15 +23,15 @@ from core.sanger import batch  # noqa: E402
 from core.sanger.verdict import build_verdict  # noqa: E402
 from tests.sanger_scenarios import SCENARIOS  # noqa: E402
 
-# status → (网页头符号, Excel 前缀, 分拣目录)；failed_reads 的出口文案
-# （待定·读取失败 + 结论头点名）随 T4 落地，T2 只要求 status 可判定
+# status → (网页头符号, Excel 前缀, 分拣目录)；failed_reads 的「分析失败」
+# 全失败形态（reads=0）在检查前单独跳过
 STATUS_CONTRACT = {
     "pass": ("✓", "合格", "正确"),
     "fail": ("✗", "不合格", "错误"),
     "pending": ("△", "待定", "待定"),
     "mixed": ("△", "疑似混合", "混合"),
     "insufficient": ("△", "无法判定", "无法判定"),
-    "failed_reads": (None, None, None),
+    "failed_reads": ("△", "待定·读取失败", "读取失败"),
 }
 
 
@@ -61,6 +61,8 @@ def test_status_consistent_across_outlets(spec):
     sym, prefix, bucket = STATUS_CONTRACT[status]
     if sym is None:
         pytest.skip(f"{spec.id}: {status} 出口文案随 T4/T3 落地")
+    if status == "failed_reads" and not res["reads"]:
+        pytest.skip(f"{spec.id}: 全部 read 解析失败，出口为「分析失败」形态")
     conclusion = res["conclusion"]
     assert conclusion.startswith(sym), \
         f"{spec.id}: status={status} 应以 {sym} 开头，实际 {conclusion[:20]!r}"

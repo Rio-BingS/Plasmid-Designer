@@ -2235,6 +2235,7 @@ def _build_conclusion(
     coverage_ranges: List[Tuple[int, int]], coverage_gaps: List[Dict],
     homopolymer_report: List[Dict], ref: str, features: List[Dict],
     unresolved_sites: Optional[List[Dict]] = None,
+    errors: Optional[List[Dict]] = None,
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
@@ -2587,7 +2588,11 @@ def _build_conclusion(
         conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
                                           partial_reads=len(partial_reads),
                                           resolved=len(resolved_variants),
-                                          unresolved_sites=len(unresolved_sites or []))
+                                          unresolved_sites=len(unresolved_sites or []),
+                                          failed_reads=len(errors or []),
+                                          failed_names="、".join(
+                                              e.get("filename", "?") for e in (errors or [])[:2])
+                                          + ("等" if len(errors or []) > 2 else ""))
                       + "\n" + conclusion)
 
     return conclusion, cds_reports, mixed_profiles, resolved_regions
@@ -2761,7 +2766,7 @@ def analyze(
     conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
-        ref, features, unresolved_sites=unresolved_sites)
+        ref, features, unresolved_sites=unresolved_sites, errors=errors)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
