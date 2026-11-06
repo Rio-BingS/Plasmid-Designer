@@ -376,7 +376,6 @@ XFAIL_BY_TASK = {
     "test_s6_tail_hq_clip_flagged": "T6",
     "test_s7_promoter_variant_fails_everywhere": "T5",
     "test_s8_partial_cds_never_qualified": "T3",
-    "test_s12_failed_reads_block_qualified": "T4",
     "test_s14_true_mixed_not_flipped_by_weak_corroboration": "T8",
     "test_s15_junction_variant_blocked": "T5",
     "test_s16_mixed_site_after_poly_survives": "T7",

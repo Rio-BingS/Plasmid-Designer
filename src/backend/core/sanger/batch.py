@@ -640,6 +640,9 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     if not res["reads"]:
         errs = "；".join(e.get("error", "") for e in res["errors"][:2]) or "无可分析 read"
         return f"分析失败：{errs}"
+    n_err = len(res.get("errors") or [])
+    err_names = "、".join(e.get("filename", "?") for e in res["errors"][:2]) \
+        + ("等" if n_err > 2 else "")
     confirmed = [v for v in res["variants"] if _variant_status_of(v) == "confirmed"]
     pending = [v for v in res["variants"] if _variant_status_of(v) == "unresolved"]
     cov = res["consensus"]["coverage_percent"]
@@ -660,6 +663,16 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         # 编码区外的确证差异也判不合格（判定区域 T5 收窄为 ROI 前按整参考口径）
         feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
         out = f"不合格：检出 {len(confirmed)} 处确证差异（{feats}）"
+    elif n_err:
+        # 解析失败的 read（goal T4；B P0-3）：不再隐身——「待定·读取失败」
+        # 前缀点名，分拣进 读取失败/；全部失败已在上面按 分析失败 返回
+        out = (f"待定·读取失败：{len(res['reads']) + n_err} 条 read 中 "
+               f"{n_err} 条解析失败（{err_names}），该部分未验证")
+        if mixed_tails:
+            out += "；" + "；".join(mixed_tails)
+        if cov < 95:
+            out += f"；测序覆盖 {cov:.0f}%"
+        return out
     elif widespread:
         if len(widespread) == 1:
             fn, p = widespread[0]
