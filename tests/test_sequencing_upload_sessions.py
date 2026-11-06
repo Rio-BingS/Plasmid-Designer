@@ -258,7 +258,7 @@ def test_excel_uploaded_at_create_is_used(env):
 def test_bad_excel_rejected_at_create(env):
     c = TestClient(app)
     r = _create(c, excel=("表.xlsx", b"not an xlsx", "application/octet-stream"),
-                manifest=[{"name": "PA.fasta", "size": 3}])
+                manifest=[{"name": "PA.fasta", "size": 30}])  # 占位 size≥真实下限，不遮盖 excel 校验
     assert r.status_code == 400 and "xlsx" in r.json()["detail"]
     r = _create(c, excel=("~$表.xlsx", b"x", "application/octet-stream"))
     assert r.status_code == 400 and "临时文件" in r.json()["detail"]
@@ -469,9 +469,10 @@ def test_manifest_precheck_rejects_before_upload(env, monkeypatch):
     assert r.status_code == 413 and "共有 3 条" in r.json()["detail"]
     assert not env["root"].exists() or list(env["root"].iterdir()) == []
     # 未达上限的清单可以建会话；空文件/临时文件与单请求入口一样不计入
-    ok = [{"name": "PA.fasta", "size": 10}, {"name": "PA-1.ab1", "size": 10},
-          {"name": "PA-2.ab1", "size": 10}, {"name": "PA-3.ab1", "size": 0},
-          {"name": "~$PA-4.ab1", "size": 10}]
+    # .ab1 占位 size 用 ≥ABIF 头下限（128）；空文件/临时文件照旧跳过
+    ok = [{"name": "PA.fasta", "size": 30}, {"name": "PA-1.ab1", "size": 200},
+          {"name": "PA-2.ab1", "size": 200}, {"name": "PA-3.ab1", "size": 0},
+          {"name": "~$PA-4.ab1", "size": 200}]
     assert _create(c, manifest=ok).status_code == 200
 
 
