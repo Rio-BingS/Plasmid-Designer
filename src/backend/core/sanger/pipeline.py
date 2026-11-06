@@ -57,7 +57,18 @@ from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
 )
 
+# 证据三态与结论资格门已迁至 core/sanger/evidence.py（T1 拆分，尺寸预算）；
+# 此处 re-export 维持既有导入路径（tests / app 层仍从 pipeline 取名）
+from core.sanger.evidence import (  # noqa: F401
+    _IUPAC_MERGE, _collect_unresolved_sites, _conclusion_summary,
+    _iupac_merge, _low_confidence_reason, _variant_reason_codes,
+    _variant_status, variant_type_text,
+)
+
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
+# 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
+# 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
+SANGER_ALGO_VERSION = "v2"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -240,67 +251,6 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     return "high" if support >= 2 else "medium"
 
 
-def variant_type_text(v: Dict) -> str:
-    """差异类型的明确文字（人工核对用）：替换 C>A / 插入 1bp（G）/ 缺失 2bp（AT）"""
-    t = v.get("type")
-    if t == "insertion":
-        n = int(v.get("length") or len((v.get("alt_base") or "").strip("-")) or 1)
-        seq = (v.get("alt_base") or "").strip("-")
-        return f"插入 {n}bp" + (f"（{seq}）" if seq and len(seq) <= 6 else "")
-    if t == "deletion":
-        n = int(v.get("length") or 1)
-        seq = (v.get("ref_base") or "").strip("-")
-        return f"缺失 {n}bp" + (f"（{seq}）" if seq and len(seq) <= 6 else "")
-    return f"替换 {v.get('ref_base', '')}>{v.get('alt_base', '')}"
-
-
-def _low_confidence_reason(v: Dict, mixed_positions: set,
-                           evidence: Optional[Dict] = None,
-                           zone: Optional[Dict] = None) -> str:
-    """低置信的具体原因（与 _variant_confidence 的判定分支一一对应），
-    把"疑似测序噪声"这种笼统说法换成人工核对时能直接对照峰图的错误类型"""
-    q = int(v.get("read_q") or 0)
-    rp = v.get("read_pos")
-    support = v.get("support_reads") or 1
-    if v.get("cross_read_conflict") and not v.get("cross_read_resolved"):
-        rd = "、".join(v["cross_read_conflict"].get("reads", [])[:2])
-        return f"互检矛盾：{rd} 在同一位点读出设计碱基"
-    if v.get("merged_zone_artifact"):
-        return "落在同聚物峰合并压缩区，该 read 此处无可分辨峰"
-    if v.get("slippage_artifact"):
-        return "poly 下游滑移伪影（同聚物后信号错位）"
-    alt_up = (v.get("alt_base") or "").upper()
-    if v.get("type") in ("substitution", "insertion") and any(
-            c not in "ACGT-" for c in alt_up):
-        return "碱基判读为 N/模糊碱基（basecaller 未能解析）"
-    if zone and rp and support < 2 and not in_zone(zone, rp):
-        return zone_reason(zone, rp)
-    ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
-    if rp and rp in mixed_positions and (ins_ratio is None or ins_ratio < 0.6):
-        return "该位点双峰（次级峰占比 >30%，疑似混合样品或杂峰）"
-    hp = v.get("homopolymer")
-    if (hp and v.get("type") in ("insertion", "deletion")
-            and hp.get("peak_amplitude_ratio") is not None
-            and hp["peak_amplitude_ratio"] < POLY_COMPRESSION_RATIO):
-        return f"同聚物峰压缩（峰幅为局部主峰的 {round(hp['peak_amplitude_ratio'] * 100)}%），重复数计数不可靠"
-    if evidence is not None:
-        if ins_ratio is not None:
-            pct = round(ins_ratio * 100)
-            if ins_ratio < 0.3:
-                return f"插入位置几乎无独立峰（插入峰为邻峰的 {pct}%），疑似 basecaller 伪影"
-            if ins_ratio >= 0.6:
-                return f"插入峰可见（为邻峰的 {pct}%），但仅单条 read 支持（Q{q}）"
-            return f"插入峰偏弱（为邻峰的 {pct}%）且 Q 值低，Q{q}"
-        mp, snr = evidence.get("mutant_pct"), evidence.get("snr")
-        if mp is not None and mp < 30:
-            return f"突变峰明显弱于参考峰（突变峰占比 {mp}%），疑似误读"
-        if mp is not None and mp < 70:
-            return f"突变峰与参考峰高度相当（突变峰占比 {mp}%），双峰/混合"
-        if snr is not None and snr < 5:
-            return f"突变峰信噪比低（SNR {snr}），接近本底"
-    return f"Q 值偏低，Q{q}" + ("，仅单条 read 支持" if support < 2 else "")
-
-
 def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
                    min_len: int = 100, cap: int = 10,
                    circular: bool = False) -> List[Dict]:
@@ -352,72 +302,6 @@ def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
     if len(covered_ranges) > 3:
         spans += f" 等 {len(covered_ranges)} 段"
     return f"，实测区间 {spans}"
-
-
-def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
-                        has_mixed: bool, partial_reads: int = 0,
-                        resolved: int = 0) -> str:
-    """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
-    优先级：疑似混合 > 确认差异 > 低置信伪影 > 完全一致。
-    partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
-    有误，或线性参考上跨原点的 read）时不得给出干净的 ✓——未比对部分
-    根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。
-
-    目的基因模式的覆盖资格门（cds_extract 伪特征带 analysis_target 标记）：
-    分析目标零覆盖时结论头必须降级为 △ 未能验证——「引物没测到目的 CDS」
-    不许因为所测区域（侧翼/骨架）恰好一致而报 ✓；部分覆盖时任何结论都要
-    追加覆盖提示。全质粒模式的 CDS 无此标记，行为逐字不变（部分测序是
-    常规策略，见 _build_cds_reports 的未测 verdict）。"""
-    target = next((c for c in cds_reports if c.get("analysis_target")), None)
-    tail = ""
-    if target and not has_mixed:
-        if target.get("coverage_status") == "uncovered":
-            tail = f"目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证"
-        elif target.get("coverage_status") == "partial":
-            tail = (f"目的 CDS 覆盖 {target.get('covered_percent') or 0:.0f}%"
-                    "（未覆盖部分按参考填充、未验证）")
-    if partial_reads and not has_mixed:
-        confirmed0 = [v for v in variants if v.get("confidence") != "low"]
-        bad0 = [c for c in cds_reports if c.get("protein_identical") is False]
-        if not confirmed0 and not bad0:
-            return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
-                    "有大段未比对上参考，该部分未验证" + (f"；{tail}" if tail else ""))
-    confirmed = [v for v in variants if v.get("confidence") != "low"]
-    bad = [c for c in cds_reports if c.get("protein_identical") is False]
-    names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
-    if has_mixed:
-        head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
-        if bad:
-            head += f"，{names}蛋白与设计不一致"
-        return head + "——建议重新挑单克隆复测"
-    if confirmed or bad:
-        bits = []
-        if bad:
-            bits.append(f"{names}蛋白与设计不一致")
-        if confirmed:
-            bits.append(f"检出 {len(confirmed)} 处确认差异")
-        return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
-    # 无确认差异且目标零覆盖：△ 未能验证（✓ 会让没测到的目标隐身）
-    if target and target.get("coverage_status") == "uncovered":
-        low_note = (f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）"
-                    if variants else "（已比对区域与设计一致）")
-        return f"△ 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
-    if variants:
-        # 分模式措辞（2026-11-05 用户定稿「目的基因测序正确」用于目的基因
-        # 模式；全质粒模式的分析对象是整质粒，维持「构建与设计一致」）
-        ok = "目的基因测序正确" if target else "构建与设计一致"
-        if resolved:
-            # 区间裁决行就在正文首，头行不再复述数量（2026-11-05 显示修复）
-            return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
-        return (f"✓ 结论：{ok}"
-                f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）"
-                + (f"；{tail}" if tail else ""))
-    if resolved:
-        # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
-        ok = "目的基因测序正确" if target else "构建与设计一致"
-        return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
-    ok = "目的基因测序正确，未检出差异" if target else "构建与设计一致，未检出差异"
-    return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
 
 
 # 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
@@ -993,6 +877,7 @@ def _merged_zone_artifact(v: Dict, src: Optional[Dict]) -> bool:
 
 def _build_consensus(reference: str, read_results: List[Dict],
                      skip_keys: Optional[set] = None,
+                     unresolved_keys: Optional[set] = None,
                      circular: bool = False) -> Dict:
     """按参考坐标逐位质量加权投票生成共识序列
 
@@ -1004,9 +889,14 @@ def _build_consensus(reference: str, read_results: List[Dict],
     单 read 覆盖的位点显式以该 read 为准（模拟人工核对）；多 read 覆盖时
     按列 Q 加权多数，孤立低质量差异被压制。
 
-    skip_keys：{(ref_pos, type, alt_base)} 低置信变体集合。这些调用不写入
-    共识——该 read 在此处按参考碱基投票：共识序列代表当前证据下的最佳猜测
-    构建体，疑似测序噪声只在变体清单中列出供人工核对，不应固化进共识。
+    skip_keys：rejected（有正面反证被互检定案）变体的 key 集合。这些调用
+    不写入共识——该 read 在此处按参考碱基投票（T1 三态：只有 rejected
+    可以从判定中剔除）。
+
+    unresolved_keys：证据不足（低置信）变体的 key 集合。这些位点不再回填
+    参考碱基：unresolved 替换输出 IUPAC 合并码（如 K=R? K=G/T），unresolved
+    indel 照实写入共识并在 diffs 标 unresolved: true——「没读清」不冒充
+    「与参考一致」（goal T1；A 3.3）。
 
     circular=True：环状参考，跨原点 read 的展开坐标、跨原点的缺失与
     原点处（L 与 1 之间）的插入都按环折回，不再有「参考末端之后」的插入。
@@ -1083,6 +973,20 @@ def _build_consensus(reference: str, read_results: List[Dict],
             best_key = voters[pos - 1][0]   # 单 read 覆盖：以该 read 为准
         else:
             best_key = _pick_base_vote(cell)
+
+        def _is_unresolved(key: str) -> bool:
+            if not unresolved_keys:
+                return False
+            if key.startswith("+"):
+                # 插入票挂在锚点右侧参考位（ref_pos+1），变体 key 用左侧锚位
+                # ——查表前折回锚位（环状 pos=1 时锚为 L）
+                anchor = ((pos - 2) % L) + 1
+                return (anchor, "insertion", key[1:], len(key) - 1) in unresolved_keys
+            if key == "-":
+                return (pos, "deletion", "-", 1) in unresolved_keys or \
+                    any(k[0] == pos and k[1] == "deletion" for k in unresolved_keys)
+            return (pos, "substitution", key, 1) in unresolved_keys
+
         if best_key.startswith("+"):
             alt = best_key[1:]
             cons_index = len(consensus_chars)
@@ -1091,18 +995,29 @@ def _build_consensus(reference: str, read_results: List[Dict],
             # 否则共识序列会悄悄吞掉插入位点右侧的参考碱基
             _emit(reference[pos - 1].upper(), pos, True)
             diffs.append({
-                "ref_pos": pos, "ref_base": "-", "cons_base": alt, "cons_index": cons_index,
+                "ref_pos": pos, "ref_base": "-", "cons_base": alt,
+                "cons_index": cons_index,
+                **({"unresolved": True} if _is_unresolved(best_key) else {}),
             })
         elif best_key == "-":
             diffs.append({
                 "ref_pos": pos, "ref_base": reference[pos - 1].upper(), "cons_base": "-",
+                **({"unresolved": True} if _is_unresolved(best_key) else {}),
             })
         else:
-            _emit(best_key, pos, True)
+            unresolved_sub = (best_key != reference[pos - 1].upper()
+                              and _is_unresolved(best_key))
+            # unresolved 替换：共识输出 IUPAC 合并码（ref 与 alt 的并集），
+            # 不再回填参考碱基冒充「与参考一致」
+            _emit(_iupac_merge(reference[pos - 1], best_key)
+                  if unresolved_sub else best_key, pos, True)
             if best_key != reference[pos - 1].upper():
                 diffs.append({
                     "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
-                    "cons_base": best_key, "cons_index": len(consensus_chars) - 1,
+                    "cons_base": _iupac_merge(reference[pos - 1], best_key)
+                    if unresolved_sub else best_key,
+                    "cons_index": len(consensus_chars) - 1,
+                    **({"unresolved": True} if unresolved_sub else {}),
                 })
 
     if end_insert_votes:
@@ -1225,7 +1140,7 @@ def _find_orf(ref: str, start: int, end: int, strand: str) -> Optional[Dict]:
 
 def _build_cds_reports(
     ref: str, features: List[Dict], variants: List[Dict], consensus: Dict,
-    _ref_pos_of=None,
+    _ref_pos_of=None, unresolved_sites: Optional[List[Dict]] = None,
 ) -> List[Dict]:
     """CDS 级别测序结论：覆盖完整性 + 共识重建 CDS 的翻译产物与参考逐位比对
 
@@ -1235,12 +1150,15 @@ def _build_cds_reports(
       以真实编码区翻译，避免阅读框整体错位；
     - 嵌套去重：被更大 CDS 完全包含的小特征（如 6xHis 标签）不单独出结论；
     - 蛋白：从共识差异重建 CDS 序列（按链方向翻译），与参考翻译逐位比对，
-      给出一致/不一致、移码数、无义提前终止位置与氨基酸替换清单。
+      给出一致/不一致、移码数、无义提前终止位置与氨基酸替换清单；
+      CDS 内有 N/模糊调用位点时蛋白判定降级为待定（protein_identical=None，
+      goal T1；B P0-2——N 参与翻译只会产出 X，「一致」无从谈起）。
     - 多段 CDS（GenBank join，含跨原点）：各段按编码方向拼成虚拟参考后
       走同一套判读，见 _joined_cds_report。
 
     _ref_pos_of：内部参数，把本次调用的坐标映射回原参考坐标（仅用于
     结论文案里的位置；多段 CDS 递归时传入）。
+    unresolved_sites：N/模糊调用等未决位点清单（analyze 下发，用于 CDS 待定判定）。
     """
     from Bio.Seq import Seq
     from core.sanger.annotator import group_feature_segments
@@ -1374,7 +1292,8 @@ def _build_cds_reports(
     for group in cds_groups:
         if len(group) > 1:
             # 多段 CDS 的各段不参与嵌套去重（段本身不是独立编码区）
-            reports.extend(_joined_cds_report(ref, group, variants, consensus))
+            reports.extend(_joined_cds_report(ref, group, variants, consensus,
+                                              unresolved_sites=unresolved_sites))
             continue
         f = group[0]
         if id(f) in nested_ids:
@@ -1399,6 +1318,13 @@ def _build_cds_reports(
         else:
             frame_note = ""
         cov_pct = _span_coverage(start, end)
+        # CDS 内的 N/模糊调用位点（goal T1；B P0-2）：重建时置 N（翻译产出
+        # X），蛋白判定降级待定——「N 读成参考碱基」的老口径会把错义位点的
+        # 蛋白误报成与设计一致
+        n_sites = [u for u in (unresolved_sites or [])
+                   if u.get("kind") in ("n_call", "iupac")
+                   and start <= int(u.get("ref_pos") or 0) <= end]
+        n_in_cds = len(n_sites)
         base = {
             "name": f.get("name") or "CDS",
             "start": start,
@@ -1443,6 +1369,9 @@ def _build_cds_reports(
         # 确证判定，单独提示待复核——避免噪声推翻整段 CDS 结论
         confirmed = [v for v in in_cds if v.get("confidence", "high") != "low"]
         pending = [v for v in in_cds if v.get("confidence", "high") == "low"]
+        # 重建不掺 N：N 位点按参考填充参与翻译，N 的影响只体现为「判定待定」
+        # （protein_identical=None）——若把 N 强制掺进产物，X 残基会把
+        # 「没读清」误算成「与设计不一致」（未决 ≠ 反证）
         alt_nt_full = _rebuild_from_variants(start, end, confirmed)
         alt_prot_raw = _translate(alt_nt_full, strand)
         stop_idx = alt_prot_raw.find("*")  # 内部终止（-1 为无）
@@ -1460,6 +1389,11 @@ def _build_cds_reports(
         inframe_ins = sum(1 for v in indels if v["type"] == "insertion" and int(v.get("length") or 1) % 3 == 0)
         inframe_del = sum(1 for v in indels if v["type"] == "deletion" and int(v.get("length") or 1) % 3 == 0)
         protein_identical = ref_prot == alt_prot_raw
+        # ✓ 资格门（CDS 层，goal T1；B P0-2）：CDS 内有 N/模糊调用时蛋白
+        # 「一致」无从判定（该位点可能是任何错义/无义），降级待定（None）；
+        # 确证损伤（False）保留——真差异证据优先于未决提示
+        if n_in_cds and protein_identical:
+            protein_identical = None
 
         # 起始/终止密码子状态（参考方向核酸层面判定，参照 VEP/snpEff 的 start_lost/stop_lost）
 
@@ -1512,7 +1446,14 @@ def _build_cds_reports(
 
         # 结论主句：一句话因果链（哪个位置的什么变异 → 什么后果），面向实验员可直接行动
         name = base["name"]
-        if protein_identical:
+        if protein_identical is None:
+            pos_txt = pos_ranges_str(sorted(int(u["ref_pos"]) for u in n_sites))
+            main = (f"{name} 蛋白判定待定：CDS 内 {n_in_cds} 处 N/模糊调用"
+                    f"（参考位置 {pos_txt}）未读清——需核对峰图或换引物补测后再判")
+            if aa_diffs:
+                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
+                main += f"；已确证 {len(aa_diffs)} 处氨基酸替换（{preview}）"
+        elif protein_identical:
             main = (
                 f"已测区域蛋白与设计一致（{len(ref_prot)} aa）" if cov_pct < 99
                 else f"{name} 蛋白与设计一致（{len(ref_prot)} aa）"
@@ -1566,10 +1507,12 @@ def _build_cds_reports(
         # 互检矛盾（单 read 报告 indel、其他 read 干净跨过同一位点）单独
         # 点名——它与"疑似测序噪声"不同：另一条 read 已给出反向证据，
         # 更可能是伪影而非漏检，人工核对有明确抓手
+        pending_impact = None
         if pending:
             conflicted = [v for v in pending if v.get("cross_read_conflict")]
             plain = [v for v in pending if not v.get("cross_read_conflict")]
             would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
+            pending_impact = "would_change" if would_change else "no_effect"
             if plain:
                 detail = "；".join(
                     f"{_rp(v['ref_pos'])} {variant_type_text(v)}"
@@ -1614,13 +1557,17 @@ def _build_cds_reports(
             "consequences": consequences,
             "synonymous_count": synonymous,
             "pending_low_confidence": len(pending),
+            # N/模糊调用位点的机器字段（goal T1；B P0-2）：待定判定与前端渲染用
+            "n_in_cds": n_in_cds,
+            "pending_impact": pending_impact,
             "verdict": verdict,
         })
     return reports
 
 
 def _joined_cds_report(
-    ref: str, parts: List[Dict], variants: List[Dict], consensus: Dict
+    ref: str, parts: List[Dict], variants: List[Dict], consensus: Dict,
+    unresolved_sites: Optional[List[Dict]] = None,
 ) -> List[Dict]:
     """多段 CDS（GenBank join，含环状质粒跨原点的 join(2701..3000,1..300)）
 
@@ -1686,8 +1633,14 @@ def _joined_cds_report(
     head = parts[0]
     vfeat = {"name": head.get("name") or "CDS", "type": "CDS",
              "start": 1, "end": len(vref), "strand": strand}
+    # N/模糊调用位点同样映射进虚拟坐标（蛋白判定待定口径与单段一致）
+    vns: List[Dict] = []
+    for u in unresolved_sites or []:
+        if u.get("kind") in ("n_call", "iupac"):
+            vns.extend({**u, "ref_pos": k} for k in inv.get(int(u["ref_pos"]), []))
     reports = _build_cds_reports(vref, [vfeat], vvars, {"covered_ranges": vcov},
-                                 _ref_pos_of=lambda k: vmap[k - 1])
+                                 _ref_pos_of=lambda k: vmap[k - 1],
+                                 unresolved_sites=vns)
     for r in reports:
         vs, ve = int(r["start"]), int(r["end"])
         segs = []
@@ -2031,6 +1984,15 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                 v["low_reason"] += (
                     f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
                     f"质量不足以互检")
+        # 证据三态 + 机器可读原因码（goal T1；A 3.3 / B P0-1）：在定案与
+        # 全部降级之后计算——rejected 仅当互检定案，confirmed=中高置信，
+        # 其余（低置信）=unresolved。放前面会拿到滞后的 status
+        v["status"] = _variant_status(v)
+        v["reason_codes"] = _variant_reason_codes(
+            v, evidence,
+            src.get("reliable_zone") if src is not None else None,
+            mixed_by_read.get(v.get("read", ""), set()),
+        )
 
 def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
                              read_results: List[Dict],
@@ -2306,6 +2268,7 @@ def _build_conclusion(
     edge_ambiguous_reads: List[Dict], consensus: Dict,
     coverage_ranges: List[Tuple[int, int]], coverage_gaps: List[Dict],
     homopolymer_report: List[Dict], ref: str, features: List[Dict],
+    unresolved_sites: Optional[List[Dict]] = None,
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
@@ -2320,7 +2283,8 @@ def _build_conclusion(
     # 终审 C-08：CDS 判读的意外异常降级为单条失败报告，不得让一条
     # 畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析
     try:
-        cds_reports = _build_cds_reports(ref, features, shown_variants, consensus)
+        cds_reports = _build_cds_reports(ref, features, shown_variants, consensus,
+                                         unresolved_sites=unresolved_sites)
     except Exception as e:
         logger.exception("CDS 判读整体失败，降级为占位报告")
         cds_reports = [{
@@ -2654,7 +2618,8 @@ def _build_conclusion(
         has_mixed = any("疑似混合样品" in x for x in mixed_lines)
         conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
                                           partial_reads=len(partial_reads),
-                                          resolved=len(resolved_variants))
+                                          resolved=len(resolved_variants),
+                                          unresolved_sites=len(unresolved_sites or []))
                       + "\n" + conclusion)
 
     return conclusion, cds_reports, mixed_profiles, resolved_regions
@@ -2794,10 +2759,15 @@ def analyze(
             if _variant_key(v) in corrob_keys:
                 v["corroborated_by_basecall"] = True
 
-    # 低置信调用不写入共识：共识序列是当前证据下的最佳猜测构建体，
-    # 疑似测序噪声仅在变体清单中列出供人工核对（与 CDS 结论的 confirmed 口径一致）
-    low_keys = {_variant_key(v) for v in variants if v.get("confidence") == "low"}
-    consensus = _build_consensus(ref, read_results, skip_keys=low_keys,
+    # 共识口径（goal T1 三态）：只有 rejected（互检定案）不写入共识按参考投票；
+    # unresolved 不再回填参考——替换输出 IUPAC 合并码、indel 照实写入并标
+    # unresolved（「没读清」不冒充「与参考一致」）
+    rejected_keys = {_variant_key(v) for v in variants
+                     if v.get("status") == "rejected"}
+    unresolved_keys = {_variant_key(v) for v in variants
+                       if v.get("status") == "unresolved"}
+    consensus = _build_consensus(ref, read_results, skip_keys=rejected_keys,
+                                 unresolved_keys=unresolved_keys,
                                  circular=circular)
 
     # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
@@ -2810,10 +2780,14 @@ def analyze(
 
     homopolymer_report = _homopolymer_report_pass(
         poly_runs, variants, read_results, coverage_ranges)
+    # 未决位点清单（goal T1；B P0-2）：N/模糊调用、poly 不可判定、dropout、
+    # 无法互检的双峰——它们不进已验证口径，也是 ✓ 的资格门输入
+    unresolved_sites = _collect_unresolved_sites(
+        read_results, homopolymer_report, mixed_corroboration)
     conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
-        ref, features)
+        ref, features, unresolved_sites=unresolved_sites)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
@@ -2846,6 +2820,10 @@ def analyze(
         "cds_reports": cds_reports,
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
+        # 未决位点（goal T1 三态）：判定区域内「没读清」的地方，✓ 资格门输入
+        "unresolved_sites": unresolved_sites,
+        # 算法版本（goal §2 约束 6）：口径变更时递增并在 HANDOVER §2 登记
+        "algo_version": SANGER_ALGO_VERSION,
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
         "resolved_regions": resolved_regions,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},

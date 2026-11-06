@@ -305,12 +305,12 @@ def test_conclusion_target_uncovered_downgrades():
     assert out.startswith("△") and "✓" not in out
     assert "未被任何 read 覆盖" in out and "未能验证" in out
     assert "已比对区域与设计一致" in out
-    # 低置信变体存在时同样不给 ✓
+    # 低置信变体（T1 未决）存在时同样不给 ✓
     out2 = _conclusion_summary([{"confidence": "low"}],
                                [_rpt(coverage_status="uncovered", covered_percent=0,
                                      protein_identical=None, analysis_target=True)],
                                has_mixed=False)
-    assert out2.startswith("△") and "低置信" in out2
+    assert out2.startswith("△") and "未决" in out2
 
 
 def test_conclusion_target_uncovered_with_confirmed_diff():

@@ -343,21 +343,22 @@ def test_align_read_substitution_and_indel(reference):
 
 
 def test_align_read_ambiguous_calls_not_compared(reference):
-    """审计 #7：read 中的 N/IUPAC 调用不比较——零变体、identity 只按确定列计"""
+    """read 中的 N/IUPAC 调用不出变体，但计入 identity 分母（T1；B P0-2——
+    「没读清」不冒充「与参考一致」；审计 #7 的旧口径 identity=1.0 已废弃）"""
     seg = list(reference[500:1100])
     for i in range(40, 600, 56):          # 10 个 N，均在对齐内部
         seg[i] = "N"
     r = align_read("".join(seg), reference)
     assert r["ref_start"] == 501 and r["ref_end"] == 1100
     assert r["variants"] == []
-    assert r["identity"] == 1.0
+    assert r["identity"] == round(590 / 600, 4)
     assert r["ambiguous"] == 10
     # 逐列视图仍原样展示 N（人工核对需要看到 basecaller 的原始调用）
     assert r["aligned"]["read_aligned"].count("N") == 10
 
 
 def test_align_read_ambiguous_reverse_and_iupac(reference):
-    """反向 read 与 IUPAC 码同样不比较；真实错配照常检出"""
+    """反向 read 与 IUPAC 码同样不出变体（计入 identity 分母，T1）；真实错配照常检出"""
     seg = list(reference[700:1300])
     seg[100] = "R"
     seg[200] = "Y"
@@ -367,7 +368,7 @@ def test_align_read_ambiguous_reverse_and_iupac(reference):
     assert r["ambiguous"] == 2
     subs = [v for v in r["variants"] if v["type"] == "substitution"]
     assert len(subs) == 1 and subs[0]["ref_pos"] == 1001
-    assert r["identity"] == round(597 / 598, 4)
+    assert r["identity"] == round(597 / 600, 4)
 
 
 def test_trim_by_quality():
@@ -421,8 +422,9 @@ def test_analyze_detects_mutation_with_annotation(reference):
 
 
 def test_analyze_end_noise_not_confirmed(reference):
-    """read 首尾 20bp 内的单 read 差异是信号爬升/下降区噪声：
-    判低置信、不写入共识、不影响 CDS 结论；中段同 Q 差异照常确证"""
+    """read 首尾 20bp 内的单 read 差异是信号爬升/下降区噪声：判低置信
+    （三态 unresolved），不冒充一致也不冒充确证——共识该位输出 IUPAC 合并码、
+    CDS verdict 把它列为未计入判定的低置信差异；中段同 Q 差异照常确证"""
     seg = list(reference[100:600])
     end_noise = "A" if seg[9] != "A" else "G"      # read_pos 10 → ref_pos 110
     mid_real = "A" if seg[249] != "A" else "G"     # read_pos 250 → ref_pos 350
@@ -433,14 +435,17 @@ def test_analyze_end_noise_not_confirmed(reference):
 
     by_pos = {v["ref_pos"]: v for v in result["variants"]}
     noise, real = by_pos[110], by_pos[350]
-    assert noise["confidence"] == "low"
-    assert real["confidence"] != "low"
-    # 噪声不进共识：consensus 该位仍是参考碱基
-    assert result["consensus"]["sequence"][109] == reference[109].upper()
+    assert noise["confidence"] == "low" and noise["status"] == "unresolved"
+    assert real["confidence"] != "low" and real["status"] == "confirmed"
+    # 噪声不再回填参考碱基冒充一致：共识该位输出 IUPAC 合并码（T1）
+    assert result["consensus"]["sequence"][109] in "RYKMSWBDHV"
     assert result["consensus"]["sequence"][349] == mid_real
-    # CDS 判定只计入确证变体：verdict 提到中段差异而非首端噪声
+    # CDS 判定只计入确证变体（110 位于 ORF 校正后的编码区 288-476 之外，
+    # 本就不入 CDS verdict；350 确证同义）：不一致不得由噪声触发
     gfp = next(cr for cr in result["cds_reports"] if cr["name"] == "GFP")
-    assert "110" not in gfp["verdict"]
+    assert "不一致" not in gfp["verdict"]
+    # 总结论只把中段差异算确证；首端噪声是未决、不参与 ✓/✗ 计数
+    assert "1 处确认差异" in result["conclusion"]
 
 
 def test_reverse_read_variant_read_pos_in_original_coords(reference):
@@ -1089,9 +1094,10 @@ def test_cds_report_ignores_low_confidence_variants():
 
 # ---------- 低质量 indel 全链路（共识与结论的噪声过滤） ----------
 
-def test_low_quality_indel_not_in_verdict_nor_consensus(reference):
-    """单 read 低质量 indel（Q<30）：不进入 CDS 结论、不写入共识序列，
-    仅保留在变体清单并标注低置信度——高质量证据才改变结论（MX.dna 实测场景）"""
+def test_low_quality_indel_unresolved_not_confirmed(reference):
+    """单 read 低质量 indel（Q<30）：三态 unresolved——照实写入共识并标
+    unresolved（不再冒充完整参考），但不进入 CDS 确证判定
+    （frameshift/蛋白判定只看确证证据；MX.dna 实测场景）"""
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     seg = ref[40:190]
@@ -1102,8 +1108,11 @@ def test_low_quality_indel_not_in_verdict_nor_consensus(reference):
 
     v = result["variants"][0]
     assert v["type"] == "deletion" and v["confidence"] == "low"
-    # 共识序列不固化该缺失：仍是完整参考
-    assert result["consensus"]["sequence"] == ref.upper()
+    assert v["status"] == "unresolved"
+    # 共识照实写入该缺失（「没读清」不冒充「与参考一致」），diffs 带 unresolved 标记
+    assert len(result["consensus"]["sequence"]) == len(ref) - 1
+    del_diffs = [d for d in result["consensus"]["diffs"] if d.get("cons_base") == "-"]
+    assert del_diffs and all(d.get("unresolved") for d in del_diffs)
 
     cr = result["cds_reports"][0]
     assert cr["frameshift_count"] == 0
@@ -1919,8 +1928,10 @@ def test_traces_payload_trim_start_and_mixed_detail():
     assert tr["channels"].keys() == {"A", "T", "G", "C"}
 
 
-def test_mixed_sample_scattered_stays_qualified():
-    """个别双峰位点（2 个）：只提示不升级——结论保持合格前缀"""
+def test_mixed_sample_scattered_stays_unmixed():
+    """个别双峰位点（2 个）：不升级为「疑似混合」（2026-11-06 定稿保留），
+    但 T1 资格门生效——无法互检的双峰进 unresolved_sites，结论 △ 未决、
+    Excel「待定：」前缀（不再是「合格」——证据不足 ≠ 与设计一致）"""
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {80: _ALT_OF[ref[80]], 260: _ALT_OF[ref[260]]}
@@ -1930,9 +1941,13 @@ def test_mixed_sample_scattered_stays_qualified():
     # 2026-11-06 定稿：待核双峰与区间裁决行同款表述（差异区间 + 参考位置）
     assert "差异区间 81、261：s.ab1 报出 2 处双峰" in result["conclusion"]
     assert "无其他引物覆盖" in result["conclusion"]
+    # T1 资格门：单 read 双峰无其他引物覆盖 → 未决位点 → △
+    assert result["conclusion"].startswith("△")
+    kinds = {u["kind"] for u in result["unresolved_sites"]}
+    assert "mixed_uncorroborated" in kinds
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 1, True)
-    assert out.startswith("合格") and "双峰" in out
+    assert out.startswith("待定") and "双峰" in out
 
 
 def test_pullup_saturated_bleed_suppressed():
@@ -2541,7 +2556,7 @@ def test_variants_branch_conclusion_shows_covered_ranges(reference):
 
 
 def test_conclusion_summary_headline():
-    """一句话总结三态：确认差异→✗、全低置信→✓（带伪影注记）、
+    """一句话总结三态（T1）：确认差异→✗、未决→△ 资格门（不再 ✓ 带伪影注记）、
     混合样品→△；混合优先级最高，蛋白不一致信息不丢"""
     from core.sanger.pipeline import _conclusion_summary
     cds_bad = [{"name": "CSQ", "protein_identical": False}]
@@ -2555,10 +2570,13 @@ def test_conclusion_summary_headline():
     # 蛋白一致但有 CDS 外确认差异
     head = _conclusion_summary(conf, cds_ok, has_mixed=False)
     assert head.startswith("✗") and "1 处确认差异" in head and "不一致" not in head
-    # 仅低置信差异：判一致但点名伪影
+    # 仅低置信差异：✓ 资格门 → △ 未决（不再预判「疑似伪影」）
     head = _conclusion_summary(low, cds_ok, has_mixed=False)
-    assert head.startswith("✓") and "低置信" in head and "未计入判定" in head
-    # 无变体
+    assert head.startswith("△") and "未决差异" in head and "需核对峰图或补测" in head
+    # 仅有未决位点（无变体）：同样不得 ✓
+    head = _conclusion_summary([], cds_ok, has_mixed=False, unresolved_sites=2)
+    assert head.startswith("△") and "2 处未决位点" in head
+    # 无变体、无未决位点
     assert _conclusion_summary([], [], has_mixed=False).startswith("✓")
     # 混合优先；混有蛋白不一致时不丢
     head = _conclusion_summary(low, cds_ok, has_mixed=True)
