@@ -43,6 +43,20 @@ export interface CdsReport {
   verdict: string
 }
 
+/** 单条支持 read 的峰级证据（goal T14 EvidenceItem） */
+export interface SequencingEvidenceItem {
+  read: string
+  read_pos?: number
+  strand?: string
+  q?: number
+  mutant_pct?: number
+  snr?: number
+  mixed_ratio?: number
+  mixed_z?: number
+  in_zone?: boolean
+  called_base?: string
+}
+
 export interface SequencingVariant {
   ref_pos: number
   read_pos?: number
@@ -70,6 +84,10 @@ export interface SequencingVariant {
   cross_read_conflict?: { reads: string[] }
   /** 互检定案：其他引物在可靠区读出设计碱基，判为源 read 测序误差（不进结论） */
   cross_read_resolved?: boolean
+  /** 逐 read 证据（goal T14）：每条支持 read 的峰强比/信噪比/Q/链向/可信区 */
+  evidence_by_read?: SequencingEvidenceItem[]
+  /** 覆盖该位点但未支持该变体的其他 read（goal T14；只记覆盖事实，非反证） */
+  covering_reads_not_supporting?: { read: string; read_pos?: number; q?: number }[]
   /** 低置信的具体错误类型/原因（人工核对用） */
   low_reason?: string
   /** 独立 basecaller（tracy）重 basecall 后报出同一变体：跨 caller 印证 */

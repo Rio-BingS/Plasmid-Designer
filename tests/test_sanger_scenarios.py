@@ -417,7 +417,6 @@ XFAIL_BY_TASK = {
     # T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
     "test_m1_same_codon_subs_annotated_as_mnv": "T25",
-    "test_m2_upload_order_independent_evidence": "T14",
     "test_m3_overlap_discordance_reported": "T21",
     "test_m4_orf_correction_bounded": "T16",
     "test_m5_primer_mismatch_detected": "T17",
