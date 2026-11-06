@@ -182,12 +182,14 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 | 2026-10-29 | [audit-round2-fixes](postmortems/2026-10-29-audit-round2-fixes.md) | 可控字符串进日志/头/路径前必须过白名单（4 处同型）；双层读取 `in`+`[]` 非原子一律 `get()`；静默降级必须留 warning |
 | 2026-10-31 | [audit-round3-fixes](postmortems/2026-10-31-audit-round3-fixes.md) | 审计报告逐条复核再动手（agent 自报 15 项有 4 项不成立）；死代码要查「有没有人用」不只「有没有错」；re-export 块是死导入重灾区 |
 | 2026-11-05 | [cds-mode-coverage-gate](postmortems/2026-11-05-cds-mode-coverage-gate.md) | 截段当参考必须带边界上下文锚定（零侧翼吞边界变异）；结论头 ✓ 是资格判定不是默认值（目标没测到不给 ✓） |
+| 2026-11-06 | [SANGER_AUDIT_2026-11-06.md](SANGER_AUDIT_2026-11-06.md) | Sanger 全链路只读审计（P0×5 复现 + P1×8 + P2×8）：证据模型缺「未决」第三态导致系统性漏报——修复清单与实施顺序在该文件，**尚未动手** |
 
 ## 8. 建议的下一步（按优先级）
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
 | **P1** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 连续两轮 CI 尺寸预算记账（900→1195→1318），再涨就要频繁动白名单；拆完白名单应只减不增 |
+| **P0** | **Sanger 审计修复**（[SANGER_AUDIT_2026-11-06.md](SANGER_AUDIT_2026-11-06.md)）：P0×5 全部已复现——证据三态化+✓资格门 → verified 覆盖口径 → errors 进批量结论 → 混合互检对齐 `_region_ok` → `resolved_regions` 进 API 下发 | 5 项 P0 都是直接漏报（N 隐身、坏 read 判合格、真混合翻 ✓、低置信=伪影预判决、覆盖虚高），先固化探针为回归用例再修；动口径按 §6.5 递增版本+同步 MX 回归断言 |
 | **P1** | CI 尺寸预算纪律：动代码后本地先跑 `python scripts/check_file_size.py`；白名单文件**有理由的小增量**（接线、新参数等）直接 `--refresh` 记账即可，**大增长/无意识增长**先拆分 | 2026-11-05 与所有者议定放宽：小增量记账不算欠账，不为 +15 行强制先重构；预演仍纳入收尾动作防「本地绿 CI 红」复发（v2.30.0 教训）。当日 refresh 顺带修正分支白名单滞后：construct_assembly.py 降到 900 以下掉出白名单，白名单 11→10 |
 | P2 | **目的基因模式推广到批量测序页**（讨论已定：缺图谱兜底优先，按名从参考/设计拉 CDS；`core/sanger/cds_extract.py` 的候选/匹配/提取可直接复用） | 单样品已随 v2.37.0-alpha.1 上线，批量工作流是自然延伸 |
 | P3 | 多段 CDS（GenBank join）在目的基因模式下暂不加侧翼（纯编码序列拼接），接缝边界效应留观察 | 真实多段 CDS 数据出现后再议 |
