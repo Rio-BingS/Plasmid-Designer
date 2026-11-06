@@ -196,6 +196,17 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  "——载体-基因接合处差异直接影响插入正确性",
                  "核对峰图；必要时换引物覆盖接合区",
                  fail_impact=st == "confirmed")
+    # 引物校验（goal T17；A 1.5）：mismatch 默认 fail——引物加错/方向搞反/
+    # 模板换位时差异判读不可信；无法确定引物只记 info「未校验引物」
+    for pc in result.get("primer_checks") or []:
+        if pc.get("status") == "mismatch":
+            _blk("primer_mismatch", None, None, pc.get("primer"),
+                 pc.get("detail") or "引物校验未通过",
+                 "核对引物与模板的对应关系；必要时换引物复测",
+                 fail_impact=True)
+        elif pc.get("status") == "unverified":
+            _info("primer_unverified", pc.get("read"),
+                  pc.get("detail") or "未校验引物")
     # 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检的双峰）
     for u in sites:
         _blk(_SITE_KIND_MAP.get(u.get("kind"), "unresolved_site"),
