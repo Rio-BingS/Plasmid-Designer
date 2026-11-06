@@ -204,7 +204,13 @@ export interface SequencingAnalysis {
   mixed_detected: Record<string, number[]>
   /** 匿名创建时下发的访问令牌（终审 B-02：后续读取/导出/删除需携带） */
   access_token?: string
-  decomposed_alleles?: Record<string, { sequence: string; source: string }[]>
+  decomposed_alleles?: Record<string, {
+    sequence: string; source: string
+    /** 等位各自走比对+CDS 判读（goal T10；A 3.6，旧记录缺省） */
+    cds_reports?: { name: string; verdict: string; coverage_status: string }[]
+    variants?: { ref_pos: number; type: string; length: number; alt_base: string }[]
+    identity?: number
+  }[]>
   errors: { filename: string; error: string }[]
   reference_length: number
   features: { name: string; type: string; start: number; end: number; strand: string; description?: string; analysis_target?: boolean }[]

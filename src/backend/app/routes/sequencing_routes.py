@@ -72,7 +72,8 @@ from core.sanger.batch import (
 )
 from core.sanger.coverage import mark_unverified_bases  # noqa: F401  (历史引用兼容)
 from core.sanger.coverage import _mask_uncovered  # noqa: F401  (历史引用兼容)
-from core.sanger.pipeline import analyze, try_tracy_decompose
+from core.sanger.pipeline import analyze, build_verdict
+from core.sanger.decompose import decompose_and_annotate
 from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
 
@@ -371,9 +372,8 @@ def _run_full_analysis(
     result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular,
                      zone_params=zone)
 
-    # 混合样品解卷积（tracy 可用时）：只对 read 级判为「疑似混合样品」
-    # （widespread）的 read 执行——个别双峰位点（scattered）多为噪声，
-    # 对它们 decompose 只会产出无意义的等位基因
+    # 解卷积只对 read 级「疑似混合样品」（widespread）执行（tracy 可用时）
+    # ——scattered 多为噪声，decompose 只会产出无意义等位
     to_decompose = {
         fn: p.get("positions") or []
         for fn, p in (result.get("mixed_profiles") or {}).items()
@@ -393,12 +393,15 @@ def _run_full_analysis(
                 ab1_path = os.path.join(td, "sample.ab1")
                 with open(ab1_path, "wb") as fh:
                     fh.write(blob)
-                dec = try_tracy_decompose(ab1_path, ref_fasta)
+                dec = decompose_and_annotate(ab1_path, ref_fasta, reference, features)
                 if dec:
                     alleles[filename] = dec
         result["decomposed_alleles"] = alleles
         if alleles:
             result["engine"] = "internal+biopython+tracy"
+            # decompose 在 analyze 之后：重建 verdict 纳入 allele_mismatch（T10）
+            result["verdict"] = build_verdict({**result, "features": features or []},
+                                              len(reference))
     return result
 
 
