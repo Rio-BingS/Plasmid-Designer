@@ -58,6 +58,7 @@ from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
 )
 from core.sanger.verdict import build_verdict
+from core.sanger.readmap import ReadRefMap
 from core.sanger.coverage import compute_coverage
 # 覆盖缺口与区间文本已迁至 core/sanger/coverage.py（T3 拆分，尺寸预算）；
 # 此处 re-export 维持既有导入路径
@@ -1744,18 +1745,17 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
     poly_runs_p1 = [r for r in poly_runs if r["period"] == 1]
     for r in read_results:
         aln = r["alignment"]
+        rmap = ReadRefMap.from_alignment(r)
         slip: set = set()
         dropouts: List[Dict] = []
         merged_zones: List[Dict] = []
         for run in poly_runs_p1:
-            # 环状跨原点 read：原点后段的 run 在展开坐标中平移 +L
-            off = _run_offset(aln, run["start"], run["end"])
-            if aln["direction"] == "-":
-                i0 = aln["ref_end"] - (run["end"] + off)
-                i1 = i0 + run["length"] - 1
-            else:
-                i0 = (run["start"] + off) - aln["ref_start"]
-                i1 = i0 + run["length"] - 1
+            # run 窗口走统一坐标映射（goal T9）：环状折回键直查，软剪切/
+            # 上游 indel/反向镜像都在映射内处理（线性偏移式已删）
+            win = rmap.run_window(run["start"], run["end"])
+            if win is None:
+                continue
+            i0, i1 = win
             if i1 < 0 or i0 > len(r["trimmed_peaks"]) - 1:
                 continue
             w0, w1 = max(0, i0), min(i1, len(r["trimmed_peaks"]) - 1)

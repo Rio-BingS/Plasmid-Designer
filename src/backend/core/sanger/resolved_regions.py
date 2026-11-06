@@ -12,6 +12,7 @@
 from typing import Dict, List, Optional, Tuple
 
 from .homopolymer import pos_ranges_str
+from .readmap import ReadRefMap
 
 # 互检排除注记的验证质量分档：验证区域平均 Q ≥ 此值措辞「验证质量充分」
 RESOLVED_STRONG_Q = 40
@@ -92,9 +93,10 @@ def build_resolved_regions(resolved_variants: List[Dict],
                            ) -> Tuple[List[str], List[Dict]]:
     """互检定案差异 → （区间裁决文本行, 结构化 resolved_regions）。
 
-    按源 read 分组聚合；引物内坐标为修剪后 read 内 1-based（反向 read 沿
-    电泳链折算，注意：此处沿用 trim_len - read_pos + 1 线性折算，软剪切
-    偏移的修正随 T9 统一 ReadRefMap 时处理）。验证 read 取逐条变体证据的
+    按源 read 分组聚合；引物内坐标为修剪后 read 内电泳链 1-based，经
+    ReadRefMap 从参考位点反查（goal T9 统一口径；反向 read 的 read_pos
+    已由 aligner 镜像回电泳链，旧 `trim_len - read_pos + 1` 是镜像时代的
+    二次折算，带软剪切时错位——M10）。验证 read 取逐条变体证据的
     并集（排除源 read 自身），质量分档取最弱区域均值 Q。
     """
     lines: List[str] = []
@@ -111,16 +113,16 @@ def build_resolved_regions(resolved_variants: List[Dict],
         src = by_filename.get(src_name)
         direction = (src or {}).get("alignment", {}).get("direction") or "+"
         dir_txt = "反向" if direction == "-" else "正向"
-        # 引物内坐标（修剪后 read 内 1-based；反向 read 沿电泳链折算）
-        rp_all = [v.get("read_pos") for v in vs if v.get("read_pos")]
-        trim_len = (src or {}).get("trimmed_length")
-        if rp_all and trim_len:
-            lo, hi = min(rp_all), max(rp_all)
-            if direction == "-":
-                lo, hi = trim_len - hi + 1, trim_len - lo + 1
-            primer_txt = f"{lo}-{hi}"
-        else:
-            primer_txt = None
+        # 引物内坐标（修剪后电泳链 1-based）：ReadRefMap 反查优先
+        # （权威列遍历口径），旧记录无对齐视图时回退变体 read_pos（同帧）
+        rmap = ReadRefMap.from_alignment(src) if src else None
+        coords = []
+        for v in vs:
+            c = rmap.primer_coord(v.get("ref_pos")) if rmap else None
+            c = c if c is not None else v.get("read_pos")
+            if c:
+                coords.append(c)
+        primer_txt = f"{min(coords)}-{max(coords)}" if coords else None
         # 逐条变体独立取验证 read（并集排除源 read 自身）；分档取最弱证据
         verifiers: set = set()
         min_q: Optional[float] = None
