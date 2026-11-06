@@ -95,13 +95,16 @@ def test_real_analysis_basic_shape():
 
 
 def test_real_analysis_mixed_baseline_and_corroboration():
-    """真实峰型下的混合检测基线（v2.16.0 可信区口径）：三条 read 都判出双峰，
-    但只有前两条达到 widespread 档（9 / 10 处），第三条 4 处降为「个别位点」。
-    旧口径（只扣首尾 20bp）下三 read 分别是 22 / 31 / 16 处——差值全部落在
-    700bp 之后的尾部噪声上，v2.16.0 起尾部双峰不再计入（有意的口径变化，
-    见 CHANGELOG 2.16.0）；不要为了凑回旧的 19–27 把尾部噪声放回来。
+    """真实峰型下的混合检测基线（goal T12 信号驱动可信区口径）：三条 read
+    都判出双峰 9 / 18 / 19 处。口径演变链：v2.16.0 之前（只扣首尾 20bp）
+    是 22 / 31 / 16；v2.16.0 700 硬顶后 4 / 9 / 10（尾部双峰静默忽略）；
+    T12 起可信区由 read 自身信号决定（zone_signal 四指标逐窗判定），
+    三条 read 的尾端信号实测可信 → zone 延伸至 975 / 965 / 940，
+    797–957 段的真实双峰形态位点重新计入（快照 work/after_T12.json，
+    新增位点全部落在旧 700 硬顶之外）。
 
-    同时锁住新口径的硬约束：报出的双峰位点必须落在该 read 的可信区内。"""
+    同时锁住两条硬约束：报出的双峰位点必须落在该 read 的可信区内；
+    read 级「疑似混合样品」升级不得因尾端位点计入而误触发。"""
     ctx = _load_ctx()
     res = ctx["analyses"]["MX"]["result"]
     md = res["mixed_detected"]
@@ -112,34 +115,34 @@ def test_real_analysis_mixed_baseline_and_corroboration():
         z = zones[_fname]
         assert all(z["start"] <= p <= z["end"] for p in positions), _fname
         counts.append(len(positions))
-    assert sorted(counts) == [4, 9, 10]
-    # T11 口径基线（goal T11；A 3.1，先取证再改断言，快照 work/after_T11.json）：
-    # read 级「疑似混合样品」升级改走证据形态学（mixed_model.classify_mixed）——
-    # seqF/pET-Up 的 9/10 处双峰集中在各自 read 前 1–4%（thirds [9,0,0]、
-    # span 0.04/0.01）且比值 CV 0.39/0.44 ≥0.35、站点 Q 中位仅 read 中位的
-    # 0.5 倍，不满足「离散一致散布 + 低 CV + 高 Q」的混合升级条件，降为
-    # local（局部信号异常，info）。位点级证据原样保留：21 处待核位点与
-    # 17 处 mixed_variant 阻断逐项不变（verdict 仅少 mixed_sample 一条），
-    # 待核行逐字不变（下方断言）；verdict 仍 fail（确证变异驱动）。
+    assert sorted(counts) == [9, 18, 19]
+    # T11+T12 口径基线（goal T11/T12；A 3.1，先取证再改断言，快照
+    # work/after_T11.json → after_T12.json）：read 级「疑似混合样品」升级
+    # 走证据形态学（mixed_model.classify_mixed）。T12 后位点集扩容
+    # （thirds [9,0,10] 型、span 0.85–0.92），站点 Q 中位仅 read 中位的
+    # 0.36–0.46 倍（<0.7）→ 三条 read 均归因 low_site_q → noise：
+    # 尾端低 Q 双峰是衰减噪声而非混合克隆，Q 比判别器正确挡下升级。
+    # verdict 仍 fail（5269/5076 确证变异驱动）。
     assert "疑似混合样品" not in res["conclusion"]
-    assert "双峰 9 处中 8 处无其他引物覆盖待核" in res["conclusion"]
-    assert "双峰 10 处中 9 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 18 处中 9 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 9 处中 4 处无其他引物覆盖待核" in res["conclusion"]
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
     assert "同报双峰" not in res["conclusion"]
-    # T8 口径基线（goal T8；B P0-5，先取证再改断言）：clean 与变异互检
-    # 同一标准（对应列在验证 read 可信区内、±25bp 区域质量达标、邻近无
-    # 其他差异）。旧口径「单列 base 一致 + Q≥20」过宽：MX 23 处双峰中
-    # 21 处实为无法互检（验证 read 可信区外/邻近有差异报道）——seqF 的
-    # 8 处（5709、5735–5741）与 pET-Up 的 9 处由「clean」转入待核，
-    # 仅 seqF 1 处真 clean；待核行从 1 条变 2 条，逐字锁新基线
+    # T8+T12 互检口径基线（先取证再改断言）：待核 = 互检 uncovered（验证
+    # read 可信区内对应列未读出设计碱基）。T12 可信区延伸后互检覆盖面
+    # 扩大：seqF 的 19 处双峰全部被其他 read 延伸后的可信区高质量覆盖
+    # （corroboration by_read：clean 19 / uncovered 0——旧待核位点 5709、
+    # 5735–5741 转为 clean 排除）→ seqF 待核行消失；pET-Up 保留 9 处
+    # 待核（5075–5085，引物 5' 端互检盲区）；T7-Term 尾端新计入位点中
+    # 4 处无法互检（6868–6873）→ 新增待核行。待核行仍为 2 条，逐字锁新基线
     concl_lines = res["conclusion"].splitlines()
     pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
     assert len(pending) == 2
-    assert any("SZ15674-10570-2-seqF.ab1" in x and "9 处中 8 处" in x
-               and "5709、5735–5741" in x for x in pending)
-    assert any("SZ15674-pET-Up.ab1" in x and "10 处中 9 处" in x
+    assert any("SZ15674-pET-Up.ab1" in x and "18 处中 9 处" in x
                and "5075–5079、5082–5085" in x for x in pending)
+    assert any("SZ15674-T7-Term.ab1" in x and "9 处中 4 处" in x
+               and "6868–6869、6872–6873" in x for x in pending)
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
