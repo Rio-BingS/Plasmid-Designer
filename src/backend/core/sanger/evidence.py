@@ -220,7 +220,8 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
                         has_mixed: bool, partial_reads: int = 0,
                         resolved: int = 0, unresolved_sites: int = 0,
                         failed_reads: int = 0,
-                        failed_names: str = "") -> str:
+                        failed_names: str = "",
+                        verdict: Optional[Dict] = None) -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
     优先级：确认差异 > 读取失败 > 疑似混合 > 未决（资格门）> 完全一致
     （T2 统一三出口：确证损伤不再让位于混合提示——多数克隆确实错了，
@@ -290,6 +291,17 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         low_note = (f"（{len(variants)} 处未决差异）"
                     if variants else "（已比对区域与设计一致）")
         return f"△ 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
+    # ROI 覆盖分级进结论头（goal T5；A 4.2）：partial/insufficient 不得出 ✓
+    # ——「测到的地方一致」不等于「构建验证完毕」。verdict 缺省（旧记录/
+    # 直调兼容）不启用，维持原分支；status 优先级保证走到这里时无未决项
+    vd_status = (verdict or {}).get("status")
+    if vd_status in ("partial", "insufficient"):
+        roi_blk = next((b for b in verdict.get("blocking") or []
+                        if b.get("kind") in ("roi_uncovered", "roi_unverified")
+                        and b.get("detail")), None)
+        if roi_blk:
+            head = ("部分验证——" if vd_status == "partial" else "")
+            return f"△ 结论：{head}{roi_blk['detail']}" + (f"；{tail}" if tail else "")
     # ✓ 资格门（A 3.3 / B P0-1）：还有未决项就不得 ✓，也不再把它们预判为
     # 「疑似测序伪影」——△ 如实说「未决」，让用户核对峰图或补测
     if variants or unresolved_sites:

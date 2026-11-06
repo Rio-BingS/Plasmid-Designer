@@ -2229,32 +2229,18 @@ def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
         homopolymer_report.append(entry)
 
     return homopolymer_report
-def _build_conclusion(
-    read_results: List[Dict], variants: List[Dict], mixed_corroboration: Dict,
-    edge_ambiguous_reads: List[Dict], consensus: Dict,
-    coverage_ranges: List[Tuple[int, int]], coverage_gaps: List[Dict],
-    homopolymer_report: List[Dict], ref: str, features: List[Dict],
-    unresolved_sites: Optional[List[Dict]] = None,
-    errors: Optional[List[Dict]] = None,
-) -> Tuple[str, List[Dict], Dict]:
-    """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
-    自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
-    mixed_profiles, resolved_regions)——resolved_regions 为区间裁决行的
-    结构化形态（前端高亮用）。
-    """
-    # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
-    # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
-    shown_variants = [v for v in variants if not v.get("cross_read_resolved")]
-    resolved_variants = [v for v in variants if v.get("cross_read_resolved")]
-
-    # 终审 C-08：CDS 判读的意外异常降级为单条失败报告，不得让一条
-    # 畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析
+def _cds_reports_safe(ref: str, features: List[Dict], variants: List[Dict],
+                      consensus: Dict,
+                      unresolved_sites: Optional[List[Dict]] = None) -> List[Dict]:
+    """CDS 判读（终审 C-08）：意外异常降级为单条失败报告，不得让一条
+    畸形特征（空蛋白比对、非法翻译边界等）拖垮整份多 read 分析。
+    独立成函数供 analyze 先于结论文本调用（verdict 需要它）。"""
     try:
-        cds_reports = _build_cds_reports(ref, features, shown_variants, consensus,
-                                         unresolved_sites=unresolved_sites)
+        return _build_cds_reports(ref, features, variants, consensus,
+                                  unresolved_sites=unresolved_sites)
     except Exception as e:
         logger.exception("CDS 判读整体失败，降级为占位报告")
-        cds_reports = [{
+        return [{
             "name": "CDS",
             "start": 0,
             "end": 0,
@@ -2272,6 +2258,34 @@ def _build_conclusion(
             "pending_low_confidence": 0,
             "verdict": f"CDS 判读失败（内部异常：{type(e).__name__}），变体明细见突变表，可核对峰图或反馈日志",
         }]
+
+
+def _build_conclusion(
+    read_results: List[Dict], variants: List[Dict], mixed_corroboration: Dict,
+    edge_ambiguous_reads: List[Dict], consensus: Dict,
+    coverage_ranges: List[Tuple[int, int]], coverage_gaps: List[Dict],
+    homopolymer_report: List[Dict], ref: str, features: List[Dict],
+    unresolved_sites: Optional[List[Dict]] = None,
+    errors: Optional[List[Dict]] = None,
+    cds_reports: Optional[List[Dict]] = None,
+    mixed_profiles: Optional[Dict] = None,
+    verdict: Optional[Dict] = None,
+) -> Tuple[str, List[Dict], Dict]:
+    """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
+    自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
+    mixed_profiles, resolved_regions)——resolved_regions 为区间裁决行的
+    结构化形态（前端高亮用）。cds_reports/mixed_profiles/verdict 可由
+    analyze 预计算传入（T5：结构化判定先于结论文本，结论头符号由
+    verdict.status 驱动）；缺省时内部自算（兼容直调）。
+    """
+    # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
+    # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
+    shown_variants = [v for v in variants if not v.get("cross_read_resolved")]
+    resolved_variants = [v for v in variants if v.get("cross_read_resolved")]
+
+    if cds_reports is None:
+        cds_reports = _cds_reports_safe(ref, features, shown_variants, consensus,
+                                        unresolved_sites=unresolved_sites)
 
     # B5：poly 下游信号骤降注记（end_truncation 属 read 末端正常下降，不算）。
     # 与"未覆盖"明确区分：覆盖区内的骤降段碱基判读不可信，不是没测到
@@ -2298,8 +2312,9 @@ def _build_conclusion(
     # mixed_positions 只进结构化字段，结论与报告完全不可见，混合样品会被
     # 报成"与设计一致"。多条 read 全部 widespread 时聚合成一条综合判读
     # （逐 read 明细在报告双峰章节），否则 N 条近似长句把关键建议淹没
-    mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
-                      if r["mixed_profile"]["count"] > 0}
+    if mixed_profiles is None:
+        mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
+                          if r["mixed_profile"]["count"] > 0}
     mixed_lines: List[str] = []
 
     def _frac_range(ps: List[Dict]) -> str:
@@ -2592,7 +2607,8 @@ def _build_conclusion(
                                           failed_reads=len(errors or []),
                                           failed_names="、".join(
                                               e.get("filename", "?") for e in (errors or [])[:2])
-                                          + ("等" if len(errors or []) > 2 else ""))
+                                          + ("等" if len(errors or []) > 2 else ""),
+                                          verdict=verdict)
                       + "\n" + conclusion)
 
     return conclusion, cds_reports, mixed_profiles, resolved_regions
@@ -2763,10 +2779,31 @@ def analyze(
     # 无法互检的双峰——它们不进已验证口径，也是 ✓ 的资格门输入
     unresolved_sites = _collect_unresolved_sites(
         read_results, homopolymer_report, mixed_corroboration)
+    # 结构化判定先于结论文本（goal T2/T5）：CDS 判读与双峰分级上提，
+    # verdict.status 驱动结论头符号——ROI 覆盖分级（partial/insufficient）
+    # 不得出 ✓（A 4.2「测到的地方一致 ≠ 构建验证完毕」）
+    mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results if r["mixed_profile"]["count"] > 0}
+    cds_reports = _cds_reports_safe(
+        ref, features, [v for v in variants if not v.get("cross_read_resolved")],
+        consensus, unresolved_sites=unresolved_sites)
+    verdict = build_verdict({
+        "variants": variants,
+        "unresolved_sites": unresolved_sites,
+        "cds_reports": cds_reports,
+        "errors": errors,
+        "reads": read_results,
+        "mixed_profiles": mixed_profiles,
+        "mixed_corroboration": mixed_corroboration,
+        "consensus": consensus,
+        "coverage": coverage,
+        "features": features or [],
+        "algo_version": SANGER_ALGO_VERSION,
+    }, len(ref))
     conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
-        ref, features, unresolved_sites=unresolved_sites, errors=errors)
+        ref, features, unresolved_sites=unresolved_sites, errors=errors,
+        cds_reports=cds_reports, mixed_profiles=mixed_profiles, verdict=verdict)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
@@ -2809,19 +2846,8 @@ def analyze(
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
         "resolved_regions": resolved_regions,
         # 结构化判定（goal T2；A 5.1/5.5）：status/blocking/roi/reads，
-        # 网页/Excel/归档/API 出口统一由它驱动
-        "verdict": build_verdict({
-            "variants": variants,
-            "unresolved_sites": unresolved_sites,
-            "cds_reports": cds_reports,
-            "errors": errors,
-            "reads": read_results,
-            "mixed_profiles": mixed_profiles,
-            "mixed_corroboration": mixed_corroboration,
-            "consensus": consensus,
-            "coverage": coverage,
-            "algo_version": SANGER_ALGO_VERSION,
-        }, len(ref)),
+        # 网页/Excel/归档/API 出口统一由它驱动（先于结论文本构建，见上）
+        "verdict": verdict,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_corroboration": mixed_corroboration,
