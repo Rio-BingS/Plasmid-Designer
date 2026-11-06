@@ -399,7 +399,7 @@ def test_analyze_perfect_read(reference):
     result = analyze([("ok.ab1", blob)], reference, [])
     assert result["reads"], "应成功解析至少一条 read"
     assert result["variants"] == []
-    assert "一致" in result["conclusion"]
+    assert "构建与设计一致，未检出差异" in result["conclusion"]
     assert result["consensus"]["sequence"] == reference.upper()
     assert result["consensus"]["coverage_percent"] == pytest.approx(25.0, abs=0.5)
 
@@ -1927,10 +1927,12 @@ def test_mixed_sample_scattered_stays_qualified():
     result = analyze([("s.ab1", _mixed_ab1(ref, sites))], ref, [])
     assert result["mixed_profiles"]["s.ab1"]["class"] == "scattered"
     assert "疑似混合样品" not in result["conclusion"]
-    assert "双峰位点" in result["conclusion"]
+    # 2026-11-06 定稿：待核双峰与区间裁决行同款表述（差异区间 + 参考位置）
+    assert "差异区间 81、261：s.ab1 报出 2 处双峰" in result["conclusion"]
+    assert "无其他引物覆盖" in result["conclusion"]
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 1, True)
-    assert out.startswith("合格") and "双峰位点" in out
+    assert out.startswith("合格") and "双峰" in out
 
 
 def test_pullup_saturated_bleed_suppressed():
@@ -2004,9 +2006,11 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
     assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
     assert chk["uncovered_ref"] == [561]   # 悬空位点外推到邻居覆盖之外
-    # 待核短语带参考位置，用户可直接对照图谱核对"这个位置真的没人测过吗"
-    assert "无其他引物覆盖待核（参考位置 561）" in result["conclusion"]
-    assert "无法互检（参考位置 561）" in result["conclusion"]
+    # 端部悬空位点（2026-11-06 定稿）：与区间裁决行同款表述，参考位置随行，
+    # 无其他引物覆盖写明——不再喊「建议核对峰图」
+    assert "差异区间 561：rev.ab1 报出 1 处双峰" in result["conclusion"]
+    assert "无其他引物覆盖" in result["conclusion"]
+    assert "建议核对峰图" not in result["conclusion"]
 
 
 def test_mixed_multi_read_aggregated_conclusion():
@@ -2028,18 +2032,15 @@ def test_mixed_multi_read_aggregated_conclusion():
     assert "估计次要克隆占比" in lines[0]
     assert "次峰占比中位数" not in lines[0]
     assert "重新挑单克隆" in lines[0]
-    # 聚合行下仍逐 read 给位点范围子行 + 跨引物互检汇总（前端默认折叠）
+    # 2026-11-05 定稿：全部位点被互检归类（同报双峰/峰形单一覆盖）的 read
+    # 不再单独成行——双峰是 read 自身属性，与构建判读无关
     detail = [x for x in result["conclusion"].splitlines()
               if x.strip().startswith("↳") and "双峰" in x]
-    assert len(detail) == 3
-    assert ("↳ a.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段") in detail[0]
-    assert "↳ b.ab1：双峰 5 处，位于 read 81、131、201、261、331" in detail[1]
-    # 互检：a 的 5 个位点 b 也同报双峰、3 个位点被 b 峰形单一覆盖；b 全部同报
-    assert "互检：5 处其他引物同报双峰" in detail[0] and "3 处其他引物覆盖且峰形单一" in detail[0]
-    assert "互检：5 处其他引物同报双峰" in detail[1]
-    # 汇总行：同报双峰的参考位置是真实混合的最强信号
-    assert "双峰位点跨引物互检：5 处参考位点被多条引物同报双峰（参考位置" in detail[2]
-    assert "倾向真实混合" in detail[2]
+    assert detail == []
+    # 多引物同报双峰（5 处）→ 真实混合信号行出现（唯一保留的互检汇总）
+    signal = [x for x in result["conclusion"].splitlines() if "同报双峰" in x
+              and "倾向真实混合" in x]
+    assert len(signal) == 1 and "参考位置" in signal[0]
     # 结构化字段：互检汇总随结果下发（批量口径复用）
     chk = result["mixed_corroboration"]
     assert chk["by_read"]["a.ab1"]["multi"] == 5 and chk["by_read"]["a.ab1"]["clean"] == 3
@@ -2400,10 +2401,10 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     # 互检已定案：不再作为"互检矛盾/待核对"塞进 CDS 结论
     assert ins[0]["cross_read_resolved"] is True
     assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
-    # 顶层结论只一句话交代互检排除，总结为确定的 ✓
+    # 顶层结论：区间裁决行（2026-11-05 定稿结构），总结为确定的 ✓
     lines = result["conclusion"].splitlines()
     assert lines[0].startswith("✓ 结论：构建与设计一致")
-    assert sum("互检排除" in x for x in lines) == 2  # 总结行 + 明细一句
+    assert sum("高质量覆盖排除" in x and "无需核对" in x for x in lines) == 1
     assert not any("低置信度（" in x for x in lines)
     # 低置信不进共识：构建体序列回到参考
     assert result["consensus"]["sequence"] == ref.upper()
@@ -2450,7 +2451,9 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     assert cds["pending_low_confidence"] == 0
     assert "低置信" not in cds["verdict"]
     lines = result["conclusion"].splitlines()
-    assert lines[0] == "✓ 结论：构建与设计一致（1 处单条 read 差异已被其他引物互检排除）"
+    # 2026-11-05 定稿：头行不再复述排除数量，详情在头行下的区间裁决行
+    assert lines[0] == "✓ 结论：构建与设计一致"
+    assert any(l.startswith("差异区间") and "无需核对" in l for l in lines)
     assert not any("低置信度（" in x for x in lines)
 
 
@@ -2506,7 +2509,8 @@ def test_single_coverage_indel_keeps_peak_evidence_grading():
 
 def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
     """覆盖区优先：未覆盖 CDS 措辞中性（不再建议补引物——部分测序是常规
-    策略），结论首行给出实测区间（回答"测的是哪段、结果如何"）"""
+    策略）。2026-11-05 定稿：无确认差异时结论正文 = CDS 行，实测区间由
+    CDS 卡与 Read 表承载，结论不再重复覆盖数字"""
     feats = [
         {"name": "COVERED", "type": "CDS", "start": 101, "end": 200, "strand": "+"},
         {"name": "UNTOUCHED", "type": "CDS", "start": 401, "end": 450, "strand": "+"},
@@ -2518,23 +2522,22 @@ def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
     assert "补充" not in unc["verdict"] and "不参与判读" in unc["verdict"]
     cov = next(c for c in result["cds_reports"] if c["name"] == "COVERED")
     assert cov["coverage_status"] != "uncovered"
-    assert "实测区间 101-200" in result["conclusion"]
+    assert "COVERED" in result["conclusion"] and "蛋白与设计一致" in result["conclusion"]
     # 未覆盖 CDS 不占结论篇幅（既有口径：自动结论只列有覆盖的 CDS）
     assert "UNTOUCHED" not in result["conclusion"]
 
 
 def test_variants_branch_conclusion_shows_covered_ranges(reference):
-    """有差异时结论以一句话总结开头（空两行），详细首行携带实测区间"""
+    """有差异时结论以一句话总结开头，区间/详细段落紧随其后（2026-11-05 定稿）"""
     seg = list(reference[100:200])
     seg[30] = "A" if seg[30] != "A" else "G"
     blob = make_ab1("".join(seg), [40] * 100)
     result = analyze([("r.ab1", blob)], reference, [])
     assert result["variants"]
     lines = result["conclusion"].splitlines()
-    # 头部结构：总结行 + 两个空行 + 详细段落
+    # 头部结构：总结行后不空行，详细首行直接携带实测区间
     assert lines[0].startswith("✗") and "结论" in lines[0]
-    assert lines[1] == "" and lines[2] == ""
-    assert "实测区间 101-200" in lines[3]
+    assert "实测区间 101-200" in lines[1]
 
 
 def test_conclusion_summary_headline():
@@ -2781,7 +2784,8 @@ def test_cross_check_requires_high_region_quality_not_single_base():
 
 
 def test_resolved_lines_spell_out_error_type_and_verifier_quality():
-    """互检排除明细逐条写清错误类型（替换 X>Y / 插入 / 缺失）与验证 read 的区域质量"""
+    """互检排除在结论只留一句汇总（2026-11-05 定稿：逐条证据行删）；
+    错误类型与验证 read 的区域质量作为结构化证据在变体表逐条可见"""
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25
     seg = ref[50:180]          # rev read 在 ref 121 处为第 60 位（首 30bp 硬不可信）
     i = 70
@@ -2792,11 +2796,17 @@ def test_resolved_lines_spell_out_error_type_and_verifier_quality():
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
          ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [])
-    lines = result["conclusion"].splitlines()
-    det = [x for x in lines if x.strip().startswith("↳ 位置 121")]
-    assert det and f"替换 {seg[i]}>{alt}" in det[0]
-    assert "fwd.ab1 该位 Q12" in det[0] and "rev.ab1" in det[0] and "平均 Q40" in det[0] \
-        and "≥Q20 占 100%" in det[0]
+    # 结论：区间裁决行（2026-11-05 定稿），验证者、引物内坐标与质量分档写明
+    assert "差异区间 121：fwd.ab1（正向 | 引物内坐标 71-71）报出 1 处差异" \
+        in result["conclusion"]
+    assert "已被 rev.ab1 高质量覆盖排除，验证质量充分，无需核对" in result["conclusion"]
+    assert "↳ 位置 121" not in result["conclusion"]
+    # 结构化证据（替换类型 + 验证 read 区域质量）在变体清单可核对
+    sub = next(v for v in result["variants"] if v.get("cross_read_resolved"))
+    assert sub["type"] == "substitution" and sub["ref_pos"] == 121
+    ev = sub["cross_read_conflict"]["evidence"][0]
+    assert ev["read"] == "rev.ab1" and ev["region_mean_q"] == 40 \
+        and ev["region_hq_frac"] == 1.0
 
 
 def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
@@ -2868,4 +2878,7 @@ def test_tail_gray_zone_single_read_variant_low_with_reason():
     assert by_pos[750]["confidence"] == "low"
     assert "尾端灰区 701–900bp" in by_pos[750]["low_reason"]
     assert "900bp 之后" in by_pos[950]["low_reason"]
-    assert "↳ long.ab1：可信区 31–700bp" in result["conclusion"]
+    # 结论教育行删（2026-11-06 定稿）：默认边界的「首尾不可信区按低置信」
+    # 提示是噪声，变体的 low_reason 已写明具体灰区依据
+    assert "read 首尾不可信区的差异按低置信处理" not in result["conclusion"]
+    assert "↳ long.ab1：可信区" not in result["conclusion"]

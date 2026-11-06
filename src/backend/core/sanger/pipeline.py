@@ -61,6 +61,7 @@ TRACY_JSON_MIN_VERSION = (0, 3, 10)
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
 MIXED_WIDESPREAD_MIN = 5   # 双峰位点 ≥ 此数 → read 级判「疑似混合样品」
 MIXED_SCATTERED_MIN = 2    # 2-4 个 → 「个别双峰位点」提示（不升级结论）
+RESOLVED_STRONG_Q = 40     # 互检排除注记的验证质量分档：区域平均 Q ≥ 此值措辞「充分」
 MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
 PULLUP_HEIGHT_FACTOR = 3.0  # 主峰高 ≥ 全 read 峰高中位 × 此倍数视为饱和峰
 PULLUP_MAX_RATIO = 0.5      # 饱和峰位次级峰占比 ≤ 此值且与主峰同期 → 按染料拖影（pull-up）抑制
@@ -400,14 +401,21 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
                     if variants else "（已比对区域与设计一致）")
         return f"△ 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
     if variants:
-        return (f"✓ 结论：构建与设计一致"
+        # 分模式措辞（2026-11-05 用户定稿「目的基因测序正确」用于目的基因
+        # 模式；全质粒模式的分析对象是整质粒，维持「构建与设计一致」）
+        ok = "目的基因测序正确" if target else "构建与设计一致"
+        if resolved:
+            # 区间裁决行就在正文首，头行不再复述数量（2026-11-05 显示修复）
+            return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
+        return (f"✓ 结论：{ok}"
                 f"（{len(variants)} 处低置信差异疑似测序伪影，未计入判定）"
                 + (f"；{tail}" if tail else ""))
     if resolved:
         # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
-        return (f"✓ 结论：构建与设计一致（{resolved} 处单条 read 差异"
-                "已被其他引物互检排除）" + (f"；{tail}" if tail else ""))
-    return "✓ 结论：构建与设计一致，未检出差异" + (f"；{tail}" if tail else "")
+        ok = "目的基因测序正确" if target else "构建与设计一致"
+        return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
+    ok = "目的基因测序正确，未检出差异" if target else "构建与设计一致，未检出差异"
+    return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
 
 
 # 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
@@ -2298,7 +2306,9 @@ def _build_conclusion(
     homopolymer_report: List[Dict], ref: str, features: List[Dict],
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
-    自动结论（编码区结论放最前）。返回 (conclusion, cds_reports, mixed_profiles)。
+    自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
+    mixed_profiles, resolved_regions)——resolved_regions 为区间裁决行的
+    结构化形态（前端高亮用）。
     """
     # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
     # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
@@ -2413,108 +2423,167 @@ def _build_conclusion(
             names = "、".join(stretchy[:2])
             line += f"；{names} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
         mixed_lines.append(line)
-    # 逐 read 位点范围子行（↳ 详情行，前端默认折叠）：核对"双峰是否落在
-    # 引物首尾"需要具体范围——read 坐标 + 互检结果
+    # 逐 read 位点范围子行（2026-11-05 用户定稿：收敛）——双峰位点能被互检
+    # 归为噪声的 read 不再单独成行（read 质量细节，与构建判读无关）；只有
+    # 含「无覆盖待核位点」的 read 保留一行，直接带待核参考位置（用户可对照
+    # 图谱核对），read 坐标细节在报告双峰章节（前端折叠组）
     for r, p in wide:
         chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
-        note = _mixed_check_phrase(chk) if crossable else ""
-        # 双峰位点是修剪后 read 坐标，而 zone_text（read 概况/结论尾部）报原始坐标；
-        # 两者不同时把原始区间一并写出，避免同一份结论里两处"可信区"看起来打架
+        uncov_refs = sorted(chk.get("uncovered_ref") or [])
+        if crossable and not uncov_refs:
+            continue
+        if crossable:
+            mixed_lines.append(
+                f"  ↳ {r['filename']}：双峰 {p['count']} 处中 "
+                f"{len(uncov_refs)} 处无其他引物覆盖待核"
+                f"（参考位置 {pos_ranges_str(uncov_refs)}）")
+            continue
+        # 单条 read 无从互检：保留原坐标行（此时坐标是唯一的核对线索）
         z = r["reliable_zone"]
         zone_txt = f"{z['start']}–{z['end']}"
         if (z["raw_start"], z["raw_end"]) != (z["start"], z["end"]):
             zone_txt += f"（原始 {z['raw_start']}–{z['raw_end']}）"
-        base = (f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
-                f"{pos_ranges_str(p['positions'])}"
-                f"（read 坐标；可信区 {zone_txt} 以外未计入）")
-        mixed_lines.append(base + (f"；{note}" if note else ""))
+        mixed_lines.append(
+            f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
+            f"{pos_ranges_str(p['positions'])}"
+            f"（read 坐标；可信区 {zone_txt} 以外未计入）")
     scat = [(r, r["mixed_profile"]) for r in read_results
             if r["mixed_profile"]["class"] == "scattered"]
-    if len(scat) == 1:
-        r, p = scat[0]
-        pos_preview = "、".join(str(x) for x in p["positions"][:6])
+    # scattered（个别双峰位点）只提示不升级结论。2026-11-06 用户定稿：待核
+    # 行与区间裁决行同款表述——「差异区间 参考坐标（目的基因内 x-y）：
+    # read 名 报出 N 处双峰」，两套坐标一次给全，用户不用再自己找引物、
+    # 换算位置。_seg_label / cds_offset 在下面的区间裁决块共用
+    def _scat_uncov_refs(r) -> List[int]:
         chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
-        noise_like = (crossable and chk.get("multi", 0) == 0
-                      and chk.get("clean", 0) >= max(1, p["count"] // 2))
-        advice = ("多数位点被其他引物测过且峰形单一，更倾向测序噪声"
-                  if noise_like else "可能为个别碱基噪声或低比例混合，建议核对峰图")
+        return chk.get("uncovered_ref") or []
+
+    target_feat = next((f for f in features if f.get("analysis_target")), None)
+    cds_offset = (target_feat["start"] - 1) if target_feat else 0
+
+    def _seg_label(positions: List[int]) -> str:
+        """连续/近邻位置合并成区段文本（参考坐标，间隔 ≤50bp 同段）"""
+        pos = sorted(set(positions))
+        ranges = [[pos[0], pos[0]]]
+        for p in pos[1:]:
+            if p - ranges[-1][1] <= 50:
+                ranges[-1][1] = p
+            else:
+                ranges.append([p, p])
+        return "、".join(f"{a}-{b}" if a != b else str(a) for a, b in ranges)
+
+    def _inner_label(seg_positions: List[int]) -> Optional[str]:
+        """目的基因内坐标文本（无分析目标时返回 None）"""
+        if not cds_offset:
+            return None
+        pos = sorted(set(seg_positions))
+        ranges = [[pos[0], pos[0]]]
+        for p in pos[1:]:
+            if p - ranges[-1][1] <= 50:
+                ranges[-1][1] = p
+            else:
+                ranges.append([p, p])
+        return "、".join(
+            f"{a - cds_offset}-{b - cds_offset}" if a != b else str(a - cds_offset)
+            for a, b in ranges)
+
+    scat_pending = [(r, _scat_uncov_refs(r)) for r, _p in scat
+                    if not crossable or _scat_uncov_refs(r)]
+    for r, refs in scat_pending:
+        refs_sorted = sorted(refs)
+        seg = _seg_label(refs_sorted)
+        inner_txt = _inner_label(refs_sorted)
+        ref_txt = f"差异区间 {seg}" + (f"（目的基因内 {inner_txt}）" if inner_txt else "")
         mixed_lines.append(
-            f"⚠ {r['filename']} 有 {p['count']} 个双峰位点（位置 {pos_preview}）："
-            f"{advice}")
-        note = _mixed_check_phrase(chk) if crossable else ""
-        if note:
-            mixed_lines.append(f"  ↳ {r['filename']}（{p['count']} 处双峰位点）：{note}")
-    elif scat:
-        n_pos = sum(p["count"] for _r, p in scat)
-        names = "、".join(r["filename"] for r, _p in scat[:2])
-        more = f" 等 {len(scat)} 条 read" if len(scat) > 2 else ""
-        mixed_lines.append(
-            f"⚠ {names}{more} 共有 {n_pos} 个双峰位点："
-            "可能为个别碱基噪声或低比例混合，建议核对峰图")
-        for r, p in scat:
-            chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
-            note = _mixed_check_phrase(chk) if crossable else ""
-            base = (f"  ↳ {r['filename']}：{p['count']} 处双峰位于 read "
-                    f"{pos_ranges_str(p['positions'])}（read 坐标）")
-            mixed_lines.append(base + (f"；{note}" if note else ""))
-    # 跨引物互检汇总（↳ 行随逐 read 明细折叠）：多引物同报双峰的参考位置
-    # 是真实混合的最强信号；其余按 复核一致/无覆盖 归类
+            f"  ↳ {ref_txt}：{r['filename']} 报出 {len(refs_sorted)} 处双峰"
+            f"（参考位置 {pos_ranges_str(refs_sorted)}；无其他引物覆盖，"
+            "无法互检，可能为个别碱基噪声）")
+    # 跨引物互检汇总：只保留「多引物同报双峰」（真实混合的最强信号）——
+    # 倾向噪声/无法互检的计数是 read 质量细节（2026-11-05 用户定稿：结论不列）
     if crossable and mixed_corroboration["total"] > 0:
         mc = mixed_corroboration
-        parts = []
         if mc["multi_sites"]:
             pos_txt = "、".join(str(rp) for rp, _fs in mc["multi_sites"][:4])
             more = " 等" if len(mc["multi_sites"]) > 4 else ""
-            parts.append(f"{len(mc['multi_sites'])} 处参考位点被多条引物同报双峰"
-                         f"（参考位置 {pos_txt}{more}，倾向真实混合）")
-        if mc["clean_total"]:
-            parts.append(f"{mc['clean_total']} 处其他引物覆盖且峰形单一（倾向噪声）")
-        if mc["uncov_total"]:
-            uncov_refs = sorted({rp
-                                 for d in mc["by_read"].values()
-                                 for rp in d.get("uncovered_ref") or []})
-            ref_txt = pos_ranges_str(uncov_refs)
-            parts.append(f"{mc['uncov_total']} 处仅单条引物覆盖，无法互检"
-                         + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
-        if parts:
-            mixed_lines.append("  ↳ 双峰位点跨引物互检：" + "；".join(parts))
+            mixed_lines.append(
+                f"⚠ {len(mc['multi_sites'])} 处参考位点被多条引物同报双峰"
+                f"（参考位置 {pos_txt}{more}，倾向真实混合）——建议重新挑单克隆复测")
 
-    # read 可信区显式提示：逐条 read 按位置先验 + Q 值与峰型判定，区外差异
-    # 按低置信处理；有其他引物覆盖的位点已自动互检定案，不再给用户布置
-    # "自己去看另一条引物"的核对作业。逐 read 可信区写成 ↳ 详情行
-    zp = ((read_results[0].get("reliable_zone") or {}).get("params")
-          if read_results else None) or DEFAULT_ZONE.as_dict()
-    end_note = (
-        f"注意：read 首 {zp['front_hard']}bp 与 {zp['tail_gray']}bp 之后为不可信区"
-        f"（{zp['front_hard'] + 1}–{zp['front_gray']}bp 按 Q 值与峰型逐条判定，"
-        f"{zp['tail_hard']}bp 之后一律不可信），该区差异按低置信处理"
-        f"{'，有其他引物覆盖的位点已自动互检' if len(read_results) >= 2 else ''}"
-    )
-    zone_rows = [f"  ↳ {r['filename']}：{zone_text(r['reliable_zone'])}"
-                 for r in read_results if r.get("reliable_zone")]
-    if zone_rows:
-        end_note = "\n".join([end_note] + zone_rows)
+    # read 可信区提示（2026-11-06 用户定稿）：默认边界的「首尾不可信区按低置信
+    # 处理」教育行删——差异该标低置信的已在变体表标注，结论里这句话是噪声；
+    # 只有用户自定义了边界时才说明边界（此时 Read 表数字与直觉可能不符）
+    _zparams = ((read_results[0].get("reliable_zone") or {}).get("params")
+                if read_results else None)
+    zp = _zparams or DEFAULT_ZONE.as_dict()
+    end_note = ""
+    if _zparams and (_zparams != DEFAULT_ZONE.as_dict()):
+        end_note = (
+            f"read 可信区为自定义边界（首端 {zp['front_hard']}bp 硬区、"
+            f"{zp['front_hard'] + 1}–{zp['front_gray']}bp 按 Q 值与峰型判定，"
+            f"{zp['tail_gray']}bp 之后不可信），区外差异按低置信处理"
+        )
 
-    # 互检定案一句话：多引物交叉验证已给出确定答案，不再逐条罗列为
-    # "低置信/待核对"（逐条明细仍在变体表，标注为互检排除）
-    resolved_line = ""
+    # 互检定案 → 区间裁决行（2026-11-05 用户定稿结构）：被排除的差异按
+    # 「源 read × 不相连位置段」聚合成区间行，每行 = 差异区间 + 源 read
+    # （方向 | 引物内坐标）+ 排除裁决（突出显示）。逐条位置不再出现于
+    # 结论；结构化区间行随 payload 输出供前端高亮。
+    # _seg_label / cds_offset / _inner_label 已在上方 scattered 块定义
+    resolved_lines: List[str] = []
+    resolved_regions: List[Dict] = []
     if resolved_variants:
-        rows = []
-        for v in resolved_variants[:8]:
-            ev = ((v.get("cross_read_conflict") or {}).get("evidence") or [{}])[0]
-            q = v.get("read_q")
-            rows.append(
-                f"  ↳ 位置 {v['ref_pos']} {variant_type_text(v)}：{v.get('read', '')}"
-                + (f" 该位 Q{q}" if q is not None else "")
-                + (f"；{ev['read']} 读出设计碱基（{region_quality_text(ev)}）"
-                   if ev.get("read") else ""))
-        if len(resolved_variants) > 8:
-            rows.append(f"  ↳ 另有 {len(resolved_variants) - 8} 处，见差异明细表")
-        resolved_line = "\n".join(
-            [f"互检排除 {len(resolved_variants)} 处单条 read 差异：其他引物在该区域"
-             f"高质量覆盖（位点 ±{CROSS_REGION_HALF}bp 平均 Q≥{CROSS_REGION_MEAN_Q}、"
-             f"≥Q20 占 {round(CROSS_REGION_HQ_FRAC * 100)}% 以上）并读出设计碱基，"
-             "判为该 read 测序误差，不计入判定"] + rows)
+        by_src: Dict[str, List[Dict]] = {}
+        for v in resolved_variants:
+            by_src.setdefault(v.get("read", "?"), []).append(v)
+        by_filename = {r["filename"]: r for r in read_results}
+
+        for src_name, vs in by_src.items():
+            src = by_filename.get(src_name)
+            direction = (src or {}).get("alignment", {}).get("direction") or "+"
+            dir_txt = "反向" if direction == "-" else "正向"
+            # 引物内坐标（修剪后 read 内 1-based；反向 read 沿电泳链折算）
+            rp_all = [v.get("read_pos") for v in vs if v.get("read_pos")]
+            trim_len = (src or {}).get("trimmed_length")
+            if rp_all and trim_len:
+                lo, hi = min(rp_all), max(rp_all)
+                if direction == "-":
+                    lo, hi = trim_len - hi + 1, trim_len - lo + 1
+                primer_txt = f"{lo}-{hi}"
+            else:
+                primer_txt = None
+            # 逐条变体独立取验证 read（并集排除源 read 自身）；分档取最弱证据
+            verifiers: set = set()
+            min_q: Optional[float] = None
+            for v in vs:
+                for h in (v.get("cross_read_conflict") or {}).get("evidence") or []:
+                    if h.get("read") and h["read"] != src_name:
+                        verifiers.add(h["read"])
+                        mq = h.get("region_mean_q")
+                        if mq is not None:
+                            min_q = mq if min_q is None else min(min_q, mq)
+            strength = ("验证质量充分" if min_q is not None and min_q >= RESOLVED_STRONG_Q
+                        else "验证质量中等" if min_q is not None else "")
+            verifier_txt = "、".join(sorted(verifiers)) or "其他引物"
+            seg = _seg_label([v["ref_pos"] for v in vs])
+            # 目的基因模式：区间追加目的基因内坐标（_inner_label 统一换算）
+            inner_txt = _inner_label([v["ref_pos"] for v in vs])
+            seg_txt = seg + (f"（目的基因内 {inner_txt}）" if inner_txt else "")
+            q_txt = "，验证质量充分" if strength == "验证质量充分" else ""
+            resolved_lines.append(
+                f"差异区间 {seg_txt}：{src_name}（{dir_txt}"
+                + (f" | 引物内坐标 {primer_txt}" if primer_txt else "")
+                + f"）报出 {len(vs)} 处差异 → 已被 {verifier_txt} "
+                f"高质量覆盖排除{q_txt}，无需核对"
+            )
+            resolved_regions.append({
+                "ref_range": seg,
+                "cds_offset": cds_offset or None,
+                "source_read": src_name,
+                "direction": direction,
+                "primer_range": primer_txt,
+                "variant_count": len(vs),
+                "verifier_reads": sorted(verifiers),
+                "verifier_quality": strength or None,
+                "positions": sorted(v["ref_pos"] for v in vs),
+            })
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
     cds_lines = [
@@ -2524,12 +2593,14 @@ def _build_conclusion(
     if not read_results:
         conclusion = "没有可分析的测序文件"
     elif not shown_variants:
-        conclusion = (
-            f"构建序列与设计一致：{len(read_results)} 条 read "
-            f"{'交叉验证无差异' if resolved_variants else '全部匹配'}，"
-            f"覆盖参考序列的 {consensus['coverage_percent']:.1f}%"
-            f"{_coverage_ranges_text(coverage_ranges)}"
-        )
+        # 用户定稿结构（2026-11-05）：正文 = 区间裁决行 → CDS 行。裁决头
+        # 由 _conclusion_summary 统一生成（✓/✗/△ + 强度），正文不再重复
+        # 覆盖数字与「构建序列与设计一致」复述
+        body_lines = list(resolved_lines)
+        # scattered 双峰提示：互检能归为噪声的不再打扰；仅剩「无覆盖待核」的
+        # 位点才保留一行（双峰是源 read 自身属性，与构建判读无关）
+        body_lines.extend(mixed_lines)
+        body_lines.extend(cds_lines)
         # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）；
         # 三态 verdict 分措辞（Step B）：矛盾→不可信，不可判定→需换引物
         _verdict_warn = {
@@ -2562,18 +2633,19 @@ def _build_conclusion(
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
         poly_warnings.extend(_poly_anchor_notes(homopolymer_report))
-        # 双峰提示紧跟首行：混合样品即使主克隆与设计一致也必须显式提示
-        all_lines = ([conclusion, resolved_line] + mixed_lines + cds_lines + poly_warnings
-                     + dropout_notes + [end_note])
-        conclusion = "\n".join(x for x in all_lines if x)
+        body_lines.extend(poly_warnings)
+        body_lines.extend(dropout_notes)
+        body_lines.append(end_note)
+        conclusion = "\n".join(x for x in body_lines if x)
     else:
-        lines = [f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
-                 f"{_coverage_ranges_text(coverage_ranges)}）："]
+        # 有确认差异：区间裁决行 → 差异摘要 → CDS 行（确认差异是主要事件，
+        # 但被排除的区间行依然靠前——它们是 read 质量信息，不是待办）
+        lines = list(resolved_lines)  # 区间裁决行紧跟头行（2026-11-05 定稿结构）
+        lines.append(f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
+                     f"{_coverage_ranges_text(coverage_ranges)}）：")
         lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
         lines.extend(summarize_severity(shown_variants))
-        if resolved_line:
-            lines.append(resolved_line)
-        # CDS 结论紧随差异摘要，poly 判读放后面（整段 CDS 有没有问题是第一信息）
+        # CDS 结论紧随其后（整段编码区有没有问题是第一信息，此前重构时遗漏）
         lines.extend(cds_lines)
         # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
         # 线——变体锚点 + 峰图实测 + 逐 read 调用/峰数。此前变体行与峰图判读
@@ -2661,22 +2733,18 @@ def _build_conclusion(
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
         lines.extend(_poly_anchor_notes(homopolymer_report))
         lines.append(end_note)
-        if consensus["coverage_percent"] < 95:
-            gap_hint = ""
-            if coverage_gaps:
-                g = coverage_gaps[0]
-                gap_hint = (
-                    f"；共 {len(coverage_gaps)} 段未覆盖缺口"
-                    f"（最大 {_gap_span_text(g)}，{g['length']}bp）"
-                )
+        # 覆盖 % 首行已有；「部分测序是常规策略」安抚话术删（2026-11-05 用户
+        # 定稿）——只保留未覆盖缺口的位置提示（判断是否补引物用得上）
+        if consensus["coverage_percent"] < 95 and coverage_gaps:
+            g = coverage_gaps[0]
             lines.append(
-                f"注意：本次实测覆盖 {consensus['coverage_percent']:.1f}%，"
-                f"未测区域按设计序列对待（部分测序是常规策略，无需测全）{gap_hint}"
+                f"注意：共 {len(coverage_gaps)} 段未覆盖缺口"
+                f"（最大 {_gap_span_text(g)}，{g['length']}bp），未测区域按设计序列对待"
             )
         conclusion = "\n".join(lines)
 
-    # 结论头部一句话总结：详细段落（差异明细/CDS 结论/注意事项）信息密度高，
-    # ✓/✗/△ 先给判读结果，空两行后再展开——回答“到底行不行”只用一眼
+    # 结论头部一句话总结：✓/✗/△ 先给判读结果，区间裁决行紧跟其后
+    # （2026-11-05 定稿结构，头行与正文间不再空行）
     # （scattered 双峰只提示不升级，不算混合）
     partial_reads = [r for r in read_results if r.get("partial_alignment")]
     if partial_reads:
@@ -2688,9 +2756,9 @@ def _build_conclusion(
         conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
                                           partial_reads=len(partial_reads),
                                           resolved=len(resolved_variants))
-                      + "\n\n\n" + conclusion)
+                      + "\n" + conclusion)
 
-    return conclusion, cds_reports, mixed_profiles
+    return conclusion, cds_reports, mixed_profiles, resolved_regions
 def analyze(
     ab1_files: List[Tuple[str, bytes]],
     reference: str,
@@ -2843,7 +2911,7 @@ def analyze(
 
     homopolymer_report = _homopolymer_report_pass(
         poly_runs, variants, read_results, coverage_ranges)
-    conclusion, cds_reports, mixed_profiles = _build_conclusion(
+    conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features)
@@ -2879,6 +2947,8 @@ def analyze(
         "cds_reports": cds_reports,
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
+        # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
+        "resolved_regions": resolved_regions,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_corroboration": mixed_corroboration,
