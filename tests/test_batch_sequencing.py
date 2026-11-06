@@ -237,13 +237,17 @@ def _h1_case(read_fn):
 ])
 def test_excel_conclusion_错质粒不入正确(label, read_fn):
     """review 04 H1 端到端：错质粒/污染 read 此前得到 "合格：与设计一致；
-    测序覆盖 1%/20%" 并被归入 正确/"""
+    测序覆盖 1%/20%" 并被归入 正确/。
+
+    T6 起口径升级（goal T6；A 2.1）：外源部分是高 Q 的端部软剪切段 →
+    unaligned_hq_segment（连接/结构异常）→ 判「不合格」归 错误/，
+    不再降级「无法判定」；回归核心不变——错质粒不得进 正确/"""
     from app.sequencing_report import _conclusion_bucket
     res = _h1_case(read_fn)
     out = batch.excel_conclusion("P1", res, 1, True)
     assert not out.startswith("合格"), (label, out)
-    assert out.startswith("无法判定：")
-    assert _conclusion_bucket(out) == "无法判定"
+    assert out.startswith("不合格："), (label, out)
+    assert _conclusion_bucket(out) == "错误"
 
 
 def test_excel_conclusion_完整比对仍合格():

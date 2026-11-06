@@ -254,6 +254,15 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"{r.get('filename')} 修剪后 {pa.get('trimmed_length')}bp 仅 "
                  f"{pa.get('aligned_read_len')}bp 比对上参考，其余部分未验证",
                  "核对样品身份/参考选择（或按环状参考分析）")
+        # 端部软剪切的高质量段（goal T6；A 2.1）：连接/结构异常 → fail
+        for hq in r.get("unaligned_hq_segments") or []:
+            _blk("unaligned_hq_segment", hq.get("adj_ref_start"),
+                 hq.get("adj_ref_end"), None,
+                 f"{r.get('filename')} {hq.get('side')}端 "
+                 f"{hq.get('length')}bp 高质量序列未比对上参考"
+                 f"（平均 Q{hq.get('mean_q')}），连接/结构异常，该部分未验证",
+                 "核对连接处/样品身份，必要时换引物或补测对侧",
+                 fail_impact=True)
     # ROI 覆盖分级（goal T5；A 4.2）：实测（measured）口径定「部分验证」。
     # 单 read 首尾不可信区是固有损耗、verified<100% 几乎恒真（T3 决策沿用：
     # verified 语义切换随 T12 复评，否则 123bp 全 CDS 对照必翻红）：

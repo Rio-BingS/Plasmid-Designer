@@ -671,6 +671,9 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     _syn_flags = [_is_synonymous(v) for v in confirmed]
     syn = [v for v, s in zip(confirmed, _syn_flags) if s]
     hard = [v for v, s in zip(confirmed, _syn_flags) if not s]
+    # 端部软剪切高质量段（goal T6；A 2.1）：旧记录 reads 无该键 → 空
+    hq_segs = [(r["filename"], s) for r in res.get("reads") or []
+               for s in (r.get("unaligned_hq_segments") or [])]
     # verdict 驱动的覆盖分级（goal T5；A 4.2）：partial/insufficient 由
     # ROI 覆盖推导、Excel 端不重复算（ROI 需要 features 参与判定，结果
     # 里没有；旧记录无 verdict → 走原分支，历史口径不变）
@@ -700,6 +703,12 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             out += f"；另有 {len(syn)} 处同义突变（蛋白不变）"
     elif syn:
         out = f"不合格：{len(syn)} 处同义突变（DNA 变、蛋白不变）"
+    elif hq_segs:
+        # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常，判不合格
+        who = "、".join(f"{fn} {s['side']}端 {s['length']}bp"
+                        for fn, s in hq_segs[:2])
+        out = (f"不合格：{who} 高质量序列未比对上参考（连接/结构异常）"
+               + ("等" if len(hq_segs) > 2 else "") + "，该部分未验证")
     elif n_err:
         # 解析失败的 read（goal T4；B P0-3）：不再隐身——「待定·读取失败」
         # 前缀点名，分拣进 读取失败/；全部失败已在上面按 分析失败 返回
