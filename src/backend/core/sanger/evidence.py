@@ -218,10 +218,13 @@ def _low_confidence_reason(v: Dict, mixed_positions: set,
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
                         has_mixed: bool, partial_reads: int = 0,
-                        resolved: int = 0, unresolved_sites: int = 0) -> str:
+                        resolved: int = 0, unresolved_sites: int = 0,
+                        failed_reads: int = 0,
+                        failed_names: str = "") -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
-    优先级：确认差异 > 疑似混合 > 未决（资格门）> 完全一致（T2 统一三出口：
-    确证损伤不再让位于混合提示——多数克隆确实错了，混合降为正文提示）。
+    优先级：确认差异 > 读取失败 > 疑似混合 > 未决（资格门）> 完全一致
+    （T2 统一三出口：确证损伤不再让位于混合提示——多数克隆确实错了，
+    混合降为正文提示；T4：解析失败的 read 不再隐身，结论头点名）。
     partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
     有误，或线性参考上跨原点的 read）时不得给出干净的 ✓——未比对部分
     根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。
@@ -263,7 +266,22 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             bits.append(f"检出 {len(confirmed)} 处确认差异")
         if has_mixed:
             bits.append("另检出疑似混合样品（部分位点双峰），建议重新挑单克隆复测")
+        if failed_reads:
+            bits.append(f"另有 {failed_reads} 条 read 解析失败（{failed_names}），该部分未验证")
         return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
+    # 解析失败的 read（goal T4；B P0-3）：不再只在 read 表出现——结论头 △
+    # 点名「哪几条没读出来」，失败的文件没有验证可言
+    if failed_reads:
+        head = (f"△ 结论：{failed_reads} 条 read 解析失败（{failed_names}），"
+                "该部分未验证")
+        if variants or unresolved_sites:
+            bits = []
+            if variants:
+                bits.append(f"{len(variants)} 处未决差异")
+            if unresolved_sites:
+                bits.append(f"{unresolved_sites} 处未决位点")
+            head += "；" + "、".join(bits) + "需核对峰图或补测"
+        return head + (f"；{tail}" if tail else "")
     if has_mixed:
         head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
         return head + "——建议重新挑单克隆复测"
