@@ -73,8 +73,9 @@ from core.sanger.coverage import (  # noqa: F401
 # 此处 re-export 维持既有导入路径（tests / app 层仍从 pipeline 取名）
 from core.sanger.evidence import (  # noqa: F401
     _IUPAC_MERGE, _collect_unresolved_sites, _conclusion_summary,
-    _iupac_merge, _low_confidence_reason, _variant_reason_codes,
-    _variant_status, variant_type_text,
+    _insertion_peak_ratio, _iupac_merge, _low_confidence_reason,
+    _variant_peak_evidence, _variant_reason_codes, _variant_status,
+    attach_evidence_by_read, covering_not_supporting, variant_type_text,
 )
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
@@ -126,66 +127,6 @@ def _peak_snr(trace: Dict[str, List[int]], peak_indices: List[Optional[int]],
     return peak_snr(trace, peak_indices, read_pos, alt_base, called_bases)
 
 
-def _insertion_peak_ratio(trace: Dict[str, List[int]], peak_indices: List[int],
-                          read_pos: int, alt_base: str) -> Optional[float]:
-    """插入峰强度比：插入碱基通道峰面积 / 相邻峰主峰面积中位数
-
-    纯合质粒中真实存在的插入，其峰高接近邻峰（~1）；部分克隆带插入（混合
-    样品）或峰压缩区峰高偏弱（~0.3-0.6）；caller 伪影几乎无独立峰（~0）。
-    仅支持单碱基插入（多碱基插入的峰形判别复杂，返回 None 走 Q 口径）。
-    """
-    if len(alt_base) != 1 or alt_base not in "ACGT":
-        return None
-    if read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
-        return None
-    i = read_pos - 1
-    n = min(len(v) for v in trace.values()) if trace else 0
-    if n == 0 or peak_indices[i] is None or not (0 <= peak_indices[i] < n):
-        return None
-    lo, hi = _peak_window(peak_indices, i, n)
-    alt_area = sum(trace[alt_base][lo:hi])
-    neigh: List[int] = []
-    for j in (i - 2, i - 1, i + 1, i + 2):
-        if j == i or not (0 <= j < len(peak_indices)):
-            continue
-        if peak_indices[j] is None or not (0 <= peak_indices[j] < n):
-            continue
-        l2, h2 = _peak_window(peak_indices, j, n)
-        neigh.append(max(sum(trace[b][l2:h2]) for b in "ACGT"))
-    if not neigh:
-        return None
-    med = sorted(neigh)[len(neigh) // 2]
-    return round(alt_area / med, 2) if med > 0 else None
-
-
-def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
-                           read_pos: Optional[int], ref_base: str,
-                           alt_base: str, vtype: str = "substitution",
-                           bases: str = "") -> Optional[Dict]:
-    """变体的峰级证据：替换用峰强比（mutant_pct）+ 信噪比，插入用插入峰强度比。
-    bases（修剪后调用碱基串）供 SNR 的局部噪声估计逐峰排除调用通道。"""
-    if vtype == "insertion":
-        # Sanger read 前导 ~20bp 峰形未稳定（信号爬升/压缩高发），峰证据不可靠
-        if read_pos is None or read_pos < 20:
-            return None
-        ratio = _insertion_peak_ratio(trace, peak_indices, read_pos, alt_base)
-        return {"insertion_peak_ratio": ratio} if ratio is not None else None
-    if not ref_base or not alt_base or len(ref_base) != 1 or len(alt_base) != 1:
-        return None
-    if alt_base not in "ACGT" or ref_base not in "ACGT":
-        return None
-    if not trace or not peak_indices or read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
-        return None
-    pk = peak_indices[read_pos - 1]
-    n = min(len(v) for v in trace.values())
-    if n == 0 or pk is None or pk < 0 or pk >= n:
-        return None
-    lo, hi = _peak_window(peak_indices, read_pos - 1, n)
-    areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
-    alt_a, ref_a = areas.get(alt_base, 0), areas.get(ref_base, 0)
-    mutant_pct = round(100 * alt_a / (alt_a + ref_a), 1) if alt_a + ref_a > 0 else None
-    return {"mutant_pct": mutant_pct,
-            "snr": _peak_snr(trace, peak_indices, read_pos, alt_base, bases)}
 
 
 def _variant_confidence(v: Dict, mixed_positions: set,
@@ -1599,24 +1540,13 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         for r in read_results
     }
     for v in variants:
+        # T14 多 read 证据聚合（A 3.4 / B P1-6）：evidence_by_read + 代表
+        # read 择强（重绑 read/read_pos/read_q——后续置信度分级、混合背景、
+        # zone 强制、互检全部基于代表 read，与上传顺序无关，M2）；
+        # peak_evidence 取代表 read 的峰证据
+        attach_evidence_by_read(v, by_read, mixed_by_read)
+        evidence = v.get("peak_evidence")
         src = by_read.get(v.get("read", ""))
-        evidence = None
-        if src is not None:
-            # 反向 read 的 alt/ref 碱基是参考链方向，trace 通道记录的却是原始
-            # 电泳链（互补链）信号：峰证据取样前必须按链向互补换算
-            if src["alignment"].get("direction") == "-":
-                comp = str.maketrans("ACGTN", "TGCAN")
-                ev_ref = (v.get("ref_base", "") or "").translate(comp)
-                ev_alt = (v.get("alt_base", "") or "").translate(comp)[::-1]
-            else:
-                ev_ref, ev_alt = v.get("ref_base", ""), v.get("alt_base", "")
-            evidence = _variant_peak_evidence(
-                src["trace"], src["trimmed_peaks"], v.get("read_pos"),
-                ev_ref, ev_alt, v.get("type", "substitution"),
-                bases=src.get("trimmed_bases") or "",
-            )
-            if evidence is not None:
-                v["peak_evidence"] = evidence
         # poly 区 indel 的峰压缩评估：决定重复数计数是否可靠（参与置信度分级）
         hp = v.get("homopolymer")
         if hp and v.get("type") in ("insertion", "deletion") and src is not None:
@@ -1652,6 +1582,11 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         # 支持、另一条 read 完整跨过同一 junction 却未报 → 互检矛盾。
         # 真实变异（clonal）必然被覆盖该位的每条 read 独立报出，单 read
         # 独有的 indel 是伪影高发形态，不能单独驱动"蛋白与设计不一致"
+        # T14：互检信息扩展到所有变体（A 3.4）——覆盖该位点但未支持该变体
+        # 的其他 read 一律记录（只记覆盖事实，含 N 列/质量不足/邻近有差异的
+        # read）；反证推断仍走下面的干净覆盖口径，判定语义不变
+        v["covering_reads_not_supporting"] = covering_not_supporting(
+            v, ref2call_by_read, keys_by_read, by_read)
         contradicts: List[Dict] = []
         weak_cover: List[Dict] = []
         if (v.get("support_reads") or 1) == 1:
@@ -2454,11 +2389,16 @@ def analyze(
     merged: Dict[Tuple, Dict] = {}
     for v in all_variants:
         key = _variant_key(v)
+        # T14：逐 read 证据聚合的原料——每条支持 read 的 read_pos/Q 记入
+        # _per_read（attach_evidence_by_read 消费后弹出，不外发）
+        pr = {"read": v["read"], "read_pos": v.get("read_pos"),
+              "read_q": v["read_q"]}
         if key in merged:
             merged[key]["support_reads"] += 1
             merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
+            merged[key]["_per_read"].append(pr)
         else:
-            merged[key] = {**v, "support_reads": 1}
+            merged[key] = {**v, "support_reads": 1, "_per_read": [pr]}
     variants = list(merged.values())
     variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
     variants = annotate_variants(variants, features, ref)
