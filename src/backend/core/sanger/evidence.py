@@ -40,6 +40,14 @@ def _variant_status(v: Dict) -> str:
     return "unresolved"
 
 
+def _vstatus_of(v: Dict) -> str:
+    """三态（读显式 status——T21 分歧降级等后处理写回的字段；旧记录无
+    status 时按置信推导，与 verdict._vstatus 同口径）"""
+    if v.get("status"):
+        return v["status"]
+    return _variant_status(v)
+
+
 def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
                           zone: Optional[Dict], mixed_positions: set) -> List[str]:
     """机器可读的原因码（goal §3 Variant.reason_codes），从结构化事实推导、
@@ -466,12 +474,12 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             tail = (f"目的 CDS 覆盖 {target.get('covered_percent') or 0:.0f}%"
                     "（未覆盖部分按参考填充、未验证）")
     if partial_reads and not has_mixed:
-        confirmed0 = [v for v in variants if v.get("confidence") != "low"]
+        confirmed0 = [v for v in variants if _vstatus_of(v) == "confirmed"]
         bad0 = [c for c in cds_reports if c.get("protein_identical") is False]
         if not confirmed0 and not bad0:
             return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
                     "有大段未比对上参考，该部分未验证" + (f"；{tail}" if tail else ""))
-    confirmed = [v for v in variants if v.get("confidence") != "low"]
+    confirmed = [v for v in variants if _vstatus_of(v) == "confirmed"]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
     # 确证差异优先（T2 三出口统一：与 Excel「不合格」同序——混合样品提示
