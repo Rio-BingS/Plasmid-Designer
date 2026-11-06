@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.noise import peak_snr
+from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
@@ -759,50 +760,11 @@ _ALT_STARTS = ("ATG", "GTG", "TTG", "ATT", "CTG", "ATC", "ATA")  # 细菌起始�
 _STOP_CODONS = {"TAA", "TAG", "TGA"}
 
 
-def _find_orf(ref: str, start: int, end: int, strand: str) -> Optional[Dict]:
-    """在特征区间内寻找最佳开放阅读框（ORF），返回参考坐标 {orf_start, orf_end}
-
-    手动标注/导入的 CDS 特征边界常有 1-3bp 偏差（如起点多含上游碱基），
-    直接按特征起点取框翻译会整体错位、连起始密码子判定都失效。
-    枚举区间内三个阅读框：优先“起始密码子→终止密码子”完整的 ORF
-    （ATG 优先于替代起始），其次起始→区间末端的开放框，取最长者。
-    """
-    win = ref[start - 1:end]
-    if strand == "-":
-        win = _seq_revcomp(win)
-    N = len(win)
-    best: Optional[Tuple[tuple, int, int]] = None  # (score, a, b) win 内 0-based 半开 [a,b)
-
-    def consider(a: int, b: int, has_stop: bool):
-        nonlocal best
-        atg = win[a:a + 3] == "ATG"
-        # 长度主导：真实 CDS 通常是区间内最长开放框，防止随机短完整 ORF 反超
-        score = (b - a, atg, has_stop)
-        if best is None or score > best[0]:
-            best = (score, a, b)
-
-    for frame in range(3):
-        i = frame
-        while i + 3 <= N:
-            if win[i:i + 3] in _ALT_STARTS:
-                j = i
-                stop_found = False
-                while j + 3 <= N:
-                    if win[j:j + 3] in _STOP_CODONS:
-                        consider(i, j + 3, True)
-                        stop_found = True
-                        break
-                    j += 3
-                if not stop_found:
-                    consider(i, N, False)  # 有起始但区间内无终止：开放框
-            i += 3
-    if best is None:
-        return None
-    _, a, b = best
-    if strand == "-":
-        # 反向互补空间 [a,b) → 参考坐标：位置 i（0-based）对应参考 end-i（1-based）
-        return {"orf_start": end - b + 1, "orf_end": end - a}
-    return {"orf_start": start + a, "orf_end": start + b - 1}
+def _find_orf(ref: str, start: int, end: int, strand: str,
+              transl_table=None, codon_start=None) -> Optional[Dict]:
+    """特征区间内最佳 ORF（T16 起委托 orf_guard.find_guarded_orf：校正
+    只允许同读框 ±3bp 标注偏差，超出保留原标注并给 suspect）"""
+    return find_guarded_orf(ref, start, end, strand, transl_table, codon_start)
 
 
 def _build_cds_reports(
@@ -971,10 +933,19 @@ def _build_cds_reports(
         if feat_start < 1 or feat_end > len(ref) or feat_start > feat_end:
             continue
         strand = f.get("strand") or "+"
-        # 编码区校正：特征边界常有 1-3bp 偏差（如起点多含上游碱基），
-        # 对齐区间内最佳 ORF 后再翻译，此后 start/end 均指真实编码区
-        orf = _find_orf(ref, feat_start, feat_end, strand)
+        # 编码区校正（T16 护栏）：特征边界常有 1-3bp 偏差（如起点多含上游
+        # 碱基），对齐区间内最佳 ORF 后再翻译，此后 start/end 均指真实编码
+        # 区；偏差超出 ±3bp 同读框护栏 → 保留原标注并记 orf_annotation_suspect
+        # （标注疑点交人工确认，不被静默改写）
+        orf = _find_orf(ref, feat_start, feat_end, strand,
+                        transl_table=f.get("transl_table"),
+                        codon_start=f.get("codon_start"))
         start, end = (orf["orf_start"], orf["orf_end"]) if orf else (feat_start, feat_end)
+        if orf and orf.get("suspect") and unresolved_sites is not None:
+            # 注意不能写 (unresolved_sites or [])：空列表为假值会拿到新
+            # 抛弃列表，位点丢失
+            unresolved_sites.append(
+                suspect_site(feat_start, feat_end, f.get("name") or "CDS"))
         if orf and (start, end) != (feat_start, feat_end):
             shift = f"起点相差 {abs(start - feat_start)} bp" if start != feat_start \
                 else f"终点相差 {abs(end - feat_end)} bp"
