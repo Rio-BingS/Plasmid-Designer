@@ -70,8 +70,7 @@ from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,
 )
-from core.sanger.coverage import mark_unverified_bases  # noqa: F401  (历史引用兼容)
-from core.sanger.coverage import _mask_uncovered  # noqa: F401  (历史引用兼容)
+from core.sanger.coverage import mark_unverified_bases, _mask_uncovered  # noqa: F401  (历史引用兼容)
 from core.sanger.pipeline import analyze, build_verdict
 from core.sanger.decompose import decompose_and_annotate
 from core.sanger.reliable_zone import ZoneParams
