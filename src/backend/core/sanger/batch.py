@@ -645,12 +645,17 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     mixed_tails, widespread = _mixed_tails(res)
     undetermined = _undetermined_reason(res)
 
-    # 确证 CDS 不一致时结论主句仍是不合格（多数克隆确实错了，混合降为
-    # 提示）；否则疑似混合样品升级为结论主句——混合培养物无法自动判定
+    # 分支序 = verdict.status 优先级（T2 三出口统一）：fail（蛋白不一致/
+    # 确证差异）> mixed > pending > insufficient > pass。确证差异不再让
+    # 位给混合提示（多数克隆确实错了，混合降为正文），也不再报「合格」
     if bad:
         names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
         hint = "（移码）" if any(c.get("frameshift_count") for c in bad) else ""
         out = f"不合格：{names} 蛋白与设计不一致{hint}"
+    elif confirmed:
+        # 编码区外的确证差异也判不合格（判定区域 T5 收窄为 ROI 前按整参考口径）
+        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
+        out = f"不合格：检出 {len(confirmed)} 处确证差异（{feats}）"
     elif widespread:
         if len(widespread) == 1:
             fn, p = widespread[0]
@@ -662,13 +667,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         out = ("疑似混合：" + main
                + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
                + "，无法自动判定，建议重新挑单克隆复测")
-        if confirmed:
-            out += f"；按主峰判读蛋白与设计一致，另有 {len(confirmed)} 处确证差异"
         return out
-    elif undetermined:
-        out = "无法判定：" + undetermined
-        if confirmed:
-            out += f"；已比对区域另有 {len(confirmed)} 处确证差异"
     elif pending or n_sites:
         # ✓/合格资格门：有未决项就不给「合格」，如实说待定
         bits = []
@@ -677,17 +676,13 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         if n_sites:
             bits.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
         out = "待定：" + "、".join(bits) + "，需核对峰图或补测"
-        if confirmed:
-            feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
-            out += f"；另有 {len(confirmed)} 处确证差异（{feats}）"
         if mixed_tails:
             out += "；" + "；".join(mixed_tails)
         if cov < 95:
             out += f"；测序覆盖 {cov:.0f}%"
         return out
-    elif confirmed:
-        feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
-        out = f"合格：编码区蛋白一致；编码区外 {len(confirmed)} 处确证差异（{feats}）"
+    elif undetermined:
+        out = "无法判定：" + undetermined
     else:
         out = "合格：与设计一致"
 
@@ -696,6 +691,9 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         tail.append(f"{len(pending)} 处未决差异")
     if n_sites:
         tail.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
+    if undetermined and not out.startswith("无法判定"):
+        # fail/待定主句不吸收的无法判定原因（如部分比对）落尾部，不丢信息
+        tail.append(undetermined)
     # A4：poly 区峰图判读存疑——按 run_verdict 分态（contradictory 互证
     # 矛盾对克隆批量筛查最致命，单独点名）
     hp_bad = [e for e in (res.get("homopolymers") or [])

@@ -215,7 +215,8 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
                         has_mixed: bool, partial_reads: int = 0,
                         resolved: int = 0, unresolved_sites: int = 0) -> str:
     """结论头部的一句话总结：✓/✗/△ 一眼给出判读结果，详细段落空两行后展开。
-    优先级：疑似混合 > 确认差异 > 未决（资格门）> 完全一致。
+    优先级：确认差异 > 疑似混合 > 未决（资格门）> 完全一致（T2 统一三出口：
+    确证损伤不再让位于混合提示——多数克隆确实错了，混合降为正文提示）。
     partial_reads>0（有 read 大段未比对上参考：载体外序列、污染、参考
     有误，或线性参考上跨原点的 read）时不得给出干净的 ✓——未比对部分
     根本没有验证。环状参考的跨原点 read 已在主流程整条比对，不再计入。
@@ -247,18 +248,20 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     confirmed = [v for v in variants if v.get("confidence") != "low"]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
-    if has_mixed:
-        head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
-        if bad:
-            head += f"，{names}蛋白与设计不一致"
-        return head + "——建议重新挑单克隆复测"
+    # 确证差异优先（T2 三出口统一：与 Excel「不合格」同序——混合样品提示
+    # 保留在正文双峰章节，不再抢占结论头）
     if confirmed or bad:
         bits = []
         if bad:
             bits.append(f"{names}蛋白与设计不一致")
         if confirmed:
             bits.append(f"检出 {len(confirmed)} 处确认差异")
+        if has_mixed:
+            bits.append("另检出疑似混合样品（部分位点双峰），建议重新挑单克隆复测")
         return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
+    if has_mixed:
+        head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
+        return head + "——建议重新挑单克隆复测"
     # 无确认差异且目标零覆盖：△ 未能验证（✓ 会让没测到的目标隐身）
     if target and target.get("coverage_status") == "uncovered":
         low_note = (f"（{len(variants)} 处未决差异）"

@@ -12,7 +12,7 @@
  * 回看时父组件 preset watch 会把两者一起复位（行为与拆分前一致）。
  */
 import { computed } from 'vue'
-import type { CdsReport, SequencingAnalysis } from '@/api'
+import type { CdsReport, SequencingAnalysis, VerdictItem } from '@/api'
 
 const props = defineProps<{
   analysis: SequencingAnalysis
@@ -78,17 +78,64 @@ const conclusionParts = computed(() => {
   return { main: main.join('\n'), low, mixed, resolved }
 })
 
-/** 结论头判读：✓ → 绿色强调，✗ → 失败，△ → 注意（头部行加粗渲染） */
+/** 结论头判读：优先 verdict.status（goal T2；A 5.2 不做文案匹配），无
+ * verdict（旧记录）退回 ✓/✗ 符号推断 */
 const headLine = computed(() => {
   const first = (props.analysis.conclusion ?? '').split('\n')[0] ?? ''
-  return { text: first, kind: first.startsWith('✓') ? 'ok' : first.startsWith('✗') ? 'fail' : 'warn' }
+  const bySymbol = first.startsWith('✓') ? 'ok' : first.startsWith('✗') ? 'fail' : 'warn'
+  const st = props.analysis.verdict?.status
+  const kind = st === 'pass' ? 'ok' : st === 'fail' ? 'fail' : st ? 'warn' : bySymbol
+  return { text: first, kind }
 })
+
+/** verdict 徽标文案（T2：状态机可读化；旧记录无 verdict 不显示） */
+const statusBadge = computed(() => {
+  const labels: Record<string, string> = {
+    pass: '通过', fail: '失败', pending: '待定', mixed: '疑似混合',
+    partial: '部分验证', insufficient: '证据不足', failed_reads: '读取失败',
+  }
+  const st = props.analysis.verdict?.status
+  return st ? { status: st, label: labels[st] ?? st } : null
+})
+
+/** 阻断项按 verdict.blocking 结构化列出（T2；每项给位置/元件与建议动作） */
+const blockingItems = computed(() => props.analysis.verdict?.blocking ?? [])
+
+const KIND_LABELS: Record<string, string> = {
+  confirmed_variant: '确证差异',
+  unresolved_variant: '未决差异',
+  unresolved_site: '未决位点',
+  n_in_cds: 'CDS 内 N/模糊调用',
+  mixed_variant: '混合等位',
+  mixed_sample: '疑似混合样品',
+  unaligned_hq_segment: '端部高质量未比对',
+  structural_breakpoint: '结构断点',
+  critical_element_variant: '关键元件差异',
+  junction_variant: '接合区差异',
+  roi_uncovered: '目标未覆盖',
+  roi_unverified: '目标未验证',
+  poly_unreliable: 'poly 计数不可信',
+  dropout: '信号骤降',
+  partial_alignment: '部分比对',
+  read_failed: 'read 解析失败',
+  primer_mismatch: '引物不符',
+  orf_annotation_suspect: 'ORF 校正存疑',
+  overlap_discordance: '重叠区分歧',
+  allele_mismatch: '等位基因不符',
+}
+
+const blockingPos = (b: VerdictItem) =>
+  b.ref_start ? (b.ref_end && b.ref_end !== b.ref_start ? `${b.ref_start}–${b.ref_end}` : `${b.ref_start}`) : ''
 
 /** 区间裁决行拆分：裁决词（高质量覆盖排除…无需核对）绿色强调，其余正常色 */
 const resolvedParts = (l: string) => {
   const i = l.indexOf('高质量覆盖排除')
   return i >= 0 ? { head: l.slice(0, i), tail: l.slice(i) } : { head: l, tail: '' }
 }
+
+/** 结构化裁决行（T2）：resolved_regions 存在时优先结构化渲染，
+ *  文本行匹配只作为旧记录的回退 */
+const resolvedRegionList = computed(() => props.analysis.resolved_regions ?? [])
 
 /** CDS 结论卡的覆盖标签 */
 function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
@@ -125,13 +172,34 @@ function soLevel(t: string): string {
 <template>
   <!-- 结论总览：卡片默认中性白底，✓ 只绿在头行文字；红底仅用于失败结论 -->
   <div class="conclusion-card" :class="{ fail: headLine.kind === 'fail' }">
-    <p class="conclusion-head" :class="headLine.kind">{{ headLine.text }}</p>
-    <!-- 区间裁决行：紧跟头行突出显示（绿色高亮条），逐条位置悬停/见差异明细 JSON -->
-    <div v-if="conclusionParts.resolved.length" class="resolved-regions">
-      <div v-for="(l, i) in conclusionParts.resolved" :key="i" class="resolved-region-line"
-           :title="`逐条位置与互检证据见导出 JSON 的 resolved_regions / 变体清单（cross_read_resolved 标注）`">
-        {{ resolvedParts(l).head }}<span class="resolved-verdict">{{ resolvedParts(l).tail }}</span>
+    <p class="conclusion-head" :class="headLine.kind">
+      {{ headLine.text }}
+      <span v-if="statusBadge" class="verdict-badge" :class="statusBadge.status">{{ statusBadge.label }}</span>
+    </p>
+    <!-- 阻断项按 verdict.blocking 结构化列出（goal T2；M13）——文案改写不影响；
+         旧记录无 verdict 时退回纯文本正文 -->
+    <ul v-if="blockingItems.length" class="verdict-blocking">
+      <li v-for="(b, i) in blockingItems" :key="i" class="verdict-blocking-item" :class="b.kind">
+        <span class="vb-kind">{{ KIND_LABELS[b.kind] ?? b.kind }}</span>
+        <span v-if="blockingPos(b)" class="vb-pos">{{ blockingPos(b) }}</span>
+        <span v-if="b.element" class="vb-element">{{ b.element }}</span>
+        <span class="vb-detail">{{ b.detail }}</span>
+        <span class="vb-action">{{ b.action }}</span>
+      </li>
+    </ul>
+    <!-- 区间裁决行：优先 resolved_regions 结构化渲染（T2），旧记录退回文本行匹配 -->
+    <div v-if="resolvedRegionList.length || conclusionParts.resolved.length" class="resolved-regions">
+      <div v-for="(r, i) in resolvedRegionList" :key="'sr' + i" class="resolved-region-line"
+           :title="`源 read ${r.source_read}（${r.direction === '-' ? '反向' : '正向'}）报出 ${r.variant_count} 处差异，由 ${r.verifier_reads.join('、') || '其他引物'} 高质量覆盖排除${r.verifier_quality ? '（' + r.verifier_quality + '）' : ''}`">
+        差异区间 {{ r.ref_range }}：{{ r.source_read }}（{{ r.direction === '-' ? '反向' : '正向' }}<template v-if="r.primer_range"> | 引物内坐标 {{ r.primer_range }}</template>）报出 {{ r.variant_count }} 处差异 →
+        已被 {{ r.verifier_reads.join('、') || '其他引物' }} <span class="resolved-verdict">高质量覆盖排除{{ r.verifier_quality ? '，' + r.verifier_quality : '' }}，无需核对</span>
       </div>
+      <template v-if="!resolvedRegionList.length">
+        <div v-for="(l, i) in conclusionParts.resolved" :key="i" class="resolved-region-line"
+             :title="`旧记录无结构化裁决行，位置与互检证据见变体清单（cross_read_resolved 标注）`">
+          {{ resolvedParts(l).head }}<span class="resolved-verdict">{{ resolvedParts(l).tail }}</span>
+        </div>
+      </template>
     </div>
     <p class="conclusion-text">{{ conclusionParts.main }}</p>
     <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
@@ -242,4 +310,19 @@ function soLevel(t: string): string {
 .coverage-seg { position: absolute; top: 0; bottom: 0; background: #2E9E44; }
 .coverage-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #999; margin-top: 2px; }
 .coverage-gaps { margin: 0.4rem 0 0; font-size: 0.78rem; color: #9A6D00; }
+/* verdict 徽标与阻断项清单（goal T2）：状态机可读化，阻断项逐条给位置/元件/动作 */
+.verdict-badge { font-size: 0.72rem; font-weight: 400; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: 1px; background: #EEE; color: #777; }
+.verdict-badge.pass { background: #E5F5E9; color: #227A36; }
+.verdict-badge.fail { background: #FBEAE8; color: #A03227; }
+.verdict-badge.pending, .verdict-badge.mixed, .verdict-badge.partial,
+.verdict-badge.insufficient, .verdict-badge.failed_reads { background: #FCF3DC; color: #9A6D00; }
+.verdict-blocking { list-style: none; margin: 0.4rem 0; padding: 0; font-size: 0.8rem; }
+.verdict-blocking-item { padding: 3px 0; border-bottom: 1px dashed #EEE; display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: baseline; }
+.vb-kind { font-weight: 600; color: #555; }
+.verdict-blocking-item .vb-kind { color: #9A6D00; }
+.vb-pos { font-family: monospace; color: #555; }
+.vb-element { color: #2277A0; }
+.vb-detail { color: #444; }
+.vb-action { color: #999; }
+.vb-action::before { content: '→ '; color: #BBB; }
 </style>

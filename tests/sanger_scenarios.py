@@ -134,7 +134,9 @@ def _s10():
 def _s11():
     rng = _rng("s11")
     ref = _rand_seq(rng, 1200)
-    blob = make_trace_ab1(ref[:1000], q=40, n_at=[340])
+    # N 放在 ORF 校正后的真实编码区内（固定种子下 _find_orf 把 301-600 校正到
+    # 474-600；340 落在编码区外不触发 n_in_cds）——场景意图是「翻译区被 N 遮蔽」
+    blob = make_trace_ab1(ref[:1000], q=40, n_at=[500])
     feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats)
 
@@ -320,7 +322,7 @@ def _m7():
     raw = (BENCH_DIR / "3100.ab1").read_bytes()
     rng = _rng("m7")
     from core.sanger.abif_reader import extract_read
-    seq = str(extract_read("3100.ab1", raw)["bases"])
+    seq = str(extract_read(raw)["bases"])
     ref = _rand_seq(rng, 170) + seq + _rand_seq(rng, 170)
     return dict(ab1_files=[("3100.ab1", raw)], reference=ref, features=[],
                 kwargs=dict(circular=True))
