@@ -17,6 +17,7 @@ Excel 一句话结论、归档分拣、API 下发）由同一 status 驱动，�
 
 from typing import Dict, List, Optional
 
+from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
 
 # pending 级阻断种类（goal §3 blocking.kind 枚举的待定子集；其余种类随
@@ -124,13 +125,32 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"{r.get('filename')} 修剪后 {pa.get('trimmed_length')}bp 仅 "
                  f"{pa.get('aligned_read_len')}bp 比对上参考，其余部分未验证",
                  "核对样品身份/参考选择（或按环状参考分析）")
+    # verified 覆盖（goal T3；B P0-4）：verified<100% 记 roi_unverified 阻断
+    # 供前端明示，不升级状态（单 read 的首尾固有不可信区使 verified<100%
+    # 几乎恒真，partial 状态随 T5 ROI 收窄判定区域后接入）。bp 闸门维持
+    # measured 口径（与 batch._covered_bp/MIN 同源，full CDS 豁免同 batch）
+    cov = result.get("coverage") or {}
+    vp = cov.get("verified_percent")
+    measured_bp = sum(int(e) - int(s) + 1
+                      for s, e in (result.get("consensus") or {}).get("covered_ranges") or [])
+    full_cds = any(c.get("coverage_status") == "full" for c in cds_reports)
+    bp_gate_failed = (not full_cds and measured_bp < MIN_VERDICT_COVERED_BP)
+    if bp_gate_failed:
+        _blk("roi_unverified", None, None, None,
+             f"实测仅 {measured_bp}bp，不足以确认是否为目标质粒",
+             "补测引物或换参考")
+    elif vp is not None and vp < 100:
+        _blk("roi_unverified", None, None, None,
+             f"验证覆盖 {vp}%（实测 {cov.get('measured_percent')}%）——"
+             "不可信区与 N/模糊调用列不构成验证",
+             "核对覆盖缺口，必要时补引物")
 
     has_fail = any(b["kind"] == "confirmed_variant" for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
     has_mixed = any(b["kind"] == "mixed_sample" for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
     has_insufficient = any(b["kind"] == "partial_alignment" for b in blocking)
-    # 优先级（goal T2）：failed_reads 让位 fail；partial 随 T3 接入
+    # 优先级（goal T2）：failed_reads 让位 fail；partial 随 T5 ROI 接入
     if has_fail:
         status = "fail"
     elif has_failed_reads:
@@ -139,7 +159,7 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         status = "mixed"
     elif has_pending:
         status = "pending"
-    elif has_insufficient:
+    elif has_insufficient or bp_gate_failed:
         status = "insufficient"
     else:
         status = "pass"
@@ -149,12 +169,12 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         "status": status,
         "blocking": blocking,
         "info": [],
-        # ROI（T5 落真实取值）：T2 阶段判定区域 = 整条参考
+        # ROI（T5 落真实取值）：T2/T3 阶段判定区域 = 整条参考
         "roi": {
             "start": 1,
             "end": ref_length,
             "source": "whole",
-            "verified_fraction": None,
+            "verified_fraction": round(vp / 100, 4) if isinstance(vp, (int, float)) else None,
             "measured_fraction": round(cov / 100, 4) if isinstance(cov, (int, float)) else None,
             "double_strand_fraction": None,
         },

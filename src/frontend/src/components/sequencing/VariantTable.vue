@@ -74,6 +74,31 @@ function confTitle(v: SequencingVariant): string {
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
   return `高置信${peak ? '：' + peak : ''}`
 }
+
+/** 机器可读原因码 → 徽标（goal T1/T3；S17）：证据在可信区外等关键码明示，
+ *  其余码进悬停 title，不在表内铺满 */
+const REASON_LABELS: Record<string, { label: string; tip: string; warn?: boolean }> = {
+  all_evidence_out_of_zone: {
+    label: '区外证据', warn: true,
+    tip: '该差异的支持证据全部来自 read 可信区之外（首端硬区/灰区或尾端）——判定成立但请核对峰图确认',
+  },
+  cross_check_clean: { label: '互检排除', tip: '其他引物在可靠区干净读出设计碱基，判为测序误差' },
+  n_call: { label: 'N/模糊', tip: '碱基调用为 N/模糊码，未解析' },
+  poly_compressed: { label: '峰压缩', tip: '落在同聚物峰合并压缩区，该 read 此处无可分辨峰' },
+  mixed_bg_high: { label: '双峰背景', tip: '位点有双峰背景，峰级证据可能被干扰' },
+}
+
+function reasonBadges(v: SequencingVariant) {
+  const codes = v.reason_codes ?? []
+  const out = codes
+    .filter((c) => REASON_LABELS[c])
+    .map((c) => ({ ...REASON_LABELS[c], warn: !!REASON_LABELS[c].warn }))
+  const extra = codes.filter((c) => !REASON_LABELS[c])
+  if (extra.length) {
+    out.push({ label: `${extra.length} 项`, tip: `其他原因码：${extra.join('、')}`, warn: false })
+  }
+  return out
+}
 </script>
 
 <template>
@@ -115,6 +140,9 @@ function confTitle(v: SequencingVariant): string {
               {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
             </span>
             <span v-else>-</span>
+            <!-- 机器可读原因码明示（goal T1/T3）：out-of-zone 证据、互检定案等 -->
+            <span v-for="c in reasonBadges(v)" :key="c" class="badge reason" :class="{ warn: c.warn }"
+                  :title="c.tip">{{ c.label }}</span>
           </td>
         </tr>
       </tbody>
@@ -142,6 +170,8 @@ function confTitle(v: SequencingVariant): string {
   border: 1px solid #BFE5C8; border-radius: 6px; padding: 0.3rem 0.6rem; margin-bottom: 0.25rem;
 }
 .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; background: #EEE; }
+.badge.reason { margin-left: 4px; background: #EDF2EE; color: #5E7A64; }
+.badge.reason.warn { background: #FCF3DC; color: #9A6D00; }
 .badge.bad { background: #FDE8E8; color: #C0392B; }
 .conf-chip { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 0.78rem; }
 .conf-high { background: #E5F5E9; color: #227A36; }

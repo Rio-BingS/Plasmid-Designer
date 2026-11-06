@@ -61,6 +61,11 @@ def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
                          else "front_gray_zone")
         else:
             codes.append("tail_zone")
+    # 双证尾端等「跨过 zone 规则」的确证变体（goal T3；B P1-7）：支持证据
+    # 全部来自可信区外时明示——判定成立但不属于可信区内的证据
+    if (v.get("confidence") in ("medium", "high") and zone and rp
+            and not in_zone(zone, rp)):
+        codes.append("all_evidence_out_of_zone")
     if rp and rp in mixed_positions:
         codes.append("mixed_bg_high")
     if evidence:
