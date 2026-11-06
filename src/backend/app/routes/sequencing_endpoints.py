@@ -8,6 +8,7 @@
 本模块只挂路由：main.py 从这里取 sequencing router。
 """
 
+import json
 import os
 import secrets
 import time
@@ -49,6 +50,7 @@ async def analyze_sequencing_upload(
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，仅以其编码序列为参考分析（所有 read 照常参与）"),
     cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
+    primer: str = Form(default="", description='引物校验（T17，可选）：JSON {"name": "M13F", "seq"?: "ACGT...", "direction"?: "+"}；seq 省略时按 name 查 data/primers/*.yaml 引物库'),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
@@ -94,10 +96,21 @@ async def analyze_sequencing_upload(
             status_code=413,
             detail=f"参考序列过长（{len(ref_seq)} bp > {sequencing_routes.MAX_REF_BP} bp）：请截取待验证区段后重新分析")
 
+    # T17 引物校验（可选）：JSON 解析失败按未提供处理（不阻塞分析）
+    primer_dict = None
+    if primer.strip():
+        try:
+            data = json.loads(primer)
+            if isinstance(data, dict):
+                primer_dict = data
+        except ValueError:
+            raise HTTPException(status_code=400, detail="引物参数格式错误（应为 JSON 对象）")
+
     sample_name = os.path.splitext(os.path.basename(ref_name))[0][:60] or "reference"
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
                                    allow_decompose, user=user,
-                                   circular=_reference_circular(topology), zone=zone)
+                                   circular=_reference_circular(topology), zone=zone,
+                                   primer=primer_dict)
 
 
 @router.post(

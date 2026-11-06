@@ -420,7 +420,6 @@ XFAIL_BY_TASK = {
     # T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
     "test_m3_overlap_discordance_reported": "T21",
-    "test_m5_primer_mismatch_detected": "T17",
     "test_m9_core_analyze_requires_topology": "T25",
     "test_m11_precheck_rejects_broken_reference": "T18",
     "test_m12_ploc_shorter_than_pbas_warns": "T24",

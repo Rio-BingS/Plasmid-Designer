@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.noise import peak_snr
 from core.sanger.orf_guard import find_guarded_orf, suspect_site
+from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
@@ -2295,6 +2296,7 @@ def analyze(
     poly_local_ratio: bool = True,
     circular: bool = False,
     zone_params: Optional[ZoneParams] = None,
+    primer: Optional[Dict] = None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2464,8 +2466,12 @@ def analyze(
     cds_reports = _cds_reports_safe(
         ref, features, [v for v in variants if not v.get("cross_read_resolved")],
         consensus, unresolved_sites=unresolved_sites)
+    # 引物校验（goal T17；A 1.5）：方向/结合位点/3′ 端距离逐 read 校验，
+    # mismatch 由 verdict 判 fail（默认），无法确定引物只记 info
+    primer_checks = check_reads(primer, read_results, ref)
     verdict = build_verdict({
         "variants": variants, "unresolved_sites": unresolved_sites,
+        "primer_checks": primer_checks,
         "cds_reports": cds_reports, "errors": errors, "reads": read_results,
         "mixed_profiles": mixed_profiles, "mixed_variants": mixed_variants,
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
@@ -2511,6 +2517,7 @@ def analyze(
         "conclusion": conclusion,
         # 未决位点（goal T1 三态）：判定区域内「没读清」的地方，✓ 资格门输入
         "unresolved_sites": unresolved_sites,
+        "primer_checks": primer_checks,
         # measured/verified 双覆盖（goal T3；B P0-4）：verified_percent/
         # verified_bp 供 CDS/闸门/结论切口径，coverage_percent 保留实测语义
         "coverage": coverage,
