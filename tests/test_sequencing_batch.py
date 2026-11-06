@@ -897,8 +897,8 @@ def _mixed_ab1_mx(name: str) -> tuple:
 
 
 def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
-    """混合样品（双峰）结论以「疑似混合」开头 → 整理包归入 无法判定/ 而非
-    正确/：混合培养物无法自动判定，报告含双峰检测章节"""
+    """混合样品（双峰）结论以「疑似混合」开头 → 整理包归入 混合/（T2 新增
+    分拣目录，不再混入 无法判定/）：混合培养物无法自动判定，报告含双峰检测章节"""
     resp = _post(client, [
         ("MX.gb", _gb_mx(), "application/octet-stream"),
         _mixed_ab1_mx("T1.ab1"),
@@ -912,9 +912,9 @@ def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
 
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()
-    assert "测序整理/MX/无法判定/T1.ab1" in names
+    assert "测序整理/MX/混合/T1.ab1" in names
     assert not any(n.startswith("测序整理/MX/正确/T1") for n in names)
-    report = zf.read("测序整理/MX/无法判定/测序分析报告.md").decode("utf-8")
+    report = zf.read("测序整理/MX/混合/测序分析报告.md").decode("utf-8")
     assert "## 双峰（疑似混合）检测" in report
     assert "**疑似混合样品**" in report and "次峰占比" in report
 

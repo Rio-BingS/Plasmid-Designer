@@ -203,6 +203,64 @@ export interface SequencingAnalysis {
   errors: { filename: string; error: string }[]
   reference_length: number
   features: { name: string; type: string; start: number; end: number; strand: string; description?: string; analysis_target?: boolean }[]
+  /** 结构化判定（goal T2；旧记录缺省）：status 驱动所有出口，blocking 为阻断项清单 */
+  verdict?: Verdict
+  /** 区间裁决行结构化形态（互检排除差异，前端高亮；旧记录缺省） */
+  resolved_regions?: ResolvedRegion[]
+  /** 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检双峰；T1） */
+  unresolved_sites?: UnresolvedSite[]
+  mixed_corroboration?: Record<string, unknown> | null
+  /** Sanger 判读算法版本（口径变更递增；旧记录缺省） */
+  algo_version?: string
+}
+
+/** verdict.blocking/info 条目（goal §3） */
+export interface VerdictItem {
+  kind: string
+  ref_start?: number | null
+  ref_end?: number | null
+  element?: string | null
+  detail: string
+  action: string
+  refs?: string[]
+}
+
+/** 结构化判定（goal T2）：网页/Excel/归档/API 出口统一由 status 驱动 */
+export interface Verdict {
+  status: 'pass' | 'fail' | 'pending' | 'mixed' | 'partial' | 'insufficient' | 'failed_reads'
+  blocking: VerdictItem[]
+  info: VerdictItem[]
+  roi?: {
+    start: number
+    end: number
+    source: string
+    verified_fraction?: number | null
+    measured_fraction?: number | null
+    double_strand_fraction?: number | null
+  }
+  reads: { total: number; analyzed: number; failed: { file: string; error: string }[] }
+  algo_version?: string
+}
+
+/** 区间裁决行（互检排除差异的 read×区段 聚合） */
+export interface ResolvedRegion {
+  ref_range: string
+  cds_offset?: number | null
+  source_read: string
+  direction: string
+  primer_range?: string | null
+  variant_count: number
+  verifier_reads: string[]
+  verifier_quality?: string | null
+  positions: number[]
+}
+
+/** 未决位点（「没读清」的地方，✓ 资格门输入） */
+export interface UnresolvedSite {
+  ref_pos: number
+  kind: 'n_call' | 'iupac' | 'out_of_zone_diff' | 'poly_undetermined' | 'dropout' | 'mixed_uncorroborated' | 'corroboration_conflict'
+  reads: string[]
+  detail: string
 }
 
 export interface ReadTrace {

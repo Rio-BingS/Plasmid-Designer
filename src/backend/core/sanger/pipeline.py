@@ -51,11 +51,13 @@ from core.sanger.homopolymer import (  # noqa: F401
     _mixed_check_phrase, _poly_anchor_notes, _poly_peak_amplitude_ratio,
     _poly_peak_count, _read_ref_maps, _read_run_verdict, _region_ok,
     _unit_run, _overlapping_run, find_homopolymers, find_repeat_runs,
+    mixed_sample_confirmed,
     peak_verdict_phrase, pos_ranges_str, region_quality_text, run_label,
 )
 from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
 )
+from core.sanger.verdict import build_verdict
 
 # 证据三态与结论资格门已迁至 core/sanger/evidence.py（T1 拆分，尺寸预算）；
 # 此处 re-export 维持既有导入路径（tests / app 层仍从 pipeline 取名）
@@ -2615,7 +2617,9 @@ def _build_conclusion(
             [conclusion] + [_partial_alignment_note(r["filename"], r["partial_alignment"])
                             for r in partial_reads])
     if read_results:
-        has_mixed = any("疑似混合样品" in x for x in mixed_lines)
+        # has_mixed 用机器判定（A 5.2：不靠文案匹配）：widespread 分级 +
+        # 跨引物互检降级例外，与 mixed_lines 的分叉同源（mixed_sample_confirmed）
+        has_mixed = mixed_sample_confirmed(read_results, mixed_corroboration)
         conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
                                           partial_reads=len(partial_reads),
                                           resolved=len(resolved_variants),
@@ -2826,6 +2830,19 @@ def analyze(
         "algo_version": SANGER_ALGO_VERSION,
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
         "resolved_regions": resolved_regions,
+        # 结构化判定（goal T2；A 5.1/5.5）：status/blocking/roi/reads，
+        # 网页/Excel/归档/API 出口统一由它驱动
+        "verdict": build_verdict({
+            "variants": variants,
+            "unresolved_sites": unresolved_sites,
+            "cds_reports": cds_reports,
+            "errors": errors,
+            "reads": read_results,
+            "mixed_profiles": mixed_profiles,
+            "mixed_corroboration": mixed_corroboration,
+            "consensus": consensus,
+            "algo_version": SANGER_ALGO_VERSION,
+        }, len(ref)),
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_corroboration": mixed_corroboration,
