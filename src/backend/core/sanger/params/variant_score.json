@@ -1,0 +1,16 @@
+{
+  "high_z": 5.0,
+  "medium_z": 2.2,
+  "low_z": -5.3,
+  "w_q_high": 0.4,
+  "w_mp_high": 0.4,
+  "w_snr_high": 0.3,
+  "w_q_medium": 0.4,
+  "w_mp_medium": 0.4,
+  "w_q_low": 0.15,
+  "w_counter_low": 0.2,
+  "accept_p": 0.99,
+  "exclude_p": 0.01,
+  "confirmed_min": 0.5,
+  "_doc": "T15 手设系数（goal_sanger_full_fix_v2 T15；A 5.3）：hard tier 锚点 z 值（high 5.0→P≈0.993、medium 2.2→P≈0.90、low -5.3→P≈0.005）+ 层内连续修正权重。层内修正不跨层边界——status/confidence 与既有规则逐位等价（行为不倒退）。T23 用 tests/data/sanger_bench 基准集经 scripts/fit_variant_score.py 拟合连续系数后替换本表（accept 0.99 / exclude 0.01 / confirmed_min 0.5 三个行动与三态阈值同步重校）。暂缺特征（峰距异常分、read 位置分位、正反链支持、poly/压缩/dye blob、call_disagrees_with_trace）的权重在 T20/T24 特征落地后加入。"
+}

@@ -14,6 +14,7 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { Ref } from 'vue'
 import { getReadTrace, type SequencingAnalysis, type SequencingVariant, type ReadTrace } from '@/api'
+import { variantColor } from '@/composables/useVariantColors'
 import {
   buildSeqCols, packLanes, readOverlaps, readSegments, readSpanText, shortName, type SeqCol,
 } from '@/utils/seqPanelModel'
@@ -185,9 +186,9 @@ export function useSeqViz(options: UseSeqVizOptions) {
     }
   }
 
-  /** read 未在显示集则加入（返回是否新加入；调用方决定是否 nextTick） */
+  /** read 未在显示集则加入（返回是否新加入；ri<0 视为未找到，忽略） */
   function ensureVisible(ri: number) {
-    if (isReadVisible(ri)) return false
+    if (ri < 0 || isReadVisible(ri)) return false
     visibleReads.value.push(ri)
     return true
   }
@@ -258,10 +259,8 @@ export function useSeqViz(options: UseSeqVizOptions) {
     const read = analysis.value.reads.find((r) => r.filename === (v.read || r.filename)) || analysis.value.reads[0]
     if (!read) return
     // T14：同时勾选全部支持 read（evidence_by_read），条带仍切代表 read
-    for (const ev of v.evidence_by_read || []) {
-      const sup = analysis.value.reads.find((r) => r.filename === ev.read)
-      if (sup) ensureVisible(sup.index)
-    }
+    for (const ev of v.evidence_by_read || []) { ensureVisible(
+      analysis.value.reads.find((r) => r.filename === ev.read)?.index ?? -1) }
     if (ensureVisible(read.index)) await nextTick()
     selectedReadIdx.value = read.index   // 峰图条带切到支持该差异的 read
     await loadSeqTrace(read.index)
@@ -609,7 +608,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
       ctx.fillRect(ovX(s - 1), ovCovY, Math.max(1, ovX(e) - ovX(s - 1)), 5)
     }
     for (const v of a.variants) {
-      ctx.fillStyle = v.confidence === 'low' ? '#E6A700' : '#D0342C'
+      ctx.fillStyle = variantColor(v)
       ctx.fillRect(ovX(v.ref_pos - 0.5) - 1, ovCovY, 2, 5)
     }
 
@@ -734,11 +733,11 @@ export function useSeqViz(options: UseSeqVizOptions) {
         if (x > -colW && x < w + colW) ctx.fillText(b, x, refRowY + 13)
       }
     }
-    // 轴上变异刻度块（与匹配简图同语义；低置信差异用黄色区分）
+    // 轴上变异刻度块（三色见 useVariantColors）
     for (const v of a.variants) {
       const x = seqX(v.ref_pos - 0.5)
       if (x > -4 && x < w + 4) {
-        ctx.fillStyle = v.confidence === 'low' ? '#E6A700' : '#D0342C'
+        ctx.fillStyle = variantColor(v)
         ctx.fillRect(x - 2, refRowY - 3, 4, 3)
       }
     }

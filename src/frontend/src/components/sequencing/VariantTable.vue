@@ -3,13 +3,14 @@
  * 突变表（差异明细）
  *
  * 从 SequencingPanel.vue 拆出的展示子组件：逐变异一行的完整证据表
- * （类型/变化/所在特征/氨基酸/移码/酶切位点/支持 reads/置信度），
- * 点击行上报给父组件跳峰图。低置信行折叠态 showLowConf 用 defineModel
- * 与父组件共享——结论总览里展开 → 本表同步展开（拆分前是同一个 ref）。
+ * （类型/变化/所在特征/氨基酸/移码/酶切位点/支持 reads/置信度/P(真实)/行动），
+ * 点击行上报给父组件跳峰图。
  *
- * 互检排除的差异不进表体（2026-11-05 用户定稿）：判读已由其他引物完成，
- * 逐条列出是把已裁决项推回人工。按「源 read × 信号衰减区段」聚合为
- * read 级注记行（同后端结论口径），展开可看逐条位置（跳峰图核对用）。
+ * T15（goal A 5.3）：按待处理优先级排序（建议重测 > 核对峰图 > 采信，
+ * 同档内 P(真实) 升序——最可疑的排最前），显示 p_real 与 action；
+ * 只折叠 exclude（互检定案项，此时折叠才合理）——低置信未决项是待办
+ * 工作，不再折叠、逐行可见。互检排除的差异不进表体（2026-11-05 用户
+ * 定稿）：按「源 read × 信号衰减区段」聚合为 read 级注记行。
  */
 import { computed } from 'vue'
 import type { SequencingVariant } from '@/api'
@@ -18,21 +19,43 @@ const props = defineProps<{
   variants: SequencingVariant[]
 }>()
 
-const showLowConf = defineModel<boolean>('showLowConf', { default: false })
-
 const emit = defineEmits<{
   (e: 'jump', v: SequencingVariant): void
 }>()
 
-/** 互检排除的差异（不进表体，聚合为 read 级注记） */
+/** 互检排除的差异（不进表体，聚合为 read 级注记；T15 起唯一被折叠的档） */
 const resolvedVariants = computed(() =>
-  props.variants.filter((v) => v.cross_read_resolved))
-/** 真·低置信（未被互检排除，仍需人工核对） */
-const lowConfVariants = computed(() =>
-  props.variants.filter((v) => v.confidence === 'low' && !v.cross_read_resolved))
+  props.variants.filter((v) => v.cross_read_resolved || v.status === 'rejected'))
+/** 待处理优先级：建议重测 > 核对峰图 > 采信；旧记录无 action 时按置信度
+ * 低>中>高折算；同档内 P(真实) 升序（最可疑在前），无 p_real 按位置 */
+const ACTION_RANK: Record<string, number> = { resequence: 0, review_trace: 1, accept: 2 }
+function pendingKey(v: SequencingVariant): (number | number)[] {
+  const rank = v.action ? ACTION_RANK[v.action] ?? 1
+    : v.confidence === 'low' ? 0.5 : v.confidence === 'medium' ? 1 : 2
+  return [rank, v.p_real ?? 0, v.ref_pos]
+}
 const shownVariants = computed(() =>
-  props.variants.filter((v) => !v.cross_read_resolved
-    && (showLowConf.value || v.confidence !== 'low')))
+  props.variants.filter((v) => !resolvedVariants.value.includes(v))
+    .sort((a, b) => {
+      const ka = pendingKey(a)
+      const kb = pendingKey(b)
+      return (ka[0] - kb[0]) || (ka[1] - kb[1]) || (ka[2] - kb[2])
+    }))
+
+/** 行动徽标文案（goal T15 四档） */
+const ACTION_LABELS: Record<string, { label: string; cls: string }> = {
+  accept: { label: '采信', cls: 'act-accept' },
+  exclude: { label: '排除', cls: 'act-exclude' },
+  review_trace: { label: '核对峰图', cls: 'act-review' },
+  resequence: { label: '建议重测', cls: 'act-reseq' },
+}
+function actionText(v: SequencingVariant): string {
+  const a = v.action ?? (v.confidence === 'low' ? 'review_trace' : 'accept')
+  return ACTION_LABELS[a]?.label ?? a
+}
+function pRealText(v: SequencingVariant): string {
+  return v.p_real != null ? `P=${Math.round(v.p_real * 1000) / 10}%` : ''
+}
 
 /** 互检排除项按「源 read × 区段」聚合（间隔 ≤50bp 视为同一衰减区段，与后端结论同口径） */
 const resolvedNotes = computed(() => {
@@ -103,11 +126,7 @@ function reasonBadges(v: SequencingVariant) {
 
 <template>
   <div v-if="variants.length">
-    <h4 class="section-title">差异明细（点击行查看峰图）
-      <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-        {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信已折叠（展开逐条查看）` }}
-      </button>
-    </h4>
+    <h4 class="section-title">差异明细（点击行查看峰图；按待处理优先级排序）</h4>
     <!-- 互检排除注记：判读已完成，不占差异表行 -->
     <div v-if="resolvedVariants.length" class="resolved-notes">
       <div v-for="n in resolvedNotes" :key="n.read" class="resolved-row"
@@ -117,7 +136,7 @@ function reasonBadges(v: SequencingVariant) {
     </div>
     <table class="seq-table clickable" v-if="shownVariants.length">
       <thead>
-        <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
+        <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th><th>P(真实) / 行动</th></tr>
       </thead>
       <tbody>
         <tr v-for="v in shownVariants" :key="`${v.ref_pos}-${v.type}-${v.alt_base ?? ''}-${v.read ?? ''}`" @click="emit('jump', v)">
@@ -144,6 +163,10 @@ function reasonBadges(v: SequencingVariant) {
             <span v-for="c in reasonBadges(v)" :key="c.label" class="badge reason" :class="{ warn: c.warn }"
                   :title="c.tip">{{ c.label }}</span>
           </td>
+          <td>
+            <span v-if="v.p_real != null" class="p-real">{{ pRealText(v) }}</span>
+            <span class="badge action" :class="v.action ? ACTION_LABELS[v.action]?.cls : 'act-review'">{{ actionText(v) }}</span>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -158,12 +181,12 @@ function reasonBadges(v: SequencingVariant) {
 .seq-table.clickable tr { cursor: pointer; }
 .seq-table.clickable tr:hover { background: var(--bg-secondary, #f7f7f7); }
 .section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
-.lowconf-toggle {
-  display: inline-block; margin: 0.1rem 0 0.4rem; padding: 0.15rem 0.6rem;
-  font-size: 0.78rem; color: #8a6a1f; background: #FBF3DF;
-  border: 1px solid #E8D9A8; border-radius: 12px; cursor: pointer;
-}
-.lowconf-toggle:hover { background: #F5E9C8; }
+.p-real { font-family: Consolas, monospace; font-size: 0.78rem; margin-right: 4px; }
+.badge.action { margin-left: 0; }
+.badge.act-accept { background: #E5F5E9; color: #227A36; }
+.badge.act-exclude { background: #EDF2EE; color: #5E7A64; }
+.badge.act-review { background: #FCF3DC; color: #9A6D00; }
+.badge.act-reseq { background: #FBEAE8; color: #A03227; }
 .resolved-notes { margin: 0 0 0.5rem; }
 .resolved-row {
   font-size: 0.82rem; color: #227A36; background: #F0FAF2;
