@@ -240,6 +240,10 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     不许因为所测区域（侧翼/骨架）恰好一致而报 ✓；部分覆盖时任何结论都要
     追加覆盖提示。全质粒模式的 CDS 无此标记，行为逐字不变（部分测序是
     常规策略，见 _build_cds_reports 的未测 verdict）。"""
+    # 位点级混合（goal T7：mixed_variant 驱动的 status=mixed）与混合样品
+    # 同待遇——verdict 缺省（直调/旧记录）不启用
+    if (verdict or {}).get("status") == "mixed":
+        has_mixed = True
     target = next((c for c in cds_reports if c.get("analysis_target")), None)
     tail = ""
     if target and not has_mixed:

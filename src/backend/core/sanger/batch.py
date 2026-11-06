@@ -719,17 +719,29 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         if cov < 95:
             out += f"；测序覆盖 {cov:.0f}%"
         return out
-    elif widespread:
-        if len(widespread) == 1:
-            fn, p = widespread[0]
-            main = f"{fn} 检出 {p['count']} 处双峰"
+    elif widespread or vd.get("status") == "mixed":
+        if widespread:
+            if len(widespread) == 1:
+                fn, p = widespread[0]
+                main = f"{fn} 检出 {p['count']} 处双峰"
+            else:
+                main = (f"{len(widespread)} 条 read 均检出双峰"
+                        f"（每条 {_count_range([p for _f, p in widespread])} 处）")
+            fr_txt = _frac_range([p for _f, p in widespread])
+            out = ("疑似混合：" + main
+                   + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
+                   + "，无法自动判定，建议重新挑单克隆复测")
         else:
-            main = (f"{len(widespread)} 条 read 均检出双峰"
-                    f"（每条 {_count_range([p for _f, p in widespread])} 处）")
-        fr_txt = _frac_range([p for _f, p in widespread])
-        out = ("疑似混合：" + main
-               + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
-               + "，无法自动判定，建议重新挑单克隆复测")
+            # 单点双峰次等位（goal T7；A 3.2）：无 widespread 分级支撑的
+            # 位点级混合（verdict.status=mixed 由 mixed_variant 驱动）；
+            # 旧记录无 mixed_variants → 不会走到这里
+            mv = sorted(res.get("mixed_variants") or [], key=lambda m: -(m.get("af") or 0))
+            afs = sorted(round((m.get("af") or 0) * 100) for m in mv)
+            fr = f"{afs[0]}%-{afs[-1]}%" if afs and afs[0] != afs[-1] \
+                else (f"{afs[0]}%" if afs else "")
+            pos_txt = "、".join(str(m["ref_pos"]) for m in mv[:4]) + ("等" if len(mv) > 4 else "")
+            out = (f"疑似混合：{len(mv)} 处双峰位点检出非参考次等位"
+                   f"（{pos_txt}，次等位 AF {fr}），无法自动判定，建议重新挑单克隆复测")
         return out
     elif pending or n_sites:
         # ✓/合格资格门：有未决项就不给「合格」，如实说待定
