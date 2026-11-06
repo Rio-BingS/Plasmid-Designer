@@ -189,3 +189,143 @@ CDS 报告/verdict/coverage）：
 - P1 范围内 xfail 14 项由 T11-T18/T24/T25 依次移除（对应表见上）。
 - T3 的 verified 语义切换、T5 的 ROI 外包框精确化 → T12 复评。
 - 生产镜像 tracy 实测挂账（KNOWN_ISSUES 未解决 #5）。
+
+## P1 闸门（T11-T18，2026-11-07，截至 03e6dea）
+
+### 闸门判定（goal 原文：S1 为 ✗；F1、F2 不判混合；S2-S17、M2、M4、M5、M11 通过；
+### 对照组、全量测试、MX 真实回归绿或差异已解释；评分系数与拟合脚本已提交）
+
+- **S1 为 ✗**：✅ 实证——`_run("S1")` verdict.status=**fail**、blocking=
+  [confirmed_variant]；变体 780 confirmed high、p_real=0.9975、action=accept
+  （T12 可信区信号驱动逐窗 + T15 校准评分）。
+- **F1、F2 不判混合**：✅ 两场景 verdict=pending，blocking 全部为
+  unresolved_site（6/7 处），无任何 mixed 升级项（T11 双峰不升级口径 +
+  T14 多 read 聚合；F1/F2 场景测试已随 T11 转绿）。
+- **S2-S17 通过**：✅ 16 项场景测试全绿。
+- **M2、M4、M5、M11 通过**：✅ M2→T14（顺序无关聚合）、M4→T16（ORF 校正
+  护栏）、M5→T17（引物方向/距离校验）、M11→T18（预检与 finalize 口径一致）。
+  另 M1 意外随 T16 转绿（护栏拦住伪校正掩盖 K2* 的病根）、F1/F2/M7 随 T11
+  转绿（M7 的 secondary_base 部分由自适应背景模型覆盖）。
+- **对照组**：✅ 全量 pytest 1938 passed 含全部对照组（反向替换高置信、跨原点、
+  纯合 ✗、CDS 模式与全质粒模式 MX 一致等）。
+- **MX 真实回归**：✅ 共享字段零漂移，3 处探针投影差异已解释（见下）。
+- **评分系数与拟合脚本已提交**：✅ `core/sanger/params/variant_score.json` +
+  `scripts/fit_variant_score.py`（27440 网格点、锚点等价一致率 1.0000，
+  T15 7ad0a7a；`--check` 模式可复验）。
+- **SANGER_ALGO_VERSION**：v4（T12）→ v5（T15），写入 result["algo_version"]，
+  HANDOVER 登记链完整（v1→v2 T1、v2→v3 T11、v3→v4 T12、v4→v5 T15）。
+
+### 改动文件（fb1c05a → 03e6dea，42 文件 +2927/−758）
+
+- **新模块（全部 ≤900 行）**：`core/sanger/{noise 91, scoring 255, orf_guard 113,
+  primer_check 150}.py`；`core/sanger/params/variant_score.json`（评分锚点+权重+
+  _doc）；`data/primers/common.yaml`（通用引物库 8 条，注明来源）
+- **扩张/收缩**：`evidence.py` 332→541（per-read 证据项/代表 read 择强/覆盖不支
+  持口径 + T13 变体峰证据迁入）；`pipeline.py` 2863→2544（T14 合并环聚合、T15
+  attach_score 替换 _variant_status、T16 find_guarded_orf 委托、T17 primer 透传，
+  白名单持续收缩）；`sequencing_routes.py` 958 顶格（primer 透传 + 注释压缩对冲）
+- **接入层**：`sequencing_endpoints.py`（primer 表单字段 + JSON 解析失败 400）、
+  `sequencing_session_routes.py`（_precheck 重写）、`verdict.py`（orf_annotation_
+  suspect/primer_mismatch 入 _SITE_KIND_MAP 与 PENDING_KINDS）
+- **前端**：`useVariantColors.ts`（新，三态色板 confirmed 红/unresolved 琥珀/
+  rejected 灰绿，旧记录按 confidence 回退）、`useSeqViz.ts` 962 行（flashRef/
+  ensureVisible 抽出 + jumpToVariant 全 evidence_by_read 支持）、`VariantTable.vue`
+  （P(真实)/行动徽标列、pendingKey 排序）、`api/sequencing.ts`（evidence_by_read/
+  covering_reads_not_supporting/p_real/action 契约）
+- **拟合脚本**：`scripts/fit_variant_score.py`（网格枚举 + 校准分桶 + --check）
+
+### 新增/修改测试
+
+- 新：`test_sanger_noise.py`（8）、`test_sanger_scoring.py`（4）、
+  `test_sanger_primer_check.py`（5）、orf_guard 三测试（并入 test_sanger_pipeline）
+- 增：`test_real_data_regression.py`（T12 重基线断言：zone 975/965/940、counts
+  [9,18,19]、全 noise low_site_q、seqF 待核行消失取证、T7-Term 新增待核）；
+  `test_batch_sequencing.py`（信噪比 96.0）；`test_sequencing_upload_sessions.py`
+  （T18 fixture 占位 size 对齐真实下限）；`sanger_scenarios.py`（_s8 真实 ORF 窗口）
+- xfail 注册表：P0 末 14 项 → 现 **5 项**（F3→T24、M3→T21、M9→T25、M12→T24、
+  M15→T25）；S1/F1/F2/M1/M2/M4/M5/M7/M11 九项转绿
+
+### §4 场景前后对比（旧 = P0 闸门时点；新 = 当前 HEAD 实际输出）
+
+| ID | P0 末输出 | P1 末输出 | 转绿任务 |
+|---|---|---|---|
+| S1 | △ pending（可信区先验 low） | ✗ fail（confirmed_variant，p_real=0.9975） | T12 |
+| F1/F2 | ✗ 混合升级 | △ pending 仅 unresolved_site（不判混合） | T11 |
+| M1 | 伪校正掩盖 K2* | ✗ 确证（护栏拦伪校正） | T16（意外） |
+| M2 | 依赖 read 顺序 | 顺序无关（多 read 聚合+代表择强） | T14 |
+| M4 | CDS 边界随标错框 | ±3bp 护栏 + suspect 待核 | T16 |
+| M5 | 引物错配无信号 | primer_mismatch（3′ 端 220bp>150） | T17 |
+| M7 | 次级峰无依据 | secondary_base（自适应背景模型） | T11 |
+| M11 | 3 字节 .gb 可建会话 | 建会话即 400（大小下限预检） | T18 |
+
+### 全量测试数字
+
+- 后端：**1938 passed / 47 skipped / 5 xfailed**（P0 末 1907/47/14 → 净增 31
+  通过；xfail 14→5，9 项转绿）
+- 前端：**vitest 690 passed（89 文件）**；`vue-tsc --noEmit` 0 error
+- 拟合复验：`scripts/fit_variant_score.py --check` 网格 27440 点一致率 1.0000
+
+### 门禁结果（CI 本地预演）
+
+| 门禁 | 结果 |
+|---|---|
+| `scripts/check_file_size.py` | ✅ 222 个源码文件，白名单 10 个（pipeline 2544、routes 958 顶格） |
+| `scripts/check_docs_sync.py` | ✅（最新 tag v2.37.0-alpha.1） |
+| `npx vitest run` | ✅ 690 passed |
+| `npx vue-tsc --noEmit` | ✅ 0 error |
+
+### MX 回归差异（私有真实数据，纪律：先取证再改断言）
+
+快照链 `after_T12 → after_T14 → after_T15 → after_T18`（work/，gitignore）：
+
+- **工具口径说明**：after_T12/T14/T15 为当时 ad-hoc 紧凑探针（结论/变体/CDS
+  判读文本，无 verdict/coverage 键）；after_T18 起恢复全字段探针
+  `work/mx_probe_t5.py`。两代探针字段集不同，对比一律以**共享字段**为准。
+- **T13/T14/T15**：conclusion 逐字节一致（当时取证）；T13 3730.ab1 T 通道
+  SNR 由 None 达成非 None（本底确定化），MX 结论不受影响。
+- **T16-T18（after_T15 vs after_T18 共享字段全对比）**：conclusion、variants
+  （17 共享键 × 4 变体）、cds_reports（8 共享键 × 5 CDS）、consensus_len/
+  consensus_diffs/coverage_percent/resolved_regions/mixed_corroboration/
+  ref_len/n_features/errors **全部零漂移**。
+- 3 处探针投影差异已解释（`git diff 7ad0a7a..HEAD` 未触碰相关产物路径）：
+  ① reads[].direction——全字段探针读顶层键（当前为 None，方向在 alignment 内），
+  紧凑探针读 alignment.direction（'+'/'-'）；② mixed_detail——紧凑探针取
+  含 mixed_z 的明细字典，全字段探针取 positions 整数列表（与 mixed_positions
+  同源）；③ homopolymer_runs——全字段探针只留 tier=="poly"，紧凑探针含
+  observed 档（6884-6901 caller_only 仍在，仅投影过滤不同）。
+- 每任务全量 `test_real_data_regression.py`（T12 重基线断言）绿。
+
+### 提交清单（T11-T18，一任务至少一提交）
+
+| 提交 | 任务 |
+|---|---|
+| 991ef59 | T11 双峰自适应背景模型与证据形态学分级 |
+| 08d6a7c | T12 可信区信号驱动逐窗判定（S1 ✗ 确证） |
+| d8d4513 | T13 局部噪声本底与 SNR 确定化 |
+| aae3414 | T14 多 read 证据聚合与代表 read 择强 |
+| 7ad0a7a | T15 校准 P(真实) 四档行动与峰图三色（v5） |
+| 6c3bc03 | T16 ORF 校正护栏与宿主起始密码子 |
+| 095aaae | T17 引物库与方向校验 |
+| 03e6dea | T18 会话预检与 finalize 口径一致 |
+
+### 口径偏差记录（对照 goal 原文，均已写入对应提交说明）
+
+1. **T12 MX 重基线**：可信区从位置先验改为信号驱动后 zone 延伸（975/965/940）、
+   变体计数 [9,18,19]、待核行文案变化——逐条取证并更新
+   test_real_data_regression.py 断言（08d6a7c 提交说明）。
+2. **T15 评分外皮等价性**：hard tier 保留原 if 树逐位迁移，logistic 锚点层内
+   修正不跨层 → status/confidence 与旧规则逐位等价（网格 1.0000 验证），
+   非口径变化；action 四档为新增展示维。
+3. **T16 M1 意外转绿**：护栏拦住「自由挑最长 ORF 掩盖 K2*」的病根——M1 的
+   goal 归属 T25（MNV 合并展示）不变，场景测试注释已记录此语义。
+4. **T17 引物校验默认 fail**：mismatch → fail（fail_impact），goal 允许 pending
+   可配置；收窄时机待 T22 对接设计记录（goal 原文同此表述）。
+5. **T18 会话测试 fixture**：占位 size（10 字节 .ab1 / 3 字节 .fasta）在
+   T18 语义下本就应拒——测试意图是「上限检查」与「excel 校验」，fixture 对齐
+   真实下限（200/30 字节），非放宽断言。
+
+### 遗留问题（进 P2）
+
+- xfail 5 项：F3/M12→T24、M3→T21、M9/M15→T25。
+- T24 PLOC −1 口径（M8 无独立合成用例，复核表锚定真实 3730 附录 A-PLOC）。
+- 生产镜像 tracy 实测挂账（KNOWN_ISSUES 未解决 #5，P0 遗留）。
