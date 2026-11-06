@@ -114,15 +114,23 @@ def test_real_analysis_mixed_baseline_and_corroboration():
         counts.append(len(positions))
     assert sorted(counts) == [4, 9, 10]
     assert "疑似混合样品" in res["conclusion"]
-    assert "跨引物互检" in res["conclusion"]
+    # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
+    # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
+    assert "同报双峰" not in res["conclusion"]
+    # 双峰位点全被互检归为噪声的 read 不单独成行；含待核位点的 read 一行带参考位置
+    concl_lines = res["conclusion"].splitlines()
+    assert "SZ15674-10570-2-seqF.ab1：双峰" not in res["conclusion"]
+    pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
+    assert len(pending) == 1 and "SZ15674-pET-Up.ab1" in pending[0]
+    assert "参考位置" in pending[0]
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
     """真实数据上的置信分层与互检反证基线：5269 C>T 高置信同义、5076 插入（移码）
     致 CDS 判「MX 蛋白与设计不一致」；6653/6666 两处缺失仅单 read 报告（Q17 / Q20），
-    其他引物在 ±25bp 高质量区读出设计碱基 → 保持 low 置信，并按 v2.15.1 口径写成
-    「互检排除 … 判为该 read 测序误差，不计入判定」（不再叫「互检矛盾」，也不再
-    作为低置信待核项）。"""
+    其他引物在 ±25bp 高质量区读出设计碱基 → 保持 low 置信。结论口径（2026-11-05
+    瘦身定稿）：互检排除只留一句汇总，逐条位置（6653/6666 等）在变体表核对——
+    变体表每条带 cross_read_resolved 标注与互检证据，结论不再点名。"""
     ctx = _load_ctx()
     res = ctx["analyses"]["MX"]["result"]
     confs = {v["ref_pos"]: v["confidence"] for v in res["variants"]}
@@ -130,10 +138,14 @@ def test_real_analysis_cross_read_conflicts_and_cds_verdict():
     assert confs[5076] in ("medium", "high")
     assert confs[6653] == "low" and confs[6666] == "low"
     concl = res["conclusion"]
-    assert "互检排除" in concl and "测序误差" in concl and "不计入判定" in concl
-    assert "6653" in concl and "6666" in concl        # 两处必须点名到参考位置
+    # read×区段 注记口径（2026-11-05 定稿）：逐条证据行删，按源 read 归并
+    assert "报出" in concl and "高质量覆盖排除" in concl and "无需核对" in concl
+    # 位置级核对走变体清单的结构化标注
+    resolved = {v["ref_pos"] for v in res["variants"] if v.get("cross_read_resolved")}
+    assert {6653, 6666} <= resolved
+    assert "↳ 位置 6653" not in concl and "↳ 位置 6666" not in concl
     assert "互检矛盾" not in concl                     # v2.15.1 起改为直接排除
-    assert "MX 蛋白与设计不一致" in concl
+    assert "MX 蛋白与设计不一致" in concl  # 头行（has_mixed 分支）
 
 
 def test_real_analysis_poly_verdicts_have_votes():
