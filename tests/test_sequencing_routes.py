@@ -386,7 +386,10 @@ def test_export_consensus_covered_only(client):
     assert fa.status_code == 200
     assert "ref_pos=1-60" in fa.text and "region=1/1" in fa.text
     seq_lines = [ln for ln in fa.text.splitlines() if not ln.startswith(">")]
-    assert "".join(seq_lines) == "AAG" * 20  # 只有覆盖段，无参考填充
+    # 只有覆盖段，无参考填充；T3 默认 verified 外小写标注（首 30bp 硬区），
+    # 与「覆盖段完整性」正交，序列比较大小写不敏感
+    assert "".join(seq_lines).upper() == "AAG" * 20
+    assert "".join(seq_lines) != "".join(seq_lines).upper()  # 标注确实生效
     gb = client.get(
         f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank&covered_only=true",
         headers=tok)

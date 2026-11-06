@@ -61,6 +61,11 @@ export interface SequencingVariant {
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
   confidence?: string
+  /** 证据三态（goal T1；旧记录缺省）：rejected 仅互检定案，unresolved=证据不足 */
+  status?: 'rejected' | 'confirmed' | 'unresolved'
+  /** 机器可读原因码（goal T1/T3）：cross_check_clean/front_hard_zone/
+   *  tail_zone/all_evidence_out_of_zone/poly_compressed 等 */
+  reason_codes?: string[]
   /** 跨 read 反证：仅单 read 报告该 indel，列出的 read 干净跨过同一位点未见差异 */
   cross_read_conflict?: { reads: string[] }
   /** 互检定案：其他引物在可靠区读出设计碱基，判为源 read 测序误差（不进结论） */
@@ -356,9 +361,9 @@ export async function getReadTrace(analysisId: string, readIndex: number): Promi
   return response.data
 }
 
-export async function exportConsensus(analysisId: string, format: string, coveredOnly = false): Promise<string> {
+export async function exportConsensus(analysisId: string, format: string, coveredOnly = false, markUnverified = true): Promise<string> {
   const response = await api.get(`/sequencing/analyses/${encodeURIComponent(analysisId)}/consensus/export`, {
-    params: { format, covered_only: coveredOnly },
+    params: { format, covered_only: coveredOnly, mark_unverified: markUnverified },
     headers: analysisTokenHeaders(analysisId),
     responseType: 'text',
     transformResponse: [(data) => data]

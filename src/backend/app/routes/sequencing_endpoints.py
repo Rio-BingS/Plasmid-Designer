@@ -366,6 +366,7 @@ async def get_read_trace(analysis_id: str, read_index: int, request: Request,
 async def export_consensus(analysis_id: str, request: Request,
                            format: str = "fasta",
                            covered_only: bool = False,
+                           mark_unverified: bool = True,
                            user: Optional[User] = Depends(get_current_user)):
     """导出拼接结果（共识序列，FASTA / GenBank）
 
@@ -373,12 +374,14 @@ async def export_consensus(analysis_id: str, request: Request,
     - FASTA：每段连续覆盖区间一条记录（参考坐标入头，可回溯源位置）；
     - GenBank：全长保留、未测位置 N 屏蔽（特征坐标不位移），实测段以
       misc_feature 注记。无覆盖区间信息时回退全量导出。
+    mark_unverified=True（默认，goal T3）：verified 覆盖外的实测碱基以
+    小写标注——「测到但没读清/不可信」不再与验证过的序列无差别交付。
     """
     record = await _aget_analysis(analysis_id, user, _request_access_token(request))
     # 审查 02 M5：N 屏蔽与排版对 200 kb 序列是秒级 CPU，移出事件循环
     content, ext, safe_name = await run_in_threadpool(
         sequencing_routes._render_consensus_export,
-        record, analysis_id, format, covered_only)
+        record, analysis_id, format, covered_only, mark_unverified)
     # 头值仅限 latin-1：safe_name 白名单放行了中文样品名，必须走
     # RFC 5987 filename*（此前直接拼 filename= 会让中文样品 500）
     return PlainTextResponse(

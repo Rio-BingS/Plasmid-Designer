@@ -578,7 +578,11 @@ MIN_VERDICT_COVERED_BP = 100
 
 
 def _covered_bp(res) -> Optional[int]:
-    """共识实测碱基数（缺 covered_ranges 时返回 None：口径未知不拦截）"""
+    """共识实测碱基数（缺 covered_ranges 时返回 None：口径未知不拦截）。
+
+    闸门维持 measured 口径（MIN_VERDICT_COVERED_BP 按实测校准；verified 的
+    首端硬区固有损耗会误拦短 read 对照，goal T3 的闸门切换随 T12 可信区
+    变宽再落）。「不可信碱基凑满」的识别由 CDS full 的 trusted 判据承担。"""
     rng = ((res or {}).get("consensus") or {}).get("covered_ranges")
     if rng is None:
         return None

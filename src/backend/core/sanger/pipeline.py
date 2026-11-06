@@ -58,6 +58,12 @@ from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
 )
 from core.sanger.verdict import build_verdict
+from core.sanger.coverage import compute_coverage
+# 覆盖缺口与区间文本已迁至 core/sanger/coverage.py（T3 拆分，尺寸预算）；
+# 此处 re-export 维持既有导入路径
+from core.sanger.coverage import (  # noqa: F401
+    _coverage_gaps, _coverage_ranges_text, _gap_span_text,
+)
 
 # 证据三态与结论资格门已迁至 core/sanger/evidence.py（T1 拆分，尺寸预算）；
 # 此处 re-export 维持既有导入路径（tests / app 层仍从 pipeline 取名）
@@ -251,59 +257,6 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     if q >= 40:
         return "high"
     return "high" if support >= 2 else "medium"
-
-
-def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
-                   min_len: int = 100, cap: int = 10,
-                   circular: bool = False) -> List[Dict]:
-    """覆盖缺口（未覆盖区间）按长度降序，供补测建议
-
-    circular=True：环状参考的尾部缺口 [x, L] 与头部缺口 [1, y] 在原点处
-    相连，先合并成一段跨原点缺口再按 min_len 过滤——分开过滤会把两侧
-    各不足 min_len、合起来已够长的缺口整段漏掉。跨原点缺口与跨原点 read
-    同口径：start/end 为折回坐标（start > end），wraps_origin=True，
-    ref_segments 给出 [[x, L], [1, y]] 两段；length 为合并后总长。
-    线性参考（及未跨原点的缺口）不带新字段，结果与此前完全一致。"""
-    raw: List[Dict] = []
-    prev = 0
-    for s, e in covered_ranges:
-        if s - prev - 1 > 0:
-            raw.append({"start": prev + 1, "end": s - 1, "length": s - prev - 1})
-        prev = max(prev, e)
-    if length - prev > 0:
-        raw.append({"start": prev + 1, "end": length, "length": length - prev})
-    if (circular and len(raw) >= 2 and raw[0]["start"] == 1
-            and raw[-1]["end"] == length):
-        head, tail = raw[0], raw.pop()
-        raw[0] = {
-            "start": tail["start"], "end": head["end"],
-            "length": tail["length"] + head["length"],
-            "wraps_origin": True,
-            "ref_segments": [[tail["start"], length], [1, head["end"]]],
-        }
-    gaps = [g for g in raw if g["length"] >= min_len]
-    gaps.sort(key=lambda g: -g["length"])
-    return gaps[:cap]
-
-
-def _gap_span_text(gap: Dict, sep: str = "-") -> str:
-    """缺口位置文本：线性「s-e」；跨原点「x-L、1-y」（与 read 区段同口径）"""
-    segs = gap.get("ref_segments")
-    if segs:
-        return "、".join(f"{a}{sep}{b}" for a, b in segs)
-    return f"{gap['start']}{sep}{gap['end']}"
-
-
-def _coverage_ranges_text(covered_ranges: List[Tuple[int, int]]) -> str:
-    """实测覆盖区间的紧凑文本（结论首行用）：部分测序是常规策略，
-    结论围绕引物实际覆盖的区域组织，把"测的是哪段"直接摆出来。
-    逗号前缀形态，可无缝嵌入既有括号短语（如「覆盖 5.0%，实测区间 21-110」）"""
-    if not covered_ranges:
-        return ""
-    spans = "、".join(f"{s}-{e}" for s, e in covered_ranges[:3])
-    if len(covered_ranges) > 3:
-        spans += f" 等 {len(covered_ranges)} 段"
-    return f"，实测区间 {spans}"
 
 
 # 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
@@ -1178,10 +1131,12 @@ def _build_cds_reports(
         return prot[:-1] if prot.endswith("*") else prot  # 去掉末尾终止密码子
 
     covered_ranges = consensus.get("covered_ranges", [])
+    verified_ranges = consensus.get("verified_ranges") or covered_ranges
+    trusted_ranges = consensus.get("trusted_ranges") or covered_ranges
 
-    def _span_coverage(start: int, end: int) -> float:
+    def _span_coverage(start: int, end: int, ranges=None) -> float:
         cov = 0
-        for s, e in covered_ranges:
+        for s, e in (ranges or covered_ranges):
             lo, hi = max(s, start), min(e, end)
             if hi >= lo:
                 cov += hi - lo + 1
@@ -1320,6 +1275,13 @@ def _build_cds_reports(
         else:
             frame_note = ""
         cov_pct = _span_coverage(start, end)
+        # verified 口径（goal T3；B P0-4）：verified/trusted 覆盖随报告下发
+        # （verified_percent 字段 + coverage 区块 + 导出小写标注），full 判定
+        # 与状态语义的切换随 T5 ROI / T12 可信区变宽落地——T3 单独切换会让
+        # 短 CDS（首端硬区占比高）的对照组误降级（约束：对照组不得变红）
+        cov_verified = _span_coverage(start, end, verified_ranges)
+        cov_trusted = _span_coverage(start, end, trusted_ranges)
+        cov_ok = cov_pct >= 99
         # CDS 内的 N/模糊调用位点（goal T1；B P0-2）：重建时置 N（翻译产出
         # X），蛋白判定降级待定——「N 读成参考碱基」的老口径会把错义位点的
         # 蛋白误报成与设计一致
@@ -1333,7 +1295,9 @@ def _build_cds_reports(
             "end": end,
             "strand": strand,
             "covered_percent": cov_pct,
-            "coverage_status": "full" if cov_pct >= 99 else ("uncovered" if cov_pct <= 0 else "partial"),
+            "verified_percent": cov_verified,
+            "trusted_percent": cov_trusted,
+            "coverage_status": "full" if cov_ok else ("uncovered" if cov_pct <= 0 else "partial"),
             # 目的基因模式的分析目标标记（cds_extract 伪特征）；结论头据此做
             # 覆盖资格判定（_conclusion_summary）。全质粒模式的 CDS 无此键
             **({"analysis_target": True} if f.get("analysis_target") else {}),
@@ -1549,7 +1513,7 @@ def _build_cds_reports(
         verdict += frame_note
         reports.append({
             **base,
-            "coverage_status": "full" if cov_pct >= 99 else "partial",
+            "coverage_status": "full" if cov_ok else "partial",
             "ref_protein_length": len(ref_prot),
             "alt_protein_length": len(alt_prot),
             "protein_identical": protein_identical,
@@ -2784,6 +2748,12 @@ def analyze(
 
     homopolymer_report = _homopolymer_report_pass(
         poly_runs, variants, read_results, coverage_ranges)
+    # measured/verified 双覆盖口径（goal T3；B P0-4）：verified = measured ∩
+    # 可信区 − N/模糊调用列；注入共识供 CDS 判定切 verified 口径
+    coverage = compute_coverage(read_results, len(ref), coverage_ranges,
+                                circular=circular)
+    consensus["verified_ranges"] = coverage["verified_ranges"]
+    consensus["trusted_ranges"] = coverage["trusted_ranges"]
     # 未决位点清单（goal T1；B P0-2）：N/模糊调用、poly 不可判定、dropout、
     # 无法互检的双峰——它们不进已验证口径，也是 ✓ 的资格门输入
     unresolved_sites = _collect_unresolved_sites(
@@ -2826,6 +2796,9 @@ def analyze(
         "conclusion": conclusion,
         # 未决位点（goal T1 三态）：判定区域内「没读清」的地方，✓ 资格门输入
         "unresolved_sites": unresolved_sites,
+        # measured/verified 双覆盖（goal T3；B P0-4）：verified_percent/
+        # verified_bp 供 CDS/闸门/结论切口径，coverage_percent 保留实测语义
+        "coverage": coverage,
         # 算法版本（goal §2 约束 6）：口径变更时递增并在 HANDOVER §2 登记
         "algo_version": SANGER_ALGO_VERSION,
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
@@ -2841,6 +2814,7 @@ def analyze(
             "mixed_profiles": mixed_profiles,
             "mixed_corroboration": mixed_corroboration,
             "consensus": consensus,
+            "coverage": coverage,
             "algo_version": SANGER_ALGO_VERSION,
         }, len(ref)),
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},

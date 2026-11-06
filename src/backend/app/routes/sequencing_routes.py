@@ -70,6 +70,8 @@ from core.sanger.batch import (
     REF_EXTS, READ_EXTS, match_clone_files, norm_stem, open_excel_for_write,
     parse_excel, rows_have_clones,
 )
+from core.sanger.coverage import mark_unverified_bases  # noqa: F401  (历史引用兼容)
+from core.sanger.coverage import _mask_uncovered  # noqa: F401  (历史引用兼容)
 from core.sanger.pipeline import analyze, try_tracy_decompose
 from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
@@ -847,25 +849,21 @@ def _summary(record: Dict) -> Dict:
     }
 
 
-def _mask_uncovered(seq: str, segs: List[Tuple[int, int]]) -> str:
-    """未测位置按 N 屏蔽（区间为 1 起始闭区间，坐标与特征不位移）。
-
-    线性复杂度：此前逐碱基扫描全部区间是 O(len × 区间数)，200 kb 共识
-    配上碎片化覆盖时可达秒级"""
-    out = ["N"] * len(seq)
-    for s, e in segs:
-        lo, hi = max(s, 1) - 1, min(e, len(seq))
-        if lo < hi:
-            out[lo:hi] = seq[lo:hi]
-    return "".join(out)
-
-
 def _render_consensus_export(record: Dict, analysis_id: str, format: str,
-                             covered_only: bool) -> Tuple[str, str, str]:
+                             covered_only: bool,
+                             mark_unverified: bool = True) -> Tuple[str, str, str]:
     """组装共识序列导出内容，返回 (content, ext, safe_name)。
 
-    纯 CPU 工作（N 屏蔽、逐行排版），由路由放进线程池执行"""
+    纯 CPU 工作（N 屏蔽、逐行排版），由路由放进线程池执行。
+    mark_unverified（goal T3，默认开）：verified 覆盖外的实测碱基小写标注
+    ——「测到但不可信/没读清」与验证过的序列在导出物里可区分。"""
     seq = record["consensus"]["sequence"]
+    # 未验证标注先于 N 屏蔽：坐标都按共识下标处理，互不干扰（goal T3）
+    cov = record.get("coverage") or {}
+    if mark_unverified and cov.get("verified_ranges") is not None:
+        seq = mark_unverified_bases(seq, record["consensus"],
+                                    len(record["reference"]),
+                                    cov["verified_ranges"])
     # 文件名白名单过滤（统一实现 app/filename.py）：sample_name 源自用户上传
     # 文件名，未过滤可注入 Content-Disposition 响应头（引号/CR/LF）
     safe_name = sanitize_filename(f"{record['sample_name']}-consensus",
