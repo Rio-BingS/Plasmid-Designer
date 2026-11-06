@@ -373,7 +373,6 @@ def test_m15_enzyme_site_pending_hint():
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
     "test_s1_tail_zone_q50_missense_not_silent": "T12",
-    "test_s14_true_mixed_not_flipped_by_weak_corroboration": "T8",
     "test_f1_3730_dye_shoulders_not_mixed": "T11",
     "test_f2_3100_decay_segment_not_mixed": "T11",
     "test_f3_no_pcon_still_analyzed": "T24",
