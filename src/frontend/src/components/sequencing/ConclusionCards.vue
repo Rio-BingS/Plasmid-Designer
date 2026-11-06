@@ -48,15 +48,24 @@ const gapSummary = computed(() => {
 // 逐 read 双峰位点范围行（“↳ …双峰 N 处，位于 read …”）单独一组默认收起，
 // 展开后可核对位点是否落在 read 首尾不可信区
 const conclusionParts = computed(() => {
-  const lines = (props.analysis.conclusion ?? '').split('\n')
+  const allLines = (props.analysis.conclusion ?? '').split('\n')
+  // 头行由 headLine 单独渲染，正文不再包含（2026-11-05 头行去重）
+  const lines = allLines.slice(1)
   const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
   const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
   const isMixedDetail = (l: string) => l.trimStart().startsWith('↳') && l.includes('双峰')
+  // 区间裁决行（2026-11-05 定稿）：「差异区间 …已被 …覆盖排除，无需核对」
+  const isResolved = (l: string) => l.startsWith('差异区间') && l.includes('无需核对')
   const main: string[] = []
   const low: string[] = []
   const mixed: string[] = []
+  const resolved: string[] = []
   let prevFolded = false
   for (const l of lines) {
+    if (isResolved(l)) {
+      resolved.push(l)
+      continue
+    }
     if (isMixedDetail(l)) {
       mixed.push(l)
       prevFolded = false
@@ -66,8 +75,20 @@ const conclusionParts = computed(() => {
     ;(folded ? low : main).push(l)
     prevFolded = folded
   }
-  return { main: main.join('\n'), low, mixed }
+  return { main: main.join('\n'), low, mixed, resolved }
 })
+
+/** 结论头判读：✓ → 绿色强调，✗ → 失败，△ → 注意（头部行加粗渲染） */
+const headLine = computed(() => {
+  const first = (props.analysis.conclusion ?? '').split('\n')[0] ?? ''
+  return { text: first, kind: first.startsWith('✓') ? 'ok' : first.startsWith('✗') ? 'fail' : 'warn' }
+})
+
+/** 区间裁决行拆分：裁决词（高质量覆盖排除…无需核对）绿色强调，其余正常色 */
+const resolvedParts = (l: string) => {
+  const i = l.indexOf('高质量覆盖排除')
+  return i >= 0 ? { head: l.slice(0, i), tail: l.slice(i) } : { head: l, tail: '' }
+}
 
 /** CDS 结论卡的覆盖标签 */
 function cdsCoverageLabel(c: { coverage_status: string; covered_percent: number }): string {
@@ -102,8 +123,16 @@ function soLevel(t: string): string {
 </script>
 
 <template>
-  <!-- 结论总览 -->
-  <div class="conclusion-card" :class="{ ok: analysis.variants.length === 0 }">
+  <!-- 结论总览：卡片默认中性白底，✓ 只绿在头行文字；红底仅用于失败结论 -->
+  <div class="conclusion-card" :class="{ fail: headLine.kind === 'fail' }">
+    <p class="conclusion-head" :class="headLine.kind">{{ headLine.text }}</p>
+    <!-- 区间裁决行：紧跟头行突出显示（绿色高亮条），逐条位置悬停/见差异明细 JSON -->
+    <div v-if="conclusionParts.resolved.length" class="resolved-regions">
+      <div v-for="(l, i) in conclusionParts.resolved" :key="i" class="resolved-region-line"
+           :title="`逐条位置与互检证据见导出 JSON 的 resolved_regions / 变体清单（cross_read_resolved 标注）`">
+        {{ resolvedParts(l).head }}<span class="resolved-verdict">{{ resolvedParts(l).tail }}</span>
+      </div>
+    </div>
     <p class="conclusion-text">{{ conclusionParts.main }}</p>
     <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
       {{ showLowConf ? '▾ 收起低置信' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
@@ -163,10 +192,21 @@ function soLevel(t: string): string {
 /* 结论卡/覆盖条带/CDS 卡样式：随模板从 SequencingPanel.vue 迁入
    （Vue scoped 样式不会穿透到子组件内部节点，父级规则管不到这里） */
 .conclusion-card {
-  background: #FDF3F3; border: 1px solid #F2C6C6; border-radius: 10px; padding: 1rem 1.25rem;
+  background: #FFFFFF; border: 1px solid #E8E8E8; border-radius: 10px; padding: 1rem 1.25rem;
 }
-.conclusion-card.ok { background: #F0FAF2; border-color: #BFE5C8; }
+.conclusion-card.fail { background: #FDF3F3; border-color: #F2C6C6; }
 .conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
+.conclusion-head { font-weight: 700; font-size: 1.02rem; white-space: pre-wrap; margin: 0 0 0.5rem; }
+.conclusion-head.ok { color: #1F7A33; }
+.conclusion-head.fail { color: #C0392B; }
+.conclusion-head.warn { color: #9A6D00; }
+.resolved-regions { margin: 0.35rem 0 0.6rem; }
+.resolved-region-line {
+  font-size: 0.84rem; color: #555; background: #F7FBF8;
+  border: 1px solid #D8EEDD; border-left: 3px solid #2E9E44;
+  border-radius: 6px; padding: 0.35rem 0.7rem; margin-bottom: 0.3rem;
+}
+.resolved-verdict { color: #1F7A33; font-weight: 600; }
 .lowconf-toggle {
   display: inline-block; margin: 0.1rem 0 0.4rem; padding: 0.15rem 0.6rem;
   font-size: 0.78rem; color: #8a6a1f; background: #FBF3DF;
