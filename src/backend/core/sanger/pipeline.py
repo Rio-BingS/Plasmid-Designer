@@ -556,34 +556,13 @@ def _classify_mixed(entries: List[Dict], read_len: int,
     return profile
 
 
-def try_tracy_decompose(ab1_path: str, ref_fasta: str) -> Optional[List[Dict]]:
-    """若 tracy 可用，对混合样品执行 decompose，返回两条等位基因序列"""
-    tracy = shutil.which(TRACY_BIN) or (TRACY_BIN if os.path.isfile(TRACY_BIN) else None)
-    if not tracy:
-        return None
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            out_prefix = os.path.join(td, "dec")
-            proc = subprocess.run(
-                [tracy, "decompose", "-r", ref_fasta, "-o", out_prefix, ab1_path],
-                capture_output=True, text=True, timeout=120,
-            )
-            if proc.returncode != 0:
-                return None
-            alleles = []
-            for suffix in (".1.fasta", ".2.fasta", "_1.fasta", "_2.fasta"):
-                p = out_prefix + suffix
-                if os.path.isfile(p):
-                    with open(p) as fh:
-                        seq = "".join(line.strip() for line in fh if not line.startswith(">"))
-                    alleles.append({"sequence": seq, "source": suffix})
-            return alleles or None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-
-
+# tracy decompose 解析与等位判读迁 core/sanger/decompose.py（goal T10；
+# A 3.6：产物是 json/align1/align2，旧 fasta 后缀恒空）。此处 re-export
+# 维持既有导入路径（app.routes 从 pipeline 取名）
+from core.sanger.decompose import (  # noqa: F401
+    try_tracy_decompose, decompose_and_annotate,
+)
+_try_tracy_decompose = try_tracy_decompose  # 公开化前的私有名（历史引用兼容）
 def _normalize_indel(ref: str, v: Dict) -> Dict:
     """indel 归一化为最左最简表示（Tan 2015，bcftools norm/GATK 同款算法）
 

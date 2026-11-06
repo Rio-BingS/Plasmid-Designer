@@ -278,6 +278,18 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         _blk("mixed_sample", None, None, None,
              f"{len(wide)} 条 read 检出双峰（每条 {cr} 处，疑似混合样品）",
              "重新挑单克隆复测")
+    # 解卷积等位（goal T10；A 3.6）：任一等位与设计不符 → allele_mismatch
+    # （pending 级——主/次克隆须分开核对，不能只看主峰序列）
+    for fname, als in (result.get("decomposed_alleles") or {}).items():
+        for i, al in enumerate(als if isinstance(als, list) else [], 1):
+            bad = [c for c in al.get("cds_reports") or []
+                   if c.get("coverage_status") != "uncovered"
+                   and c.get("protein_identical") is False]
+            if bad:
+                _blk("allele_mismatch", None, None, None,
+                     f"{fname} 等位 {i} 与设计不符（{bad[0].get('name')} 蛋白不一致）"
+                     "——解卷积等位须分别核对",
+                     "按等位判读核对主/次克隆，必要时重新挑单克隆", refs=[fname])
     # read 解析失败（T4 起进结论文本；blocking 自 T2 起始终列出）
     for e in errors:
         _blk("read_failed", None, None, None,

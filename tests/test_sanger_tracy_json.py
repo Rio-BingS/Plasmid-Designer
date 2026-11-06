@@ -222,3 +222,64 @@ def test_analyze_tracy_fastq_fallback_has_no_corroboration(monkeypatch):
     prof = res["mixed_profiles"]["mx.ab1"]
     assert prof["class"] == "widespread" and prof["tracy_corroboration"] is None
     assert res["engine"] == "internal+biopython+tracy-basecall"
+
+
+# ==================== T10：decompose 产物解析与等位判读 ====================
+
+def _fixture_dir(tmp_path, with_json=True, with_align=True, bad_json=False):
+    """把 fixtures/tracy 的样例铺成 outprefix 形态（dec.json/.align1/.align2）"""
+    import shutil as _sh
+    fx = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "tracy")
+    prefix = os.path.join(str(tmp_path), "dec")
+    if with_json:
+        text = open(os.path.join(fx, "decompose_sample.json")).read()
+        if bad_json:
+            text = "{\"shape\": \"unknown\"}"
+        with open(prefix + ".json", "w") as fh:
+            fh.write(text)
+    if with_align:
+        for k in (1, 2):
+            _sh.copy(os.path.join(fx, f"decompose_sample_align{k}.fasta"),
+                     f"{prefix}.align{k}")
+    return prefix
+
+
+def test_decompose_parse_json_first(tmp_path):
+    """T10：产物解析 JSON 优先——json 在场时返回 json 来源的两条等位"""
+    from core.sanger.decompose import _parse_decompose_output
+    als = _parse_decompose_output(_fixture_dir(tmp_path))
+    assert [a["source"] for a in als] == ["json", "json"]
+    assert len({a["sequence"] for a in als}) == 2
+
+
+def test_decompose_parse_falls_back_to_align(tmp_path):
+    """T10：JSON 缺失/结构不识别 → 退回 outprefix.align1/.align2（FASTA）"""
+    from core.sanger.decompose import _parse_decompose_output
+    als = _parse_decompose_output(_fixture_dir(tmp_path, with_json=False))
+    assert [a["source"] for a in als] == [".align1", ".align2"]
+    als2 = _parse_decompose_output(_fixture_dir(tmp_path, bad_json=True))
+    assert [a["source"] for a in als2] == [".align1", ".align2"]
+
+
+def test_decompose_allele_annotate_and_verdict(tmp_path):
+    """T10：等位走与主流程同一套比对 + CDS 判读；带突变等位 →
+    verdict 记 allele_mismatch（pending），正确等位不记"""
+    from core.sanger.decompose import annotate_decomposed_allele
+    from core.sanger.decompose import _parse_decompose_output
+    from core.sanger.verdict import build_verdict
+    fx = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "tracy")
+    ref = json.load(open(os.path.join(fx, "decompose_ref.json")))["ref"]
+    feats = [dict(name="GeneX", type="CDS", start=101, end=400, strand="+")]
+    als = _parse_decompose_output(_fixture_dir(tmp_path, with_align=False))
+    for al in als:
+        annotate_decomposed_allele(al, ref, feats)
+    assert als[0]["cds_reports"] and als[0]["cds_reports"][0]["protein_identical"] is True
+    assert als[1]["cds_reports"][0]["protein_identical"] is False
+    res = {"variants": [], "unresolved_sites": [], "cds_reports": [], "errors": [],
+           "reads": [], "mixed_profiles": {}, "mixed_variants": [],
+           "decomposed_alleles": {"mix.ab1": als},
+           "consensus": {}, "coverage": {}, "features": feats}
+    vd = build_verdict(res, len(ref))
+    am = [b for b in vd["blocking"] if b["kind"] == "allele_mismatch"]
+    assert am and am[0]["refs"] == ["mix.ab1"] and "等位 2" in am[0]["detail"]
+    assert vd["status"] == "pending"  # allele_mismatch ∈ PENDING_KINDS
