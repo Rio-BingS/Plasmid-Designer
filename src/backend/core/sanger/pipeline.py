@@ -30,6 +30,7 @@ from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.split_read import classify_segment
+from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
@@ -1411,6 +1412,9 @@ def _analyze_one_read(
         "trace": read["trace"],
         "peak_indices": read["peak_indices"],
         "trimmed_peaks": trimmed_peaks,
+        # 通用伪迹区段（goal T20；A 3.5）：压缩/dye blob/短同聚物滑移，
+        # 只作 T15 特征与 verdict info，不进任何判定分支
+        "artifacts": detect_artifacts(read["trace"], trimmed_peaks, trimmed),
         # poly 计数用：质量修剪常剪掉 poly 末端低 Q 压缩区，峰窗需沿
         # 原始 read 外扩（B4），保留原始碱基串与修剪偏移
         "raw_bases": bases,

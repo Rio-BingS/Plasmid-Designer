@@ -55,6 +55,8 @@ export interface SequencingEvidenceItem {
   mixed_z?: number
   in_zone?: boolean
   called_base?: string
+  /** 位点所在伪迹区段 kind（goal T20：compression/dye_blob/short_slippage） */
+  artifact?: string
 }
 
 export interface SequencingVariant {

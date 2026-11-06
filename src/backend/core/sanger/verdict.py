@@ -337,6 +337,16 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                      "（未知序列），该部分未验证",
                      "核对连接处/样品身份，必要时换引物或补测对侧",
                      fail_impact=True)
+        # read 级伪迹区段（goal T20；A 3.5）：只作 info（特征已随
+        # evidence_by_read 下发），不进任何判定分支
+        arts = r.get("artifacts") or []
+        if arts:
+            brief = "、".join(f"{a['kind']} {a['start']}-{a['end']}"
+                              for a in arts[:4])
+            _info("read_artifacts", None,
+                  f"{r.get('filename')} 检出伪迹区段：{brief}"
+                  f"{' 等' if len(arts) > 4 else ''}"
+                  "——区内调用与峰证据应谨慎采信")
     # ROI 覆盖分级（goal T5；A 4.2）：实测（measured）口径定「部分验证」。
     # 单 read 首尾不可信区是固有损耗、verified<100% 几乎恒真（T3 决策沿用：
     # verified 语义切换随 T12 复评，否则 123bp 全 CDS 对照必翻红）：
