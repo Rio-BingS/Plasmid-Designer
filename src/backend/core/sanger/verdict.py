@@ -1,4 +1,4 @@
-"""结构化判定（goal T2；审计 A 5.1/5.2/5.5、B P1-8）
+"""结构化判定（goal T2/T5；审计 A 4.1/4.2/5.1/5.2/5.5、B P1-8、P1-10、P1-11）
 
 把 analyze 结果折叠成一个机器可读的 Verdict 对象，所有出口（网页结论头、
 Excel 一句话结论、归档分拣、API 下发）由同一 status 驱动，终结三出口
@@ -11,21 +11,31 @@ Excel 一句话结论、归档分拣、API 下发）由同一 status 驱动，�
 
 状态优先级：fail > failed_reads > mixed > pending > partial > insufficient
 > pass。failed_reads 在有 confirmed 差异时让位给 fail（blocking 中仍列出）。
-本模块只读 result 各键做归并，不回改；T3/T5 落地后 partial 与 roi 才有
-真实取值（T2 阶段 roi 为 whole 占位、partial 不触发）。
+
+T5：
+- ROI 来源：设计记录的插入区间（数据源随 T22 设计记录对接；当前
+  实现）> 参考 CDS 特征并集（source="cds_union"）> 整条参考
+  （source="whole"，partial 只记 info 不降状态——单引物测整质粒是常规策略）；
+- 关键元件表（CRITICAL_TYPES / CRITICAL_NAME_RE，可按需扩充）：元件内
+  confirmed 差异 → critical_element_variant（fail）；unresolved → pending；
+  参考无任何抗性/ori 注释时在 info 提示盲区；
+- 接合区（CDS 模式 analysis_target ±30bp；全质粒模式的插入边界随设计
+  记录对接）：区内非 rejected 差异/未决位点 → junction_variant
+  （confirmed 为 fail，否则 pending）。
 """
 
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
 
 # pending 级阻断种类（goal §3 blocking.kind 枚举的待定子集；其余种类随
-# 对应任务 T5/T6/T7/T9/T16/T17 落地后加入）
+# 对应任务 T6/T7/T9/T16/T17 落地后加入）
 PENDING_KINDS = {
     "unresolved_variant", "unresolved_site", "n_in_cds", "poly_unreliable",
     "dropout", "overlap_discordance", "orf_annotation_suspect",
-    "allele_mismatch",
+    "allele_mismatch", "junction_variant", "critical_element_variant",
 }
 
 # 未决位点 kind → blocking.kind 映射
@@ -37,6 +47,23 @@ _SITE_KIND_MAP = {
     "dropout": "dropout",
 }
 
+# 关键元件表（goal §5 T5；依据：克隆筛选/表达验证中「序列必须逐字正确，
+# 差异即失败」的功能元件——启动子/RBS/复制原/终止/polyA/重组位点/选择标记/
+# 亲和标签）。type 用 GenBank 惯用词；名称匹配不区分大小写。扩充即改表。
+CRITICAL_TYPES = {"promoter", "rbs", "rep_origin", "polya_signal", "terminator",
+                  "protein_bind", "misc_recomb"}
+CRITICAL_NAME_RE = re.compile(
+    r"kozak|loxp|att[bplr]|frt|ampr|kanr|cmr|neor|his|flag|ha|myc|strep|gst|mbp",
+    re.IGNORECASE)
+# 抗性/ori 盲区提示的名称线索（参考未注释这些元件时只提示，不自动注释）
+_RESIST_ORI_NAME_RE = re.compile(r"ampr|kanr|cmr|neor|puc|ori|f1", re.IGNORECASE)
+
+# 接合区半宽（goal §5 T5：CDS 模式载体-基因接合区 ±30bp）
+JUNCTION_HALF_WIDTH = 30
+
+# ROI 内 verified 覆盖低于该百分比且参考为 whole 口径时只记 info
+_WHOLE_PARTIAL_INFO = True
+
 # 旧记录兼容（无 status 字段）的三态推导，与 batch._variant_status_of 同口径
 def _vstatus(v: Dict) -> str:
     if v.get("status"):
@@ -44,6 +71,41 @@ def _vstatus(v: Dict) -> str:
     if v.get("cross_read_resolved"):
         return "rejected"
     return "confirmed" if v.get("confidence") != "low" else "unresolved"
+
+
+def _critical_features(features: List[Dict]) -> List[Dict]:
+    """关键元件筛选（type 或名称命中 CRITICAL 表）"""
+    out = []
+    for f in features or []:
+        if f.get("type", "").lower() in CRITICAL_TYPES or \
+                CRITICAL_NAME_RE.search(f.get("name") or ""):
+            out.append(f)
+    return out
+
+
+def _ranges_cover(ranges: List, start: int, end: int) -> float:
+    """[start,end] 内被区间列表覆盖的 bp 占比（%）"""
+    length = end - start + 1
+    if length <= 0:
+        return 0.0
+    cov = sum(max(0, min(int(e), end) - max(int(s), start) + 1)
+              for s, e in ranges)
+    return round(min(cov, length) / length * 100, 2)
+
+
+def _junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
+    """接合区（goal T5；B P1-11）：CDS 模式 analysis_target 的两端 ±30bp。
+    返回 [(start, end, element)]；全质粒模式的插入边界随设计记录对接。"""
+    out: List[Tuple[int, int, str]] = []
+    for f in features or []:
+        if not f.get("analysis_target") or f.get("type") != "CDS":
+            continue
+        s, e = int(f["start"]), int(f["end"])
+        out.append((max(1, s - JUNCTION_HALF_WIDTH), s + JUNCTION_HALF_WIDTH,
+                    f.get("name") or "CDS"))
+        out.append((e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH,
+                    f.get("name") or "CDS"))
+    return out
 
 
 def build_verdict(result: Dict, ref_length: int) -> Dict:
@@ -54,11 +116,17 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
     errors = result.get("errors") or []
     reads = result.get("reads") or []
     profiles = result.get("mixed_profiles") or {}
+    features = result.get("features") or []
+    cov = result.get("coverage") or {}
+    verified_ranges = [tuple(r) for r in cov.get("verified_ranges") or []]
+    measured_ranges = [tuple(r) for r in
+                       (result.get("consensus") or {}).get("covered_ranges") or []]
 
     blocking: List[Dict] = []
+    info: List[Dict] = []
 
     def _blk(kind: str, ref_start, ref_end, element, detail: str, action: str,
-             refs: Optional[List[str]] = None) -> None:
+             refs: Optional[List[str]] = None, fail_impact: bool = False) -> None:
         blocking.append({
             "kind": kind,
             "ref_start": ref_start,
@@ -67,43 +135,104 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
             "detail": detail,
             "action": action,
             "refs": refs or [],
+            **({"fail_impact": True} if fail_impact else {}),
         })
 
+    def _info(kind: str, element, detail: str) -> None:
+        info.append({"kind": kind, "ref_start": None, "ref_end": None,
+                     "element": element, "detail": detail, "action": "",
+                     "refs": []})
+
+    # ROI（goal T5）：CDS 特征并集 > 整条参考；设计记录的插入区间随 T22 对接
+    cds_feats = [f for f in features if f.get("type") == "CDS"
+                 and 1 <= int(f.get("start") or 0) <= int(f.get("end") or 0) <= ref_length]
+    if cds_feats:
+        roi_start = min(int(f["start"]) for f in cds_feats)
+        roi_end = max(int(f["end"]) for f in cds_feats)
+        roi_source = "cds_union"
+    else:
+        roi_start, roi_end, roi_source = 1, ref_length, "whole"
+
     # 变体三态（rejected 不进 blocking：resolved_regions 已有裁决行）
+    junctions = _junction_ranges(features)
     for v in variants:
         st = _vstatus(v)
         if st == "rejected":
             continue
         feats = "、".join(sorted({f.get("name") or "" for f in v.get("features") or []})) or None
+        rp = v.get("ref_pos")
         if st == "confirmed":
-            _blk("confirmed_variant", v.get("ref_pos"),
-                 (v.get("ref_pos") or 0) + int(v.get("length") or 1) - 1,
-                 feats, f"{v.get('ref_pos')} {v.get('type')}（置信 {v.get('confidence')}）",
-                 "核对差异清单，必要时换引物复测")
+            _blk("confirmed_variant", rp,
+                 (rp or 0) + int(v.get("length") or 1) - 1,
+                 feats, f"{rp} {v.get('type')}（置信 {v.get('confidence')}）",
+                 "核对差异清单，必要时换引物复测", fail_impact=True)
         else:
-            _blk("unresolved_variant", v.get("ref_pos"),
-                 (v.get("ref_pos") or 0) + int(v.get("length") or 1) - 1,
+            _blk("unresolved_variant", rp,
+                 (rp or 0) + int(v.get("length") or 1) - 1,
                  feats,
-                 f"{v.get('ref_pos')} {v.get('type')}"
+                 f"{rp} {v.get('type')}"
                  + (f"（{v['low_reason']}）" if v.get("low_reason") else ""),
                  "核对峰图或补测")
+        # 接合区（goal T5；B P1-11）：载体-基因接合处 ±30bp 内任何非 rejected
+        # 差异 → junction_variant（confirmed 为 fail，否则 pending）
+        jh = next((j for j in junctions if j[0] <= (rp or 0) <= j[1]), None)
+        if jh:
+            _blk("junction_variant", jh[0], jh[1], jh[2],
+                 f"接合区 {rp} {v.get('type')}（{'确证' if st == 'confirmed' else '未决'}）"
+                 "——载体-基因接合处差异直接影响插入正确性",
+                 "核对峰图；必要时换引物覆盖接合区",
+                 fail_impact=st == "confirmed")
     # 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检的双峰）
     for u in sites:
         _blk(_SITE_KIND_MAP.get(u.get("kind"), "unresolved_site"),
              u.get("ref_pos"), u.get("ref_pos"), None,
              u.get("detail") or u.get("kind"), "核对峰图或换引物补测",
              refs=u.get("reads") or [])
+        jh = next((j for j in junctions if j[0] <= (u.get("ref_pos") or 0) <= j[1]), None)
+        if jh:
+            _blk("junction_variant", jh[0], jh[1], jh[2],
+                 f"接合区 {u['ref_pos']} 未决位点（{u.get('detail') or u.get('kind')}）",
+                 "核对峰图；必要时换引物覆盖接合区")
     # CDS：蛋白不一致（fail）与 N 待定（pending）
     for c in cds_reports:
         if c.get("coverage_status") != "uncovered" and c.get("protein_identical") is False:
             hint = "（移码）" if c.get("frameshift_count") else ""
             _blk("confirmed_variant", c.get("start"), c.get("end"), c.get("name"),
                  f"{c.get('name')} 蛋白与设计不一致{hint}",
-                 "核对差异清单，必要时重新挑克隆")
+                 "核对差异清单，必要时重新挑克隆", fail_impact=True)
         if c.get("n_in_cds"):
             _blk("n_in_cds", c.get("start"), c.get("end"), c.get("name"),
                  f"CDS 内 {c['n_in_cds']} 处 N/模糊调用，蛋白判定待定",
                  "核对峰图或换引物补测")
+    # 关键元件（goal T5；A 4.1）：启动子/RBS/复制原/终止/选择标记/标签等，
+    # 元件内 confirmed → critical_element_variant（fail），unresolved → pending；
+    # 元件级覆盖结论（full/partial/uncovered）进 info
+    critical = _critical_features(features)
+    for f in critical:
+        s_, e_ = int(f["start"]), int(f["end"])
+        el_cov = _ranges_cover(verified_ranges, s_, e_)
+        el_state = "full" if el_cov >= 99 else ("uncovered" if el_cov <= 0 else "partial")
+        for v in variants:
+            st = _vstatus(v)
+            if st == "rejected":
+                continue
+            rp = v.get("ref_pos")
+            if not (s_ <= (rp or 0) <= e_ or
+                    (v.get("type") == "deletion"
+                     and s_ <= (rp or 0) + int(v.get("length") or 1) - 1 <= e_)):
+                continue
+            _blk("critical_element_variant", s_, e_, f.get("name"),
+                 f"{f.get('name')}（{f.get('type')}）内 {rp} {v.get('type')}"
+                 f"（{'确证' if st == 'confirmed' else '未决'}）——"
+                 "功能元件序列必须逐字正确",
+                 "核对峰图/重新挑克隆", fail_impact=st == "confirmed")
+        _info("element_coverage", f.get("name"),
+              f"{f.get('name')}（{f.get('type')}）verified 覆盖 {el_cov}%（{el_state}）")
+    if not critical and not any(
+            _RESIST_ORI_NAME_RE.search(f.get("name") or "") for f in features):
+        # 盲区提示（goal T5；A 4.1）：参考未注释抗性/ori 元件时不做元件级判读
+        _info("unannotated_element", None,
+              "参考未注释抗性/复制原点等关键元件，未做元件级判读（自动注释不在范围内）")
     # 混合样品（widespread 分级 + 跨引物互检降级例外；scattered 只进
     # unresolved_sites 的 mixed_uncorroborated，不升级 mixed_sample）
     wide = [p for p in profiles.values() if p.get("class") == "widespread"]
@@ -125,32 +254,54 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"{r.get('filename')} 修剪后 {pa.get('trimmed_length')}bp 仅 "
                  f"{pa.get('aligned_read_len')}bp 比对上参考，其余部分未验证",
                  "核对样品身份/参考选择（或按环状参考分析）")
-    # verified 覆盖（goal T3；B P0-4）：verified<100% 记 roi_unverified 阻断
-    # 供前端明示，不升级状态（单 read 的首尾固有不可信区使 verified<100%
-    # 几乎恒真，partial 状态随 T5 ROI 收窄判定区域后接入）。bp 闸门维持
-    # measured 口径（与 batch._covered_bp/MIN 同源，full CDS 豁免同 batch）
-    cov = result.get("coverage") or {}
-    vp = cov.get("verified_percent")
-    measured_bp = sum(int(e) - int(s) + 1
-                      for s, e in (result.get("consensus") or {}).get("covered_ranges") or [])
+    # ROI 覆盖分级（goal T5；A 4.2）：实测（measured）口径定「部分验证」。
+    # 单 read 首尾不可信区是固有损耗、verified<100% 几乎恒真（T3 决策沿用：
+    # verified 语义切换随 T12 复评，否则 123bp 全 CDS 对照必翻红）：
+    # - ROI 实测 0% → roi_uncovered（insufficient：目标没测到）；
+    # - ROI 实测 <99% → roi_uncovered（partial：测了但没测全，S8）；
+    # - ROI 实测齐全且 verified<100% → roi_unverified 阻断明示（cds_union）/
+    #   只记 info（whole：单引物测整质粒是常规策略）；均不升状态
+    roi_measured_pct = _ranges_cover(measured_ranges, roi_start, roi_end)
+    roi_verified_pct = _ranges_cover(verified_ranges, roi_start, roi_end)
+    roi_measured_bp = round((roi_end - roi_start + 1) * roi_measured_pct / 100)
+    measured_bp = sum(int(e) - int(s) + 1 for s, e in measured_ranges)
     full_cds = any(c.get("coverage_status") == "full" for c in cds_reports)
     bp_gate_failed = (not full_cds and measured_bp < MIN_VERDICT_COVERED_BP)
+    roi_gap = roi_source != "whole" and roi_measured_pct < 99
+    if roi_gap and roi_measured_pct <= 0:
+        _blk("roi_uncovered", roi_start, roi_end, None,
+             f"判定区域（{roi_start}-{roi_end}）未被任何 read 覆盖，目标未验证",
+             "补测覆盖目标的引物或核对参考选择")
+    elif roi_gap:
+        _blk("roi_uncovered", roi_start, roi_end, None,
+             f"判定区域实测覆盖 {roi_measured_pct}%（约 {roi_measured_bp}bp），"
+             "未覆盖部分未验证",
+             "补测缺口区域或核对参考选择")
+    elif roi_verified_pct < 100:
+        if roi_source == "whole":
+            if _WHOLE_PARTIAL_INFO:
+                _info("roi_unverified", None,
+                      f"验证覆盖 {roi_verified_pct}%（实测 {roi_measured_pct}%）"
+                      "——首尾不可信区与 N/模糊调用列不构成验证，判定以实测为准")
+        else:
+            _blk("roi_unverified", roi_start, roi_end, None,
+                 f"判定区域验证覆盖 {roi_verified_pct}%"
+                 f"（实测 {roi_measured_pct}%）——不可信区与 N/模糊调用列不构成验证",
+                 "核对覆盖缺口，必要时补引物")
     if bp_gate_failed:
         _blk("roi_unverified", None, None, None,
              f"实测仅 {measured_bp}bp，不足以确认是否为目标质粒",
              "补测引物或换参考")
-    elif vp is not None and vp < 100:
-        _blk("roi_unverified", None, None, None,
-             f"验证覆盖 {vp}%（实测 {cov.get('measured_percent')}%）——"
-             "不可信区与 N/模糊调用列不构成验证",
-             "核对覆盖缺口，必要时补引物")
 
-    has_fail = any(b["kind"] == "confirmed_variant" for b in blocking)
+    has_fail = any(b.get("fail_impact") for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
     has_mixed = any(b["kind"] == "mixed_sample" for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
-    has_insufficient = any(b["kind"] == "partial_alignment" for b in blocking)
-    # 优先级（goal T2）：failed_reads 让位 fail；partial 随 T5 ROI 接入
+    has_partial = roi_gap and roi_measured_pct > 0
+    has_insufficient = (any(b["kind"] == "partial_alignment" for b in blocking)
+                        or (roi_gap and roi_measured_pct <= 0))
+    # 优先级（goal §3）：fail > failed_reads > mixed > pending > partial
+    # > insufficient > pass；failed_reads 让位 fail（blocking 中仍列出）
     if has_fail:
         status = "fail"
     elif has_failed_reads:
@@ -159,23 +310,24 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         status = "mixed"
     elif has_pending:
         status = "pending"
+    elif has_partial:
+        status = "partial"
     elif has_insufficient or bp_gate_failed:
         status = "insufficient"
     else:
         status = "pass"
 
-    cov = (result.get("consensus") or {}).get("coverage_percent")
     return {
         "status": status,
         "blocking": blocking,
-        "info": [],
-        # ROI（T5 落真实取值）：T2/T3 阶段判定区域 = 整条参考
+        "info": info,
+        # ROI（goal T5）：设计记录插入区间（T22 对接）> CDS 特征并集 > 整条参考
         "roi": {
-            "start": 1,
-            "end": ref_length,
-            "source": "whole",
-            "verified_fraction": round(vp / 100, 4) if isinstance(vp, (int, float)) else None,
-            "measured_fraction": round(cov / 100, 4) if isinstance(cov, (int, float)) else None,
+            "start": roi_start,
+            "end": roi_end,
+            "source": roi_source,
+            "verified_fraction": round(roi_verified_pct / 100, 4),
+            "measured_fraction": round(roi_measured_pct / 100, 4),
             "double_strand_fraction": None,
         },
         "reads": {
