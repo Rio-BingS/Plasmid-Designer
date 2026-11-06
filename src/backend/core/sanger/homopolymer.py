@@ -626,6 +626,13 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
             if rp is not None:
                 s.add(rp)
         mixed_ref_by_read[r["filename"]] = s
+    # 各 read 在参考上已报的差异位点（变体 ∪ 自身双峰）：验证 read 在位点
+    # 邻近报过任何差异 → 区域不干净，不作反证（与变异互检同口径，T8）
+    var_pos_by_read: Dict[str, set] = {}
+    for r in read_results:
+        s = {int(vv["ref_pos"]) for vv in (r.get("alignment") or {}).get("variants") or []
+             if vv.get("ref_pos")}
+        var_pos_by_read[r["filename"]] = s | mixed_ref_by_read[r["filename"]]
 
     by_read: Dict[str, Dict] = {}
     multi_sites: Dict[int, List[str]] = {}
@@ -648,16 +655,27 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
                 multi.append(e["pos"])
                 multi_sites.setdefault(rp, []).append(fname)
                 continue
-            # 其他引物在该位点峰形单一（自己没报双峰）且判读碱基一致、
-            # Q≥20 → 判"被覆盖复核"
+            # 其他引物在该位点峰形单一（自己没报双峰）→ 与变异互检同一
+            # 标准复核（goal T8；B P0-5）：对应列在验证 read 可信区内、
+            # ±25bp 区域质量达标（_region_ok：均值 Q≥30、≥Q20 占 90%、
+            # core 最低 Q≥20）、验证 read 在位点邻近未报其他差异；达不到
+            # 即 uncovered，不算 clean。源 read 位点无验证 read 覆盖时
+            # call 为 None，永远归 uncovered，不能据此判为噪声
             ok = False
             for o, _o2ref, ocall in maps:
                 if o["filename"] == fname:
                     continue
                 call = ocall.get(rp)
-                if call and call["base"] == _c.get(rp, {}).get("base") \
-                        and call["q"] >= 20 \
-                        and rp not in mixed_ref_by_read[o["filename"]]:
+                if not call or call["base"] != _c.get(rp, {}).get("base") \
+                        or rp in mixed_ref_by_read[o["filename"]]:
+                    continue
+                if any(abs(k - rp) <= CROSS_CLEAN_HALF
+                       for k in var_pos_by_read[o["filename"]]):
+                    continue
+                rq = _cross_region_quality(ocall, rp, rp,
+                                           _circ_len(o.get("alignment") or {}),
+                                           o.get("reliable_zone"))
+                if _region_ok(rq):
                     ok = True
                     break
             (clean if ok else uncovered).append(e["pos"])
