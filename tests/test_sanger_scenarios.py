@@ -342,11 +342,16 @@ def test_m13_structured_verdict_in_payload():
 
 
 def test_m14_end_insertion_single_low_vote_not_applied():
-    """M14：参考末端插入仅一票且 low → 不定插或作为 unresolved"""
+    """M14：参考末端插入仅一票且 low → 不静默定插：要么不写入共识（ref 等长），
+    要么照实写入但标 unresolved（T1 三态；不得冒充已验证序列）"""
     spec, res = _run("M14")
     cons = res["consensus"]["sequence"]
-    assert len(cons) == len(S["M14"].build()["reference"]) or \
-        "unresolved_site" in _kinds(res)
+    if len(cons) != len(S["M14"].build()["reference"]):
+        ins_diffs = [d for d in res["consensus"].get("diffs", [])
+                     if d.get("ref_base") == "-"]
+        assert ins_diffs, "共识变长必须由插入差异解释"
+        assert all(d.get("unresolved") for d in ins_diffs), \
+            "单 low 票插入必须带 unresolved 标记"
 
 
 def test_m15_enzyme_site_pending_hint():

@@ -279,9 +279,9 @@ def align_read(read: str, reference: str, quality: Optional[List[int]] = None) -
     返回 {direction: '+'/'-', ref_start, ref_end, score, identity, variants, aligned}
     variants: [{ref_pos(1-based), read_pos, type: substitution|insertion|deletion,
                 ref_base, alt_base, length}]
-    ambiguous: 对齐列中 read 为非 ACGT 调用（N/IUPAC）的列数——这些列不计入
-    identity 的分子分母，也不产出 substitution（basecaller 没给出确定碱基，
-    不构成「与参考不同」的证据）。
+    ambiguous: 对齐列中 read 为非 ACGT 调用（N/IUPAC）的列数——这些列不出
+    变体但计入 identity 分母（goal T1；B P0-2）。不产出 substitution
+    （basecaller 没给出确定碱基，不构成「与参考不同」的证据）。
     坐标为正向参考链 1-based；insertion 的 ref_pos 为插入点左侧参考位置。
     aligned 为逐列对齐视图（供前端人工核对）：ref_aligned/read_aligned 等长字符串，
     '-' 表示该列在对方序列中缺失（插入/缺失）；read 一律以参考方向展示（反向
@@ -368,12 +368,14 @@ def _align_impl(read_up: str, ref_up: str, quality: Optional[List[int]],
             ref_chars.append(rb)
             read_chars.append(qb)
             read_qi.append(qs + i)
+            compared += 1
             if qb not in _ACGT:
-                # N/IUPAC 调用：不比较、不出变体（wildcard 只影响打分，
-                # 必须在此处排除，否则每个 N 都成一条假 substitution）
+                # N/IUPAC 调用：不出变体（wildcard 只影响打分，必须在此处
+                # 排除，否则每个 N 都成一条假 substitution），但计入 identity
+                # 分母（goal T1；B P0-2——「没读清」不冒充「与参考一致」，
+                # 一串 N 曾把 identity 抬到 1.0 让失败比对看起来完美）
                 ambiguous += 1
                 continue
-            compared += 1
             if rb == qb:
                 matches += 1
             else:
