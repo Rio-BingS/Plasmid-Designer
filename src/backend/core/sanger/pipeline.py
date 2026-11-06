@@ -60,6 +60,7 @@ from core.sanger.resolved_regions import (
 )
 from core.sanger.verdict import build_verdict
 from core.sanger.readmap import ReadRefMap
+from core.sanger.mixed_call import collect_mixed_variants
 from core.sanger.coverage import compute_coverage
 # 覆盖缺口与区间文本已迁至 core/sanger/coverage.py（T3 拆分，尺寸预算）；
 # 此处 re-export 维持既有导入路径
@@ -1731,8 +1732,7 @@ def _analyze_one_read(
         "cross_variants": cross_variants if used_tracy else None,
         "tracy_calls": tracy_calls,
         "partial_alignment": partial,
-        # 端部软剪切高质量段（goal T6；A 2.1）——空列表表示无异常剪切
-        "unaligned_hq_segments": hq_segments,
+        "unaligned_hq_segments": hq_segments,  # 端部软剪切高质量段（T6）；空=无
         # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
         "reliable_zone": compute_reliable_zone(
             len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
@@ -1755,8 +1755,8 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
         dropouts: List[Dict] = []
         merged_zones: List[Dict] = []
         for run in poly_runs_p1:
-            # run 窗口走统一坐标映射（goal T9）：环状折回键直查，软剪切/
-            # 上游 indel/反向镜像都在映射内处理（线性偏移式已删）
+            # run 窗口走统一坐标映射（goal T9）：折回键直查，软剪切/indel/
+            # 反向镜像都在映射内处理（线性偏移式已删）
             win = rmap.run_window(run["start"], run["end"])
             if win is None:
                 continue
@@ -1799,9 +1799,8 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             e for e in _detect_mixed_detail(
                 r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
             if e["pos"] not in slip
-            # read 可信区之外是信号爬升/衰减区，次级峰不可信——
-            # 与变体置信度同一条边界（区外差异本就需多 read 支持才升级），
-            # 否则末端拖尾会凭空触发"连续双峰段"误报
+            # read 可信区之外是信号爬升/衰减区，次级峰不可信——与变体置信度
+            # 同一边界，否则末端拖尾会凭空触发"连续双峰段"误报
             and in_zone(r.get("reliable_zone"), e["pos"])
             # Step A 抑制：合并压缩的 run 窗内次级峰结构不可分辨，
             # 强行判读会把压缩段切成一串伪双峰（反向压缩山丘难例）
@@ -2280,8 +2279,8 @@ def _build_conclusion(
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
     mixed_profiles, resolved_regions)——resolved_regions 为区间裁决行的
     结构化形态（前端高亮用）。cds_reports/mixed_profiles/verdict 可由
-    analyze 预计算传入（T5：结构化判定先于结论文本，结论头符号由
-    verdict.status 驱动）；缺省时内部自算（兼容直调）。
+    analyze 预计算传入（T5：结构化判定先行，结论头由 verdict.status 驱动）；
+    缺省时内部自算（兼容直调）。
     """
     # 互检定案的差异（单 read 报告、其他引物可靠区干净读出参考）不再进入
     # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
@@ -2741,6 +2740,8 @@ def analyze(
     mixed_corroboration = _corroborate_mixed(read_results)
 
     _variant_confidence_pass(variants, read_results, poly_local_ratio)
+    # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流
+    mixed_variants = collect_mixed_variants(read_results, ref)
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
     # 构成独立证据。是否真实仍由峰级证据、多 read 支持与 Q 值决定。
@@ -2784,8 +2785,7 @@ def analyze(
     # 无法互检的双峰——它们不进已验证口径，也是 ✓ 的资格门输入
     unresolved_sites = _collect_unresolved_sites(
         read_results, homopolymer_report, mixed_corroboration)
-    # 结构化判定先于结论文本（goal T2/T5）：CDS 判读与双峰分级上提，
-    # verdict.status 驱动结论头符号——partial/insufficient 不得出 ✓（A 4.2）
+    # 结构化判定先于结论文本（goal T2/T5）：verdict.status 驱动结论头符号
     mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results if r["mixed_profile"]["count"] > 0}
     cds_reports = _cds_reports_safe(
         ref, features, [v for v in variants if not v.get("cross_read_resolved")],
@@ -2793,10 +2793,10 @@ def analyze(
     verdict = build_verdict({
         "variants": variants, "unresolved_sites": unresolved_sites,
         "cds_reports": cds_reports, "errors": errors, "reads": read_results,
-        "mixed_profiles": mixed_profiles,
-        "mixed_corroboration": mixed_corroboration,
-        "consensus": consensus, "coverage": coverage,
-        "features": features or [], "algo_version": SANGER_ALGO_VERSION,
+        "mixed_profiles": mixed_profiles, "mixed_variants": mixed_variants,
+        "mixed_corroboration": mixed_corroboration, "consensus": consensus,
+        "coverage": coverage, "features": features or [],
+        "algo_version": SANGER_ALGO_VERSION,
     }, len(ref))
     conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
@@ -2849,6 +2849,7 @@ def analyze(
         "verdict": verdict,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
+        "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）
         "mixed_corroboration": mixed_corroboration,
         "errors": errors,
         "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
