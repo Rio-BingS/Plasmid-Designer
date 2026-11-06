@@ -31,6 +31,10 @@ from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.split_read import classify_segment
 from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at
+from core.sanger.overlap import (
+    find_discordances, downgrade_overlap_conflicts,
+    double_strand_fraction as _double_strand_fraction,
+)
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
@@ -580,6 +584,10 @@ def _build_consensus(reference: str, read_results: List[Dict],
     votes: List[Dict[str, float]] = [{} for _ in range(L)]
     voters: List[List[str]] = [[] for _ in range(L)]   # 每位点各 read 的观测
     end_insert_votes: Dict[str, float] = {}  # 参考末端之后的插入（无右侧锚定位）
+    # 重叠区分歧明细（goal T21；A 4.4）：非参考票全记，热位点（已出现非参
+    # 考票）上的参考票也记——分歧判定与各 read 调用/Q 下发都用它
+    voter_info: Dict[int, List[Dict]] = {}
+    hot_pos: set = set()
 
     for r in read_results:
         mean_q = float(r.get("mean_q") or 0)
@@ -618,14 +626,25 @@ def _build_consensus(reference: str, read_results: List[Dict],
                 i = pos - 1
                 key = observed.get(i) or ambig.get(i) or reference[i].upper()
                 q = obs_q.get(i, base_q.get(i, mean_q))
-                votes[i][key] = votes[i].get(key, 0.0) + _phred_weight(q)
+                w = _phred_weight(q)
+                votes[i][key] = votes[i].get(key, 0.0) + w
                 voters[i].append(key)
+                if key != reference[i].upper():
+                    hot_pos.add(i)
+                if i in hot_pos:
+                    voter_info.setdefault(i, []).append(
+                        {"read": r.get("filename") or "?", "call": key,
+                         "q": q, "w": w})
 
     consensus_chars: List[str] = []
     char_ref: List[int] = []      # 每个共识字符对应的参考位点（插入碱基记插入点右侧位点）
     char_cov: List[bool] = []     # 该字符是否来自 read 实测（False = 未测位置的参考填充）
     diffs: List[Dict] = []  # 共识与参考的差异位（供前端高亮，人工核对最终构建体）
     covered: List[bool] = []
+    # 近平局分歧位点（goal T21；A 4.4）：共识输出 IUPAC 合并码，不再静默
+    # 按投票顺序取一边；分歧记录随共识下发
+    discordances = find_discordances(voter_info, reference)
+    discordance_map = {_idx(d["ref_pos"]): d for d in discordances}
 
     def _emit(chars, pos: int, cov: bool) -> None:
         for ch in chars:
@@ -640,6 +659,16 @@ def _build_consensus(reference: str, read_results: List[Dict],
             covered.append(False)
             continue
         covered.append(True)
+        d = discordance_map.get(_idx(pos))
+        if d is not None:
+            _emit(d["consensus"], pos, True)
+            diffs.append({
+                "ref_pos": pos, "ref_base": reference[pos - 1].upper(),
+                "cons_base": d["consensus"],
+                "cons_index": len(consensus_chars) - 1,
+                "unresolved": True, "overlap_discordance": True,
+            })
+            continue
         if len(voters[pos - 1]) == 1:
             best_key = voters[pos - 1][0]   # 单 read 覆盖：以该 read 为准
         else:
@@ -709,6 +738,8 @@ def _build_consensus(reference: str, read_results: List[Dict],
         "covered_ranges": covered_ranges,
         "coverage_percent": round(coverage * 100, 2),
         "diffs": diffs,
+        # 重叠区近平局分歧记录（goal T21）：ref_pos/calls/vote_gap/consensus
+        "overlap_discordances": discordances,
         # 由 read 实测拼接出的连续片段（不含未测位置的参考填充）；
         # cons_start/cons_end 为 sequence 内 1 起始闭区间，ref_start/ref_end 为参考坐标
         "segments": segments,
@@ -1018,9 +1049,15 @@ def _build_cds_reports(
 
         in_cds = [v for v in variants if _affects(v)]
         # 置信度分层：低置信变异（峰级证据/Q 值不支持，疑似测序噪声）不计入
-        # 确证判定，单独提示待复核——避免噪声推翻整段 CDS 结论
-        confirmed = [v for v in in_cds if v.get("confidence", "high") != "low"]
-        pending = [v for v in in_cds if v.get("confidence", "high") == "low"]
+        # 确证判定，单独提示待复核——避免噪声推翻整段 CDS 结论。
+        # 显式 status 优先（T21 重叠分歧降级写回 unresolved），旧记录按置信推导
+        def _cstat(v: Dict) -> str:
+            st = v.get("status")
+            if st:
+                return st
+            return "confirmed" if v.get("confidence", "high") != "low" else "unresolved"
+        confirmed = [v for v in in_cds if _cstat(v) == "confirmed"]
+        pending = [v for v in in_cds if _cstat(v) != "confirmed"]
         # 重建不掺 N：N 位点按参考填充参与翻译，N 的影响只体现为「判定待定」
         # （protein_identical=None）——若把 N 强制掺进产物，X 残基会把
         # 「没读清」误算成「与设计不一致」（未决 ≠ 反证）
@@ -2449,6 +2486,11 @@ def analyze(
     consensus = _build_consensus(ref, read_results, skip_keys=rejected_keys,
                                  unresolved_keys=unresolved_keys,
                                  circular=circular)
+    # 重叠区分歧（goal T21；A 4.4）：近平局的非参考碱基冲突 → 冲突变体双方
+    # 降 unresolved（共识已在 _build_consensus 内按 IUPAC 合并）
+    discordances = consensus.get("overlap_discordances") or []
+    if discordances:
+        downgrade_overlap_conflicts(variants, discordances)
 
     # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
     # （线性比对即 (ref_start, ref_end)，与此前一致）
@@ -2470,6 +2512,13 @@ def analyze(
     # 无法互检的双峰——它们不进已验证口径，也是 ✓ 的资格门输入
     unresolved_sites = _collect_unresolved_sites(
         read_results, homopolymer_report, mixed_corroboration)
+    for d in discordances:
+        unresolved_sites.append({
+            "ref_pos": d["ref_pos"], "kind": "overlap_discordance",
+            "reads": [c["read"] for c in d["calls"]],
+            "detail": d["detail"],
+            "consensus_base": d["consensus"],
+        })
     # 结构化判定先于结论文本（goal T2/T5）：verdict.status 驱动结论头符号
     mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results if r["mixed_profile"]["count"] > 0}
     cds_reports = _cds_reports_safe(

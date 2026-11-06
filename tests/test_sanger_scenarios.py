@@ -419,7 +419,6 @@ XFAIL_BY_TASK = {
     # （旧实现返回 None），该断言转绿；call_disagrees_with_trace 字段仍归
     # T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
-    "test_m3_overlap_discordance_reported": "T21",
     "test_m9_core_analyze_requires_topology": "T25",
     "test_m12_ploc_shorter_than_pbas_warns": "T24",
     "test_m15_enzyme_site_pending_hint": "T25",
