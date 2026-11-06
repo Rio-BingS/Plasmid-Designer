@@ -328,11 +328,13 @@ def test_m6_soft_clip_poly_windows_consistent():
 
 
 def test_m7_secondary_base_when_call_not_top():
-    """M7：3100 第 609 位调用碱基为第二高通道 → secondary_base 非 None 或分歧标注"""
+    """M7：调用碱基为第二高通道（位点 300 次级峰 1.2 倍）→ secondary_base 非
+    None 或分歧标注。T12 起 3100 的 609 位落入信号衰减段（可信区外双峰不
+    记录），场景改确定性合成（见 _m7）"""
     spec, res = _run("M7")
     detail = res["reads"][0]["mixed_detail"]
-    e = next((d for d in detail if d["pos"] == 609), None)
-    assert e is not None, "609 位双峰应被记录"
+    e = next((d for d in detail if d["pos"] == 300), None)
+    assert e is not None, "300 位双峰应被记录"
     assert e.get("secondary_base") is not None or e.get("call_disagrees_with_trace")
 
 
@@ -408,11 +410,11 @@ def test_m15_enzyme_site_pending_hint():
 # 比对不可达（尾端插入恒被软剪切，B P2-16 为静态确认），「不定插」行为当前已
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
-    "test_s1_tail_zone_q50_missense_not_silent": "T12",
-    # F1/F2 已随 T11 转绿（mixed_model 自适应背景 + 证据形态学分级）；
-    # M7 的 secondary_base 部分：新检测对「调用碱基非最高通道」的位点取
-    # 最高次级通道为 secondary_base（旧实现返回 None），该断言转绿；
-    # call_disagrees_with_trace 字段仍归 T24.4。
+    # S1 已随 T12 转绿（可信区信号驱动，尾端位置不再强制 low——峰证据
+    # 齐全的错义确证 ✗）；F1/F2 已随 T11 转绿；M7 的 secondary_base 部分：
+    # 新检测对「调用碱基非最高通道」的位点取最高次级通道为 secondary_base
+    # （旧实现返回 None），该断言转绿；call_disagrees_with_trace 字段仍归
+    # T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
     "test_m1_same_codon_subs_annotated_as_mnv": "T25",
     "test_m2_upload_order_independent_evidence": "T14",
