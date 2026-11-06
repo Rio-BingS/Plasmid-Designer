@@ -46,6 +46,7 @@ _SITE_KIND_MAP = {
     "mixed_uncorroborated": "unresolved_site",
     "poly_undetermined": "poly_unreliable",
     "dropout": "dropout",
+    "orf_annotation_suspect": "orf_annotation_suspect",  # T16 护栏：ORF 校正越界
 }
 
 # 关键元件表（goal §5 T5；依据：克隆筛选/表达验证中「序列必须逐字正确，
