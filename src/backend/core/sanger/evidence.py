@@ -19,6 +19,7 @@ unresolved_sites，`_build_conclusion` 调用 `_conclusion_summary`）。
 from typing import Dict, List, Optional, Tuple
 
 from core.sanger.abif_reader import peak_window as _peak_window
+from core.sanger.artifacts import artifact_at as _artifact_at
 from core.sanger.homopolymer import POLY_COMPRESSION_RATIO, _read_ref_maps
 from core.sanger.noise import peak_snr as _noise_peak_snr
 from core.sanger.reliable_zone import in_zone, zone_reason
@@ -188,6 +189,9 @@ def _evidence_item(v: Dict, r: Dict, pr: Dict) -> Optional[Dict]:
         "mixed_z": (site or {}).get("mixed_z"),
         "in_zone": bool(zone and rp and in_zone(zone, rp)),
         "called_base": called,
+        # 伪迹特征（goal T20）：位点落在压缩/dye blob/短滑移区段 → kind 值，
+        # 评分权重待 T23 基准集拟合（当前不参与计算）
+        "artifact": _artifact_at(r.get("artifacts") or [], rp),
     }
 
 
