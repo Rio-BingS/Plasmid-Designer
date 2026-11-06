@@ -1,0 +1,14 @@
+{
+  "_doc": "双峰自适应背景模型参数（goal T11；core/sanger/mixed_model.py 读取）。按 ABIF MODL/MCHN 选 mixed_<型号>.json，缺失回退本文件。ratio_floor 取 0.30 而非 goal 原文的 0.20：3730/3100 实测（work/probe_mixed_model.py）0.20-0.30 区间是噪声底，0.20 下限会让检出数翻倍而无判读收益；待 T23 基准集 ROC 后再标定。",
+  "ratio_floor": 0.3,
+  "adaptive_k": 4.0,
+  "mad_scale": 1.4826,
+  "window": 25,
+  "min_local_samples": 8,
+  "widespread_min": 5,
+  "stretch_min": 8,
+  "density_min_per100bp": 5.0,
+  "ratio_cv_max": 0.35,
+  "segment_span_max": 0.35,
+  "site_q_ratio_min": 0.7
+}
