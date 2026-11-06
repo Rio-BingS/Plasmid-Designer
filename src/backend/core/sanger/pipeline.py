@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
+from core.sanger.noise import peak_snr
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
@@ -116,23 +117,13 @@ def _read_grade(trimmed: str, trimmed_q: List[int]) -> Tuple[str, float, int]:
     return "B", q20_ratio, continuous_read_length(trimmed_q)
 
 
-def _peak_snr(trace: Dict[str, List[int]], base: str, pk: int,
-              half_window: int = 2) -> Optional[float]:
-    """变体碱基通道的信噪比（Mutation Surveyor S/N 要素的工程近似）
-
-    峰高取变体位点窗口内该通道最大值；噪声本底取该通道全轨迹中位数。
-    """
-    ch = trace.get(base) or []
-    n = len(ch)
-    if n == 0 or pk < 0 or pk >= n:
-        return None
-    lo, hi = max(0, pk - half_window), min(n, pk + half_window + 1)
-    peak = max(ch[lo:hi])
-    rest = ch[:lo] + ch[hi:]
-    if not rest:
-        return None
-    noise = sorted(rest)[len(rest) // 2]
-    return round(peak / noise, 1) if noise > 0 else None
+def _peak_snr(trace: Dict[str, List[int]], peak_indices: List[Optional[int]],
+              read_pos: int, alt_base: str, called_bases: str = ""):
+    """变体碱基通道信噪比（T13 起委托 noise.peak_snr：噪声本底改为
+    局部非调用通道峰窗面积的 max(1, 1.4826×MAD)——旧「全轨迹中位数」
+    在大面积静默通道（如 3730.ab1 的 T 通道）上恒 0 → None → 被误当
+    响亮；新口径全零通道也给出确定 SNR）"""
+    return peak_snr(trace, peak_indices, read_pos, alt_base, called_bases)
 
 
 def _insertion_peak_ratio(trace: Dict[str, List[int]], peak_indices: List[int],
@@ -169,8 +160,10 @@ def _insertion_peak_ratio(trace: Dict[str, List[int]], peak_indices: List[int],
 
 def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
                            read_pos: Optional[int], ref_base: str,
-                           alt_base: str, vtype: str = "substitution") -> Optional[Dict]:
-    """变体的峰级证据：替换用峰强比（mutant_pct）+ 信噪比，插入用插入峰强度比"""
+                           alt_base: str, vtype: str = "substitution",
+                           bases: str = "") -> Optional[Dict]:
+    """变体的峰级证据：替换用峰强比（mutant_pct）+ 信噪比，插入用插入峰强度比。
+    bases（修剪后调用碱基串）供 SNR 的局部噪声估计逐峰排除调用通道。"""
     if vtype == "insertion":
         # Sanger read 前导 ~20bp 峰形未稳定（信号爬升/压缩高发），峰证据不可靠
         if read_pos is None or read_pos < 20:
@@ -191,7 +184,8 @@ def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
     areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
     alt_a, ref_a = areas.get(alt_base, 0), areas.get(ref_base, 0)
     mutant_pct = round(100 * alt_a / (alt_a + ref_a), 1) if alt_a + ref_a > 0 else None
-    return {"mutant_pct": mutant_pct, "snr": _peak_snr(trace, alt_base, pk)}
+    return {"mutant_pct": mutant_pct,
+            "snr": _peak_snr(trace, peak_indices, read_pos, alt_base, bases)}
 
 
 def _variant_confidence(v: Dict, mixed_positions: set,
@@ -251,7 +245,9 @@ def _variant_confidence(v: Dict, mixed_positions: set,
         if snr is not None and snr < 5:
             return "low"  # 突变峰淹没在本底附近
         clean = mp is None or mp >= 80
-        loud = snr is None or snr >= 10
+        # T13：snr 不可估（None）视为不确定——不再当响亮（噪声淹没的弱峰
+        # 不构成强证据）；snr 有值时按 ≥10 判响亮
+        loud = snr is not None and snr >= 10
         if clean and loud and (q >= 40 or (support >= 2 and q >= 30)):
             return "high"
         if q >= 25:
@@ -1617,6 +1613,7 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             evidence = _variant_peak_evidence(
                 src["trace"], src["trimmed_peaks"], v.get("read_pos"),
                 ev_ref, ev_alt, v.get("type", "substitution"),
+                bases=src.get("trimmed_bases") or "",
             )
             if evidence is not None:
                 v["peak_evidence"] = evidence

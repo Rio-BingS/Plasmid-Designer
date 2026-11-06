@@ -494,7 +494,8 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
     assert "- 参考图谱：MX.gb（111 bp，1 个特征）" in mx_md
     assert ("各编码区（CDS）结论：\n\n- ✅ **MX**（100.0% 覆盖）：CDS 已完整覆盖。"
             "MX 蛋白与设计不一致：1 处氨基酸替换（K11E）\n") in mx_md
-    assert "| 31 | substitution | A>G | 高 | 40 | 1 | 峰强比 100% | MX | MX:K11E |" in mx_md
+    # T13 局部噪声 SNR：旧口径该合成 trace 的 G 通道全轨迹中位=0 → SNR None （不显示）；新口径本底 max(1,·) 给出确定值
+    assert "| 31 | substitution | A>G | 高 | 40 | 1 | 峰强比 100%、信噪比 96.0 | MX | MX:K11E |" in mx_md
     assert "| M1.ab1 | 测序 read | Excel 引物列精确匹配 |" in mx_md
     mix_md = off["MIX/混合/测序分析报告.md"].decode("utf-8")
     assert "## 双峰（疑似混合）检测" in mix_md and "**疑似混合样品**" in mix_md
