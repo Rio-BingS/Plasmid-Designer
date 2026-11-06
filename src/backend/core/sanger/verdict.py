@@ -30,6 +30,9 @@ from typing import Dict, List, Optional, Tuple
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
 from core.sanger.mixed_call import MINOR_AF_MIN
+from core.sanger.overlap import (
+    double_strand_fraction as _double_strand_fraction, REQUIRE_DOUBLE_STRAND,
+)
 
 # pending 级阻断种类（goal §3 blocking.kind 枚举的待定子集；其余种类随
 # 对应任务 T6/T7/T9/T16/T17 落地后加入）
@@ -46,6 +49,7 @@ _SITE_KIND_MAP = {
     "mixed_uncorroborated": "unresolved_site",
     "poly_undetermined": "poly_unreliable",
     "dropout": "dropout",
+    "overlap_discordance": "overlap_discordance",  # T21：重叠区近平局分歧
     "orf_annotation_suspect": "orf_annotation_suspect",  # T16 护栏：ORF 校正越界
 }
 
@@ -385,6 +389,14 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         _blk("roi_unverified", None, None, None,
              f"实测仅 {measured_bp}bp，不足以确认是否为目标质粒",
              "补测引物或换参考")
+    # 双链覆盖（goal T21；A 4.4）：占比随 roi 下发；「必须双链」策略默认
+    # 关闭（单引物测整质粒是常规策略），启用时未满双链记 pending
+    dsf = _double_strand_fraction(reads, roi_start, roi_end)
+    if (REQUIRE_DOUBLE_STRAND and dsf is not None
+            and roi_measured_pct > 0 and dsf < 100):
+        _blk("unresolved_site", roi_start, roi_end, None,
+             f"ROI 双链覆盖 {dsf}%（策略：ROI 必须双链覆盖）——单链覆盖区域未经对侧验证",
+             "补测对侧链引物，或在设置中关闭双链覆盖强制")
 
     has_fail = any(b.get("fail_impact") for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
@@ -422,7 +434,8 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
             "source": roi_source,
             "verified_fraction": round(roi_verified_pct / 100, 4),
             "measured_fraction": round(roi_measured_pct / 100, 4),
-            "double_strand_fraction": None,
+            # ROI 内正负两链都被覆盖的 bp 占比（goal T21；此前恒 None）
+            "double_strand_fraction": dsf,
         },
         "reads": {
             "total": len(reads) + len(errors),
