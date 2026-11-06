@@ -496,13 +496,16 @@ def estimate_run_length(trace: Dict[str, List[int]], peaks: List[int],
 
 def detect_phase_shift(trace: Dict[str, List[int]], peaks: List[int],
                        run_i0: int, run_i1: int, run_base: str,
-                       window: int = SLIP_WINDOW_BASES) -> List[int]:
+                       window: int = SLIP_WINDOW_BASES,
+                       min_ratio: float = SLIP_MIN_RATIO) -> List[int]:
     """检测 poly 结束后 window 内 n−1/n−2 几何衰减次峰序列（B4 滑移伪影）
 
     run_i0/i1：run 在 read 上的首末碱基下标（0-based 含端）。在 run_base
-    通道上检查 run 末端之后的碱基位：峰高落在 [5%, 60%]×H(run) 且逐个
-    单调衰减、≥2 个 → 判滑移 echo 序列，返回 echo 的 read 位置（1-based）。
-    主峰延续（≥60%，真实同碱基延续或下一个正常峰）即中断序列。
+    通道上检查 run 末端之后的碱基位：峰高落在 [min_ratio, 60%]×H(run) 且
+    逐个单调衰减、≥2 个 → 判滑移 echo 序列，返回 echo 的 read 位置
+    （1-based）。主峰延续（≥60%，真实同碱基延续或下一个正常峰）即中断
+    序列。min_ratio 缺省 5%（poly 链路口径不变）；短同聚物（T20）传更高
+    下限滤掉相邻峰的尾漏（尾漏 ~15%，真实 echo ≥20%）。
 
     goal T7（B P2-21）：STR stutter 的 echo 物理上紧邻 run 末端——首个
     echo 之后相邻 echo 间距超过 SLIP_ECHO_GAP 即中断序列，本底级弱峰
@@ -536,7 +539,7 @@ def detect_phase_shift(trace: Dict[str, List[int]], peaks: List[int],
         h = max(ch[lo:hi]) if lo < len(ch) else 0
         if h >= SLIP_MAX_RATIO * h_run:
             break  # 主峰延续：不是 echo 序列
-        if h < SLIP_MIN_RATIO * h_run:
+        if h < min_ratio * h_run:
             continue  # 本底级信号：跳过（间距约束已在上限长间隔时中断）
         if prev is not None and h > prev * SLIP_DECAY:
             break  # 增高：非几何衰减序列
