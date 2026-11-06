@@ -333,10 +333,11 @@ def test_conclusion_target_partial_qualifies():
 
 
 def test_conclusion_target_full_unchanged():
-    """完整覆盖：结论与此前逐字一致（无追加）"""
+    """目的基因模式完整覆盖：结论头用定稿措辞「目的基因测序正确」
+    （2026-11-05；全质粒模式无标记仍为「构建与设计一致」）"""
     from core.sanger.pipeline import _conclusion_summary
     assert _conclusion_summary([], [_rpt(analysis_target=True)], False) == \
-        "✓ 结论：构建与设计一致，未检出差异"
+        "✓ 结论：目的基因测序正确，未检出差异"
 
 
 def test_conclusion_no_marker_unchanged():
