@@ -18,7 +18,9 @@ unresolved_sites，`_build_conclusion` 调用 `_conclusion_summary`）。
 
 from typing import Dict, List, Optional, Tuple
 
+from core.sanger.abif_reader import peak_window as _peak_window
 from core.sanger.homopolymer import POLY_COMPRESSION_RATIO, _read_ref_maps
+from core.sanger.noise import peak_snr as _noise_peak_snr
 from core.sanger.reliable_zone import in_zone, zone_reason
 
 
@@ -88,6 +90,211 @@ def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
             and hp["peak_amplitude_ratio"] < POLY_COMPRESSION_RATIO):
         codes.append("poly_compressed")
     return codes
+
+
+def _insertion_peak_ratio(trace: Dict[str, List[int]], peak_indices: List[int],
+                          read_pos: int, alt_base: str) -> Optional[float]:
+    """插入峰强度比：插入碱基通道峰面积 / 相邻峰主峰面积中位数
+
+    纯合质粒中真实存在的插入，其峰高接近邻峰（~1）；部分克隆带插入（混合
+    样品）或峰压缩区峰高偏弱（~0.3-0.6）；caller 伪影几乎无独立峰（~0）。
+    仅支持单碱基插入（多碱基插入的峰形判别复杂，返回 None 走 Q 口径）。
+    （T14 自 pipeline 迁入：峰级证据归证据模块）"""
+    if len(alt_base) != 1 or alt_base not in "ACGT":
+        return None
+    if read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
+        return None
+    i = read_pos - 1
+    n = min(len(v) for v in trace.values()) if trace else 0
+    if n == 0 or peak_indices[i] is None or not (0 <= peak_indices[i] < n):
+        return None
+    lo, hi = _peak_window(peak_indices, i, n)
+    alt_area = sum(trace[alt_base][lo:hi])
+    neigh: List[int] = []
+    for j in (i - 2, i - 1, i + 1, i + 2):
+        if j == i or not (0 <= j < len(peak_indices)):
+            continue
+        if peak_indices[j] is None or not (0 <= j < n):
+            continue
+        l2, h2 = _peak_window(peak_indices, j, n)
+        neigh.append(max(sum(trace[b][l2:h2]) for b in "ACGT"))
+    if not neigh:
+        return None
+    med = sorted(neigh)[len(neigh) // 2]
+    return round(alt_area / med, 2) if med > 0 else None
+
+
+def _variant_peak_evidence(trace: Dict[str, List[int]], peak_indices: List[int],
+                           read_pos: Optional[int], ref_base: str,
+                           alt_base: str, vtype: str = "substitution",
+                           bases: str = "") -> Optional[Dict]:
+    """变体的峰级证据：替换用峰强比（mutant_pct）+ 信噪比，插入用插入峰强度比。
+    bases（修剪后调用碱基串）供 SNR 的局部噪声估计逐峰排除调用通道。
+    （T14 自 pipeline 迁入）"""
+    if vtype == "insertion":
+        # Sanger read 前导 ~20bp 峰形未稳定（信号爬升/压缩高发），峰证据不可靠
+        if read_pos is None or read_pos < 20:
+            return None
+        ratio = _insertion_peak_ratio(trace, peak_indices, read_pos, alt_base)
+        return {"insertion_peak_ratio": ratio} if ratio is not None else None
+    if not ref_base or not alt_base or len(ref_base) != 1 or len(alt_base) != 1:
+        return None
+    if alt_base not in "ACGT" or ref_base not in "ACGT":
+        return None
+    if not trace or not peak_indices or read_pos is None or read_pos < 1 or read_pos > len(peak_indices):
+        return None
+    pk = peak_indices[read_pos - 1]
+    n = min(len(v) for v in trace.values())
+    if n == 0 or pk is None or pk < 0 or pk >= n:
+        return None
+    lo, hi = _peak_window(peak_indices, read_pos - 1, n)
+    areas = {b: sum(trace[b][lo:hi]) for b in "ACGT"}
+    alt_a, ref_a = areas.get(alt_base, 0), areas.get(ref_base, 0)
+    mutant_pct = round(100 * alt_a / (alt_a + ref_a), 1) if alt_a + ref_a > 0 else None
+    return {"mutant_pct": mutant_pct,
+            "snr": _noise_peak_snr(trace, peak_indices, read_pos, alt_base, bases)}
+
+
+def _evidence_item(v: Dict, r: Dict, pr: Dict) -> Optional[Dict]:
+    """单条支持 read 的证据项（EvidenceItem，goal §3 T14）。
+
+    v 为合并变体（参考链方向），r 为该 read 的分析结果，pr 为合并时记录的
+    {read, read_pos, read_q}；反向 read 的 ref/alt 按电泳链互补换算后取峰证据。"""
+    fname = pr["read"]
+    rp = pr.get("read_pos")
+    direction = (r.get("alignment") or {}).get("direction", "+")
+    if direction == "-":
+        comp = str.maketrans("ACGTN", "TGCAN")
+        ev_ref = (v.get("ref_base", "") or "").translate(comp)
+        ev_alt = (v.get("alt_base", "") or "").translate(comp)[::-1]
+    else:
+        ev_ref, ev_alt = v.get("ref_base", ""), v.get("alt_base", "")
+    ev = _variant_peak_evidence(
+        r.get("trace") or {}, r.get("trimmed_peaks") or [], rp,
+        ev_ref, ev_alt, v.get("type", "substitution"),
+        bases=r.get("trimmed_bases") or "",
+    ) or {}
+    site = next((d for d in (r.get("mixed_detail") or [])
+                 if d.get("pos") == rp), None)
+    zone = r.get("reliable_zone")
+    called = ""
+    tb = (r.get("trimmed_bases") or "").upper()
+    if rp and 1 <= rp <= len(tb):
+        called = tb[rp - 1]
+    return {
+        "read": fname, "read_pos": rp, "strand": direction, "q": pr.get("read_q"),
+        "mutant_pct": ev.get("mutant_pct"), "snr": ev.get("snr"),
+        "mixed_ratio": (site or {}).get("ratio"),
+        "mixed_z": (site or {}).get("mixed_z"),
+        "in_zone": bool(zone and rp and in_zone(zone, rp)),
+        "called_base": called,
+    }
+
+
+def _evidence_strength(item: Dict) -> tuple:
+    """证据强度排序键（代表 read 择强，goal T14）：峰强比 > 信噪比 > Q；
+    峰证据缺失（indel / trace 缺失）按「无峰证据」参与排序——确定性，与
+    上传顺序无关，同名 read 兜底稳定。"""
+    mp = item.get("mutant_pct")
+    snr = item.get("snr")
+    return (1 if mp is not None else 0, mp or 0,
+            1 if snr is not None else 0, snr or 0,
+            item.get("q") or 0)
+
+
+def attach_evidence_by_read(v: Dict, by_read: Dict[str, Dict],
+                            mixed_by_read: Dict[str, set]) -> None:
+    """多 read 证据聚合（goal T14；A 3.4 / B P1-6，就地修改 v）：
+
+    - 合并时记录的 `_per_read`（每条支持 read 的 read_pos/Q）逐条构造
+      EvidenceItem → `evidence_by_read`（按 read 名排序，输出确定）；
+    - 展示用「代表 read」取证据最强者（_evidence_strength 最大，平局按
+      read 名升序），并重绑 v 的 read/read_pos/read_q——后续置信度分级
+      （峰证据、混合背景、zone 强制、互检）全部基于代表 read，与上传
+      顺序无关（M2）。
+    """
+    per = v.pop("_per_read", None) or [{"read": v.get("read"),
+                                        "read_pos": v.get("read_pos"),
+                                        "read_q": v.get("read_q")}]
+    items: List[Dict] = []
+    for pr in per:
+        r = by_read.get(pr["read"])
+        if r is None:
+            continue
+        item = _evidence_item(v, r, pr)
+        if item is not None:
+            items.append(item)
+    items.sort(key=lambda e: e["read"])
+    v["evidence_by_read"] = items
+    if not items:
+        return
+    # 代表 read：证据最强者；平局按 read 名升序（_name_desc 逆转实现 max 语义）
+    rep = max(items, key=_rep_key)
+    v["read"] = rep["read"]
+    v["read_pos"] = rep["read_pos"]
+    v["read_q"] = rep["q"]
+    r = by_read.get(rep["read"])
+    if r is not None:
+        direction = (r.get("alignment") or {}).get("direction", "+")
+        if direction == "-":
+            comp = str.maketrans("ACGTN", "TGCAN")
+            ev_ref = (v.get("ref_base", "") or "").translate(comp)
+            ev_alt = (v.get("alt_base", "") or "").translate(comp)[::-1]
+        else:
+            ev_ref, ev_alt = v.get("ref_base", ""), v.get("alt_base", "")
+        ev = _variant_peak_evidence(
+            r.get("trace") or {}, r.get("trimmed_peaks") or [], rep["read_pos"],
+            ev_ref, ev_alt, v.get("type", "substitution"),
+            bases=r.get("trimmed_bases") or "",
+        )
+        if ev is not None:
+            v["peak_evidence"] = ev
+
+
+def _rep_key(item: Dict) -> tuple:
+    """max() 用的代表键：强度最大；平局 read 名升序（字符串直接比较即升序，
+    但 max 取大——对名字取负序用元组包装）"""
+    return (_evidence_strength(item), _name_desc(item["read"]))
+
+
+def _name_desc(name: str) -> tuple:
+    return tuple(-ord(c) for c in (name or ""))
+
+
+def covering_not_supporting(v: Dict, ref2call_by_read: Dict[str, Dict[int, Dict]],
+                            keys_by_read: Dict[str, set],
+                            by_read: Dict[str, Dict]) -> List[Dict]:
+    """覆盖该位点但未支持该变体的其他 read（goal T14：互检信息扩展到所有
+    变体；A 3.4 covering_reads_not_supporting）。与 contradicts/weak 的
+    「干净覆盖反证」不同：本清单只记录覆盖事实本身（含 N 列、质量不足、
+    邻近有其他差异的 read），不做反证推断——判定仍走 _clean_cover_reads*。"""
+    out: List[Dict] = []
+    try:
+        anchor = int(v["ref_pos"])
+    except (KeyError, TypeError, ValueError):
+        return out
+    key = _variant_key_for_cover(v)
+    for fname, r2c in ref2call_by_read.items():
+        if fname == v.get("read"):
+            continue
+        c = r2c.get(anchor)
+        if not c:
+            continue
+        if key in keys_by_read.get(fname, ()):
+            continue
+        r = by_read.get(fname) or {}
+        rp = c.get("read_pos")
+        tq = r.get("trimmed_quality") or []
+        q = tq[rp - 1] if rp and 1 <= rp <= len(tq) else None
+        out.append({"read": fname, "read_pos": rp, "q": q})
+    return sorted(out, key=lambda h: h["read"])
+
+
+def _variant_key_for_cover(v: Dict) -> tuple:
+    """covering 判定用的变体键（与 pipeline._variant_key 同构；此处独立
+    实现避免循环导入）"""
+    return (int(v.get("ref_pos") or 0), v.get("type") or "",
+            (v.get("alt_base") or "").upper(), int(v.get("length") or 1))
 
 
 _IUPAC_MERGE = {

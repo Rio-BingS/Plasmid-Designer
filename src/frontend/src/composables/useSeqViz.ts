@@ -185,6 +185,13 @@ export function useSeqViz(options: UseSeqVizOptions) {
     }
   }
 
+  /** read 未在显示集则加入（返回是否新加入；调用方决定是否 nextTick） */
+  function ensureVisible(ri: number) {
+    if (isReadVisible(ri)) return false
+    visibleReads.value.push(ri)
+    return true
+  }
+
   function isReadVisible(ri: number) {
     return visibleReads.value.includes(ri)
   }
@@ -225,22 +232,24 @@ export function useSeqViz(options: UseSeqVizOptions) {
     }
   }
 
+  /** 目标列 1.6s 黄色闪烁标识（跳转/选 read 共用；先清旧定时器防串扰） */
+  function flashRef(refPos: number) {
+    flashRefPos.value = refPos
+    if (flashTimer) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      flashRefPos.value = null
+      nextSeqDraw()
+    }, 1600)
+  }
+
   function scrollToRefPos(refPos: number, flash = false) {
     const wrap = seqBox.value
     if (wrap) {
       const target = Math.max(0, (refPos - 0.5) * seqColW.value - wrap.clientWidth / 2)
-      // 立即定位（不用平滑滚动）：平滑滚动进行中缩放/连跳会取到中途 scrollLeft，
-      // 造成视口漂移；目标列本身有 1.6s 黄色闪烁标识，无需动画引导
+      // 立即定位（不用平滑滚动）：平滑滚动中缩放/连跳会取到中途 scrollLeft 致漂移
       safeScrollTo(target, false)
     }
-    if (flash) {
-      flashRefPos.value = refPos
-      if (flashTimer) clearTimeout(flashTimer)
-      flashTimer = setTimeout(() => {
-        flashRefPos.value = null
-        nextSeqDraw()
-      }, 1600)
-    }
+    if (flash) flashRef(refPos)
     nextSeqDraw()
   }
 
@@ -248,10 +257,12 @@ export function useSeqViz(options: UseSeqVizOptions) {
     if (!analysis.value) return
     const read = analysis.value.reads.find((r) => r.filename === (v.read || r.filename)) || analysis.value.reads[0]
     if (!read) return
-    if (!isReadVisible(read.index)) {
-      visibleReads.value.push(read.index)
-      await nextTick()
+    // T14：同时勾选全部支持 read（evidence_by_read），条带仍切代表 read
+    for (const ev of v.evidence_by_read || []) {
+      const sup = analysis.value.reads.find((r) => r.filename === ev.read)
+      if (sup) ensureVisible(sup.index)
     }
+    if (ensureVisible(read.index)) await nextTick()
     selectedReadIdx.value = read.index   // 峰图条带切到支持该差异的 read
     await loadSeqTrace(read.index)
     selRefPos.value = v.ref_pos
@@ -263,10 +274,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
   function openReadInSeqviz(i: number) {
     const read = analysis.value?.reads[i]
     if (!read) return
-    if (!isReadVisible(i)) {
-      visibleReads.value.push(i)
-      loadSeqTrace(i)
-    }
+    if (ensureVisible(i)) loadSeqTrace(i)
     selectedReadIdx.value = i
     seqBox.value?.scrollIntoView?.({ block: 'nearest' })
     scrollToRefPos(read.ref_start)
@@ -279,10 +287,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
     if (!read || read.ref_end <= 0) return
     const first = selectedReadIdx.value !== ri
     selectedReadIdx.value = ri
-    if (!isReadVisible(ri)) {
-      visibleReads.value.push(ri)
-      loadSeqTrace(ri)
-    }
+    if (ensureVisible(ri)) loadSeqTrace(ri)
     seqInfo.value = `已选中 ${shortName(read.filename)}（${read.direction === '-' ? '←' : '→'} ${readSpanText(read)} · Q${read.mean_q}）${first ? '，峰图条带已切换到该引物' : ''}`
     const wrap = seqBox.value
     if (zoom && wrap && wrap.clientWidth > 0) {
@@ -302,12 +307,7 @@ export function useSeqViz(options: UseSeqVizOptions) {
         // 塞不下整条 read：以可读密度落在 read 起点处（起点闪黄标识），向右浏览
         seqScrollX.value = Math.max(0, (zs - 1) * nu - 12)
         safeScrollTo(seqScrollX.value, false)
-        flashRefPos.value = zs
-        if (flashTimer) clearTimeout(flashTimer)
-        flashTimer = setTimeout(() => {
-          flashRefPos.value = null
-          nextSeqDraw()
-        }, 1600)
+        flashRef(zs)
         nextSeqDraw()
       }
     }
