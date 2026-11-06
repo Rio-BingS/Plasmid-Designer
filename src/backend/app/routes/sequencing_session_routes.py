@@ -109,13 +109,50 @@ def _parse_manifest(raw: Optional[str]) -> Optional[List[Dict]]:
     return out
 
 
-def _precheck(manifest: List[Dict], excel_bytes: Optional[bytes], read_limits: Dict) -> None:
-    """按文件清单预演归组与 read 上限（只看文件名，不需要文件内容）。
+# 可解析性预检的最小字节数（T18；B P1-13）：内容不在场时按「大小不足以
+# 构成合法文件头」拦掉明显的损坏文件——任何可解析的参考文件都不可能小于
+# 10 字节（FASTA 最短 ">x\nACGT\n"；GenBank LOCUS 行 20+ 字节），.ab1 的
+# ABIF 文件头固定 128 字节。真正的解析校验仍在 finalize 按实际字节做。
+MIN_REF_BYTES = 10
+MIN_ABIF_BYTES = 128
 
-    与 finalize 用同一套归类/归组/上限函数，判定一致；finalize 时仍会按
-    实际收到的文件再检查一遍（清单只是让超限尽早暴露，不被信任）。"""
-    blobs = [(m["name"], b"\0" if m["size"] else b"") for m in manifest]
-    reads, refs, _ignored = sr._classify_batch_blobs(blobs)
+
+def _precheck(manifest: List[Dict], excel_bytes: Optional[bytes], read_limits: Dict) -> None:
+    """按文件清单预演归组、可解析性下限与 read 上限。
+
+    与 finalize 用同一套归类/归组/上限口径：扩展名分类（READ_EXTS/REF_EXTS）
+    与 _classify_batch_blobs 同表、归组与上限复用 _group_and_check；内容
+    不在场（清单只含 name/size），可解析性只做「大小不足以构成合法文件头」
+    的下限校验（参考 ≥10 字节、.ab1 ≥128 字节 ABIF 头），finalize 时仍按
+    实际收到的文件解析再查一遍（清单只是让损坏/超限尽早暴露，不被信任）。"""
+    reads: List[Dict] = []
+    refs: List[Dict] = []
+    for m in manifest:
+        # 空文件与 ~$ 临时文件与 finalize 的 _classify_batch_blobs 同口径：跳过
+        if m["size"] == 0 or m["name"].startswith("~$"):
+            continue
+        ext = os.path.splitext(m["name"])[1].lower()
+        entry = {"name": m["name"], "ext": ext, "size": m["size"],
+                 "stem": sr.norm_stem(os.path.splitext(os.path.basename(m["name"]))[0])}
+        if ext in sr.READ_EXTS:
+            if m["size"] < MIN_ABIF_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{m['name']}：{m['size']} 字节不足以构成有效的 ABIF 文件"
+                           f"（文件头固定 {MIN_ABIF_BYTES} 字节），文件可能损坏")
+            reads.append(entry)
+        elif ext in sr.REF_EXTS:
+            if m["size"] < MIN_REF_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{m['name']}：{m['size']} 字节不足以构成可解析的参考文件"
+                           "（FASTA/GenBank 均需文件头），文件可能损坏")
+            refs.append(entry)
+        # 未知扩展名与 finalize 的 ignored 口径一致：不参与归组、不在此拒绝
+    if not reads and not refs:
+        raise HTTPException(
+            status_code=400,
+            detail="未找到可用的测序文件（.ab1）或参考图谱（.dna/.gb/.fasta）")
     rows = None
     if excel_bytes is not None:
         _cols, rows = sr._load_batch_excel(excel_bytes)
