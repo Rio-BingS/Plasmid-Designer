@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
 from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
+    check_unaligned_hq_segment,
 )
 from core.sanger.annotator import annotate_variants, summarize_severity
 from core.seq_utils import revcomp as _seq_revcomp
@@ -1668,6 +1669,8 @@ def _analyze_one_read(
     aln = align_fn(trimmed, ref, trimmed_q)
     # 截断提示：环状参考的跨原点 read 已整条比对，仍截断即另有原因
     partial = _check_partial_alignment(trimmed, aln, circular)
+    # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常，不再静默成"没测到"
+    hq_segments = check_unaligned_hq_segment(aln, trimmed_q)
 
     # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
     # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
@@ -1728,6 +1731,8 @@ def _analyze_one_read(
         "cross_variants": cross_variants if used_tracy else None,
         "tracy_calls": tracy_calls,
         "partial_alignment": partial,
+        # 端部软剪切高质量段（goal T6；A 2.1）——空列表表示无异常剪切
+        "unaligned_hq_segments": hq_segments,
         # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
         "reliable_zone": compute_reliable_zone(
             len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
@@ -2780,24 +2785,18 @@ def analyze(
     unresolved_sites = _collect_unresolved_sites(
         read_results, homopolymer_report, mixed_corroboration)
     # 结构化判定先于结论文本（goal T2/T5）：CDS 判读与双峰分级上提，
-    # verdict.status 驱动结论头符号——ROI 覆盖分级（partial/insufficient）
-    # 不得出 ✓（A 4.2「测到的地方一致 ≠ 构建验证完毕」）
+    # verdict.status 驱动结论头符号——partial/insufficient 不得出 ✓（A 4.2）
     mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results if r["mixed_profile"]["count"] > 0}
     cds_reports = _cds_reports_safe(
         ref, features, [v for v in variants if not v.get("cross_read_resolved")],
         consensus, unresolved_sites=unresolved_sites)
     verdict = build_verdict({
-        "variants": variants,
-        "unresolved_sites": unresolved_sites,
-        "cds_reports": cds_reports,
-        "errors": errors,
-        "reads": read_results,
+        "variants": variants, "unresolved_sites": unresolved_sites,
+        "cds_reports": cds_reports, "errors": errors, "reads": read_results,
         "mixed_profiles": mixed_profiles,
         "mixed_corroboration": mixed_corroboration,
-        "consensus": consensus,
-        "coverage": coverage,
-        "features": features or [],
-        "algo_version": SANGER_ALGO_VERSION,
+        "consensus": consensus, "coverage": coverage,
+        "features": features or [], "algo_version": SANGER_ALGO_VERSION,
     }, len(ref))
     conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
