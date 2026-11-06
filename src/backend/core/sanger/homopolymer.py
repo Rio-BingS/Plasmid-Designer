@@ -277,11 +277,13 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
                         base: str) -> Optional[Tuple[int, int, int]]:
     """从逐列对齐提取参考区间 [cs,ce] 对应的 read 峰窗与段内调用数
 
-    返回 (i0, i1, called)：i0/i1 为 read 原始方向 0-based 索引（峰窗两端），
+    返回 (i0, i1, called)：i0/i1 为电泳链 0-based 索引（峰窗两端），
     called 为窗口内与参考链 run 碱基一致的调用数（read_aligned 一律按参考
     方向展示，正反 read 通用）。线性偏移映射在 read 带上游 indel 时错位、
     且反向 read 会数错互补碱基（表现为调用 0），逐列对齐两种问题都避免。
-    区间内无对齐列（对齐视图缺失/退化）时返回 None。
+    电泳坐标按 _read_ref_maps 同式折算（query_start/query_end 扣软剪切、
+    反向 = query_end - 列内序号；goal T9 前 idx 是块内序号，带软剪切时
+    峰窗整体偏移，M6）。区间内无对齐列（对齐视图缺失/退化）时返回 None。
     """
     aligned = aln.get("aligned") or {}
     ref_s = (aligned.get("ref_aligned") or "").upper()
@@ -290,29 +292,34 @@ def _aligned_run_window(aln: Dict, cs: int, ce: int,
         return None
     ref_pos = int(aligned.get("ref_start") or aln["ref_start"])
     L = _circ_len(aln)  # 环状跨原点：展开坐标折回后再与 [cs,ce] 比较
-    total = sum(1 for c in read_s if c != "-")
+    direction = aln.get("direction", "+")
+    qs, qe = aln.get("query_start"), aln.get("query_end")
+    if qs is not None and qe is not None:
+        block_first = int(qs) if direction == "+" else int(qe)
+    else:
+        block_first = 1  # 旧记录回退（无软剪切时恰为 1）
     first = last = None
     called = 0
-    idx = 0  # 参考方向的 read 碱基序号（非 gap 才前进）
+    qi = -1  # 对齐块内 read 碱基序号（0-based，非 gap 才前进）
     for k, rch in enumerate(ref_s):
         b = read_s[k]
         if b != "-":
+            qi += 1
             if rch != "-":
                 cur = fold_pos(ref_pos, L) if L else ref_pos
                 ref_pos += 1
                 if cs <= cur <= ce:
-                    if first is None:
-                        first = idx
-                    last = idx
+                    orig = (block_first - qi) if direction == "-" \
+                        else (block_first + qi)
+                    if first is None or orig < first:
+                        first = orig
+                    if last is None or orig > last:
+                        last = orig
                     if b == base:
                         called += 1
-            idx += 1
     if first is None:
         return None
-    if aln.get("direction") == "-":
-        # read_aligned 为参考方向，原始 read（trace/peaks）方向相反
-        first, last = total - 1 - last, total - 1 - first
-    return first, last, called
+    return first - 1, last - 1, called
 
 
 def pos_ranges_str(positions: List[int], max_ranges: int = 6) -> str:
