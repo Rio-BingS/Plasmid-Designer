@@ -78,7 +78,9 @@ def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
         snr = evidence.get("snr")
         if snr is not None and snr < 5:
             codes.append("low_snr")
-        elif snr is None and evidence.get("snr_checked"):
+        elif snr is None and "snr" in evidence:
+            # T13：替换证据里 snr 键存在但为 None（局部噪声样本不可估）
+            # = 不确定而非响亮；插入证据不带 snr 键，不误报
             codes.append("snr_unavailable")
     hp = v.get("homopolymer")
     if (hp and v.get("type") in ("insertion", "deletion")
