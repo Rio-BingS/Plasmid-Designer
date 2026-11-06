@@ -223,35 +223,34 @@ describe('SequencingPanel', () => {
     expect(text).toContain('无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）')
   })
 
-  it('collapses low-confidence variants by default with an expand toggle', async () => {
+  it('T15 低置信行不再折叠：常显并按待处理优先级排前，仅结论文本保留折叠', async () => {
     const analysis = {
       ...mockAnalysis,
       conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n  ↳ 新增酶切位点: EcoRI\n【MBYSTC CDS】CDS 已完整覆盖\n位置 380 缺失 1bp（非编码区），低置信度（疑似测序噪声或混合峰，建议人工核对峰图）\n  ↳ 破坏酶切位点: BsaHI',
       variants: [
-        { ...mockAnalysis.variants[0], confidence: 'high' },
-        { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low' },
+        { ...mockAnalysis.variants[0], confidence: 'high', p_real: 0.995, action: 'accept' },
+        { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low', p_real: 0.006, action: 'resequence' },
       ],
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await wrapper.vm.$nextTick()
 
-    let text = wrapper.text()
-    // 默认折叠：差异明细只剩高置信行，结论卡开关挂在低置信行组上
+    const text = wrapper.text()
+    // 差异明细：低置信行常显（T15 只折叠 exclude），且待处理优先级排最前
+    expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
+    const rows = wrapper.findAll('.seq-table.clickable tbody tr')
+    expect(rows[0].text()).toContain('380')
+    expect(rows[0].text()).toContain('建议重测')
+    expect(rows[0].text()).toContain('P=0.6%')
+    expect(rows[1].text()).toContain('采信')
+    // 结论文本的低置信折叠保留在结论卡（开关仍在，默认收起）
     expect(text).toContain('1 处低置信已折叠')
-    expect(text).toContain('共检出 2 处差异')
-    expect(text).not.toContain('位置 380 缺失 1bp')
-    // 低置信行的子注释行（破坏酶切位点）跟随折叠，高置信行的子注释保留
     expect(text).not.toContain('破坏酶切位点: BsaHI')
     expect(text).toContain('新增酶切位点: EcoRI')
     expect(text).toContain('【MBYSTC CDS】')
-    expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(1)
-
-    // 展开：低置信行、其子注释与差异明细行都出现
+    // 展开：结论文本的低置信子注释出现（差异明细行不受影响）
     await wrapper.find('.lowconf-toggle').trigger('click')
-    text = wrapper.text()
-    expect(text).toContain('位置 380 缺失 1bp')
-    expect(text).toContain('低置信度（疑似测序噪声或混合峰，建议人工核对峰图）')
-    expect(text).toContain('破坏酶切位点: BsaHI')
+    expect(wrapper.text()).toContain('破坏酶切位点: BsaHI')
     expect(wrapper.findAll('.seq-table.clickable tbody tr').length).toBe(2)
   })
 
@@ -694,9 +693,8 @@ describe('SequencingPanel', () => {
     // read 表质量评级（含 Q20 tooltip）
     expect(wrapper.find('.grade-chip').text()).toBe('A')
     expect(wrapper.find('.grade-chip').attributes('title')).toContain('98%')
-    // 变异表置信度分级（低置信默认折叠，先展开再断言）
+    // 变异表置信度分级（T15：低置信行常显不折叠，直接断言）
     // happy-dom 的 querySelector 对复合类选择器（.a.b）不可靠，用单类选择器断言
-    await wrapper.find('.lowconf-toggle').trigger('click')
     expect(wrapper.find('.conf-low').text()).toBe('低')
     // 覆盖缺口提示（按长度排序，取最长 3 段）
     const gaps = wrapper.find('.coverage-gaps').text()
