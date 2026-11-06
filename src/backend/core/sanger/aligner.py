@@ -12,6 +12,7 @@ import numpy as np
 from Bio.Align import PairwiseAligner
 
 from core.seq_utils import revcomp  # noqa: F401  # 共享实现；测试与 pipeline 亦从此处导入
+from core.sanger.reliable_zone import DEFAULT_ZONE
 
 _ALIGNER = None
 _ACGT = frozenset("ACGT")
@@ -415,6 +416,11 @@ def _align_impl(read_up: str, ref_up: str, quality: Optional[List[int]],
             else:
                 q_aligned.append(quality[qi] if direction == "+" else quality[nq - 1 - qi])
 
+    # 1-based 电泳帧对齐块起止（正反同帧；反向 = 上面注释的镜像式）
+    n_up = len(read_up)
+    block_s = (n_up - query_end + 1) if direction == "-" else (query_start + 1)
+    block_e = (n_up - query_start) if direction == "-" else query_end
+
     return {
         "direction": direction,
         "ref_start": ref_start,
@@ -423,11 +429,12 @@ def _align_impl(read_up: str, ref_up: str, quality: Optional[List[int]],
         # 正向 read 对齐块覆盖原始 [query_start+1, query_end]；
         # 反向 read 的 query 是 revcomp，原始电泳坐标 = n - query 坐标 + 1，
         # 对齐块对应原始 [n-query_end+1, n-query_start]
-        "query_start": (len(read_up) - query_end + 1) if direction == "-"
-                       else (query_start + 1),
-        "query_end": (len(read_up) - query_start) if direction == "-"
-                     else query_end,
-        "score": float(score),
+        "query_start": block_s,
+        "query_end": block_e,
+        # 端部软剪切段（goal T6；A 2.1）：电泳链 1-based 闭区间，正反
+        # 同式（块起止已镜像到电泳帧）；无剪切为 None
+        "clipped_5p": [1, block_s - 1] if block_s > 1 else None,
+        "clipped_3p": [block_e + 1, n_up] if block_e < n_up else None,
         "identity": round(identity, 4),
         "variants": variants,
         "ambiguous": ambiguous,
@@ -519,3 +526,46 @@ def merge_coverage(ranges: List[Tuple[int, int]], length: int) -> List[Tuple[int
         else:
             merged.append((s, e))
     return merged
+
+# ==================== 端部软剪切高质量段（goal T6；A 2.1）====================
+
+# Q≥20 占比 ≥80%、长度 ≥15bp 的端部剪切段 → 连接/结构异常（该部分
+# 未验证，进入判定阻断）
+UNALIGNED_HQ_MIN_BP = 15
+UNALIGNED_HQ_Q = 20
+UNALIGNED_HQ_FRAC = 0.8
+
+
+def check_unaligned_hq_segment(aln: Dict, trimmed_q: List[int]) -> List[Dict]:
+    """端部被软剪切的高质量段（goal T6；A 2.1）。
+
+    局部比对把端部差异解释成"没测到"——而连接错误恰恰发生在 read 端部。
+    判定：剪切段长度 ≥15bp 且 Q≥20 占比 ≥80%（首尾低质量正常剪切被占比
+    挡住）；5′ 端整体落在首端硬不可信区内（≤front_hard，染料团/信号未稳
+    的正常剪切）不触发。3′ 端不套 tail_gray 边界——该边界是对「对齐穿过
+    去」的 read 的信号衰减先验，端部剪掉的高 Q 段正是要报的异常（S6）。
+    返回 [{side, start, end, length, hq_len, mean_q, adj_ref_start,
+    adj_ref_end, direction}]（电泳链 1-based；adj_* 为相邻比对块参考坐标）。"""
+
+    out: List[Dict] = []
+    for side, seg in (("5′", aln.get("clipped_5p")), ("3′", aln.get("clipped_3p"))):
+        if not seg:
+            continue
+        a, b = int(seg[0]), int(seg[1])
+        if b < a or b - a + 1 < UNALIGNED_HQ_MIN_BP:
+            continue
+        if side == "5′" and b <= DEFAULT_ZONE.front_hard:
+            continue  # 首端硬区整体剪切：正常，不触发
+        qs_ = trimmed_q[a - 1:b]
+        hq = sum(1 for q in qs_ if q >= UNALIGNED_HQ_Q)
+        if hq < UNALIGNED_HQ_MIN_BP or hq / len(qs_) < UNALIGNED_HQ_FRAC:
+            continue
+        out.append({
+            "side": side, "start": a, "end": b, "length": b - a + 1,
+            "hq_len": hq,
+            "mean_q": round(sum(qs_) / len(qs_), 1) if qs_ else 0,
+            "adj_ref_start": aln.get("ref_start"),
+            "adj_ref_end": aln.get("ref_end"),
+            "direction": aln.get("direction", "+"),
+        })
+    return out

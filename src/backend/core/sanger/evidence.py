@@ -270,6 +270,15 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         if failed_reads:
             bits.append(f"另有 {failed_reads} 条 read 解析失败（{failed_names}），该部分未验证")
         return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
+    # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常 → ✗，端部差异
+    # 不再被局部比对静默解释成"没测到"（verdict 缺省的直调/旧记录不启用）
+    hq_blks = [b for b in (verdict or {}).get("blocking") or []
+               if b.get("kind") == "unaligned_hq_segment"]
+    if hq_blks:
+        who = "；".join(b["detail"] for b in hq_blks[:2])
+        return (f"✗ 结论：{who}"
+                + ("等" if len(hq_blks) > 2 else "")
+                + (f"；{tail}" if tail else ""))
     # 解析失败的 read（goal T4；B P0-3）：不再只在 read 表出现——结论头 △
     # 点名「哪几条没读出来」，失败的文件没有验证可言
     if failed_reads:
