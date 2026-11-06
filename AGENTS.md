@@ -253,6 +253,7 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 | docs/KNOWN_ISSUES.md | 未解决挂账 + 防回潮约束 + 历次审计修复索引（代码注释「KNOWN_ISSUES x.y」「终审 X-NN」所指） |
 | docs/ALGORITHM_ROADMAP.md | 算法已实现清单 + 暂缓项路线图（含文献/专利出处；用户明确要求短期不做） |
 | docs/CACHE.md | 缓存策略与现状 |
+| docs/NAMING.md | 各部分功能命名对应关系速查（页面/API/路由/core/DTO/枚举对照 + 质粒名称识别链路专项） |
 | deploy/docker/README.md、deploy/bare/README.md | Docker Compose / Ubuntu systemd 部署 |
 
 ## 已知坑
