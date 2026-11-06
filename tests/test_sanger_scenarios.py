@@ -180,10 +180,13 @@ def test_s15_junction_variant_blocked():
 
 
 def test_s16_mixed_site_after_poly_survives():
-    """S16：poly 后 20+bp 的真实混合双峰不被滑移序列吞掉"""
+    """S16：poly 后 20+bp 的真实混合双峰不被滑移序列吞掉（场景构造：
+    polyA20 @100-119、真 echo @122、混合位点 @150——断言随构造取 150，
+    xfail 掩盖期的 140 是笔误）"""
     spec, res = _run("S16")
     r = res["reads"][0]
-    assert 140 in r["mixed_positions"], "真实混合位点被 slip 序列剔除"
+    assert 150 in r["mixed_positions"], "真实混合位点被 slip 序列剔除"
+    assert 122 not in r["mixed_positions"], "真滑移 echo 未被剔除"
 
 
 def test_s17_all_evidence_out_of_zone_noted():
@@ -370,10 +373,7 @@ def test_m15_enzyme_site_pending_hint():
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
     "test_s1_tail_zone_q50_missense_not_silent": "T12",
-    "test_s2_cds_mixed_35_detected": "T7",
-    "test_s3_cds_mixed_5050_detected": "T7",
     "test_s14_true_mixed_not_flipped_by_weak_corroboration": "T8",
-    "test_s16_mixed_site_after_poly_survives": "T7",
     "test_f1_3730_dye_shoulders_not_mixed": "T11",
     "test_f2_3100_decay_segment_not_mixed": "T11",
     "test_f3_no_pcon_still_analyzed": "T24",

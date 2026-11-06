@@ -24,6 +24,7 @@ B4 detect_phase_shift / B5 detect_post_poly_dropout：poly 末端下游的
 """
 
 import math
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from core.sanger.abif_reader import peak_window
@@ -48,6 +49,17 @@ SLIP_DECAY = 0.9        # 相邻 echo 单调不增（后一个 ≤ 前一个 × 
 SLIP_MIN_ECHOES = 2
 SLIP_WINDOW_BASES = 40  # poly 末端后向前搜索的窗口（碱基数）
 SLIP_FIRST_WITHIN = 4   # 首 echo 必须紧贴 poly 末端（碱基数）
+SLIP_ECHO_GAP = 3       # 相邻 echo 最大间距（峰数；STR stutter 物理上紧邻）
+
+
+class Strand(Enum):
+    """链向约定（goal T7；B P2-21）：通道类参数（run_base 等）一律取
+    电泳链碱基——trace 通道按读向（测序链）记录，反向 read 的参考链
+    碱基须由调用方先取互补（pipeline._signal_analysis_pass 同式）。
+    detect_phase_shift 的 run_base 属 ELECTRO；参考链坐标换算走 ReadRefMap。
+    反向场景的约定由单测锁定（test_signal_reverse_slip_strand_convention）。"""
+    ELECTRO = "electro"    # 电泳链（trace 通道键，channel 类参数的口径）
+    REF = "ref"            # 参考链（比对/变体的 ref_base、alt_base 口径）
 
 # —— B5 骤降参数 ——
 DROPOUT_FLOOR_RATIO = 0.35  # 滑动峰幅中位数跌破 poly 前水平的 35% 视为骤降
@@ -491,6 +503,12 @@ def detect_phase_shift(trace: Dict[str, List[int]], peaks: List[int],
     通道上检查 run 末端之后的碱基位：峰高落在 [5%, 60%]×H(run) 且逐个
     单调衰减、≥2 个 → 判滑移 echo 序列，返回 echo 的 read 位置（1-based）。
     主峰延续（≥60%，真实同碱基延续或下一个正常峰）即中断序列。
+
+    goal T7（B P2-21）：STR stutter 的 echo 物理上紧邻 run 末端——首个
+    echo 之后相邻 echo 间距超过 SLIP_ECHO_GAP 即中断序列，本底级弱峰
+    不再无条件 `continue` 桥接（间距按峰位累计，长间隔后的弱峰不属于
+    本序列）；保证被剔除出 mixed 的只有真实滑移位点（S16）。
+    run_base 为电泳链通道键（Strand.ELECTRO，见模块 Strand 约定）。
     """
     n = min(len(v) for v in trace.values()) if trace else 0
     if n == 0 or not peaks or run_base not in trace:
@@ -512,12 +530,14 @@ def detect_phase_shift(trace: Dict[str, List[int]], peaks: List[int],
     for offset, i in enumerate(range(i1 + 1, min(len(peaks), i1 + 1 + window))):
         if offset >= SLIP_FIRST_WITHIN and not echoes:
             break  # 首 echo 必须紧贴 run 末端
+        if echoes and i - (echoes[-1] - 1) > SLIP_ECHO_GAP + 1:
+            break  # 相邻 echo 间距超限：序列已断，后续弱峰与本序列无关
         lo, hi = peak_window(peaks, i, n)
         h = max(ch[lo:hi]) if lo < len(ch) else 0
         if h >= SLIP_MAX_RATIO * h_run:
             break  # 主峰延续：不是 echo 序列
         if h < SLIP_MIN_RATIO * h_run:
-            continue  # 本底级信号：跳过但不中断序列
+            continue  # 本底级信号：跳过（间距约束已在上限长间隔时中断）
         if prev is not None and h > prev * SLIP_DECAY:
             break  # 增高：非几何衰减序列
         echoes.append(i + 1)  # 1-based read 位置

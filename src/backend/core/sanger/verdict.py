@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
+from core.sanger.mixed_call import MINOR_AF_MIN
 
 # pending 级阻断种类（goal §3 blocking.kind 枚举的待定子集；其余种类随
 # 对应任务 T6/T7/T9/T16/T17 落地后加入）
@@ -126,7 +127,8 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
     info: List[Dict] = []
 
     def _blk(kind: str, ref_start, ref_end, element, detail: str, action: str,
-             refs: Optional[List[str]] = None, fail_impact: bool = False) -> None:
+             refs: Optional[List[str]] = None, fail_impact: bool = False,
+             **extra) -> None:
         blocking.append({
             "kind": kind,
             "ref_start": ref_start,
@@ -136,6 +138,7 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
             "action": action,
             "refs": refs or [],
             **({"fail_impact": True} if fail_impact else {}),
+            **extra,
         })
 
     def _info(kind: str, element, detail: str) -> None:
@@ -155,6 +158,16 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
 
     # 变体三态（rejected 不进 blocking：resolved_regions 已有裁决行）
     junctions = _junction_ranges(features)
+    critical = _critical_features(features)
+
+    def _in_scope(rp: int) -> bool:
+        """单点混合的升级范围（goal T7）：CDS/关键元件/接合区等功能区——
+        骨架与无注释参考上的散在双峰不升级「疑似混合」（2026-11-06 用户
+        定稿：个别双峰位点不升级，经 unresolved_sites 走 △待定）"""
+        return (any(int(f["start"]) <= rp <= int(f["end"]) for f in cds_feats)
+                or any(int(f["start"]) <= rp <= int(f["end"]) for f in critical)
+                or any(j[0] <= rp <= j[1] for j in junctions))
+
     for v in variants:
         st = _vstatus(v)
         if st == "rejected":
@@ -207,7 +220,6 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
     # 关键元件（goal T5；A 4.1）：启动子/RBS/复制原/终止/选择标记/标签等，
     # 元件内 confirmed → critical_element_variant（fail），unresolved → pending；
     # 元件级覆盖结论（full/partial/uncovered）进 info
-    critical = _critical_features(features)
     for f in critical:
         s_, e_ = int(f["start"]), int(f["end"])
         el_cov = _ranges_cover(verified_ranges, s_, e_)
@@ -233,6 +245,30 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
         # 盲区提示（goal T5；A 4.1）：参考未注释抗性/ori 元件时不做元件级判读
         _info("unannotated_element", None,
               "参考未注释抗性/复制原点等关键元件，未做元件级判读（自动注释不在范围内）")
+    # 单点双峰次等位（goal T7；A 3.2；B P2-20）：AF ≥0.15 且在判定范围
+    # （ROI/关键元件/接合区）→ mixed_variant 阻断（status mixed）；其余
+    # 只记 info。与同位点 unresolved 替换合并为一条 blocking
+    mixed_vars = result.get("mixed_variants") or []
+    for m in mixed_vars:
+        rp, af = int(m["ref_pos"]), float(m.get("af") or 0)
+        if af < MINOR_AF_MIN or not _in_scope(rp):
+            _info("mixed_variant", None,
+                  f"{rp} 双峰次等位 {m.get('secondary_base')}（AF {af}，"
+                  "低于门槛或不在判定范围，仅记录）")
+            continue
+        _blk("mixed_variant", rp, rp, None,
+             f"{rp} 双峰 {m.get('called_base')}/{m.get('secondary_base')}"
+             f"（参考 {m.get('ref_base')}，次等位 AF {af}）——疑似混合样品",
+             "重新挑单克隆复测，或 tracy 解卷积分离等位",
+             refs=m.get("reads") or [], af=af)
+    _mixed_pos = {int(m["ref_pos"]) for m in mixed_vars
+                  if float(m.get("af") or 0) >= MINOR_AF_MIN and _in_scope(int(m["ref_pos"]))}
+    if _mixed_pos:
+        # 同位点合并（goal T7）：位点级混合与未决替换是同一证据的两面，
+        # 只留 mixed_variant 一条（detail 已含双峰判读）
+        blocking[:] = [b for b in blocking
+                       if not (b["kind"] == "unresolved_variant"
+                               and b.get("ref_start") in _mixed_pos)]
     # 混合样品（widespread 分级 + 跨引物互检降级例外；scattered 只进
     # unresolved_sites 的 mixed_uncorroborated，不升级 mixed_sample）
     wide = [p for p in profiles.values() if p.get("class") == "widespread"]
@@ -304,7 +340,8 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
 
     has_fail = any(b.get("fail_impact") for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
-    has_mixed = any(b["kind"] == "mixed_sample" for b in blocking)
+    # mixed：mixed_sample 或 ROI 内 mixed_variant（goal T2/T7）
+    has_mixed = any(b["kind"] in ("mixed_sample", "mixed_variant") for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
     has_partial = roi_gap and roi_measured_pct > 0
     has_insufficient = (any(b["kind"] == "partial_alignment" for b in blocking)

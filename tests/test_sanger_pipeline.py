@@ -1928,6 +1928,27 @@ def test_traces_payload_trim_start_and_mixed_detail():
     assert tr["channels"].keys() == {"A", "T", "G", "C"}
 
 
+def test_signal_reverse_slip_strand_convention():
+    """goal T7（B P2-21）：detect_phase_shift 的 run_base 是电泳链通道键
+    （Strand.ELECTRO）——反向 read 的参考链 run 碱基须先互补再查通道，
+    不再只靠注释。构造电泳链 G 通道 poly run + n-1/n-2 echo：以 'G' 查到
+    echo 序列；传参考链碱基 'C'（忘记互补的链向错误）→ 查不到（空）。"""
+    from core.sanger.signal import Strand, detect_phase_shift
+    n = 40
+    peaks = list(range(10, 10 + n))              # 等距采样点
+    width = peaks[-1] + 10
+    g = [0.0] * width
+    for i in range(10, 20):                      # poly G run @ 索引 10-19
+        g[peaks[i]] = 1000.0
+    g[peaks[20]], g[peaks[21]] = 500.0, 450.0    # n-1/n-2 echo（单调衰减）
+    trace = {"A": [0.0] * width, "C": [0.0] * width,
+             "G": g, "T": [0.0] * width}
+    assert detect_phase_shift(trace, peaks, 10, 19, "G") == [21, 22]
+    # 链向反例：参考链碱基 C（G 的互补）不是本例信号通道 → 无 echo
+    assert detect_phase_shift(trace, peaks, 10, 19, "C") == []
+    assert Strand.ELECTRO.value == "electro" and Strand.REF.value == "ref"
+
+
 def test_mixed_sample_scattered_stays_unmixed():
     """个别双峰位点（2 个）：不升级为「疑似混合」（2026-11-06 定稿保留），
     但 T1 资格门生效——无法互检的双峰进 unresolved_sites，结论 △ 未决、
