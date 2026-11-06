@@ -430,7 +430,9 @@ def test_analyze_end_noise_not_confirmed(reference):
     mid_real = "A" if seg[249] != "A" else "G"     # read_pos 250 → ref_pos 350
     seg[9], seg[249] = end_noise, mid_real
     blob = make_ab1("".join(seg), [40] * 500)
-    features = [{"name": "GFP", "type": "CDS", "start": 101, "end": 700, "strand": "+"}]
+    # T16 护栏：标注须是窗口内真实 ORF（288-476，ATG 起始 189bp），随意边界
+    # 会被 orf_annotation_suspect 标疑、盖过本场景的噪声语义
+    features = [{"name": "GFP", "type": "CDS", "start": 288, "end": 476, "strand": "+"}]
     result = analyze([("end.ab1", blob)], reference, features)
 
     by_pos = {v["ref_pos"]: v for v in result["variants"]}
@@ -440,8 +442,8 @@ def test_analyze_end_noise_not_confirmed(reference):
     # 噪声不再回填参考碱基冒充一致：共识该位输出 IUPAC 合并码（T1）
     assert result["consensus"]["sequence"][109] in "RYKMSWBDHV"
     assert result["consensus"]["sequence"][349] == mid_real
-    # CDS 判定只计入确证变体（110 位于 ORF 校正后的编码区 288-476 之外，
-    # 本就不入 CDS verdict；350 确证同义）：不一致不得由噪声触发
+    # CDS 判定只计入确证变体（110 位于编码区 288-476 之外，本就不入
+    # CDS verdict；350 确证同义）：不一致不得由噪声触发
     gfp = next(cr for cr in result["cds_reports"] if cr["name"] == "GFP")
     assert "不一致" not in gfp["verdict"]
     # 总结论只把中段差异算确证；首端噪声是未决、不参与 ✓/✗ 计数
@@ -982,6 +984,42 @@ def test_find_orf_realignment_reverse():
     # 特征两端各多含 1bp：仍应对齐回真实编码区
     orf = _find_orf(ref_neg, 40, 191, "-")
     assert (orf["orf_start"], orf["orf_end"]) == (41, 190)
+
+
+def test_orf_guard_bounded_shift_and_suspect():
+    """T16 护栏：±3bp 边界偏差照常校正；超出保留原标注并标疑"""
+    from core.sanger.orf_guard import find_guarded_orf
+    ref, start, end = _cds_reference()  # 真实 CDS 41..190（ATG 起始）
+    orf = find_guarded_orf(ref, 40, 191, "+")     # 两端各偏 1bp → 照常校正
+    assert (orf["orf_start"], orf["orf_end"]) == (start, end)
+    assert orf["suspect"] is False
+    # 偏差 30bp：M4 形态——保留原标注 + suspect
+    far = find_guarded_orf(ref, start - 30, end, "+")
+    assert far["suspect"] is True
+    assert (far["orf_start"], far["orf_end"]) == (start - 30, end)
+
+
+def test_orf_guard_host_start_codons():
+    """T16：transl_table=1（真核标准表）仅 ATG 可锚定；缺省/细菌表允许 GTG/TTG"""
+    from core.sanger.orf_guard import find_guarded_orf
+    # GTG 起始 + 无终止（开放框）：细菌口径可校正，真核表下该候选不被采纳
+    body = "GTG" + "GCT" * 30
+    ref = "ACGT" * 5 + body + "ACGT" * 5          # body 位于 21..113
+    prok = find_guarded_orf(ref, 21, 113, "+")
+    assert (prok["orf_start"], prok["orf_end"]) == (21, 113)
+    euk = find_guarded_orf(ref, 21, 113, "+", transl_table=1)
+    # 真核表不认 GTG 起始：无 ATG 候选 → 沿用原标注（无可锚定 ORF → None
+    # 或开放框差异超出护栏 → suspect），不得把 GTG 当起始校正
+    assert euk is None or euk["suspect"] or (euk["orf_start"], euk["orf_end"]) != (21, 113)
+
+
+def test_orf_guard_codon_start_frame():
+    """T16：/codon_start 给定时仅在指定读框枚举"""
+    from core.sanger.orf_guard import find_guarded_orf
+    # 位点 22 起有 ATG（frame 0），codon_start=2 指定 frame 1 的 ORF
+    ref = "ACGT" * 5 + "AATG" + "GCT" * 20 + "TAA" + "ACGT" * 5
+    orf = find_guarded_orf(ref, 21, 90, "+", codon_start=2)
+    assert orf is not None and orf["orf_start"] >= 22
 
 
 def test_cds_report_orf_realignment_end_to_end():
@@ -2447,7 +2485,9 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     ref = "ACGT" * 25 + "GGATGAAACCAACCTGACCGGTTAC" + "ACGT" * 25  # AAA 在 106-108
     seg = ref[50:150]                       # 覆盖 51-150
     fwd = seg[:58] + "A" + seg[58:]         # 108 后多 1 个 A（run 边缘伪影）
-    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    # T16 护栏：标注用参考里真实的 ATG..TGA ORF（103-117），随意边界会被
+    # orf_annotation_suspect 标疑、盖过互检场景的 ✓ 语义
+    feats = [{"name": "CSQ", "type": "CDS", "start": 103, "end": 117, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
          ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
@@ -2498,7 +2538,7 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     fwd = seg[:i] + ("A" if seg[i] != "A" else "C") + seg[i + 1:]
     q = [40] * len(fwd)
     q[i] = 12
-    feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
+    feats = [{"name": "CSQ", "type": "CDS", "start": 103, "end": 117, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
          ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)

@@ -410,15 +410,16 @@ def test_m15_enzyme_site_pending_hint():
 # 比对不可达（尾端插入恒被软剪切，B P2-16 为静态确认），「不定插」行为当前已
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
+    # M1 已随 T16 转绿：ORF 校正护栏（±3bp）拦住了旧自由校正把 CDS 窗口
+    # 挪走、掩盖 K2* 提前终止的病根——同密码子双替换的 MNV/终止注释本就
+    # 存在，窗口对了判定即对；真正的 MNV 合并展示仍归 T25。
     # S1 已随 T12 转绿（可信区信号驱动，尾端位置不再强制 low——峰证据
     # 齐全的错义确证 ✗）；F1/F2 已随 T11 转绿；M7 的 secondary_base 部分：
     # 新检测对「调用碱基非最高通道」的位点取最高次级通道为 secondary_base
     # （旧实现返回 None），该断言转绿；call_disagrees_with_trace 字段仍归
     # T24.4。
     "test_f3_no_pcon_still_analyzed": "T24",
-    "test_m1_same_codon_subs_annotated_as_mnv": "T25",
     "test_m3_overlap_discordance_reported": "T21",
-    "test_m4_orf_correction_bounded": "T16",
     "test_m5_primer_mismatch_detected": "T17",
     "test_m9_core_analyze_requires_topology": "T25",
     "test_m11_precheck_rejects_broken_reference": "T18",

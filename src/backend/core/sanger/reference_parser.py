@@ -101,6 +101,17 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
             if v:
                 note = str(v[0])
                 break
+        # T16：ORF 护栏读取 GenBank /transl_table、/codon_start（未给出时
+        # 由 orf_guard 按宿主缺省口径处理）
+        transl_table = None
+        codon_start = None
+        try:
+            if quals.get("transl_table"):
+                transl_table = int(quals["transl_table"][0])
+            if quals.get("codon_start"):
+                codon_start = int(quals["codon_start"][0])
+        except (TypeError, ValueError, IndexError):
+            pass
         whole_strand = f.location.strand
         for idx, (start, end, part_strand) in enumerate(segments):
             strand = whole_strand if whole_strand in (1, -1) else part_strand
@@ -111,6 +122,8 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
                 "end": end,
                 "strand": "-" if strand == -1 else "+",
                 "description": _clean(note or name or f.type)[:120],
+                    "transl_table": transl_table,
+                "codon_start": codon_start,
             }
             if len(segments) > 1:
                 # 多段特征的分组键：同一 feature_id 的各段共享名称/类型/方向，

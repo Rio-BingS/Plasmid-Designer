@@ -114,7 +114,9 @@ def test_join_emits_one_record_per_part_with_group_key():
                for f in amp)
     # 单段特征不带分组键（输出形状与改动前一致）
     p1 = next(f for f in feats if f["name"] == "P1")
-    assert set(p1) == {"name", "type", "start", "end", "strand", "description"}
+    # T16：/transl_table、/codon_start 随特征下发（ORF 护栏读宿主口径）
+    assert set(p1) == {"name", "type", "start", "end", "strand", "description",
+                       "transl_table", "codon_start"}
 
 
 def test_minus_join_segment_order_follows_coding_direction():

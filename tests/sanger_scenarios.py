@@ -111,9 +111,15 @@ def _s7():
 
 def _s8():
     rng = _rng("s8")
-    ref = _rand_seq(rng, 1500)
-    blob = _read_from_ref(ref, 301, 646, q=50)   # 345bp ≈ 34.5% of CDS 301-1300
-    feats = [dict(name="Solo", type="CDS", start=301, end=1300, strand="+")]
+    ref = list(_rand_seq(rng, 1500))
+    # T16 护栏：CDS 标注须是窗口内干净 ORF（ATG..TAA，999bp=333 密码子），
+    # 否则 orf_annotation_suspect 未决位点会盖过本场景的覆盖语义
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(331)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:1299] = list("".join(codons))
+    ref = "".join(ref)
+    blob = _read_from_ref(ref, 301, 646, q=50)   # 345bp ≈ 34.5% of CDS 301-1299
+    feats = [dict(name="Solo", type="CDS", start=301, end=1299, strand="+")]
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats)
 
 
