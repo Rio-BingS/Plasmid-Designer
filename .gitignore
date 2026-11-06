@@ -40,3 +40,4 @@ data/batch_uploads/
 
 # 备份产物（backup.sh 默认输出到 data/backups/，含全库明文数据，严禁入库）
 data/backups/
+work/
