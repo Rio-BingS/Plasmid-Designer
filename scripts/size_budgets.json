@@ -4,7 +4,7 @@
   "src/backend/core/clone_strategy.py": 1051,
   "src/backend/core/codon_optimizer.py": 934,
   "src/backend/core/primer_designer.py": 1048,
-  "src/backend/core/sanger/pipeline.py": 2934,
+  "src/backend/core/sanger/pipeline.py": 2863,
   "src/frontend/src/composables/useSeqViz.ts": 963,
   "src/frontend/src/map/components/CircularMap.vue": 950,
   "src/frontend/src/views/BatchDesignView.vue": 1318,
