@@ -6,6 +6,10 @@
  * （类型/变化/所在特征/氨基酸/移码/酶切位点/支持 reads/置信度），
  * 点击行上报给父组件跳峰图。低置信行折叠态 showLowConf 用 defineModel
  * 与父组件共享——结论总览里展开 → 本表同步展开（拆分前是同一个 ref）。
+ *
+ * 互检排除的差异不进表体（2026-11-05 用户定稿）：判读已由其他引物完成，
+ * 逐条列出是把已裁决项推回人工。按「源 read × 信号衰减区段」聚合为
+ * read 级注记行（同后端结论口径），展开可看逐条位置（跳峰图核对用）。
  */
 import { computed } from 'vue'
 import type { SequencingVariant } from '@/api'
@@ -20,10 +24,38 @@ const emit = defineEmits<{
   (e: 'jump', v: SequencingVariant): void
 }>()
 
+/** 互检排除的差异（不进表体，聚合为 read 级注记） */
+const resolvedVariants = computed(() =>
+  props.variants.filter((v) => v.cross_read_resolved))
+/** 真·低置信（未被互检排除，仍需人工核对） */
 const lowConfVariants = computed(() =>
-  props.variants.filter((v) => v.confidence === 'low'))
+  props.variants.filter((v) => v.confidence === 'low' && !v.cross_read_resolved))
 const shownVariants = computed(() =>
-  showLowConf.value ? props.variants : props.variants.filter((v) => v.confidence !== 'low'))
+  props.variants.filter((v) => !v.cross_read_resolved
+    && (showLowConf.value || v.confidence !== 'low')))
+
+/** 互检排除项按「源 read × 区段」聚合（间隔 ≤50bp 视为同一衰减区段，与后端结论同口径） */
+const resolvedNotes = computed(() => {
+  const byRead = new Map<string, SequencingVariant[]>()
+  for (const v of resolvedVariants.value) {
+    const key = v.read || '?'
+    if (!byRead.has(key)) byRead.set(key, [])
+    byRead.get(key)!.push(v)
+  }
+  return Array.from(byRead.entries()).map(([read, vs]) => {
+    const pos = [...new Set(vs.map((v) => v.ref_pos))].sort((a, b) => a - b)
+    const ranges: string[] = []
+    let rs = pos[0], re = pos[0]
+    for (const p of pos.slice(1)) {
+      if (p - re <= 50) re = p
+      else { ranges.push(rs === re ? `${rs}` : `${rs}-${re}`); rs = p; re = p }
+    }
+    ranges.push(rs === re ? `${rs}` : `${rs}-${re}`)
+    const verifiers = [...new Set(vs.flatMap((v) => v.cross_read_conflict?.reads || []))]
+    return { read, count: vs.length, ranges: ranges.join('、'),
+             verifiers: verifiers.join('、') || '其他引物' }
+  })
+})
 
 /** 置信度徽章的悬停说明：附峰级证据（突变峰占比 / 信噪比 / 插入峰强度比） */
 function confTitle(v: SequencingVariant): string {
@@ -37,10 +69,6 @@ function confTitle(v: SequencingVariant): string {
   if (v.corroborated_by_basecall) {
     peak += (peak ? '；' : '') + 'tracy 重 basecall 也报出此变异（同一测序信号的两个读出，仅供参考）'
   }
-  if (v.cross_read_resolved) {
-    const rd = (v.cross_read_conflict?.reads || []).join('、')
-    return `已互检排除：${rd || '其他引物'}在可靠区读出设计碱基，判为该 read 测序误差，不计入结论`
-  }
   if (v.confidence === 'low' && v.low_reason) return `低置信：${v.low_reason}${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'low') return `低置信：疑似混合峰或 Q 值偏低${peak ? '；' + peak : ''}，务必人工核对峰图`
   if (v.confidence === 'medium') return `中置信：建议核对峰图${peak ? '；' + peak : ''}`
@@ -52,10 +80,17 @@ function confTitle(v: SequencingVariant): string {
   <div v-if="variants.length">
     <h4 class="section-title">差异明细（点击行查看峰图）
       <button v-if="lowConfVariants.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-        {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信/互检排除已折叠（展开逐条查看）` }}
+        {{ showLowConf ? '▾ 收起低置信' : `▸ ${lowConfVariants.length} 处低置信已折叠（展开逐条查看）` }}
       </button>
     </h4>
-    <table class="seq-table clickable">
+    <!-- 互检排除注记：判读已完成，不占差异表行 -->
+    <div v-if="resolvedVariants.length" class="resolved-notes">
+      <div v-for="n in resolvedNotes" :key="n.read" class="resolved-row"
+           :title="`逐条位置：${resolvedVariants.filter((v) => v.read === n.read).map((v) => v.ref_pos).join('、')}（点击行可跳峰图核对）`">
+        ✓ {{ n.read }} 报出 {{ n.count }} 处差异（参考 {{ n.ranges }}）：均已被 {{ n.verifiers }} 干净覆盖排除，判为该 read 测序误差，无需人工核对
+      </div>
+    </div>
+    <table class="seq-table clickable" v-if="shownVariants.length">
       <thead>
         <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th></tr>
       </thead>
@@ -77,7 +112,7 @@ function confTitle(v: SequencingVariant): string {
           <td>
             <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
                   :title="confTitle(v)">
-              {{ v.cross_read_resolved ? '排除' : v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
+              {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
             </span>
             <span v-else>-</span>
           </td>
@@ -101,6 +136,11 @@ function confTitle(v: SequencingVariant): string {
   border: 1px solid #E8D9A8; border-radius: 12px; cursor: pointer;
 }
 .lowconf-toggle:hover { background: #F5E9C8; }
+.resolved-notes { margin: 0 0 0.5rem; }
+.resolved-row {
+  font-size: 0.82rem; color: #227A36; background: #F0FAF2;
+  border: 1px solid #BFE5C8; border-radius: 6px; padding: 0.3rem 0.6rem; margin-bottom: 0.25rem;
+}
 .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; background: #EEE; }
 .badge.bad { background: #FDE8E8; color: #C0392B; }
 .conf-chip { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 0.78rem; }
