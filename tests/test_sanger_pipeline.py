@@ -1344,15 +1344,22 @@ def test_poly_ratio_window_height_resists_ploc_jitter():
 # ==================== A2：基线校正 ====================
 
 def test_baseline_correction_prevents_mixed_false_positives():
-    """A2：线性基线漂移抬高本底——不校正时 read 后段本底接近峰高，
-    _detect_mixed_positions 大面积误报；校正后本底扣除、零误报"""
+    """A2：线性基线漂移抬高本底——基线校正必须扣除漂移，校正后零误报。
+
+    T11 起检测改自适应背景模型：±25 峰窗内通道对局部中位/MAD 跟随
+    「局部均匀」的漂移，未校正的线性漂移被 z 模型吸收（locally-uniform
+    inflation 不再成串误报——与 F2 衰减段同机制）。本测试保留作校正
+    护栏：漂移确实被扣平（trace 层）+ 校正后分析零误报。"""
     ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
     read_bases = ref[40:170]
     traces = _shaped_traces(read_bases, (40, 70), 30, baseline_slope=0.10)
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    raw = analyze([("f.ab1", blob)], ref, [], signal_correct=False)
-    assert raw["mixed_detected"] and any(raw["mixed_detected"].values()), \
-        "注入应先复现误报（基线漂移 → 假混合峰）"
+    # trace 层：校正后末端本底回到 0（read 末位是 T，G 通道只有本底+漂移）
+    from core.sanger.signal import baseline_correct
+    raw_tr = dict(zip("ATGC", traces))          # _shaped_traces 按通道序出 4 条 list
+    bc = baseline_correct(dict(zip("ATGC", traces)))
+    assert raw_tr["G"][-1] >= 40, "注入的线性漂移未生效"
+    assert bc["G"][-1] <= 15, "线性漂移未被扣平（末端窗边界容差 15）"
     corrected = analyze([("f.ab1", blob)], ref, [], signal_correct=True)
     assert corrected["mixed_detected"] == {}
 
@@ -1774,18 +1781,26 @@ def _mixed_ab1(seq, mix_sites, minor_level=60, sat_sites=None):
 
 
 def test_classify_mixed_levels_and_minor_fraction():
-    """read 级分级：widespread/scattered/none 与次要克隆占比 f=r/(1+r)"""
+    """read 级分级（goal T11 证据形态学）：widespread 须「离散一致散布」，
+    scattered/none 与次要克隆占比 f=r/(1+r) 口径不变"""
     from core.sanger.pipeline import _classify_mixed
-    entries = [{"pos": i + 1, "ratio": 0.5, "secondary_base": "G", "pullup": False}
-               for i in range(5)]
+    # T11：5 个位点须散布（三段有分布、跨度 >0.35）且比值一致（CV<0.35）
+    # 才升级 widespread——集中单一区段判 local（局部信号异常）
+    spread = [50, 150, 250, 350, 450]
+    entries = [{"pos": p, "ratio": 0.5, "secondary_base": "G", "pullup": False}
+               for p in spread]
     p = _classify_mixed(entries, 600)
     assert p["class"] == "widespread" and p["count"] == 5
     assert p["median_ratio"] == 0.5 and p["minor_fraction"] == pytest.approx(1 / 3, abs=1e-3)
+    # 同样 5 处但集中在 read 前 8% → local（3730 染料肩峰形态，T11 实证）
+    clustered = [{"pos": p, "ratio": 0.5, "secondary_base": "G", "pullup": False}
+                 for p in (50, 55, 60, 70, 90)]
+    assert _classify_mixed(clustered, 600)["class"] == "local"
     # pull-up 位点不计数、单独记录
     entries[0]["pullup"] = True
     p2 = _classify_mixed(entries, 600)
     assert p2["count"] == 4 and p2["pullup_excluded"] == 1
-    assert p2["class"] == "scattered" and 1 not in p2["positions"]
+    assert p2["class"] == "scattered" and 50 not in p2["positions"]
     # 连续段 ≥ MIXED_STRETCH_MIN 也算 widespread（indel 介导的混合）
     entries3 = [{"pos": 100 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
                 for i in range(4)]
@@ -1794,6 +1809,11 @@ def test_classify_mixed_levels_and_minor_fraction():
     entries3 += [{"pos": 104 + i, "ratio": 0.4, "secondary_base": "T", "pullup": False}
                  for i in range(4)]
     assert _classify_mixed(entries3, 600)["class"] == "widespread"
+    # 散布但比值不一致（CV≥0.35）→ noise（信号质量，不判混合）
+    noisy = [{"pos": p, "ratio": r, "secondary_base": "G", "pullup": False}
+             for p, r in zip(spread, (0.2, 0.9, 0.25, 0.85, 0.3))]
+    p4 = _classify_mixed(noisy, 600)
+    assert p4["class"] == "noise" and p4["class_reason"] == "inconsistent_ratio"
     # 空与单点
     assert _classify_mixed([], 600)["class"] == "none"
     one = _classify_mixed([{"pos": 9, "ratio": 0.8, "secondary_base": "C", "pullup": False}], 600)

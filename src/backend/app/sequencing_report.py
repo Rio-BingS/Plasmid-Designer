@@ -334,7 +334,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
         for r, p in flagged:
             cls = p.get("class")
             label = ("**疑似混合样品**" if cls == "widespread"
-                     else "个别双峰位点" if cls == "scattered" else "—")
+                     else "个别双峰位点" if cls == "scattered"
+                     else "局部信号异常" if cls == "local"
+                     else "信号质量差" if cls == "noise" else "—")
             pct = (f"{round((p.get('median_ratio') or 0) * 100)}%"
                    if p.get("median_ratio") is not None else "—")
             frac = p.get("minor_fraction")

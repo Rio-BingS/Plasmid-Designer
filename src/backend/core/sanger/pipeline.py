@@ -79,7 +79,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v2"
+SANGER_ALGO_VERSION = "v3"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -332,228 +332,17 @@ def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, i
     return (best_start, best_end)
 
 
-def _detect_mixed_detail(bases: str, trace: Dict[str, List[int]],
-                         peak_indices: List[int]) -> List[Dict]:
-    """逐位双峰细节（双峰检测的底层）：[{pos(1-based), ratio, secondary_base, pullup}]
-
-    判定口径与旧版一致：次级通道峰面积占主峰比例 > MIXED_PEAK_RATIO、
-    主峰面积高于全 read 主峰面积中位数 25%（called 碱基无信号的退化窗口
-    四通道面积全相等，不设门槛会把每个位点都误判成混合）、四通道面积不接
-    近相等（无主导通道 = 无真实信号差异）。
-
-    pull-up（染料拖影）抑制：强饱和峰会在其他通道同期漏出小峰——与真实
-    混合的双峰同期出现无法靠 timing 区分，改按「触发条件」区分：主峰高
-    ≥ 全 read 峰高中位 × PULLUP_HEIGHT_FACTOR（接近饱和）且次级占比
-    ≤ PULLUP_MAX_RATIO（拖影比例通常远低于真实混合）→ 标记 pullup。
-    真实混合样品在 read 上有多个双峰位点，个别饱和位被抑制不影响分级。
-    """
-    detail: List[Dict] = []
-    n = min(len(v) for v in trace.values()) if trace else 0
-    if n == 0:
-        return detail
-    windows: List[Optional[Dict[str, int]]] = []
-    for i, base in enumerate(bases):
-        if base not in "ACGT" or i >= len(peak_indices):
-            windows.append(None)
-            continue
-        pk = peak_indices[i]
-        if pk is None or pk < 0 or pk >= n:
-            windows.append(None)
-            continue
-        lo, hi = _peak_window(peak_indices, i, n)
-        windows.append({b: sum(trace[b][lo:hi]) for b in "ACGT"})
-    tops = sorted(max(w.values()) for w in windows if w)
-    pos_tops = [t for t in tops if t > 0]
-    main_floor = 0.25 * pos_tops[len(pos_tops) // 2] if pos_tops else 0.0
-    # 全 read 峰高中位（pull-up 触发参考）：每峰取四通道最大值
-    all_heights = sorted(h for w in windows if w for h in [max(w.values())] if h > 0)
-    med_height = all_heights[len(all_heights) // 2] if all_heights else 0.0
-    for i, base in enumerate(bases):
-        areas = windows[i]
-        if areas is None:
-            continue
-        sorted_a = sorted(areas.values(), reverse=True)
-        if sorted_a[0] < main_floor:
-            continue
-        # 退化窗口护栏：四通道面积接近相等（无主导通道）说明基线校正后
-        # 该窗口无真实信号差异，按混合峰处理只会整段误报。
-        # 终审 A-19：判据改为「第四名通道仍有显著信号」——真实 1:1 混合/
-        # 杂合的双通道窗口里第三、四通道只有本底噪声（≪ 主峰），而基线
-        # 校正失效的无信号窗口四通道同高。旧判据 sorted_a[1] >= 0.9 主峰
-        # 恰好屏蔽了最典型的 1:1 双峰（实测 ratio 0.92/0.95/1.00 检出 0/5）
-        if sorted_a[3] >= 0.8 * sorted_a[0]:
-            continue
-        if sorted_a[1] > 0 and sorted_a[0] > 0:
-            ratio = sorted_a[1] / sorted_a[0]
-            # 终审 A-19：去掉 areas[base]==sorted_a[0] 硬要求——真实混合中
-            # basecaller 可能恰好把次要碱基作为 called（次要克隆占多数的位点），
-            # 此时次要通道才是主峰，位点同样应计入双峰
-            if ratio > MIXED_PEAK_RATIO:
-                sec_base = next((b for b in "ACGT" if b != base
-                                 and areas.get(b) == sorted_a[1]), None)
-                pullup = False
-                if med_height > 0 and sorted_a[0] >= PULLUP_HEIGHT_FACTOR * med_height \
-                        and ratio <= PULLUP_MAX_RATIO:
-                    pk = peak_indices[i] if i < len(peak_indices) else None
-                    if pk is not None and 0 <= pk < n:
-                        lo, hi = _peak_window(peak_indices, i, n)
-                        main_apex = max(range(lo, hi), key=lambda x: trace[base][x])
-                        sec_apex = max(range(lo, hi),
-                                       key=lambda x: trace.get(sec_base, [0] * n)[x])
-                        pullup = abs(sec_apex - main_apex) <= 1
-                detail.append({"pos": i + 1, "ratio": round(ratio, 3),
-                               "secondary_base": sec_base, "pullup": pullup})
-    return detail
-
-
-def _detect_mixed_positions(bases: str, trace: Dict[str, List[int]],
-                            peak_indices: List[int]) -> List[int]:
-    """检测疑似混合/杂合位点（兼容入口）：返回双峰位点的 1-based 位置列表
-
-    已剔除 pull-up 拖影位（饱和峰在其他通道的同期小峰不是混合信号）；
-    poly 下游滑移 echo 由管线在调用前剔除。
-    """
-    return [e["pos"] for e in _detect_mixed_detail(bases, trace, peak_indices)
-            if not e["pullup"]]
-
-
-def _tracy_mixed_corroboration(entries: List[Dict], peaks: List[int],
-                               tracy_calls: Dict,
-                               zone: Optional[Dict] = None) -> Dict:
-    """tracy 次级 basecall 对院内逐位双峰的独立印证（审计 #8）
-
-    tracy 与 ABI caller 的碱基序列不一一对应，按峰在 trace 上的采样坐标
-    对位：取与院内峰最近的 tracy 调用，距离不超过半个峰间距才算同一位点。
-    每个院内双峰位点（pull-up 已剔除的不计）标记：
-    - agree：tracy 在该处也报次级峰，且院内主/次两个碱基都在 tracy 的
-      primary + secondary（IUPAC 展开）内；
-    - disagree：tracy 在该处单峰，或其次级碱基与院内不同；
-    - unmatched：附近没有 tracy 调用（对位失败，不计入一致率）。
-    tracy_only 为院内可判读区间内 tracy 报次级峰而院内未报的位点数。
-    只作证据记录，不改院内分级。"""
-    primary = tracy_calls.get("primary") or ""
-    secondary = tracy_calls.get("secondary") or ""
-    tpos = tracy_calls.get("positions") or []
-    nt = min(len(primary), len(secondary), len(tpos))
-    out = {"agree": 0, "disagree": 0, "unmatched": 0, "tracy_only": 0,
-           "agreement": None, "version": tracy_calls.get("version")}
-    valid = [p for p in peaks if p is not None and p >= 0]
-    if nt == 0 or len(valid) < 2:
-        out["unmatched"] = sum(1 for e in entries if not e.get("pullup"))
-        return out
-    gaps = sorted(b - a for a, b in zip(valid, valid[1:]) if b > a)
-    tol = max(1.0, 0.5 * gaps[len(gaps) // 2]) if gaps else 1.0
-    def nearest(pk: int) -> Optional[int]:
-        j = bisect.bisect_left(tpos, pk, 0, nt)
-        best = None
-        for c in (j - 1, j):
-            if 0 <= c < nt and (best is None or abs(tpos[c] - pk) < abs(tpos[best] - pk)):
-                best = c
-        return best if best is not None and abs(tpos[best] - pk) <= tol else None
-
-    def alleles(c: int) -> set:
-        return {primary[c]} | set(_IUPAC_EXPAND.get(secondary[c], ""))
-
-    matched: set = set()
-    for e in entries:
-        if e.get("pullup"):
-            continue
-        i = e["pos"] - 1
-        pk = peaks[i] if 0 <= i < len(peaks) else None
-        c = nearest(pk) if pk is not None else None
-        if c is None:
-            e["tracy"] = "unmatched"
-            out["unmatched"] += 1
-            continue
-        matched.add(c)
-        het = secondary[c] != primary[c] and secondary[c] != "N"
-        mine = {b for b in (e.get("called_base"), e.get("secondary_base")) if b}
-        if het and mine and mine <= alleles(c):
-            e["tracy"] = "agree"
-            out["agree"] += 1
-        else:
-            e["tracy"] = "disagree"
-            out["disagree"] += 1
-    # 院内可判读区间（read 可信区）内 tracy 独报的双峰
-    n = len(peaks)
-    if zone:
-        lo_i, hi_i = zone["start"] - 1, zone["end"] - 1
-    else:
-        lo_i, hi_i = END_MARGIN, n - END_MARGIN - 1
-    if 0 <= lo_i <= hi_i < n and peaks[lo_i] is not None and peaks[hi_i] is not None:
-        lo, hi = peaks[lo_i], peaks[hi_i]
-        out["tracy_only"] = sum(
-            1 for c in range(nt)
-            if c not in matched and lo <= tpos[c] <= hi
-            and secondary[c] != primary[c] and secondary[c] != "N")
-    judged = out["agree"] + out["disagree"]
-    if judged:
-        out["agreement"] = round(out["agree"] / judged, 3)
-    return out
-
-
-_IUPAC_EXPAND = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "AG", "Y": "CT",
-                 "S": "CG", "W": "AT", "K": "GT", "M": "AC", "B": "CGT",
-                 "D": "AGT", "H": "ACT", "V": "ACG"}
-
-
-def _classify_mixed(entries: List[Dict], read_len: int,
-                    tracy_calls: Optional[Dict] = None,
-                    peaks: Optional[List[int]] = None,
-                    zone: Optional[Dict] = None) -> Dict:
-    """把逐位双峰聚合成 read 级混合分级（双峰准确性的关键一层）
-
-    - widespread（疑似混合样品）：位点数 ≥ MIXED_WIDESPREAD_MIN，或存在
-      ≥ MIXED_STRETCH_MIN 的连续双峰段（两个克隆相差插入/缺失时，交界下游
-      相位错开的逐位双峰是典型形态）；
-    - scattered（个别双峰）：MIXED_SCATTERED_MIN..MIN-1 个位点——两个克隆
-      仅差 1-2 个碱基的真实混合也会落在这里，按提示级处理、不升级结论；
-    - none：无或仅 1 个位点（单点双峰与个别碱基噪声无法区分，交由该位点
-      变体的峰级证据与置信度口径）。
-
-    tracy_calls/peaks 给出时附加 tracy_corroboration（见
-    _tracy_mixed_corroboration），不参与分级。
-
-    minor_fraction：双峰占比中位数 r → 次要克隆占比 r/(1+r)
-    （两克隆混合模型下 次峰/主峰 = f/(1-f)，f 为次要克隆的摩尔占比）。
-    """
-    kept = [e for e in entries if not e["pullup"]]
-    count = len(kept)
-    profile = {
-        "count": count,
-        "pullup_excluded": len(entries) - count,
-        "positions": [e["pos"] for e in kept],
-        "median_ratio": None,
-        "minor_fraction": None,
-        "span": None,
-        "longest_stretch": 0,
-        "class": "none",
-        # tracy 次级 basecall 的独立印证；tracy 未运行为 None。分级仍按院内口径
-        "tracy_corroboration": (
-            _tracy_mixed_corroboration(entries, peaks or [], tracy_calls, zone)
-            if tracy_calls is not None else None),
-    }
-    if not kept:
-        return profile
-    ratios = sorted(e["ratio"] for e in kept)
-    med = ratios[len(ratios) // 2]
-    profile["median_ratio"] = round(med, 3)
-    if 0 < med:
-        # 次峰/主峰 = f/(1-f)（f 为次要克隆占比）→ f = r/(1+r)；50/50 混合
-        # 时 r=1 → f=0.5
-        profile["minor_fraction"] = round(med / (1 + med), 3)
-    positions = profile["positions"]
-    profile["span"] = [positions[0], positions[-1]]
-    stretch = best = 1
-    for a, b in zip(positions, positions[1:]):
-        stretch = stretch + 1 if b - a == 1 else 1
-        best = max(best, stretch)
-    profile["longest_stretch"] = best
-    if count >= MIXED_WIDESPREAD_MIN or best >= MIXED_STRETCH_MIN:
-        profile["class"] = "widespread"
-    elif count >= MIXED_SCATTERED_MIN:
-        profile["class"] = "scattered"
-    return profile
+# 双峰检测与 read 级混合分级迁 core/sanger/mixed_model.py（goal T11；A 3.1；
+# B P2-14 自适应背景模型）。此处 re-export 维持既有导入路径（tests/app 从
+# pipeline 取名）；MIXED_* 绝对计数常量退役——判定改走证据形态学（详见
+# mixed_model 模块注），常量仅作历史兼容保留。
+from core.sanger.mixed_model import (  # noqa: F401
+    MixedParams, classify_mixed as _classify_mixed,
+    detect_and_classify, detect_mixed_detail as _detect_mixed_detail,
+    detect_mixed_positions as _detect_mixed_positions,
+    load_params as load_mixed_params,
+    _tracy_mixed_corroboration,
+)
 
 
 # tracy decompose 解析与等位判读迁 core/sanger/decompose.py（goal T10；
@@ -1773,36 +1562,24 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
         merged_span: set = set()
         for z in merged_zones:
             merged_span.update(z["positions"])
-        n_trim = len(r["trimmed_bases"])
-        mixed_detail = [
-            e for e in _detect_mixed_detail(
-                r["trimmed_bases"], r["trace"], r["trimmed_peaks"])
-            if e["pos"] not in slip
-            # read 可信区之外是信号爬升/衰减区，次级峰不可信——与变体置信度
-            # 同一边界，否则末端拖尾会凭空触发"连续双峰段"误报
-            and in_zone(r.get("reliable_zone"), e["pos"])
-            # Step A 抑制：合并压缩的 run 窗内次级峰结构不可分辨，
-            # 强行判读会把压缩段切成一串伪双峰（反向压缩山丘难例）
-            and e["pos"] not in merged_span
-        ]
+        # 双峰检出 + read 级分级走 mixed_model 自适应背景模型（goal T11；
+        # A 3.1）：滑移 echo / 合并压缩区剔除、可信区外剔除（末端拖尾不凭空
+        # 触发「连续双峰段」误报），通道对比值表一次构图，站点检测与
+        # floor 兜底路径共用
+        mixed_detail, r["mixed_profile"] = detect_and_classify(
+            r["trimmed_bases"], r["trace"], r["trimmed_peaks"],
+            quality=r.get("trimmed_quality"), zone=r.get("reliable_zone"),
+            tracy_calls=r.get("tracy_calls"),
+            params=load_mixed_params(r.get("instrument")),
+            exclude=slip | merged_span,
+        )
         r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
-        # 逐位证据（次级通道与占比）随结果下发，供前端在峰图上标注双峰
+        # 逐位证据（次级通道/占比/自适应 z 值）随结果下发，供前端峰图标注
         r["mixed_detail"] = [
             {"pos": e["pos"], "ratio": round(e["ratio"], 3),
-             "secondary_base": e["secondary_base"]}
+             "secondary_base": e["secondary_base"], "mixed_z": e.get("mixed_z")}
             for e in mixed_detail if not e["pullup"]
         ]
-        # read 级混合分级：把逐位双峰聚合成 可行动 的判定（widespread=疑似
-        # 混合样品 / scattered=个别双峰），pull-up 拖影已在 detail 内标记剔除
-        # tracy 次级 basecall 作独立印证（审计 #8）：只附加 tracy_corroboration
-        # 与逐位 tracy 标记，分级仍按院内口径
-        for e in mixed_detail:
-            i = e["pos"] - 1
-            e["called_base"] = r["trimmed_bases"][i] if i < n_trim else None
-        r["mixed_profile"] = _classify_mixed(
-            mixed_detail, len(r["trimmed_bases"]),
-            tracy_calls=r.get("tracy_calls"), peaks=r["trimmed_peaks"],
-            zone=r.get("reliable_zone"))
         if r.get("tracy_calls") is not None:
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
             for d in r["mixed_detail"]:
@@ -2357,8 +2134,12 @@ def _build_conclusion(
     # 逐 read 位点范围子行（2026-11-05 用户定稿：收敛）——双峰位点能被互检
     # 归为噪声的 read 不再单独成行（read 质量细节，与构建判读无关）；只有
     # 含「无覆盖待核位点」的 read 保留一行，直接带待核参考位置（用户可对照
-    # 图谱核对），read 坐标细节在报告双峰章节（前端折叠组）
-    for r, p in wide:
+    # 图谱核对），read 坐标细节在报告双峰章节（前端折叠组）。
+    # T11：local（局部信号异常）/noise（信号质量）read 的位点同样待核，
+    # 与 widespread 同等保留子行（scattered 走 resolved_regions 的差异区
+    # 间款，不在此列避免双行）
+    for r, p in [(r, r["mixed_profile"]) for r in read_results
+                 if r["mixed_profile"]["class"] in ("widespread", "local", "noise")]:
         chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
         uncov_refs = sorted(chk.get("uncovered_ref") or [])
         if crossable and not uncov_refs:

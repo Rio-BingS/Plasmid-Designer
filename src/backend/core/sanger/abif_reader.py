@@ -302,6 +302,8 @@ def _extract_read_biopython(data: bytes) -> Dict:
         "sample_name": str(sample_name),
         "lane": raw.get("LANE1", raw.get("LANE", 0)),
         "dye": str(raw.get("DLAB1", "") or ""),
+        # 仪器型号/机器名（T11 双峰参数表按型号选择；MODL 优先 MCHN 兜底）
+        "instrument": _tag_text(raw.get("MODL1") or raw.get("MCHN1")),
     }
 
 
@@ -356,4 +358,15 @@ def _extract_read_internal(data: bytes) -> Dict:
         "sample_name": str(sample_name),
         "lane": lane,
         "dye": str(dye) if not isinstance(dye, list) else "",
+        "instrument": _tag_text(records.get(("MODL", 1))
+                                or records.get(("MCHN", 1))),
     }
+
+
+def _tag_text(v) -> str:
+    """ABIF 文本 tag（MODL/MCHN 等）→ str（bytes 解码，list/缺失归空）"""
+    if isinstance(v, (bytes, bytearray)):
+        return v.decode("ascii", errors="replace").strip("\x00 ").strip()
+    if isinstance(v, list):
+        return ""
+    return str(v).strip() if v else ""
