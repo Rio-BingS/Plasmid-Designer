@@ -135,7 +135,7 @@ def test_excel_conclusion不合格_点名CDS():
     out = batch.excel_conclusion("MX", res, 3, True)
     assert out.startswith("不合格：MX 蛋白与设计不一致（移码）")
     assert "5269 C>T" not in out and "详见报告" not in out
-    assert "1 处低置信差异疑似伪影" in out
+    assert "1 处未决差异" in out  # T1 三态：低置信不再预判为「伪影」
 
 
 def test_excel_conclusion_编码区外差异():
@@ -155,13 +155,14 @@ def test_excel_conclusion_完全一致与缺参考():
     assert batch.excel_conclusion("MX", failed, 1, True).startswith("分析失败：修剪后过短")
 
 
-def test_excel_conclusion_互检矛盾合并为疑似伪影():
-    """简洁口径：互检矛盾与一般低置信不再分开解释，合并为
-    "N 处低置信差异疑似伪影"；全净克隆输出恰好一句主句"""
+def test_excel_conclusion_互检矛盾合并为未决():
+    """三态口径（T1）：互检矛盾与一般低置信合并为「未决差异」，不再预判
+    「疑似伪影」；有未决项时合格资格门生效——「待定：」前缀而非「合格」"""
     conflict = {"confidence": "low", "cross_read_conflict": {"reads": ["b.ab1"]}}
     res = _res([conflict, {"confidence": "low"}], [], coverage=42.0)
     out = batch.excel_conclusion("MX", res, 2, True)
-    assert out == "合格：与设计一致；2 处低置信差异疑似伪影；测序覆盖 42%"
+    assert out.startswith("待定：2 处未决差异，需核对峰图或补测")
+    assert "测序覆盖 42%" in out
     assert "互检矛盾" not in out and "详见报告" not in out
 
 

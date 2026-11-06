@@ -611,12 +611,24 @@ def _undetermined_reason(res) -> Optional[str]:
     return None
 
 
+def _variant_status_of(v: Dict) -> str:
+    """变体三态读取（goal T1）：旧记录无 status 字段时按旧口径推导
+    （向后兼容约束——缓存结果/历史报告不重算也能正确分拣）"""
+    if v.get("status"):
+        return v["status"]
+    if v.get("cross_read_resolved"):
+        return "rejected"
+    return "confirmed" if v.get("confidence") != "low" else "unresolved"
+
+
 def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     """一句话结论（网页结果表与离线 Excel 回填共用同一口径）。
 
-    表格单元格以简洁为先：合格/不合格/疑似混合/无法判定 前缀供批量筛选分拣，
-    差异细节与伪影鉴别解释一律不进表（互检矛盾与一般低置信合并为
-    "疑似伪影"，逐条证据在网页报告里）"""
+    表格单元格以简洁为先：合格/不合格/待定/疑似混合/无法判定 前缀供批量
+    筛选分拣，差异细节与伪影鉴别解释一律不进表（逐条证据在网页报告里）。
+    三态口径（goal T1；A 3.3 / B P0-1、P0-2）：rejected（互检定案）不算
+    待定；unresolved 变体或未决位点（N/模糊调用、poly 不可判定、dropout、
+    无法互检的双峰）触发「待定：」前缀——不得因证据不足而报「合格」。"""
     if not has_ref:
         return f"已整理 {n_reads} 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对"
     if res is None:
@@ -624,11 +636,12 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     if not res["reads"]:
         errs = "；".join(e.get("error", "") for e in res["errors"][:2]) or "无可分析 read"
         return f"分析失败：{errs}"
-    confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
-    pending = len(res["variants"]) - len(confirmed)
+    confirmed = [v for v in res["variants"] if _variant_status_of(v) == "confirmed"]
+    pending = [v for v in res["variants"] if _variant_status_of(v) == "unresolved"]
     cov = res["consensus"]["coverage_percent"]
     bad = [c for c in res["cds_reports"]
            if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
+    n_sites = res.get("unresolved_sites") or []
     mixed_tails, widespread = _mixed_tails(res)
     undetermined = _undetermined_reason(res)
 
@@ -656,6 +669,22 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         out = "无法判定：" + undetermined
         if confirmed:
             out += f"；已比对区域另有 {len(confirmed)} 处确证差异"
+    elif pending or n_sites:
+        # ✓/合格资格门：有未决项就不给「合格」，如实说待定
+        bits = []
+        if pending:
+            bits.append(f"{len(pending)} 处未决差异")
+        if n_sites:
+            bits.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
+        out = "待定：" + "、".join(bits) + "，需核对峰图或补测"
+        if confirmed:
+            feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
+            out += f"；另有 {len(confirmed)} 处确证差异（{feats}）"
+        if mixed_tails:
+            out += "；" + "；".join(mixed_tails)
+        if cov < 95:
+            out += f"；测序覆盖 {cov:.0f}%"
+        return out
     elif confirmed:
         feats = "、".join(sorted({f["name"] for v in confirmed for f in v.get("features", [])})) or "无特征区"
         out = f"合格：编码区蛋白一致；编码区外 {len(confirmed)} 处确证差异（{feats}）"
@@ -664,7 +693,9 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
 
     tail = []
     if pending:
-        tail.append(f"{pending} 处低置信差异疑似伪影")
+        tail.append(f"{len(pending)} 处未决差异")
+    if n_sites:
+        tail.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
     # A4：poly 区峰图判读存疑——按 run_verdict 分态（contradictory 互证
     # 矛盾对克隆批量筛查最致命，单独点名）
     hp_bad = [e for e in (res.get("homopolymers") or [])
