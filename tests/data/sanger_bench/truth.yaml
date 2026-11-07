@@ -36,9 +36,9 @@ scenarios:
   S15: {verdict: fail,          sites: [{pos: 140, type: substitution, status: confirmed}], mixed: false, unresolved: [{pos: 151, kind: poly}]}
   S16: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 150, af: 0.30}]}   # 双峰保留为未决、不升级混合（2026-11-06 定稿）
   S17: {verdict: fail,          sites: [{pos: 800, type: substitution, status: confirmed}], mixed: false}   # 749-755 双峰=尾端滑移伪影，不升级
-  F1:  {verdict: pending,       sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰：混合误报基准
-  F2:  {verdict: pending,       sites: [], mixed: false, file: 3100.ab1}   # 信号衰减段 61 次峰：同上
-  F3:  {verdict: failed_reads,  sites: [], mixed: false, file: 310.ab1}    # 无 PCON：T24 落地后转绿
+  F1:  {verdict: pass,          sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰：T24.1 峰心窗后 blob 肩峰低于地板不检出（2026-11-07 实测）
+  F2:  {verdict: pass,          sites: [], mixed: false, file: 3100.ab1}   # 衰减段次峰：同上（2026-11-07 实测）
+  F3:  {verdict: pending,       sites: [], mixed: false, file: 310.ab1}    # 无 PCON：T24 峰型估 Q 恢复分析（quality_source=peak_estimate，2026-11-07 实测）
   M1:  {verdict: fail,          sites: [{pos: 104, type: substitution, status: confirmed}, {pos: 106, type: substitution, status: confirmed}], mixed: false}
   M2:  {verdict: fail,          sites: [{pos: 300, type: substitution, status: confirmed}], mixed: false}
   M3:  {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: overlap_discordance}]}   # 分歧双方降 unresolved，共识 IUPAC
@@ -48,12 +48,13 @@ scenarios:
   M7:  {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 300, af: 0.50}]}   # secondary_base 展示，不判混合
   M9:  {verdict: pass,          sites: [], mixed: false}   # 环状拓扑默认（T25 将改显式）
   M10: {verdict: pass,          sites: [], mixed: false}   # 300/330 rejected（互检定案）
-  M12: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 92, af: 0.50}]}   # PLOC<PBAS 警示（T24）
+  M12: {verdict: pass,          sites: [], mixed: false}   # PLOC<PBAS 告警（T24）；−1 修正后边界伪双峰位点消失（2026-11-07 实测）
   M13: {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}   # 与 S1 同构造（契约测试）
   M14: {verdict: pending,       sites: [{pos: 999, type: insertion, status: unresolved}], mixed: false}
   M15: {verdict: pending,       sites: [{pos: 29, type: insertion, status: unresolved}], mixed: false}
 
-# raw 场景（不经 analyze）：M8（PLOC −1 峰窗，abif_reader 级）、M11（会话预检，app 级）
+# raw 场景（不经 analyze）：M8（PLOC 峰窗基准，abif_reader 级；T24.1 修正 −1 偏移）、
+# M11（会话预检，app 级）
 raw_scenarios: [M8, M11]
 
 # 真实 AB1（Biopython Tests/Abi，Biopython License）：参考由 read 自身

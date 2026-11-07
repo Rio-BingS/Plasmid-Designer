@@ -414,13 +414,11 @@ XFAIL_BY_TASK = {
     # 挪走、掩盖 K2* 提前终止的病根——同密码子双替换的 MNV/终止注释本就
     # 存在，窗口对了判定即对；真正的 MNV 合并展示仍归 T25。
     # S1 已随 T12 转绿（可信区信号驱动，尾端位置不再强制 low——峰证据
-    # 齐全的错义确证 ✗）；F1/F2 已随 T11 转绿；M7 的 secondary_base 部分：
-    # 新检测对「调用碱基非最高通道」的位点取最高次级通道为 secondary_base
-    # （旧实现返回 None），该断言转绿；call_disagrees_with_trace 字段仍归
-    # T24.4。
-    "test_f3_no_pcon_still_analyzed": "T24",
+    # 齐全的错义确证 ✗）；F1/F2 已随 T11 转绿；M7 已随 T12/T24 转绿
+    # （secondary_base 取最高次级通道 + call_disagrees_with_trace 分歧标注）。
+    # F3/M12 已随 T24 转绿：无 PCON 按峰型估 Q（quality_source 标注），
+    # PLOC 短于 PBAS 显式告警不静默。
     "test_m9_core_analyze_requires_topology": "T25",
-    "test_m12_ploc_shorter_than_pbas_warns": "T24",
     "test_m15_enzyme_site_pending_hint": "T25",
 }
 

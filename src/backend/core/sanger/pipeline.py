@@ -24,7 +24,10 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-from core.sanger.abif_reader import extract_read, AbiParseError, peak_window as _peak_window
+from core.sanger.abif_reader import (  # noqa: F401
+    AbiParseError, extract_read, estimate_quality_from_trace,
+    peak_window as _peak_window,
+)
 from core.sanger.noise import peak_snr
 from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
@@ -90,7 +93,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v5"
+SANGER_ALGO_VERSION = "v6"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -281,6 +284,19 @@ def _trim_by_quality(bases: str, quality: List[int], min_q: int) -> Tuple[int, i
     return (best_start, best_end)
 
 
+def _trim_span_mask(quality: List[int], min_q: int) -> Tuple[int, int]:
+    """估 Q 路径的修剪口径（goal T24.5）：首末好碱基张成区间，凹陷掩蔽
+
+    峰型估的 Q 对中段凹陷系统性偏悲观（峰高受染料团/压缩影响，不纯代表
+    碱基错误率），Kadane 会在凹陷处把 read 截断丢掉一整侧。改为取首个与
+    最后一个 Q≥min_q 的碱基张成区间：区间内的低 Q 凹陷**保留不截**，由
+    调用方在 low_q_ranges 里掩蔽标注（Q 低 → 置信口径自然保守）。"""
+    good = [i for i, q in enumerate(quality) if q >= min_q]
+    if not good:
+        return (0, 0)
+    return (good[0], good[-1] + 1)
+
+
 # 双峰检测与 read 级混合分级迁 core/sanger/mixed_model.py（goal T11；A 3.1；
 # B P2-14 自适应背景模型）。此处 re-export 维持既有导入路径（tests/app 从
 # pipeline 取名）；MIXED_* 绝对计数常量退役——判定改走证据形态学（详见
@@ -368,7 +384,9 @@ def _parse_tracy_json(text: str) -> Optional[Tuple[str, List[int], Dict]]:
 
     字段（tracy v0.3.10+，src/json.h）：primarySeq / secondarySeq 等长，
     secondary 与 primary 相同为单峰，否则为其余过阈值碱基的 IUPAC 码；
-    basecallQual 为逐碱基 Q，basecallPos 为峰在 trace 上的 1-based 采样坐标。"""
+    basecallQual 为逐碱基 Q，basecallPos 为峰在 trace 采样点上的坐标。
+    T24.1 起与 PLOC 统一取 0 基原值（tracy 内部读同一 ABIF 的 PLOC；
+    本地无 tracy 无法实测核对，基准疑义挂 KNOWN_ISSUES「tracy 基准」。"""
     try:
         d = json.loads(text)
     except ValueError:
@@ -385,7 +403,7 @@ def _parse_tracy_json(text: str) -> Optional[Tuple[str, List[int], Dict]]:
         return None
     try:
         q = [int(x) for x in qual[:n]]
-        tp = [int(x) - 1 for x in pos[:n]]   # → 0-based，与 PLOC 峰坐标同系
+        tp = [int(x) for x in pos[:n]]   # 0 基采样点，与 PLOC 原值同口径（T24.1）
     except (TypeError, ValueError):
         return None
     if any(x < 0 for x in q):
@@ -1369,12 +1387,35 @@ def _analyze_one_read(
     if len(bases) < MIN_WINDOW:
         return None, {"filename": filename, "error": "碱基数过少（<50bp）"}
 
+    # tracy 交叉 basecall（提前到此，无 PCON 时先借它的 Q；生产镜像内置，
+    # 缺失时降级。终审 C-09：交叉 basecall 异常不得拖垮整份多 read 分析）
+    cross = _try_tracy_basecall(blob)
+
+    # 质量值来源（goal T24.5）：PBAS 内嵌 Q 为常规来源；PCON 缺失/全 0
+    # （个别老机型/导出工具）先试 tracy 重新 basecall 的 Q（长度须与
+    # PBAS 对齐），无 tracy 环境按峰型估 Q——绝不让「无 Q」等同「读不了」
+    quality_source = "pbas"
+    if not any((q or 0) > 0 for q in quality):
+        cq = cross[1] if cross else None
+        if cq and len(cq) == len(bases):
+            quality = list(cq)
+            quality_source = "tracy_basecall"
+        else:
+            quality = estimate_quality_from_trace(
+                read["trace"], read["peak_indices"], len(bases))
+            quality_source = "peak_estimate"
+    read["quality_source"] = quality_source
+
     # A2 基线校正：峰级定量前扣除各通道加性本底（通道映射不动）；
     # 显示与定量统一使用校正后信号（关闭开关回退原始信号）
     if signal_correct:
         read["trace"] = baseline_correct(read["trace"])
 
-    s, e = _trim_by_quality(bases, quality, min_q)
+    # 估 Q 路径用 span+mask 口径（凹陷掩蔽而非截断），常规路径保持 Mott
+    if quality_source == "peak_estimate":
+        s, e = _trim_span_mask(quality, min_q)
+    else:
+        s, e = _trim_by_quality(bases, quality, min_q)
     trimmed = bases[s:e]
     trimmed_q = quality[s:e]
     # 阈值高于全部碱基 Q 值时修剪结果为空：记为错误条目，
@@ -1384,6 +1425,22 @@ def _analyze_one_read(
             "filename": filename,
             "error": f"Q≥{min_q} 的碱基不足 {MIN_WINDOW}bp（修剪后仅 {len(trimmed)}bp），无法比对",
         }
+    # 估 Q 路径的凹陷掩蔽标注（goal T24.5）：区间内 Q<min_q 的连续段记入
+    # 结果（0 基半开区间，与 trim_start 同系），供前端/证据包标注
+    # 「测到但峰型不可信」——掩蔽而非截断
+    low_q_ranges: List[List[int]] = []
+    if quality_source == "peak_estimate" and e > s:
+        run: Optional[List[int]] = None
+        for i in range(s, e):
+            if quality[i] < min_q:
+                if run and run[1] == i:
+                    run[1] = i + 1
+                else:
+                    if run:
+                        low_q_ranges.append(run)
+                    run = [i, i + 1]
+        if run:
+            low_q_ranges.append(run)
     mean_q = sum(trimmed_q) / len(trimmed_q) if trimmed_q else 0
     grade, q20_ratio, crl = _read_grade(trimmed, trimmed_q)
 
@@ -1405,10 +1462,8 @@ def _analyze_one_read(
         qi = min(max(rp - 1, 0), len(trimmed_q) - 1)
         v["quality"] = trimmed_q[qi]
 
-    # tracy 交叉 basecall：独立 caller 的第二意见（生产镜像内置，缺失时降级）
-    # 终审 C-09：tracy 全流程降级隔离——一条低质量 ab1 的交叉 basecall
-    # 异常不得拖垮整份多 read 分析
-    cross = _try_tracy_basecall(blob)
+    # tracy 交叉 basecall 结果复用（已在修剪前调用，见上）：独立 caller 的
+    # 第二意见，全流程降级隔离（终审 C-09）
     used_tracy = cross is not None
     cross_variants: List[Dict] = []
     tracy_calls: Optional[Dict] = None
@@ -1443,6 +1498,11 @@ def _analyze_one_read(
         "grade": grade,
         "q20_ratio": q20_ratio,
         "crl": crl,
+        # 质量值来源（goal T24.5）：pbas / tracy_basecall / peak_estimate
+        "quality_source": quality_source,
+        # PLOC 比 PBAS 短的条数（goal T24.2/M12；0=正常），管线汇总告警
+        "ploc_shortfall": read.get("ploc_shortfall") or 0,
+        **({"low_q_ranges": low_q_ranges} if low_q_ranges else {}),
         "trimmed_bases": trimmed,
         "trimmed_quality": trimmed_q,
         "alignment": aln,
@@ -1533,10 +1593,13 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             exclude=slip | merged_span,
         )
         r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
-        # 逐位证据（次级通道/占比/自适应 z 值）随结果下发，供前端峰图标注
+        # 逐位证据（次级通道/占比/自适应 z 值）随结果下发，供前端峰图标注；
+        # call_disagrees_with_trace（T24.4）：调用碱基不在峰面积前两通道
         r["mixed_detail"] = [
             {"pos": e["pos"], "ratio": round(e["ratio"], 3),
-             "secondary_base": e["secondary_base"], "mixed_z": e.get("mixed_z")}
+             "secondary_base": e["secondary_base"], "mixed_z": e.get("mixed_z"),
+             **({"call_disagrees_with_trace": True}
+                if e.get("call_disagrees_with_trace") else {})}
             for e in mixed_detail if not e["pullup"]
         ]
         if r.get("tracy_calls") is not None:
@@ -2545,6 +2608,19 @@ def analyze(
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
 
+    # 解析层告警（goal T24.2/T24.5）：PLOC 截短与质量值来源降级，不静默
+    warnings: List[str] = []
+    for r in read_results:
+        k = r.get("ploc_shortfall") or 0
+        if k:
+            warnings.append(
+                f"PLOC 比 PBAS 短 {k} 条（{r['filename']}，read 尾端 {k}bp）："
+                "缺失区段峰位置不可用，峰级证据按缺失处理")
+        if r.get("quality_source") == "peak_estimate":
+            warnings.append(
+                f"{r['filename']}：PCON 质量值缺失/全 0，已按峰型估 Q"
+                "（quality_source=peak_estimate），置信口径相应保守")
+
     return {
         "reads": [
             {k: v for k, v in r.items()
@@ -2591,6 +2667,8 @@ def analyze(
         "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）
         "mixed_corroboration": mixed_corroboration,
         "errors": errors,
+        # 解析层告警（goal T24.2/T24.5；旧结果无此键，API 向后兼容）
+        "warnings": warnings,
         "engine": "internal+biopython+tracy-basecall" if any_tracy else "internal+biopython",
     }
 

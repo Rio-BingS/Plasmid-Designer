@@ -96,12 +96,16 @@ def test_real_analysis_basic_shape():
 
 def test_real_analysis_mixed_baseline_and_corroboration():
     """真实峰型下的混合检测基线（goal T12 信号驱动可信区口径）：三条 read
-    都判出双峰 9 / 18 / 19 处。口径演变链：v2.16.0 之前（只扣首尾 20bp）
+    都判出双峰 8 / 16 / 17 处。口径演变链：v2.16.0 之前（只扣首尾 20bp）
     是 22 / 31 / 16；v2.16.0 700 硬顶后 4 / 9 / 10（尾部双峰静默忽略）；
     T12 起可信区由 read 自身信号决定（zone_signal 四指标逐窗判定），
     三条 read 的尾端信号实测可信 → zone 延伸至 975 / 965 / 940，
     797–957 段的真实双峰形态位点重新计入（快照 work/after_T12.json，
-    新增位点全部落在旧 700 硬顶之外）。
+    新增位点全部落在旧 700 硬顶之外）；T24.1 起 PLOC 取 0 基峰心原值
+    （不再减 1，快照 work/after_T24.json）：峰窗以峰心对称取面积后，
+    滞后于主峰的染料 blob/衰减段肩峰占比实测下降（如 pET-Up 位点
+    0.62→0.45、0.52→0.36），贴 0.30 地板的伪影条目不再检出，
+    9/18/19 → 8/16/17，MX 核心判定（2 确证差异/CDS/覆盖）逐字节不变。
 
     同时锁住两条硬约束：报出的双峰位点必须落在该 read 的可信区内；
     read 级「疑似混合样品」升级不得因尾端位点计入而误触发。"""
@@ -115,7 +119,7 @@ def test_real_analysis_mixed_baseline_and_corroboration():
         z = zones[_fname]
         assert all(z["start"] <= p <= z["end"] for p in positions), _fname
         counts.append(len(positions))
-    assert sorted(counts) == [9, 18, 19]
+    assert sorted(counts) == [8, 16, 17]
     # T11+T12 口径基线（goal T11/T12；A 3.1，先取证再改断言，快照
     # work/after_T11.json → after_T12.json）：read 级「疑似混合样品」升级
     # 走证据形态学（mixed_model.classify_mixed）。T12 后位点集扩容
@@ -124,25 +128,24 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     # 尾端低 Q 双峰是衰减噪声而非混合克隆，Q 比判别器正确挡下升级。
     # verdict 仍 fail（5269/5076 确证变异驱动）。
     assert "疑似混合样品" not in res["conclusion"]
-    assert "双峰 18 处中 9 处无其他引物覆盖待核" in res["conclusion"]
-    assert "双峰 9 处中 4 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 16 处中 9 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 8 处中 3 处无其他引物覆盖待核" in res["conclusion"]
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
     assert "同报双峰" not in res["conclusion"]
     # T8+T12 互检口径基线（先取证再改断言）：待核 = 互检 uncovered（验证
     # read 可信区内对应列未读出设计碱基）。T12 可信区延伸后互检覆盖面
-    # 扩大：seqF 的 19 处双峰全部被其他 read 延伸后的可信区高质量覆盖
-    # （corroboration by_read：clean 19 / uncovered 0——旧待核位点 5709、
-    # 5735–5741 转为 clean 排除）→ seqF 待核行消失；pET-Up 保留 9 处
-    # 待核（5075–5085，引物 5' 端互检盲区）；T7-Term 尾端新计入位点中
-    # 4 处无法互检（6868–6873）→ 新增待核行。待核行仍为 2 条，逐字锁新基线
+    # 扩大：seqF 的双峰全部被其他 read 延伸后的可信区高质量覆盖 → seqF
+    # 待核行消失；pET-Up 保留 9 处待核（5075–5085，引物 5' 端互检盲区，
+    # T24.1 后分母 18→16 但待核集合不变）；T7-Term 尾端 3 处无法互检
+    # （6868–6872，T24.1 后 6873 掉档）→ 待核行仍为 2 条，逐字锁新基线
     concl_lines = res["conclusion"].splitlines()
     pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
     assert len(pending) == 2
-    assert any("SZ15674-pET-Up.ab1" in x and "18 处中 9 处" in x
+    assert any("SZ15674-pET-Up.ab1" in x and "16 处中 9 处" in x
                and "5075–5079、5082–5085" in x for x in pending)
-    assert any("SZ15674-T7-Term.ab1" in x and "9 处中 4 处" in x
-               and "6868–6869、6872–6873" in x for x in pending)
+    assert any("SZ15674-T7-Term.ab1" in x and "8 处中 3 处" in x
+               and "6868–6869、6872" in x for x in pending)
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
