@@ -1,9 +1,10 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-11-05（`v2.37.0-alpha.1`：单样品测序新增「目的基因模式」
-> （按文件名定位参考内目的 CDS 分析）+ 结论覆盖资格门 + 尺寸门禁约定放宽，
-> [留档](postmortems/2026-11-05-cds-mode-coverage-gate.md)）。
+> **更新**：2026-11-07（`v2.37.0-alpha.2`：**Sanger 判读链路全量修复收口**
+> （goal_sanger_full_fix_v2 T0-T25：证据三态/结构化 verdict/verified 覆盖/
+> 校准评分/基准集/解析层口径修正），变更明细见 CHANGELOG 2.37.0-alpha.2，
+> 闸门与提交清单见 docs/audit/PROGRESS.md）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -14,15 +15,19 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前分支
-`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.1**（2026-11-05）：单样品测序
-新增**目的基因模式**（按文件名从参考图谱定位目的 CDS 分析：候选下拉自动匹配、
-CDS±150bp 侧翼参考、read↔CDS 覆盖关系、结论覆盖资格门——引物没测到目标时
-结论头强制 △ 未能验证不给 ✓），两个正确性教训见
-[留档](postmortems/2026-11-05-cds-mode-coverage-gate.md)。此前该分支已发
-v2.36.0 / v2.36.1-alpha.1（限制性克隆预览三图分工、轨道宽度两轮弹性求解，已部署
-VPS 预览验收）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
-2026-11-05 实测：后端 **1850 passed / 43 skipped / 0 failed**（约 110 s），
-前端 **686 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步门禁全绿。
+`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.2**（2026-11-07）：
+**Sanger 判读链路全量修复收口**（goal_sanger_full_fix_v2 T0-T25）——证据三态
+（rejected/confirmed/unresolved）+ 结构化 verdict 统一四出口、verified 覆盖
+口径、可信区信号驱动、校准 P(真实) 四档行动、证据包、引物校验、混合判定
+重构（染料肩峰不再误升「疑似混合」）、解析层口径修正（PLOC 峰心原值/峰型
+估 Q）与基准集 CI 断言（33/33 对角、FPR=0）；「待定」结论明显增多是预期
+（诚实呈现证据不足）。上一版 v2.37.0-alpha.1（2026-11-05：目的基因模式 +
+结论覆盖资格门）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
+2026-11-07 实测：后端 **1965 passed / 46 skipped / 0 failed / 0 xfailed**
+（约 145 s；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可
+触发 + 3 契约测试对不经 analyze 场景的显式登记），
+前端 **693 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步
+门禁全绿。
 线上为 Docker Compose 部署（VPS，ssh 别名 `vps-direct`（直连 23.95.78.18；旧别名 myvps 已不存在；ControlMaster 残留时加 `-o ControlMaster=no -o ControlPath=none`），
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
@@ -40,9 +45,9 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.1`（2026-11-05：目的基因模式 + 结论覆盖资格门）。此前 v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
-| 后端测试 | **1850 passed / 43 skipped / 0 failed**（约 110 秒，2026-11-05；43 skipped 含本机 Windows 平台跳过的 deploy_backup 与真实数据回归的条件跳过） |
-| 前端测试 | **686 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-05；npm audit 2026-10-29 实测 0 漏洞） |
+| 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.2`（2026-11-07：Sanger 判读链路全量修复 T0-T25）。此前 v2.37.0-alpha.1（2026-11-05：目的基因模式 + 结论覆盖资格门）、v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
+| 后端测试 | **1965 passed / 46 skipped / 0 failed / 0 xfailed**（约 145 秒，2026-11-07；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11 不经 analyze）；Sanger 场景库 36 项 0 xfail） |
+| 前端测试 | **693 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-07；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |

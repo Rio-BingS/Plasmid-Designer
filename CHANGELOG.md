@@ -6,6 +6,79 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [2.37.0-alpha.2] - 2026-11-07
+
+> 实验分支 `experiment/preview-visual-tuning` 预发布（未合并 main）；基于 2.37.0-alpha.1。
+> 本版为 Sanger 判读链路全量修复（goal_sanger_full_fix_v2，T0-T25）整体收口，
+> 基准集指标与口径演变见 `docs/SANGER_CALIBRATION.md` 与 `docs/audit/PROGRESS.md`。
+
+### 升级注意
+- **「待定」结论会明显增多，这是预期**：证据不足/可信区外的差异不再冒充
+  「合格」或被静默回填参考——三态判定（confirmed/unresolved/rejected）如实
+  呈现，低置信差异以「△ 待定」+ 未决位点清单下发。
+- **核心 `analyze()` 的 `circular` 变为必填关键字参数**（无默认值）：拓扑由
+  调用方从参考对象读取后显式传入；直接调用核心层的嵌入脚本需补参
+  （app 层路由不受影响，参考拓扑改读载体/图谱记录的真实 topology）。
+- **PLOC 解析口径修正**（0 基峰心原值，不再减 1）：峰级证据数值有轻微变化；
+  真实文件实测原值即峰心（3730/3100/310），滞后主峰的染料肩峰占比下降，
+  部分伪影位点不再产生待核项。
+- `SANGER_ALGO_VERSION` v5 → v7（T24/T25 口径变更递增；旧缓存记录按版本
+  失效重算）。测试基线：后端 **1965 passed** / 前端 **693 passed**。
+- API 只加字段（`warnings`、reads 的 `quality_source`/`ploc_shortfall`、
+  variants 的 `mnv`/`enzyme_sites_pending` 等），旧记录缺省兼容。
+
+### 新增
+- **结构化判定 verdict**（T1/T2/T5）：rejected/confirmed/unresolved 三态 +
+  status 驱动的结论头符号（✓/✗/△）、阻断项清单、ROI；网页/API/Excel/
+  分拣目录/Markdown 报告同一出口；分拣目录由 verdict.status 驱动。
+- **未决位点清单**（T1/T9）：N/模糊调用、poly 不可判定、信号骤降、重叠区
+  分歧、ORF 标注疑点、引物不匹配等逐项坐标化，作为 ✓ 的资格门输入。
+- **verified 双覆盖口径**（T3）：verified_percent/bp = 实测 ∩ 可信区 − N 列，
+  CDS 判定与覆盖资格门切 verified 口径。
+- **校准 P(真实) 与四档行动**（T15）：每条变体带 p_real（confirmed ≥0.5 /
+  unresolved <0.5）与 accept/exclude/review_trace/resequence 行动档，
+  峰图三色标注。
+- **证据包**（T22）：`GET /sequencing/analyses/{id}/evidence-pack`
+  （json/markdown）+ 前端证据包面板——阻断/复核位点的逐 read 四通道 SVG
+  快照与证据表，多 read 同屏比对。
+- **引物校验**（T17）：read 方向、结合位点、3′ 端距离逐条校验，
+  mismatch 由 verdict 判 fail（可配 pending）。
+- **混合判定重构**（T7/T11/T14）：单点双峰保留为次等位展示（AF 丰度）；
+  自适应背景模型 + 证据形态学分级（局部/弥散），染料肩峰/滑移伪影不再
+  误升「疑似混合」（基准集 FPR=0）；多 read 证据聚合并保证顺序无关。
+- **split-read 结构断点定位**（T19）：端部软剪切高质量段二次局部比对，
+  命中报 structural_breakpoint 坐标，未命中报「未知序列」。
+- **通用伪迹检测**（T20）：峰压缩、dye blob、短同聚物滑移区段检出，
+  作为 T15 特征与 verdict info。
+- **重叠区分歧**（T21）：近平局分歧输出 IUPAC 共识 + unresolved + 双方
+  变体降级；双链覆盖占比入 verdict.roi。
+- **解析层健壮化**（T24）：PLOC 短于 PBAS 明确告警并标注受影响区段；
+  无 PCON 先试 tracy basecall 再按峰型估 Q（quality_source 标注），
+  310 类老文件不再被整条拒绝；通道检测采样跳过首端不可信区；
+  调用碱基不在峰面积前两名时标 `call_disagrees_with_trace`。
+- **MNV 联合注释**（T25.1）：同密码子多替换先聚合再注释（如 AAA>TAG
+  终止 K2*），变体表 MNV 徽标合并呈现。
+- **酶位待定提示**（T25.4）：未决 indel ±10bp 内有酶识别位点时提示
+  「位点归属待定」。
+- **基准集与 CI 指标断言**（T23）：35 项合成场景 + 3 真实 AB1 真值库
+  （truth.yaml），verdict 混淆矩阵 33/33 对角、位点敏感度/特异度 1.0、
+  混合 FPR=0 在 CI 断言；拟合脚本与报告见 `docs/SANGER_CALIBRATION.md`。
+- **会话预检**（T18）：空文件/可疑扩展名/尺寸下限在解析前拦截（400）。
+
+### 变更
+- **可信区信号驱动**（T12）：废除 700bp 硬顶，zone 由 read 自身信号
+  （Q/峰宽/次级占比/信噪）逐窗判定——尾端真实信号重新计入，位置不再
+  直接把变体判 low。
+- **SNR 本底确定化**（T13）：局部噪声逐峰估计，SNR 缺失按「不确定」
+  而非「响亮」处理。
+- **低置信共识口径**（T1）：未决插入/替换照实写入共识并标 unresolved
+  （IUPAC 合并码），不回填参考冒充已验证；参考末端单 low 票插入不定插。
+- **ORF 校正护栏**（T16）：起始密码子校正限 ±3bp 偏移；宿主起始密码子
+  与表达载体语义区分。
+- **tracy decompose 对齐官方产物格式**（T10，json/align1/align2）；
+  basecall JSON 带次级调用与峰坐标印证。
+- 坐标换算统一走 ReadRefMap（软剪切/环状折回/反向镜像一处实现，T9）。
+
 ## [Unreleased]
 
 ## [2.37.0-alpha.1] - 2026-11-05

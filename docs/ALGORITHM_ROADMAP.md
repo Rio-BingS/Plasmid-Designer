@@ -133,3 +133,37 @@ L ≈ 1 周以上。
 - Mauro 2014（PMCID: PMC4253638）——治疗性基因密码子优化的批判性分析
 - Verma 2019（Nat Commun）——translational ramp
 - Twist 白皮书——LLM harmonization 基准；ATUM GeneGPS——实验数据驱动 ML
+
+---
+
+## Sanger 判读链路（goal_sanger_full_fix_v2，2026-11-07 收口）
+
+> 与密码子优化无关，随 Sanger 全量修复一并落地的算法项状态标记；
+> 细节见 docs/audit/PROGRESS.md 与 docs/SANGER_CALIBRATION.md。
+
+### 已实现（主流程生效）
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 双峰自适应背景模型 + 证据形态学分级 | `core/sanger/mixed_model.py` | 局部中位+MAD 阈值；FPR=0 硬约束下参数经网格拟合确认为最优（并列） |
+| 可信区信号驱动逐窗判定 | `core/sanger/zone_signal.py` | Q/峰宽/次级占比/信噪四指标，700 硬顶废除 |
+| 校准 P(真实) logistic 锚点+权重 | `core/sanger/scoring.py` + `params/variant_score.json` | hard tier（含位置特征）先分层、层内 logistic 修正；真值行 AUC 1.0 |
+| 局部噪声 SNR | `core/sanger/noise.py` | 逐峰本底，None=不确定不按响亮 |
+| ORF 校正护栏 | `core/sanger/orf_guard.py` | ±3bp 约束 |
+| split-read 端部剪切段二次定位 | `core/sanger/split_read.py` | 复用 local 比对；先测量（6 组合错位率 0.0）后按结论不改比对打分 |
+| 通用伪迹检测（压缩/dye blob/短滑移） | `core/sanger/artifacts.py` | 只作证据特征与 info，不进判定分支 |
+| 重叠区分歧 IUPAC 共识 | `core/sanger/overlap.py` | 近平局分歧不静默取边 |
+| 证据包 SVG 渲染 | `core/sanger/evidence_pack.py` | 逐位点四通道快照 |
+
+### 暂缓项（按需启动）
+
+1. **p_real 作为唯一裁决线**：基准集实测 p_real 分布双峰、判别力在分档
+   不在连续阈值（SANGER_CALIBRATION §2），位置级上下文（分歧/互检）按
+   设计覆盖证据分——单阈值化无增益，维持 hard tier + 层内修正结构。
+2. **比对打分质量感知**（审计 A 2.3）：T19 先测量结论为「已评估无需改动」
+   （错位率 0.0）；待真实数据积累后再评估 mismatch 打分随 Q 调制。
+3. **带设计参考的真实数据基准扩充**：现 3 个真实 AB1 无设计参考，位点级
+   真值不可用（KNOWN_ISSUES #6 阈值标定口径）；取得后重跑
+   scripts/fit_variant_score.py --benchmark 与 fit_mixed_params.py 复核。
+4. **tracy 基准实测**（KNOWN_ISSUES #5）：decompose 产物与 basecallPos
+   基准需生产镜像内核对。
