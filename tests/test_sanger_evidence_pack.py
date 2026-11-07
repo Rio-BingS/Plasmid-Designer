@@ -77,7 +77,7 @@ def test_build_pack_and_markdown_e2e():
     ref = "".join(rng.choice("ACGT") for _ in range(600))
     blob = _read_from_ref(ref, 1, 500, q=50,
                           subs=[(300, "G" if ref[299] != "G" else "T")])
-    res = analyze([("r1.ab1", blob)], ref, [])
+    res = analyze([("r1.ab1", blob)], ref, [], circular=False)
     record = {**res, "_trace_data": {i: t for i, t in enumerate(res["traces"])}}
     pack = build_pack_data(record)
     assert pack["verdict_status"] == res["verdict"]["status"]

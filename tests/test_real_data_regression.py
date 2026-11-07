@@ -38,7 +38,7 @@ def _load_ctx():
         return _real_ctx
     from core.sanger.batch import load_excel, match_files, norm_stem
     from core.sanger.pipeline import analyze
-    from core.sanger.reference_parser import parse_reference
+    from core.sanger.reference_parser import parse_reference_topology
 
     excel_bytes = (REAL_DATA_DIR / "测序.xlsx").read_bytes()
     wb, _header, cols, rows = load_excel(excel_bytes)
@@ -56,10 +56,13 @@ def _load_ctx():
             continue
         groups.append({"plasmid": plasmid, "reference": ref_item,
                        "reads": slot["reads"]})
-        ref_seq, features = parse_reference(
+        ref_seq, features, topo = parse_reference_topology(
             ref_item["file"]["name"], ref_item["file"]["bytes"])
         ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in slot["reads"]]
-        analyses[plasmid] = {"result": analyze(ab1s, ref_seq, features),
+        # T25.2：拓扑读参考（GenBank LOCUS / SnapGene 标记；未标明默认环状，
+        # 与 app.sequencing_batch.reference_circular 同口径）
+        analyses[plasmid] = {"result": analyze(ab1s, ref_seq, features,
+                                               circular=topo is not False),
                              "ref_len": len(ref_seq),
                              "n_features": len(features)}
     _real_ctx = {"groups": groups, "unmatched": unmatched, "analyses": analyses,

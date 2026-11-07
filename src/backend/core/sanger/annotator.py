@@ -162,6 +162,21 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
     gained = sorted({s["name"] for s in alt_sites if not _preserved(s["name"], s["position"], False)})
     variant["enzyme_sites_lost"] = lost
     variant["enzyme_sites_gained"] = gained
+    # 计划酶位提示（goal T25.4/M15）：indel ±10bp 内落在参考的酶识别位点
+    # 上时记录位点名——该 indel 若为未决，共识序列在此处的归属就不确定，
+    # 「这个酶还切不切得动」同样待定（由结论文本提示，不进判定分支）
+    variant["enzyme_sites_pending"] = []
+    if variant["type"] in ("insertion", "deletion"):
+        span_lo = ref_pos
+        span_hi = ref_pos + int(variant.get("length") or 1) - 1
+        w_lo = max(0, span_lo - 11)          # 窗口多留 1bp 供位点起始判定
+        w_hi = min(L, span_hi + 18)          # 位点最长 8bp：右端多留出识别长度
+        near = []
+        for s in find_enzyme_sites(ref[w_lo:w_hi]):
+            abs_pos = w_lo + int(s["position"])
+            if span_lo - 10 <= abs_pos <= span_hi + 10:
+                near.append(s["name"])
+        variant["enzyme_sites_pending"] = sorted(set(near))
     return variant
 
 
@@ -176,8 +191,72 @@ def _apply_variant(ref: str, variant: Dict) -> str:
     return ref
 
 
+def apply_mnv_annotation(variants: List[Dict], features: List[Dict],
+                         reference: str) -> None:
+    """同一 CDS 同一密码子内的多个替换先聚合再注释（goal T25.1/M1；原地修改）
+
+    逐变体注释（annotate_variant）按单碱基套密码子——同密码子双替换会各报
+    「自己那半」（AAA>TAA / AAA>AAG），蛋白层的联合后果（两处合起来才是
+    终止 TAG）只在碰巧的那半出现。这里按（特征, 编码框, 密码子序号）分组，
+    把组内全部 alt 一起套到参考密码子上：每个成员的 codon_change/aa_change
+    都是联合结果，并带 mnv 组标注（成员位置/合并碱基变化/氨基酸变化）供
+    展示层把同组行合并呈现。单成员密码子不改动（与逐变体注释一致）。"""
+    ref = reference.upper().replace("U", "T")
+    subs = [v for v in variants if v.get("type") == "substitution"]
+    for parts in group_feature_segments(features):
+        feat = parts[0]
+        if feat.get("type") not in ("CDS", "gene"):
+            continue
+        coding = coding_sequence(ref, parts)
+        members = []
+        for v in subs:
+            cpos = coding_offset(parts, v["ref_pos"])
+            if cpos is None:
+                continue
+            strand = next(
+                (p.get("strand", "+") for p in parts
+                 if int(p["start"]) <= v["ref_pos"] <= int(p["end"])),
+                feat.get("strand", "+"),
+            )
+            members.append((cpos, strand, v))
+        if len(members) < 2:
+            continue
+        by_codon: Dict[int, List] = {}
+        for cpos, strand, v in members:
+            by_codon.setdefault(cpos // 3, []).append((cpos, strand, v))
+        for frame, grp in by_codon.items():
+            if len(grp) < 2:
+                continue
+            codon_ref = coding[frame * 3: frame * 3 + 3]
+            mut = list(codon_ref)
+            for cpos, strand, v in grp:
+                base = v.get("alt_base", "")[:1].upper()
+                mut[cpos % 3] = _revcomp(base) if strand == "-" else base
+            codon_mut = "".join(mut).upper()
+            aa_ref = CODON_TABLE.get(codon_ref, "x")
+            aa_alt = CODON_TABLE.get(codon_mut, "x")
+            name = feat.get("name", "CDS")
+            aa = (None if aa_alt == aa_ref else
+                  f"{name}:{aa_ref}{frame + 1}{aa_alt}")
+            positions = sorted(m["ref_pos"] for _c, _s, m in grp)
+            for _cpos, _strand, v in grp:
+                v["codon_change"] = f"{codon_ref}>{codon_mut}"
+                v["aa_change"] = aa
+                if aa is None:
+                    # 联合同义：成员各自的 missense/同义都不作数，以联合密码子为准
+                    if aa_ref != "x":
+                        v["synonymous"] = True
+                else:
+                    v.pop("synonymous", None)
+                v["mnv"] = {"codon": frame + 1, "members": positions,
+                            "nt_change": f"{codon_ref}>{codon_mut}",
+                            "aa_change": aa}
+
+
 def annotate_variants(variants: List[Dict], features: List[Dict], reference: str) -> List[Dict]:
-    return [annotate_variant(v, features, reference) for v in variants]
+    out = [annotate_variant(v, features, reference) for v in variants]
+    apply_mnv_annotation(out, features, reference)
+    return out
 
 
 def summarize_severity(variants: List[Dict]) -> List[str]:
@@ -219,4 +298,7 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
             notes.append(f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}")
         if v.get("enzyme_sites_gained"):
             notes.append(f"  ↳ 新增酶切位点: {', '.join(v['enzyme_sites_gained'])}")
+        if v.get("enzyme_sites_pending") and v.get("status") == "unresolved":
+            notes.append("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
+                         + " 在 ±10bp 内、indel 归属未定：位点归属待定")
     return notes

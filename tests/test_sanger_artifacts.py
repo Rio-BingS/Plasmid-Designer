@@ -116,7 +116,7 @@ def test_e2e_artifacts_wiring():
     ref = "".join(rng.choice("ACGT") for _ in range(1200))
     blob = _read_from_ref(ref, 100, 1100, q=50,
                           subs=[(300, "G" if ref[299] != "G" else "T")])
-    res = analyze([("r.ab1", blob)], ref, [])
+    res = analyze([("r.ab1", blob)], ref, [], circular=False)
     r0 = res["reads"][0]
     assert isinstance(r0["artifacts"], list)
     sub = next(v for v in res["variants"] if v["type"] == "substitution")

@@ -104,6 +104,11 @@ export interface SequencingVariant {
   frameshift?: boolean
   enzyme_sites_lost?: string[]
   enzyme_sites_gained?: string[]
+  /** 酶位提示（goal T25.4；旧记录缺省）：±10bp 内落在参考酶识别位点上的
+   *  未决 indel——位点有无随 indel 归属待定，结论带「位点归属待定」 */
+  enzyme_sites_pending?: string[]
+  /** 同密码子多替换联合注释（goal T25.1；旧记录缺省）：成员位/合并碱基变化 */
+  mnv?: { codon: number; members: number[]; nt_change: string; aa_change?: string | null }
   confidence?: string
   /** 证据三态（goal T1；旧记录缺省）：rejected 仅互检定案，unresolved=证据不足 */
   status?: 'rejected' | 'confirmed' | 'unresolved'

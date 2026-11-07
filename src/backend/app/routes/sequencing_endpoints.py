@@ -23,6 +23,7 @@ from app.auth.jwt_auth import User, get_current_user
 from app import batch_report_store, sequencing_store
 from app.gating import require_feature
 from app.vector_library_cache import get_vector_library
+from app.design_service import _vector_is_circular
 from app.filename import content_disposition
 from app.routes import sequencing_routes
 from app.routes.sequencing_routes import (
@@ -277,10 +278,15 @@ async def analyze_design_sequencing(
         raise HTTPException(status_code=400, detail="Design not completed")
 
     reference = result.construct_sequence or result.optimized_sequence or ""
-    # 有载体骨架参与组装才是环状质粒。空骨架回退（design_service：查不到载体时
-    # construct_sequence = 纯插入片段、insert_start=1）与仅有优化序列时都是
-    # 线性片段——按环状延长比对会在「原点」接缝上产生假环化坐标与错误覆盖合并
-    circular = bool(result.construct_sequence) and result.insert_start != 1
+    # T25.2：拓扑读参考——载体记录的真实 topology 是权威（防回潮「载体拓扑
+    # 按真实值落盘」），不再以 insert_start != 1 推断。骨架参与组装 → 构建
+    # 体随载体真实拓扑（线性骨架载体 → 线性构建体）；载体记录已删（回退
+    # 纯插入片段）或仅优化序列 → 线性片段
+    circular = False
+    if result.construct_sequence:
+        vector = get_vector_library().get_vector(result.vector_id)
+        circular = (_vector_is_circular(vector)
+                    if vector is not None else result.insert_start != 1)
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,

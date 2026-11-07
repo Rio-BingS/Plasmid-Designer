@@ -1,7 +1,7 @@
 """poly 优化基线快照
 
 每个 --data-dir 视为一个质粒组：目录顶层恰好 1 个参考图谱（.dna/.gb/.fasta）
-+ 若干 .ab1 测序 read（不递归子目录）。逐组调用 core.sanger.pipeline.analyze()，
++ 若干 .ab1 测序 read（不递归子目录）。逐组调用 core.sanger.pipeline.analyze(circular=False)，
 把当前行为整体快照成 JSON：
 
 - homopolymers / variants（含峰级证据）/ conclusion / mixed_positions /
@@ -112,7 +112,8 @@ def snapshot_group(data_dir: Path, legacy: bool = False) -> dict:
     reference, features = parse_reference(refs[0].name, ref_blob)
     ab1 = [(p.name, p.read_bytes()) for p in reads]
     res = analyze(ab1, reference, features=features,
-                  signal_correct=not legacy, poly_local_ratio=not legacy)
+                  signal_correct=not legacy, poly_local_ratio=not legacy, circular=False,
+                  )
 
     prov = {p.name: read_provenance(blob) for p, (_, blob) in zip(reads, ab1)}
 
