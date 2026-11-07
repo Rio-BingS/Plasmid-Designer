@@ -144,21 +144,34 @@ def _md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
 
 
-def _conclusion_bucket(conclusion: str) -> str:
+# Excel 一句话结论的固定前缀 → 分拣桶。与 core.sanger.batch.excel_conclusion
+# 写出的前缀同源（旧版本含「疑似混合样品」），仅作**旧批次包重跑归档**的
+# 文本兜底；verdict.status 在场时由 _conclusion_bucket 的 status 表直接驱动，
+# 不走本表（goal §6.3：分拣不逐字符匹配结论文案做判定）
+_CONCLUSION_PREFIX_BUCKETS = (
+    ("待定·读取失败", "读取失败"),
+    ("不合格", "错误"),
+    ("合格", "正确"),
+    ("疑似混合样品", "混合"),
+    ("疑似混合", "混合"),
+    ("待定", "待定"),
+)
+
+
+def _conclusion_bucket(conclusion: str, status: Optional[str] = None) -> str:
     """按一句话结论把组归入质粒文件夹下的子文件夹（T2 出口统一）：
-    合格→正确，不合格→错误，疑似混合→混合，待定→待定，待定·读取失败→
-    读取失败（T4）；其余（分析失败、缺参考图谱、没匹配到 reads 等）
-    无法自动判定 → 无法判定"""
-    if conclusion.startswith("合格"):
-        return "正确"
-    if conclusion.startswith("不合格"):
-        return "错误"
-    if conclusion.startswith("待定·读取失败"):
-        return "读取失败"
-    if conclusion.startswith("待定"):
-        return "待定"
-    if conclusion.startswith("疑似混合"):
-        return "混合"
+    verdict.status 直接驱动（pass/fail/mixed/pending/partial/insufficient/
+    failed_reads → 正确/错误/混合/待定/读取失败）；无 verdict 的旧批次包
+    按 _CONCLUSION_PREFIX_BUCKETS 前缀表反查兜底；其余（分析失败、缺参考
+    图谱、没匹配到 reads 等）无法自动判定 → 无法判定"""
+    if status:
+        return {"pass": "正确", "fail": "错误", "mixed": "混合",
+                "pending": "待定", "partial": "待定", "insufficient": "待定",
+                "failed_reads": "读取失败"}.get(status, "无法判定")
+    text = (conclusion or "").strip()
+    for prefix, bucket in _CONCLUSION_PREFIX_BUCKETS:
+        if text.startswith(prefix):
+            return bucket
     return "无法判定"
 
 
@@ -696,7 +709,10 @@ def archive_buckets(archive: BatchArchive, groups: List[Dict],
         if folder is None:
             continue
         buckets.setdefault(
-            (folder, _conclusion_bucket(item.get("conclusion") or "")), []).append(i)
+            (folder, _conclusion_bucket(item.get("conclusion") or "",
+                                        item.get("verdict_status")
+                                        or ((item.get("verdict") or {})
+                                            .get("status")))), []).append(i)
     return buckets
 
 
