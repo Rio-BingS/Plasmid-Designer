@@ -70,7 +70,9 @@ def make_ab1(bases, quals, traces=None, channel_start=9, channel_order="ATGC",
                 traces.append(expanded)
         else:
             traces = raw
-    ploc = [i * samples_per_base + 1 for i in range(n)]
+    # PLOC = 峰心（平台首采样点）的 0 基索引，与真实文件实测及
+    # make_trace_ab1 同口径（T24.1：解析端不再减 1）
+    ploc = [i * samples_per_base for i in range(n)]
     entries = [
         (b"PBAS", 2, 2, 1, n, bases.encode()),
         (b"PCON", 2, 2, 1, len(quals), bytes(quals)),
