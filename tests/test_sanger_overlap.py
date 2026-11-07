@@ -128,7 +128,7 @@ def test_e2e_m3_shape():
     ref = "".join(ref)
     r1 = _read_from_ref(ref, 1, 1000, subs=[(500, "A")], q=50)
     r2 = _read_from_ref(ref, 1, 1000, subs=[(500, "G")], q=50)
-    res = analyze([("a.ab1", r1), ("b.ab1", r2)], ref, [])
+    res = analyze([("a.ab1", r1), ("b.ab1", r2)], ref, [], circular=False)
     v = res["verdict"]
     assert v["status"] == "pending"
     kinds = {b["kind"] for b in v["blocking"]}

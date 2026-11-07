@@ -194,7 +194,7 @@ def test_analyze_mixed_sample_tracy_agrees_and_clean_stays_clean(monkeypatch):
              clean: _stub_tracy_from(clean, {})}
     monkeypatch.setattr(P, "_try_tracy_basecall", lambda blob: stubs[blob])
 
-    res = P.analyze([("mx.ab1", mx)], ref, [])
+    res = P.analyze([("mx.ab1", mx)], ref, [], circular=False)
     prof = res["mixed_profiles"]["mx.ab1"]
     assert prof["class"] == "widespread" and prof["count"] == 8
     tc = prof["tracy_corroboration"]
@@ -203,7 +203,7 @@ def test_analyze_mixed_sample_tracy_agrees_and_clean_stays_clean(monkeypatch):
     assert "tracy_calls" not in res["reads"][0]          # 内部数据不随结果下发
     assert res["engine"] == "internal+biopython+tracy-basecall"
 
-    res2 = P.analyze([("clean.ab1", clean)], ref, [])
+    res2 = P.analyze([("clean.ab1", clean)], ref, [], circular=False)
     assert res2["reads"][0]["mixed_positions"] == []
     assert res2["reads"][0]["mixed_profile"]["class"] == "none"
     assert res2["reads"][0]["mixed_profile"]["tracy_corroboration"]["tracy_only"] == 0
@@ -218,7 +218,7 @@ def test_analyze_tracy_fastq_fallback_has_no_corroboration(monkeypatch):
     rd = extract_read(mx)
     monkeypatch.setattr(P, "_try_tracy_basecall",
                         lambda blob: (rd["bases"], list(rd["quality"])))
-    res = P.analyze([("mx.ab1", mx)], ref, [])
+    res = P.analyze([("mx.ab1", mx)], ref, [], circular=False)
     prof = res["mixed_profiles"]["mx.ab1"]
     assert prof["class"] == "widespread" and prof["tracy_corroboration"] is None
     assert res["engine"] == "internal+biopython+tracy-basecall"

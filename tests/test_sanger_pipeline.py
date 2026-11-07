@@ -120,7 +120,7 @@ def test_homopolymer_poly_count_and_conclusion():
     read_bases = ref[20:180]
     mutated = read_bases[:60] + read_bases[61:]  # 缺 1 个 A
     blob = make_ab1(mutated, [40] * len(mutated))
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["ref_repeat_count"] == 20
     assert hp["observed_repeat_count"] == 19
@@ -188,7 +188,7 @@ def test_poly_peak_count_and_cross_read_validation():
     spb = 4
     traces = _shaped_traces(read_bases, poly_span=(40, 70), real_peaks=27)
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=spb)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["ref_repeat_count"] == 30 and hp["observed_repeat_count"] == 30
     assert hp["peak_count_estimate"] == 27
@@ -211,7 +211,7 @@ def test_poly_peak_count_agrees_is_reliable():
     ref = "ACGT" * 20 + "A" * 30 + "TGCACGTT" + "ACGT" * 30
     read_bases = ref[40:170]
     blob = make_ab1(read_bases, [40] * len(read_bases), samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["count_reliable"] is True
     assert hp["peak_count_estimate"] == 30
@@ -232,7 +232,7 @@ def test_poly_partial_read_participates_and_peak_verdict():
         ("f1.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
         ("f2.ab1", make_ab1(read2, [40] * len(read2), traces=traces2, samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     by_file = {x["filename"]: x for x in hp["read_counts"]}
     assert by_file["f1.ab1"]["coverage"] == "full"
@@ -264,7 +264,7 @@ def test_poly_trimmed_tail_recovered_from_raw_read():
     # read 末端低 Q：Mott 修剪剪进 polyA（保留 27 个 A，剪掉末尾 3 个）
     quality = [40] * 67 + [5] * (len(read_bases) - 67)
     blob = make_ab1(read_bases, quality, traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     rc = hp["read_counts"][0]
     assert rc["coverage"] == "full"            # 原始 read 两侧侧翼可见
@@ -286,7 +286,7 @@ def test_poly_reverse_read_called_count_via_complement():
     read_bases = ref[89:170].translate(str.maketrans("ACGT", "TGCA"))[::-1]
     traces = _shaped_traces(read_bases, poly_span=(60, 81), real_peaks=21, channel="T")
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("r.ab1", blob)], ref, [])
+    result = analyze([("r.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     rc = hp["read_counts"][0]
     assert rc["direction"] == "-"
@@ -397,7 +397,7 @@ def test_merge_coverage():
 
 def test_analyze_perfect_read(reference):
     blob = make_ab1(reference[100:600], [40] * 500)
-    result = analyze([("ok.ab1", blob)], reference, [])
+    result = analyze([("ok.ab1", blob)], reference, [], circular=False)
     assert result["reads"], "应成功解析至少一条 read"
     assert result["variants"] == []
     assert "构建与设计一致，未检出差异" in result["conclusion"]
@@ -411,7 +411,7 @@ def test_analyze_detects_mutation_with_annotation(reference):
     seg[50] = "A" if seg[50] != "A" else "G"  # ref_pos 551, CDS 内
     seg = "".join(seg) + "NNNN"  # 低质量尾部应被修剪
     blob = make_ab1(seg, [40] * 500 + [5] * 4)
-    result = analyze([("mut.ab1", blob)], reference, features)
+    result = analyze([("mut.ab1", blob)], reference, features, circular=False)
     assert len(result["variants"]) == 1
     v = result["variants"][0]
     assert v["ref_pos"] == 551 and v["type"] == "substitution"
@@ -433,7 +433,7 @@ def test_analyze_end_noise_not_confirmed(reference):
     # T16 护栏：标注须是窗口内真实 ORF（288-476，ATG 起始 189bp），随意边界
     # 会被 orf_annotation_suspect 标疑、盖过本场景的噪声语义
     features = [{"name": "GFP", "type": "CDS", "start": 288, "end": 476, "strand": "+"}]
-    result = analyze([("end.ab1", blob)], reference, features)
+    result = analyze([("end.ab1", blob)], reference, features, circular=False)
 
     by_pos = {v["ref_pos"]: v for v in result["variants"]}
     noise, real = by_pos[110], by_pos[350]
@@ -458,7 +458,7 @@ def test_reverse_read_variant_read_pos_in_original_coords(reference):
     rc = revcomp("".join(seg))                  # 原始 read（电泳顺序）：突变靠近 read 末端
     q = [40] * len(rc)
     q[3] = 5                                    # read 首端的坏碱基（与突变无关）
-    result = analyze([("rev.ab1", make_ab1(rc, q))], reference, [])
+    result = analyze([("rev.ab1", make_ab1(rc, q))], reference, [], circular=False)
     v = result["variants"][0]
     assert v["ref_pos"] == 751
     assert v["read_q"] == 40                   # 取突变真实位点的 Q，而非镜像位（Q5）
@@ -480,7 +480,7 @@ def test_ab1_channel_autodetect_nonstandard_tag_and_order(reference):
     r = extract_read(blob)
     expected_a0 = 100 if mutated[0] == "A" else 4
     assert r["trace"]["A"][0] == expected_a0
-    result = analyze([("f.ab1", blob)], reference, [])
+    result = analyze([("f.ab1", blob)], reference, [], circular=False)
     v = next(x for x in result["variants"] if x["ref_pos"] == 601)
     assert v["confidence"] != "low"
     ev = v.get("peak_evidence") or {}
@@ -498,14 +498,14 @@ def test_analyze_multi_read_consensus(reference):
     """两条不同区段的 read 拼接后覆盖范围合并"""
     b1 = make_ab1(reference[200:700], [40] * 500)
     b2 = make_ab1(revcomp(reference[600:1100]), [40] * 500)
-    result = analyze([("r1.ab1", b1), ("r2.ab1", b2)], reference, [])
+    result = analyze([("r1.ab1", b1), ("r2.ab1", b2)], reference, [], circular=False)
     assert result["consensus"]["coverage_percent"] == pytest.approx(45.0, abs=1.0)
     assert result["reads"][0]["alignment"]["direction"] == "+"
     assert result["reads"][1]["alignment"]["direction"] == "-"
 
 
 def test_analyze_reports_errors():
-    result = analyze([("bad.ab1", b"junk")], "ACGT" * 100, [])
+    result = analyze([("bad.ab1", b"junk")], "ACGT" * 100, [], circular=False)
     assert result["reads"] == []
     assert result["errors"][0]["filename"] == "bad.ab1"
 
@@ -513,7 +513,7 @@ def test_analyze_reports_errors():
 def test_analyze_over_aggressive_trim_reports_error():
     """阈值高于全部碱基 Q 值：修剪后为空，报错误条目而非比对崩溃"""
     blob = make_ab1("ACGT" * 50, [40] * 200)
-    result = analyze([("q.ab1", blob)], "ACGT" * 100, [], min_q=50)
+    result = analyze([("q.ab1", blob)], "ACGT" * 100, [], min_q=50, circular=False)
     assert result["reads"] == []
     assert result["errors"] and "修剪后仅 0bp" in result["errors"][0]["error"]
 
@@ -580,7 +580,7 @@ def test_pipeline_alignment_view_and_consensus_diffs(reference):
     seg[50] = "A" if seg[50] != "A" else "G"  # ref_pos 551
     b1 = make_ab1("".join(seg), [40] * 500)
     b2 = make_ab1(revcomp(reference[900:1400]), [40] * 500)
-    result = analyze([("f.ab1", b1), ("r.ab1", b2)], reference, features)
+    result = analyze([("f.ab1", b1), ("r.ab1", b2)], reference, features, circular=False)
     assert len(result["variants"]) == 1
 
     for r in result["reads"]:
@@ -654,7 +654,7 @@ def _cds_reference():
 def test_cds_report_identical(reference):
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
-    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["coverage_status"] == "full"
     assert cr["protein_identical"] is True
@@ -669,7 +669,7 @@ def test_cds_report_frameshift(reference):
     # 缺失放在 read 第 40 位：read 首 30bp 为硬不可信区
     seg = ref[30:190]
     mutated = seg[:39] + seg[40:]  # 删 CDS 内 1bp（ref pos 70）→ 移码
-    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is False
     assert cr["frameshift_count"] == 1
@@ -687,14 +687,14 @@ def test_cds_report_insertion_boundaries():
 
     # 紧贴起点之前的插入：CDS 序列不变，翻译产物一致
     seg_before = ref[:40] + "T" + ref[40:190]
-    cr1 = analyze([("f.ab1", make_ab1(seg_before, [40] * len(seg_before)))], ref, feats)["cds_reports"][0]
+    cr1 = analyze([("f.ab1", make_ab1(seg_before, [40] * len(seg_before)))], ref, feats, circular=False)["cds_reports"][0]
     assert cr1["frameshift_count"] == 0
     assert cr1["protein_identical"] is True
     assert "与设计一致" in cr1["verdict"]
 
     # CDS 首碱基之后的 1bp 插入：移码，HGVS fs 描述
     seg_in = ref[:41] + "T" + ref[41:190]
-    cr2 = analyze([("f.ab1", make_ab1(seg_in, [40] * len(seg_in)))], ref, feats)["cds_reports"][0]
+    cr2 = analyze([("f.ab1", make_ab1(seg_in, [40] * len(seg_in)))], ref, feats, circular=False)["cds_reports"][0]
     assert cr2["frameshift_count"] == 1
     assert cr2["protein_identical"] is False
     assert "移码" in cr2["verdict"]
@@ -707,7 +707,7 @@ def test_cds_report_premature_stop(reference):
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     seg = list(ref)
     seg[54] = "G"  # 第 5 个编码子 TAC→TAG（ref pos 55）：无义突变
-    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is False
     assert cr["premature_stop_aa"] == 5
@@ -717,7 +717,7 @@ def test_cds_report_premature_stop(reference):
 def test_cds_report_partial_coverage(reference):
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
-    result = analyze([("f.ab1", make_ab1(ref[:120], [40] * 120))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(ref[:120], [40] * 120))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["coverage_status"] == "partial"
     assert "未验证" in cr["verdict"]
@@ -727,12 +727,12 @@ def test_cds_report_uncovered_and_reverse_strand():
     ref, start, end = _cds_reference()
     # 未覆盖：CDS 无 read 覆盖
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
-    result = analyze([("f.ab1", make_ab1(ref[:40], [40] * 40))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(ref[:40], [40] * 40))], ref, feats, circular=False)
     assert result["cds_reports"][0]["coverage_status"] == "uncovered"
 
     # 反向链 CDS：read 覆盖且干净 → 翻译一致
     feats_rev = [{"name": "R", "type": "CDS", "start": start, "end": end, "strand": "-"}]
-    result2 = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats_rev)
+    result2 = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats_rev, circular=False)
     cr = result2["cds_reports"][0]
     assert cr["protein_identical"] is True
     assert cr["verdict"].startswith("CDS 已完整覆盖")
@@ -744,7 +744,7 @@ def test_cds_report_synonymous_mutation(reference):
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     seg = list(ref)
     seg[45] = "C"  # GCT→GCC（codon2）：Ala→Ala 同义
-    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["protein_identical"] is True
     assert "synonymous_variant" in cr["consequences"]
@@ -757,7 +757,7 @@ def test_cds_report_inframe_deletion(reference):
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     mutated = ref[:46] + ref[49:190]  # 删 codon3 TTC（pos 47-49）
-    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(mutated, [40] * len(mutated)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert "inframe_deletion" in cr["consequences"]
     assert cr["frameshift_count"] == 0
@@ -772,7 +772,7 @@ def test_cds_report_start_lost(reference):
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     seg = list(ref)
     seg[41] = "C"  # ATG→ACG（codon1）
-    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert "start_lost" in cr["consequences"]
     assert "起始密码子改变" in cr["verdict"]
@@ -784,7 +784,7 @@ def test_cds_report_stop_lost(reference):
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     seg = list(ref)
     seg[187] = "C"  # TAA→CAA（codon50，pos 188-190）
-    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1("".join(seg), [40] * len(seg)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert "stop_lost" in cr["consequences"]
     assert "终止密码子丢失" in cr["verdict"]
@@ -902,7 +902,7 @@ def test_analyze_reports_grade_confidence_and_gaps(reference):
     seg = list(reference[99:499])
     seg[50] = "A" if seg[50] != "A" else "G"
     seq = "".join(seg)
-    result = analyze([("f.ab1", make_ab1(seq, [40] * 400, _real_traces(seq)))], reference, [])
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400, _real_traces(seq)))], reference, [], circular=False)
     r = result["reads"][0]
     assert r["grade"] in ("A", "B", "C")
     assert 0 <= r["q20_ratio"] <= 1
@@ -1025,7 +1025,7 @@ def test_orf_guard_codon_start_frame():
 def test_cds_report_orf_realignment_end_to_end():
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start - 1, "end": end, "strand": "+"}]
-    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(ref, [40] * len(ref)))], ref, feats, circular=False)
     cr = result["cds_reports"][0]
     assert cr["start"] == start and cr["end"] == end
     assert cr["ref_protein_length"] == 49
@@ -1075,7 +1075,7 @@ def test_cds_report_pipeline_survives_internal_error(monkeypatch):
     ref, start, end = _cds_reference()
     feats = [{"name": "MX", "type": "CDS", "start": start, "end": end, "strand": "+"}]
     blob = make_ab1(ref, [40] * len(ref))
-    result = pl.analyze([("t.ab1", blob)], ref, feats)
+    result = pl.analyze([("t.ab1", blob)], ref, feats, circular=False)
     assert len(result["cds_reports"]) == 1
     assert result["cds_reports"][0]["verdict"].startswith("CDS 判读失败")
     # 原始异常细节不外泄给终端用户
@@ -1101,7 +1101,7 @@ def test_tracy_cross_basecall_short_trimmed_guard(monkeypatch):
     monkeypatch.setattr(pl, "_try_tracy_basecall", lambda blob: ("ATGAAATTAGTAAA", [1] * 14))
     ref = "ACGT" * 20 + "ATGAAATTAGTAAA" + "ACGT" * 20
     blob = make_ab1(ref, [40] * len(ref))
-    result = pl.analyze([("t.ab1", blob)], ref)
+    result = pl.analyze([("t.ab1", blob)], ref, circular=False)
     # 所有送进比对的序列（主 read 与交叉 basecall）都必须 ≥ MIN_WINDOW
     assert seen_lens, "主 read 比对应正常发生"
     assert all(n >= pl.MIN_WINDOW for n in seen_lens), seen_lens
@@ -1142,7 +1142,7 @@ def test_low_quality_indel_unresolved_not_confirmed(reference):
     mutated = seg[:29] + seg[30:]  # 删 CDS 内 1bp（ref pos 70）
     # 缺失点落在 69-71 的 T 同聚区内，把可能的归因位都设为低质量（Q10）
     quality = [40] * 29 + [10] * 3 + [40] * (len(mutated) - 32)
-    result = analyze([("f.ab1", make_ab1(mutated, quality))], ref, feats)
+    result = analyze([("f.ab1", make_ab1(mutated, quality))], ref, feats, circular=False)
 
     v = result["variants"][0]
     assert v["type"] == "deletion" and v["confidence"] == "low"
@@ -1293,14 +1293,14 @@ def test_tracy_basecall_corroboration(monkeypatch, reference):
     seq = "".join(seg)
     q = [45] * 400
     q[50] = 12                                            # 变异位低 Q
-    result = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    result = analyze([("f.ab1", make_ab1(seq, q))], reference, [], circular=False)
     v = result["variants"][0]
     assert v["confidence"] == "low" and "corroborated_by_basecall" not in v
 
     # tracy 重 basecall 输出同一序列 → 报出同一变体（跨 caller 印证）
     cross = P._try_tracy_basecall  # 保留引用防误删
     monkeypatch.setattr(P, "_try_tracy_basecall", lambda blob: (seq, [40] * len(seq)))
-    result2 = analyze([("f.ab1", make_ab1(seq, q))], reference, [])
+    result2 = analyze([("f.ab1", make_ab1(seq, q))], reference, [], circular=False)
     v2 = result2["variants"][0]
     assert v2.get("corroborated_by_basecall") is True
     # 印证仅标记、不改置信度：两个 caller 读同一信号，错误相关不构成独立证据
@@ -1313,7 +1313,7 @@ def test_tracy_unavailable_degrades_gracefully(reference):
     seg = list(reference[99:499])
     seg[50] = "A" if seg[50] != "A" else "G"
     seq = "".join(seg)
-    result = analyze([("f.ab1", make_ab1(seq, [40] * 400))], reference, [])
+    result = analyze([("f.ab1", make_ab1(seq, [40] * 400))], reference, [], circular=False)
     assert result["engine"] == "internal+biopython"
     assert result["variants"]
 
@@ -1398,7 +1398,7 @@ def test_baseline_correction_prevents_mixed_false_positives():
     bc = baseline_correct(dict(zip("ATGC", traces)))
     assert raw_tr["G"][-1] >= 40, "注入的线性漂移未生效"
     assert bc["G"][-1] <= 15, "线性漂移未被扣平（末端窗边界容差 15）"
-    corrected = analyze([("f.ab1", blob)], ref, [], signal_correct=True)
+    corrected = analyze([("f.ab1", blob)], ref, [], signal_correct=True, circular=False)
     assert corrected["mixed_detected"] == {}
 
 
@@ -1509,7 +1509,7 @@ def test_estimate_run_length_rescues_merged_peaks():
     traces = _shaped_traces(read_bases, (40, 70), 30)
     traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道（"ATGC" 第 1 路）连续高台
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["peak_count_estimate"] is None  # 合并 read 的 pc=0 是"无可分辨峰"非真实计数，不进估计（2026-10-08 起）
     assert hp["count_reliable"] is False
@@ -1525,7 +1525,7 @@ def test_repeat_runs_report_and_observed_tier_end_to_end():
     观察级与单元重复不触发“碱基调用偏差”结论告警"""
     ref = "ACGT" * 10 + "CAG" * 6 + "ACGT" * 5 + "A" * 12 + "TGCACGTT" + "ACGT" * 20
     read_bases = ref[20:150]
-    result = analyze([("f.ab1", make_ab1(read_bases, [40] * len(read_bases)))], ref, [])
+    result = analyze([("f.ab1", make_ab1(read_bases, [40] * len(read_bases)))], ref, [], circular=False)
     cag = next(h for h in result["homopolymers"] if h["period"] == 3)
     assert cag["unit"] == "CAG" and cag["ref_repeat_count"] == 6
     obs = next(h for h in result["homopolymers"]
@@ -1546,7 +1546,7 @@ def test_slippage_echoes_not_flagged_as_mixed():
     read = extract_read(blob)
     unfiltered = _detect_mixed_positions(read_bases, read["trace"], read["peak_indices"])
     assert 71 in unfiltered and 72 in unfiltered, "注入应先复现误报（echo 峰 → 假混合）"
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     mixed = result["mixed_detected"].get("f.ab1", [])
     assert 71 not in mixed and 72 not in mixed
     assert result["reads"][0]["slippage_positions"] == [71, 72]
@@ -1559,7 +1559,7 @@ def test_slippage_ignores_full_height_continuation():
     read_bases = ref[40:170]
     traces = _shaped_traces(read_bases, (40, 70), 30)
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     assert result["reads"][0]["slippage_positions"] == []
 
 
@@ -1576,7 +1576,7 @@ def test_post_poly_dropout_reported_and_end_truncation_not_alarmed():
             row = traces[ch_i]
             row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     drops = result["reads"][0]["post_poly_dropouts"]
     assert drops and drops[0]["base"] == "A"
     assert drops[0]["end_truncation"] is False and drops[0]["recovered"] is True
@@ -1589,7 +1589,7 @@ def test_post_poly_dropout_reported_and_end_truncation_not_alarmed():
             row = traces2[ch_i]
             row[i * 4:i * 4 + 4] = [max(0, v - 90) for v in row[i * 4:i * 4 + 4]]
     blob2 = make_ab1(read_bases, [40] * len(read_bases), traces=traces2, samples_per_base=4)
-    result2 = analyze([("f.ab1", blob2)], ref, [])
+    result2 = analyze([("f.ab1", blob2)], ref, [], circular=False)
     drops2 = result2["reads"][0]["post_poly_dropouts"]
     assert drops2 and drops2[0]["end_truncation"] is True
     assert "信号骤降" not in result2["conclusion"]
@@ -1599,11 +1599,11 @@ def test_read_crl_in_output():
     """B5：CRL 进 read QC 输出"""
     ref = "ACGT" * 30
     blob = make_ab1(ref[10:130], [40] * 110)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     assert result["reads"][0]["crl"] == 110
     q = [40] * 60 + [3] * 5 + [40] * 45
     blob2 = make_ab1(ref[10:130], q)
-    result2 = analyze([("f.ab1", blob2)], ref, [])
+    result2 = analyze([("f.ab1", blob2)], ref, [], circular=False)
     assert result2["reads"][0]["crl"] == 60
 
 
@@ -1877,7 +1877,7 @@ def test_mixed_sample_widespread_end_to_end():
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
-    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     prof = result["mixed_profiles"]["m.ab1"]
     assert prof["class"] == "widespread" and prof["count"] == 8
     assert prof["positions"] == [p + 1 for p in sorted(sites)]
@@ -1916,7 +1916,7 @@ def test_mixed_equal_ratio_sites_not_shielded():
 
     for label, level, equal in (("ratio 0.92", 92, False), ("ratio 0.96", 96, False),
                                 ("1:1 equal", 0, True)):
-        r = analyze([("m.ab1", _mix(level, equal))], ref, [])
+        r = analyze([("m.ab1", _mix(level, equal))], ref, [], circular=False)
         prof = r.get("mixed_profiles", {}).get("m.ab1", {})
         assert prof.get("class") == "widespread", f"{label}: {prof}"
         assert prof.get("count") == 8, f"{label}: {prof}"
@@ -1969,7 +1969,7 @@ def test_traces_payload_trim_start_and_mixed_detail():
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260)}
-    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     read = result["reads"][0]
     # mixed_detail：逐位次级峰证据，pos 与触发位点一致
     md = read["mixed_detail"]
@@ -2014,7 +2014,7 @@ def test_mixed_sample_scattered_stays_unmixed():
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {80: _ALT_OF[ref[80]], 260: _ALT_OF[ref[260]]}
-    result = analyze([("s.ab1", _mixed_ab1(ref, sites))], ref, [])
+    result = analyze([("s.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     assert result["mixed_profiles"]["s.ab1"]["class"] == "scattered"
     assert "疑似混合样品" not in result["conclusion"]
     # 2026-11-06 定稿：待核双峰与区间裁决行同款表述（差异区间 + 参考位置）
@@ -2035,7 +2035,8 @@ def test_pullup_saturated_bleed_suppressed():
     ref = "".join(random.choice("ACGT") for _ in range(600))
     result = analyze([("p.ab1", _mixed_ab1(
         ref, {80: _ALT_OF[ref[80]]},
-        sat_sites={200: _ALT_OF[ref[200]], 330: _ALT_OF[ref[330]]}))], ref, [])
+        sat_sites={200: _ALT_OF[ref[200]], 330: _ALT_OF[ref[330]]}))], ref, [], circular=False,
+        )
     prof = result["mixed_profiles"]["p.ab1"]
     assert prof["pullup_excluded"] == 2
     assert prof["count"] == 1 and prof["class"] == "none"
@@ -2046,7 +2047,7 @@ def test_mixed_contiguous_stretch_widespread():
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {p: _ALT_OF[ref[p]] for p in range(300, 309)}
-    result = analyze([("c.ab1", _mixed_ab1(ref, sites))], ref, [])
+    result = analyze([("c.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     prof = result["mixed_profiles"]["c.ab1"]
     assert prof["class"] == "widespread" and prof["longest_stretch"] == 9
     assert "连续双峰段" in result["conclusion"]
@@ -2060,7 +2061,8 @@ def test_mixed_cross_read_corroboration_downgrades_noise():
     ref = "".join(random.choice("ACGT") for _ in range(600))
     sites = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
     result = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
-                      ("clean.ab1", _mixed_ab1(ref, {}))], ref, [])
+                      ("clean.ab1", _mixed_ab1(ref, {}))], ref, [], circular=False,
+                      )
     # 分级本身不变（widespread 由该 read 位点数决定），但结论措辞按互检改写
     assert result["mixed_profiles"]["mx.ab1"]["class"] == "widespread"
     assert "疑似混合样品" not in result["conclusion"]
@@ -2076,7 +2078,8 @@ def test_mixed_cross_read_corroboration_downgrades_noise():
     assert "倾向该 read 信号噪声" in out
     # 反例：干净引物不覆盖（换个短 read 只测前 100bp）→ 维持疑似混合措辞
     result2 = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
-                       ("short.ab1", _mixed_ab1(ref[:100], {}))], ref, [])
+                       ("short.ab1", _mixed_ab1(ref[:100], {}))], ref, [], circular=False,
+                       )
     assert "疑似混合样品" in result2["conclusion"]
 
 
@@ -2097,7 +2100,8 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     sec_of = lambda i: "A" if read_bases[i] != "A" else "G"
     mix = {95: sec_of(95), 139: sec_of(139)}   # pos96 悬空→外推506；pos140 块内→461
     result = analyze([("rev.ab1", _mixed_ab1(read_bases, mix)),
-                      ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [])
+                      ("nb.ab1", _mixed_ab1(ref[299:500], {}))], ref, [], circular=False,
+                      )
     chk = result["mixed_corroboration"]["by_read"]["rev.ab1"]
     assert chk["clean"] == 1 and chk["multi"] == 0 and chk["uncovered"] == 1
     assert chk["clean_ref"] == [461]       # 块内位点精确映射且被邻居覆盖
@@ -2118,7 +2122,8 @@ def test_mixed_multi_read_aggregated_conclusion():
     full = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330, 400, 470, 540)}
     part = {p: _ALT_OF[ref[p]] for p in (80, 130, 200, 260, 330)}
     result = analyze([("a.ab1", _mixed_ab1(ref, full)),
-                      ("b.ab1", _mixed_ab1(ref, part))], ref, [])
+                      ("b.ab1", _mixed_ab1(ref, part))], ref, [], circular=False,
+                      )
     # 头部总结行（△ 结论：…）之外，mixed_lines 聚合行不重复报
     lines = [x for x in result["conclusion"].splitlines()
              if "疑似混合" in x and not x.startswith("△")]
@@ -2156,7 +2161,7 @@ def test_mixed_end_margin_positions_ignored():
     random.seed(7)
     ref = "".join(random.choice("ACGT") for _ in range(800))
     sites = {p: _ALT_OF[ref[p]] for p in (10, 25, 80, 130, 200, 260, 330, 750)}
-    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [])
+    result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     prof = result["mixed_profiles"]["m.ab1"]
     # 首 30bp 硬区与首端未稳定段的双峰（11/26）不计——T12 保留；750 处信号
     # 良好 → 可信区延伸覆盖（旧口径 700 封顶不计，T12 取消硬顶）
@@ -2183,7 +2188,7 @@ def test_poly_variant_and_peak_conflict_single_conclusion_line():
     mutated = read_bases[:65] + read_bases[66:]   # poly 内缺 1 个 A（调用 29）
     traces = _shaped_traces(mutated, poly_span=(40, 69), real_peaks=26)  # 峰 26
     blob = make_ab1(mutated, [40] * len(mutated), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     poly_lines = [ln for ln in result["conclusion"].splitlines()
                   if "poly(A)" in ln and ln.strip().startswith("↳")]
     assert len(poly_lines) == 1, result["conclusion"]
@@ -2213,7 +2218,7 @@ def test_poly_merged_reverse_does_not_veto_resolvable_forward():
         ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
         ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     by_file = {x["filename"]: x for x in hp["read_counts"]}
     assert by_file["fwd.ab1"]["resolution"] == "resolvable"
@@ -2241,7 +2246,7 @@ def test_poly_resolvable_reads_conflict_is_contradictory():
         ("a.ab1", make_ab1(read1, [40] * len(read1), traces=traces1, samples_per_base=4)),
         ("b.ab1", make_ab1(mutated, [40] * len(mutated), traces=traces2, samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "contradictory"
     assert hp["count_reliable"] is False
@@ -2256,7 +2261,7 @@ def test_poly_all_merged_reads_undetermined_not_conclusion_conflict():
     traces = _shaped_traces(read_bases, (40, 70), 30)
     traces[1][40 * 4:70 * 4] = [100] * 120   # A 通道连续高台
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "undetermined"
     assert hp["count_reliable"] is False
@@ -2279,7 +2284,7 @@ def test_poly_edge_hits_exempt_when_verdict_accepted():
         ("mid.ab1", make_ab1(mid, [40] * len(mid), traces=t_mid, samples_per_base=4)),
         ("full.ab1", make_ab1(full, [40] * len(full), traces=t_full, samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "accepted"
     assert "比对端点落在同聚物区内部" not in result["conclusion"]
@@ -2288,7 +2293,7 @@ def test_poly_edge_hits_exempt_when_verdict_accepted():
     t_mid2 = _shaped_traces(mid, (0, 25), 25)
     t_mid2[1][0:25 * 4] = [100] * 100
     blob2 = make_ab1(mid, [40] * len(mid), traces=t_mid2, samples_per_base=4)
-    result2 = analyze([("g.ab1", blob2)], ref, [])
+    result2 = analyze([("g.ab1", blob2)], ref, [], circular=False)
     hp2 = next(h for h in result2["homopolymers"] if h["base"] == "A")
     assert hp2["run_verdict"] == "undetermined"
     assert "比对端点落在同聚物区内部" in result2["conclusion"]
@@ -2308,7 +2313,7 @@ def test_poly_merged_zone_suppresses_pseudo_mixed():
         traces[2][40 * 4 + j * 4] = 45
         traces[2][40 * 4 + j * 4 + 1] = 45
     blob = make_ab1(read_bases, [40] * len(read_bases), traces=traces, samples_per_base=4)
-    result = analyze([("f.ab1", blob)], ref, [])
+    result = analyze([("f.ab1", blob)], ref, [], circular=False)
     read = result["reads"][0]
     # 峰窗 41-70 对应 run 窗：窗内无伪双峰位点
     in_zone = [p for p in (read["mixed_positions"] or []) if 38 <= p <= 72]
@@ -2331,7 +2336,7 @@ def test_poly_joint_coverage_partial_reads_accepted():
         ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
         ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     by_file = {x["filename"]: x for x in hp["read_counts"]}
     assert by_file["a.ab1"]["coverage"] == "partial"
@@ -2355,7 +2360,7 @@ def test_poly_accepted_with_unreliable_anchor_notes_position_doubt():
     edge = ref[60:114]
     traces = _shaped_traces(edge, poly_span=(20, 50), real_peaks=30)
     blob = make_ab1(edge, [40] * len(edge), traces=traces, samples_per_base=4)
-    result = analyze([("edge.ab1", blob)], ref, [])
+    result = analyze([("edge.ab1", blob)], ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "accepted"
     assert hp.get("vote_anchor_grade") in ("marginal", "unreliable")
@@ -2365,7 +2370,8 @@ def test_poly_accepted_with_unreliable_anchor_notes_position_doubt():
     full = ref[40:170]
     t_full = _shaped_traces(full, poly_span=(40, 70), real_peaks=30)
     r2 = analyze([("f.ab1", make_ab1(full, [40] * len(full),
-                                     traces=t_full, samples_per_base=4))], ref, [])
+                                     traces=t_full, samples_per_base=4))], ref, [], circular=False,
+                                     )
     assert "计数确证但定位存疑" not in r2["conclusion"]
 
 
@@ -2384,7 +2390,7 @@ def test_poly_peak_count_estimate_ignores_merged_zero_counts():
         ("fwd.ab1", make_ab1(fwd, [40] * len(fwd), traces=t_fwd, samples_per_base=4)),
         ("rev.ab1", make_ab1(rev, [40] * len(rev), traces=t_rev, samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["peak_count_estimate"] == 30   # 旧口径会算出 0
 
@@ -2399,7 +2405,7 @@ def test_poly_joint_coverage_gap_falls_back():
         ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
         ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "caller_only"
     assert hp.get("joint_coverage") is None
@@ -2420,7 +2426,7 @@ def test_poly_joint_conflicts_with_full_resolvable():
         ("a.ab1", make_ab1(read1, [40] * len(read1), samples_per_base=4)),
         ("b.ab1", make_ab1(read2, [40] * len(read2), samples_per_base=4)),
     ]
-    result = analyze(reads, ref, [])
+    result = analyze(reads, ref, [], circular=False)
     hp = next(h for h in result["homopolymers"] if h["base"] == "A")
     assert hp["run_verdict"] == "contradictory"
     assert hp["count_reliable"] is False
@@ -2490,7 +2496,8 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     feats = [{"name": "CSQ", "type": "CDS", "start": 103, "end": 117, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
-         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats, circular=False,
+         )
     ins = [v for v in result["variants"] if v["type"] == "insertion"]
     assert len(ins) == 1
     assert ins[0]["confidence"] == "low"
@@ -2518,7 +2525,8 @@ def test_single_read_deletion_vetoed_by_clean_other_read():
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
-         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats, circular=False,
+         )
     dele = [v for v in result["variants"] if v["type"] == "deletion"]
     assert len(dele) == 1
     assert dele[0]["confidence"] == "low"
@@ -2541,7 +2549,8 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     feats = [{"name": "CSQ", "type": "CDS", "start": 103, "end": 117, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
-         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, feats, circular=False,
+         )
     sub = [v for v in result["variants"] if v["type"] == "substitution"]
     assert len(sub) == 1 and sub[0]["ref_pos"] == 121
     assert sub[0]["cross_read_resolved"] is True
@@ -2565,7 +2574,7 @@ def test_single_read_substitution_without_cross_cover_stays_pending():
     q = [40] * len(fwd)
     q[i] = 12
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
-    result = analyze([("fwd.ab1", make_ab1(fwd, q))], ref, feats)
+    result = analyze([("fwd.ab1", make_ab1(fwd, q))], ref, feats, circular=False)
     sub = [v for v in result["variants"] if v["type"] == "substitution"]
     assert len(sub) == 1 and sub[0]["confidence"] == "low"
     assert "cross_read_resolved" not in sub[0]
@@ -2581,7 +2590,8 @@ def test_indel_backed_by_both_reads_stays_confirmed():
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
-         ("rev.ab1", make_ab1(revcomp(fwd), [40] * len(fwd)))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(fwd), [40] * len(fwd)))], ref, feats, circular=False,
+         )
     ins = [v for v in result["variants"] if v["type"] == "insertion"]
     assert len(ins) == 1 and ins[0]["support_reads"] == 2
     assert ins[0]["confidence"] == "high"
@@ -2597,7 +2607,7 @@ def test_single_coverage_indel_keeps_peak_evidence_grading():
     seg = ref[50:150]
     fwd = seg[:58] + "A" + seg[58:]
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
-    result = analyze([("fwd.ab1", make_ab1(fwd, [40] * len(fwd)))], ref, feats)
+    result = analyze([("fwd.ab1", make_ab1(fwd, [40] * len(fwd)))], ref, feats, circular=False)
     ins = [v for v in result["variants"] if v["type"] == "insertion"]
     assert len(ins) == 1
     assert ins[0]["confidence"] == "high"
@@ -2615,7 +2625,7 @@ def test_uncovered_cds_verdict_neutral_and_conclusion_shows_ranges(reference):
         {"name": "UNTOUCHED", "type": "CDS", "start": 401, "end": 450, "strand": "+"},
     ]
     blob = make_ab1(reference[100:200], [40] * 100)  # 覆盖 101-200
-    result = analyze([("r.ab1", blob)], reference, feats)
+    result = analyze([("r.ab1", blob)], reference, feats, circular=False)
     unc = next(c for c in result["cds_reports"] if c["name"] == "UNTOUCHED")
     assert unc["coverage_status"] == "uncovered"
     assert "补充" not in unc["verdict"] and "不参与判读" in unc["verdict"]
@@ -2631,7 +2641,7 @@ def test_variants_branch_conclusion_shows_covered_ranges(reference):
     seg = list(reference[100:200])
     seg[30] = "A" if seg[30] != "A" else "G"
     blob = make_ab1("".join(seg), [40] * 100)
-    result = analyze([("r.ab1", blob)], reference, [])
+    result = analyze([("r.ab1", blob)], reference, [], circular=False)
     assert result["variants"]
     lines = result["conclusion"].splitlines()
     # 头部结构：总结行后不空行，详细首行直接携带实测区间
@@ -2690,6 +2700,8 @@ def _circ_case(seed: int = 7, L: int = 1000, left: int = 150, right: int = 250,
 def _run(read: str, ref: str, **kw):
     logging.disable(logging.WARNING)
     try:
+        # T25.2：拓扑必填；helper 未声明时由本调用方显式按线性
+        kw.setdefault("circular", False)
         return analyze([("r.ab1", make_ab1(read, [40] * len(read)))], ref, **kw)
     finally:
         logging.disable(logging.NOTSET)
@@ -2850,7 +2862,7 @@ def test_fully_aligned_read_has_no_partial_flag():
     read = ref[100:500]
     logging.disable(logging.WARNING)
     try:
-        r = analyze([("ok.ab1", make_ab1(read, [40] * len(read)))], ref)
+        r = analyze([("ok.ab1", make_ab1(read, [40] * len(read)))], ref, circular=False)
     finally:
         logging.disable(logging.NOTSET)
     assert r["reads"][0]["partial_alignment"] is None
@@ -2874,7 +2886,8 @@ def test_cross_check_requires_high_region_quality_not_single_base():
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
-         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats, circular=False,
+         )
     sub = [v for v in result["variants"] if v["type"] == "substitution"]
     assert len(sub) == 1
     v = sub[0]
@@ -2899,7 +2912,8 @@ def test_resolved_lines_spell_out_error_type_and_verifier_quality():
     q[i] = 12
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
-         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [])
+         ("rev.ab1", make_ab1(revcomp(seg), [40] * len(seg)))], ref, [], circular=False,
+         )
     # 结论：区间裁决行（2026-11-05 定稿），验证者、引物内坐标与质量分档写明
     assert "差异区间 121：fwd.ab1（正向 | 引物内坐标 71-71）报出 1 处差异" \
         in result["conclusion"]
@@ -2925,7 +2939,8 @@ def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
     qr[len(seg) - 1 - (110 - 51)] = 12        # ref 110 单个低 Q
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, q)),
-         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, [])
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, [], circular=False,
+         )
     sub = [v for v in result["variants"] if v["type"] == "substitution"]
     assert sub and sub[0].get("cross_read_resolved") is True
     ev = sub[0]["cross_read_conflict"]["evidence"][0]
@@ -2959,7 +2974,8 @@ def test_single_read_indel_with_weak_validator_stays_low_not_confirmed():
     feats = [{"name": "CSQ", "type": "CDS", "start": 61, "end": 140, "strand": "+"}]
     result = analyze(
         [("fwd.ab1", make_ab1(fwd, [40] * len(fwd))),
-         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats)
+         ("rev.ab1", make_ab1(revcomp(seg), qr))], ref, feats, circular=False,
+         )
     ins = [v for v in result["variants"] if v["type"] == "insertion"]
     assert len(ins) == 1
     assert "cross_read_resolved" not in ins[0]
@@ -2978,7 +2994,7 @@ def test_tail_position_no_longer_forces_low():
     seg = list(ref[:1000])
     for i in (399, 749, 949):                  # read 400 / 750 / 950
         seg[i] = "A" if seg[i] != "A" else "C"
-    result = analyze([("long.ab1", make_ab1("".join(seg), [40] * 1000))], ref, [])
+    result = analyze([("long.ab1", make_ab1("".join(seg), [40] * 1000))], ref, [], circular=False)
     by_pos = {v["ref_pos"]: v for v in result["variants"] if v["type"] == "substitution"}
     assert by_pos[400]["confidence"] != "low"
     assert by_pos[750]["confidence"] != "low"

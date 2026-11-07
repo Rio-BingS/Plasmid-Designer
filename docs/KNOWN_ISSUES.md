@@ -114,6 +114,12 @@
 - **401 只清会话**：接口若要拿 401 表达业务错误（凭据/验证码无效），必须加进
   前端 `api/index.ts` 的 `SESSION_401_EXEMPT_PATHS`；带 `X-Access-Token` 的请求
   一律不清会话。CSRF 豁免只认原样路径（含 `//`、`.`、`..`、`%2e` 的一律不豁免）。
+- **核心 `analyze()` 的 `circular` 是必填关键字参数，没有默认值**（T25.2/M9）：
+  拓扑是判定语义的一部分，核心层不猜测——调用方从参考对象读取真实拓扑后
+  显式传入（图谱/载体记录走 `parse_reference_topology` + `reference_circular`
+  「明确标 linear 才线性，未标明默认环状」；设计流走载体记录的
+  `_vector_is_circular`）。新调用点不要给 `circular` 补回默认值，更不要在
+  核心层用 insert_start 之类对齐产物反推拓扑。
 - **共识投票**：明确碱基优先于 N/IUPAC（`pipeline._pick_base_vote`），单 read 覆盖
   仍如实保留 N；压缩区降级只降 `support_reads < 2` 的单 read 证据
   （`pipeline._merged_zone_artifact`）——这两条是「N 不进共识 / 互证不被单 read 拖累」

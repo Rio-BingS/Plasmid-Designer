@@ -67,7 +67,7 @@ def test_verdict_structural_breakpoint_e2e():
     # 主比对 175-1075，3′ 端接参考 1430-1499（距离 355bp：以缺失桥接需
     # 付 ~714 分 gap 代价，远超尾段 140 分 → 局部比对剪掉尾段）
     blob = make_trace_ab1(ref[174:1075] + ref[1430:1500], q=50)
-    res = analyze([("r.ab1", blob)], ref, [])
+    res = analyze([("r.ab1", blob)], ref, [], circular=False)
     kinds = {b["kind"] for b in res["verdict"]["blocking"]}
     assert "structural_breakpoint" in kinds
     bp = next(b for b in res["verdict"]["blocking"]
@@ -78,7 +78,7 @@ def test_verdict_structural_breakpoint_e2e():
     # 对照：junk 尾段（S6 形态）仍走 unaligned_hq_segment，detail 含「未知序列」
     junk = "".join(rng.choice("ACGT") for _ in range(160))
     blob2 = make_trace_ab1(ref[174:1075] + junk, q=50)
-    res2 = analyze([("r.ab1", blob2)], ref, [])
+    res2 = analyze([("r.ab1", blob2)], ref, [], circular=False)
     kinds2 = {b["kind"] for b in res2["verdict"]["blocking"]}
     assert "unaligned_hq_segment" in kinds2
     unk = next(b for b in res2["verdict"]["blocking"]

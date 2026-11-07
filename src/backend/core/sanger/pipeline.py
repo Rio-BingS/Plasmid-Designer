@@ -93,7 +93,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v6"
+SANGER_ALGO_VERSION = "v7"
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -602,6 +602,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
     votes: List[Dict[str, float]] = [{} for _ in range(L)]
     voters: List[List[str]] = [[] for _ in range(L)]   # 每位点各 read 的观测
     end_insert_votes: Dict[str, float] = {}  # 参考末端之后的插入（无右侧锚定位）
+    end_insert_voters: Dict[str, int] = {}   # 各候选插入的票数（单票 → unresolved）
     # 重叠区分歧明细（goal T21；A 4.4）：非参考票全记，热位点（已出现非参
     # 考票）上的参考票也记——分歧判定与各 read 调用/Q 下发都用它
     voter_info: Dict[int, List[Dict]] = {}
@@ -633,7 +634,17 @@ def _build_consensus(reference: str, read_results: List[Dict],
                     observed[idx] = key
                     obs_q[idx] = q
                 elif idx == L:
+                    # 参考末端之后的插入（无右侧锚定位）。T25.3 与 skip_keys
+                    # 同口径：rejected（skip_keys）与 unresolved（低置信）票
+                    # 不参与定插——单 low 票不把插入写进共识
+                    if skip_keys and _variant_key(v) in skip_keys:
+                        continue
+                    if unresolved_keys and \
+                            (L, "insertion", v.get("alt_base", "").upper(),
+                             int(v.get("length") or 1)) in unresolved_keys:
+                        continue
                     end_insert_votes[key] = end_insert_votes.get(key, 0.0) + _phred_weight(q)
+                    end_insert_voters[key] = end_insert_voters.get(key, 0) + 1
         # read 在参考列上调用为 N/IUPAC 的位点：投它自己的调用，而不是默认投参考碱基——
         # 否则只有 N 覆盖的位点会被参考碱基悄悄填上，拼接结果看起来就是参考序列
         ambig = _ambiguous_columns(aln, L, circular)
@@ -743,7 +754,12 @@ def _build_consensus(reference: str, read_results: List[Dict],
         alt = best_key[1:]
         cons_index = len(consensus_chars)
         _emit(alt, L, True)
-        diffs.append({"ref_pos": L, "ref_base": "-", "cons_base": alt, "cons_index": cons_index})
+        # 单票（仅一条 read 报告该末端插入）：照实写入但标 unresolved，
+        # 不冒充已验证序列（与主循环插入位点的 unresolved 口径一致）
+        diffs.append({"ref_pos": L, "ref_base": "-", "cons_base": alt,
+                      "cons_index": cons_index,
+                      **({"unresolved": True}
+                         if end_insert_voters.get(best_key, 0) <= 1 else {})})
 
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
@@ -2403,7 +2419,8 @@ def analyze(
     allow_decompose: bool = True,
     signal_correct: bool = True,
     poly_local_ratio: bool = True,
-    circular: bool = False,
+    *,
+    circular: bool,
     zone_params: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
 ) -> Dict:
@@ -2411,10 +2428,12 @@ def analyze(
 
     ab1_files: [(filename, bytes), ...]
     reference: 参考载体序列（1-based 坐标）
-    circular: 参考为环状（质粒）时，每条 read 对「参考 + 参考[:k]」比对
-    （k≈read 长），跨越原点的 read 整条比对上；变体、覆盖区间（跨原点
-    拆为两段）、共识、read↔参考坐标映射全部按 ((p-1) % L) + 1 折回。
-    False（默认）按线性参考比对，行为与此前一致。
+    circular: 参考是否环状，**必填关键字参数（goal T25.2/M9）**——拓扑是
+    判定语义的一部分，核心层不猜测：由调用方从参考对象读取后显式传入
+    （app 层走载体/图谱记录的真实 topology，见 reference_circular）。
+    True 时每条 read 对「参考 + 参考[:k]」比对（k≈read 长），跨越原点的
+    read 整条比对上；变体、覆盖区间（跨原点拆为两段）、共识、read↔参考
+    坐标映射全部按 ((p-1) % L) + 1 折回。False 按线性参考比对。
     signal_correct: A2 基线校正（逐通道扣除滑动低分位本底后再做峰级定量，
     显示 trace 亦为校正后信号）；False 回退原始信号（约束 2 的前后对比开关）。
     poly_local_ratio: B1 poly 压缩比分母用局部峰幅 H(run)（False 回退全 read

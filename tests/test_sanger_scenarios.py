@@ -22,6 +22,9 @@ def _run(sid):
     spec = S[sid].build()
     kwargs = {k: v for k, v in (spec.get("kwargs") or {}).items()
               if not k.startswith("_")}
+    # T25.2：核心 analyze() 拓扑必填——场景 runner 是调用方，场景未声明
+    # 拓扑时显式按线性跑（与旧默认行为一致；M9 的直接调用仍必须报错）
+    kwargs.setdefault("circular", False)
     res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
     return spec, res
 
@@ -232,7 +235,7 @@ def test_t11_uniform30_mixed_sample_detected():
     sec = {p: (next(b for b in "ACGT" if b != ref[p - 1]), 0.30 / 0.70)
            for p in range(1, 701)}
     blob = make_trace_ab1(ref[:700], q=50, secondary=sec)
-    res = analyze([("u30.ab1", blob)], ref[:700], [])
+    res = analyze([("u30.ab1", blob)], ref[:700], [], circular=False)
     prof = res["reads"][0]["mixed_profile"]
     assert prof["class"] == "widespread", prof
     assert res["verdict"]["status"] == "mixed"
@@ -248,7 +251,7 @@ def test_t11_local_cluster_not_mixed_sample():
     sec = {p: (next(b for b in "ACGT" if b != ref[p - 1]), 0.45 / 0.55)
            for p in (100, 108, 116, 124, 132)}
     blob = make_trace_ab1(ref[:800], q=50, secondary=sec)
-    res = analyze([("loc.ab1", blob)], ref[:800], [])
+    res = analyze([("loc.ab1", blob)], ref[:800], [], circular=False)
     prof = res["reads"][0]["mixed_profile"]
     assert prof["class"] == "local" and prof["class_reason"] == "concentrated_segment"
     assert res["verdict"]["status"] != "mixed"
@@ -278,8 +281,8 @@ def test_m2_upload_order_independent_evidence():
     """M2：两条 read 支持同一变体 → status/p_real/峰证据不随顺序变化"""
     spec = S["M2"].build()
     a, b = spec["ab1_files"]
-    res_ab = analyze([a, b], spec["reference"], spec["features"])
-    res_ba = analyze([b, a], spec["reference"], spec["features"])
+    res_ab = analyze([a, b], spec["reference"], spec["features"], circular=False)
+    res_ba = analyze([b, a], spec["reference"], spec["features"], circular=False)
     v_ab, v_ba = res_ab["variants"][0], res_ba["variants"][0]
     assert v_ab["status"] == v_ba["status"]
     assert v_ab.get("p_real") == v_ba.get("p_real")
@@ -410,18 +413,13 @@ def test_m15_enzyme_site_pending_hint():
 # 比对不可达（尾端插入恒被软剪切，B P2-16 为静态确认），「不定插」行为当前已
 # 满足，故不挂 xfail；T25.3 仍按规格补 low/rejected 票排除（防御深度）。
 XFAIL_BY_TASK = {
-    # M1 已随 T16 转绿：ORF 校正护栏（±3bp）拦住了旧自由校正把 CDS 窗口
-    # 挪走、掩盖 K2* 提前终止的病根——同密码子双替换的 MNV/终止注释本就
-    # 存在，窗口对了判定即对；真正的 MNV 合并展示仍归 T25。
-    # S1 已随 T12 转绿（可信区信号驱动，尾端位置不再强制 low——峰证据
-    # 齐全的错义确证 ✗）；F1/F2 已随 T11 转绿；M7 已随 T12/T24 转绿
-    # （secondary_base 取最高次级通道 + call_disagrees_with_trace 分歧标注）。
-    # F3/M12 已随 T24 转绿：无 PCON 按峰型估 Q（quality_source 标注），
-    # PLOC 短于 PBAS 显式告警不静默。
-    "test_m9_core_analyze_requires_topology": "T25",
-    "test_m15_enzyme_site_pending_hint": "T25",
+    # 全部场景已转绿（P2 闸门口径）：M1 随 T16/T25.1（MNV 联合注释）、
+    # S1 随 T12、F1/F2 随 T11、M7 随 T12/T24、F3/M12 随 T24（峰型估 Q /
+    # PLOC 截短告警）、M9 随 T25.2（circular 必填关键字）、M15 随 T25.4
+    # （酶位 ±10bp 未决 indel 提示）。
 }
 
 for _name, _task in XFAIL_BY_TASK.items():
     globals()[_name] = pytest.mark.xfail(strict=True, reason=_task)(globals()[_name])
-del _name, _task
+if XFAIL_BY_TASK:   # 全部转绿后注册表为空，循环体未执行时无名字可删
+    del _name, _task
