@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src/backend"))
 
 from core.sanger.scoring import (  # noqa: E402
@@ -119,8 +120,99 @@ def calibration(data, p: ScoreParams):
     return {str(k): buckets[k] for k in sorted(buckets)}
 
 
+def benchmark_rows():
+    """基准集真值行（T23；A 5.6）：真值位点上的替换变异 + 构造伪影位点。
+
+    label 1 = 真值 confirmed（设计注入的真实变异）；label 0 = 构造的伪影
+    位点（首端硬区/低 Q，truth status=unresolved）。上下文裁决不计入：
+    M3 重叠分歧降级与 M10 互检排除的证据特征本就强，其排除是位置级上下文
+    （互检/分歧），不是证据不足——把它们塞进证据拟合会系统性压低权重。"""
+    from scripts.sanger_benchmark import load_truth, run_corpus
+    truth = load_truth()
+    corpus = run_corpus(truth)
+    rows = []
+    for sid, t in truth["scenarios"].items():
+        if sid not in corpus:
+            continue
+        for v in corpus[sid].get("variants", []):
+            tr = next((s for s in t.get("sites", [])
+                       if s["pos"] == v["ref_pos"]), None)
+            if tr is None or v.get("type") != tr["type"] \
+                    or v.get("type") != "substitution":
+                continue
+            ev = next((e for e in (v.get("evidence_by_read") or [])
+                       if e.get("mutant_pct") is not None), None) or {}
+            if ev.get("mutant_pct") is None or ev.get("snr") is None:
+                continue
+            rows.append({"sid": sid, "pos": v["ref_pos"],
+                         "label": 1 if tr["status"] == "confirmed" else 0,
+                         "q": v.get("read_q") or 0,
+                         "mp": ev["mutant_pct"], "snr": ev["snr"],
+                         "p_real": v.get("p_real")})
+    return rows
+
+
+def _auc(scores, labels):
+    """AUC（秩统计；同分并序）"""
+    pairs = sorted(zip(scores, labels))
+    rank = {}
+    i = 0
+    while i < len(pairs):
+        j = i
+        while j + 1 < len(pairs) and pairs[j + 1][0] == pairs[i][0]:
+            j += 1
+        r = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            rank[k] = r
+        i = j + 1
+    pos = [rank[k] for k, (_, lb) in enumerate(pairs) if lb == 1]
+    neg = [rank[k] for k, (_, lb) in enumerate(pairs) if lb == 0]
+    if not pos or not neg:
+        return None
+    return (sum(pos) - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg))
+
+
+def benchmark_fit():
+    """真值拟合：logistic（纯 Python 梯度下降）对真值行拟合
+    [截距, (q-40)/10, (mp-80)/20, (snr-10)/40]；与现参数 p_real 的 AUC 对比。
+    小语料（10 行）防过拟合：结果只入校准文档，不自动写 params。"""
+    rows = benchmark_rows()
+    if not rows:
+        print("基准集无可用真值行")
+        return
+    X = [[1.0, (r["q"] - 40) / 10, (r["mp"] - 80) / 20, (r["snr"] - 10) / 40]
+         for r in rows]
+    y = [r["label"] for r in rows]
+    w = [0.0] * 4
+    lr, n = 0.1, len(X)
+    for _ in range(4000):
+        g = [0.0] * 4
+        for xi, yi in zip(X, y):
+            z = sum(a * b for a, b in zip(w, xi))
+            p = 1 / (1 + math.exp(-max(-30.0, min(30.0, z))))
+            err = p - yi
+            for k in range(4):
+                g[k] += err * xi[k]
+        w = [wi - lr * gi / n for wi, gi in zip(w, g)]
+    fitted = [sum(a * b for a, b in zip(w, xi)) for xi in X]
+    cur_auc = _auc([r["p_real"] or 0.0 for r in rows], y)
+    fit_auc = _auc(fitted, y)
+    print(f"真值行数：{len(rows)}（正 {sum(y)} / 负 {len(y) - sum(y)}）")
+    for r in rows:
+        print(f"  {r['sid']} @{r['pos']}: label={r['label']} "
+              f"Q={r['q']} mp={r['mp']:.0f} snr={r['snr']:.1f} "
+              f"p_real={r['p_real']}")
+    print(f"现参数 p_real AUC={cur_auc:.4f}；真值拟合 AUC={fit_auc:.4f} "
+          f"(w={[round(x, 3) for x in w]})")
+    print("结论：小语料防过拟合——系数仅入校准文档，不自动写回 params；"
+          "仅当拟合 AUC 严格更高且全量/对照/MX 回归复验通过时人工替换")
+
+
 def main() -> int:
     check_only = "--check" in sys.argv
+    if "--benchmark" in sys.argv:
+        benchmark_fit()
+        return 0
     cur = load_params()
     data = [(v, ev, mixed, rule_label(v, ev, mixed))
             for v, ev, mixed, _ in enumerate_space()]

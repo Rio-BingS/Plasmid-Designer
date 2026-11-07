@@ -26,6 +26,12 @@
    `tracy --version` 确认版本并用真实混合样品跑一次 decompose，核对产物
    字段形状；若与文档不符按实际格式修正 `_parse_decompose_output`（goal §7
    停止条件「tracy 实际输出格式与文档都对不上」届时由人取舍）。
+6. **Sanger 基准集阈值为合成语料标定**（2026-11-07，goal T23）：
+   `test_sanger_benchmark.py` 的位点级敏感度 ≥0.95 / 特异度 ≥0.99 /
+   混合 FPR=0 来自 35 项合成场景 + 3 个无设计参考的 Biopython 真实 AB1
+   （真实文件仅参与混合 FPR，位点级真值不可用）。当时实测均为
+   1.0/1.0/0.0（见 docs/SANGER_CALIBRATION.md）；换入带设计参考的真实
+   数据后需按实测重标定阈值并同步 truth.yaml `thresholds` 与本文档。
 
 ---
 

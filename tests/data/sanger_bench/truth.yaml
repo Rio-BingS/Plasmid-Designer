@@ -1,0 +1,71 @@
+# Sanger 基准集真值（goal T23；A 5.6）
+#
+# 用法：scripts/sanger_benchmark.py 按本文件跑 35 项场景 + 3 个真实 AB1，
+# 计算位点级敏感度/特异度、混合 TPR/FPR、verdict 混淆矩阵与 p_real 阈值
+# 扫描 ROC；tests/test_sanger_benchmark.py 在 CI 断言阈值。
+#
+# 真值来源：
+# - verdict：场景测试（tests/test_sanger_scenarios.py，35 项全绿断言）——
+#   每项的期望状态经 goal/审计逐条定稿，非「跑出来是什么就是什么」；
+# - sites：场景构造器注入的真变体（_read_from_ref subs / 插入等），
+#   status 列为该位点应有的三态判定；未列出的确证变异一律算假阳性；
+# - mixed：真值 mixed=true 表示该场景应判「疑似混合」（verdict.status=mixed）；
+#   染料肩峰/信号衰减/poly 滑移伪影（F1/F2/S13/S17/M7/M12）一律 false——
+#   2026-11-06 定稿：个别双峰位点不升级「疑似混合」。
+# - raw 场景（M8 PLOC 峰窗、M11 会话预检）不经 analyze，不参与统计。
+
+meta:
+  created: "2026-11-07"
+  note: "verdict 真值与场景测试断言同源；改判定口径须同步本文件与测试"
+
+scenarios:
+  S1:  {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}
+  S2:  {verdict: mixed,         sites: [], mixed: true, mixed_sites: [{pos: 450, af: 0.35}]}
+  S3:  {verdict: mixed,         sites: [], mixed: true, mixed_sites: [{pos: 450, af: 0.50}]}
+  S4:  {verdict: mixed,         sites: [{pos: 450, type: substitution, status: unresolved}], mixed: true, mixed_sites: [{pos: 450, af: 0.35}]}
+  S5:  {verdict: fail,          sites: [], mixed: false}   # 5′ 端 175bp 连接错误（structural/unaligned 阻断）
+  S6:  {verdict: fail,          sites: [], mixed: false}   # 3′ 端 188bp 连接错误
+  S7:  {verdict: fail,          sites: [{pos: 180, type: substitution, status: confirmed}], mixed: false}
+  S8:  {verdict: partial,       sites: [], mixed: false}   # CDS 覆盖 34.5% → partial
+  S9:  {verdict: pending,       sites: [{pos: 20, type: substitution, status: unresolved}], mixed: false}
+  S10: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
+  S11: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
+  S12: {verdict: failed_reads,  sites: [], mixed: false}   # 3 read 2 条损坏
+  S13: {verdict: fail,          sites: [{pos: 950, type: substitution, status: confirmed}, {pos: 15, type: substitution, status: unresolved}], mixed: false}
+  S14: {verdict: mixed,         sites: [], mixed: true, mixed_sites: [{pos: 100, af: 0.45}, {pos: 200, af: 0.44}, {pos: 300, af: 0.45}, {pos: 400, af: 0.46}, {pos: 500, af: 0.44}, {pos: 600, af: 0.46}]}
+  S15: {verdict: fail,          sites: [{pos: 140, type: substitution, status: confirmed}], mixed: false, unresolved: [{pos: 151, kind: poly}]}
+  S16: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 150, af: 0.30}]}   # 双峰保留为未决、不升级混合（2026-11-06 定稿）
+  S17: {verdict: fail,          sites: [{pos: 800, type: substitution, status: confirmed}], mixed: false}   # 749-755 双峰=尾端滑移伪影，不升级
+  F1:  {verdict: pending,       sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰：混合误报基准
+  F2:  {verdict: pending,       sites: [], mixed: false, file: 3100.ab1}   # 信号衰减段 61 次峰：同上
+  F3:  {verdict: failed_reads,  sites: [], mixed: false, file: 310.ab1}    # 无 PCON：T24 落地后转绿
+  M1:  {verdict: fail,          sites: [{pos: 104, type: substitution, status: confirmed}, {pos: 106, type: substitution, status: confirmed}], mixed: false}
+  M2:  {verdict: fail,          sites: [{pos: 300, type: substitution, status: confirmed}], mixed: false}
+  M3:  {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: overlap_discordance}]}   # 分歧双方降 unresolved，共识 IUPAC
+  M4:  {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 1100, kind: orf_annotation_suspect}]}
+  M5:  {verdict: fail,          sites: [], mixed: false}   # 引物 3′ 端距离出窗 → primer_mismatch
+  M6:  {verdict: fail,          sites: [], mixed: false}   # 窗口口径（ReadRefMap 统一后 ✗ 确证）
+  M7:  {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 300, af: 0.50}]}   # secondary_base 展示，不判混合
+  M9:  {verdict: pass,          sites: [], mixed: false}   # 环状拓扑默认（T25 将改显式）
+  M10: {verdict: pass,          sites: [], mixed: false}   # 300/330 rejected（互检定案）
+  M12: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 92, af: 0.50}]}   # PLOC<PBAS 警示（T24）
+  M13: {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}   # 与 S1 同构造（契约测试）
+  M14: {verdict: pending,       sites: [{pos: 999, type: insertion, status: unresolved}], mixed: false}
+  M15: {verdict: pending,       sites: [{pos: 29, type: insertion, status: unresolved}], mixed: false}
+
+# raw 场景（不经 analyze）：M8（PLOC −1 峰窗，abif_reader 级）、M11（会话预检，app 级）
+raw_scenarios: [M8, M11]
+
+# 真实 AB1（Biopython Tests/Abi，Biopython License）：参考由 read 自身
+# basecall 拼合（F1/F2/F3 场景），无设计变异 → 任何确证变异均为假阳性；
+# 位点级真值不可用，仅参与混合 FPR（染料肩峰/衰减段不是真混合）
+real:
+  3730.ab1: {mixed_truth: false, note: "6 处 0.30-0.39 染料肩峰（修剪后 50-125bp）"}
+  3100.ab1: {mixed_truth: false, note: "61 处次峰集中 470-667bp 衰减段"}
+  310.ab1:  {mixed_truth: false, note: "无 PCON 质量记录（解析回退基准）"}
+
+# CI 阈值（以 2026-11-07 基准集实测标定；SANGER_CALIBRATION.md 有完整报告）
+thresholds:
+  site_sensitivity_min: 0.95
+  site_specificity_min: 0.99
+  mixed_fpr_max: 0.0
