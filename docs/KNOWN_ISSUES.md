@@ -632,3 +632,60 @@ build 通过、`npm audit --omit=dev` 0 漏洞；尺寸预算门禁与文档同�
 `in` + `[]` 两步访问在容量淘汰下不是原子操作，一律 `get()`；③后台任务重跑时不能依赖
 「镜像里还留着属主」——显式传参；④读路径的 `except: return None` 会把存储故障伪装成
 404，至少要留 warning。
+
+---
+
+### 2026-11-07 Sanger 判读链路全量修复（goal_sanger_full_fix_v2，T0-T25）
+
+依据：审计 A 27 条 + 审计 B 21 条（逐条复核见
+[VERIFY_2026-11-07](audit/VERIFY_2026-11-07.md)）；三阶段闸门与提交清单见
+[PROGRESS](audit/PROGRESS.md)（P0 fb1c05a / P1 84a98bf / P2 dd57e5b）；
+指标与拟合报告见 [SANGER_CALIBRATION](SANGER_CALIBRATION.md)；用户可见变化见
+CHANGELOG 2.37.0-alpha.2。场景库 36 项全绿（0 xfail / 0 skip）。
+
+| 任务 | 一句话 | 提交 |
+|---|---|---|
+| T0 | 审计复核表 + 高斯峰合成器 + 36 场景 xfail 红测 | 0194703/e5e7d3c/609645a |
+| T1 | 证据三态（rejected/confirmed/unresolved）与 ✓ 资格门；共识不回填 | b6e47ba |
+| T2 | 结构化 verdict 统一网页/API/Excel/分拣四出口 | 84e54c2 |
+| T3 | measured/verified 双覆盖口径 | c5364d8 |
+| T4 | 解析失败 read 进结论（failed_reads） | e536bfd |
+| T5 | ROI 覆盖分级、关键元件与接合区判读 | 9879026 |
+| T6 | 端部软剪切高质量段进判定（连接/结构异常） | 04d36eb |
+| T7 | 单点双峰次等位 MixedVariant（AF 丰度） | aa60717 |
+| T8 | 混合互检与变异互检同一标准 | 2edf6cf |
+| T9 | ReadRefMap 统一坐标映射（软剪切/环状/反向一处实现） | 99bd50e |
+| T10 | tracy decompose 官方产物解析与等位判读 | b3a5709 |
+| T11 | 双峰自适应背景模型 + 证据形态学分级（F1/F2 不再误判混合） | 991ef59 |
+| T12 | 可信区信号驱动逐窗判定（700 硬顶废除；S1 ✗） | 08d6a7c |
+| T13 | 局部噪声本底与 SNR 确定化 | d8d4513 |
+| T14 | 多 read 证据聚合与代表 read 择强（顺序无关） | aae3414 |
+| T15 | 校准 P(真实) 四档行动 + 峰图三色（v5） | 7ad0a7a |
+| T16 | ORF 校正护栏（±3bp）与宿主起始密码子 | 6c3bc03 |
+| T17 | 引物库与方向/距离校验 | 095aaae |
+| T18 | 会话预检与 finalize 口径一致 | 03e6dea |
+| T19 | split-read 端部剪切段二次定位（先测量：错位率 0.0） | 3b4cad8 |
+| T20 | 通用伪迹检测——压缩/dye blob/短滑移 | 6f4c54b |
+| T21 | 重叠区分歧 IUPAC 共识 + 双链覆盖占比 | e0d844d |
+| T22 | 证据包（逐位点四通道 SVG）与多 read 同屏 | 9a59126 |
+| T23 | 基准集 35+3 真值库与 CI 指标断言；T11/T15 真拟合（保持现行系数有据） | f51dd3d |
+| T24 | 解析层：PLOC 峰心原值（v6）/PLOC<PBAS 告警/峰型估 Q/通道采样/次峰分歧 | 6dd42b4 |
+| T25 | MNV 联合注释/拓扑必填（v7）/端插加固/酶位待定提示 | 9d0d948 |
+
+### 真实数据基线（MX 批次，work/ 快照链）
+
+MX 真实批次（仓库外 `..\plasmid-designer V1.01\sequencing results`）三条 read
+无设计参考 → 位点级真值不可用，基线锁「混合检测 + 互检 + CDS 判定」形态；
+口径演变逐条解释记录在 `tests/test_real_data_regression.py` 注释与各提交说明，
+快照链 work/after_T*.json（gitignored，`work/mx_probe_t5.py` 复现）：
+
+| 快照 | 口径变化 | 混合计数（seqF/pET-Up/T7-Term） |
+|---|---|---|
+| v2.16.0 前 | 只扣首尾 20bp | 22 / 31 / 16 |
+| v2.16.0 | 700 硬顶 | 4 / 9 / 10 |
+| after_T12 | 可信区信号驱动（zone 975/965/940） | 9 / 18 / 19 |
+| after_T24 | PLOC 峰心对称窗：滞后主峰的 blob 肩峰占比下降（0.62→0.45 等），贴 0.30 地板条目不再检出；待核 6873 掉档 | 8 / 16 / 17 |
+| after_T25 | 拓扑读参考（环状）：跨原点缺口两段并一段；read 不跨原点与线性等价 | 8 / 16 / 17（不变） |
+
+核心判定零漂移：2 处确证差异（5076 插入移码 + 5269 C>T 同义）、6653/6666
+互检排除、CDS「不一致」结论、覆盖 27.3% 全程不变。

@@ -32,7 +32,8 @@ REPO_URL = "https://github.com/Rio-BingS/Plasmid-Designer"
 DOC_FILES = ["AGENTS.md", "README.md", "CHANGELOG.md", "CLAUDE.md",
              "docs/HANDOVER.md", "docs/KNOWN_ISSUES.md",
              "docs/MAP.md", "docs/CACHE.md", "docs/MIGRATIONS.md",
-             "docs/ALGORITHM_ROADMAP.md", "docs/README.md"]
+             "docs/ALGORITHM_ROADMAP.md", "docs/SANGER_CALIBRATION.md",
+             "docs/README.md"]
 
 
 def latest_tag() -> str:
@@ -184,6 +185,8 @@ def check_doc_links() -> list[str]:
             "MIGRATIONS": "docs/MIGRATIONS.md", "MIGRATIONS.md": "docs/MIGRATIONS.md",
             "ALGORITHM_ROADMAP": "docs/ALGORITHM_ROADMAP.md",
             "ALGORITHM_ROADMAP.md": "docs/ALGORITHM_ROADMAP.md",
+            "SANGER_CALIBRATION": "docs/SANGER_CALIBRATION.md",
+            "SANGER_CALIBRATION.md": "docs/SANGER_CALIBRATION.md",
             "CHANGELOG": "CHANGELOG.md", "CHANGELOG.md": "CHANGELOG.md",
         }
         heading_numbers = set(re.findall(r"^#{2,4}\s+((?:\d+\.)*\d+)", body, re.M))
