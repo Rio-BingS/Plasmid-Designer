@@ -207,7 +207,13 @@ function reasonBadges(v: SequencingVariant) {
             <template v-else><span class="badge reason">混合位点</span></template>
           </td>
           <td class="mono">
-            <template v-if="row.rowKind === 'variant'">{{ row.variant!.ref_base }} → {{ row.variant!.alt_base }}</template>
+            <template v-if="row.rowKind === 'variant'">
+              <!-- MNV（goal T25.1）：同密码子多替换联合注释，成员位合并呈现 -->
+              <template v-if="row.variant!.mnv">{{ row.variant!.mnv.nt_change }}
+                <span class="badge reason" :title="'同密码子 ' + row.variant!.mnv.members.length + ' 处替换联合注释（密码子 ' + row.variant!.mnv.codon + '）'">MNV @{{ row.variant!.mnv.members.join('+') }}</span>
+              </template>
+              <template v-else>{{ row.variant!.ref_base }} → {{ row.variant!.alt_base }}</template>
+            </template>
             <template v-else-if="row.rowKind === 'mixed'">{{ row.called || '?' }} / {{ row.secondary || '?' }}（AF {{ row.af ?? '-' }}）</template>
             <template v-else>-</template>
           </td>
@@ -221,7 +227,10 @@ function reasonBadges(v: SequencingVariant) {
             <template v-if="row.rowKind === 'variant'">
               <span v-if="row.variant!.enzyme_sites_lost?.length" class="badge bad">破坏: {{ row.variant!.enzyme_sites_lost.join(', ') }}</span>
               <span v-if="row.variant!.enzyme_sites_gained?.length" class="badge">新增: {{ row.variant!.enzyme_sites_gained.join(', ') }}</span>
-              <span v-if="!row.variant!.enzyme_sites_lost?.length && !row.variant!.enzyme_sites_gained?.length">-</span>
+              <!-- 酶位 ±10bp 内有未决 indel（goal T25.4）：结论带提示，表内挂徽标 -->
+              <span v-if="row.variant!.enzyme_sites_pending?.length" class="badge reason warn"
+                    title="该 indel 归属未定，±10bp 内酶切位点的有无同样待定">待定: {{ row.variant!.enzyme_sites_pending.join(', ') }}</span>
+              <span v-if="!row.variant!.enzyme_sites_lost?.length && !row.variant!.enzyme_sites_gained?.length && !row.variant!.enzyme_sites_pending?.length">-</span>
             </template>
             <template v-else>-</template>
           </td>

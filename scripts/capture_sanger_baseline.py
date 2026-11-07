@@ -43,7 +43,7 @@ def capture() -> dict:
         ref_seq, features = parse_reference(
             ref_item["file"]["name"], ref_item["file"]["bytes"])
         ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in slot["reads"]]
-        res = analyze(ab1s, ref_seq, features)
+        res = analyze(ab1s, ref_seq, features, circular=False)
         out["plasmids"][plasmid] = {
             "ref_len": len(ref_seq),
             "n_features": len(features),

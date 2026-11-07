@@ -106,7 +106,7 @@ def test_analyze_result_carries_p_real_and_action():
     r1 = _read_from_ref(ref, 1, 600, subs=[sub], q=50)
     r2 = _read_from_ref(ref, 1, 600, subs=[sub], q=50)
     from core.sanger.pipeline import analyze
-    res = analyze([("a.ab1", r1), ("b.ab1", r2)], ref, [])
+    res = analyze([("a.ab1", r1), ("b.ab1", r2)], ref, [], circular=False)
     v = next(x for x in res["variants"] if x["ref_pos"] == 300)
     assert v["p_real"] > 0.99
     assert v["action"] == "accept"

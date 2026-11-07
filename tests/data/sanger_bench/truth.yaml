@@ -46,7 +46,7 @@ scenarios:
   M5:  {verdict: fail,          sites: [], mixed: false}   # 引物 3′ 端距离出窗 → primer_mismatch
   M6:  {verdict: fail,          sites: [], mixed: false}   # 窗口口径（ReadRefMap 统一后 ✗ 确证）
   M7:  {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 300, af: 0.50}]}   # secondary_base 展示，不判混合
-  M9:  {verdict: pass,          sites: [], mixed: false}   # 环状拓扑默认（T25 将改显式）
+  M9:  {verdict: pass,          sites: [], mixed: false}   # 场景 runner 显式 circular=False；核心 analyze 拓扑必填（T25.2）
   M10: {verdict: pass,          sites: [], mixed: false}   # 300/330 rejected（互检定案）
   M12: {verdict: pass,          sites: [], mixed: false}   # PLOC<PBAS 告警（T24）；−1 修正后边界伪双峰位点消失（2026-11-07 实测）
   M13: {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}   # 与 S1 同构造（契约测试）

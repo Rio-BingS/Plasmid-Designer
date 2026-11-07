@@ -87,7 +87,7 @@ def test_verdict_fail_on_primer_mismatch():
     primer = {"name": "M13F", "seq": ref[99:130], "direction": "+"}
     from sanger_scenarios import _read_from_ref
     blob = _read_from_ref(ref, 350, 1350, q=50)
-    res = analyze([("r.ab1", blob)], ref, [], primer=primer)
+    res = analyze([("r.ab1", blob)], ref, [], primer=primer, circular=False)
     assert res["verdict"]["status"] == "fail"
     kinds = {b["kind"] for b in res["verdict"]["blocking"]}
     assert "primer_mismatch" in kinds
@@ -95,6 +95,6 @@ def test_verdict_fail_on_primer_mismatch():
     assert res["primer_checks"][0]["status"] == "mismatch"
     # 对照：正确距离（350 → 起点距 3′ 端 130+20=150bp 处起 read）→ 不判 fail
     blob2 = _read_from_ref(ref, 280, 1350, q=50)   # 280 - 130 = 150 ✓
-    res2 = analyze([("r.ab1", blob2)], ref, [], primer=primer)
+    res2 = analyze([("r.ab1", blob2)], ref, [], primer=primer, circular=False)
     assert not any(b["kind"] == "primer_mismatch" for b in res2["verdict"]["blocking"])
     assert res2["primer_checks"][0]["status"] == "ok"

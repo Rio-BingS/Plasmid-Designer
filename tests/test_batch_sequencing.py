@@ -700,7 +700,7 @@ def _write_two_plasmids(data_dir: Path):
         (data_dir / f"{read}.ab1").write_bytes(make_ab1(REF, [40] * len(REF)))
 
 
-def _crash_on_second_analyze(monkeypatch):
+def _crash_on_second_analyze(monkeypatch, circular=False):
     """第 2 次跑管线时模拟 Ctrl-C（BaseException，不会被单组容错吞掉）"""
     import app.sequencing_batch as sb
     real = sb.analyze
@@ -723,7 +723,7 @@ def test_interrupted_run_keeps_finished_plasmids(tmp_path, monkeypatch):
     data_dir = tmp_path / "results"
     data_dir.mkdir()
     _write_two_plasmids(data_dir)
-    _crash_on_second_analyze(monkeypatch)
+    _crash_on_second_analyze(monkeypatch, circular=False)
     with pytest.raises(KeyboardInterrupt):
         _run(monkeypatch, data_dir, "--no-write-back")
 
@@ -747,7 +747,7 @@ def test_rerun_after_interrupt_cleans_from_journal(tmp_path, monkeypatch):
     data_dir = tmp_path / "results"
     data_dir.mkdir()
     _write_two_plasmids(data_dir)
-    _crash_on_second_analyze(monkeypatch)
+    _crash_on_second_analyze(monkeypatch, circular=False)
     with pytest.raises(KeyboardInterrupt):
         _run(monkeypatch, data_dir, "--no-write-back")
     monkeypatch.undo()
@@ -890,7 +890,7 @@ def test_interrupted_rerun_partial_manifest_md5_points_at_written_file(tmp_path,
     out = data_dir / "测序分析"
     _run(monkeypatch, data_dir, "--no-write-back")
     (out / "TST" / "正确" / "T1.ab1").write_bytes(b"user replaced this read")
-    _crash_on_second_analyze(monkeypatch)
+    _crash_on_second_analyze(monkeypatch, circular=False)
     with pytest.raises(KeyboardInterrupt):
         _run(monkeypatch, data_dir, "--no-write-back")
     assert _manifest_paths(out) == {"TST/TST.fasta", "TST/正确/T1 (2).ab1"}
