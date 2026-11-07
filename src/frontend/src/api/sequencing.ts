@@ -43,6 +43,34 @@ export interface CdsReport {
   verdict: string
 }
 
+/** 证据包单 read 行（goal T22；A 5.4）：调用/Q/峰强比/P(真实)/伪迹 + 小图 */
+export interface EvidencePackRead {
+  read: string
+  read_pos?: number
+  call?: string
+  q?: number | null
+  mutant_pct?: number | null
+  p_real?: number | null
+  artifact?: string | null
+  svg?: string | null
+}
+
+/** 证据包位点（blocking 项 + 建议核对/复测变体，goal T22） */
+export interface EvidencePackSite {
+  ref_pos: number
+  kind: string
+  label: string
+  detail: string
+  reads: EvidencePackRead[]
+}
+
+export interface EvidencePackData {
+  sample: string
+  verdict_status?: string
+  algo_version?: string
+  sites: EvidencePackSite[]
+}
+
 /** 单条支持 read 的峰级证据（goal T14 EvidenceItem） */
 export interface SequencingEvidenceItem {
   read: string
@@ -244,6 +272,9 @@ export interface SequencingAnalysis {
   resolved_regions?: ResolvedRegion[]
   /** 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检双峰；T1） */
   unresolved_sites?: UnresolvedSite[]
+  /** 单点双峰次等位（goal T7 MixedVariant；T22 起下发供差异表/证据包跳转） */
+  mixed_variants?: { ref_pos: number; ref_base?: string; called_base?: string;
+    secondary_base?: string; af?: number; reads?: string[] }[]
   mixed_corroboration?: Record<string, unknown> | null
   /** Sanger 判读算法版本（口径变更递增；旧记录缺省） */
   algo_version?: string
@@ -389,6 +420,22 @@ export async function getReadTrace(analysisId: string, readIndex: number): Promi
   const response = await api.get(`/sequencing/analyses/${encodeURIComponent(analysisId)}/trace/${encodeURIComponent(readIndex)}`,
     { headers: analysisTokenHeaders(analysisId) })
   return response.data
+}
+
+/** 证据包（goal T22；A 5.4）：blocking 项与建议核对/复测变体的逐 read 峰图 */
+export async function getEvidencePack(analysisId: string): Promise<EvidencePackData> {
+  const response = await api.get(
+    `/sequencing/analyses/${encodeURIComponent(analysisId)}/evidence-pack`,
+    { params: { format: 'json' }, headers: analysisTokenHeaders(analysisId) })
+  return response.data
+}
+
+export async function downloadEvidencePack(analysisId: string, sample: string): Promise<void> {
+  const response = await api.get(
+    `/sequencing/analyses/${encodeURIComponent(analysisId)}/evidence-pack`,
+    { params: { format: 'md' }, headers: analysisTokenHeaders(analysisId),
+      responseType: 'blob' })
+  await saveBlobResponse(response, `${sample || 'analysis'}-evidence-pack.md`)
 }
 
 export async function exportConsensus(analysisId: string, format: string, coveredOnly = false, markUnverified = true): Promise<string> {

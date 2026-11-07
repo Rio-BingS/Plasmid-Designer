@@ -844,7 +844,7 @@ def _summary(record: Dict) -> Dict:
         "decomposed_alleles": record.get("decomposed_alleles", {}),
         # 结构化判定与未决证据（goal T2；B P1-8）；旧记录缺省 None/[]
         "verdict": record.get("verdict"), "algo_version": record.get("algo_version"),
-        "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []),
+        "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []), "mixed_variants": record.get("mixed_variants", []),
         "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"],
         "reference_length": len(record["reference"]),
         "features": record["features"],

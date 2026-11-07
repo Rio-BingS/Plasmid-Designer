@@ -11,16 +11,52 @@
  * 只折叠 exclude（互检定案项，此时折叠才合理）——低置信未决项是待办
  * 工作，不再折叠、逐行可见。互检排除的差异不进表体（2026-11-05 用户
  * 定稿）：按「源 read × 信号衰减区段」聚合为 read 级注记行。
+ *
+ * T22（goal A 5.4）：unresolved_sites 与 MixedVariant 也进列表可跳转
+ * （rowKind='site'/'mixed' 行，证据包面板同位出图）。
  */
 import { computed } from 'vue'
 import type { SequencingVariant } from '@/api'
 
+export interface SequencingUnresolvedSite {
+  ref_pos?: number
+  kind?: string
+  detail?: string
+  reads?: string[]
+}
+
+/** 表行：常规变体 / 未决位点 / 混合位点（T22 起三类同列表） */
+export interface VariantTableRow {
+  rowKind: 'variant' | 'site' | 'mixed'
+  ref_pos: number
+  variant?: SequencingVariant
+  kind?: string
+  detail?: string
+  called?: string
+  secondary?: string
+  af?: number
+  reads?: string[]
+  p_real?: number
+}
+
+/** 单点双峰次等位（goal T7 MixedVariant；参考链口径） */
+export interface SequencingMixedVariant {
+  ref_pos: number
+  ref_base?: string
+  called_base?: string
+  secondary_base?: string
+  af?: number
+  reads?: string[]
+}
+
 const props = defineProps<{
   variants: SequencingVariant[]
+  unresolvedSites?: SequencingUnresolvedSite[]
+  mixedVariants?: SequencingMixedVariant[]
 }>()
 
 const emit = defineEmits<{
-  (e: 'jump', v: SequencingVariant): void
+  (e: 'jump', v: SequencingVariant | VariantTableRow): void
 }>()
 
 /** 互检排除的差异（不进表体，聚合为 read 级注记；T15 起唯一被折叠的档） */
@@ -41,6 +77,30 @@ const shownVariants = computed(() =>
       const kb = pendingKey(b)
       return (ka[0] - kb[0]) || (ka[1] - kb[1]) || (ka[2] - kb[2])
     }))
+
+/** T22：未决位点/混合位点转表行（排在所有变体之前——未经判定的工作） */
+const extraRows = computed<VariantTableRow[]>(() => [
+  ...(props.unresolvedSites ?? [])
+    .filter((s) => s.ref_pos)
+    .map((s) => ({ rowKind: 'site' as const, ref_pos: s.ref_pos!,
+                   kind: s.kind || 'unresolved_site', detail: s.detail,
+                   reads: s.reads })),
+  ...(props.mixedVariants ?? []).map((m) => ({
+    rowKind: 'mixed' as const, ref_pos: m.ref_pos,
+    called: m.called_base, secondary: m.secondary_base, af: m.af,
+    reads: m.reads,
+  })),
+])
+const SITE_KIND_LABELS: Record<string, string> = {
+  n_call: 'N/模糊调用', iupac: '模糊调用', poly_undetermined: 'poly 不可判定',
+  dropout: '信号骤降', overlap_discordance: '重叠区分歧',
+  orf_annotation_suspect: 'ORF 标注疑点',
+}
+const allRows = computed<VariantTableRow[]>(() => [
+  ...extraRows.value,
+  ...shownVariants.value.map((v) => ({ rowKind: 'variant' as const,
+                                      ref_pos: v.ref_pos, variant: v })),
+])
 
 /** 行动徽标文案（goal T15 四档） */
 const ACTION_LABELS: Record<string, { label: string; cls: string }> = {
@@ -125,7 +185,7 @@ function reasonBadges(v: SequencingVariant) {
 </script>
 
 <template>
-  <div v-if="variants.length">
+  <div v-if="variants.length || extraRows.length">
     <h4 class="section-title">差异明细（点击行查看峰图；按待处理优先级排序）</h4>
     <!-- 互检排除注记：判读已完成，不占差异表行 -->
     <div v-if="resolvedVariants.length" class="resolved-notes">
@@ -134,38 +194,60 @@ function reasonBadges(v: SequencingVariant) {
         ✓ {{ n.read }} 报出 {{ n.count }} 处差异（参考 {{ n.ranges }}）：均已被 {{ n.verifiers }} 干净覆盖排除，判为该 read 测序误差，无需人工核对
       </div>
     </div>
-    <table class="seq-table clickable" v-if="shownVariants.length">
+    <table class="seq-table clickable" v-if="allRows.length">
       <thead>
         <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th><th>P(真实) / 行动</th></tr>
       </thead>
       <tbody>
-        <tr v-for="v in shownVariants" :key="`${v.ref_pos}-${v.type}-${v.alt_base ?? ''}-${v.read ?? ''}`" @click="emit('jump', v)">
-          <td>{{ v.ref_pos }}</td>
-          <td>{{ v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失' }}</td>
-          <td class="mono">{{ v.ref_base }} → {{ v.alt_base }}</td>
-          <td>{{ (v.features || []).map((f) => f.name).join(', ') || '非编码区' }}</td>
-          <td>{{ v.aa_change || (v.type === 'substitution' ? '同义' : '-') }}</td>
-          <td><span v-if="v.frameshift" class="badge bad">移码</span><span v-else>-</span></td>
+        <tr v-for="row in allRows" :key="`${row.rowKind}-${row.ref_pos}-${row.kind ?? row.variant?.alt_base ?? ''}`" @click="emit('jump', row)">
+          <td>{{ row.ref_pos }}</td>
           <td>
-            <span v-if="v.enzyme_sites_lost?.length" class="badge bad">破坏: {{ v.enzyme_sites_lost.join(', ') }}</span>
-            <span v-if="v.enzyme_sites_gained?.length" class="badge">新增: {{ v.enzyme_sites_gained.join(', ') }}</span>
-            <span v-if="!v.enzyme_sites_lost?.length && !v.enzyme_sites_gained?.length">-</span>
+            <template v-if="row.rowKind === 'variant'">{{ row.variant!.type === 'substitution' ? '替换' : row.variant!.type === 'insertion' ? '插入' : '缺失' }}</template>
+            <template v-else-if="row.rowKind === 'site'"><span class="badge reason warn">{{ SITE_KIND_LABELS[row.kind!] ?? '未决位点' }}</span></template>
+            <template v-else><span class="badge reason">混合位点</span></template>
           </td>
-          <td>{{ v.support_reads || 1 }}</td>
-          <td>{{ v.read_q ?? '-' }}</td>
-          <td>
-            <span v-if="v.confidence" class="conf-chip" :class="'conf-' + v.confidence"
-                  :title="confTitle(v)">
-              {{ v.confidence === 'high' ? '高' : v.confidence === 'medium' ? '中' : '低' }}
-            </span>
-            <span v-else>-</span>
-            <!-- 机器可读原因码明示（goal T1/T3）：out-of-zone 证据、互检定案等 -->
-            <span v-for="c in reasonBadges(v)" :key="c.label" class="badge reason" :class="{ warn: c.warn }"
-                  :title="c.tip">{{ c.label }}</span>
+          <td class="mono">
+            <template v-if="row.rowKind === 'variant'">{{ row.variant!.ref_base }} → {{ row.variant!.alt_base }}</template>
+            <template v-else-if="row.rowKind === 'mixed'">{{ row.called || '?' }} / {{ row.secondary || '?' }}（AF {{ row.af ?? '-' }}）</template>
+            <template v-else>-</template>
           </td>
           <td>
-            <span v-if="v.p_real != null" class="p-real">{{ pRealText(v) }}</span>
-            <span class="badge action" :class="v.action ? ACTION_LABELS[v.action]?.cls : 'act-review'">{{ actionText(v) }}</span>
+            <template v-if="row.rowKind === 'variant'">{{ (row.variant!.features || []).map((f) => f.name).join(', ') || '非编码区' }}</template>
+            <template v-else>{{ row.detail || '-' }}</template>
+          </td>
+          <td>{{ row.variant?.aa_change || (row.rowKind === 'variant' && row.variant!.type === 'substitution' ? '同义' : '-') }}</td>
+          <td><span v-if="row.variant?.frameshift" class="badge bad">移码</span><span v-else>-</span></td>
+          <td>
+            <template v-if="row.rowKind === 'variant'">
+              <span v-if="row.variant!.enzyme_sites_lost?.length" class="badge bad">破坏: {{ row.variant!.enzyme_sites_lost.join(', ') }}</span>
+              <span v-if="row.variant!.enzyme_sites_gained?.length" class="badge">新增: {{ row.variant!.enzyme_sites_gained.join(', ') }}</span>
+              <span v-if="!row.variant!.enzyme_sites_lost?.length && !row.variant!.enzyme_sites_gained?.length">-</span>
+            </template>
+            <template v-else>-</template>
+          </td>
+          <td>{{ row.rowKind === 'variant' ? (row.variant!.support_reads || 1) : (row.reads?.length || '-') }}</td>
+          <td>{{ row.variant?.read_q ?? '-' }}</td>
+          <td>
+            <template v-if="row.rowKind === 'variant'">
+              <span v-if="row.variant!.confidence" class="conf-chip" :class="'conf-' + row.variant!.confidence"
+                    :title="confTitle(row.variant!)">
+                {{ row.variant!.confidence === 'high' ? '高' : row.variant!.confidence === 'medium' ? '中' : '低' }}
+              </span>
+              <span v-else>-</span>
+              <!-- 机器可读原因码明示（goal T1/T3）：out-of-zone 证据、互检定案等 -->
+              <span v-for="c in reasonBadges(row.variant!)" :key="c.label" class="badge reason" :class="{ warn: c.warn }"
+                    :title="c.tip">{{ c.label }}</span>
+            </template>
+            <template v-else>-</template>
+          </td>
+          <td>
+            <template v-if="row.rowKind === 'variant'">
+              <span v-if="row.variant!.p_real != null" class="p-real">{{ pRealText(row.variant!) }}</span>
+              <span class="badge action" :class="row.variant!.action ? ACTION_LABELS[row.variant!.action]?.cls : 'act-review'">{{ actionText(row.variant!) }}</span>
+            </template>
+            <template v-else>
+              <span class="badge action act-review">证据包</span>
+            </template>
           </td>
         </tr>
       </tbody>

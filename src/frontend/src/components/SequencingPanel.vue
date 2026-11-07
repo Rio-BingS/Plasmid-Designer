@@ -20,6 +20,7 @@ import VariantTable from '@/components/sequencing/VariantTable.vue'
 import AlleleCard from '@/components/sequencing/AlleleCard.vue'
 import ConsensusCard from '@/components/sequencing/ConsensusCard.vue'
 import MatchMap from '@/components/sequencing/MatchMap.vue'
+import EvidencePackPanel from '@/components/sequencing/EvidencePackPanel.vue'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 import { cdsCoverageSummary, findCdsTarget } from '@/utils/cdsMode'
@@ -329,6 +330,17 @@ watch(() => props.preset, (p) => {
 }, { immediate: true })
 
 // 低置信/差异明细过滤与置信度徽章悬停说明已迁入
+// 证据包面板（goal T22）：点击差异行跳峰图并同位出图（多 read 堆叠）
+const packFocus = ref<number | null>(null)
+const packOpen = ref(false)
+function onVariantJump(v: { ref_pos: number }) {
+  jumpToVariant(v as never)
+  if (v.ref_pos) {
+    packFocus.value = v.ref_pos
+    packOpen.value = true
+  }
+}
+
 // sequencing/VariantTable.vue（showLowConf 经 defineModel 共享）
 
 // —— 峰图融合视图的其余逻辑（CHANNEL_COLORS/READ_COLORS/loadSeqTrace/
@@ -460,7 +472,13 @@ async function downloadConsensus(format: string) {
 
       <!-- 突变表（子组件；点击行跳峰图。T15：只折叠 exclude，低置信未决行
            常显——待办工作不再折叠；结论文本的低置信折叠仍在结论卡） -->
-      <VariantTable :variants="analysis.variants" @jump="jumpToVariant" />
+      <VariantTable :variants="analysis.variants"
+                    :unresolved-sites="analysis.unresolved_sites"
+                    :mixed-variants="analysis.mixed_variants"
+                    @jump="onVariantJump" />
+      <EvidencePackPanel v-if="packOpen" :analysis-id="analysis.analysis_id"
+                         :sample-name="analysis.sample_name || ''"
+                         :focus-ref-pos="packFocus" @close="packOpen = false" />
 
       <!-- 比对峰图：参考行 + 各 read 碱基行 + 四通道峰图画在同一参考坐标轴上
            （差异证据一屏看完：参考碱基/read 碱基/Q/峰形/次级峰占比） -->
