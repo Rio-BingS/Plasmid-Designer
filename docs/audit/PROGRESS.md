@@ -329,3 +329,105 @@ CDS 报告/verdict/coverage）：
 - xfail 5 项：F3/M12→T24、M3→T21、M9/M15→T25。
 - T24 PLOC −1 口径（M8 无独立合成用例，复核表锚定真实 3730 附录 A-PLOC）。
 - 生产镜像 tracy 实测挂账（KNOWN_ISSUES 未解决 #5，P0 遗留）。
+
+---
+
+## P2 闸门（T19-T25，2026-11-07，截至 9d0d948）
+
+### 闸门判定（goal 原文：§4 全部场景无 xfail 通过；基准测试在 CI 运行且达标；
+### 对照组、全量测试、MX 真实回归绿）
+
+- **§4 全部场景无 xfail**：✅ 实证——`test_sanger_scenarios.py` **36/36 通过、
+  0 xfail**（XFAIL_BY_TASK 注册表清空并留档各场景转绿任务号）；全量
+  **1965 passed / 46 skipped / 0 xfailed**。T0 注册的 4 项红测全部转绿：
+  F3/M12→T24（峰型估 Q / PLOC 截短告警）、M9→T25.2（circular 必填关键字）、
+  M15→T25.4（酶位 ±10bp 未决提示）；M1 的 MNV 联合注释随 T25.1 落地
+  （两成员均报 AAA>TAG / GeneX:K2*，旧「104 单边 TAA 巧合终止」已消除）。
+- **基准测试在 CI 运行且达标**：✅ `test_sanger_benchmark.py` 在全量内运行
+  （不 skip）：verdict 混淆矩阵 **33/33 对角**（T24 后 fail 12 / failed_reads 1 /
+  mixed 4 / partial 1 / pass 5 / pending 10）；位点敏感度 1.0（TP14/FN0）、
+  特异度 1.0（TN29378/FP0）≥ 阈值 0.95/0.99；混合 TPR 1.0、**FPR 0.0**
+  （硬约束）；truth.yaml 契约自洽断言（confirmed≥0.5 / unresolved<0.5）绿。
+  指标与拟合报告见 docs/SANGER_CALIBRATION.md（T24 后实测同步）。
+- **对照组**：✅ 全量 1965 passed（对照场景：反向替换高置信、跨原点折回、
+  纯合 ✗、CDS/全质粒模式一致、Excel/分拣契约等全部在内）。
+- **全量测试**：✅ 1965 passed / 46 skipped / 0 xfailed（skip 构成：42 deploy
+  需 bash/sh + 1 snapgene-reader ImportError 分支不可触发 = T0 基线 43；
+  +3 为契约测试对 M5/M8/M11「不经 analyze」的显式登记，goal §4 允许，
+  test_sanger_scenarios.py 自身 0 skip 0 xfail）。
+- **MX 真实回归**：✅ work/after_T25.json 对 after_T24.json 逐字段 diff：仅
+  2 处——①跨原点缺口「2 段（1-5011、6932-7039）」合并为「1 段（6932-7039、
+  1-5011，5119bp）」：T25.2 探针改用参考真实拓扑（GenBank 环状）后，环上
+  连续的跨原点缺口正确并段；read 不跨原点时环状与线性比对等价，生产
+  batch 路径本就走 reference_circular（探针此前 linear 是偏离生产）；②
+  algo_version v6→v7。核心判定（2 确证差异、CDS 不一致、mixed 计数、
+  待核行）逐字节一致。
+- **前端门禁**：✅ `vue-tsc --noEmit` 0 error、`vitest run` 90 文件 / 693 tests
+  全绿（T22 证据包面板 + T24/T25 类型同步后复验）。
+- **尺寸/文档门禁**：✅ check_file_size（白名单 10 个不超预算，
+  sequencing_routes.py 用行合并对冲 T24 新增字段）、check_docs_sync 绿。
+- **SANGER_ALGO_VERSION**：v5（T15）→ v6（T24 PLOC 口径）→ v7（T25 MNV
+  联合注释），写入 result["algo_version"]，HANDOVER 登记链完整。
+
+### 改动文件（03e6dea → 9d0d948，42 文件 +2804/−213）
+
+- **新模块（全部 ≤900 行）**：`core/sanger/{split_read 68, artifacts 179,
+  overlap 154, evidence_pack 241}.py`；`scripts/{sanger_benchmark,
+  fit_mixed_params}.py`（拟合脚本，不改自动参数）；`tests/data/sanger_bench/
+  truth.yaml`（35 场景真值 + 3 真实 AB1 + 阈值）
+- **扩张**：`pipeline.py`（T19 split-read 接线、T20 伪迹、T21 分歧/IUPAC、
+  T24 解析层质量来源/warnings、T25 端插加固 + circular 必填）；`annotator.py`
+  （T25.1 MNV 聚合、T25.4 enzyme_sites_pending）；`abif_reader.py`（T24.1
+  PLOC 原值 + 峰型估 Q + 通道采样跳首端）；`verdict.py`/`evidence.py`（T19/
+  T20/T21 判定接入）；`sequencing_endpoints.py`（T22 证据包端点、T25.2
+  设计流拓扑读载体记录）；`sequencing_session_routes.py`（T18 预检）
+- **前端**：`sequencing.ts`（evidence-pack/quality_source/warnings/mnv/
+  enzyme_sites_pending 类型）、`EvidencePackPanel.vue`（新）、`VariantTable.vue`
+  （unresolved/mixed 行 + MNV 徽标 + 酶位待定徽标）、`SequencingPanel.vue`
+  （证据包跳转）
+- **测试**：新增 `test_sanger_{split_read, artifacts, overlap, evidence_pack,
+  benchmark}.py` + `test_real_data_regression` 重基线；场景 36 项全绿
+
+### 提交清单（T19-T25，一任务至少一提交）
+
+| 提交 | 任务 |
+|---|---|
+| 3b4cad8 | T19 split-read 端部剪切段二次定位 |
+| 6f4c54b | T20 通用伪迹检测——压缩/dye blob/短滑移 |
+| e0d844d | T21 重叠区分歧与双链覆盖 |
+| 9a59126 | T22 证据包与多 read 同屏 |
+| f51dd3d | T23 基准集与 ROC 回归、T11/T15 真拟合 |
+| 6dd42b4 | T24 解析层：PLOC 峰心原值与无 PCON 峰型估 Q |
+| 9d0d948 | T25 判读注释层：MNV 联合注释/拓扑必填/酶位待定提示 |
+
+### 口径偏差记录（对照 goal 原文，均已写入对应提交说明）
+
+1. **T24.1 PLOC 基准**：实测 3730/3100/310 原值即峰心（减 1 系统性偏左），
+   解析端取 0 基原值；tracy basecallPos 同口径统一但本地无 tracy 无法实测，
+   基准核对并入 KNOWN_ISSUES 挂账 #5。
+2. **T24 真实数据基线更新**：峰心对称窗下滞后主峰的染料 blob 肩峰占比
+   实测下降（0.62→0.45 等），贴 0.30 地板条目不再检出——F1/F2/M12
+   pending→pass、MX 混合计数 9/18/19→8/16/17、待核 6873 掉档；
+   truth.yaml/test_real_data_regression.py 断言逐条随实测更新（6dd42b4）。
+3. **T24 M12 边界伪位点消失**：旧 pending 由错位窗（12i−1）边界伪双峰
+   @92 驱动，修正后不再产生；M12 场景章程（PLOC<PBAS 告警）由
+   res["warnings"] 承接。
+4. **T25.2 拓扑显式化**：circular 为必填关键字是核心 API 契约变更——
+   测试/脚本 107 处调用点 codemod 显式传参；M9 直接调用保持无参断言
+   TypeError；设计流启发式（insert_start != 1）改为读载体记录 topology，
+   载体记录缺失时保留旧启发式兜底（线性骨架载体语义更正确）。
+5. **T25.3 end_insert_votes 静态加固**：idx==L 路径经局部比对不可达
+   （B P2-16），skip_keys 同口径/低票不定插/单票 unresolved 按规格落地，
+   现无场景可触发（M14 走主循环路径，保持绿）。
+6. **T25.4 酶位提示范围**：核心层无「用户计划酶位」入参，按参考上的
+   酶识别位点（find_enzyme_sites，与 enzyme_sites_lost 同源）±10bp 判定；
+   设计流用户的克隆酶提示可后续在端点层叠加。
+
+### 遗留问题（进最终验收）
+
+- 生产镜像 tracy 实测（decompose 产物格式 + basecallPos 基准）挂账
+  KNOWN_ISSUES #5——goal §7 停止条件不触发（本机无 tracy 属预期环境）。
+- MX 真实数据无设计参考 → 位点级真值不可用（KNOWN_ISSUES #6 阈值
+  标定口径）；带设计参考的真实数据扩充项留档。
+- 46 skip 中 42 项 deploy 环境性 skip（需 bash/sh）为 Windows 本机常态，
+  CI Linux 环境实跑。
