@@ -405,6 +405,32 @@ async def export_consensus(analysis_id: str, request: Request,
                                      ascii_fallback=f"consensus.{ext}")},
     )
 
+@router.get("/sequencing/analyses/{analysis_id}/evidence-pack")
+async def get_evidence_pack(analysis_id: str, request: Request,
+                            format: str = "json",
+                            user: Optional[User] = Depends(get_current_user)):
+    """证据包（goal T22；A 5.4）：blocking 项与建议核对/复测变体的逐 read
+    峰图小图 + 调用/Q/峰比/P(真实) 表与判定理由。
+
+    format=json（默认）：结构化数据（前端证据面板多 read 堆叠显示）；
+    format=md：内联小图的 Markdown 报告，单样品下载。
+    """
+    from core.sanger.evidence_pack import build_pack_data, render_markdown
+    record = await _aget_analysis(analysis_id, user,
+                                  _request_access_token(request))
+    pack = await run_in_threadpool(build_pack_data, record)
+    if format.lower() in ("md", "markdown"):
+        md = await run_in_threadpool(render_markdown, pack)
+        return PlainTextResponse(
+            content=md,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition":
+                     content_disposition(f"{record.get('sample_name') or 'analysis'}"
+                                         "-evidence-pack.md",
+                                         ascii_fallback="evidence-pack.md")},
+        )
+    return pack
+
 @router.delete("/sequencing/analyses/{analysis_id}")
 async def delete_analysis(analysis_id: str, request: Request,
                           user: Optional[User] = Depends(get_current_user)):
