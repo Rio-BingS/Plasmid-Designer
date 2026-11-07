@@ -269,6 +269,9 @@ def run_batch_groups(
                 # dict（并发淘汰时会 KeyError）
                 records_by_id[aid] = rec
                 item["reference_length"] = len(ref_seq)
+                # 分拣目录由 verdict.status 驱动（goal T25/§6.3：不再字符串
+                # 匹配「合格/不合格」文案）；无 verdict 的失败/缺件分支不设
+                item["verdict_status"] = res["verdict"]["status"]
                 confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
                 item["variant_count"] = len(confirmed)
                 item["pending_count"] = len(res["variants"]) - len(confirmed)
