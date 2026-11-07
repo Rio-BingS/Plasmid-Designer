@@ -227,6 +227,12 @@ def _detect_from_table(table, bases: str, trace: Dict[str, List[int]],
                  "pullup": False, "mixed_z": z, "pair": f"{base}>{sec}",
                  "local_median": round(med, 4) if med is not None else None,
                  "local_mad": round(mad, 4) if mad is not None else None}
+        # T24.4：调用碱基不在峰面积前两通道 → caller 与 trace 分歧，明示标注
+        # （secondary_base 仍取前两通道中不等于调用碱基者——上面 max 已是）
+        top2 = {c for c, _ in sorted(areas.items(), key=lambda kv: kv[1],
+                                     reverse=True)[:2]}
+        if base not in top2:
+            entry["call_disagrees_with_trace"] = True
         # pull-up：主峰近饱和、次级占比低、次级峰尖与主峰同期（±1 采样点）
         if med_height > 0 and areas[base] >= PULLUP_HEIGHT_FACTOR * med_height \
                 and ratio <= PULLUP_MAX_RATIO:

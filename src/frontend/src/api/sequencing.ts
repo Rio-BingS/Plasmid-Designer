@@ -165,10 +165,14 @@ export interface SequencingAnalysis {
     ref_segments?: [number, number][] | null
     identity: number
     mixed_positions: number[]
-    mixed_detail?: { pos: number; ratio: number; secondary_base: string }[]
+    mixed_detail?: { pos: number; ratio: number; secondary_base: string; call_disagrees_with_trace?: boolean }[]
     alignment_view?: AlignmentView | null
     grade?: string
     q20_ratio?: number
+    /** 质量值来源（goal T24.5；旧记录缺省）：pbas/tracy_basecall/peak_estimate */
+    quality_source?: string
+    /** PLOC 比 PBAS 短的条数（goal T24.2；0/缺省=正常），尾端峰位缺失 */
+    ploc_shortfall?: number
     /** read 可信区（原始 read 坐标 raw_start–raw_end；start/end 为修剪后坐标），旧记录缺省 */
     reliable_zone?: {
       start: number
@@ -264,6 +268,8 @@ export interface SequencingAnalysis {
     identity?: number
   }[]>
   errors: { filename: string; error: string }[]
+  /** 解析层告警（goal T24；旧记录缺省 []）：PLOC 截短 / 峰型估 Q 降级等 */
+  warnings?: string[]
   reference_length: number
   features: { name: string; type: string; start: number; end: number; strand: string; description?: string; analysis_target?: boolean }[]
   /** 结构化判定（goal T2；旧记录缺省）：status 驱动所有出口，blocking 为阻断项清单 */

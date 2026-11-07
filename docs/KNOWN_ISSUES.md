@@ -19,13 +19,16 @@
    负链臂落进 minus CDS 时不做融合判定，起始密码子按载体 ATG 常规处理。
 4. **custom_arms 模式不产出载体线性化引物**（背靠背引物）：默认用户自行
    双酶切/购买线性化载体，引物只覆盖插入片段两端。
-5. **tracy decompose 产物格式未在真实环境核对**（2026-11-07，goal T10）：
-   本机无 tracy，解析按官方文档（v0.9.1：`outprefix.json` 优先，退回
+5. **tracy 产物格式未在真实环境核对**（2026-11-07，goal T10/T24）：
+   本机无 tracy，decompose 按官方文档（v0.9.1：`outprefix.json` 优先，退回
    `.align1`/`.align2`）实现并以文档格式 fixtures 锁定
-   （`core/sanger/decompose.py`、`tests/fixtures/tracy/`）。需在生产镜像内
-   `tracy --version` 确认版本并用真实混合样品跑一次 decompose，核对产物
-   字段形状；若与文档不符按实际格式修正 `_parse_decompose_output`（goal §7
-   停止条件「tracy 实际输出格式与文档都对不上」届时由人取舍）。
+   （`core/sanger/decompose.py`、`tests/fixtures/tracy/`）；basecall 的
+   `basecallPos` 已与 PLOC 统一为 0 基采样点原值（T24.1，不再减 1），
+   但该基准同样未在本地实测核对（tracy 内部读同一 ABIF 的 PLOC，理论
+   一致）。需在生产镜像内 `tracy --version` 确认版本并用真实混合样品跑
+   一次 decompose + basecall，核对产物字段形状与 basecallPos 基准；若与
+   文档不符按实际格式修正（goal §7 停止条件「tracy 实际输出格式与文档
+   都对不上」届时由人取舍）。
 6. **Sanger 基准集阈值为合成语料标定**（2026-11-07，goal T23）：
    `test_sanger_benchmark.py` 的位点级敏感度 ≥0.95 / 特异度 ≥0.99 /
    混合 FPR=0 来自 35 项合成场景 + 3 个无设计参考的 Biopython 真实 AB1
@@ -63,6 +66,13 @@
   不要回退到 `L-1-qi` 镜像式。
 - 真实 .ab1 回归集（`tests/test_real_data_regression.py`，skip-if-missing）
   中 MX 批次的「疑似混合样品」是该批数据的真实判定，不是误报，勿按理想断言改。
+- **PLOC 是 0 基峰心采样点索引，解析端不要减 1**（T24.1，2026-11-07 实测
+  3730/3100/310 三个真实 ab1：原值即落在峰心，减 1 反而系统性偏左一格）。
+  合成器 `tests/abif_utils.py`（make_ab1/make_trace_ab1）同口径直写峰心
+  索引；「峰窗以峰心对称取面积」后，滞后主峰的染料 blob 肩峰占比实测下降
+  （MX 快照 work/after_T24.json：混合计数 9/18/19→8/16/17，核心判定不变），
+  F1/F2/M12 truth 由此从 pending 转 pass——别把 −1 加回去「修」回归基线。
+  tracy basecallPos 同口径（基准核对挂账见上 #5）。
 - 在线序列来源（`core/online_sources.py`）：SnapGene 在线库只做低频、单次、人工触发的
   读取（进程级限速 + 结果缓存），**不要加定时同步/批量镜像/对外再分发 zip**；其
   `robots.txt` 明确 `Disallow: /local`，商业用途须先获 GraphPad Software, LLC 许可。

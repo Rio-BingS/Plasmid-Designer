@@ -16,6 +16,7 @@ ABIF 1.0 格式（Applied Biosystems）：
 
 import itertools
 import logging
+import math
 import struct
 from typing import Dict, List, Tuple
 
@@ -47,6 +48,59 @@ def peak_window(peak_indices: List[int], i: int, n: int,
         gaps.append(max(1, peak_indices[i + 1] - pk))
     half = min(default_half, min(gaps) // 2) if gaps else default_half
     return max(0, pk - half), min(n, pk + half + 1)
+
+
+# 通道检测采样跳过的首端碱基数（与 ZoneParams.front_hard 默认同口径：
+# 首端染料团/信号爬升区峰形不可信，混进采样会拉低映射符合率）
+_FRONT_SKIP_BP = 30
+_MIN_CHANNEL_SAMPLES = 20  # 跳过首端后可用位不足（短 read）时退回全量采样
+
+
+def _peak_indices_from_ploc(ploc, n_bases: int):
+    """PLOC 原值 → 0 基采样点索引；短于 PBAS 时缺失位补 None 并返回短缺数
+
+    PLOC 官方语义为「峰在 trace 采样点上的位置」。实测 3730/3100/310 三个
+    真实 ab1：原值即落在峰心（减 1 反而系统性偏左一格）——旧「1-based 需
+    减 1」口径是错的，T24.1 起直接取原值（合成器 tests/abif_utils 写的
+    就是峰心采样点索引，与此一致）。个别导出工具会把 PLOC 截短到短于
+    PBAS2：缺失位补 None（下游峰窗/峰证据均按 None=不可估处理），短缺数
+    返回给调用方供管线告警（goal T24.2/M12，不静默截短）。
+    """
+    out = [int(p) for p in (ploc or [])[:n_bases]]
+    shortfall = n_bases - len(out)
+    if shortfall > 0:
+        out.extend([None] * shortfall)
+    return out, shortfall
+
+
+def estimate_quality_from_trace(trace: Dict[str, List[int]],
+                                peak_indices: List[int],
+                                n_bases: int) -> List[int]:
+    """峰型估 Q（goal T24.5）：PCON 缺失/全 0 时的近似质量值
+
+    每碱基取峰心 ±2 采样点内最大通道值，对全 read 中位峰高做 log 比值
+    单调映射到 2-50（比值 1 → 37、每差 10 倍 ±13、封顶 50、峰缺失 2）。
+    这不是真 Phred——只是「峰弱处不装可信」的单调代理，供修剪/置信按
+    低 Q 保守处理；quality_source="peak_estimate" 必须随结果下发。
+    """
+    n = min((len(v) for v in trace.values()), default=0) if trace else 0
+    tops: List[float] = []
+    for i in range(n_bases):
+        pk = peak_indices[i] if i < len(peak_indices) else None
+        if pk is None or n == 0 or not (0 <= pk < n):
+            tops.append(0.0)
+            continue
+        lo, hi = max(0, pk - 2), min(n, pk + 3)
+        tops.append(float(max(max(v[lo:hi]) for v in trace.values())))
+    pos = [t for t in tops if t > 0]
+    med = pos[len(pos) // 2] if pos else 0.0
+    out: List[int] = []
+    for t in tops:
+        if med <= 0 or t <= 0:
+            out.append(2)
+        else:
+            out.append(max(2, min(50, int(round(37 + 13 * math.log10(t / med))))))
+    return out
 
 # ABIF 数据类型 → struct 格式与字节宽
 _TYPE_FMT = {
@@ -145,12 +199,16 @@ def _detect_channel_assignment(channel_data: Dict[int, List[int]], bases: str,
     if not channel_data or not bases or not peak_indices:
         return None, 0.0
 
-    # 采样：均匀取 ≤150 个有效碱基位（速度可控且覆盖全 read）
+    # 采样：跳过首端不可信区（front_hard 同口径）后均匀取 ≤150 个有效碱基位
+    # （速度可控且覆盖全 read；跳过后样本不足的短 read 退回全量）
     usable = [i for i, b in enumerate(bases)
               if b in "ACGT" and i < len(peak_indices)
               and peak_indices[i] is not None and peak_indices[i] >= 0]
     if not usable:
         return None, 0.0
+    stable = [i for i in usable if i >= _FRONT_SKIP_BP]
+    if len(stable) >= _MIN_CHANNEL_SAMPLES:
+        usable = stable
     if len(usable) > 150:
         step = len(usable) / 150
         usable = [usable[int(j * step)] for j in range(150)]
@@ -283,7 +341,7 @@ def _extract_read_biopython(data: bytes) -> Dict:
             channel_data[int(key[4:])] = list(values)
 
     ploc = raw.get("PLOC2", raw.get("PLOC1", [])) or []
-    peak_indices = [int(p) - 1 for p in ploc[: len(bases)]]
+    peak_indices, ploc_shortfall = _peak_indices_from_ploc(ploc, len(bases))
 
     # FWO 记录：4 字节 tag "FWO_"（下划线填充）+ number 1，Biopython key "FWO_1"；
     # NUL 填充变体（"FWO\x001"）留作个别软件的兜底
@@ -299,6 +357,8 @@ def _extract_read_biopython(data: bytes) -> Dict:
         "quality": quality[: len(bases)],
         "trace": trace,
         "peak_indices": peak_indices,
+        # PLOC 比 PBAS 短的条数（0=正常）；管线据此告警并标注受影响区段
+        "ploc_shortfall": ploc_shortfall,
         "sample_name": str(sample_name),
         "lane": raw.get("LANE1", raw.get("LANE", 0)),
         "dye": str(raw.get("DLAB1", "") or ""),
@@ -338,7 +398,7 @@ def _extract_read_internal(data: bytes) -> Dict:
             channel_data.setdefault(num if tag == "DATA" else num + 8, list(values))
 
     ploc = records.get(("PLOC", 2), records.get(("PLOC", 1))) or []
-    peak_indices = [int(p) - 1 for p in ploc[: len(bases)]]  # 1-based → 0-based
+    peak_indices, ploc_shortfall = _peak_indices_from_ploc(ploc, len(bases))
 
     trace = _build_trace(channel_data, bases, peak_indices,
                          fwo=records.get(("FWO_", 1), records.get(("FWO\x00", 1))))
@@ -355,6 +415,8 @@ def _extract_read_internal(data: bytes) -> Dict:
         "quality": quality,
         "trace": trace,
         "peak_indices": peak_indices,
+        # PLOC 比 PBAS 短的条数（0=正常）；管线据此告警并标注受影响区段
+        "ploc_shortfall": ploc_shortfall,
         "sample_name": str(sample_name),
         "lane": lane,
         "dye": str(dye) if not isinstance(dye, list) else "",

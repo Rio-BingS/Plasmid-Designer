@@ -39,7 +39,7 @@ def test_parse_tracy_json_documented_shape():
     bases, qual, calls = P._parse_tracy_json(text)
     assert bases == "ACGTA" and qual == [40, 41, 30, 20, 0]
     assert calls["secondary"] == "ACRTA"
-    assert calls["positions"] == [6, 18, 30, 42, 54]   # → 0-based，与 PLOC 同系
+    assert calls["positions"] == [7, 19, 31, 43, 55]   # 0 基原值，与 PLOC 同口径（T24.1）
 
 
 @pytest.mark.parametrize("bad", [

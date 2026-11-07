@@ -845,7 +845,7 @@ def _summary(record: Dict) -> Dict:
         # 结构化判定与未决证据（goal T2；B P1-8）；旧记录缺省 None/[]
         "verdict": record.get("verdict"), "algo_version": record.get("algo_version"),
         "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []), "mixed_variants": record.get("mixed_variants", []),
-        "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"],
+        "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"], "warnings": record.get("warnings", []),  # T24 解析层告警；旧记录缺省 []
         "reference_length": len(record["reference"]),
         "features": record["features"],
     }
