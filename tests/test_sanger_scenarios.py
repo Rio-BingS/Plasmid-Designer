@@ -423,3 +423,20 @@ for _name, _task in XFAIL_BY_TASK.items():
     globals()[_name] = pytest.mark.xfail(strict=True, reason=_task)(globals()[_name])
 if XFAIL_BY_TASK:   # 全部转绿后注册表为空，循环体未执行时无名字可删
     del _name, _task
+
+
+def test_s18_inframe_cds_deletion_confirmed():
+    """S18（复审 R7 独立正例）：CDS 内框内缺失 3bp（planted）→ ✗ 确证"""
+    _spec, res = _run("S18")
+    v = _v(res, 500)
+    assert v and v["type"] == "deletion" and v["confidence"] == "high"
+    assert _status(res) == "fail"
+
+
+def test_s19_backbone_substitution_confirmed():
+    """S19（复审 R7 独立正例）：骨架确证替换 + read 全覆盖 → ✗ 确证"""
+    _spec, res = _run("S19")
+    v = _v(res, 650)
+    assert v and v["confidence"] == "high"
+    assert res["conclusion"].startswith("✗")
+    assert _status(res) == "fail"
