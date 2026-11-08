@@ -680,7 +680,8 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     vd = res.get("verdict") or {}
     vd_partial = vd.get("status") == "partial"
     vd_insufficient = (vd.get("status") == "insufficient"
-                       and any(b.get("kind") in ("roi_uncovered", "roi_unverified")
+                       and any(b.get("kind") in ("roi_uncovered", "roi_unverified",
+                                 "roi_insufficient_bp")
                                for b in vd.get("blocking") or []))
 
     # 分支序 = verdict.status 优先级（T2 三出口统一）：fail（蛋白不一致/
@@ -761,8 +762,20 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     elif vd_insufficient:
         out = ("无法判定："
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []
-                        if b.get("kind") in ("roi_uncovered", "roi_unverified")),
+                        if b.get("kind") in ("roi_uncovered", "roi_unverified",
+                            "roi_insufficient_bp")),
                        "") or "实测数据不足以确认是否为目标质粒"))
+    elif vd.get("status") == "pending":
+        # 2026-11-08 复审 R2：pending 兜底出口。上文分支只认未决变异/位点
+        # 列表，roi_unverified（verified 残余缺口）、关键元件未验证等
+        # pending kind 不在其列，会漏到「合格」造成结论文本与 verdict.status
+        # 分叉（T2 三出口统一）。按 blocking 明细如实说待定
+        # （惰性导入：verdict.py 顶部反向 import 本模块的
+        # MIN_VERDICT_COVERED_BP，模块级互 import 会循环）
+        from core.sanger.verdict import PENDING_KINDS as _PENDING_KINDS
+        det = next((b.get("detail") or "" for b in vd.get("blocking") or []
+                    if b.get("kind") in _PENDING_KINDS), "")
+        out = "待定：" + (det or "存在未验证或待核区域，需核对峰图或补测")
     elif vd_partial:
         out = ("待定：部分验证——"
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []

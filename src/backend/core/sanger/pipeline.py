@@ -93,7 +93,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v7"
+SANGER_ALGO_VERSION = "v8"  # v8: 2026-11-08 复审——whole ROI 实测<99%→partial、关键元件未验证→pending、cds_union verified 缺口→pending（R1/R2）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)

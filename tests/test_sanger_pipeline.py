@@ -400,7 +400,10 @@ def test_analyze_perfect_read(reference):
     result = analyze([("ok.ab1", blob)], reference, [], circular=False)
     assert result["reads"], "应成功解析至少一条 read"
     assert result["variants"] == []
-    assert "构建与设计一致，未检出差异" in result["conclusion"]
+    # 2026-11-08 复审 R1：整质粒只测 25% 不得 ✓「构建与设计一致」——
+    # 未测的 75% 没有任何证据，结论须是 △部分验证
+    assert result["conclusion"].startswith("△ 结论：部分验证——")
+    assert "实测覆盖 25.0%" in result["conclusion"]
     assert result["consensus"]["sequence"] == reference.upper()
     assert result["consensus"]["coverage_percent"] == pytest.approx(25.0, abs=0.5)
 
@@ -2759,13 +2762,16 @@ def test_circular_origin_spanning_read_folds_positions(reverse):
 
 
 def test_circular_clean_origin_spanning_read_is_consistent():
-    """跨原点 read 与参考一致时：环状参考给出干净的 ✓，不再有截断提示"""
+    """跨原点 read 与参考一致时：环状参考不再有截断提示。2026-11-08 复审
+    R1：整质粒 40% 实测覆盖为 △部分验证（与线性同口径）——「测到的地方
+    一致」不等于「构建验证完毕」"""
     ref, read, _ = _circ_case(seed=11, subs=())
     r = _run(read, ref, circular=True)
     assert r["variants"] == []
     assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
     assert r["reads"][0]["partial_alignment"] is None
-    assert r["conclusion"].startswith("✓")
+    assert r["conclusion"].startswith("△ 结论：部分验证——")
+    assert "实测覆盖 40.0%" in r["conclusion"]
 
 
 def test_linear_reference_does_not_wrap():
@@ -2866,7 +2872,8 @@ def test_fully_aligned_read_has_no_partial_flag():
     finally:
         logging.disable(logging.NOTSET)
     assert r["reads"][0]["partial_alignment"] is None
-    assert r["conclusion"].startswith("✓")
+    # 2026-11-08 复审 R1：read 完整比对但只覆盖整条参考的 50% → △部分验证
+    assert r["conclusion"].startswith("△ 结论：部分验证——")
 
 
 def test_cross_check_requires_high_region_quality_not_single_base():
