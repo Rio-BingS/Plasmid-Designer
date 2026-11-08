@@ -16,7 +16,14 @@
 
 meta:
   created: "2026-11-07"
-  note: "verdict 真值与场景测试断言同源；改判定口径须同步本文件与测试"
+  note: >-
+    verdict 真值与场景测试断言同源（场景期望经 goal/审计逐条定稿，
+    非跑出来是什么就是什么）；sites 真值独立于判定链路——来自场景
+    构造器注入的 planted 变体。口径修订留痕：F1/F2/M12（T24.1 峰心窗，
+    实测取证）、F1/F2/M9/M12（2026-11-08 复审 R1 覆盖闸）、S18/S19
+    （R7 独立正例扩充）。CI 阈值（thresholds 节）是 2026-11-07 在
+    FPR=0 硬约束下事后标定的，语料扩充后须重跑 scripts/fit_*.py
+    复核——改判定口径须同步本文件与场景测试。
 
 scenarios:
   S1:  {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}
@@ -36,6 +43,8 @@ scenarios:
   S15: {verdict: fail,          sites: [{pos: 140, type: substitution, status: confirmed}], mixed: false, unresolved: [{pos: 151, kind: poly}]}
   S16: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 150, af: 0.30}]}   # 双峰保留为未决、不升级混合（2026-11-06 定稿）
   S17: {verdict: fail,          sites: [{pos: 800, type: substitution, status: confirmed}], mixed: false}   # 749-755 双峰=尾端滑移伪影，不升级
+  S18: {verdict: fail,          sites: [{pos: 500, type: deletion, status: confirmed}], mixed: false}   # 独立正例（2026-11-08 复审 R7）：CDS 内框内缺失 3bp，真值来自构造（planted）
+  S19: {verdict: fail,          sites: [{pos: 650, type: substitution, status: confirmed}], mixed: false}   # 独立正例（R7）：骨架确证替换 + read 全覆盖，期望由构造决定
   F1:  {verdict: pending,       sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰不升级混合（2026-11-07 实测）；R1：自拼参考含首端低质量段实测 <99%→partial；R3（2026-11-08）：地板 0.30→0.18 后 4 处 af 0.155-0.193 散在双峰单 read 无法互检 → 待定（af<0.15 的 3 处只记 info），不升级混合
   F2:  {verdict: pending,       sites: [], mixed: false, file: 3100.ab1}   # 衰减段次峰不升级混合（2026-11-07 实测）；R3（2026-11-08）：地板 0.30→0.18 后 7 处 af 0.153-0.208 散在双峰（含衰减段外 249/265）单 read 无法互检 → 待定（1 处 af<0.15 只记 info）
   F3:  {verdict: pending,       sites: [], mixed: false, file: 310.ab1}    # 无 PCON：T24 峰型估 Q 恢复分析（quality_source=peak_estimate，2026-11-07 实测）

@@ -101,6 +101,32 @@ def _s6():
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[])
 
 
+def _s18():
+    """独立正例（2026-11-08 复审 R7）：CDS 内框内缺失 3bp——真值来自构造
+    （planted deletion），不是「跑出来是什么就是什么」；与既有正例
+    （替换为主、M14/M15 为未决 indel）互补，覆盖确证缺失这一格"""
+    rng = _rng("s18")
+    ref = list(_rand_seq(rng, 1500))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(331)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:1299] = list("".join(codons))
+    ref = "".join(ref)
+    # 500-502 框内缺失（CDS 301-1299 内，远离端部与边界）
+    blob = make_trace_ab1(ref[0:500] + ref[503:1100], q=50)
+    feats = [dict(name="Solo", type="CDS", start=301, end=1299, strand="+")]
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats)
+
+
+def _s19():
+    """独立正例（R7）：骨架（无特征区）确证替换 + read 全覆盖——goal T5
+    整参考差异判定口径下唯一事件就是 planted sub，期望 fail 由构造决定"""
+    rng = _rng("s19")
+    ref = _rand_seq(rng, 900)
+    alt = "G" if ref[649] != "G" else "T"
+    blob = _read_from_ref(ref, 1, 900, subs=[(650, alt)], q=50)
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[])
+
+
 def _s7():
     rng = _rng("s7")
     ref = _rand_seq(rng, 1500)
@@ -439,6 +465,8 @@ SCENARIOS: List[Scenario] = [
     Scenario("S5", "A 2.1", "T6", "read 5' 端 175bp 连接错误被软剪切吞掉", _s5),
     Scenario("S6", "A 2.1", "T6", "read 3' 端 188bp 差异被软剪切吞掉", _s6),
     Scenario("S7", "A 4.1 / A 5.5", "T5", "启动子确证突变网页✗/Excel 合格/归档正确", _s7),
+    Scenario("S18", "复审R7", "R7", "独立正例：CDS 内框内缺失 3bp 确证（真值来自构造）", _s18),
+    Scenario("S19", "复审R7", "R7", "独立正例：骨架确证替换全覆盖（真值来自构造）", _s19),
     Scenario("S8", "A 4.2 / B P0-4", "T3", "唯一 CDS 覆盖 34.5% 照样 ✓/合格", _s8),
     Scenario("S9", "B P0-1", "T1", "首端 30bp 硬区 Q40 变异 → ✓（疑似伪影）", _s9),
     Scenario("S10", "B P0-2", "T1", "read 中段 N 隐身（variants=[] identity=1.0 ✓）", _s10),
