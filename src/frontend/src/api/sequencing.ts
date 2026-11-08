@@ -43,7 +43,7 @@ export interface CdsReport {
   verdict: string
 }
 
-/** 证据包单 read 行（goal T22；A 5.4）：调用/Q/峰强比/P(真实)/伪迹 + 小图 */
+/** 证据包单 read 行（goal T22；A 5.4）：调用/Q/峰强比/评分/伪迹 + 小图 */
 export interface EvidencePackRead {
   read: string
   read_pos?: number
@@ -112,7 +112,8 @@ export interface SequencingVariant {
   confidence?: string
   /** 证据三态（goal T1；旧记录缺省）：rejected 仅互检定案，unresolved=证据不足 */
   status?: 'rejected' | 'confirmed' | 'unresolved'
-  /** 校准概率 P(真实)（goal T15；旧记录缺省） */
+  /** T15 规则评分 0-1（锚点+层内修正；2026-11-08 复审 R5：与旧 if 树
+   * 逐位等价的手设系数，非校准概率——前端展示为 0-100 评分，旧记录缺省） */
   p_real?: number
   /** 四档行动（goal T15；旧记录缺省）：采信/排除/核对峰图/建议重测 */
   action?: 'accept' | 'exclude' | 'review_trace' | 'resequence'
