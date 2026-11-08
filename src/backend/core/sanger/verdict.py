@@ -44,8 +44,9 @@ PENDING_KINDS = {
     "allele_mismatch", "junction_variant", "critical_element_variant",
     # 2026-11-08 复审：cds_union 实测齐全但 verified<100% 的残余缺口
     # （首尾不可信区/N 列）——T12 复评挂账落地，不再出现 ✓ 头行与
-    # 阻断项并存的矛盾；关键元件覆盖缺口同理（不能只写 info）
-    "roi_unverified", "critical_element_unverified",
+    # 阻断项并存的矛盾；关键元件覆盖缺口同理（不能只写 info）；
+    # 首端硬区内未比对的高质量段（≤30bp 连接错误原来被解析端豁免）
+    "roi_unverified", "critical_element_unverified", "end_junction_unverified",
 }
 
 # 未决位点 kind → blocking.kind 映射
@@ -334,7 +335,10 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"{pa.get('aligned_read_len')}bp 比对上参考，其余部分未验证",
                  "核对样品身份/参考选择（或按环状参考分析）")
         # 端部软剪切的高质量段（goal T6；A 2.1）+ split-read 定位（T19）：
-        # 命中→结构断点（段落点坐标可查），未命中→未知序列；均 fail
+        # 命中→结构断点（段落点坐标可查），未命中→未知序列；均 fail。
+        # 例外（2026-11-08 复审 P1-6）：首端硬区（≤front_hard）内的未定位
+        # 段降为待核（end_junction_unverified）——≤30bp 连接错误原来在
+        # 解析端被豁免成静默 ✓；split-read 定位到断点的仍按结构异常 fail
         for hq in r.get("unaligned_hq_segments") or []:
             sr_ = hq.get("split_read") or {}
             if sr_.get("status") == "breakpoint":
@@ -347,6 +351,14 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                      + f"（身份 {sr_.get('identity')}），连接/结构异常，该部分未验证",
                      "核对连接处/样品身份，必要时换引物或补测对侧",
                      fail_impact=True)
+            elif hq.get("zone") == "front_hard":
+                _blk("end_junction_unverified", hq.get("adj_ref_start"),
+                     hq.get("adj_ref_end"), None,
+                     f"{r.get('filename')} 首端硬区内 "
+                     f"{hq.get('length')}bp 高质量序列未比对上参考"
+                     f"（平均 Q{hq.get('mean_q')}）——连接/结构待核"
+                     "（亦可能为首端伪影），该部分未验证",
+                     "核对峰图起点与连接处；必要时换引物或补测对侧")
             else:
                 _blk("unaligned_hq_segment", hq.get("adj_ref_start"),
                      hq.get("adj_ref_end"), None,

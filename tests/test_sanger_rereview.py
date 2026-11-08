@@ -86,11 +86,13 @@ def test_low_af_mixed_in_cds_detected():
 
 def test_front_short_junction_reported():
     """P1-6：首端 20bp 高质量外源段（错误连接，落在 front_hard 豁免区）
-    → 不得静默，须进 blocking"""
+    → 不得静默：出 end_junction_unverified 待核阻断（split-read 定位到
+    断点仍按 structural_breakpoint fail）"""
     rng = _rng("rr5")
     ref = _rand_seq(rng, 1500)
     wrong = "".join(rng.choice("ACGT") for _ in range(20))
     blob = make_trace_ab1(wrong + ref[0:880], q=50)
     res = analyze([("r.ab1", blob)], ref, [], circular=False)
     kinds = _blocking_kinds(res)
-    assert "unaligned_hq_segment" in kinds
+    assert "end_junction_unverified" in kinds
+    assert _status(res) == "pending"
