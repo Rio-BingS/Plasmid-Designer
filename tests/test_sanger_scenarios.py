@@ -440,3 +440,367 @@ def test_s19_backbone_substitution_confirmed():
     assert v and v["confidence"] == "high"
     assert res["conclusion"].startswith("✗")
     assert _status(res) == "fail"
+
+
+# ==================== goal v3 §4 场景真值（W0 定稿，不得随输出修改） ====================
+# 期望 = goal_sanger_scope_v3 §4 表格右列 + §8 已采用的默认决策；实现未落地
+# 的任务挂 xfail(strict=True, reason=<工作项>)，落地后移除标记即转绿。
+# 真值来源：goal 文本与场景构造（planted），不是「跑出来是什么就是什么」。
+
+XF = pytest.mark.xfail
+
+
+# ---------- §4.1 SC：范围 ----------
+
+@XF(strict=True, reason="W5：headline 与 element_verdicts（PL A5/A6）")
+def test_sc1_scope_geneX_pass_headline_elements():
+    """SC1：scope=GeneX 正反全覆盖 → pass；headline 含 GeneX（301–900）；
+    AmpR/ori 元件结论 not_assessed"""
+    spec, res = _run("SC1")
+    vd = res["verdict"]
+    assert _status(res) == "pass"
+    assert vd["blocking"] == []
+    assert "GeneX（301–900）" in (vd.get("headline") or "")
+    els = {e["name"]: e for e in vd.get("element_verdicts") or []}
+    assert els["AmpR"]["status"] == "not_assessed"
+    assert els["ori"]["status"] == "not_assessed"
+
+
+@XF(strict=True, reason="W10：scope 来源推断（filename_match）")
+def test_sc2_filename_match_scope_pass():
+    """SC2：不声明 scope，参考名 GeneX 命中 → source=filename_match，pass"""
+    from core.sanger.scope import infer_scope  # noqa: W10 落地
+    spec = S["SC2"].build()
+    scope = infer_scope(spec["ref_name"], [n for n, _ in spec["ab1_files"]],
+                        spec["features"])
+    assert scope.source == "filename_match" and scope.declared
+    kwargs = dict(spec["kwargs"])
+    kwargs["scope"] = scope
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
+    assert _status(res) == "pass"
+    assert res["verdict"]["scope"]["source"] == "filename_match"
+
+
+@XF(strict=True, reason="W5：headline「已测区段」口径（§8 决策 1）")
+def test_sc3_undeclared_scope_measured_wording():
+    """SC3：未声明范围 → declared=false、status=pass；headline 写「已测 x–y…
+    …未评估」；任何出口不得出现「构建与设计一致」"""
+    spec, res = _run("SC3")
+    vd = res["verdict"]
+    assert vd["scope"]["declared"] is False
+    assert _status(res) == "pass"
+    head = vd.get("headline") or ""
+    assert "已测" in head and "未评估" in head
+    assert "构建与设计一致" not in head
+    assert "构建与设计一致" not in res["conclusion"]
+    assert not excel_conclusion("P", res, 1, True).startswith("合格：与设计一致")
+
+
+@XF(strict=True, reason="W5：headline「已测区段」口径（§8 决策 1；RV P0-1）")
+def test_sc4_whole_partial_never_blanket_pass():
+    """SC4：3000bp 只测 1-900 不声明范围 → 同 SC3：pass + 已测区段口径"""
+    spec, res = _run("SC4")
+    vd = res["verdict"]
+    assert vd["scope"]["declared"] is False
+    assert _status(res) == "pass"
+    head = vd.get("headline") or ""
+    assert "已测" in head and "构建与设计一致" not in head
+
+
+@XF(strict=True, reason="W6：缺口归因 beyond_primer")
+def test_sc5_scope_tail_beyond_primer():
+    """SC5：scope=301-1500 只有正向 read（至 1250）→ partial；
+    缺口 cause=beyond_primer（加引物动作）"""
+    spec, res = _run("SC5")
+    assert _status(res) == "partial"
+    blk = [b for b in res["verdict"]["blocking"]
+           if b.get("kind") == "scope_beyond_primer"]
+    assert blk and blk[0]["ref_end"] >= 1400
+    assert "引物" in (blk[0].get("action") or "")
+
+
+@XF(strict=True, reason="W14：复核队列（缺口归因 read_shortfall 随 W6）")
+def test_sc6_read_shortfall_enters_review_queue():
+    """SC6：read 400bp 处衰减 → partial；cause=read_shortfall；进复核队列"""
+    from core.sanger.review import build_queue  # noqa: W14 落地
+    spec, res = _run("SC6")
+    assert _status(res) == "partial"
+    blk = [b for b in res["verdict"]["blocking"]
+           if b.get("kind") == "scope_read_shortfall"]
+    assert blk, "测序未达缺口必须单列"
+    queue = build_queue(res)
+    assert queue, "read_shortfall 缺口必须进入复核队列"
+    assert any(q.get("evidence") for q in queue), "队列项自带峰图证据"
+
+
+@XF(strict=True, reason="W2：范围外确证差异降 info")
+def test_sc7_out_of_scope_variant_info_only():
+    """SC7：R 外骨架 1200 确证替换 → pass；out_of_scope_variant 单列不进 blocking"""
+    spec, res = _run("SC7")
+    assert _status(res) == "pass"
+    assert res["verdict"]["blocking"] == []
+    info = [b for b in res["verdict"]["info"]
+            if b.get("kind") == "out_of_scope_variant"]
+    assert info and info[0].get("ref_start") == 1200
+
+
+@XF(strict=True, reason="W2：范围外关键元件确证差异判 pending（§8 决策 2）")
+def test_sc8_out_of_scope_critical_element_pending():
+    """SC8：R 外 ori 内确证替换 → pending（critical_element_variant），不判 fail"""
+    spec, res = _run("SC8")
+    assert _status(res) == "pending"
+    blk = [b for b in res["verdict"]["blocking"]
+           if b.get("kind") == "critical_element_variant"]
+    assert blk and blk[0].get("element") == "ori"
+
+
+@XF(strict=True, reason="W1：build_verdict 纯函数化 + scope 入参")
+def test_sc9_verdict_reproducible_across_scopes(monkeypatch):
+    """SC9：同一份 result 依次 GeneX / 全质粒 / 不声明 重算 verdict，
+    与本快照一致、不调用比对、重算可复现"""
+    import core.sanger.aligner as _aligner
+    from core.sanger.verdict import build_verdict
+
+    def _boom(*_a, **_k):
+        raise AssertionError("build_verdict 不得调用比对")
+    monkeypatch.setattr(_aligner, "align_read", _boom)
+    monkeypatch.setattr(_aligner, "align_read_circular", _boom)
+    spec = S["SC9"].build()
+    kwargs = {k: v for k, v in (spec.get("kwargs") or {}).items()
+              if not k.startswith("_")}
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
+    L = len(spec["reference"])
+    v_gene = build_verdict(res, L, scope="GeneX")
+    v_whole = build_verdict(res, L, scope="全质粒")
+    v_none = build_verdict(res, L, scope=None)
+    # 快照（goal §4 SC9 期望，W0 定稿）：scope=GeneX 全覆盖 → pass；
+    # 全质粒声明范围 → 范围内未测元件 pending；未声明 → 已测区段 pass
+    assert v_gene["status"] == "pass" and v_gene["blocking"] == []
+    assert "GeneX（301–900）" in (v_gene.get("headline") or "")
+    assert v_whole["status"] == "pending"
+    kinds = {b["kind"] for b in v_whole["blocking"]}
+    assert {"scope_beyond_primer", "critical_element_unverified"} <= kinds
+    assert v_none["status"] == "pass" and v_none["scope"]["declared"] is False
+    assert build_verdict(res, L, scope="GeneX") == v_gene
+
+
+@XF(strict=True, reason="W3：pass ⇏ blocking 契约（RV P0-2）")
+def test_sc10_verified_gap_never_pass_with_blocking():
+    """SC10：verified ≈99%、measured 100% → 不得出现 pass 同时带 blocking"""
+    spec, res = _run("SC10")
+    vd = res["verdict"]
+    assert not (vd["status"] == "pass" and vd["blocking"]), "pass 与 blocking 并存"
+    assert vd["status"] == "pending"
+    assert any(b["kind"] == "roi_unverified" for b in vd["blocking"])
+    cov = res["coverage"]
+    assert 98.0 <= cov["verified_percent"] < 100.0
+
+
+@XF(strict=True, reason="W6：双链要求按 E 归因")
+def test_sc11_double_strand_required_partial():
+    """SC11：scope 要求双链、GeneX 后半段单链 → partial；阻断指向单链区"""
+    spec, res = _run("SC11")
+    assert _status(res) == "partial"
+    blk = [b for b in res["verdict"]["blocking"]
+           if (b.get("ref_start") or 10**9) <= 700 <= (b.get("ref_end") or -1)]
+    assert blk, "单链区（651-900）必须有归因阻断项"
+
+
+# ---------- §4.2 CM：目的基因模式 ----------
+
+def _run_cds_mode(sid):
+    """W8 目标路径：prepare_scope_mode（全质粒 + scope，不裁参考）→ analyze"""
+    from core.sanger.cds_extract import prepare_scope_mode  # noqa: W8 落地
+    spec = S[sid].build()
+    ref2, feats2, scope, circular = prepare_scope_mode(
+        spec["reference"], spec["features"], spec["ref_name"],
+        [n for n, _ in spec["ab1_files"]], None)
+    res = analyze(spec["ab1_files"], ref2, feats2, scope=scope, circular=circular)
+    return spec, res
+
+
+@XF(strict=True, reason="W8：目的基因模式不再裁参考（CM P0-A）")
+def test_cm1_long_reads_beyond_flank_pass():
+    """CM1：正反 read 覆盖 700-1701/1000-1900，序列全对 → pass，
+    无 unaligned_hq_segment / partial_alignment"""
+    spec, res = _run_cds_mode("CM1")
+    assert _status(res) == "pass"
+    kinds = _kinds(res)
+    assert "unaligned_hq_segment" not in kinds
+    assert "partial_alignment" not in kinds
+    assert "GeneX（1001–1600）" in (res["verdict"].get("headline") or "")
+
+
+@XF(strict=True, reason="W8：目的基因模式不再裁参考（CM P0-A）")
+def test_cm2_vector_primer_read_pass():
+    """CM2：载体通用引物 read 起点距 ATG 300bp → pass"""
+    spec, res = _run_cds_mode("CM2")
+    assert _status(res) == "pass"
+    assert "unaligned_hq_segment" not in _kinds(res)
+
+
+@XF(strict=True, reason="W8：跨原点 CDS 全质粒比对（CM P0-B）")
+def test_cm3_cross_origin_cds_junction_insertions():
+    """CM3：跨原点 CDS 的 ATG 前 / 终止后 1bp 插入 → 检出并判 junction_variant"""
+    spec, res = _run_cds_mode("CM3")
+    ins = [v for v in res["variants"] if v["type"] == "insertion"]
+    assert len(ins) >= 2, f"两处接合区插入都必须检出：{res['variants']}"
+    assert "junction_variant" in _kinds(res)
+    assert _status(res) == "fail"
+
+
+@XF(strict=True, reason="W8：近原点 CDS 全质粒比对")
+def test_cm4_near_origin_cds_matches_scope_mode():
+    """CM4：近原点 CDS ATG 前 1bp 插入 → 检出；与「全质粒 + scope=该 CDS」一致"""
+    spec, res = _run_cds_mode("CM4")
+    assert any(v["type"] == "insertion" for v in res["variants"]), "插入必须检出"
+    assert "junction_variant" in _kinds(res)
+    # 对照：同一份 read 直接走全质粒 + scope=该 CDS
+    res2 = analyze(spec["ab1_files"], spec["reference"], spec["features"],
+                   scope="NearCDS", circular=True)
+    ins2 = [v for v in res2["variants"] if v["type"] == "insertion"]
+    assert len(ins2) == len([v for v in res["variants"] if v["type"] == "insertion"])
+    assert _status(res2) == _status(res)
+
+
+@XF(strict=True, reason="W8：cds_mode 与 scope 模式同源")
+def test_cm5_cds_mode_equals_scope_mode():
+    """CM5：同一组 read，cds_mode 与「全质粒 + scope=该 CDS」的 status、
+    headline、blocking kind 集合逐项一致"""
+    spec, res_cds = _run_cds_mode("CM5")
+    res_scope = analyze(spec["ab1_files"], spec["reference"], spec["features"],
+                        scope="GeneX", circular=True)
+    assert _status(res_cds) == _status(res_scope)
+    assert (res_cds["verdict"].get("headline") or "") == \
+           (res_scope["verdict"].get("headline") or "")
+    assert {b["kind"] for b in res_cds["verdict"]["blocking"]} == \
+           {b["kind"] for b in res_scope["verdict"]["blocking"]}
+
+
+@XF(strict=True, reason="W9：参考名与 read 名冲突判歧义（CM P2-G）")
+def test_cm6_ref_read_name_conflict_ambiguous():
+    """CM6：参考名命中 GFP、read 名命中 mCherry → 判歧义返回候选清单"""
+    from core.sanger.cds_extract import cds_candidates, resolve_auto
+    spec = S["CM6"].build()
+    cand, note = resolve_auto(cds_candidates(spec["features"]),
+                              "GFP_backbone", ["mCherry_F.ab1"])
+    assert cand is None and "歧义" in note
+
+
+@XF(strict=True, reason="W9：显式选择在未去重候选中查找（CM P1-F）")
+def test_cm7_explicit_nested_and_duplicate():
+    """CM7：显式选择嵌套 6xHis 可选中；重名时报错"""
+    from core.sanger.cds_extract import CdsResolveError, resolve_explicit
+    spec = S["CM7"].build()
+    cand = resolve_explicit(spec["features"], "6xHis")
+    assert cand["name"] == "6xHis" and cand["start"] == 401 and cand["end"] == 418
+    dup_feats = [dict(name="Dup", type="CDS", start=1501, end=1600, strand="+"),
+                 dict(name="Dup", type="CDS", start=1701, end=1800, strand="+")]
+    with pytest.raises(CdsResolveError):
+        resolve_explicit(dup_feats, "Dup")
+
+
+@XF(strict=True, reason="W9：变异双坐标（CM P1-D）")
+def test_cm8_negative_strand_dual_coords():
+    """CM8：负链基因质粒 1100 位替换 → coords.plasmid=1100，c./p. 正确
+    （CDS 1001-1600 负链：编码偏移 = 1600-1100 = 500 → c.501）"""
+    spec, res = _run("CM8")
+    v = _v(res, 1100)
+    assert v and v.get("coords"), "变异必须携带双坐标"
+    assert v["coords"]["plasmid"] == 1100
+    cds = v["coords"].get("cds") or {}
+    assert cds.get("name") == "GeneX" and cds.get("c") == "c.501"
+
+
+# ---------- §4.3 MX-AF：混合 ----------
+
+@XF(strict=True, reason="W4：范围内低 AF 进入 pending（RV P0-3）")
+@pytest.mark.parametrize("af", [0.12, 0.15, 0.18, 0.20])
+def test_af1_low_af_in_cds_at_least_pending(af):
+    """AF1：CDS 内单 read AF 0.12/0.15/0.18/0.20 → 至少 pending，不得 pass，
+    位点必须留痕（不允许静默）"""
+    spec = _af1_make(af)
+    kwargs = dict(spec["kwargs"])
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
+    assert _status(res) in ("pending", "mixed"), \
+        f"AF {af} 不得静默 pass（实际 {_status(res)}）"
+    assert _status(res) != "pass"
+    recorded = ([u.get("ref_pos") for u in res.get("unresolved_sites") or []]
+                + [m.get("ref_pos") for m in res.get("mixed_variants") or []])
+    assert 450 in recorded, f"AF {af} 位点必须留痕（unresolved 或 mixed）"
+
+
+def test_af2_backbone_scattered_low_af_unresolved():
+    """AF2：骨架散在双峰 AF 0.15 → 经 unresolved_sites 判 △，不升级 mixed。
+    真值锁定（W0 即满足）：planted 比值 0.1765 经峰幅噪声后实际高于地板
+    0.18，现行口径即走 unresolved_site——本测试锁的是「不升级 mixed、
+    经 unresolved_sites 判 △」这一口径不变量（2026-11-06 定稿）"""
+    spec, res = _run("AF2")
+    us = [u for u in res.get("unresolved_sites") or []
+          if u.get("ref_pos") in (300, 700)]
+    assert us and any(u.get("kind") == "mixed_uncorroborated" for u in us)
+    assert _status(res) == "pending"
+    assert _status(res) != "mixed"
+
+
+# ---------- §4.4 PR：引物 ----------
+
+@XF(strict=True, reason="W7：逐 read 引物映射")
+def test_pr1_per_read_primer_mapping_ok():
+    """PR1：正反两条引物各自对应自己的 read → 两条校验都 ok，不报方向不一致"""
+    spec = S["PR1"].build()
+    kwargs = dict(spec["kwargs"])
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
+    pcs = {pc["read"]: pc for pc in res["primer_checks"]}
+    assert pcs["F.ab1"]["status"] == "ok", pcs["F.ab1"]
+    assert pcs["R.ab1"]["status"] == "ok", pcs["R.ab1"]
+
+
+@XF(strict=True, reason="W7：引物无对应 read 报「引物无信号」")
+def test_pr2_primer_without_read_no_signal():
+    """PR2：提供了引物但没有对应的 read → 引物无信号，归 read_shortfall"""
+    spec = S["PR2"].build()
+    kwargs = dict(spec["kwargs"])
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"], **kwargs)
+    blk = [b for b in res["verdict"]["blocking"]
+           if b.get("kind") == "scope_read_shortfall"]
+    assert blk and "引物无信号" in blk[0]["detail"]
+    assert _status(res) == "partial"
+
+
+def test_pr3_primer_window_mismatch():
+    """PR3：read 起点与引物 3′ 端距离出窗 → primer_mismatch（T17 口径保持，
+    W0 即应满足——真值锁定防回潮）"""
+    spec, res = _run("PR3")
+    assert "primer_mismatch" in _kinds(res)
+    assert _status(res) == "fail"
+
+
+# ---------- §4.5 OC：出口一致 ----------
+
+@XF(strict=True, reason="W12：三出口统一由 verdict.status 导出")
+@pytest.mark.parametrize("sid", ["SC3", "SC5", "SC6", "S1"])
+def test_oc1_three_exits_status_derived(sid):
+    """OC1：网页头行符号、Excel 结论前缀、（前端卡片 vitest 于 W13 断言）
+    全部由 verdict.status 导出"""
+    from core.sanger.verdict import status_excel_word, status_symbol
+    spec, res = _run(sid)
+    st = _status(res)
+    assert (res["conclusion"] or "").startswith(status_symbol(st))
+    excel = excel_conclusion("P", res, 1, True)
+    assert excel.startswith(status_excel_word(st)), \
+        f"{sid}: Excel 前缀与 status {st} 不一致：{excel[:30]}"
+
+
+@XF(strict=True, reason="W12：三出口统一（CM 审核三出口不一致例）")
+def test_oc2_cross_origin_exits_consistent():
+    """OC2：跨原点探针不再出现 fail / △ / 不合格 三种说法并存"""
+    from core.sanger.verdict import status_excel_word, status_symbol
+    spec, res = _run_cds_mode("CM3")
+    st = _status(res)
+    sym = status_symbol(st)
+    assert (res["conclusion"] or "").startswith(sym)
+    excel = excel_conclusion("P", res, 1, True)
+    assert excel.startswith(status_excel_word(st))
+    # 网页 △ 而 Excel 不合格 的并存不再出现：符号与 Excel 词同源于 status
+    assert (sym == "✗") == excel.startswith("不合格")

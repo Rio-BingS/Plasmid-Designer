@@ -457,6 +457,352 @@ def _m15():
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[])
 
 
+# ==================== goal v3（sanger scope v3）§4 场景 ====================
+# 真值先行（goal v3 §2 硬约束）：本节场景的「最终期望」在 W0 写定并单独
+# 提交，之后不得为了让测试通过而修改真值（需要改时停下汇报）。
+# 期望集中写在 test_sanger_scenarios.py 的对应断言里；未实现的任务以
+# xfail(strict=True, reason=Wxx) 标注，任务落地后移除标记即转绿。
+
+
+def _scope_base():
+    """SC 系列共用质粒：4000bp 环状——GeneX CDS(301-900，干净 ORF)、
+    AmpR promoter(2001-2100)、AmpR gene(2101-2900，type=gene 避开蛋白
+    判读机器；名称命中关键元件表)、ori(3101-3900)。干净 Q50 read：
+    fwd 覆盖 201-1101、rev 覆盖 151-1051（反向互补），两者信号可信区
+    都完整罩住 GeneX"""
+    rng = _rng("sc-base")
+    ref = list(_rand_seq(rng, 4000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:900] = list("".join(codons))
+    ref = "".join(ref)
+    feats = [
+        dict(name="GeneX", type="CDS", start=301, end=900, strand="+"),
+        dict(name="AmpR promoter", type="promoter", start=2001, end=2100, strand="+"),
+        dict(name="AmpR", type="gene", start=2101, end=2900, strand="+"),
+        dict(name="ori", type="rep_origin", start=3101, end=3900, strand="+"),
+    ]
+    return ref, feats
+
+
+def _scope_reads(ref, fwd_span=(201, 1101), rev_span=(151, 1051)):
+    from core.seq_utils import revcomp
+    out = [("F.ab1", make_trace_ab1(ref[fwd_span[0] - 1:fwd_span[1]], q=50))]
+    if rev_span:
+        out.append(("R.ab1", make_trace_ab1(
+            revcomp(ref[rev_span[0] - 1:rev_span[1]]), q=50)))
+    return out
+
+
+def _sc1():
+    ref, feats = _scope_base()
+    return dict(ab1_files=_scope_reads(ref), reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=True),
+                ref_name="GeneX.gb")
+
+
+def _sc2():
+    """不声明 scope，参考文件名 GeneX 与 read 名可命中 → filename_match"""
+    ref, feats = _scope_base()
+    files = [("GeneX_F.ab1", _scope_reads(ref)[0][1]),
+             ("GeneX_R.ab1", _scope_reads(ref)[1][1])]
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="GeneX.gb")
+
+
+def _sc3():
+    """不声明 scope，文件名也匹配不到 → 未声明范围：已测区段口径"""
+    ref, feats = _scope_base()
+    return dict(ab1_files=_scope_reads(ref), reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="Unknown-123.gb")
+
+
+def _sc4():
+    """3000bp 无 CDS 参考单 read 只测 1-900（RV P0-1 回归）→ 未声明范围
+    「已测区段」口径，不得再出「构建与设计一致」"""
+    rng = _rng("sc4")
+    ref = _rand_seq(rng, 3000)
+    return dict(ab1_files=[("r.ab1", _read_from_ref(ref, 1, 900, q=50))],
+                reference=ref, features=[], kwargs=dict(circular=False),
+                ref_name="noCDS.gb")
+
+
+def _sc5():
+    """scope=301-1500 只有正向 read（起点 200）→ 尾部缺口引物够不到"""
+    ref, feats = _scope_base()
+    return dict(ab1_files=_scope_reads(ref, fwd_span=(200, 1250), rev_span=None),
+                reference=ref, features=feats,
+                kwargs=dict(scope="301-1500", circular=True))
+
+
+def _sc6():
+    """scope=GeneX，正向 read 在 read 坐标约 400 起信号退化 → 测序未达"""
+    ref, feats = _scope_base()
+    blob = make_trace_ab1(ref[200:1101], q=50, tail_width=(400, 3.0))
+    return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=True))
+
+
+def _sc7():
+    """scope=GeneX，read 伸到 R 外，R 外骨架 1200 有确证替换 → 附带结果"""
+    ref, feats = _scope_base()
+    alt = "G" if ref[1199] != "G" else "T"
+    blob = _read_from_ref(ref, 201, 1400, subs=[(1200, alt)], q=50)
+    return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=True))
+
+
+def _sc8():
+    """scope=GeneX，R 外 ori（3101-3900）内 3500 确证替换 → 警示 pending"""
+    ref, feats = _scope_base()
+    alt = "G" if ref[3499] != "G" else "T"
+    blob_scope = _read_from_ref(ref, 201, 1101, q=50)
+    blob_ori = _read_from_ref(ref, 2901, 3901, subs=[(3500, alt)], q=50)
+    return dict(ab1_files=[("F.ab1", blob_scope), ("F2.ab1", blob_ori)],
+                reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=True))
+
+
+def _sc9():
+    """同一份 result 三种 scope 重算（不重跑分析）——spec 与 SC1 同构造，
+    但 analyze 不传 scope（scope 重算只发生在 build_verdict）"""
+    ref, feats = _scope_base()
+    return dict(ab1_files=_scope_reads(ref), reference=ref, features=feats,
+                kwargs=dict(circular=True))
+
+
+def _sc10():
+    """CDS 301-1299（干净 ORF），read 覆盖到 1320 但尾端 ~1289 起信号退化
+    → verified ≈99%、measured 100%：pass 与 blocking 不得并存（RV P0-2）"""
+    rng = _rng("sc10")
+    ref = list(_rand_seq(rng, 1800))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(331)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:1299] = list("".join(codons))
+    ref = "".join(ref)
+    feats = [dict(name="Solo", type="CDS", start=301, end=1299, strand="+")]
+    blob = make_trace_ab1(ref[240:1320], q=50, tail_width=(1050, 3.0))
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="301-1299", circular=False))
+
+
+def _sc11():
+    """scope=GeneX 且要求双链：GeneX 后半段只有正向单链 → partial 按 E 归因"""
+    ref, feats = _scope_base()
+    files = _scope_reads(ref, fwd_span=(201, 1101), rev_span=(151, 651))
+    scope = {"ranges": [[301, 900]], "source": "user", "declared": True,
+             "require_double_strand": True, "elements": ["GeneX"]}
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(scope=scope, circular=True))
+
+
+def _cm_base():
+    """CM 系列共用：4000bp 环状，GeneX CDS 1001-1600（干净 ORF）"""
+    rng = _rng("cm-base")
+    ref = list(_rand_seq(rng, 4000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[1000:1600] = list("".join(codons))
+    ref = "".join(ref)
+    feats = [dict(name="GeneX", type="CDS", start=1001, end=1600, strand="+")]
+    return ref, feats
+
+
+def _cm1():
+    """目的基因模式 + 长 read 超出 ±150 侧翼（CM P0-A）：正反 read 覆盖
+    700-1701 / 1000-1900，序列全对 → pass，无 unaligned/partial"""
+    ref, feats = _cm_base()
+    from core.seq_utils import revcomp
+    files = [("GeneX_F.ab1", make_trace_ab1(ref[699:1701], q=50)),
+             ("GeneX_R.ab1", make_trace_ab1(revcomp(ref[999:1901]), q=50))]
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="GeneX.gb", cds_mode=True)
+
+
+def _cm2():
+    """载体通用引物 read，起点距 ATG 300bp → pass（不因离基因远判 ✗）"""
+    ref, feats = _cm_base()
+    return dict(ab1_files=[("T7_Uni.ab1", make_trace_ab1(ref[700:1701], q=50))],
+                reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="GeneX.gb", cds_mode=True)
+
+
+def _cm3():
+    """跨原点 CDS join(3701..4000,1..300)（干净 ORF 600bp）：ATG 前、终止
+    密码子后各一条含 1bp 插入的 read → 都检出并判 junction_variant（CM P0-B）"""
+    rng = _rng("cm3")
+    ref = list(_rand_seq(rng, 4000))
+    stops = ("TAA", "TAG", "TGA")
+    body = []
+    for _ in range(198):
+        c = _rand_seq(rng, 3)
+        body.append(c if c not in stops else "GCT")
+    # 编码方向：3701-4000（300bp）+ 1-300（300bp）；ATG@3701，TAA@298-300
+    ref[3700:3703] = list("ATG")
+    ref[3703:4000] = list("".join(body[:99]))
+    ref[0:297] = list("".join(body[99:]))
+    ref[297:300] = list("TAA")
+    ref = "".join(ref)
+    ins = "T" if ref[3699] != "T" else "A"       # ATG 前插 1bp（3700/3701 之间）
+    ins2 = "T" if ref[300] != "T" else "A"       # 终止后插 1bp（300/301 之间）
+    r1 = make_trace_ab1(ref[3299:3700] + ins + ref[3700:4000] + ref[0:450], q=50)
+    r2 = make_trace_ab1(ref[3299:4000] + ref[0:300] + ins2 + ref[301:450], q=50)
+    feats = [
+        dict(name="CrossGene", type="CDS", start=3701, end=4000, strand="+",
+             feature_id="cm3cds", segment_index=0, segment_count=2,
+             analysis_target=True),
+        dict(name="CrossGene", type="CDS", start=1, end=300, strand="+",
+             feature_id="cm3cds", segment_index=1, segment_count=2,
+             analysis_target=True),
+    ]
+    return dict(ab1_files=[("CG_F.ab1", r1), ("CG_R.ab1", r2)],
+                reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="CrossGene.gb", cds_mode=True)
+
+
+def _cm4():
+    """近原点 CDS 31-630（干净 ORF），ATG 前 1bp 插入 → 检出且与
+    「全质粒 + scope=该 CDS」结果一致"""
+    rng = _rng("cm4")
+    ref = list(_rand_seq(rng, 2000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[30:630] = list("".join(codons))
+    ref = "".join(ref)
+    ins = "T" if ref[29] != "T" else "A"
+    blob = make_trace_ab1(ref[0:30] + ins + ref[30:1000], q=50)
+    feats = [dict(name="NearCDS", type="CDS", start=31, end=630, strand="+",
+                  analysis_target=True)]
+    return dict(ab1_files=[("N_F.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="NearCDS.gb", cds_mode=True)
+
+
+def _cm5():
+    """同一组干净 read：cds_mode 与「全质粒 + scope=该 CDS」逐项一致"""
+    ref, feats = _cm_base()
+    from core.seq_utils import revcomp
+    files = [("GeneX_F.ab1", make_trace_ab1(ref[699:1701], q=50)),
+             ("GeneX_R.ab1", make_trace_ab1(revcomp(ref[999:1901]), q=50))]
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="GeneX.gb", cds_mode=True)
+
+
+def _cm6():
+    """参考名 GFP_backbone 与 read 名 mCherry_F 指向不同候选 → 判歧义"""
+    rng = _rng("cm6")
+    ref = list(_rand_seq(rng, 3000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:900] = list("".join(codons))          # GFP 301-900
+    codons2 = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons2 = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons2]
+    ref[1500:2100] = list("".join(codons2))       # mCherry 1501-2100
+    ref = "".join(ref)
+    feats = [dict(name="GFP", type="CDS", start=301, end=900, strand="+"),
+             dict(name="mCherry", type="CDS", start=1501, end=2100, strand="+")]
+    blob = _read_from_ref(ref, 1401, 2400, q=50)
+    return dict(ab1_files=[("mCherry_F.ab1", blob)], reference=ref,
+                features=feats, kwargs=dict(circular=False),
+                ref_name="GFP_backbone.gb")
+
+
+def _cm7():
+    """嵌套 6xHis 可被显式选中；重名显式选择报错（构造在测试内补一份）"""
+    rng = _rng("cm7")
+    ref = list(_rand_seq(rng, 2000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(388)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:1469] = list("".join(codons))         # BigCDS 301-1469（390 密码子）
+    ref[400:418] = list("CATCATCATCATCATCAT")     # 6xHis 401-418（嵌套）
+    ref = "".join(ref)
+    feats = [dict(name="BigCDS", type="CDS", start=301, end=1469, strand="+"),
+             dict(name="6xHis", type="CDS", start=401, end=418, strand="+")]
+    blob = _read_from_ref(ref, 201, 1200, q=50)
+    return dict(ab1_files=[("H_F.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(circular=False), ref_name="HisTag.gb")
+
+
+def _cm8():
+    """负链基因：质粒 1100 位替换 → coords.plasmid=1100、c./p. 按编码方向"""
+    rng = _rng("cm8")
+    from core.seq_utils import revcomp
+    ref = list(_rand_seq(rng, 3000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(198)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[1000:1600] = list(revcomp("".join(codons)))   # 负链 CDS 1001-1600
+    ref = "".join(ref)
+    alt = "G" if ref[1099] != "G" else "T"
+    blob = _read_from_ref(ref, 201, 1400, subs=[(1100, alt)], q=50)
+    feats = [dict(name="GeneX", type="CDS", start=1001, end=1600, strand="-")]
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=False))
+
+
+def _af1_make(af: float):
+    """AF1 工厂：CDS 内单 read，450 位次等位丰度 af（0.12/0.15/0.18/0.20）"""
+    rng = _rng("af1")
+    ref = _rand_seq(rng, 1200)
+    alt = next(b for b in "ACGT" if b != ref[449])
+    blob = make_trace_ab1(ref[:1000], q=50, secondary={450: (alt, af / (1 - af))})
+    feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
+    return dict(ab1_files=[("mix.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=False))
+
+
+def _af1():
+    return _af1_make(0.15)
+
+
+def _af2():
+    """骨架散在双峰 AF 0.15：经 unresolved_sites 判 △，不升级 mixed"""
+    rng = _rng("af2")
+    ref = _rand_seq(rng, 1500)
+    sec = {300: (next(b for b in "ACGT" if b != ref[299]), 0.15 / 0.85),
+           700: (next(b for b in "ACGT" if b != ref[699]), 0.15 / 0.85)}
+    blob = make_trace_ab1(ref[:1000], q=50, secondary=sec)
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[],
+                kwargs=dict(circular=False))
+
+
+def _pr_base():
+    """PR 系列共用：1500bp 线性参考，正向引物结合 100-130、反向引物
+    结合 1400-1430（负链）。正向 read 起点 200（距 F 3′ 端 70bp）、
+    反向 read 起点 1500（距 R 3′ 端 70bp）——均在 T17 窗口内"""
+    rng = _rng("pr")
+    ref = _rand_seq(rng, 1500)
+    from core.seq_utils import revcomp
+    fwd_primer = {"name": "P-F", "seq": ref[99:130], "direction": "+"}
+    rev_primer = {"name": "P-R", "seq": revcomp(ref[1399:1430]), "direction": "-"}
+    return ref, fwd_primer, rev_primer
+
+
+def _pr1():
+    """正反两条引物各自对应自己的 read → 两条校验都 ok，不报方向不一致"""
+    ref, fwd_primer, rev_primer = _pr_base()
+    from core.seq_utils import revcomp
+    files = [("F.ab1", make_trace_ab1(ref[199:1200], q=50)),
+             ("R.ab1", make_trace_ab1(revcomp(ref[499:1500]), q=50))]
+    return dict(ab1_files=files, reference=ref, features=[],
+                kwargs=dict(circular=False,
+                            primer={"F.ab1": fwd_primer, "R.ab1": rev_primer}))
+
+
+def _pr2():
+    """提供了引物但没有对应的 read → 「引物无信号」，归 read_shortfall"""
+    ref, fwd_primer, rev_primer = _pr_base()
+    return dict(ab1_files=[("F.ab1", make_trace_ab1(ref[199:1200], q=50))],
+                reference=ref, features=[],
+                kwargs=dict(circular=False, primer={"R.ab1": rev_primer}))
+
+
+def _pr3():
+    """read 起点与引物 3′ 端距离出窗 → primer_mismatch（保持 T17 口径）"""
+    ref, fwd_primer, _rev = _pr_base()
+    blob = _read_from_ref(ref, 350, 1350, q=50)   # 距 F 3′ 端 220bp > 150
+    return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=[],
+                kwargs=dict(circular=False, primer=fwd_primer))
+
+
 SCENARIOS: List[Scenario] = [
     Scenario("S1", "A 1.1 / B P0-1", "T12", "尾端灰区 Q50 错义被强制 low → ✓", _s1),
     Scenario("S2", "A 3.2", "T7", "CDS 单点 35% 混合静默 ✓", _s2),
@@ -495,4 +841,29 @@ SCENARIOS: List[Scenario] = [
     Scenario("M13", "B P1-8", "T2", "verdict/resolved_regions 未结构化下发", _s1),
     Scenario("M14", "B P2-16", "T25", "参考末端插入单 low 票即定插", _m14),
     Scenario("M15", "B P2-17", "T25", "计划酶位附近未决 indel 无提示", _m15),
+    # ---- goal v3 §4（W0 真值先行；task = 使其转绿的工作项）----
+    Scenario("SC1", "goal v3 §4.1", "W5", "scope=GeneX 全覆盖 → pass + headline + 元件未评估", _sc1),
+    Scenario("SC2", "goal v3 §4.1", "W10", "文件名命中 → filename_match scope", _sc2),
+    Scenario("SC3", "goal v3 §4.1", "W5", "未声明范围 → 已测区段口径，禁「构建与设计一致」", _sc3),
+    Scenario("SC4", "goal v3 §4.1", "W5", "无 CDS 参考只测 1/3 → 同 SC3（RV P0-1）", _sc4),
+    Scenario("SC5", "goal v3 §4.1", "W6", "scope 尾部引物够不到 → beyond_primer", _sc5),
+    Scenario("SC6", "goal v3 §4.1", "W14", "read 中途衰减 → read_shortfall 进复核队列", _sc6),
+    Scenario("SC7", "goal v3 §4.1", "W2", "R 外骨架确证差异 → out_of_scope_variant info", _sc7),
+    Scenario("SC8", "goal v3 §4.1", "W2", "R 外关键元件确证差异 → pending", _sc8),
+    Scenario("SC9", "goal v3 §4.1", "W1", "同一 result 换三种 scope 重算可复现", _sc9),
+    Scenario("SC10", "goal v3 §4.1", "W3", "verified 99% 不得 pass 与 blocking 并存（RV P0-2）", _sc10),
+    Scenario("SC11", "goal v3 §4.1", "W6", "要求双链而后半段单链 → partial 按 E 归因", _sc11),
+    Scenario("CM1", "goal v3 §4.2", "W8", "目的基因模式长 read 超侧翼 → pass（CM P0-A）", _cm1),
+    Scenario("CM2", "goal v3 §4.2", "W8", "载体通用引物 read 距 ATG 300bp → pass", _cm2),
+    Scenario("CM3", "goal v3 §4.2", "W8", "跨原点 CDS 接合区插入检出（CM P0-B）", _cm3),
+    Scenario("CM4", "goal v3 §4.2", "W8", "近原点 CDS 与全质粒+scope 一致", _cm4),
+    Scenario("CM5", "goal v3 §4.2", "W8", "cds_mode 与全质粒+scope 结论逐项一致", _cm5),
+    Scenario("CM6", "goal v3 §4.2", "W9", "参考名与 read 名指向不同候选 → 歧义", _cm6),
+    Scenario("CM7", "goal v3 §4.2", "W9", "嵌套 6xHis 可显式选中；重名报错", _cm7),
+    Scenario("CM8", "goal v3 §4.2", "W9", "负链基因替换 → 双坐标正确", _cm8),
+    Scenario("AF1", "goal v3 §4.3", "W4", "CDS 内 AF 0.12-0.20 至少 pending（RV P0-3）", _af1),
+    Scenario("AF2", "goal v3 §4.3", "W4", "骨架散在双峰 AF 0.15 → △ 不升级混合", _af2),
+    Scenario("PR1", "goal v3 §4.4", "W7", "逐 read 引物对应 → 两条都 ok", _pr1),
+    Scenario("PR2", "goal v3 §4.4", "W7", "引物无对应 read → 引物无信号", _pr2),
+    Scenario("PR3", "goal v3 §4.4", "", "引物距离出窗 → primer_mismatch（T17 既有口径）", _pr3),
 ]
