@@ -48,13 +48,11 @@ NOT_VIA_ANALYZE = {
     "M11": "app 层 _precheck 场景（T18）",
 }
 
-# goal v3 §4 场景中当前契约确实失败的子集（spec kwargs 里的 scope 等
-# analyze 尚未接受的入参 → TypeError）。strict xfail 自 policing：任务
-# 落地、契约转绿后若忘记从本表移除，XPASS 会报错强制清理。其余 v3 场景
-# （SC2/3/4/9、CM1-7、AF2、PR1-3）在契约口径下当前已一致，不标。
-V3_CONTRACT_XFAIL = {
-    "SC1", "SC5", "SC6", "SC7", "SC8", "SC10", "SC11", "CM8", "AF1",
-}
+# goal v3 §4 场景中当前契约确实失败的子集。strict xfail 自 policing：
+# 任务落地、契约转绿后若忘记从本表移除，XPASS 会报错强制清理。
+# W1 接线 analyze(scope=...) 后此前因 TypeError 失败的场景全部转一致，
+# 集合暂空（W0 期间曾登记 9 例，见 git log）——机制保留备用
+V3_CONTRACT_XFAIL: set = set()
 
 
 @pytest.mark.parametrize("spec", SCENARIOS, ids=[s.id for s in SCENARIOS])
