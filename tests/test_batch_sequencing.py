@@ -250,13 +250,16 @@ def test_excel_conclusion_错质粒不入正确(label, read_fn):
     assert _conclusion_bucket(out) == "错误"
 
 
-def test_excel_conclusion_完整比对仍合格():
-    """对照：同一参考上完整比对的 read（覆盖 CDS）结论不变，仍归入 正确/"""
+def test_excel_conclusion_完整比对_verified缺口待定():
+    """对照：同一参考上完整比对的 read（覆盖 CDS）。2026-11-08 复审 R2：
+    CDS 起点即 read 起点时首端硬区 1-30bp 落在 CDS 内、verified 90%——
+    旧口径 status=pass 却挂着 blocking roi_unverified（✓ 头行与阻断项
+    并存的矛盾，复审 P0-2），现在随 verified 口径落 △待定、归 待定/"""
     from app.sequencing_report import _conclusion_bucket
     res = _h1_case(lambda ref, rs: ref[:700])
     out = batch.excel_conclusion("P1", res, 1, True)
-    assert out.startswith("合格：与设计一致"), out
-    assert _conclusion_bucket(out) == "正确"
+    assert out.startswith("待定：判定区域验证覆盖 90.0%"), out
+    assert _conclusion_bucket(out) == "待定"
 
 
 # ---------------------------------------------------------------- 端到端
