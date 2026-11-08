@@ -671,9 +671,12 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     _syn_flags = [_is_synonymous(v) for v in confirmed]
     syn = [v for v, s in zip(confirmed, _syn_flags) if s]
     hard = [v for v, s in zip(confirmed, _syn_flags) if not s]
-    # 端部软剪切高质量段（goal T6；A 2.1）：旧记录 reads 无该键 → 空
+    # 端部软剪切高质量段（goal T6；A 2.1）：旧记录 reads 无该键 → 空。
+    # 首端硬区段（zone="front_hard"，2026-11-08 复审 P1-6 起上报）是待核
+    # 不是结构异常——不进「不合格」分支，由 verdict pending 闸门出 待定
     hq_segs = [(r["filename"], s) for r in res.get("reads") or []
-               for s in (r.get("unaligned_hq_segments") or [])]
+               for s in (r.get("unaligned_hq_segments") or [])
+               if s.get("zone") != "front_hard"]
     # verdict 驱动的覆盖分级（goal T5；A 4.2）：partial/insufficient 由
     # ROI 覆盖推导、Excel 端不重复算（ROI 需要 features 参与判定，结果
     # 里没有；旧记录无 verdict → 走原分支，历史口径不变）

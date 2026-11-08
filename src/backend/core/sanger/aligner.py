@@ -541,11 +541,15 @@ def check_unaligned_hq_segment(aln: Dict, trimmed_q: List[int]) -> List[Dict]:
 
     局部比对把端部差异解释成"没测到"——而连接错误恰恰发生在 read 端部。
     判定：剪切段长度 ≥15bp 且 Q≥20 占比 ≥80%（首尾低质量正常剪切被占比
-    挡住）；5′ 端整体落在首端硬不可信区内（≤front_hard，染料团/信号未稳
-    的正常剪切）不触发。3′ 端不套 tail_gray 边界——该边界是对「对齐穿过
-    去」的 read 的信号衰减先验，端部剪掉的高 Q 段正是要报的异常（S6）。
+    挡住）。3′ 端不套 tail_gray 边界——该边界是对「对齐穿过去」的 read
+    的信号衰减先验，端部剪掉的高 Q 段正是要报的异常（S6）。
+    5′ 端整体落在首端硬不可信区内（≤front_hard=30）的剪切段仍上报，但带
+    zone="front_hard" 标记降为待核（2026-11-08 复审 P1-6：≤30bp 的高质量
+    连接错误原来在这里被无条件豁免成静默 ✓；正常首端染料团剪切是低 Q，
+    能过质量门的外源段不该沉默）——判定端按标记出 pending 而非 fail。
     返回 [{side, start, end, length, hq_len, mean_q, adj_ref_start,
-    adj_ref_end, direction}]（电泳链 1-based；adj_* 为相邻比对块参考坐标）。"""
+    adj_ref_end, direction, zone?}]（电泳链 1-based；adj_* 为相邻比对块
+    参考坐标）。"""
 
     out: List[Dict] = []
     for side, seg in (("5′", aln.get("clipped_5p")), ("3′", aln.get("clipped_3p"))):
@@ -554,18 +558,19 @@ def check_unaligned_hq_segment(aln: Dict, trimmed_q: List[int]) -> List[Dict]:
         a, b = int(seg[0]), int(seg[1])
         if b < a or b - a + 1 < UNALIGNED_HQ_MIN_BP:
             continue
-        if side == "5′" and b <= DEFAULT_ZONE.front_hard:
-            continue  # 首端硬区整体剪切：正常，不触发
         qs_ = trimmed_q[a - 1:b]
         hq = sum(1 for q in qs_ if q >= UNALIGNED_HQ_Q)
         if hq < UNALIGNED_HQ_MIN_BP or hq / len(qs_) < UNALIGNED_HQ_FRAC:
             continue
-        out.append({
+        entry = {
             "side": side, "start": a, "end": b, "length": b - a + 1,
             "hq_len": hq,
             "mean_q": round(sum(qs_) / len(qs_), 1) if qs_ else 0,
             "adj_ref_start": aln.get("ref_start"),
             "adj_ref_end": aln.get("ref_end"),
             "direction": aln.get("direction", "+"),
-        })
+        }
+        if side == "5′" and b <= DEFAULT_ZONE.front_hard:
+            entry["zone"] = "front_hard"  # 判定端降为待核（end_junction_unverified）
+        out.append(entry)
     return out
