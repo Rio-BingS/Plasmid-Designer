@@ -35,6 +35,9 @@ from core.sanger.mixed_call import MINOR_AF_MIN
 from core.sanger.overlap import (
     double_strand_fraction as _double_strand_fraction, REQUIRE_DOUBLE_STRAND,
 )
+from core.sanger.scope import (  # goal v3 W1：范围统一载体（§3.1）
+    JUNCTION_HALF_WIDTH, Scope, coerce_scope, junction_ranges,
+)
 
 # pending 级阻断种类（goal §3 blocking.kind 枚举的待定子集；其余种类随
 # 对应任务 T6/T7/T9/T16/T17 落地后加入）
@@ -71,8 +74,9 @@ CRITICAL_NAME_RE = re.compile(
 # 抗性/ori 盲区提示的名称线索（参考未注释这些元件时只提示，不自动注释）
 _RESIST_ORI_NAME_RE = re.compile(r"ampr|kanr|cmr|neor|puc|ori|f1", re.IGNORECASE)
 
-# 接合区半宽（goal §5 T5：CDS 模式载体-基因接合区 ±30bp）
-JUNCTION_HALF_WIDTH = 30
+# 接合区半宽（goal §5 T5：CDS 模式载体-基因接合区 ±30bp）——常量与实现
+# 已收敛到 core.sanger.scope（goal v3 W1），此处保留别名兼容旧引用
+# JUNCTION_HALF_WIDTH = scope.JUNCTION_HALF_WIDTH（见顶部 import）
 
 # ROI 内 verified 覆盖低于该百分比且参考为 whole 口径时只记 info
 _WHOLE_PARTIAL_INFO = True
@@ -107,22 +111,18 @@ def _ranges_cover(ranges: List, start: int, end: int) -> float:
 
 
 def _junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
-    """接合区（goal T5；B P1-11）：CDS 模式 analysis_target 的两端 ±30bp。
-    返回 [(start, end, element)]；全质粒模式的插入边界随设计记录对接。"""
-    out: List[Tuple[int, int, str]] = []
-    for f in features or []:
-        if not f.get("analysis_target") or f.get("type") != "CDS":
-            continue
-        s, e = int(f["start"]), int(f["end"])
-        out.append((max(1, s - JUNCTION_HALF_WIDTH), s + JUNCTION_HALF_WIDTH,
-                    f.get("name") or "CDS"))
-        out.append((e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH,
-                    f.get("name") or "CDS"))
-    return out
+    """接合区（goal T5；B P1-11）：实现收敛到 core.sanger.junction_ranges
+    （goal v3 W1）；保留私有别名兼容既有调用"""
+    return junction_ranges(features)
 
 
-def build_verdict(result: Dict, ref_length: int) -> Dict:
-    """从 analyze 结果组装 Verdict（只读，不改 result 内其他键）"""
+def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
+    """从 analyze 结果组装 Verdict（只读，不改 result 内其他键）。
+
+    goal v3 W1：build_verdict 是纯函数——除 result/scope/ref_length 外不读
+    任何状态、不调用比对；同一份 result 换 scope 重算可复现（goal v3 §0.6）。
+    scope：None / Scope / dict / str（元件名、区间、关键字，见 scope.py）。
+    W1 只接线：声明范围时 ROI 取 scope 外包框（语义重构随 W2）。"""
     variants = result.get("variants") or []
     sites = result.get("unresolved_sites") or []
     cds_reports = result.get("cds_reports") or []
@@ -158,10 +158,16 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                      "element": element, "detail": detail, "action": "",
                      "refs": []})
 
-    # ROI（goal T5）：CDS 特征并集 > 整条参考；设计记录的插入区间随 T22 对接
+    # ROI（goal T5）：CDS 特征并集 > 整条参考；设计记录的插入区间随 T22 对接。
+    # goal v3 W1：声明范围（scope.declared）时 ROI = scope 外包框（兼容旧
+    # verdict.roi 字段）；范围语义（缺口归因/未声明口径）随 W2 重构
+    scope_obj = coerce_scope(scope, features, ref_length)
     cds_feats = [f for f in features if f.get("type") == "CDS"
                  and 1 <= int(f.get("start") or 0) <= int(f.get("end") or 0) <= ref_length]
-    if cds_feats:
+    if scope_obj is not None and scope_obj.ranges:
+        roi_start, roi_end = scope_obj.bounding_box()
+        roi_source = scope_obj.source
+    elif cds_feats:
         roi_start = min(int(f["start"]) for f in cds_feats)
         roi_end = max(int(f["end"]) for f in cds_feats)
         roi_source = "cds_union"
@@ -477,5 +483,7 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
             "failed": [{"file": e.get("filename"), "error": e.get("error", "")}
                        for e in errors],
         },
+        # 需测范围（goal v3 §3.3；None=未声明，W2 起合成 measured 口径）
+        "scope": scope_obj.to_dict() if scope_obj is not None else None,
         "algo_version": result.get("algo_version"),
     }

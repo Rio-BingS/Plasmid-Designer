@@ -72,6 +72,7 @@ from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
 )
 from core.sanger.verdict import build_verdict
+from core.sanger.scope import coerce_scope  # goal v3 W1：scope 入参归一
 from core.sanger.readmap import ReadRefMap
 from core.sanger.mixed_call import collect_mixed_variants
 from core.sanger.coverage import compute_coverage
@@ -2438,6 +2439,7 @@ def analyze(
     circular: bool,
     zone_params: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
+    scope=None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2455,12 +2457,18 @@ def analyze(
     中位数——信号沿 read 衰减时后段正常 poly 会被误判压缩）。
     zone_params: read 可信区边界（首端硬区/灰区、尾端灰区/硬区，read 坐标 bp），
     缺省 30/60/700/900，见 reliable_zone。
+    scope: 需测范围（goal v3 W1，可选关键字，只增不改）：None / Scope /
+    dict / str（元件名、「301-900」、多段、关键字，见 core.sanger.scope）。
+    analyze 只把它透传给 build_verdict 并写入 result["scope"]——per-read
+    分析与覆盖计算不随 scope 变化（换范围不重跑分析，§0.6）；范围语义
+    （缺口归因/未声明口径）在 build_verdict 侧（W2 起）。
     """
     features = features or []
     zone_params = zone_params or DEFAULT_ZONE
     ref = reference.upper().replace("U", "T")
     if not ref:
         raise ValueError("参考序列为空，无法进行比对分析")
+    scope_obj = coerce_scope(scope, features, len(ref))
 
     read_results: List[Dict] = []
     errors: List[Dict] = []
@@ -2632,7 +2640,7 @@ def analyze(
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
         "coverage": coverage, "features": features or [],
         "algo_version": SANGER_ALGO_VERSION,
-    }, len(ref))
+    }, len(ref), scope=scope_obj)
     conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
@@ -2697,6 +2705,8 @@ def analyze(
         # 结构化判定（goal T2；A 5.1/5.5）：status/blocking/roi/reads，
         # 网页/Excel/归档/API 出口统一由它驱动（先于结论文本构建，见上）
         "verdict": verdict,
+        # 需测范围（goal v3 §3.1；None=未声明，W2 起合成 measured 口径）
+        "scope": scope_obj.to_dict() if scope_obj is not None else None,
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）
