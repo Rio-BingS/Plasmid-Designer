@@ -1,6 +1,6 @@
 {
-  "_doc": "双峰自适应背景模型参数（goal T11；core/sanger/mixed_model.py 读取）。按 ABIF MODL/MCHN 选 mixed_<型号>.json，缺失回退本文件。ratio_floor 历史：0.30（T11，彼时自适应阈值未落地，0.20-0.30 是噪声底）→ 0.15（2026-11-08 复审 R3）：T23 网格补测 0.15/0.18（AF= r/(1+r)，旧下限 0.30 卡的是 AF 0.231，MINOR_AF_MIN=0.15 对应比值 0.176 成死代码、AF 15-22% 混合在 CDS 内静默 ✓）——0.15 在基准集 FPR=0 约束下与 0.30 等价（status TPR/FPR 1.0/0.0、site 1.0，k=3/4 均然），取最敏感值；噪声仍由自适应 MAD 项（med + k·mad_scale·MAD）抬升，地板只管干净区的低带。低于 MINOR_AF_MIN（AF<0.15）的条目进表但 verdict 只记 info。",
-  "ratio_floor": 0.15,
+  "_doc": "双峰自适应背景模型参数（goal T11；core/sanger/mixed_model.py 读取）。按 ABIF MODL/MCHN 选 mixed_<型号>.json，缺失回退本文件。ratio_floor 历史：0.30（T11，彼时自适应阈值未落地，0.20-0.30 是噪声底）→ 0.18（2026-11-08 复审 R3）：af = ratio/(1+ratio)（mixed_call 口径），旧地板 0.30 卡的是 AF 0.231，MINOR_AF_MIN=0.15 对应比值 0.176 从未进拟合网格（旧下限 0.20）——AF 15-22% 带死代码、CDS 内静默 ✓。补测网格（0.15/0.176/0.18 × k 3/4）在基准集 FPR=0 约束下全部与 0.30 等价（TPR/FPR/site 1.0/0.0/1.0）；取 0.18（af 0.1525 ≥ 0.15，门槛带完整进表）而非 0.15：MX 真实批次实测 0.15 的 0.130-0.1525 尾带纯增噪声（每 read +10 处，[25,31,43] vs [15,25,35]），无判读收益。噪声仍由自适应 MAD 项抬升。",
+  "ratio_floor": 0.18,
   "adaptive_k": 4.0,
   "mad_scale": 1.4826,
   "window": 25,

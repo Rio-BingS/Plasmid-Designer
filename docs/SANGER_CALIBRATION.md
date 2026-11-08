@@ -90,22 +90,27 @@ MINOR_AF_MIN=0.15 对应比值 0.176，AF 15-22% 带是死代码（CDS 内静默
 | 参数组 | status TPR | status FPR | 位点检出率 |
 |---|---|---|---|
 | 旧现行（ratio_floor=0.30, adaptive_k=4.0） | 1.0 | 0.0 | 1.0 |
-| **新现行（ratio_floor=0.15, adaptive_k=4.0）** | 1.0 | 0.0 | 1.0 |
+| **新现行（ratio_floor=0.18, adaptive_k=4.0）** | 1.0 | 0.0 | 1.0 |
 | 0.15 / 0.176 / 0.18 × k∈{3.0, 4.0} 全部 | 1.0 | 0.0 | 1.0 |
 
-**结论：0.15 在 FPR=0 约束下与 0.30 等价，取最敏感值。** 噪声仍由自适应
-MAD 项（med + k·mad_scale·MAD）抬升，地板只管干净区低带。语义归一：
+**结论：低地板在 FPR=0 约束下与 0.30 全等价。取 0.18（af 0.1525 ≥
+MINOR_AF_MIN 0.15，门槛带完整进表）而非 0.15（af 0.130）**：0.15 的
+0.130-0.1525 尾带在 MX 真实批次纯增噪声（每 read +10 处，
+[25,31,43] vs [15,25,35]），无判读收益；噪声仍由自适应 MAD 项
+（med + k·mad_scale·MAD）抬升，地板只管干净区低带。语义归一：
 
-- 检测带（af ≥ 0.130）进表；verdict 端 af < MINOR_AF_MIN(0.15) 只记
+- 检测带（af ≥ 0.153）进表；verdict 端 af < MINOR_AF_MIN(0.15) 只记
   info（info 分支自此有真实输入），af ≥ 0.15 且在判定范围（CDS/关键
   元件/接合区）→ mixed_variant 升级（goal T7 设计意图恢复）；
 - 互检端（crosscheck）同步 af < 0.15 不进未决位点；
 - 散在双峰（af ≥ 0.15、范围外、单 read 无法互检）仍按 2026-11-06 定稿
   走 unresolved_site △待定——基准集 F1/F2 由此 pass→partial→pending
   （3730：4 处 af 0.155-0.193；3100：7 处 af 0.153-0.208，见 truth.yaml
-  行注释）；MX 真实批次快照（work/after_R3.json vs after_T25.json）
-  **逐字段零 diff**——真实数据在自适应阈值下无 0.15-0.30 比值带的
-  边界检出，旧地板在本语料上一直是冗余闸门。
+  行注释）；MX 真实批次 verdict/coverage 快照（work/after_R3.json vs
+  after_T25.json）**逐字段零 diff**——检出扩容只发生在 per-read
+  mixed_detail 计数（8/16/17 → 15/25/35，Q 比判别器仍全部归因 noise、
+  「疑似混合样品」不触发、互检待核集合 pET-Up 不变 / T7-Term 3→4），
+  旧地板在本语料的 verdict 层一直是冗余闸门。
 
 ## 5. 复验方式
 

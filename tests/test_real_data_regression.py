@@ -99,7 +99,7 @@ def test_real_analysis_basic_shape():
 
 def test_real_analysis_mixed_baseline_and_corroboration():
     """真实峰型下的混合检测基线（goal T12 信号驱动可信区口径）：三条 read
-    都判出双峰 8 / 16 / 17 处。口径演变链：v2.16.0 之前（只扣首尾 20bp）
+    都判出双峰 15 / 25 / 35 处。口径演变链：v2.16.0 之前（只扣首尾 20bp）
     是 22 / 31 / 16；v2.16.0 700 硬顶后 4 / 9 / 10（尾部双峰静默忽略）；
     T12 起可信区由 read 自身信号决定（zone_signal 四指标逐窗判定），
     三条 read 的尾端信号实测可信 → zone 延伸至 975 / 965 / 940，
@@ -109,6 +109,13 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     滞后于主峰的染料 blob/衰减段肩峰占比实测下降（如 pET-Up 位点
     0.62→0.45、0.52→0.36），贴 0.30 地板的伪影条目不再检出，
     9/18/19 → 8/16/17，MX 核心判定（2 确证差异/CDS/覆盖）逐字节不变。
+    R3 起（2026-11-08 复审）ratio_floor 0.30→0.18（af=r/(1+r)，0.30 卡的是
+    AF 0.231，MINOR_AF_MIN=0.15 对应比值 0.176 是死代码——复审 P0-3）：
+    af 0.153-0.23 带的肩峰/衰减噪声位点重新进入检测（快照
+    work/after_R3.json，verdict/coverage 与 T25 逐字段零 diff），
+    8/16/17 → 15/25/35；新增位点 Q 比判别器仍全部归因 noise，
+    「疑似混合样品」升级不触发；互检待核集合 pET-Up 不变（分母 16→25）、
+    T7-Term 3→4（T24.1 掉档的 6873 在低地板下重新检出且待核）。
 
     同时锁住两条硬约束：报出的双峰位点必须落在该 read 的可信区内；
     read 级「疑似混合样品」升级不得因尾端位点计入而误触发。"""
@@ -122,7 +129,7 @@ def test_real_analysis_mixed_baseline_and_corroboration():
         z = zones[_fname]
         assert all(z["start"] <= p <= z["end"] for p in positions), _fname
         counts.append(len(positions))
-    assert sorted(counts) == [8, 16, 17]
+    assert sorted(counts) == [15, 25, 35]
     # T11+T12 口径基线（goal T11/T12；A 3.1，先取证再改断言，快照
     # work/after_T11.json → after_T12.json）：read 级「疑似混合样品」升级
     # 走证据形态学（mixed_model.classify_mixed）。T12 后位点集扩容
@@ -131,8 +138,8 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     # 尾端低 Q 双峰是衰减噪声而非混合克隆，Q 比判别器正确挡下升级。
     # verdict 仍 fail（5269/5076 确证变异驱动）。
     assert "疑似混合样品" not in res["conclusion"]
-    assert "双峰 16 处中 9 处无其他引物覆盖待核" in res["conclusion"]
-    assert "双峰 8 处中 3 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 25 处中 9 处无其他引物覆盖待核" in res["conclusion"]
+    assert "双峰 15 处中 4 处无其他引物覆盖待核" in res["conclusion"]
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
     assert "同报双峰" not in res["conclusion"]
@@ -145,10 +152,10 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     concl_lines = res["conclusion"].splitlines()
     pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
     assert len(pending) == 2
-    assert any("SZ15674-pET-Up.ab1" in x and "16 处中 9 处" in x
+    assert any("SZ15674-pET-Up.ab1" in x and "25 处中 9 处" in x
                and "5075–5079、5082–5085" in x for x in pending)
-    assert any("SZ15674-T7-Term.ab1" in x and "8 处中 3 处" in x
-               and "6868–6869、6872" in x for x in pending)
+    assert any("SZ15674-T7-Term.ab1" in x and "15 处中 4 处" in x
+               and "6868–6869、6872–6873" in x for x in pending)
 
 
 def test_real_analysis_cross_read_conflicts_and_cds_verdict():
