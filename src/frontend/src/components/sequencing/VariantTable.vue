@@ -3,11 +3,11 @@
  * 突变表（差异明细）
  *
  * 从 SequencingPanel.vue 拆出的展示子组件：逐变异一行的完整证据表
- * （类型/变化/所在特征/氨基酸/移码/酶切位点/支持 reads/置信度/P(真实)/行动），
+ * （类型/变化/所在特征/氨基酸/移码/酶切位点/支持 reads/置信度/评分/行动），
  * 点击行上报给父组件跳峰图。
  *
  * T15（goal A 5.3）：按待处理优先级排序（建议重测 > 核对峰图 > 采信，
- * 同档内 P(真实) 升序——最可疑的排最前），显示 p_real 与 action；
+ * 同档内评分升序——最可疑的排最前），显示 p_real 与 action；
  * 只折叠 exclude（互检定案项，此时折叠才合理）——低置信未决项是待办
  * 工作，不再折叠、逐行可见。互检排除的差异不进表体（2026-11-05 用户
  * 定稿）：按「源 read × 信号衰减区段」聚合为 read 级注记行。
@@ -63,7 +63,7 @@ const emit = defineEmits<{
 const resolvedVariants = computed(() =>
   props.variants.filter((v) => v.cross_read_resolved || v.status === 'rejected'))
 /** 待处理优先级：建议重测 > 核对峰图 > 采信；旧记录无 action 时按置信度
- * 低>中>高折算；同档内 P(真实) 升序（最可疑在前），无 p_real 按位置 */
+ * 低>中>高折算；同档内评分升序（最可疑在前），无 p_real 按位置 */
 const ACTION_RANK: Record<string, number> = { resequence: 0, review_trace: 1, accept: 2 }
 function pendingKey(v: SequencingVariant): (number | number)[] {
   const rank = v.action ? ACTION_RANK[v.action] ?? 1
@@ -113,8 +113,10 @@ function actionText(v: SequencingVariant): string {
   const a = v.action ?? (v.confidence === 'low' ? 'review_trace' : 'accept')
   return ACTION_LABELS[a]?.label ?? a
 }
+/** 2026-11-08 复审 R5：p_real 是 T15 规则评分（锚点+层内修正，与旧
+ * if 树逐位等价），不是校准概率——展示为 0-100 评分，不再伪作百分比 */
 function pRealText(v: SequencingVariant): string {
-  return v.p_real != null ? `P=${Math.round(v.p_real * 1000) / 10}%` : ''
+  return v.p_real != null ? `评分 ${Math.round(v.p_real * 100)}` : ''
 }
 
 /** 互检排除项按「源 read × 区段」聚合（间隔 ≤50bp 视为同一衰减区段，与后端结论同口径） */
@@ -196,7 +198,7 @@ function reasonBadges(v: SequencingVariant) {
     </div>
     <table class="seq-table clickable" v-if="allRows.length">
       <thead>
-        <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th><th>P(真实) / 行动</th></tr>
+        <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th><th>评分 / 行动</th></tr>
       </thead>
       <tbody>
         <tr v-for="row in allRows" :key="`${row.rowKind}-${row.ref_pos}-${row.kind ?? row.variant?.alt_base ?? ''}`" @click="emit('jump', row)">
@@ -251,7 +253,8 @@ function reasonBadges(v: SequencingVariant) {
           </td>
           <td>
             <template v-if="row.rowKind === 'variant'">
-              <span v-if="row.variant!.p_real != null" class="p-real">{{ pRealText(row.variant!) }}</span>
+              <span v-if="row.variant!.p_real != null" class="p-real"
+                    :title="'T15 规则评分（0-100，非校准概率），详见 SANGER_CALIBRATION §2/§3'">{{ pRealText(row.variant!) }}</span>
               <span class="badge action" :class="row.variant!.action ? ACTION_LABELS[row.variant!.action]?.cls : 'act-review'">{{ actionText(row.variant!) }}</span>
             </template>
             <template v-else>
