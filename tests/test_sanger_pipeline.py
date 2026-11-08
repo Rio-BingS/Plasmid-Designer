@@ -400,10 +400,13 @@ def test_analyze_perfect_read(reference):
     result = analyze([("ok.ab1", blob)], reference, [], circular=False)
     assert result["reads"], "应成功解析至少一条 read"
     assert result["variants"] == []
-    # 2026-11-08 复审 R1：整质粒只测 25% 不得 ✓「构建与设计一致」——
-    # 未测的 75% 没有任何证据，结论须是 △部分验证
-    assert result["conclusion"].startswith("△ 结论：部分验证——")
-    assert "实测覆盖 25.0%" in result["conclusion"]
+    # goal v3 §8 决策 1（W2 重编码，原 R1 partial 语义被取代）：未声明
+    # 范围 → 「已测区段」口径 pass；头行不得主张「构建与设计一致」（§0.1
+    # 对所有出口生效），未测的 75% 未评估
+    assert result["verdict"]["scope"]["declared"] is False
+    assert result["verdict"]["status"] == "pass"
+    assert "构建与设计一致" not in result["conclusion"]
+    assert "已测" in result["conclusion"] and "未评估" in result["conclusion"]
     assert result["consensus"]["sequence"] == reference.upper()
     assert result["consensus"]["coverage_percent"] == pytest.approx(25.0, abs=0.5)
 
@@ -2516,7 +2519,9 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
     # 顶层结论：区间裁决行（2026-11-05 定稿结构），总结为确定的 ✓
     lines = result["conclusion"].splitlines()
-    assert lines[0].startswith("✓ 结论：构建与设计一致")
+    # goal v3 §8 决策 1（W2）：未声明范围 → 已测区段口径（禁整参考主张）
+    assert lines[0].startswith("✓ 结论：已测") and "与设计一致" in lines[0]
+    assert "构建与设计一致" not in result["conclusion"]
     assert sum("高质量覆盖排除" in x and "无需核对" in x for x in lines) == 1
     assert not any("低置信度（" in x for x in lines)
     # 低置信不进共识：构建体序列回到参考
@@ -2566,8 +2571,10 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     assert cds["pending_low_confidence"] == 0
     assert "低置信" not in cds["verdict"]
     lines = result["conclusion"].splitlines()
-    # 2026-11-05 定稿：头行不再复述排除数量，详情在头行下的区间裁决行
-    assert lines[0] == "✓ 结论：构建与设计一致"
+    # 2026-11-05 定稿：头行不再复述排除数量，详情在头行下的区间裁决行；
+    # goal v3 §8 决策 1（W2）：未声明范围 → 已测区段口径
+    assert lines[0].startswith("✓ 结论：已测") and "与设计一致" in lines[0]
+    assert "构建与设计一致" not in result["conclusion"]
     assert any(l.startswith("差异区间") and "无需核对" in l for l in lines)
     assert not any("低置信度（" in x for x in lines)
 
@@ -2766,16 +2773,17 @@ def test_circular_origin_spanning_read_folds_positions(reverse):
 
 
 def test_circular_clean_origin_spanning_read_is_consistent():
-    """跨原点 read 与参考一致时：环状参考不再有截断提示。2026-11-08 复审
-    R1：整质粒 40% 实测覆盖为 △部分验证（与线性同口径）——「测到的地方
-    一致」不等于「构建验证完毕」"""
+    """跨原点 read 与参考一致时：环状参考不再有截断提示。goal v3 §8 决策 1
+    （W2 重编码）：未声明范围 → 已测区段口径 pass（与线性同口径），
+    头行不得主张「构建与设计一致」——「测到的地方一致」只对已测段成立"""
     ref, read, _ = _circ_case(seed=11, subs=())
     r = _run(read, ref, circular=True)
     assert r["variants"] == []
     assert r["coverage_ranges"] == [(1, 250), (851, 1000)]
     assert r["reads"][0]["partial_alignment"] is None
-    assert r["conclusion"].startswith("△ 结论：部分验证——")
-    assert "实测覆盖 40.0%" in r["conclusion"]
+    assert r["verdict"]["status"] == "pass"
+    assert "构建与设计一致" not in r["conclusion"]
+    assert "已测" in r["conclusion"] and "未评估" in r["conclusion"]
 
 
 def test_linear_reference_does_not_wrap():
@@ -2876,8 +2884,10 @@ def test_fully_aligned_read_has_no_partial_flag():
     finally:
         logging.disable(logging.NOTSET)
     assert r["reads"][0]["partial_alignment"] is None
-    # 2026-11-08 复审 R1：read 完整比对但只覆盖整条参考的 50% → △部分验证
-    assert r["conclusion"].startswith("△ 结论：部分验证——")
+    # goal v3 §8 决策 1（W2 重编码）：未声明范围 → 已测区段口径 pass
+    assert r["verdict"]["status"] == "pass"
+    assert r["verdict"]["scope"]["declared"] is False
+    assert "构建与设计一致" not in r["conclusion"]
 
 
 def test_cross_check_requires_high_region_quality_not_single_base():

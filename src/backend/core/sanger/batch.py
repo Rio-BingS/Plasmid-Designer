@@ -651,6 +651,21 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     bad = [c for c in res["cds_reports"]
            if c["coverage_status"] != "uncovered" and c["protein_identical"] is False]
     n_sites = res.get("unresolved_sites") or []
+    # 范围感知（goal v3 W2）：声明范围外的确证差异不驱「不合格」
+    # （out_of_scope_variant 由 verdict 记 info）；未声明范围的「合格」
+    # 用「已测区段」口径，禁止「与设计一致」整参考主张（goal v3 §0.1）。
+    # 旧记录（无 scope 字段）不启用过滤，行为不变
+    vd = res.get("verdict") or {}
+    vd_scope = vd.get("scope") or {}
+    vd_declared = bool(vd_scope.get("declared"))
+    vd_scope_ranges = [(int(s), int(e)) for s, e in (vd_scope.get("ranges") or [])]
+
+    def _in_scope_v(v) -> bool:
+        if not (vd_declared and vd_scope_ranges):
+            return True
+        rp = int(v.get("ref_pos") or 0)
+        v_end = rp + int(v.get("length") or 1) - 1
+        return any(s <= v_end and rp <= e for s, e in vd_scope_ranges)
     mixed_tails, widespread = _mixed_tails(res)
     undetermined = _undetermined_reason(res)
     # 同义突变单列（goal T5；A 4.1）：DNA 变、蛋白不变的确证替换不并入
@@ -669,8 +684,9 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             for n in names)
 
     _syn_flags = [_is_synonymous(v) for v in confirmed]
-    syn = [v for v, s in zip(confirmed, _syn_flags) if s]
-    hard = [v for v, s in zip(confirmed, _syn_flags) if not s]
+    syn = [v for v, s in zip(confirmed, _syn_flags) if s and _in_scope_v(v)]
+    hard = [v for v, s in zip(confirmed, _syn_flags) if not s and _in_scope_v(v)]
+    out_scope = [v for v in confirmed if not _in_scope_v(v)]
     # 端部软剪切高质量段（goal T6；A 2.1）：旧记录 reads 无该键 → 空。
     # 首端硬区段（zone="front_hard"，2026-11-08 复审 P1-6 起上报）是待核
     # 不是结构异常——不进「不合格」分支，由 verdict pending 闸门出 待定
@@ -680,7 +696,6 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     # verdict 驱动的覆盖分级（goal T5；A 4.2）：partial/insufficient 由
     # ROI 覆盖推导、Excel 端不重复算（ROI 需要 features 参与判定，结果
     # 里没有；旧记录无 verdict → 走原分支，历史口径不变）
-    vd = res.get("verdict") or {}
     vd_partial = vd.get("status") == "partial"
     vd_insufficient = (vd.get("status") == "insufficient"
                        and any(b.get("kind") in ("roi_uncovered", "roi_unverified",
@@ -797,7 +812,22 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             out += f"；测序覆盖 {cov:.0f}%"
         return out
     else:
-        out = "合格：与设计一致"
+        # 合格的主张范围（goal v3 W2/§8 决策 1）：未声明范围只说「已测
+        # 区段」，禁止「与设计一致」整参考主张（goal v3 §0.1 对所有出口
+        # 生效；spans 取 verified 区间——实测含首尾不可信区，不构成验证）
+        if not vd_declared and vd_scope_ranges:
+            v_ranges = [tuple(r) for r in
+                        (res.get("coverage") or {}).get("verified_ranges") or []]
+            if v_ranges:
+                spans = "、".join(f"{s}–{e}" for s, e in v_ranges[:3])
+                more = f" 等 {len(v_ranges)} 段" if len(v_ranges) > 3 else ""
+                out = f"合格：已测 {spans}{more} 与设计一致；范围外未评估"
+            else:
+                out = "合格：已测区段与设计一致；范围外未评估"
+        else:
+            out = "合格：与设计一致"
+        if out_scope:
+            out += f"；范围外 {len(out_scope)} 处差异未评估（见附带结果）"
 
     tail = []
     if pending:
