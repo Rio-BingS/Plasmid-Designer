@@ -112,6 +112,15 @@ def render_site_svg(trace_entry: Dict, read_pos: int,
     return "".join(parts)
 
 
+# 区域级阻断（覆盖门/元件门）：有 ref_start 但不是位点，不出峰图
+# （2026-11-08 复审 R2：roi_unverified 升 pending 阻断后带 ROI 起点坐标，
+# 若不过滤会在证据包里冒出 pos=1 的假位点）
+_REGION_KINDS = frozenset({
+    "roi_uncovered", "roi_unverified", "roi_insufficient_bp",
+    "critical_element_unverified",
+})
+
+
 def collect_sites(record: Dict) -> List[Dict]:
     """出图位点：verdict.blocking（有参考坐标的）+ review_trace/resequence
     变体。按 (ref_pos, kind) 去重，ref_pos 升序，超上限截断。"""
@@ -128,7 +137,7 @@ def collect_sites(record: Dict) -> List[Dict]:
 
     verdict = record.get("verdict") or {}
     for b in verdict.get("blocking") or []:
-        if b.get("ref_start"):
+        if b.get("ref_start") and (b.get("kind") or "blocking") not in _REGION_KINDS:
             add(b["ref_start"], b.get("kind") or "blocking",
                 (b.get("detail") or "")[:80], b.get("detail"))
     for v in record.get("variants") or []:

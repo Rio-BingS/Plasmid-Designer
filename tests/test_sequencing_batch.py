@@ -804,15 +804,17 @@ def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
     ], excel_part=_xlsx([("17648", ["T1"]), ("17648 MBYSTC", ["T2"])]))
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["items"][0]["conclusion"].startswith("合格")
+    # 2026-11-08 复审 R1：单 read 测整质粒只覆盖一部分 → 不再 ✓合格，
+    # 诚实落「待定」（部分验证）；T2 确证错义仍「不合格」
+    assert data["items"][0]["conclusion"].startswith("待定")
     assert data["items"][1]["conclusion"].startswith("不合格")
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()
     assert not any(n.startswith("测序整理/17648/") for n in names)   # 两种写法已并档
     assert "测序整理/17648 MBYSTC/17648.gb" in names                 # 图谱在质粒文件夹根
-    assert "测序整理/17648 MBYSTC/正确/T1.ab1" in names
+    assert "测序整理/17648 MBYSTC/待定/T1.ab1" in names
     assert "测序整理/17648 MBYSTC/错误/T2.ab1" in names
-    assert "测序整理/17648 MBYSTC/正确/测序分析报告.md" in names
+    assert "测序整理/17648 MBYSTC/待定/测序分析报告.md" in names
     assert "测序整理/17648 MBYSTC/错误/测序分析报告.md" in names
     manifest = zf.read("测序整理/整理清单.csv").decode("utf-8")
     assert "结论" in manifest and "T2.ab1" in manifest and "不合格" in manifest

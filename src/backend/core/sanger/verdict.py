@@ -15,7 +15,9 @@ Excel 一句话结论、归档分拣、API 下发）由同一 status 驱动，�
 T5：
 - ROI 来源：设计记录的插入区间（数据源随 T22 设计记录对接；当前
   实现）> 参考 CDS 特征并集（source="cds_union"）> 整条参考
-  （source="whole"，partial 只记 info 不降状态——单引物测整质粒是常规策略）；
+  （source="whole"）。实测覆盖 <99% 一律 roi_uncovered（2026-11-08 复审：
+  整质粒只测一小段不得 ✓——单引物测整质粒是常规策略，但「常规」≠「已
+  验证」，未测部分没有任何证据）；
 - 关键元件表（CRITICAL_TYPES / CRITICAL_NAME_RE，可按需扩充）：元件内
   confirmed 差异 → critical_element_variant（fail）；unresolved → pending；
   参考无任何抗性/ori 注释时在 info 提示盲区；
@@ -40,6 +42,10 @@ PENDING_KINDS = {
     "unresolved_variant", "unresolved_site", "n_in_cds", "poly_unreliable",
     "dropout", "overlap_discordance", "orf_annotation_suspect",
     "allele_mismatch", "junction_variant", "critical_element_variant",
+    # 2026-11-08 复审：cds_union 实测齐全但 verified<100% 的残余缺口
+    # （首尾不可信区/N 列）——T12 复评挂账落地，不再出现 ✓ 头行与
+    # 阻断项并存的矛盾；关键元件覆盖缺口同理（不能只写 info）
+    "roi_unverified", "critical_element_unverified",
 }
 
 # 未决位点 kind → blocking.kind 映射
@@ -254,8 +260,17 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"（{'确证' if st == 'confirmed' else '未决'}）——"
                  "功能元件序列必须逐字正确",
                  "核对峰图/重新挑克隆", fail_impact=st == "confirmed")
-        _info("element_coverage", f.get("name"),
-              f"{f.get('name')}（{f.get('type')}）verified 覆盖 {el_cov}%（{el_state}）")
+        # 2026-11-08 复审：元件级覆盖缺口不得只写 info——功能元件必须逐字
+        # 正确，未验证部分可能藏着差异。full 仍 info；partial/uncovered 进
+        # pending 阻断（critical_element_unverified）
+        if el_state == "full":
+            _info("element_coverage", f.get("name"),
+                  f"{f.get('name')}（{f.get('type')}）verified 覆盖 {el_cov}%（full）")
+        else:
+            _blk("critical_element_unverified", s_, e_, f.get("name"),
+                 f"{f.get('name')}（{f.get('type')}）verified 覆盖 {el_cov}%"
+                 f"（{el_state}）——未验证部分可能存在差异，功能元件必须逐字正确",
+                 "补测覆盖该元件的引物")
     if not critical and not any(
             _RESIST_ORI_NAME_RE.search(f.get("name") or "") for f in features):
         # 盲区提示（goal T5；A 4.1）：参考未注释抗性/ori 元件时不做元件级判读
@@ -352,19 +367,23 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                   f"{' 等' if len(arts) > 4 else ''}"
                   "——区内调用与峰证据应谨慎采信")
     # ROI 覆盖分级（goal T5；A 4.2）：实测（measured）口径定「部分验证」。
-    # 单 read 首尾不可信区是固有损耗、verified<100% 几乎恒真（T3 决策沿用：
-    # verified 语义切换随 T12 复评，否则 123bp 全 CDS 对照必翻红）：
+    # 2026-11-08 复审：whole 豁免取消——整质粒只测一小段不得 ✓（单引物测
+    # 整质粒是常规策略，但未测部分没有任何证据）；T12 复评挂账的 verified
+    # 语义切换落地为：实测齐全而 verified<100% 的残余缺口（首尾不可信区/
+    # N 列）在 cds_union 升 pending（roi_unverified 入 PENDING_KINDS，消除
+    # ✓ 头行与阻断项并存的矛盾），whole 仍只记 info（全质粒 verified<100%
+    # 几乎恒真，首尾不可信区是固有损耗）：
     # - ROI 实测 0% → roi_uncovered（insufficient：目标没测到）；
     # - ROI 实测 <99% → roi_uncovered（partial：测了但没测全，S8）；
-    # - ROI 实测齐全且 verified<100% → roi_unverified 阻断明示（cds_union）/
-    #   只记 info（whole：单引物测整质粒是常规策略）；均不升状态
+    # - ROI 实测齐全且 verified<100% → roi_unverified（cds_union 升 pending/
+    #   whole 只记 info）
     roi_measured_pct = _ranges_cover(measured_ranges, roi_start, roi_end)
     roi_verified_pct = _ranges_cover(verified_ranges, roi_start, roi_end)
     roi_measured_bp = round((roi_end - roi_start + 1) * roi_measured_pct / 100)
     measured_bp = sum(int(e) - int(s) + 1 for s, e in measured_ranges)
     full_cds = any(c.get("coverage_status") == "full" for c in cds_reports)
     bp_gate_failed = (not full_cds and measured_bp < MIN_VERDICT_COVERED_BP)
-    roi_gap = roi_source != "whole" and roi_measured_pct < 99
+    roi_gap = roi_measured_pct < 99
     if roi_gap and roi_measured_pct <= 0:
         _blk("roi_uncovered", roi_start, roi_end, None,
              f"判定区域（{roi_start}-{roi_end}）未被任何 read 覆盖，目标未验证",
@@ -386,7 +405,10 @@ def build_verdict(result: Dict, ref_length: int) -> Dict:
                  f"（实测 {roi_measured_pct}%）——不可信区与 N/模糊调用列不构成验证",
                  "核对覆盖缺口，必要时补引物")
     if bp_gate_failed:
-        _blk("roi_unverified", None, None, None,
+        # bp 门是「数据量不足」语义（insufficient），与覆盖缺口（roi_unverified，
+        # pending 级）分开——2026-11-08 复审：roi_unverified 入 PENDING_KINDS
+        # 后，bp 门若沿用该 kind 会被误升 pending，故独立 kind
+        _blk("roi_insufficient_bp", None, None, None,
              f"实测仅 {measured_bp}bp，不足以确认是否为目标质粒",
              "补测引物或换参考")
     # 双链覆盖（goal T21；A 4.4）：占比随 roi 下发；「必须双链」策略默认
