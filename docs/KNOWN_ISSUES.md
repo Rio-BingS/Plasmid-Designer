@@ -55,6 +55,28 @@
 
 ## 防回潮约束（改相关代码前必读）
 
+**Sanger 判读链路的五条工程约束**（2026-11-07 全量修复 goal §2 沉淀，
+2026-11-08 复审 R8 登记为常读项——改 `core/sanger/` 与测序 API 前先对照）：
+
+1. **判定不依赖文案**：禁止用字符串匹配做判定/分组逻辑（`"疑似混合样品"
+   in x`、`startswith("合格")`、前端 `includes('低置信（')` 一类）。结论
+   折叠分组走 `result["conclusion_groups"]` 结构化标记（R6）；分拣走
+   `verdict.status` 直查表；唯一豁免是前端对**旧记录**（无结构化键）的
+   文案回退，新代码不得新增匹配点。
+2. **API 契约只加不改**：不改路径、不改已有字段语义；新增返回字段必须
+   同步 `src/frontend/src/api/sequencing.ts` 类型，并在
+   `sequencing_routes._summary` 下发白名单显式登记（该文件 958 行预算，
+   加行要合并相邻行找补）。
+3. **向后兼容旧记录**：旧分析记录没有新字段，读取/重放/前端展示必须
+   正常（`tests/test_sequencing_rehydrate.py` 保持绿）；新字段全部可选，
+   前端缺字段降级为旧展示。
+4. **口径变更必须递增 `SANGER_ALGO_VERSION`**（`core/sanger/pipeline.py`，
+   写入 result["algo_version"]），并在 HANDOVER §2 版本常量处登记；
+   判定口径/阈值/真值修订的提交正文要写清依据（复审 R1-R4 先例）。
+5. **尺寸预算**：`scripts/size_budgets.json` 白名单文件只许变小；新文件
+   ≤900 行；新逻辑放新模块并把被替换逻辑迁出（迁出后下调预算数字），
+   不得 `--refresh` 调高预算。
+
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并
   `invalidate_cache()`，否则污染同进程后续模块（设计端点会 403）。
