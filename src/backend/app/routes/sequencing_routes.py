@@ -831,6 +831,7 @@ def _summary(record: Dict) -> Dict:
         "analysis_id": record["analysis_id"], "sample_name": record.get("sample_name", ""),
         "created_at": record["created_at"], "engine": record["engine"],
         "conclusion": record["conclusion"],
+        "conclusion_groups": record.get("conclusion_groups"),  # R6 折叠组；旧记录 None→前端回退
         "reads": reads,
         "variants": record["variants"],
         "consensus": record["consensus"],
@@ -846,8 +847,7 @@ def _summary(record: Dict) -> Dict:
         "verdict": record.get("verdict"), "algo_version": record.get("algo_version"),
         "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []), "mixed_variants": record.get("mixed_variants", []),
         "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"], "warnings": record.get("warnings", []),  # T24 解析层告警；旧记录缺省 []
-        "reference_length": len(record["reference"]),
-        "features": record["features"],
+        "reference_length": len(record["reference"]), "features": record["features"],
     }
 
 

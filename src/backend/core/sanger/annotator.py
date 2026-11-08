@@ -5,7 +5,7 @@
 - 酶切位点：是否破坏/新引入限制酶识别序列
 """
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from core.enzyme_sites import find_enzyme_sites
 from core.seq_utils import revcomp as _revcomp
@@ -259,9 +259,16 @@ def annotate_variants(variants: List[Dict], features: List[Dict], reference: str
     return out
 
 
-def summarize_severity(variants: List[Dict]) -> List[str]:
-    """生成变体影响摘要（供自动结论使用）"""
-    notes = []
+def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
+    """生成变体影响摘要（供自动结论使用）。
+
+    返回 [(行文本, kind)]——kind 是机器可读的分组标记（2026-11-08 复审
+    R6：前端折叠分组由它驱动，不再靠「低置信度（」文案匹配）：
+    - "low"：低置信变体行及其 ↳ 子注释（前端默认折叠组）；
+    - "variant"：确证变体行 / 互检排除行及其子注释（正文常驻）。
+    与旧折叠口径逐行等价：low ⟺ 行文本含「低置信度（」⟹ confidence=low
+    且非互检排除（cross_read_resolved 行不带低置信文案，归正文）。"""
+    notes: List[Tuple[str, str]] = []
     for v in variants:
         loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
         if v.get("frameshift"):
@@ -279,6 +286,7 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
         else:
             kind = "插入" if v["type"] == "insertion" else "缺失"
             note = f"位置 {v['ref_pos']} {kind} {v['length']}bp（{loc}）"
+        line_kind = "variant"
         if v.get("confidence") == "low":
             # 低置信文案分三支（A4 + 互检反证）：poly 下游滑移 echo 与跨 read
             # 互检矛盾各有明确原因点名，其余维持原口径
@@ -286,19 +294,22 @@ def summarize_severity(variants: List[Dict]) -> List[str]:
                 rd = "、".join(((v.get("cross_read_conflict") or {}).get("reads") or [])[:2])
                 note += f"，已被 {rd} 互检排除（该处读出设计碱基，判为测序误差）"
             elif v.get("cross_read_conflict"):
-                note += "，低置信度（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，疑似伪影）"
+                # 2026-11-08 复审 R6：「疑似伪影」是对矛盾证据的预判——
+                # 伪影与低频真实变异均无法排除，如实说
+                note += "，低置信度（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，伪影与低频真实变异均无法排除）"
             elif v.get("slippage_artifact"):
                 note += "，低置信度（poly 下游疑似滑移伪影，建议人工核对峰图）"
             elif v.get("low_reason"):
                 note += f"，低置信度（{v['low_reason']}，建议人工核对峰图）"
             else:
                 note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
-        notes.append(note)
+            line_kind = "low"
+        notes.append((note, line_kind))
         if v.get("enzyme_sites_lost"):
-            notes.append(f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}")
+            notes.append((f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}", line_kind))
         if v.get("enzyme_sites_gained"):
-            notes.append(f"  ↳ 新增酶切位点: {', '.join(v['enzyme_sites_gained'])}")
+            notes.append((f"  ↳ 新增酶切位点: {', '.join(v['enzyme_sites_gained'])}", line_kind))
         if v.get("enzyme_sites_pending") and v.get("status") == "unresolved":
-            notes.append("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
-                         + " 在 ±10bp 内、indel 归属未定：位点归属待定")
+            notes.append(("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
+                          + " 在 ±10bp 内、indel 归属未定：位点归属待定", line_kind))
     return notes
