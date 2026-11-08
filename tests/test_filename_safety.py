@@ -101,14 +101,16 @@ def test_filename_whitelist_regex_has_single_implementation():
     #   （core 不得反向 import app/filename），字符集与 app/filename 完全一致
     # - middleware.py：X-Request-ID 消毒（日志注入/响应头编码安全），非文件名用途，
     #   字符类撞车属形态巧合
+    # 相对路径统一归一化为 / 分隔（Linux rglob 产生 /，Windows 产生 \——
+    # 豁免清单若按平台拼接分隔符会只在单侧生效，2026-11-08 复审流程节 3）
     allowed = {
-        "core" + chr(92) + "plasmid_map" + chr(92) + "genbank.py",
-        "core" + chr(92) + "external_vector_importer.py",
-        "app" + chr(92) + "middleware.py",
+        "core/plasmid_map/genbank.py",
+        "core/external_vector_importer.py",
+        "app/middleware.py",
     }
     offenders = []
     for py in backend.rglob("*.py"):
-        rel = str(py.relative_to(backend))
+        rel = str(py.relative_to(backend)).replace(os.sep, "/")
         if py.name == "filename.py" or rel in allowed:
             continue
         if pattern.search(py.read_text(encoding="utf-8", errors="ignore")):
