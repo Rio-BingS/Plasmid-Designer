@@ -13,17 +13,18 @@ Excel 一句话结论、归档分拣、API 下发）由同一 status 驱动，�
 > pass。failed_reads 在有 confirmed 差异时让位给 fail（blocking 中仍列出）。
 
 T5：
-- ROI 来源：设计记录的插入区间（数据源随 T22 设计记录对接；当前
-  实现）> 参考 CDS 特征并集（source="cds_union"）> 整条参考
-  （source="whole"）。实测覆盖 <99% 一律 roi_uncovered（2026-11-08 复审：
-  整质粒只测一小段不得 ✓——单引物测整质粒是常规策略，但「常规」≠「已
-  验证」，未测部分没有任何证据）；
-- 关键元件表（CRITICAL_TYPES / CRITICAL_NAME_RE，可按需扩充）：元件内
-  confirmed 差异 → critical_element_variant（fail）；unresolved → pending；
-  参考无任何抗性/ori 注释时在 info 提示盲区；
-- 接合区（CDS 模式 analysis_target ±30bp；全质粒模式的插入边界随设计
-  记录对接）：区内非 rejected 差异/未决位点 → junction_variant
-  （confirmed 为 fail，否则 pending）。
+- 需测范围（goal v3 W2 重构）：判定只对 scope 负责——声明范围直接采用；
+  未声明时合成 measured 口径（R=实测区段），范围外「未评估」不降级、
+  不判 partial，任何出口不得输出「构建与设计一致」（goal v3 §0.1、§8
+  决策 1）。覆盖缺口只对声明范围判定（roi_uncovered→partial、
+  roi_unverified→pending；W6 起按引物理论覆盖 E 归因）；
+- 关键元件表（CRITICAL_TYPES / CRITICAL_NAME_RE，可按需扩充）：范围内
+  元件必须验证齐全（缺口→critical_element_unverified pending）；元件内
+  confirmed 差异 → critical_element_variant：范围内 fail、范围外 pending
+  （§8 决策 2）；参考无任何抗性/ori 注释时在 info 提示盲区；
+- 接合区（CDS 模式 analysis_target ±30bp；设计插入边界 ±30bp，W2 扩展）：
+  区内非 rejected 差异/未决位点 → junction_variant（confirmed 为 fail，
+  否则 pending）。
 """
 
 import re
@@ -77,9 +78,6 @@ _RESIST_ORI_NAME_RE = re.compile(r"ampr|kanr|cmr|neor|puc|ori|f1", re.IGNORECASE
 # 接合区半宽（goal §5 T5：CDS 模式载体-基因接合区 ±30bp）——常量与实现
 # 已收敛到 core.sanger.scope（goal v3 W1），此处保留别名兼容旧引用
 # JUNCTION_HALF_WIDTH = scope.JUNCTION_HALF_WIDTH（见顶部 import）
-
-# ROI 内 verified 覆盖低于该百分比且参考为 whole 口径时只记 info
-_WHOLE_PARTIAL_INFO = True
 
 # 旧记录兼容（无 status 字段）的三态推导，与 batch._variant_status_of 同口径
 def _vstatus(v: Dict) -> str:
@@ -158,24 +156,37 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
                      "element": element, "detail": detail, "action": "",
                      "refs": []})
 
-    # ROI（goal T5）：CDS 特征并集 > 整条参考；设计记录的插入区间随 T22 对接。
-    # goal v3 W1：声明范围（scope.declared）时 ROI = scope 外包框（兼容旧
-    # verdict.roi 字段）；范围语义（缺口归因/未声明口径）随 W2 重构
+    # 范围解析（goal v3 W2；PL A2/A4）：声明范围直接采用；未声明时合成
+    # measured 口径——R = 实测区段（比对覆盖），判定只对实测负责：范围外
+    # 「未评估」不降级，不判 partial，任何出口不得输出「构建与设计一致」
+    # （goal v3 §0.1；§8 决策 1：未声明沿用 pass、不新增状态）
     scope_obj = coerce_scope(scope, features, ref_length)
+    if scope_obj is None:
+        scope_obj = Scope(
+            ranges=[(int(s), int(e)) for s, e in measured_ranges],
+            source="measured", declared=False,
+            reason="未声明范围：仅描述实测区段，未测部分未评估")
+    declared = bool(scope_obj.declared and scope_obj.ranges)
+    scope_ranges = scope_obj.ranges
     cds_feats = [f for f in features if f.get("type") == "CDS"
                  and 1 <= int(f.get("start") or 0) <= int(f.get("end") or 0) <= ref_length]
-    if scope_obj is not None and scope_obj.ranges:
+    # 旧字段 verdict.roi 保留（goal v3 §2 API 契约）：取 scope 外包框
+    if scope_ranges:
         roi_start, roi_end = scope_obj.bounding_box()
-        roi_source = scope_obj.source
-    elif cds_feats:
-        roi_start = min(int(f["start"]) for f in cds_feats)
-        roi_end = max(int(f["end"]) for f in cds_feats)
-        roi_source = "cds_union"
     else:
-        roi_start, roi_end, roi_source = 1, ref_length, "whole"
+        roi_start, roi_end = 1, ref_length
+    roi_source = scope_obj.source
 
     # 变体三态（rejected 不进 blocking：resolved_regions 已有裁决行）
     junctions = _junction_ranges(features)
+    if scope_obj.source == "design_insert":
+        # goal v3 W2：接合区扩展——设计插入边界的两端 ±30bp 也是接合区
+        # （载体-插入接缝与 CDS 模式同判）
+        for s_, e_ in scope_ranges:
+            junctions.append((max(1, s_ - JUNCTION_HALF_WIDTH),
+                              s_ + JUNCTION_HALF_WIDTH, "插入5′接合区"))
+            junctions.append((e_ - JUNCTION_HALF_WIDTH,
+                              e_ + JUNCTION_HALF_WIDTH, "插入3′接合区"))
     critical = _critical_features(features)
 
     def _in_scope(rp: int) -> bool:
@@ -186,33 +197,75 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
                 or any(int(f["start"]) <= rp <= int(f["end"]) for f in critical)
                 or any(j[0] <= rp <= j[1] for j in junctions))
 
+    def _scope_hit(rp: int, v_end: int) -> bool:
+        """变异是否落在需测范围内（与任一范围段相交即算在内）"""
+        return any(s_ <= v_end and rp <= e_ for s_, e_ in scope_ranges)
+
     for v in variants:
         st = _vstatus(v)
         if st == "rejected":
             continue
         feats = "、".join(sorted({f.get("name") or "" for f in v.get("features") or []})) or None
         rp = v.get("ref_pos")
+        v_end = (rp or 0) + int(v.get("length") or 1) - 1
+        # 接合区（goal T5；B P1-11）：载体-基因接合处 ±30bp 内任何非 rejected
+        # 差异 → junction_variant（confirmed 为 fail，否则 pending）
+        jh = next((j for j in junctions if j[0] <= (rp or 0) <= j[1]), None)
+        if not _scope_hit(rp or 0, v_end):
+            # 范围外（goal v3 W2）：接合区仍按目标边界语义判；关键元件内
+            # 的确证差异判 pending 不判 fail（§8 决策 2）；其余骨架只记
+            # out_of_scope_variant（info）——范围外未评估，不降级不阻断
+            ce = next((f for f in critical
+                       if int(f["start"]) <= (rp or 0) <= int(f["end"])
+                       or (v.get("type") == "deletion"
+                           and int(f["start"]) <= v_end <= int(f["end"]))), None)
+            if jh:
+                _blk("junction_variant", jh[0], jh[1], jh[2],
+                     f"接合区 {rp} {v.get('type')}（{'确证' if st == 'confirmed' else '未决'}，"
+                     "范围外）——载体-基因接合处差异直接影响插入正确性",
+                     "核对峰图；必要时换引物覆盖接合区",
+                     fail_impact=st == "confirmed")
+            elif ce:
+                _blk("critical_element_variant", int(ce["start"]), int(ce["end"]),
+                     ce.get("name"),
+                     f"{ce.get('name')}（{ce.get('type')}）内 {rp} {v.get('type')}"
+                     f"（{'确证' if st == 'confirmed' else '未决'}，范围外）——"
+                     "功能元件差异，虽在需测范围外仍应关注",
+                     "扩大验证范围复测，或单独核对该元件")
+            else:
+                _info("out_of_scope_variant", feats,
+                      f"{rp} {v.get('type')}"
+                      f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，未评估")
+            continue
         if st == "confirmed":
-            _blk("confirmed_variant", rp,
-                 (rp or 0) + int(v.get("length") or 1) - 1,
+            _blk("confirmed_variant", rp, v_end,
                  feats, f"{rp} {v.get('type')}（置信 {v.get('confidence')}）",
                  "核对差异清单，必要时换引物复测", fail_impact=True)
         else:
-            _blk("unresolved_variant", rp,
-                 (rp or 0) + int(v.get("length") or 1) - 1,
+            _blk("unresolved_variant", rp, v_end,
                  feats,
                  f"{rp} {v.get('type')}"
                  + (f"（{v['low_reason']}）" if v.get("low_reason") else ""),
                  "核对峰图或补测")
-        # 接合区（goal T5；B P1-11）：载体-基因接合处 ±30bp 内任何非 rejected
-        # 差异 → junction_variant（confirmed 为 fail，否则 pending）
-        jh = next((j for j in junctions if j[0] <= (rp or 0) <= j[1]), None)
         if jh:
             _blk("junction_variant", jh[0], jh[1], jh[2],
                  f"接合区 {rp} {v.get('type')}（{'确证' if st == 'confirmed' else '未决'}）"
                  "——载体-基因接合处差异直接影响插入正确性",
                  "核对峰图；必要时换引物覆盖接合区",
                  fail_impact=st == "confirmed")
+        # 关键元件内的范围内差异：critical_element_variant 与通用条目并列
+        # （功能元件序列必须逐字正确；goal T5 沿用）
+        ce_in = next((f for f in critical
+                      if int(f["start"]) <= (rp or 0) <= int(f["end"])
+                      or (v.get("type") == "deletion"
+                          and int(f["start"]) <= v_end <= int(f["end"]))), None)
+        if ce_in:
+            _blk("critical_element_variant", int(ce_in["start"]), int(ce_in["end"]),
+                 ce_in.get("name"),
+                 f"{ce_in.get('name')}（{ce_in.get('type')}）内 {rp} {v.get('type')}"
+                 f"（{'确证' if st == 'confirmed' else '未决'}）——"
+                 "功能元件序列必须逐字正确",
+                 "核对峰图/重新挑克隆", fail_impact=st == "confirmed")
     # 引物校验（goal T17；A 1.5）：mismatch 默认 fail——引物加错/方向搞反/
     # 模板换位时差异判读不可信；无法确定引物只记 info「未校验引物」
     for pc in result.get("primer_checks") or []:
@@ -246,30 +299,22 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
             _blk("n_in_cds", c.get("start"), c.get("end"), c.get("name"),
                  f"CDS 内 {c['n_in_cds']} 处 N/模糊调用，蛋白判定待定",
                  "核对峰图或换引物补测")
-    # 关键元件（goal T5；A 4.1）：启动子/RBS/复制原/终止/选择标记/标签等，
-    # 元件内 confirmed → critical_element_variant（fail），unresolved → pending；
-    # 元件级覆盖结论（full/partial/uncovered）进 info
+    # 关键元件（goal T5；A 4.1）：启动子/RBS/复制原/终止/选择标记/标签等。
+    # 元件级覆盖闸（goal v3 W2）：声明范围内相交的元件必须验证齐全；
+    # 未声明范围只对完整落入实测区段的元件负责（部分相交 → 未评估），
+    # 范围外元件不阻断（SC1：AmpR/ori not_assessed）。full 记 info，
+    # partial/uncovered 进 pending 阻断（critical_element_unverified）。
+    # 元件内差异条目移至变体循环（范围内 fail / 范围外 pending，§8 决策 2）
     for f in critical:
         s_, e_ = int(f["start"]), int(f["end"])
+        if declared:
+            gate = any(s_ <= e2 and s1 <= e_ for s1, e2 in scope_ranges)
+        else:
+            gate = any(s1 <= s_ and e_ <= e2 for s1, e2 in scope_ranges)
+        if not gate:
+            continue
         el_cov = _ranges_cover(verified_ranges, s_, e_)
         el_state = "full" if el_cov >= 99 else ("uncovered" if el_cov <= 0 else "partial")
-        for v in variants:
-            st = _vstatus(v)
-            if st == "rejected":
-                continue
-            rp = v.get("ref_pos")
-            if not (s_ <= (rp or 0) <= e_ or
-                    (v.get("type") == "deletion"
-                     and s_ <= (rp or 0) + int(v.get("length") or 1) - 1 <= e_)):
-                continue
-            _blk("critical_element_variant", s_, e_, f.get("name"),
-                 f"{f.get('name')}（{f.get('type')}）内 {rp} {v.get('type')}"
-                 f"（{'确证' if st == 'confirmed' else '未决'}）——"
-                 "功能元件序列必须逐字正确",
-                 "核对峰图/重新挑克隆", fail_impact=st == "confirmed")
-        # 2026-11-08 复审：元件级覆盖缺口不得只写 info——功能元件必须逐字
-        # 正确，未验证部分可能藏着差异。full 仍 info；partial/uncovered 进
-        # pending 阻断（critical_element_unverified）
         if el_state == "full":
             _info("element_coverage", f.get("name"),
                   f"{f.get('name')}（{f.get('type')}）verified 覆盖 {el_cov}%（full）")
@@ -384,42 +429,41 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
                   f"{r.get('filename')} 检出伪迹区段：{brief}"
                   f"{' 等' if len(arts) > 4 else ''}"
                   "——区内调用与峰证据应谨慎采信")
-    # ROI 覆盖分级（goal T5；A 4.2）：实测（measured）口径定「部分验证」。
-    # 2026-11-08 复审：whole 豁免取消——整质粒只测一小段不得 ✓（单引物测
-    # 整质粒是常规策略，但未测部分没有任何证据）；T12 复评挂账的 verified
-    # 语义切换落地为：实测齐全而 verified<100% 的残余缺口（首尾不可信区/
-    # N 列）在 cds_union 升 pending（roi_unverified 入 PENDING_KINDS，消除
-    # ✓ 头行与阻断项并存的矛盾），whole 仍只记 info（全质粒 verified<100%
-    # 几乎恒真，首尾不可信区是固有损耗）：
-    # - ROI 实测 0% → roi_uncovered（insufficient：目标没测到）；
-    # - ROI 实测 <99% → roi_uncovered（partial：测了但没测全，S8）；
-    # - ROI 实测齐全且 verified<100% → roi_unverified（cds_union 升 pending/
-    #   whole 只记 info）
-    roi_measured_pct = _ranges_cover(measured_ranges, roi_start, roi_end)
-    roi_verified_pct = _ranges_cover(verified_ranges, roi_start, roi_end)
-    roi_measured_bp = round((roi_end - roi_start + 1) * roi_measured_pct / 100)
+    # 范围覆盖分级（goal v3 W2；替代旧 cds_union/whole ROI 分级，RV P0-1
+    # 的 whole 豁免随外包框一并取消）：只对声明范围判定覆盖缺口——
+    # - R 内实测 0% → roi_uncovered（insufficient：目标没测到）；
+    # - R 内实测 <99% → roi_uncovered（partial：测了但没测全；W6 起按 E
+    #   归因拆 scope_beyond_primer / scope_read_shortfall）；
+    # - 实测齐全而 verified<100% → roi_unverified（pending：不可信区与
+    #   N/模糊调用列不构成验证，RV P0-2）。
+    # 未声明范围不判覆盖缺口（已测区段口径，§8 决策 1；SC3/SC4）——
+    # 头行/Excel 只描述实测区段，未测部分未评估。
+    def _cover_bp(ranges: List[Tuple[int, int]]) -> int:
+        return sum(max(0, min(int(e), te) - max(int(s), ts) + 1)
+                   for ts, te in scope_ranges for s, e in ranges)
+
+    scope_bp = scope_obj.total_bp()
     measured_bp = sum(int(e) - int(s) + 1 for s, e in measured_ranges)
+    measured_in_bp = _cover_bp(measured_ranges)
+    verified_in_bp = _cover_bp(verified_ranges)
+    roi_measured_pct = round(measured_in_bp / scope_bp * 100, 2) if scope_bp else 0.0
+    roi_verified_pct = round(verified_in_bp / scope_bp * 100, 2) if scope_bp else 0.0
+    roi_measured_bp = measured_in_bp
     full_cds = any(c.get("coverage_status") == "full" for c in cds_reports)
     bp_gate_failed = (not full_cds and measured_bp < MIN_VERDICT_COVERED_BP)
-    roi_gap = roi_measured_pct < 99
-    if roi_gap and roi_measured_pct <= 0:
-        _blk("roi_uncovered", roi_start, roi_end, None,
-             f"判定区域（{roi_start}-{roi_end}）未被任何 read 覆盖，目标未验证",
-             "补测覆盖目标的引物或核对参考选择")
-    elif roi_gap:
-        _blk("roi_uncovered", roi_start, roi_end, None,
-             f"判定区域实测覆盖 {roi_measured_pct}%（约 {roi_measured_bp}bp），"
-             "未覆盖部分未验证",
-             "补测缺口区域或核对参考选择")
-    elif roi_verified_pct < 100:
-        if roi_source == "whole":
-            if _WHOLE_PARTIAL_INFO:
-                _info("roi_unverified", None,
-                      f"验证覆盖 {roi_verified_pct}%（实测 {roi_measured_pct}%）"
-                      "——首尾不可信区与 N/模糊调用列不构成验证，判定以实测为准")
-        else:
+    if declared:
+        if measured_in_bp <= 0:
+            _blk("roi_uncovered", roi_start, roi_end, None,
+                 f"需测范围（{scope_obj.spans_text('、')}）未被任何 read 覆盖，目标未验证",
+                 "补测覆盖目标的引物或核对参考选择")
+        elif roi_measured_pct < 99:
+            _blk("roi_uncovered", roi_start, roi_end, None,
+                 f"需测范围实测覆盖 {roi_measured_pct}%（约 {roi_measured_bp}bp），"
+                 "未覆盖部分未验证",
+                 "补测缺口区域或核对参考选择")
+        elif roi_verified_pct < 100:
             _blk("roi_unverified", roi_start, roi_end, None,
-                 f"判定区域验证覆盖 {roi_verified_pct}%"
+                 f"需测范围验证覆盖 {roi_verified_pct}%"
                  f"（实测 {roi_measured_pct}%）——不可信区与 N/模糊调用列不构成验证",
                  "核对覆盖缺口，必要时补引物")
     if bp_gate_failed:
@@ -443,9 +487,11 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
     # mixed：mixed_sample 或 ROI 内 mixed_variant（goal T2/T7）
     has_mixed = any(b["kind"] in ("mixed_sample", "mixed_variant") for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
-    has_partial = roi_gap and roi_measured_pct > 0
+    # partial/insufficient 只由声明范围的覆盖缺口驱动（goal v3 W2：
+    # 未声明范围不判 partial，已测区段口径）
+    has_partial = declared and measured_in_bp > 0 and roi_measured_pct < 99
     has_insufficient = (any(b["kind"] == "partial_alignment" for b in blocking)
-                        or (roi_gap and roi_measured_pct <= 0))
+                        or (declared and measured_in_bp <= 0))
     # 优先级（goal §3）：fail > failed_reads > mixed > pending > partial
     # > insufficient > pass；failed_reads 让位 fail（blocking 中仍列出）
     if has_fail:

@@ -107,11 +107,18 @@ def test_s7_promoter_variant_fails_everywhere():
 
 
 def test_s8_partial_cds_never_qualified():
-    """S8：唯一 CDS 覆盖 34.5% → 部分验证，不得合格"""
+    """S8：唯一 CDS 覆盖 34.5% → 不得整参考「合格：与设计一致」。
+    goal v3 §8 决策 1（W2 重编码）：未声明范围 → 已测区段口径 pass
+    （旧口径 partial 的整参考主张被取代，SC3/SC4 为真值锁）；CDS 级
+    覆盖缺口如实进 cds_reports，W5 起 element_verdicts 展示"""
     spec, res = _run("S8")
     excel = excel_conclusion("P", res, 1, True)
-    assert not excel.startswith("合格")
-    assert _status(res) in ("partial", "insufficient")
+    assert not excel.startswith("合格：与设计一致")
+    assert "构建与设计一致" not in excel
+    assert res["verdict"]["scope"]["declared"] is False
+    assert _status(res) == "pass"
+    cr = next(c for c in res["cds_reports"] if c["name"] == "Solo")
+    assert float(cr.get("covered_percent") or 0) < 50, "CDS 报告须如实报覆盖"
 
 
 def test_s9_front_hard_zone_variant_unresolved():
@@ -154,15 +161,18 @@ def test_s12_failed_reads_block_qualified():
 
 
 def test_s13_coverage_by_untrusted_not_verified():
-    """S13：不可信碱基凑满的覆盖 → verified 口径下 partial/roi_unverified"""
+    """S13：不可信碱基凑满的覆盖 → verified < measured 如实下发；
+    「合格」只对 verified 区段主张（goal v3 §8 决策 1，W2 重编码——
+    旧口径的 roi_unverified blocking 只对声明范围生效，SC10 为真值锁）"""
     spec, res = _run("S13")
     excel = excel_conclusion("P", res, 1, True)
     assert not excel.startswith("合格")
-    assert _status(res) != "pass"
-    assert ("roi_unverified" in _kinds(res) or _status(res) == "partial")
+    # 950 确证差异（可信区外但峰证据齐全，S17 同口径）→ fail；覆盖语义：
+    # verified（≈1-700）< measured（1-1000）如实下发，不可信尾段不构成验证
+    assert _status(res) == "fail"
     cov = res.get("coverage") or {}
-    if cov:
-        assert cov["verified_percent"] < cov["measured_percent"]
+    assert cov, "coverage 必须下发"
+    assert cov["verified_percent"] < cov["measured_percent"]
 
 
 def test_s14_true_mixed_not_flipped_by_weak_corroboration():
@@ -544,7 +554,6 @@ def test_sc7_out_of_scope_variant_info_only():
     assert info and info[0].get("ref_start") == 1200
 
 
-@XF(strict=True, reason="W2：范围外关键元件确证差异判 pending（§8 决策 2）")
 def test_sc8_out_of_scope_critical_element_pending():
     """SC8：R 外 ori 内确证替换 → pending（critical_element_variant），不判 fail"""
     spec, res = _run("SC8")
