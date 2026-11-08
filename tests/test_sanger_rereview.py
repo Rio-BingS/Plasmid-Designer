@@ -1,12 +1,16 @@
 """复审（2026-11-08）修复红测：假 ✓ 三处 + 首端连接段 + verified 口径。
 
-对应复审条目（全部已对代码取证）：
-- P0-1 整质粒模式部分覆盖仍 ✓：whole ROI 实测 <99% 应 partial（不能只
-  记 info）；关键元件（ori/启动子）未验证应 pending 阻断，不能只写 info。
-- P0-2 verified 口径：cds_union 实测齐全但 verified<100% 时挂 blocking
-  roi_unverified 却仍 ✓（头行与阻断列表自相矛盾）→ 应 pending。
+对应复审条目（全部已对代码取证）。2026-11-09 goal v3 重编码留痕：
+P0-1/P0-2 的「整质粒 partial / cds_union 覆盖闸」语义被 goal v3 §8 决策 1
+取代——未声明范围 → 已测区段口径 pass（不判 partial、不出「构建与设计
+一致」），覆盖缺口只对声明范围判定；本文件相应改为锁定 v3 语义（未声明
+口径 + 声明范围下的 pending 闸各留一锁）：
+- P0-1 整质粒模式部分覆盖：未声明范围禁「构建与设计一致」；声明范围下
+  关键元件缺口 → critical_element_unverified pending。
+- P0-2 verified 口径：声明范围下实测齐全但 verified<100% → pending
+  （pass ⇒ blocking 为空契约由 test_sanger_verdict_contract 钉死）。
 - P0-3 AF 15-30% 混合在 CDS 内静默 ✓：ratio_floor=0.30 硬地板使
-  MINOR_AF_MIN=0.15 成死代码 → 该带应检出并升级 mixed_variant。
+  MINOR_AF_MIN=0.15 成死代码 → 该带应检出（AF≥0.23 判 mixed）。
 - P1-6 首端 ≤front_hard 高质量剪切段（错误连接）被无条件豁免 → 应上报。
 
 本文件断言「修复后的最终期望」；先红后绿（无 xfail——修复提交即转绿）。
@@ -34,26 +38,43 @@ def _clean_orf(rng, n_codons):
                    for c in codons)
 
 
-def test_whole_roi_partial_measured_never_pass():
-    """P0-1：整质粒模式只测 1-900/3000 → 不得 ✓，须 partial + roi_uncovered"""
+def test_whole_roi_partial_measured_scope_wording():
+    """P0-1（v3 §8 决策 1 重编码）：整质粒只测 1-900/3000 → 未声明范围
+    「已测区段」口径 pass，头行/Excel 不得主张「构建与设计一致」；
+    声明范围后缺口判定随范围走：声明 1-900（实测齐全但首端 30bp 端部
+    软剪切不可信）→ pending + roi_unverified；声明 1-2200（实测只有
+    40.9%）→ partial + roi_uncovered（覆盖闸 if/elif 链先判 uncovered）"""
     rng = _rng("rr1")
     ref = _rand_seq(rng, 3000)
     blob = _read_from_ref(ref, 1, 900, q=50)
     res = analyze([("r.ab1", blob)], ref, [], circular=False)
-    assert _status(res) == "partial"
-    assert "roi_uncovered" in _blocking_kinds(res)
+    assert _status(res) == "pass"
+    assert res["verdict"]["scope"]["declared"] is False
+    assert "构建与设计一致" not in res["conclusion"]
+    res2 = analyze([("r.ab1", blob)], ref, [], circular=False, scope="1-900")
+    assert _status(res2) == "pending"
+    assert "roi_unverified" in _blocking_kinds(res2)
+    res3 = analyze([("r.ab1", blob)], ref, [], circular=False, scope="1-2200")
+    assert _status(res3) == "partial"
+    assert "roi_uncovered" in _blocking_kinds(res3)
 
 
 def test_critical_element_unverified_pending():
-    """P0-1：启动子 2000-2200 完全没测到 → 不得静默 info，须 pending 阻断"""
+    """P0-1（v3 重编码）：启动子 2000-2200 完全没测到 → 未声明范围不阻断
+    （范围外未评估）；声明范围覆盖到启动子时缺口 → pending 阻断，
+    不得静默 info"""
     rng = _rng("rr2")
     ref = _rand_seq(rng, 3000)
     blob = _read_from_ref(ref, 1, 900, q=50)
     feats = [dict(name="CMV promoter", type="promoter",
                   start=2000, end=2200, strand="+")]
     res = analyze([("r.ab1", blob)], ref, feats, circular=False)
-    assert "critical_element_unverified" in _blocking_kinds(res)
-    assert _status(res) == "pending"
+    assert "critical_element_unverified" not in _blocking_kinds(res)
+    assert _status(res) == "pass"
+    res2 = analyze([("r.ab1", blob)], ref, feats, circular=False,
+                   scope="1-2200")
+    assert "critical_element_unverified" in _blocking_kinds(res2)
+    assert _status(res2) == "pending"
 
 
 def test_cds_verified_gap_pending_not_pass():
@@ -65,7 +86,7 @@ def test_cds_verified_gap_pending_not_pass():
     ref = "".join(ref)
     blob = _read_from_ref(ref, 1, 1000, q=50)
     feats = [dict(name="GeneX", type="CDS", start=1, end=900, strand="+")]
-    res = analyze([("r.ab1", blob)], ref, feats, circular=False)
+    res = analyze([("r.ab1", blob)], ref, feats, circular=False, scope="1-900")
     assert _status(res) == "pending"
     assert "roi_unverified" in _blocking_kinds(res)
 

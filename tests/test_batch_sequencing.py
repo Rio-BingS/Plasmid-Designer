@@ -203,7 +203,7 @@ def test_excel_conclusion_实测过少不给合格():
     assert batch.excel_conclusion("MX", res, 1, True).startswith("合格：")
 
 
-def _h1_case(read_fn):
+def _h1_case(read_fn, scope=None):
     """review 04 H1 复现：2000 bp 环状参考（CDS 1..300），单条 read 跑主流程"""
     import logging
     import random
@@ -226,7 +226,7 @@ def _h1_case(read_fn):
     logging.disable(logging.WARNING)
     try:
         return analyze([("r0.ab1", make_ab1(read, [40] * len(read)))],
-                       ref, feats, circular=True)
+                       ref, feats, circular=True, scope=scope)
     finally:
         logging.disable(logging.NOTSET)
 
@@ -251,14 +251,14 @@ def test_excel_conclusion_错质粒不入正确(label, read_fn):
 
 
 def test_excel_conclusion_完整比对_verified缺口待定():
-    """对照：同一参考上完整比对的 read（覆盖 CDS）。2026-11-08 复审 R2：
-    CDS 起点即 read 起点时首端硬区 1-30bp 落在 CDS 内、verified 90%——
-    旧口径 status=pass 却挂着 blocking roi_unverified（✓ 头行与阻断项
-    并存的矛盾，复审 P0-2），现在随 verified 口径落 △待定、归 待定/"""
+    """对照：同一参考上完整比对的 read（覆盖 CDS）。复审 R2 → goal v3 W2
+    重编码：verified 缺口语义落在声明范围上（未声明范围不判覆盖缺口，
+    同构造未声明时为已测区段 pass）——scope=1-300 声明后首端硬区 1-30bp
+    落在范围内、verified 90% → △待定 + roi_unverified（P0-2 回归锁）"""
     from app.sequencing_report import _conclusion_bucket
-    res = _h1_case(lambda ref, rs: ref[:700])
+    res = _h1_case(lambda ref, rs: ref[:700], scope="1-300")
     out = batch.excel_conclusion("P1", res, 1, True)
-    assert out.startswith("待定：判定区域验证覆盖 90.0%"), out
+    assert out.startswith("待定：需测范围验证覆盖 90.0%"), out
     assert _conclusion_bucket(out) == "待定"
 
 
@@ -299,13 +299,15 @@ def test_end_to_end(tmp_path, monkeypatch):
     manifest = (out / "整理清单.csv").read_text(encoding="utf-8-sig")
     assert "原始路径" in manifest and str(data_dir / "T1.ab1") in manifest
     assert (out / "测序_原始备份.xlsx").exists()
-    # Excel 回填
+    # Excel 回填（goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径，
+    # 禁整参考主张「构建与设计一致」；已测区间随 read 覆盖而定，不做精确匹配）
     ws = openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0]
     result = ws.cell(row=2, column=3).value
-    assert result == "合格：与设计一致"
+    assert result.startswith("合格：已测") and "与设计一致" in result
+    assert "范围外未评估" in result and "构建与设计一致" not in result
     # 报告内容：read 概况 + 一致结论
     report = (folder / "测序分析报告.md").read_text(encoding="utf-8")
-    assert "合格：与设计一致" in report and "T1.ab1" in report
+    assert "合格：已测" in report and "与设计一致" in report and "T1.ab1" in report
     payload = json.loads((folder / "分析结果.json").read_text(encoding="utf-8"))
     assert payload["variants"] == [] and "traces" not in payload
 
@@ -425,7 +427,9 @@ def _strip_volatile(md: str) -> str:
 
 _EXPECTED_CONCLUSIONS = {
     "MX": "不合格：MX 蛋白与设计不一致",
-    "PX": "合格：与设计一致",
+    # goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 「已测区段」口径，
+    # 禁整参考主张；已测区间取 verified_ranges（端部软剪切后 31–111）
+    "PX": "合格：已测 31–111 与设计一致；范围外未评估",
     "NOREF": "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对",
 }
 
@@ -734,7 +738,10 @@ def test_interrupted_run_keeps_finished_plasmids(tmp_path, monkeypatch):
     ok = out / "TST" / "正确"
     assert (out / "TST" / "TST.fasta").read_bytes() == (data_dir / "TST.fasta").read_bytes()
     assert (ok / "T1.ab1").read_bytes() == (data_dir / "T1.ab1").read_bytes()
-    assert "合格：与设计一致" in (ok / "测序分析报告.md").read_text(encoding="utf-8")
+    # goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径
+    _ok_md = (ok / "测序分析报告.md").read_text(encoding="utf-8")
+    assert "合格：已测" in _ok_md and "与设计一致" in _ok_md
+    assert "构建与设计一致" not in _ok_md
     assert json.loads((ok / "分析结果.json").read_text(encoding="utf-8"))["sample_name"] == "TST"
     assert not (out / "TS2").exists()
     rows = list(csv.DictReader(io.StringIO(

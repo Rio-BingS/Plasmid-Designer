@@ -33,7 +33,7 @@ scenarios:
   S5:  {verdict: fail,          sites: [], mixed: false}   # 5′ 端 175bp 连接错误（structural/unaligned 阻断）
   S6:  {verdict: fail,          sites: [], mixed: false}   # 3′ 端 188bp 连接错误
   S7:  {verdict: fail,          sites: [{pos: 180, type: substitution, status: confirmed}], mixed: false}
-  S8:  {verdict: partial,       sites: [], mixed: false}   # CDS 覆盖 34.5% → partial
+  S8:  {verdict: pass,          sites: [], mixed: false}   # CDS 覆盖 34.5%；goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 已测区段口径 pass（原 partial 为整参考主张，被 v3 取代）
   S9:  {verdict: pending,       sites: [{pos: 20, type: substitution, status: unresolved}], mixed: false}
   S10: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
   S11: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
@@ -55,9 +55,9 @@ scenarios:
   M5:  {verdict: fail,          sites: [], mixed: false}   # 引物 3′ 端距离出窗 → primer_mismatch
   M6:  {verdict: fail,          sites: [], mixed: false}   # 窗口口径（ReadRefMap 统一后 ✗ 确证）
   M7:  {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 300, af: 0.50}]}   # secondary_base 展示，不判混合
-  M9:  {verdict: partial,       sites: [], mixed: false}   # 场景 runner 显式 circular=False；核心 analyze 拓扑必填（T25.2）；2026-11-08 复审 R1：单 read 整质粒实测 <99% → partial（原 pass 是复审指出的假 ✓）
+  M9:  {verdict: pass,          sites: [], mixed: false}   # 场景 runner 显式 circular=False；核心 analyze 拓扑必填（T25.2）；goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 已测区段口径 pass（R1 的 partial 语义被 v3 取代，SC4 为真值锁）
   M10: {verdict: pass,          sites: [], mixed: false}   # 300/330 rejected（互检定案）
-  M12: {verdict: partial,       sites: [], mixed: false}   # PLOC<PBAS 告警（T24）；−1 修正后边界伪双峰位点消失（2026-11-07 实测）；2026-11-08 复审 R1 → partial（单 read 整质粒实测 <99%）
+  M12: {verdict: pass,          sites: [], mixed: false}   # PLOC<PBAS 告警（T24）；−1 修正后边界伪双峰位点消失（2026-11-07 实测）；goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 已测区段口径 pass（R1 的 partial 语义被 v3 取代；PLOC 截短告警仍下发 warnings）
   M13: {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}   # 与 S1 同构造（契约测试）
   M14: {verdict: pending,       sites: [{pos: 999, type: insertion, status: unresolved}], mixed: false}
   M15: {verdict: pending,       sites: [{pos: 29, type: insertion, status: unresolved}], mixed: false}

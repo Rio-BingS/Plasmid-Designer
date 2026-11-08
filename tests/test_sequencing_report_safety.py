@@ -334,5 +334,9 @@ def test_offline_rerun_replaces_backfilled_result(tmp_path, monkeypatch):
     first = run()          # 缺图谱 → 无法自动比对
     assert first.startswith("加急\n已整理 1 个测序文件，但缺少同名参考图谱")
     (data_dir / "TST.fasta").write_text(f">TST\n{REF}\n", encoding="utf-8")
-    assert run() == "加急\n合格：与设计一致"
-    assert run() == "加急\n合格：与设计一致"     # 不再层层叠加
+    # goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径；
+    # 已测区间随覆盖而定，回填只替换结论不层层叠加
+    second = run()
+    assert second.startswith("加急\n合格：已测") and "与设计一致" in second
+    assert "构建与设计一致" not in second
+    assert run() == second

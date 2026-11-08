@@ -465,6 +465,21 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     # 同待遇——verdict 缺省（直调/旧记录）不启用
     if (verdict or {}).get("status") == "mixed":
         has_mixed = True
+    # 范围感知（goal v3 W2）：判定只对 scope 负责——声明范围外的确证差异
+    # 不驱头行（out_of_scope_variant 已由 verdict 记 info，SC7/SC8）；
+    # 未声明范围时头行用「已测区段」口径，不得输出「构建与设计一致」
+    # （goal v3 §0.1）。旧记录（无 scope 字段）不启用过滤，行为不变
+    vd_scope = (verdict or {}).get("scope") or {}
+    declared = bool(vd_scope.get("declared"))
+    scope_ranges = [(int(s), int(e)) for s, e in (vd_scope.get("ranges") or [])]
+
+    def _in_scope_v(v: Dict) -> bool:
+        if not (declared and scope_ranges):
+            return True
+        rp = int(v.get("ref_pos") or 0)
+        v_end = rp + int(v.get("length") or 1) - 1
+        return any(s <= v_end and rp <= e for s, e in scope_ranges)
+
     target = next((c for c in cds_reports if c.get("analysis_target")), None)
     tail = ""
     if target and not has_mixed:
@@ -479,9 +494,16 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         if not confirmed0 and not bad0:
             return (f"△ 结论：已比对区域与设计一致，但 {partial_reads} 条 read "
                     "有大段未比对上参考，该部分未验证" + (f"；{tail}" if tail else ""))
-    confirmed = [v for v in variants if _vstatus_of(v) == "confirmed"]
+    confirmed = [v for v in variants
+                 if _vstatus_of(v) == "confirmed" and _in_scope_v(v)]
+    out_scope = [v for v in variants
+                 if _vstatus_of(v) != "rejected" and not _in_scope_v(v)]
     bad = [c for c in cds_reports if c.get("protein_identical") is False]
     names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
+    # 范围外差异注记（goal v3 W2）：不驱头行符号，但如实列出「未评估」
+    oos_note = ""
+    if out_scope:
+        oos_note = f"；范围外 {len(out_scope)} 处差异未评估（见附带结果）"
     # 确证差异优先（T2 三出口统一：与 Excel「不合格」同序——混合样品提示
     # 保留在正文双峰章节，不再抢占结论头）
     if confirmed or bad:
@@ -549,10 +571,11 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             return f"△ 结论：{head}{roi_blk['detail']}" + (f"；{tail}" if tail else "")
     # ✓ 资格门（A 3.3 / B P0-1）：还有未决项就不得 ✓，也不再把它们预判为
     # 「疑似测序伪影」——△ 如实说「未决」，让用户核对峰图或补测
-    if variants or unresolved_sites:
+    ins_variants = [v for v in variants if _in_scope_v(v)]
+    if ins_variants or unresolved_sites:
         bits = []
-        if variants:
-            bits.append(f"{len(variants)} 处未决差异，需核对峰图或补测")
+        if ins_variants:
+            bits.append(f"{len(ins_variants)} 处未决差异，需核对峰图或补测")
         if unresolved_sites:
             bits.append(f"{unresolved_sites} 处未决位点（N/模糊调用、poly 或双峰未定）")
         return "△ 结论：" + "；".join(bits) + (f"；{tail}" if tail else "")
@@ -566,9 +589,23 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         more = f" 等 {len(blk_all)} 项" if len(blk_all) > 1 else ""
         return (f"△ 结论：{first.get('detail') or first.get('kind')}{more}"
                 + (f"；{tail}" if tail else ""))
+    # ✓ 的主张范围（goal v3 W2/§8 决策 1）：未声明范围只说「已测区段」，
+    # 禁止「构建与设计一致」（goal v3 §0.1 对所有出口生效）；声明范围
+    # 的头行三段式（符号 · 范围 · 证据）随 W5 重构
+    if not declared and not target and scope_ranges:
+        spans = "、".join(f"{s}–{e}" for s, e in scope_ranges[:3])
+        more = f" 等 {len(scope_ranges)} 段" if len(scope_ranges) > 3 else ""
+        claim = f"已测 {spans}{more} 与设计一致"
+        note = "；范围外未评估" + oos_note
+    else:
+        claim = None
+        note = oos_note
     if resolved:
         # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
-        ok = "目的基因测序正确" if target else "构建与设计一致"
-        return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
-    ok = "目的基因测序正确，未检出差异" if target else "构建与设计一致，未检出差异"
-    return f"✓ 结论：{ok}" + (f"；{tail}" if tail else "")
+        ok = ("目的基因测序正确" if target
+              else (claim or "构建与设计一致"))
+        return f"✓ 结论：{ok}{note}" + (f"；{tail}" if tail else "")
+    ok = ("目的基因测序正确，未检出差异" if target
+          else ((claim + "，未检出差异") if claim
+                else "构建与设计一致，未检出差异"))
+    return f"✓ 结论：{ok}{note}" + (f"；{tail}" if tail else "")
