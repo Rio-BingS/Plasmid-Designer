@@ -96,3 +96,30 @@ def test_front_short_junction_reported():
     kinds = _blocking_kinds(res)
     assert "end_junction_unverified" in kinds
     assert _status(res) == "pending"
+
+
+def test_conclusion_groups_structured():
+    """R6/P1-7：结论折叠组由后端结构化下发（low/mixed_detail/resolved），
+    前端不再靠「低置信度（/↳+双峰」文案匹配分组"""
+    rng = _rng("rr6")
+    ref = _rand_seq(rng, 1200)
+    main = ref[449]
+    alt = next(b for b in "ACGT" if b != main)
+    blob = _read_from_ref(ref, 1, 1000, subs=[(950, "G" if ref[949] != "G" else "T")],
+                          secondary={450: (alt, 0.4)}, q=50)
+    feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
+    res = analyze([("mix.ab1", blob)], ref, feats, circular=False)
+    groups = res.get("conclusion_groups")
+    assert groups is not None
+    assert set(groups) == {"low", "mixed_detail", "resolved"}
+    concl_lines = set(res["conclusion"].split("\n"))
+    # 组内每一行都必须逐字来自结论文本（分组是行的子集标注，不是再加工）
+    for kind in ("low", "mixed_detail", "resolved"):
+        for line in groups[kind]:
+            assert line in concl_lines, (kind, line)
+    # 混合位点在 CDS 内 → mixed_detail 组含逐 read 双峰行；低置信行归 low 组
+    blob2 = _read_from_ref(ref, 1, 700, subs=[(20, "G" if ref[19] != "G" else "T")], q=40)
+    res2 = analyze([("r2.ab1", blob2)], ref, feats, circular=False)
+    g2 = res2["conclusion_groups"]
+    assert g2["low"], "首端硬区低置信变异应进 low 组"
+    assert any("低置信度" in l for l in g2["low"])

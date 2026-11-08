@@ -43,14 +43,21 @@ const gapSummary = computed(() => {
   return parts.join('、') + (gs.length > 3 ? ' 等' : '')
 })
 
-// 结论文本按组折叠：低置信行（后端标注“低置信（/低置信度（”）连同紧随的
-// “↳ 破坏/新增酶切位点”子注释行一起收起；poly 判读等独立行不受牵连。
-// 逐 read 双峰位点范围行（“↳ …双峰 N 处，位于 read …”）单独一组默认收起，
-// 展开后可核对位点是否落在 read 首尾不可信区
+// 结论文本按组折叠（2026-11-08 复审 R6）：新记录优先用后端下发的
+// conclusion_groups 结构化分组（构建端显式标记，判定不依赖文案）；
+// 旧记录无该键 → 回退按文案匹配（低置信行（“低置信（/低置信度（”）
+// 连同紧随的 “↳ 破坏/新增酶切位点” 子注释一起收起；逐 read 双峰位点
+// 范围行（“↳ …双峰 N 处…”）单独一组默认收起）
 const conclusionParts = computed(() => {
   const allLines = (props.analysis.conclusion ?? '').split('\n')
   // 头行由 headLine 单独渲染，正文不再包含（2026-11-05 头行去重）
   const lines = allLines.slice(1)
+  const g = props.analysis.conclusion_groups
+  if (g) {
+    const grouped = new Set([...(g.low ?? []), ...(g.mixed_detail ?? []), ...(g.resolved ?? [])])
+    const main = lines.filter((l) => l.trim() !== '' && !grouped.has(l)).join('\n')
+    return { main, low: g.low ?? [], mixed: g.mixed_detail ?? [], resolved: g.resolved ?? [] }
+  }
   const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
   const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
   const isMixedDetail = (l: string) => l.trimStart().startsWith('↳') && l.includes('双峰')

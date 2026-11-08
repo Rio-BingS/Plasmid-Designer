@@ -282,6 +282,10 @@ export interface SequencingAnalysis {
   verdict?: Verdict
   /** 区间裁决行结构化形态（互检排除差异，前端高亮；旧记录缺省） */
   resolved_regions?: ResolvedRegion[]
+  /** 结论行结构化分组（2026-11-08 复审 R6；旧记录缺省 null → 前端回退
+   * 文案匹配）：low=低置信折叠组、mixed_detail=逐 read 双峰行、
+   * resolved=区间裁决行——前端折叠不再依赖「低置信度（/↳+双峰」匹配 */
+  conclusion_groups?: { low: string[]; mixed_detail: string[]; resolved: string[] } | null
   /** 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检双峰；T1） */
   unresolved_sites?: UnresolvedSite[]
   /** 单点双峰次等位（goal T7 MixedVariant；T22 起下发供差异表/证据包跳转） */
