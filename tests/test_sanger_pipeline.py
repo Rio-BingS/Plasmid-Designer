@@ -1194,7 +1194,9 @@ def test_synonymous_substitution_not_labeled_aa_change():
     assert v.get("synonymous") is True
     assert v["codon_change"] == "TAT>TAC"
     notes = summarize_severity([v])
-    assert "同义突变" in notes[0] and "氨基酸改变" not in notes[0]
+    # R6：返回 [(文本, kind)]——同义确证行 kind="variant"（正文常驻）
+    assert "同义突变" in notes[0][0] and "氨基酸改变" not in notes[0][0]
+    assert notes[0][1] == "variant"
 
 
 def test_summarize_marks_low_confidence():
@@ -1202,11 +1204,13 @@ def test_summarize_marks_low_confidence():
     v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v["confidence"] = "low"
     v["features"] = []
-    note = summarize_severity([v])[0]
+    note, kind = summarize_severity([v])[0]
     assert "低置信度" in note and "人工核对" in note
+    assert kind == "low"  # R6：低置信行机器标记（前端折叠组数据源）
     v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v2["features"] = []
-    assert "低置信度" not in summarize_severity([v2])[0]
+    note2, kind2 = summarize_severity([v2])[0]
+    assert "低置信度" not in note2 and kind2 == "variant"
 
 
 # ---------- 插入峰强度比（真实单碱基插入 vs caller 伪影的判别） ----------
@@ -1424,12 +1428,12 @@ def test_summarize_slippage_wording():
     v["features"] = []
     v["slippage_artifact"] = True
     note = summarize_severity([v])[0]
-    assert "滑移伪影" in note and "混合峰" not in note
+    assert "滑移伪影" in note[0] and "混合峰" not in note[0]
     # 无标记的低置信变异维持原口径
     v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v2["confidence"] = "low"
     v2["features"] = []
-    assert "疑似测序噪声或混合峰" in summarize_severity([v2])[0]
+    assert "疑似测序噪声或混合峰" in summarize_severity([v2])[0][0]
 
 
 def test_excel_conclusion_flags_poly_count_mismatch():

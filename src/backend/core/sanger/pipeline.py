@@ -2110,7 +2110,8 @@ def _build_conclusion(
     if mixed_profiles is None:
         mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
                           if r["mixed_profile"]["count"] > 0}
-    mixed_lines: List[str] = []
+    mixed_lines: List[str] = []  # 待折叠组（R6：↳ 逐 read 双峰行 + scattered 待核行）
+    mixed_signal_lines: List[str] = []
 
     def _frac_range(ps: List[Dict]) -> str:
         fr = sorted(round(p["minor_fraction"] * 100) for p in ps
@@ -2206,7 +2207,9 @@ def _build_conclusion(
         if mc["multi_sites"]:
             pos_txt = "、".join(str(rp) for rp, _fs in mc["multi_sites"][:4])
             more = " 等" if len(mc["multi_sites"]) > 4 else ""
-            mixed_lines.append(
+            # R6：⚠ 信号行不进折叠组（前端正文常驻），mixed_lines 只留
+            # 待折叠的 ↳ 逐 read/scattered 行
+            mixed_signal_lines.append(
                 f"⚠ {len(mc['multi_sites'])} 处参考位点被多条引物同报双峰"
                 f"（参考位置 {pos_txt}{more}，倾向真实混合）——建议重新挑单克隆复测")
 
@@ -2243,7 +2246,7 @@ def _build_conclusion(
         body_lines = list(resolved_lines)
         # scattered 双峰提示：互检能归为噪声的不再打扰；仅剩「无覆盖待核」的
         # 位点才保留一行（双峰是源 read 自身属性，与构建判读无关）
-        body_lines.extend(mixed_lines)
+        body_lines.extend(mixed_lines + mixed_signal_lines)
         body_lines.extend(cds_lines)
         # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）；
         # 三态 verdict 分措辞（Step B）：矛盾→不可信，不可判定→需换引物
@@ -2288,7 +2291,9 @@ def _build_conclusion(
         lines.append(f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
                      f"{_coverage_ranges_text(coverage_ranges)}）：")
         lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
-        lines.extend(summarize_severity(shown_variants))
+        lines.extend(mixed_signal_lines)
+        severity_tagged = summarize_severity(shown_variants)
+        lines.extend(text for text, _kind in severity_tagged)
         # CDS 结论紧随其后（整段编码区有没有问题是第一信息，此前重构时遗漏）
         lines.extend(cds_lines)
         # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
@@ -2395,6 +2400,14 @@ def _build_conclusion(
         conclusion = "\n".join(
             [conclusion] + [_partial_alignment_note(r["filename"], r["partial_alignment"])
                             for r in partial_reads])
+    # R6 结构化分组（goal §2 判定不依赖文案）：前端折叠组由构建端显式给出，
+    # 不再靠「低置信度（/↳+双峰/差异区间」文案匹配（旧记录无该键走前端回退）
+    conclusion_groups = {
+        "low": [text for text, kind in (severity_tagged if shown_variants else [])
+                if kind == "low"],
+        "mixed_detail": list(mixed_lines),
+        "resolved": list(resolved_lines),
+    }
     if read_results:
         # has_mixed 用机器判定（A 5.2：不靠文案匹配）：widespread 分级 +
         # 跨引物互检降级例外，与 mixed_lines 的分叉同源（mixed_sample_confirmed）
@@ -2410,7 +2423,9 @@ def _build_conclusion(
                                           verdict=verdict)
                       + "\n" + conclusion)
 
-    return conclusion, cds_reports, mixed_profiles, resolved_regions
+    return conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups
+
+
 def analyze(
     ab1_files: List[Tuple[str, bytes]],
     reference: str,
@@ -2618,7 +2633,7 @@ def analyze(
         "coverage": coverage, "features": features or [],
         "algo_version": SANGER_ALGO_VERSION,
     }, len(ref))
-    conclusion, cds_reports, mixed_profiles, resolved_regions = _build_conclusion(
+    conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features, unresolved_sites=unresolved_sites, errors=errors,
@@ -2668,6 +2683,7 @@ def analyze(
         "cds_reports": cds_reports,
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
+        "conclusion_groups": conclusion_groups,  # R6 结构化折叠组（low/mixed_detail/resolved）
         # 未决位点（goal T1 三态）：判定区域内「没读清」的地方，✓ 资格门输入
         "unresolved_sites": unresolved_sites,
         "primer_checks": primer_checks,
