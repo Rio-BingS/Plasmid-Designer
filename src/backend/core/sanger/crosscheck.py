@@ -10,6 +10,7 @@ re-export 维持全部旧导入路径。
 from typing import Dict, List, Optional, Set, Tuple
 
 from core.sanger.aligner import fold_pos
+from core.sanger.mixed_call import MINOR_AF_MIN
 from core.sanger.readmap import _circ_len, _read_ref_maps
 from core.sanger.reliable_zone import in_zone
 
@@ -160,6 +161,13 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         uncovered: List[int] = []
         uncovered_ref: List[int] = []
         for e in r.get("mixed_detail") or []:
+            # 2026-11-08 复审 R3：低于次等位门槛的双峰（AF < MINOR_AF_MIN，
+            # ratio_floor 降到 0.15 后检测带随之打开）是噪声级——不进互检/
+            # 未决位点，由 verdict 端按 info 记录（与 mixed_variant 的
+            # AF 门槛同一数值，af = ratio/(1+ratio) 同 mixed_call 口径）
+            _ratio = float(e.get("ratio") or 0)
+            if _ratio / (1 + _ratio) < MINOR_AF_MIN:
+                continue
             rp = r2ref.get(e["pos"])
             if rp is None:
                 rp = _approx(r, r2ref, e["pos"])

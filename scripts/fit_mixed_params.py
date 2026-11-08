@@ -48,7 +48,10 @@ def main() -> int:
     truth = load_truth()
     cur = MM._DEFAULT_PARAMS
     results = []
-    for ratio_floor in (0.2, 0.25, 0.3, 0.35, 0.4):
+    # 2026-11-08 复审 R3：补低地板 0.15/0.18——AF= r/(1+r)，旧网格下限 0.20
+    # （AF 0.167）漏掉 MINOR_AF_MIN=0.15（AF 0.15↔r 0.176）对应的比值带，
+    # 网格从未覆盖过它；0.18（AF 0.153）是让 MINOR_AF_MIN 恰好生效的最整值
+    for ratio_floor in (0.15, 0.18, 0.2, 0.25, 0.3, 0.35, 0.4):
         for adaptive_k in (3.0, 4.0, 5.0, 6.0):
             cand = MM.MixedParams(ratio_floor=ratio_floor, adaptive_k=adaptive_k)
             MM._DEFAULT_PARAMS = cand

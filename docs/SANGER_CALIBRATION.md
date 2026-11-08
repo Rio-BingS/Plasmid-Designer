@@ -76,15 +76,33 @@ M1@104/106、M2@300、M13@780；构造伪影 3：S4@450、S9@20、S13@15——
 
 ## 4. T11 双峰模型参数拟合（scripts/fit_mixed_params.py）
 
-对 MixedParams 核心参数网格（ratio_floor × adaptive_k = 5×4）在混合语料
-（S2/S3/S4/S14 + 伪影 F1/F2/S13/S17/M7/M12）上以 FPR=0 硬约束择优：
+对 MixedParams 核心参数网格（ratio_floor × adaptive_k）在混合语料
+（S2/S3/S4/S14 + 伪影 F1/F2/S13/S17/M7/M12）上以 FPR=0 硬约束择优。
+
+**2026-11-08 复审 R3 修订**：T23 的网格下限是 0.20，从未覆盖 0.15/0.18——
+而 af = ratio/(1+ratio)（mixed_call 口径），旧地板 0.30 卡的是 **AF 0.231**，
+MINOR_AF_MIN=0.15 对应比值 0.176，AF 15-22% 带是死代码（CDS 内静默 ✓，
+复审指出的 P0-3）。补测低地板（FPR=0 硬约束下）：
 
 | 参数组 | status TPR | status FPR | 位点检出率 |
 |---|---|---|---|
-| 现行（ratio_floor=0.30, adaptive_k=4.0） | 1.0 | 0.0 | 1.0 |
-| 网格最优并列（如 0.20, 3.0） | 1.0 | 0.0 | 1.0 |
+| 旧现行（ratio_floor=0.30, adaptive_k=4.0） | 1.0 | 0.0 | 1.0 |
+| **新现行（ratio_floor=0.15, adaptive_k=4.0）** | 1.0 | 0.0 | 1.0 |
+| 0.15 / 0.176 / 0.18 × k∈{3.0, 4.0} 全部 | 1.0 | 0.0 | 1.0 |
 
-**结论：现行参数已是约束下最优（并列），保持不变。**
+**结论：0.15 在 FPR=0 约束下与 0.30 等价，取最敏感值。** 噪声仍由自适应
+MAD 项（med + k·mad_scale·MAD）抬升，地板只管干净区低带。语义归一：
+
+- 检测带（af ≥ 0.130）进表；verdict 端 af < MINOR_AF_MIN(0.15) 只记
+  info（info 分支自此有真实输入），af ≥ 0.15 且在判定范围（CDS/关键
+  元件/接合区）→ mixed_variant 升级（goal T7 设计意图恢复）；
+- 互检端（crosscheck）同步 af < 0.15 不进未决位点；
+- 散在双峰（af ≥ 0.15、范围外、单 read 无法互检）仍按 2026-11-06 定稿
+  走 unresolved_site △待定——基准集 F1/F2 由此 pass→partial→pending
+  （3730：4 处 af 0.155-0.193；3100：7 处 af 0.153-0.208，见 truth.yaml
+  行注释）；MX 真实批次快照（work/after_R3.json vs after_T25.json）
+  **逐字段零 diff**——真实数据在自适应阈值下无 0.15-0.30 比值带的
+  边界检出，旧地板在本语料上一直是冗余闸门。
 
 ## 5. 复验方式
 
