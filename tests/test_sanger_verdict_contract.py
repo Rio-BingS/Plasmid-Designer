@@ -48,12 +48,23 @@ NOT_VIA_ANALYZE = {
     "M11": "app 层 _precheck 场景（T18）",
 }
 
+# goal v3 §4 场景中当前契约确实失败的子集（spec kwargs 里的 scope 等
+# analyze 尚未接受的入参 → TypeError）。strict xfail 自 policing：任务
+# 落地、契约转绿后若忘记从本表移除，XPASS 会报错强制清理。其余 v3 场景
+# （SC2/3/4/9、CM1-7、AF2、PR1-3）在契约口径下当前已一致，不标。
+V3_CONTRACT_XFAIL = {
+    "SC1", "SC5", "SC6", "SC7", "SC8", "SC10", "SC11", "CM8", "AF1",
+}
+
 
 @pytest.mark.parametrize("spec", SCENARIOS, ids=[s.id for s in SCENARIOS])
-def test_status_consistent_across_outlets(spec):
+def test_status_consistent_across_outlets(request, spec):
     """每个场景：网页符号 / Excel 前缀 / 分拣目录 / verdict.status 四方一致"""
     if spec.id in NOT_VIA_ANALYZE:
         pytest.skip(NOT_VIA_ANALYZE[spec.id])
+    if spec.id in V3_CONTRACT_XFAIL:
+        request.applymarker(
+            pytest.mark.xfail(strict=True, reason=f"goal v3 {spec.task} 未落地"))
     from app.sequencing_report import _conclusion_bucket
     _spec, res = _run_scenario(spec)
     vd = res["verdict"]

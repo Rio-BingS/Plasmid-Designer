@@ -504,6 +504,16 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         return (f"✗ 结论：{who}"
                 + ("等" if len(hq_blks) > 2 else "")
                 + (f"；{tail}" if tail else ""))
+    # 引物校验未通过（goal T17）：verdict 判 fail——引物加错/方向搞反/模板
+    # 换位时差异判读不可信。结论头此前漏掉该分支，出现 ✓ 头行与 fail
+    # status 并存（PR3 真值锁定暴露的三出口分叉，goal v3 W0）
+    pm_blks = [b for b in (verdict or {}).get("blocking") or []
+               if b.get("kind") == "primer_mismatch"]
+    if pm_blks:
+        who = "；".join((b.get("detail") or "引物校验未通过")
+                        for b in pm_blks[:2])
+        return (f"✗ 结论：{who}" + ("等" if len(pm_blks) > 2 else "")
+                + (f"；{tail}" if tail else ""))
     # 解析失败的 read（goal T4；B P0-3）：不再只在 read 表出现——结论头 △
     # 点名「哪几条没读出来」，失败的文件没有验证可言
     if failed_reads:
@@ -546,6 +556,16 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         if unresolved_sites:
             bits.append(f"{unresolved_sites} 处未决位点（N/模糊调用、poly 或双峰未定）")
         return "△ 结论：" + "；".join(bits) + (f"；{tail}" if tail else "")
+    # 出口一致兜底（goal v3 W0，PR3/SC2/SC3/SC9 真值锁定暴露）：verdict
+    # 仍有阻断项（引物校验未通过、关键元件未验证等）时头行不得报 ✓——
+    # 上文各专项分支未覆盖的 blocking kind 在此按明细如实降 △，终结
+    # 「✓ 头行 + 非 pass status」的并存
+    blk_all = (verdict or {}).get("blocking") or []
+    if blk_all:
+        first = next((b for b in blk_all if b.get("detail")), blk_all[0])
+        more = f" 等 {len(blk_all)} 项" if len(blk_all) > 1 else ""
+        return (f"△ 结论：{first.get('detail') or first.get('kind')}{more}"
+                + (f"；{tail}" if tail else ""))
     if resolved:
         # variants 已剔除互检定案项：剩下的都排除了，结论是确定的
         ok = "目的基因测序正确" if target else "构建与设计一致"
