@@ -1,10 +1,11 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-11-07（`v2.37.0-alpha.2`：**Sanger 判读链路全量修复收口**
-> （goal_sanger_full_fix_v2 T0-T25：证据三态/结构化 verdict/verified 覆盖/
-> 校准评分/基准集/解析层口径修正），变更明细见 CHANGELOG 2.37.0-alpha.2，
-> 闸门与提交清单见 docs/audit/PROGRESS.md）。
+> **更新**：2026-11-08（`v2.37.0-alpha.3`：**2026-11-08 复审修复**（8 条：
+> 假 ✓ 三处——整质粒部分覆盖/verified 口径/低 AF 混合静默，加首端硬区
+> 连接段上报、p_real 展示改评分、结论分组结构化、基准集独立正例与诚实
+> 声明、五条防回潮约束登记），变更明细见 CHANGELOG 2.37.0-alpha.3；
+> alpha.2 全量修复史见同文件与 docs/audit/PROGRESS.md）。
 >
 > 本文只回答「现在在哪、怎么接、下一步做什么」。功能清单、API、环境变量看
 > [README.md](../README.md)；工作规范与代码地图看 [AGENTS.md](../AGENTS.md)；
@@ -15,7 +16,8 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前分支
-`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.2**（2026-11-07）：
+`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.3**（2026-11-08 复审修复；
+alpha.2 = 2026-11-07 全量修复收口）：
 **Sanger 判读链路全量修复收口**（goal_sanger_full_fix_v2 T0-T25）——证据三态
 （rejected/confirmed/unresolved）+ 结构化 verdict 统一四出口、verified 覆盖
 口径、可信区信号驱动、校准 P(真实) 四档行动、证据包、引物校验、混合判定
@@ -23,8 +25,8 @@
 估 Q）与基准集 CI 断言（33/33 对角、FPR=0）；「待定」结论明显增多是预期
 （诚实呈现证据不足）。上一版 v2.37.0-alpha.1（2026-11-05：目的基因模式 +
 结论覆盖资格门）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
-2026-11-07 实测：后端 **1965 passed / 46 skipped / 0 failed / 0 xfailed**
-（约 145 s；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可
+2026-11-08 实测：后端 **1975 passed / 46 skipped / 0 failed / 0 xfailed**
+（约 152 s；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可
 触发 + 3 契约测试对不经 analyze 场景的显式登记），
 前端 **693 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步
 门禁全绿。
@@ -45,13 +47,13 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 
 | 项 | 值 |
 |---|---|
-| 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.2`（2026-11-07：Sanger 判读链路全量修复 T0-T25）。此前 v2.37.0-alpha.1（2026-11-05：目的基因模式 + 结论覆盖资格门）、v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
-| 后端测试 | **1965 passed / 46 skipped / 0 failed / 0 xfailed**（约 145 秒，2026-11-07；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11 不经 analyze）；Sanger 场景库 36 项 0 xfail） |
-| 前端测试 | **693 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-07；npm audit 2026-10-29 实测 0 漏洞） |
+| 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.3`（2026-11-08：复审修复 8 条——覆盖闸收紧/双峰地板 0.18/首端连接段上报/结论分组结构化/基准集诚实化）。此前 `v2.37.0-alpha.2`（2026-11-07：Sanger 判读链路全量修复 T0-T25）。此前 v2.37.0-alpha.1（2026-11-05：目的基因模式 + 结论覆盖资格门）、v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
+| 后端测试 | **1975 passed / 46 skipped / 0 failed / 0 xfailed**（约 152 秒，2026-11-08；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11 不经 analyze）；Sanger 场景库 38 项 0 xfail，含 R7 独立正例 S18/S19） |
+| 前端测试 | **693 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-08；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
-| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v7"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7 写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
+| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v8"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8 写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |

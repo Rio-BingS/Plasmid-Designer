@@ -78,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 
 测试基线（本机 Windows，2026-11-07 实测，分支 `experiment/preview-visual-tuning`）：
 pytest
-**1965 passed / 46 skipped / 0 failed / 0 xfailed**（约 145 s），vitest **693 passed**，
+**1975 passed / 46 skipped / 0 failed / 0 xfailed**（约 152 s），vitest **693 passed**，
 vue-tsc **0**、build/npm audit/尺寸预算/文档同步门禁全绿。46 skipped = 42 deploy
 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11
 不经 analyze）；Sanger 场景库 36 项 0 xfail。其中 5 项真实数据回归
