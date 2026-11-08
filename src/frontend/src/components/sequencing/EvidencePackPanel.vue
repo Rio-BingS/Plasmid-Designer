@@ -3,7 +3,7 @@
  * 证据包面板（goal T22；A 5.4）
  *
  * 点击变体/未决位点/混合位点行时多 read 堆叠对齐显示：该位 ±10 峰的四通道
- * 小图（后端纯 Python 生成 SVG）+ 调用/Q/峰强比/P(真实)/伪迹表与判定理由。
+ * 小图（后端纯 Python 生成 SVG）+ 调用/Q/峰强比/评分/伪迹表与判定理由。
  * Markdown 证据包可整包下载（单样品，脱离系统后仍可核对）。
  */
 import { ref, watch } from 'vue'
@@ -92,7 +92,7 @@ async function download(): Promise<void> {
             <table class="seq-table">
               <thead>
                 <tr><th>read</th><th>read 位</th><th>调用</th><th>Q</th>
-                    <th>峰强比</th><th>P(真实)</th><th>伪迹</th></tr>
+                    <th>峰强比</th><th title="T15 规则评分（0-100，非校准概率）">评分</th><th>伪迹</th></tr>
               </thead>
               <tbody>
                 <tr v-for="r in s.reads" :key="r.read">
@@ -101,7 +101,7 @@ async function download(): Promise<void> {
                   <td class="mono">{{ r.call || '-' }}</td>
                   <td>{{ r.q ?? '-' }}</td>
                   <td>{{ r.mutant_pct ?? '-' }}</td>
-                  <td>{{ r.p_real != null ? `${Math.round(r.p_real * 1000) / 10}%` : '-' }}</td>
+                  <td>{{ r.p_real != null ? Math.round(r.p_real * 100) : '-' }}</td>
                   <td>{{ artifactText(r.artifact) }}</td>
                 </tr>
               </tbody>
