@@ -713,6 +713,13 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
                         for fn, s in hq_segs[:2])
         out = (f"不合格：{who} 高质量序列未比对上参考（连接/结构异常）"
                + ("等" if len(hq_segs) > 2 else "") + "，该部分未验证")
+    elif any(b.get("kind") == "primer_mismatch"
+             for b in vd.get("blocking") or []):
+        # 引物校验未通过（goal T17）：verdict 判 fail。Excel 此前漏掉该
+        # 分支会与 fail status 分叉出「合格」（PR3 真值锁定暴露，goal v3 W0）
+        pm = next(b for b in vd.get("blocking") or []
+                  if b.get("kind") == "primer_mismatch")
+        out = f"不合格：{pm.get('detail') or '引物校验未通过'}"
     elif n_err:
         # 解析失败的 read（goal T4；B P0-3）：不再隐身——「待定·读取失败」
         # 前缀点名，分拣进 读取失败/；全部失败已在上面按 分析失败 返回
