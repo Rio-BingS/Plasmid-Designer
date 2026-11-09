@@ -11,7 +11,7 @@
  * 同时控制突变表的低置信行折叠（总览里展开 → 突变表同步展开）；退出历史
  * 回看时父组件 preset watch 会把两者一起复位（行为与拆分前一致）。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { CdsReport, SequencingAnalysis, VerdictItem } from '@/api'
 
 const props = defineProps<{
@@ -71,6 +71,19 @@ const headLine = computed(() => {
   const kind = st === 'pass' ? 'ok' : st === 'fail' ? 'fail' : st ? 'warn' : bySymbol
   return { text: first, kind }
 })
+
+// ==================== 元件状态表（goal v3 W13，PL §E5） ====================
+// verdict.element_verdicts（W5 下发）：范围内元件逐行列出；范围外（
+// not_assessed）折叠成一行——结论只对声明范围负责，范围外如实说未评估
+const showOutOfScope = ref(false)
+const elementRows = computed(() => props.analysis.verdict?.element_verdicts ?? [])
+const inScopeElements = computed(() => elementRows.value.filter((e) => e.in_scope))
+const outScopeCount = computed(() =>
+  elementRows.value.filter((e) => !e.in_scope).length)
+
+const ELEMENT_STATUS_LABEL: Record<string, string> = {
+  ok: '一致', issue: '有问题', not_assessed: '未评估',
+}
 
 /** verdict 徽标文案（T2：状态机可读化；旧记录无 verdict 不显示） */
 const statusBadge = computed(() => {
@@ -234,6 +247,36 @@ function soLevel(t: string): string {
           <span v-if="c.frameshift_count">移码 {{ c.frameshift_count }} 处</span>
           <span v-if="c.ref_protein_length != null && c.alt_protein_length != null && c.ref_protein_length !== c.alt_protein_length">蛋白长度 {{ c.ref_protein_length }} → {{ c.alt_protein_length }} aa</span>
           <span v-if="c.aa_changes?.length">氨基酸替换（{{ c.aa_changes.slice(0, 5).join('、') }}{{ c.aa_changes.length > 5 ? '…' : '' }}）</span>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 元件状态表（goal v3 W13）：范围内元件逐行；范围外折叠成一行 -->
+  <div class="conclusion-card elements-card" v-if="inScopeElements.length || outScopeCount">
+    <h4 class="section-title">元件状态<span class="map-sub">（只评估需测范围内的元件；点击图谱元件可加入/移出范围）</span></h4>
+    <div v-for="e in inScopeElements" :key="e.name + e.start" class="cds-row">
+      <span class="cds-dot" :class="e.status === 'ok' ? 'pass' : 'fail'"></span>
+      <div class="cds-main">
+        <p class="cds-name">
+          {{ e.name }}
+          <span class="cds-coord">{{ e.start }}-{{ e.end }}（{{ e.type === 'junction' ? '接合区' : e.type }}）</span>
+          <span class="cds-cov" :class="e.status === 'ok' ? 'full' : 'partial'">
+            {{ ELEMENT_STATUS_LABEL[e.status] ?? e.status }} · 覆盖 {{ e.coverage ?? 0 }}%
+          </span>
+          <span v-if="e.issues" class="cds-so mid">{{ e.issues }} 处问题</span>
+        </p>
+      </div>
+    </div>
+    <button v-if="outScopeCount" class="lowconf-toggle" @click="showOutOfScope = !showOutOfScope">
+      {{ showOutOfScope ? '▾ 收起范围外元件' : `▸ ${outScopeCount} 个范围外元件未评估（声明包含它们后重算即可评估）` }}
+    </button>
+    <div v-if="showOutOfScope && outScopeCount" class="cds-row">
+      <span class="cds-dot na"></span>
+      <div class="cds-main">
+        <p class="cds-name">
+          <span class="cds-cov">{{ elementRows.filter((e) => !e.in_scope).map((e) => e.name).join('、') }}</span>
+          <span class="cds-cov">未评估</span>
         </p>
       </div>
     </div>

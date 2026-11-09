@@ -226,7 +226,12 @@ describe('SequencingPanel', () => {
   it('T15 低置信行不再折叠：常显并按待处理优先级排前，仅结论文本保留折叠', async () => {
     const analysis = {
       ...mockAnalysis,
-      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n  ↳ 新增酶切位点: EcoRI\n【MBYSTC CDS】CDS 已完整覆盖\n位置 380 缺失 1bp（非编码区），低置信度（疑似测序噪声或混合峰，建议人工核对峰图）\n  ↳ 破坏酶切位点: BsaHI',
+      // W12：低置信行文案改「未决（」口径；折叠只消费 conclusion_groups 结构化分组
+      conclusion: '共检出 2 处差异（覆盖 12.0%）：\n位置 200 A→G（高置信）\n  ↳ 新增酶切位点: EcoRI\n【MBYSTC CDS】CDS 已完整覆盖\n位置 380 缺失 1bp（非编码区），未决（测序噪声或混合峰无法排除，需人工核对峰图）\n  ↳ 破坏酶切位点: BsaHI',
+      conclusion_groups: {
+        low: ['位置 380 缺失 1bp（非编码区），未决（测序噪声或混合峰无法排除，需人工核对峰图）', '  ↳ 破坏酶切位点: BsaHI'],
+        mixed_detail: [], resolved: [],
+      },
       variants: [
         { ...mockAnalysis.variants[0], confidence: 'high', p_real: 0.995, action: 'accept' },
         { ...mockAnalysis.variants[0], ref_pos: 380, type: 'deletion', alt_base: '-', confidence: 'low', p_real: 0.006, action: 'resequence' },
@@ -243,8 +248,8 @@ describe('SequencingPanel', () => {
     expect(rows[0].text()).toContain('建议重测')
     expect(rows[0].text()).toContain('评分 1')
     expect(rows[1].text()).toContain('采信')
-    // 结论文本的低置信折叠保留在结论卡（开关仍在，默认收起）
-    expect(text).toContain('1 处低置信已折叠')
+    // 结论文本的低置信折叠保留在结论卡（W12：未决口径文案）
+    expect(text).toContain('1 处未决差异已折叠')
     expect(text).not.toContain('破坏酶切位点: BsaHI')
     expect(text).toContain('新增酶切位点: EcoRI')
     expect(text).toContain('【MBYSTC CDS】')
@@ -263,6 +268,15 @@ describe('SequencingPanel', () => {
         '  ↳ r1.ab1：双峰 8 处，位于 read 81–140、201–260（read 坐标；首尾 20bp 不可信区未计入）',
         '  ↳ r2.ab1：双峰 5 处，位于 read 90、130（read 坐标；首尾 20bp 不可信区未计入）',
       ].join('\n'),
+      // W13：折叠只消费结构化分组——mock 补 conclusion_groups（旧记录回退已删）
+      conclusion_groups: {
+        low: [],
+        mixed_detail: [
+          '  ↳ r1.ab1：双峰 8 处，位于 read 81–140、201–260（read 坐标；首尾 20bp 不可信区未计入）',
+          '  ↳ r2.ab1：双峰 5 处，位于 read 90、130（read 坐标；首尾 20bp 不可信区未计入）',
+        ],
+        resolved: [],
+      },
     }
     const wrapper = mount(SequencingPanel, { props: { preset: analysis } })
     await wrapper.vm.$nextTick()
@@ -798,25 +812,37 @@ describe('SequencingPanel', () => {
       { name: '6xHis', start: 6884, end: 6901, strand: '+', length: 18 }
     ],
     auto_match: { name: 'MX', note: '参考文件名匹配（文件名与CDS精确匹配）' },
-    note: ''
+    note: '',
+    // W13：范围预设条数据源（W10 scope_presets/default_preset）
+    scope_presets: [
+      { value: '全质粒', label: '全质粒', reason: '整条参考都在需测范围' },
+      { value: 'KanR', label: 'KanR（559-1374）', reason: '以「KanR」及其接合区为需测范围' },
+      { value: 'MX', label: 'MX（5075-6877）', reason: '以「MX」及其接合区为需测范围' },
+      { value: '6xHis', label: '6xHis（6884-6901）', reason: '以「6xHis」及其接合区为需测范围' },
+    ],
+    default_preset: { value: 'MX', reason: '文件名命中目标 CDS' },
   }
 
-  it('目的基因模式默认关闭：提示文案在但不显示下拉，分析入口不受影响', async () => {
+  it('范围预设条：参考就绪即解析预设并预选默认项（W13，目的基因模式并入预设）', async () => {
+    vi.mocked(parseSequencingReference).mockResolvedValue(mockParse)
     const wrapper = mount(SequencingPanel)
-    expect(wrapper.text()).toContain('目的基因模式')
+    expect(wrapper.text()).toContain('验证范围')
     expect(wrapper.find('.cds-pick').exists()).toBe(false)
     ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
     await flushPromises()
-    expect(parseSequencingReference).not.toHaveBeenCalled()
+    // 参考+read 就绪即解析（不再挂模式开关）
+    expect(parseSequencingReference).toHaveBeenCalledTimes(1)
+    // 默认项 = default_preset（文件名命中 MX）自动预选
+    expect((wrapper.vm as any).scopePreset).toBe('MX')
+    const active = wrapper.find('.scope-btn.active')
+    expect(active.text()).toContain('MX')
     expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeUndefined()
   })
 
-  it('打开开关：解析候选 CDS、自动匹配预选、提交带 CDS 参数', async () => {
+  it('选 CDS 预设：提交带 cds_mode 参数；预设按钮带默认项 reason', async () => {
     vi.mocked(parseSequencingReference).mockResolvedValue(mockParse)
     const wrapper = mount(SequencingPanel)
     ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
-    await flushPromises()
-    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
     await flushPromises()
 
     expect(parseSequencingReference).toHaveBeenCalledTimes(1)
@@ -824,48 +850,55 @@ describe('SequencingPanel', () => {
     expect(refFile.name).toBe('MX.dna')
     expect(readNames).toEqual(['r1.ab1'])
 
-    const select = wrapper.find('.cds-pick select')
-    expect((select.element as HTMLSelectElement).value).toBe('MX')
-    expect(wrapper.text()).toContain('自动匹配')
+    // 预设按钮列出全部候选（label 带区间），默认项 reason 提示在条下
     expect(wrapper.text()).toContain('KanR')
-    expect(wrapper.text()).toContain('1803 bp')
+    expect(wrapper.text()).toContain('默认 MX')
+    expect(wrapper.text()).toContain('文件名命中目标 CDS')
 
     vi.mocked(analyzeSequencingFiles).mockResolvedValue(mockAnalysis)
     ;(wrapper.vm as any).runAnalysis()
     await flushPromises()
+    // 默认预设 MX（CDS）→ cds_mode=true + cds_name=MX（§8 决策 4 并入预设）
     const cdsOpts = vi.mocked(analyzeSequencingFiles).mock.calls.at(-1)![5]
     expect(cdsOpts).toEqual({ mode: true, name: 'MX' })
+    const scopeArg = vi.mocked(analyzeSequencingFiles).mock.calls.at(-1)![6]
+    expect(scopeArg).toBe('')
   })
 
-  it('手动改选 CDS 后新增 read 不重解析、不顶掉选择', async () => {
+  it('手动切预设后新增 read 不重解析、不顶掉选择', async () => {
     vi.mocked(parseSequencingReference).mockResolvedValue(mockParse)
     const wrapper = mount(SequencingPanel)
     ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
     await flushPromises()
-    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
+    // 点 KanR 预设按钮（手动选择）
+    const kanr = wrapper.findAll('.scope-btn').find((b) => b.text().includes('KanR'))
+    await kanr!.trigger('click')
     await flushPromises()
-    await wrapper.find('.cds-pick select').setValue('KanR')
 
     ;(wrapper.vm as any).addFiles([makeFile('r2.ab1')])
     await flushPromises()
     expect(parseSequencingReference).toHaveBeenCalledTimes(1)
-    expect((wrapper.vm as any).cdsSelected).toBe('KanR')
+    expect((wrapper.vm as any).scopePreset).toBe('KanR')
+    expect((wrapper.vm as any).cdsMode).toBe(true)
   })
 
-  it('参考无候选：显示后端提示且分析按钮禁用', async () => {
+  it('参考无 CDS 候选：显示提示，全质粒验证仍可分析（W13 松绑）', async () => {
     vi.mocked(parseSequencingReference).mockResolvedValue({
       ...mockParse,
       candidates: [],
       auto_match: null,
-      note: '参考内没有可作目标的 CDS/gene 特征'
+      note: '参考内没有可作目标的 CDS/gene 特征',
+      scope_presets: [{ value: '全质粒', label: '全质粒', reason: '整条参考都在需测范围' }],
+      default_preset: { value: '全质粒', reason: '文件名未命中目标 CDS，默认按全质粒验证' },
     })
     const wrapper = mount(SequencingPanel)
     ;(wrapper.vm as any).addFiles([makeFile('MX.dna'), makeFile('r1.ab1')])
     await flushPromises()
-    await wrapper.find('.cds-toggle input[type=checkbox]').setValue(true)
-    await flushPromises()
-    expect(wrapper.text()).toContain('没有可作目标')
-    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeDefined()
+    // 提示落在默认项 reason 上（后端 note 仅在完全没有预设时才作 scopeError）
+    expect(wrapper.text()).toContain('文件名未命中目标 CDS')
+    // 无候选不再锁死分析入口：范围条默认全质粒（旧 cds_mode 语义为禁用）
+    expect((wrapper.vm as any).scopePreset).toBe('全质粒')
+    expect(wrapper.find('.analyze-btn').attributes('disabled')).toBeUndefined()
   })
 
   it('目的基因模式报告：read↔CDS 覆盖关系列与汇总行（匹配引物）', async () => {

@@ -89,6 +89,9 @@ export interface SequencingEvidenceItem {
 
 export interface SequencingVariant {
   ref_pos: number
+  /** 双坐标（goal v3 W9，CM P1-D）：质粒坐标 + 命中 CDS 内 c./p.（负链
+   *  按编码方向换算）；旧记录无此字段 → 变异表只显示质粒坐标 */
+  coords?: { plasmid: number; cds?: { name: string; c: string; p?: string } }
   read_pos?: number
   type: string
   ref_base: string
@@ -209,14 +212,26 @@ export interface SequencingAnalysis {
   }
   coverage_ranges: [number, number][]
   /** 覆盖缺口；环状参考跨原点的缺口 start > end（折回坐标），带
-   *  wraps_origin 与 ref_segments [[x, L], [1, y]]，length 为合并后总长 */
+   *  wraps_origin 与 ref_segments [[x, L], [1, y]]，length 为合并后总长；
+   *  cause（goal v3 W6）：beyond_primer=引物够不到 / read_shortfall=
+   *  应测到未测到 / unknown=归因不明——前端缺口按原因着色 */
   coverage_gaps?: {
     start: number
     end: number
     length: number
+    cause?: string
     wraps_origin?: boolean
     ref_segments?: [number, number][] | null
   }[]
+  /** 覆盖分级（goal v3 W6/W13）：expected_ranges=引物理论覆盖 E、
+   *  verified_ranges=验证覆盖 V——MatchMap 三层色带数据源（旧记录缺省） */
+  coverage?: {
+    measured_ranges?: [number, number][]
+    verified_ranges?: [number, number][]
+    expected_ranges?: [number, number][]
+    verified_percent?: number
+    measured_percent?: number
+  }
   /** 参考是否按环状比对（旧记录无此字段） */
   circular?: boolean
   cds_reports?: CdsReport[]
@@ -307,11 +322,40 @@ export interface VerdictItem {
   refs?: string[]
 }
 
+/** 需测范围 R（goal v3 §3.1；W2 起随 verdict 下发，未声明为合成 measured） */
+export interface ScopeInfo {
+  ranges: [number, number][]
+  source: 'user' | 'design_insert' | 'cds_target' | 'filename_match' | 'primer_window' | 'measured'
+  declared: boolean
+  require_double_strand?: boolean
+  elements?: string[]
+  reason?: string
+  /** 接合区窗口（W8）：属需测范围但不并入 ranges（头行/区间渲染只显示主段） */
+  junctions?: [number, number][]
+}
+
+/** 元件级判定（goal v3 W5）：范围内元件逐行，范围外 not_assessed */
+export interface ElementVerdict {
+  name: string
+  type: string
+  start: number
+  end: number
+  status: 'ok' | 'issue' | 'not_assessed'
+  coverage: number | null
+  double_strand?: number | null
+  issues: number
+  in_scope: boolean
+}
+
 /** 结构化判定（goal T2）：网页/Excel/归档/API 出口统一由 status 驱动 */
 export interface Verdict {
   status: 'pass' | 'fail' | 'pending' | 'mixed' | 'partial' | 'insufficient' | 'failed_reads'
   blocking: VerdictItem[]
   info: VerdictItem[]
+  /** 三段式头行（goal v3 W5/W12）：三出口唯一文案来源 */
+  headline?: string
+  scope?: ScopeInfo | null
+  element_verdicts?: ElementVerdict[]
   roi?: {
     start: number
     end: number
@@ -364,7 +408,10 @@ export async function analyzeSequencingFiles(
   /** read 可信区边界 "30,60,700,900"；空串用后端默认 */
   reliableZone = '',
   /** 目的基因模式：以参考内指定 CDS 的编码序列为参考分析（坐标即 CDS 内坐标） */
-  cdsOptions?: { mode: boolean; name?: string }
+  cdsOptions?: { mode: boolean; name?: string },
+  /** 需测范围（goal v3 W10）：元件名 / 301-900 / 多段(;) / 「全质粒」等；
+   * 声明后结论只对该范围负责。留空走来源推断（记忆/CDS 模式/文件名） */
+  scope?: string
 ): Promise<SequencingAnalysis> {
   const form = new FormData()
   form.append('reference', reference, reference.name)
@@ -376,6 +423,7 @@ export async function analyzeSequencingFiles(
     form.append('cds_mode', 'true')
     if (cdsOptions.name) form.append('cds_name', cdsOptions.name)
   }
+  if (scope) form.append('scope', scope)
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   const data = response.data as SequencingAnalysis
   // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
@@ -394,6 +442,10 @@ export interface SequencingReferenceParse {
   /** 文件名自动匹配命中的候选（唯一命中才有）；note 为匹配依据 */
   auto_match: { name: string; note: string } | null
   note: string
+  /** 范围预设（goal v3 W10/W13）：「全质粒」+ 各 CDS 候选，附 reason——
+   * 范围选择条的数据源；default_preset 是按文件名匹配推导的默认项 */
+  scope_presets?: { value: string; label: string; reason: string }[]
+  default_preset?: { value: string; reason: string } | null
 }
 
 /** 解析参考文件特征，供「目的基因模式」下拉预选（轻量只读，不落库不分析） */
@@ -406,6 +458,20 @@ export async function parseSequencingReference(
   readNames.forEach((n) => form.append('read_names', n))
   const response = await api.post('/sequencing/parse-reference', form)
   return response.data as SequencingReferenceParse
+}
+
+/** 按新范围从存档重算判定（goal v3 W11/W13）：不重跑比对，毫秒级返回；
+ * 更新 verdict/conclusion 并追加 scope_history。响应含重算后的三件套 */
+export async function recomputeVerdict(
+  analysisId: string,
+  scope: string,
+): Promise<{ verdict: Verdict; conclusion: string; scope_history: unknown[] }> {
+  const response = await api.post(
+    `/sequencing/analyses/${encodeURIComponent(analysisId)}/verdict`,
+    { scope },
+    { headers: analysisTokenHeaders(analysisId) },
+  )
+  return response.data
 }
 
 export function rememberAnalysisToken(analysisId: string, token: string): void {
