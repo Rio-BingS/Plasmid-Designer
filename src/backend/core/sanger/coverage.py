@@ -179,7 +179,8 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
                    min_len: int = 100, cap: int = 10,
                    circular: bool = False,
                    expected: Optional[List[Dict]] = None,
-                   scope_ranges: Optional[List[Tuple[int, int]]] = None
+                   scope_ranges: Optional[List[Tuple[int, int]]] = None,
+                   scope_min_len: int = 20,
                    ) -> List[Dict]:
     """覆盖缺口（未覆盖区间）按长度降序，供补测建议
 
@@ -194,7 +195,10 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
     部分；expected（理论覆盖 E）给出时逐缺口归因 cause——beyond_primer
     （任何 read/引物的理论窗都够不到 → 加引物）、read_shortfall（理论窗
     可达但实测未达 → 看峰图/重测，detail 带衰减位置）；E 不可得 →
-    unknown（verdict 侧落 scope_uncovered）。"""
+    unknown（verdict 侧落 scope_uncovered）。
+    scope_min_len（W8）：声明范围内的归因阈值独立于整参考的 min_len——
+    接合区窗口宽 61bp，两侧各 ~30bp 的未测缺口必须可归因，100bp 整参考
+    阈值会把它们全部滤掉（scope_uncovered 兜底吞掉 cause）。"""
     raw: List[Dict] = []
     prev = 0
     for s, e in covered_ranges:
@@ -212,19 +216,22 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
             "wraps_origin": True,
             "ref_segments": [[tail["start"], length], [1, head["end"]]],
         }
-    gaps = [g for g in raw if g["length"] >= min_len]
     if scope_ranges:
         # R 内缺口（goal v3 W6）：整参考缺口与声明范围求交，跨原点缺口
-        # 逐段求交后按长度重算；范围外部分不归需测范围管
+        # 逐段求交后按长度重算；范围外部分不归需测范围管。求交在
+        # min_len 过滤**之前**做（W8）——接合区两侧 ~30bp 的缺口在整参考
+        # 口径下不足 100bp，但属于需测范围必须归因
         scoped: List[Dict] = []
-        for g in gaps:
+        for g in raw:
             for gs, ge in _segments_of(g):
                 for rs, re_ in scope_ranges:
                     s_, e_ = max(gs, rs), min(ge, re_)
-                    if s_ <= e_ and e_ - s_ + 1 >= min_len:
+                    if s_ <= e_ and e_ - s_ + 1 >= scope_min_len:
                         scoped.append({"start": s_, "end": e_,
                                        "length": e_ - s_ + 1})
         gaps = scoped
+    else:
+        gaps = [g for g in raw if g["length"] >= min_len]
     for g in gaps:
         g.setdefault("cause", "unknown")
         g.setdefault("detail", "")

@@ -106,13 +106,97 @@
   partial）、PR3（距离出窗 fail 保持 T17 口径）全绿。
 - 测试数字（W6/W7 全落地树）：Windows 全量 **2018 passed / 0 failed /
   46 skipped / 14 xfailed**（xfailed 21→14：SC5/SC11/SC6/SC9/PR1/PR2
-  摘除）；Linux（VPS）W3-W5 树 2044 passed / 3 failed（map_annotate
-  预存）/ 21 xfailed——W6/W7 推送后重跑回填。
+  摘除）；Linux（VPS，60d9741）**2052 passed / 2 failed（map_annotate
+  性能预存，W0 基线同现）/ 10 skipped / 14 xfailed**——xfailed 与
+  Windows 一致，双平台同步确认。
 - W6/W7 期间修复的构造级残留（不计真值改动）：v2 旧 T17 负链构造
   `ref_end = 3′端−20` 是「read 不含引物区」语义，与 W7 口径（负链
   read 以引物区开头、5′ 锚 ref_end ≥ 3′ 端）相反——重编码并补负链
   出窗反例，留痕于测试注释。
 - `SANGER_ALGO_VERSION` v10→v11（HANDOVER §2 登记）。
+
+
+## W8 目的基因模式不再裁参考（CM P0-A/P0-B/P1-C/P1-F）
+
+- `cds_extract.prepare_scope_mode`（W8 目标路径）：cds_mode 不再替换参考
+  ——全质粒按真实拓扑比对，`scope = 目标 CDS + 接合区`
+  （source=cds_target，declared），**全部注释原样保留**（P1-F 的
+  「窗口内其他注释丢失」与「参考未注释关键元件」噪音随之消失）。
+- **接合区入需测范围但不进头行区间**：Scope 新增 `junctions` 字段（CDS
+  两端 ±30，跨原点按折回形态给出后归并）；verdict 覆盖分数/缺口/变异
+  归因按 `merged_ranges()`（ranges ∪ junctions）判，头行与区间渲染只用
+  ranges——cds_target 路径与「全质粒 + scope」结论逐字同源（CM5），
+  接合区变异仍判 junction_variant（CM3）。
+- 覆盖缺口归因阈值独立：`_coverage_gaps(scope_min_len=20)`——接合区两侧
+  ~30bp 的未测缺口在整参考 100bp 阈值下永远拿不到 cause（会落
+  scope_uncovered 兜底），W8 起声明范围内的缺口按 20bp 归因。
+- **只有质粒超 MAX_REF_BP 才裁剪**：侧翼 = max(1500, 最长 read+200)；
+  窗口 = 「CDS 首段 5′ 侧翼起点 → 末段 3′ 侧翼终点」的环状跨原点切片
+  （跨原点 CDS 天然连续化、近原点 CDS 两侧侧翼完整，一个映射机制统一
+  P0-B/P1-C）；features 平移进窗口坐标（窗口内保留、目标 CDS 加
+  analysis_target），scope 同步平移，circular=False。
+- `analyze(..., full_ref=None, full_circular=False)` 新可选参数（goal 硬
+  约束内）：裁剪路径端部未比对高质量段在窗口上无落点时按完整质粒
+  split-read 再定位——能连续定位 = 读取越过窗口边缘的正常延续，记
+  `located_outside`（verdict 记 info「窗口外已定位」），未比对部分全部
+  定位成功时不判 partial_alignment。
+- resolve_auto/显式选择逻辑抽 `_resolve_candidate` 共用；resolve_reference
+  （v2 裁参考路径）保留为对照实现，生产路径不再调用。
+- 顺带修复：`_run_full_analysis` 解卷积重建 verdict 时漏传 scope（W2 期
+  缺口，decompose+scope 并存时范围语义丢失）。
+- test_real_cds_mode_mx 重编码：等价性从「变体集合一致」扩展到「结论
+  一致」（verdict.status / headline / blocking kind 集合与手搭同范围
+  scope 逐字一致）；MX 实测 CDS+接合区 verified 100%，junction 窗口内
+  未决位点（首端 5075-5085 等）随接合区归 junction_variant。
+- CM1-CM5 摘 xfail；CM3 构造重编码留痕：初版两条 read 各带一处插入，
+  同位点被对方 read 干净覆盖互检排除，与「同一质粒的插入应出现在每条
+  覆盖 read」的真实场面矛盾——改为同一变体质粒正反两条 read；1bp 插入
+  在微同源边界可被比对器等价表示为紧邻替换（alt=插入碱基），断言按
+  truth 粒度校准为「接合区窗口内确证差异检出 + junction_variant + fail」。
+- 端点测试重编码：cds_mode 语义断言从「裁剪参考/伪特征」改为「全质粒
+  /全注释保留/scope=cds_target/junctions 下发」。
+- 测试数字（W8 全落地树）：见闸门 3 回填（W8/W9 合并记录）。
+
+
+## W9 自动匹配与双坐标（CM P1-D/P2-G/P1-F）
+
+- `resolve_auto` 歧义判别（CM P2-G）：参考名命中与 read 名命中**指向不同
+  候选**时判歧义不猜——旧实现参考名唯一即静默采用（GFP_backbone ×
+  mCherry_F 探针静默选错）；一方命中集合为另一方的子集（收敛到同一
+  候选）不算冲突。依据写明在返回说明里。
+- `resolve_explicit`（CM P1-F）：显式选择在**未去重**的 CDS/gene 分组中
+  查找——嵌套特征（6xHis、融合蛋白报告基因）可选；重名（双拷贝）报错
+  不静默取第一个。`_resolve_candidate` 显式分支接线，路由 400 语义不变。
+- 变体新增 `coords`（CM P1-D）：`{"plasmid": 质粒坐标, "cds": {name, c,
+  p?}}`——c. 按编码方向（负链由 coding_offset 处理，CM8：质粒 1100 →
+  GeneX c.501）；aa_change 可导出时并列 p.。W8 全质粒口径下坐标即质粒
+  坐标，P1-D「质粒 1300 报成 450」随之消失。
+- `resolved_regions` 的 cds_offset 仅存显示文本助手（inner_label），判定
+  不消费 offset（W8 无参考替换后该机制自然退役）；`cds_extract.py` 重复
+  `import re` 已在 W8 重写时删除。
+- CM6/CM7/CM8 摘 xfail（剩余 xfail 6 个：SC2→W10、OC1/OC2→W12）。
+
+## 【闸门 3】阶段 3 收口（CM1–CM8 绿 + MX 回归解释）
+
+- 场景：CM1-CM8 全绿（长 read 超窗 pass / 通用引物 read pass / 跨原点
+  接合区插入 junction_variant fail / 近原点与 scope 一致 / cds_mode 与
+  scope 同源 / 名称歧义 / 嵌套显式选择 / 负链双坐标）。
+- **MX 真实回归差异解释**：全质粒未声明口径逐字不变（W8/W9 只加
+  coords 字段与 cds 路径行为；变体集合/结论断言全对角）。cds_target
+  路径（test_real_cds_mode_mx）：status=fail 与旧裁参考路径语义一致
+  （确证差异 5076 插入/5269 替换在范围内），headline「✗ 不合格 · 范围：
+  MX（5075–6877） · 证据：4 处确证差异」；blocking 构成变化 = 接合区
+  窗口内未决位点（首端 5075-5085、尾端 6868-6873）归 junction_variant、
+  旧「参考未注释关键元件」噪音消失（全注释保留）；与手搭同范围 scope
+  逐字一致（等价断言锁定）；verified 覆盖 CDS+接合区 100%（真实三条
+  read 越过接合区窗口）。
+- 测试数字（W8/W9 全落地树）：
+  - Windows 全量（W8 树，v12）：**2028 passed / 0 failed / 46 skipped /
+    9 xfailed**；W9 收口后 CM6-8 摘除（xfailed 9→6）。
+  - Linux（VPS）：W6/W7 树 60d9741 = 2052 passed / 2 failed
+    （map_annotate 性能预存）/ 14 xfailed——W8/W9 推送后重跑回填。
+- `SANGER_ALGO_VERSION` v12→v13（W9 变更自动选择行为与变体载荷；HANDOVER
+  §2 登记）。
 
 
 ## W3 verified 口径与 pass 契约（RV P0-2）

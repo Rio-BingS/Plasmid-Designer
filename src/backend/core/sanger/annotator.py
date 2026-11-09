@@ -94,6 +94,7 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
     variant["codon_change"] = None
     variant["aa_change"] = None
     variant["frameshift"] = False
+    _coords_cds = None          # 双坐标（W9）：首个命中 CDS 的编码坐标
     for parts in hit_groups:
         feat = parts[0]
         if feat.get("type") not in ("CDS", "gene"):
@@ -106,6 +107,9 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
         cpos = coding_offset(parts, hit_pos)
         if cpos is None:
             continue
+        if _coords_cds is None:
+            _coords_cds = {"name": feat.get("name", "CDS"),
+                           "c": f"c.{cpos + 1}"}
         strand = next(
             (p.get("strand", "+") for p in parts
              if int(p["start"]) <= hit_pos <= int(p["end"])),
@@ -131,6 +135,13 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
         elif variant["type"] in ("insertion", "deletion"):
             # 跨原点缺失只有一段落在该特征时按该段长度判移码
             variant["frameshift"] = sum(n for _s, n in hit_segs) % 3 != 0
+
+    # 双坐标（goal v3 W9，CM P1-D）：质粒坐标 + CDS 编码坐标并列——
+    # 图谱上找「质粒 1100」，蛋白/密码子口径看「GeneX c.501」（负链按
+    # 编码方向，coding_offset 已处理）；蛋白变化可导出时并列 p.
+    variant["coords"] = {"plasmid": ref_pos, "cds": _coords_cds}
+    if _coords_cds and variant.get("aa_change"):
+        _coords_cds["p"] = "p." + variant["aa_change"].split(":", 1)[-1]
 
     # 酶切位点变化：在变体附近 ±14bp 窗口比较参考与突变序列。
     # 插入/缺失会使下游位点整体平移 delta，直接按 (名称, 位置) 对比会把"平移"

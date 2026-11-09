@@ -49,7 +49,7 @@ async def analyze_sequencing_upload(
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
-    cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，仅以其编码序列为参考分析（所有 read 照常参与）"),
+    cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，以其+接合区为需测范围分析（W8 起全质粒比对、不裁参考）"),
     cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
     primer: str = Form(default="", description='引物校验（T17，可选）：JSON {"name": "M13F", "seq"?: "ACGT...", "direction"?: "+"}；seq 省略时按 name 查 data/primers/*.yaml 引物库'),
     user: Optional[User] = Depends(get_current_user),
@@ -75,23 +75,39 @@ async def analyze_sequencing_upload(
             parse_reference_topology, ref_name, ref_bytes)
     except ReferenceParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    scope_obj = None
+    full_ref = None
+    full_circular = False
     if cds_mode:
-        # 目的基因模式：参考替换为 CDS 编码序列（先提取后校验——大质粒超
-        # MAX_REF_BP 但 CDS 本身不超时仍可分析）；提取出的片段恒为线性
+        # 目的基因模式（goal v3 W8，CM P0-A/P0-B/P1-C/P1-F）：不再裁参考——
+        # 全质粒按真实拓扑比对，scope = 目标 CDS + 接合区（source=cds_target），
+        # 全部注释保留。只有质粒超 MAX_REF_BP 时才裁剪取窗（侧翼
+        # max(1500, 最长 read+200)、环状绕回、跨原点 CDS 连续化），窗口外
+        # 溢出段由 full_ref 重定位兜底（「窗口外已定位」不算异常）。
+        # prepare_scope_mode 契约：未裁剪时原样返回同一 ref 对象——据此
+        # 判定是否发生裁剪，裁剪时把完整质粒交给管线做窗口外重定位
         ref_stem = os.path.splitext(os.path.basename(ref_name))[0]
         try:
-            ref_seq, features = cds_extract.resolve_reference(
+            ref2, feats2, scope_obj, circ2 = cds_extract.prepare_scope_mode(
                 ref_seq, features, ref_stem,
-                [r.filename or "" for r in reads], cds_name.strip() or None)
+                [r.filename or "" for r in reads], cds_name.strip() or None,
+                circular=_reference_circular(topology),
+                max_ref_bp=sequencing_routes.MAX_REF_BP)
+        # 用户已显式声明范围（user > cds_target）时不再裁剪：窗口坐标会
+        # 使 scope 错位；超大参考直接走下方 413 诚实拒绝
         except cds_extract.CdsResolveError as e:
             detail = str(e)
             if e.candidates:
                 detail += "；可选 CDS：" + "、".join(c["name"] for c in e.candidates[:10])
             raise HTTPException(status_code=400, detail=detail)
-        topology = False
+        if ref2 is not ref_seq:
+            full_ref = ref_seq
+            full_circular = _reference_circular(topology)
+        ref_seq, features, topology = ref2, feats2, circ2
     if len(ref_seq) < 50:
         raise HTTPException(status_code=400, detail=f"参考序列过短（{len(ref_seq)} bp），无法比对")
-    # 终审 C-01：长度上限（见 _analyze_endpoint 同款校验）
+    # 终审 C-01：长度上限（见 _analyze_endpoint 同款校验）。W8 裁剪路径
+    # 的窗口已在 prepare_scope_mode 内压到上限以内，此处只拦未裁剪路径
     if len(ref_seq) > sequencing_routes.MAX_REF_BP:
         raise HTTPException(
             status_code=413,
@@ -111,7 +127,8 @@ async def analyze_sequencing_upload(
     return await _analyze_endpoint(ref_seq, sample_name, features, reads, min_q,
                                    allow_decompose, user=user,
                                    circular=_reference_circular(topology), zone=zone,
-                                   primer=primer_dict)
+                                   primer=primer_dict, scope=scope_obj,
+                                   full_ref=full_ref, full_circular=full_circular)
 
 
 @router.post(

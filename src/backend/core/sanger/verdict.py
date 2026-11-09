@@ -177,6 +177,11 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             reason="未声明范围：仅描述实测区段，未测部分未评估")
     declared = bool(scope_obj.declared and scope_obj.ranges)
     scope_ranges = scope_obj.ranges
+    # W8：接合区窗口（scope.junctions，cds_target 来源）属于需测范围——
+    # 覆盖缺口/变异归因按并集判定；但不进头行区间渲染（cds_target 路径
+    # 与「全质粒 + scope」的结论逐字同源，CM5）
+    junction_windows = [(int(s), int(e)) for s, e in scope_obj.junctions]
+    req_ranges = scope_obj.merged_ranges() or scope_ranges
     cds_feats = [f for f in features if f.get("type") == "CDS"
                  and 1 <= int(f.get("start") or 0) <= int(f.get("end") or 0) <= ref_length]
     # 旧字段 verdict.roi 保留（goal v3 §2 API 契约）：取 scope 外包框
@@ -188,6 +193,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
 
     # 变体三态（rejected 不进 blocking：resolved_regions 已有裁决行）
     junctions = _junction_ranges(features)
+    junctions.extend((s_, e_, scope_obj.elements[0] if scope_obj.elements
+                      else "接合区") for s_, e_ in junction_windows)
     if scope_obj.source == "design_insert":
         # goal v3 W2：接合区扩展——设计插入边界的两端 ±30bp 也是接合区
         # （载体-插入接缝与 CDS 模式同判）
@@ -207,8 +214,10 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                 or any(j[0] <= rp <= j[1] for j in junctions))
 
     def _scope_hit(rp: int, v_end: int) -> bool:
-        """变异是否落在需测范围内（与任一范围段相交即算在内）"""
-        return any(s_ <= v_end and rp <= e_ for s_, e_ in scope_ranges)
+        """变异是否落在需测范围内（与任一范围段相交即算在内；W8 起含
+        接合区窗口——cds_target 的接合区属于需测范围）"""
+        return (any(s_ <= v_end and rp <= e_ for s_, e_ in scope_ranges)
+                or any(s_ <= v_end and rp <= e_ for s_, e_ in junction_windows))
 
     for v in variants:
         st = _vstatus(v)
@@ -316,7 +325,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     for u in sites:
         rp = int(u.get("ref_pos") or 0)
         if rp >= 1 and scope_ranges and not any(
-                s <= rp <= e for s, e in scope_ranges):
+                s <= rp <= e for s, e in req_ranges):
             _info("out_of_scope_unresolved", u.get("ref_pos"),
                   f"参考位置 {rp} 的未决位点（{u.get('detail') or u.get('kind')}）"
                   f"在需测范围外——未评估", ref_start=rp, ref_end=rp)
@@ -450,7 +459,16 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         # 解析端被豁免成静默 ✓；split-read 定位到断点的仍按结构异常 fail
         for hq in r.get("unaligned_hq_segments") or []:
             sr_ = hq.get("split_read") or {}
-            if sr_.get("status") == "breakpoint":
+            if sr_.get("status") == "located_outside":
+                # W8 裁剪窗口路径：段在完整质粒上连续定位（越过窗口边缘
+                # 的正常延续）——不算异常，记 info 供峰图核对
+                _info("outside_window_segment", None,
+                      f"{r.get('filename')} {hq.get('side')}端 "
+                      f"{hq.get('length')}bp 高质量序列在完整质粒上定位到 "
+                      f"{sr_.get('ref_start')}-{sr_.get('ref_end')}"
+                      "（分析窗口外，已定位不算异常；该部分不在需测范围）",
+                      ref_start=sr_.get("ref_start"), ref_end=sr_.get("ref_end"))
+            elif sr_.get("status") == "breakpoint":
                 _blk("structural_breakpoint", sr_.get("ref_start"),
                      sr_.get("ref_end"), None,
                      f"{r.get('filename')} {hq.get('side')}端 "
@@ -497,8 +515,9 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     # 未声明范围不判覆盖缺口（已测区段口径，§8 决策 1；SC3/SC4）——
     # 头行/Excel 只描述实测区段，未测部分未评估。
     def _cover_bp(ranges: List[Tuple[int, int]]) -> int:
+        # W8：按需测并集（含接合区窗口）计——分子分母同口径，重叠不重复计
         return sum(max(0, min(int(e), te) - max(int(s), ts) + 1)
-                   for ts, te in scope_ranges for s, e in ranges)
+                   for ts, te in req_ranges for s, e in ranges)
 
     scope_bp = scope_obj.total_bp()
     measured_bp = sum(int(e) - int(s) + 1 for s, e in measured_ranges)

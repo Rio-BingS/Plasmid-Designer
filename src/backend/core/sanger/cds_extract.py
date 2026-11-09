@@ -19,11 +19,13 @@ CDS，以「该 CDS ± 侧翼」的线性区段（而非整个质粒）为比对
 """
 
 import re
-import re
 from typing import Dict, List, Optional, Tuple
 
 from core.sanger.annotator import coding_sequence, group_feature_segments
 from core.sanger.batch import _match_ref_name, norm_stem
+from core.sanger.scope import (
+    JUNCTION_HALF_WIDTH, Scope, SOURCE_CDS_TARGET,
+)
 from core.seq_utils import revcomp
 
 # 可作分析目标的特征类型：与批量页 feature_alias_names 同口径（启动子、
@@ -34,6 +36,13 @@ CDS_TYPES = ("cds", "gene")
 # 贴着 CDS 首端的插入在零上下文参考下会被软 clipping 吞掉（见
 # resolve_reference docstring）——侧翼不是可选项，是正确性前提
 FLANK_BP = 150
+
+# 裁剪路径（W8，仅质粒超 MAX_REF_BP 时启用）的侧翼下限与 read 余量：
+# 侧翼 = max(1500, 最长 read + 200)。app 层 MAX_REF_BP（200_000）是请求
+# 上限的权威；这里给缺省值，调用方（路由）显式传入路由常量保持同源
+MAX_REF_BP_DEFAULT = 200_000
+CROP_FLANK_FLOOR = 1500
+CROP_READ_MARGIN = 200
 
 
 class CdsResolveError(ValueError):
@@ -111,14 +120,13 @@ def resolve_auto(candidates: List[Dict], ref_stem: str,
     来源优先级：参考文件名 > read 文件名。参考名命中唯一候选直接采用
     （MX.dna → CDS「MX」）；参考名未命中时 read 文件名兜底（
     S99675-17647-seqF1 ⊇ CDS「17647 MUTPK」的组成段 17647）。
-    所有命中指向同一候选才采用；指向不同候选时判歧义不猜。read 名命中
+    W9（CM P2-G）：参考名命中与 read 名命中**指向不同候选**时判歧义不猜
+    （GFP_backbone × mCherry_F 探针——旧实现参考名唯一即静默采用）；
+    read 命中是参考命中的子集或反之（同一候选收敛）不冲突。read 名命中
     与否只影响自动识别，不影响该 read 是否参与分析（见模块 docstring）。"""
     names = {c["name"] for c in candidates}
     by_name = {c["name"]: c for c in candidates}
     ref_hits = _stem_hits(norm_stem(ref_stem), names) if ref_stem else {}
-    if len(ref_hits) == 1:
-        name, how = next(iter(ref_hits.items()))
-        return by_name[name], f"参考文件名匹配（{how}）"
     read_hits: Dict[str, str] = {}
     for raw in read_names or ():
         stem = norm_stem(raw)
@@ -126,6 +134,18 @@ def resolve_auto(candidates: List[Dict], ref_stem: str,
             continue
         for name, how in _stem_hits(stem, names).items():
             read_hits.setdefault(name, f"{raw}: {how}")
+    if ref_hits:
+        all_hits = {k: f"参考文件名 {how}" for k, how in ref_hits.items()}
+        all_hits.update(read_hits)
+        if len(all_hits) > 1 and read_hits and not (
+                set(read_hits) <= set(ref_hits)
+                or set(ref_hits) <= set(read_hits)):
+            return None, ("参考文件名与 read 文件名指向不同 CDS（"
+                          + "、".join(sorted(all_hits))[:80]
+                          + "），判歧义——请显式选择目标 CDS")
+        if len(ref_hits) == 1:
+            name, how = next(iter(ref_hits.items()))
+            return by_name[name], f"参考文件名匹配（{how}）"
     all_hits = dict(read_hits)
     if ref_hits:
         # 参考名未唯一（含歧义）时并入 union：read 若收敛到其中之一仍可用
@@ -140,10 +160,180 @@ def resolve_auto(candidates: List[Dict], ref_stem: str,
     return None, "文件名未能唯一识别目的 CDS"
 
 
+def resolve_explicit(features: List[Dict], name: str) -> Dict:
+    """显式选择目标 CDS（goal v3 W9，CM P1-F/P2-G）：在**未去重**的
+    CDS/gene 分组中查找——允许选中嵌套特征（6xHis 标签、融合蛋白里
+    嵌套的报告基因，cds_candidates 的嵌套去重不适用于显式选择）；
+    重名（两处同名的 CDS/gene，如双拷贝）报错不静默取第一个。
+
+    返回候选 dict（与 cds_candidates 同形）；找不到抛 CdsResolveError
+    （candidates 附去重后的可选清单供前端下拉）。"""
+    feats = [f for f in (features or [])
+             if str(f.get("type") or "").strip().lower() in CDS_TYPES]
+    key = norm_stem(name)
+    hits: List[List[Dict]] = []
+    for parts in group_feature_segments(feats):
+        if norm_stem(str(parts[0].get("name") or "CDS")) == key:
+            hits.append(parts)
+    if not hits:
+        raise CdsResolveError(
+            f"参考文件内没有名为「{name}」的 CDS/gene 特征",
+            cds_candidates(features))
+    if len(hits) > 1:
+        spans = "、".join(
+            f"{p[0].get('name') or 'CDS'}"
+            f"（{min(int(q['start']) for q in p)}-{max(int(q['end']) for q in p)}）"
+            for p in hits)
+        raise CdsResolveError(
+            f"参考内有 {len(hits)} 个同名「{name}」特征（{spans}）"
+            "——请改用「验证范围」按坐标声明", cds_candidates(features))
+    parts = hits[0]
+    return {
+        "name": str(parts[0].get("name") or "CDS"),
+        "start": min(int(p["start"]) for p in parts),
+        "end": max(int(p["end"]) for p in parts),
+        "strand": parts[0].get("strand") or "+",
+        "length": sum(int(p["end"]) - int(p["start"]) + 1 for p in parts),
+        "parts": parts,
+    }
+
+
+def _resolve_candidate(features: List[Dict], ref_stem: str,
+                       read_names: List[str],
+                       explicit_name: Optional[str] = None
+                       ) -> Tuple[Dict, str]:
+    """确定目标 CDS（resolve_reference / prepare_scope_mode 共用）。
+
+    explicit_name（前端下拉显式选择）优先于自动匹配。定位失败抛
+    CdsResolveError（candidates 附可选清单）。"""
+    candidates = cds_candidates(features)
+    if not candidates:
+        raise CdsResolveError("参考文件内没有可作分析目标的 CDS/gene 特征", [])
+    if explicit_name:
+        # W9（CM P1-F）：显式选择在未去重候选中查找（嵌套可选、重名报错）
+        return resolve_explicit(features, explicit_name), "手动选择"
+    cand, how = resolve_auto(candidates, ref_stem, read_names)
+    if cand is None:
+        raise CdsResolveError(how, candidates)
+    return cand, how
+
+
+def prepare_scope_mode(ref_seq: str, features: List[Dict], ref_stem: str,
+                       read_names: List[str],
+                       explicit_name: Optional[str] = None,
+                       circular: bool = True,
+                       max_ref_bp: int = MAX_REF_BP_DEFAULT,
+                       read_lens: Optional[List[int]] = None,
+                       ) -> Tuple[str, List[Dict], Scope, bool]:
+    """目的基因模式 W8 目标路径（CM P0-A/P0-B/P1-C/P1-F）：不再裁参考。
+
+    全质粒按真实拓扑比对，scope = 目标 CDS + 接合区（source=cds_target），
+    全部注释原样保留。返回 (ref_seq, features, scope, circular)：
+
+    - len(ref_seq) ≤ max_ref_bp：参考、features、拓扑（circular 入参）
+      原样返回；
+      scope.ranges = 目标 CDS 各段（跨原点 join 按折回形态自然成两段），
+      scope.junctions = 各段两端 ±30bp（属需测范围但不进头行区间——
+      cds_target 路径与「全质粒 + scope」的结论才能逐字同源，CM5）；
+    - 超限才裁剪（goal W8）：侧翼 = max(1500, 最长 read + 200)；窗口 =
+      「CDS 首段 5′ 侧翼起点 → 末段 3′ 侧翼终点」的环状跨原点切片——
+      跨原点 CDS 的窗口天然穿过原点（等价于「旋转使 CDS 连续」），近原点
+      CDS 的两侧侧翼也完整（P1-C）；features 平移进窗口坐标（窗口内的
+      段保留、目标 CDS 加 analysis_target 标记——蛋白报告与结论资格门
+      随窗口坐标生效），scope 同步平移，circular=False。窗口外溢出段由
+      pipeline 的 full_ref 重定位兜底（能连续定位到窗口外不算异常）。
+    """
+    cand, how = _resolve_candidate(features, ref_stem, read_names,
+                                   explicit_name)
+    name = cand["name"]
+    parts = cand["parts"]
+    L = len(ref_seq)
+    ranges = [(int(p["start"]), int(p["end"])) for p in parts]
+    junctions: List[Tuple[int, int]] = []
+    for s, e in ranges:
+        for x in (s, e):
+            a, b = x - JUNCTION_HALF_WIDTH, x + JUNCTION_HALF_WIDTH
+            # 窗口越原点用 start > end 折回形态（normalized 拆两段）——
+            # 接合区跟随真实拓扑（跨原点 CDS 的接缝判定不丢）
+            if a < 1:
+                a += L
+            if b > L:
+                b -= L
+            junctions.append((a, b))
+    reason = (f"目的基因模式：目标 CDS「{name}」（{how}），"
+              "范围 = CDS + 接合区（两端 ±30bp）")
+
+    if L <= max_ref_bp:
+        scope = Scope(ranges=ranges, junctions=junctions,
+                      source=SOURCE_CDS_TARGET, elements=[name],
+                      reason=reason)
+        return ref_seq, features, scope.normalized(L), bool(circular)
+
+    # —— 裁剪路径（goal W8：只有质粒超 MAX_REF_BP 才裁）——
+    flank = CROP_FLANK_FLOOR
+    if read_lens:
+        flank = max(flank, max(read_lens) + CROP_READ_MARGIN)
+    win_start = ranges[0][0] - flank
+    win_end = ranges[-1][1] + flank
+    if win_end - win_start + 1 >= L:      # CDS+侧翼覆盖整条质粒：整条即窗口
+        off, span = 1, L
+    else:
+        span = ((win_end - win_start) % L) + 1   # 跨原点 diff<0 → 环状切片
+        off = ((win_start - 1) % L) + 1          # 窗口起点折回 [1, L]
+    win = "".join(ref_seq[(off - 1 + i) % L] for i in range(span))
+
+    # 平移映射：原始坐标 p → 窗口局部 i = ((p - off) % L) + 1（p 在窗口弧
+    # 上时唯一）。特征段映射后跨窗口折回点的拆两段，完整落在窗口内的保留
+    def _to_window(s: int, e: int) -> List[Tuple[int, int]]:
+        ls = (s - off) % L
+        le = (e - off) % L
+        if ls <= le:
+            ivs = [(ls + 1, le + 1)]
+        else:                             # 段跨窗口折回点：拆两段
+            ivs = [(ls + 1, span), (1, le + 1)]
+        return [(a, b) for a, b in ivs if 1 <= a <= b <= span]
+
+    feats_out: List[Dict] = []
+    for feat in features:
+        s, e = int(feat.get("start") or 0), int(feat.get("end") or 0)
+        if s < 1 or e < s:
+            continue
+        locs = _to_window(s, e)
+        if not locs:
+            continue
+        is_target = feat.get("name") == name and (s, e) in ranges
+        for k, (a, b) in enumerate(locs):
+            f2 = dict(feat)
+            f2["start"], f2["end"] = a, b
+            if len(locs) > 1:
+                # 跨窗口折回点拆出的多段：补分组键让管线重聚（原本无
+                # feature_id 的普通特征拆段后给合成键）
+                if feat.get("feature_id") is None:
+                    f2["feature_id"] = f"__w{feat.get('name') or ''}_{s}_{e}"
+                f2["segment_index"] = k
+                f2["segment_count"] = len(locs)
+            if is_target:
+                f2["analysis_target"] = True
+            feats_out.append(f2)
+    scope = Scope(
+        ranges=[r for s, e in ranges for r in _to_window(s, e)],
+        junctions=[], source=SOURCE_CDS_TARGET, elements=[name],
+        reason=reason + "；质粒超长度上限，已裁剪取窗（窗口坐标）")
+    # 窗口内接合区：从平移后的 CDS 段重新生成（窗口已含 CDS ± 侧翼，
+    # 接合区必完整落在窗口内）
+    for s, e in scope.ranges:
+        scope.junctions.extend(
+            [(max(1, s - JUNCTION_HALF_WIDTH), s + JUNCTION_HALF_WIDTH),
+             (e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH)])
+    scope.normalized(span)
+    return win, feats_out, scope, False
+
+
 def resolve_reference(ref_seq: str, features: List[Dict], ref_stem: str,
                       read_names: List[str],
                       explicit_name: Optional[str] = None) -> Tuple[str, List[Dict]]:
-    """目的基因模式的参考替换：确定目标 CDS → 提取编码区段 + 侧翼 → 伪特征。
+    """目的基因模式的参考替换（v2 旧路径，W8 起仅测试与回退对照使用）：
+    确定目标 CDS → 提取编码区段 + 侧翼 → 伪特征。
 
     explicit_name（前端下拉显式选择）优先于自动匹配。返回 (ext_seq, feats)：
 
@@ -158,21 +348,12 @@ def resolve_reference(ref_seq: str, features: List[Dict], ref_stem: str,
       参考上下文可加），坐标即 CDS 内坐标——接缝处边界效应留待真实多段
       数据出现后再议。
 
+    W8 起生产路径改走 prepare_scope_mode（全质粒 + scope，不裁参考）；
+    本函数保留为裁参考口径的对照实现（P0-A/P0-B/P1-C 的行为问题在
+    REVIEW_cds_mode 有完整记录）。
+
     定位失败抛 CdsResolveError（candidates 附可选清单）。"""
-    candidates = cds_candidates(features)
-    if not candidates:
-        raise CdsResolveError("参考文件内没有可作分析目标的 CDS/gene 特征", [])
-    if explicit_name:
-        key = norm_stem(explicit_name)
-        cand = next((c for c in candidates if norm_stem(c["name"]) == key), None)
-        if cand is None:
-            raise CdsResolveError(
-                f"参考文件内没有名为「{explicit_name}」的 CDS/gene 特征", candidates)
-        how = "手动选择"
-    else:
-        cand, how = resolve_auto(candidates, ref_stem, read_names)
-        if cand is None:
-            raise CdsResolveError(how, candidates)
+    cand, how = _resolve_candidate(features, ref_stem, read_names, explicit_name)
 
     parts = cand["parts"]
     if len(parts) > 1:

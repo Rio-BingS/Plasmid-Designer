@@ -198,55 +198,61 @@ def test_real_analysis_poly_verdicts_have_votes():
 
 
 def test_real_cds_mode_mx():
-    """目的基因模式（CDS 对比）：MX.dna 按参考文件名识别 CDS「MX」
+    """目的基因模式（W8 全质粒口径）：MX.dna 按参考文件名识别 CDS「MX」
     （read 名 SZ15674-* 不带 MX，靠参考名兜底——真实交付形态），
-    以「CDS ± 150bp 侧翼」线性区段为参考跑管线。
+    prepare_scope_mode 产 scope（CDS+接合区）→ analyze 全质粒按真实拓扑比对。
 
-    等价性锁定（本用例的存在理由）：同组 read、同一段编码区，CDS 模式与
-    全质粒口径的变体集合/蛋白判定必须一致。首版零侧翼实现曾把贴着 CDS
-    首端的插入（参考 5076）吞进软 clipping——蛋白判定由 False 翻成 True，
-    验证结论直接错；侧翼上下文是正确性前提，此断言防回潮。"""
+    等价性锁定（本用例的存在理由，W8 从「变体集合一致」扩展到「结论一致」）：
+    同组 read、同一参考，cds_target 路径与「全质粒 + 手搭同范围 scope」的
+    verdict.status / headline / blocking kind 集合必须逐字一致；变体集合与
+    全质粒未声明口径逐一相同（scope 不改比对）。历史教训保留为口径注记：
+    首版零侧翼裁参考实现曾把贴着 CDS 首端的插入（参考 5076）吞进软
+    clipping——全质粒比对下该插入在需测范围内必然检出。"""
     from core.sanger import cds_extract
     from core.sanger.pipeline import analyze
     from core.sanger.reference_parser import parse_reference
+    from core.sanger.scope import Scope
 
     ctx = _load_ctx()
     full = ctx["analyses"]["MX"]["result"]
     ref_path = REAL_DATA_DIR / "MX.dna"
     seq, feats = parse_reference(ref_path.name, ref_path.read_bytes())
+    read_names = ["SZ15674-10570-2-seqF.ab1", "SZ15674-T7-Term.ab1",
+                  "SZ15674-pET-Up.ab1"]
 
     cands = cds_extract.cds_candidates(feats)
-    cand, note = cds_extract.resolve_auto(
-        cands, "MX", ["SZ15674-10570-2-seqF.ab1", "SZ15674-T7-Term.ab1",
-                      "SZ15674-pET-Up.ab1"])
+    cand, note = cds_extract.resolve_auto(cands, "MX", read_names)
     assert cand is not None and cand["name"] == "MX", note
     assert (cand["start"], cand["end"]) == (5075, 6877)
 
-    ext, pseudo_feats = cds_extract.resolve_reference(seq, feats, "MX", [])
-    # CDS 5075-6877 ±150（两端不触质粒边界）→ 区段 4925-7027，CDS 落在 151-1953
-    assert len(ext) == 2103
-    cds_feat = next(f for f in pseudo_feats if f["type"] == "CDS")
-    assert (cds_feat["start"], cds_feat["end"]) == (151, 1953)
-    flank_names = {f["name"] for f in pseudo_feats if f["type"] != "CDS"}
-    assert flank_names == {"5′侧翼", "3′侧翼"}
+    ref2, feats2, scope, circular = cds_extract.prepare_scope_mode(
+        seq, feats, "MX", read_names)
+    assert ref2 is seq and feats2 is feats     # W8：不裁参考、全注释保留（P1-F）
+    assert scope.ranges == [(5075, 6877)]
+    assert scope.junctions == [(5045, 5105), (6847, 6907)]   # CDS 两端 ±30
+    assert scope.source == "cds_target" and scope.elements == ["MX"]
 
     mx_reads = next(g["reads"] for g in ctx["groups"] if g["plasmid"] == "MX")
     ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in mx_reads]
-    res = analyze(ab1s, ext, pseudo_feats, circular=False)
-    reports = res["cds_reports"]
-    assert [c["name"] for c in reports] == ["MX"]
-    mx = reports[0]
+    res = analyze(ab1s, ref2, feats2, scope=scope, circular=circular)
+
+    # 结论一致（W8）：与手搭同范围 scope（同 R 同接合区）逐字一致
+    manual = Scope(ranges=[(5075, 6877)], junctions=[(5045, 5105), (6847, 6907)],
+                   source="user", elements=["MX"], reason="对照")
+    res_manual = analyze(ab1s, seq, feats, scope=manual, circular=True)
+    assert res["verdict"]["status"] == res_manual["verdict"]["status"]
+    assert res["verdict"]["headline"] == res_manual["verdict"]["headline"]
+    assert ({b["kind"] for b in res["verdict"]["blocking"]}
+            == {b["kind"] for b in res_manual["verdict"]["blocking"]})
+    # 变体集合与全质粒未声明口径逐一相同（同参考同 read，scope 不改比对）
+    assert sorted((v["ref_pos"], v["type"], v["confidence"])
+                  for v in res["variants"]) == \
+        sorted((v["ref_pos"], v["type"], v["confidence"])
+               for v in full["variants"])
+
+    mx = next(c for c in res["cds_reports"] if c["name"] == "MX")
     assert mx["coverage_status"] in ("full", "partial")
     assert mx["covered_percent"] > 90  # 三条 read 覆盖 CDS 主体
-
-    # 变体集合等价：CDS 模式坐标平移回参考坐标后与全质粒模式逐一相同
-    span_start = 5075 - cds_extract.FLANK_BP  # 4925
-    cds_vars = sorted((v["ref_pos"] + span_start - 1, v["type"], v["confidence"])
-                      for v in res["variants"])
-    full_vars = sorted((v["ref_pos"], v["type"], v["confidence"])
-                       for v in full["variants"])
-    assert cds_vars == full_vars
-
     full_mx = next(c for c in full["cds_reports"] if c["name"] == "MX")
     assert mx.get("protein_identical") == full_mx.get("protein_identical")
     assert len(mx.get("aa_changes") or []) == len(full_mx.get("aa_changes") or [])
