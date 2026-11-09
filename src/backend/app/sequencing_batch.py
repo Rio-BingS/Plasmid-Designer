@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from app import sequencing_store
 from core.sanger.batch import (
     READ_EXTS, excel_conclusion, feature_alias_names, match_files,
     match_reference_aliases, norm_stem,
@@ -268,6 +269,14 @@ def run_batch_groups(
                 from core.sanger.scope import parse_scope_cell
                 scope_obj, scope_note = parse_scope_cell(
                     _scope_text, features, len(ref_seq))
+            elif scope_obj is None:
+                # W11（PL §C7）：范围列留空时按参考指纹带出上次声明范围
+                # （与单样品入口同口径；无记录/读取失败退回未声明）
+                from core.sanger.scope import Scope as _Scope
+                _mem = sequencing_store.load_scope_memory(ref_seq)
+                if _mem:
+                    scope_obj = _Scope.from_dict(_mem)
+                    scope_obj.reason = "沿用上次范围"
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 # goal v3 W7（PL B3）：信息表引物列 → 逐 read 引物映射。

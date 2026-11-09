@@ -12,11 +12,13 @@ import json
 import os
 import secrets
 import time
+from datetime import datetime
 from typing import List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app.auth.jwt_auth import User, get_current_user
@@ -86,6 +88,15 @@ async def analyze_sequencing_upload(
         scope_obj, scope_err = parse_scope_cell(scope, features, len(ref_seq))
         if scope_obj is None and scope_err:
             raise HTTPException(status_code=400, detail=scope_err)
+    if scope_obj is None and not cds_mode:
+        # W11（PL §C7）：范围记忆——同一参考序列上次使用的声明范围自动
+        # 带出（source 保留原来源、reason 注明沿用）；读取失败/无记录时
+        # 沉默退回未声明口径
+        from core.sanger.scope import Scope as _Scope
+        _mem = await run_in_threadpool(sequencing_store.load_scope_memory, ref_seq)
+        if _mem:
+            scope_obj = _Scope.from_dict(_mem)
+            scope_obj.reason = "沿用上次范围"
     if cds_mode and scope_obj is None:
         # 目的基因模式（goal v3 W8，CM P0-A/P0-B/P1-C/P1-F）：不再裁参考——
         # 全质粒按真实拓扑比对，scope = 目标 CDS + 接合区（source=cds_target），
@@ -416,6 +427,73 @@ async def get_analysis(analysis_id: str, request: Request,
     """获取分析结果（不含峰图原始数据；非创建者且非管理员返回 403）"""
     return _summary(await _aget_analysis(analysis_id, user,
                                          _request_access_token(request)))
+
+
+class VerdictRecomputeRequest(BaseModel):
+    """范围重算请求体（goal v3 W11）：scope 为范围文本（元件名/区间/
+    「全质粒」「插入片段」等），留空退回未声明口径"""
+    scope: str = ""
+
+
+@router.post("/sequencing/analyses/{analysis_id}/verdict")
+async def recompute_verdict(analysis_id: str, request: Request,
+                            body: VerdictRecomputeRequest,
+                            user: Optional[User] = Depends(get_current_user)):
+    """按新范围从存档 result 重算判定并落库（goal v3 W11，PL §C6）。
+
+    build_verdict 是纯函数（W1）：不重跑比对，毫秒级返回；verdict/scope
+    更新进存档，结论头行按新 verdict.headline 重建（W5 同源，正文保留）；
+    追加 scope_history（时间/用户/新旧范围）；声明范围按参考指纹覆盖
+    范围记忆。鉴权与读取同 GET 端点（属主或访问令牌）。"""
+    record = await _aget_analysis(analysis_id, user,
+                                  _request_access_token(request))
+    reference = record.get("reference") or ""
+    if len(reference) < 50:
+        raise HTTPException(status_code=400, detail="存档记录缺参考序列，无法重算范围")
+    scope_text = (body.scope or "").strip()
+    old_scope = dict(((record.get("verdict") or {}).get("scope")) or {})
+    if scope_text:
+        from core.sanger.scope import coerce_scope
+        scope_obj = coerce_scope(scope_text, record.get("features") or [],
+                                 len(reference))
+        if scope_obj is None:
+            raise HTTPException(status_code=400,
+                                detail=f"范围无法识别：「{scope_text}」"
+                                       "（可用元件名 / 数字区间 / 「全质粒」「插入片段」）")
+    else:
+        scope_obj = None  # 显式清空声明 → 退回未声明（measured）口径
+    from core.sanger.verdict import build_verdict
+
+    def _recompute():
+        verdict = build_verdict(record, len(reference), scope_obj)
+        conclusion = record.get("conclusion") or ""
+        headline = verdict.get("headline") or ""
+        # 结论头行重建（三出口同源：头行=verdict.headline，正文保留）
+        if headline:
+            lines = conclusion.split("\n") if conclusion else []
+            record["conclusion"] = "\n".join([headline] + lines[1:])
+        record["verdict"] = verdict
+        hist = list(record.get("scope_history") or [])
+        hist.append({
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "user": (getattr(user, "username", None) or getattr(user, "email", None)
+                     or ("匿名" if user is None else str(getattr(user, "id", "?")))),
+            "old": old_scope or None,
+            "new": verdict.get("scope") or {},
+        })
+        record["scope_history"] = hist
+        sequencing_store.persist_record(record)
+        return verdict, hist
+
+    verdict, hist = await run_in_threadpool(_recompute)
+    # 记忆更新：声明的范围按参考指纹覆盖旧值（清声明不覆盖，保留上次）
+    new_scope = verdict.get("scope") or {}
+    if new_scope.get("declared"):
+        await run_in_threadpool(sequencing_store.save_scope_memory,
+                                reference, new_scope)
+    return {"verdict": verdict, "conclusion": record.get("conclusion"),
+            "scope_history": hist}
+
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")
 async def get_read_trace(analysis_id: str, read_index: int, request: Request,

@@ -454,6 +454,12 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
         _ANALYSES[analysis_id] = record
         _enforce_caps_locked()
     sequencing_store.persist_record(record)  # 持久化：重启/过期后仍可回看（峰图压缩落库）
+    # 范围记忆（goal v3 W11）：参考指纹 → 最近一次使用的声明范围——
+    # 同一质粒再次分析时自动带出（单样品入口；批量/设计流各自接线）。
+    # 只存声明过的 scope（measured 未声明不记忆），失败已在 save 侧留痕
+    _vd_scope = (result.get("verdict") or {}).get("scope") or {}
+    if _vd_scope.get("declared"):
+        sequencing_store.save_scope_memory(reference, _vd_scope)
     return analysis_id, access_token, record
 
 

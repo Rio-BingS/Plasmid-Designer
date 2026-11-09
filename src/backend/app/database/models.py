@@ -348,6 +348,19 @@ class SequencingAnalysisDB(Base):
     created_at = Column(DateTime, default=utcnow_naive)
 
 
+class SequencingScopeMemoryDB(Base):
+    """参考序列指纹 → 最近一次使用的需测范围（goal v3 W11，PL §C7）。
+
+    同一质粒再次测序时自动带出上次范围（source 保留原来源、reason 改
+    「沿用上次范围」）；只存声明过的 scope（measured 未声明不记忆）。
+    每个参考哈希一行，重算范围时覆盖。"""
+    __tablename__ = "sequencing_scope_memory"
+
+    reference_hash = Column(String(64), primary_key=True)  # sha256(reference.upper())
+    scope_json = Column(Text, nullable=False)              # Scope.to_dict()
+    updated_at = Column(DateTime, default=utcnow_naive)
+
+
 def init_db():
     """初始化数据库"""
     _migrate_users_table()

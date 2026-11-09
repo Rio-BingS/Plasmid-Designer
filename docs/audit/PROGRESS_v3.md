@@ -194,7 +194,10 @@
   - Windows 全量（W8 树，v12）：**2028 passed / 0 failed / 46 skipped /
     9 xfailed**；W9 收口后 CM6-8 摘除（xfailed 9→6）。
   - Linux（VPS）：W6/W7 树 60d9741 = 2052 passed / 2 failed
-    （map_annotate 性能预存）/ 14 xfailed——W8/W9 推送后重跑回填。
+    （map_annotate 性能预存）/ 14 xfailed；**W8-W10 树 79cb901 重跑 =
+    2080 passed / 0 failed / 10 skipped / 5 xfailed**（457s）——上一轮
+    的 map_annotate 2 项预存失败本轮通过（性能断言负载敏感，与 W0 基线
+    同源现象），双平台 0 failed 确认。
 - `SANGER_ALGO_VERSION` v12→v13（W9 变更自动选择行为与变体载荷；HANDOVER
   §2 登记）。
 
@@ -232,6 +235,44 @@
 - 影响面回归（Windows）：test_sanger_scenarios + test_batch_sequencing +
   test_sequencing_batch + test_sequencing_routes = 164 passed / 5 xfailed；
   test_cds_mode 28 passed；test_sanger_scope 7 passed。
+
+
+## W11 重算端点与范围记忆（PL §C6/§C7）
+
+- `POST /api/sequencing/analyses/{id}/verdict`（请求体 `{scope}`）：从存档
+  result 按 build_verdict（W1 纯函数）重算并落库——**不重跑比对**（测试
+  打桩 analyze 计数锁零调用）；scope 解析复用 coerce_scope（元件名/区间/
+  关键字，失败 400 带可用写法提示），空 scope 显式退回未声明（measured）
+  口径。鉴权与 GET analyses 同（属主 / X-Access-Token，匿名令牌口径 B-02）。
+- 结论头行按新 verdict.headline 重建（W5 三出口同源；正文保留）；
+  scope_history（payload 内键，旧记录无此键天然兼容）追加
+  {时间, 用户, 旧 scope, 新 scope}。
+- 范围记忆（PL §C7）：新表 `sequencing_scope_memory`（参考序列 sha256
+  指纹 → 最近一次**声明过**的 scope dict；measured 不记忆）。分析落库
+  （_register_analysis）时写入；单样品端点（无 Form scope 且非 cds_mode）
+  与批量（「验证范围」列留空时）按指纹带出——source 保留原来源、
+  reason=「沿用上次范围」。重算端点对声明的范围覆盖记忆。
+- 数据库增量迁移：alembic 新修订 a1b2c3d4e5f6（纯新增表，无列变更）；
+  MIGRATIONS.md 增设「修订历史」段登记（baseline + 本修订）。
+- 新增 5 测（test_cds_mode.py W11 段，scope 记忆打桩为进程内 dict 不依赖
+  sqlite）：SC9 端点路径三 scope 重算快照一致+零比对、conclusion 头行
+  重建+落库回读、400、旧记录兼容（无 verdict/scope_history 键）、记忆
+  回路与复用带出。
+
+
+## 【闸门 4】阶段 4 收口（W10+W11）
+
+- SC9 走端点路径变绿（test_recompute_verdict_endpoint_sc9：同一份存档
+  依次 TARGET/全质粒/未声明，verdict 与直接 build_verdict 快照一致，
+  analyze 打桩计数 0）。
+- scope 输入解析单测全绿（test_sanger_scope.py 7 个：infer_scope 两级
+  来源/优先级/无命中 + parse_scope_cell 多段/关键字/失败不抛）。
+- 历史记录兼容（test_recompute_legacy_record_compat：旧 payload 无
+  verdict/scope_history 键重算正常，history 从 0 追加）。
+- Windows 全量（W11 树）：**2049 passed / 0 failed / 46 skipped /
+  5 xfailed**（2044 + W11 新增 5 测；algo_version 不变——W11 只增重算
+  入口与记忆，不改分析口径）。Linux（VPS，79cb901 含 W10）= 2080 passed /
+  0 failed / 10 skipped / 5 xfailed（闸门3 段已记）；W11 推送后重跑回填。
 
 
 ## W3 verified 口径与 pass 契约（RV P0-2）
