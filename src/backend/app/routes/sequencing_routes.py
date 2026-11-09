@@ -822,6 +822,9 @@ def _summary(record: Dict) -> Dict:
             "identity": r["alignment"]["identity"],
             "mixed_positions": r.get("mixed_positions", []),
             "mixed_detail": r.get("mixed_detail", []),
+            # 软检出带双峰（goal v3 W4）：地板下、af≥0.115 的展示带，
+            # verdict 侧在声明范围×功能区出 pending 复核项
+            "mixed_soft": r.get("mixed_soft", []),
             "mixed_class": (r.get("mixed_profile") or {}).get("class"),
             "mixed_count": (r.get("mixed_profile") or {}).get("count", 0),
             # 逐列对齐视图（read 与参考的原始证据，供人工核对）

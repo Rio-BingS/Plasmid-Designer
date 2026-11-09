@@ -572,8 +572,12 @@ def _sc9():
 
 
 def _sc10():
-    """CDS 301-1299（干净 ORF），read 覆盖到 1320 但尾端 ~1289 起信号退化
-    → verified ≈99%、measured 100%：pass 与 blocking 不得并存（RV P0-2）"""
+    """CDS 301-1299（干净 ORF），read 覆盖到 1320 → measured 100%；
+    尾端 50bp Q=24（高于修剪阈值不被切、低于可信窗均值 TRUST_MEAN_Q=25
+    → 可信区止于 ~1289，ROI verified ≈98.6%）。构造刻意不叠加峰形退化
+    ——早期 tail_width=3.0 会在段内造出密集次峰触发 widespread 判
+    mixed，偏离 §4「纯 verified 缺口」的场面：pending + roi_unverified，
+    pass 与 blocking 不得并存（RV P0-2）"""
     rng = _rng("sc10")
     ref = list(_rand_seq(rng, 1800))
     codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(331)] + ["TAA"]
@@ -581,7 +585,8 @@ def _sc10():
     ref[300:1299] = list("".join(codons))
     ref = "".join(ref)
     feats = [dict(name="Solo", type="CDS", start=301, end=1299, strand="+")]
-    blob = make_trace_ab1(ref[240:1320], q=50, tail_width=(1050, 3.0))
+    seq = ref[240:1320]
+    blob = make_trace_ab1(seq, q=[50] * (len(seq) - 50) + [24] * 50)
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats,
                 kwargs=dict(scope="301-1299", circular=False))
 

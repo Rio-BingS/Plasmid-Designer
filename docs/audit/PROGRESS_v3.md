@@ -44,3 +44,71 @@
 - 测试数字：Windows 全量 **2002 passed / 0 failed / 46 skipped / 29 xfailed**；
   Linux（VPS，W0 树 64dcee4 基线）2021 passed / 16 failed / 10 skipped / 30 xfailed
   （16 失败=W1/W2 待落地契约分叉，W2 推送后 VPS 重跑回填）。
+- Linux 回填（VPS，W2 树 1b5dfd4，2026-11-09）：**2035 passed / 3 failed /
+  10 skipped / 29 xfailed**。3 failed = test_plasmid_map_annotate 3 项性能
+  断言（1.33s/1.44s>1.0s 预算等），**W0 基线日志中同样存在**——VPS CPU
+  慢于预算的预存平台差异，与 sanger 无关。
+
+## W3 verified 口径与 pass 契约（RV P0-2）
+
+- `build_verdict` 末尾新增真断言：status==pass ⇒ blocking==[]（契约违反
+  直接抛 AssertionError 列出冲突 kind）；契约测试 `test_pass_never_carries_
+  blocking` 对全部 26 个经 analyze 场景扫零（与断言双保险）。
+- SC10 构造复核（alpha.3 覆盖条目逐条做实）：原 tail_width=3.0 尾端退化
+  会在段内造出密集次峰触发 widespread 判 mixed，偏离 §4「纯 verified 缺口」
+  场面——改为尾端 50bp Q=24（高于修剪阈值不缩 measured、低于可信窗均值
+  TRUST_MEAN_Q=25 使 verified 止于 ~1289）；断言改按 ROI 分数（measured_
+  fraction==1.0、0.98≤verified_fraction<1.0），W3「统一 verified 口径」落地。
+- 连带修复（SC10 构造暴露的 W2 漏网）：未决位点循环补范围闸——范围外
+  未决位点（如声明 301-1299 时 1301+ 的双峰）不再误入 blocking 驱 pending，
+  记 out_of_scope_unresolved info；ref_pos 缺失无法归因的保留旧行为。
+
+## W4 混合低 AF（RV P0-3；alpha.3 复核后偏离 W4 原案）
+
+- **floor 不取 0.20、取 0.18 对齐**：运行时真值在 params/mixed_default.json
+  （R3 实测标定 0.18，F1/F2 真值钉死 0.153+ 检出带；0.20 会让 af 0.1525-0.167
+  重新变死代码）。W4 原案消灭的是「dataclass 死默认 0.30」——已将
+  `MixedParams.ratio_floor` 缺省 0.30→0.18 与 JSON 对齐，并留注说明。
+- `MINOR_AF_MIN=0.15` 真正生效（不再死代码）：verdict af 分带——功能区
+  （CDS/关键元件/接合区）内 **AF≥0.23 → mixed_variant（mixed）**；
+  **0.15–0.23 → minor_af_site（pending 复核项，入 PENDING_KINDS）**；
+  骨架散在双峰一律 info（2026-11-06 定稿不变）。
+- 新增软检出带（soft_ratio_floor=0.13，af≈0.115 起）：模型地板 0.18 之下
+  的双峰以 soft 标记出表，**不进** mixed_positions/互检分母/widespread 分级
+  （FPR 口径不变，MX 真实批次计数基线逐字不变）；verdict 在**声明范围×
+  功能区**将 af 0.115-0.15 出 minor_af_site pending——AF1 的 0.12 档不再
+  静默。未声明范围软带只记 info（噪声带不进复核）。
+- AF1 四档全绿（pending+留痕）、rereview P0-3 重编码（ratio 0.22→AF 0.18 →
+  pending 不判混）、AF2 真值锁定不变。
+- FPR 复测（3 个真实 AB1：3730/3100/310）：mixed TPR 1.0（4 项）、
+  **FPR 0.0（误判 []）**；verdict 混淆矩阵 35 项全对角（14/1/4/4/12）；
+  位点级敏感度 1.0 / 特异度 1.0（fp=0）。
+
+## W5 element_verdicts 与 headline（PL §A5/§A6）
+
+- verdict 新增 `element_verdicts`：CDS/关键元件/接合区各一条，字段
+  name/type/start/end/status（ok|issue|not_assessed）/coverage（verified %）/
+  double_strand/issues（相交 blocking 数）/in_scope。范围闸与关键元件闸
+  同款：声明范围相交才判、未声明范围须完整落入实测（SC1：AmpR/ori
+  not_assessed）。
+- verdict 新增 `headline` 三段式「符号 状态 · 范围 · 证据」：声明范围
+  「范围：GeneX（301–900）」；未声明范围「已测 x–y；范围外未评估」
+  （goal §0.1 禁整参考主张）。W12 起三出口统一只读 headline（本阶段
+  随 verdict 下发）。
+- 同义突变可配置（§8 决策 3）：`analyze(..., synonymous_action="ok")`
+  默认合格口径——CDS 内确证同义替换（蛋白一致）出 synonymous_variant
+  info 不阻断，Excel 合格注明「X 处同义突变（蛋白不变）」；"fail" 沿旧
+  口径按确证差异阻断（双向锁定测试入册）。
+- SC1/SC3/SC4 摘 xfail 转绿。
+
+## 【闸门 1】阶段 1 收口（SC1-4/7-10、AF1-2、对照组）
+
+- 场景：SC1/SC2*（W10 范围来源，构造预留）/SC3/SC4/SC7-SC10、AF1/AF2 全绿；
+  对照组 benchmark verdict 混淆矩阵 35 项全对角、mixed FPR 0.0 不变红。
+- 测试数字（W3/W4/W5 全落地树）：
+  - Windows 全量：**2011 passed / 0 failed / 46 skipped / 21 xfailed**
+    （xfailed 29→21：SC1/SC3/SC4/SC10/AF1×4 摘除）；
+  - Linux（VPS）：W2 树 2035 passed / 3 failed（map_annotate 预存）——
+    W3-W5 推送后重跑回填。
+- `SANGER_ALGO_VERSION` v9→v10（HANDOVER §2 登记）。
+
