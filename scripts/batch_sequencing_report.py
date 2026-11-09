@@ -227,6 +227,10 @@ class OfflineBatch:
                                     origin="offline", source_paths=True, root="")
         self.items: List[Dict] = []
         self.payload: Optional[Dict] = None
+        # W12：范围列回填需要 analysis_id → 分析记录；逐组分析时累积
+        # （chunks 的释放逻辑照旧——本 dict 只留 verdict/scope 等小字段也够，
+        # 但为与网页端逐字节一致，保留完整记录直到回填完成）
+        self.records: Dict[str, Dict] = {}
         self._seq = 0
 
     def _register(self, label: str, ref_seq: str, features: List[Dict], res: Dict):
@@ -275,6 +279,7 @@ class OfflineBatch:
                                              max_ref_bp=None)
             self.items.append(item)
             records.update(recs)
+            self.records.update(recs)
             if self.on_item:
                 self.on_item(item)
             folder = folder_of[i]
@@ -660,11 +665,11 @@ def sync_archive(entries: List[Tuple[str, Optional[object]]], out_dir: Path,
 
 def run_to_dir(files: List[Dict], rows: List[Dict], out_dir: Path, min_q: int = 20,
                protected: Iterable[Path] = (), dry_run: bool = False,
-               on_item=None) -> Tuple[Dict, ArchivePlan]:
+               on_item=None) -> Tuple[Dict, ArchivePlan, Dict]:
     """命令行主流程：逐质粒分析并落盘（见 OfflineBatch / Archiver）
 
-    返回 (payload, 汇总计划)。中途异常时已写完的质粒文件夹、整理清单行与
-    进行中记录都留在输出目录。"""
+    返回 (payload, 汇总计划, records)。中途异常时已写完的质粒文件夹、
+    整理清单行与进行中记录都留在输出目录。"""
     run = OfflineBatch(files, rows, min_q, on_item=on_item)
     arch = Archiver(out_dir, load_previous_outputs(out_dir), protected, dry_run,
                     manifest_fields=run.archive.fields)
@@ -676,7 +681,7 @@ def run_to_dir(files: List[Dict], rows: List[Dict], out_dir: Path, min_q: int = 
     except BaseException:
         arch.abort()
         raise
-    return run.payload, arch.finish()
+    return run.payload, arch.finish(), run.records
 
 
 # ---------------------------------------------------------------- Excel 回填
@@ -774,8 +779,8 @@ def main() -> int:
         # 输出目录留有上次运行记录时，需要本次结论才能知道哪些旧副本会被
         # 清理：只读地跑一遍分析，打印计划，不写、不删、不回填
         if out_dir.is_dir() and load_previous_outputs(out_dir):
-            _payload, plan = run_to_dir(files, rows, out_dir, args.min_q,
-                                        protected=inputs, dry_run=True)
+            _payload, plan, _rec = run_to_dir(files, rows, out_dir, args.min_q,
+                                              protected=inputs, dry_run=True)
             if not plan.remove:
                 print("[预览] 输出目录没有需要清理的旧副本")
         return EXIT_OK
@@ -787,8 +792,8 @@ def main() -> int:
 
     # 逐质粒分析并落盘：每个质粒文件夹分析完即写出，中途中断时已完成的
     # 部分（副本、报告、整理清单行）保留在输出目录
-    payload, _plan = run_to_dir(files, rows, out_dir, args.min_q,
-                                protected=inputs, on_item=_progress)
+    payload, _plan, _records = run_to_dir(files, rows, out_dir, args.min_q,
+                                          protected=inputs, on_item=_progress)
     for u in payload["unmatched"]:
         print(f"! 未匹配（原件保留原位，副本归入 未匹配文件/）：{u['filename']} — {u['reason']}")
 
@@ -802,7 +807,8 @@ def main() -> int:
         backup = out_dir / f"{excel_path.stem}_原始备份({n}){excel_path.suffix}"
         n += 1
     shutil.copy2(excel_path, backup)
-    filled = backfill_excel(wb, cols, rows, payload["items"], clone_mode=False)
+    filled = backfill_excel(wb, cols, rows, payload["items"], clone_mode=False,
+                            records=_records)
     if filled is not None:
         _replace_excel(excel_path, filled, out_dir, backup)
     print(f"√ 结论已回填 {excel_path.name}（原表备份：{backup.name}）")

@@ -22,6 +22,9 @@ from core.sanger.abif_reader import peak_window as _peak_window
 from core.sanger.artifacts import artifact_at as _artifact_at
 from core.sanger.homopolymer import POLY_COMPRESSION_RATIO, _read_ref_maps
 from core.sanger.noise import peak_snr as _noise_peak_snr
+# W12：头行符号映射（verdict.py 顶部反向 import 本模块——循环风险在
+# verdict 侧已按惰性导入处理，此处为正向依赖，安全）
+from core.sanger.verdict import status_symbol
 from core.sanger.reliable_zone import in_zone, zone_reason
 
 
@@ -483,6 +486,11 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
         return (any(s <= v_end and rp <= e for s, e in scope_ranges)
                 or any(s <= v_end and rp <= e for s, e in junction_windows))
 
+    # W12 三出口统一：verdict 存在时头行符号由 verdict.status 经统一映射
+    # 导出（OC1）；旧记录/直调（无 verdict）保持分支字面量，口径不变
+    _vd_status = (verdict or {}).get("status")
+    _sym = status_symbol(_vd_status) if _vd_status else None
+
     target = next((c for c in cds_reports if c.get("analysis_target")), None)
     tail = ""
     if target and not has_mixed:
@@ -519,14 +527,14 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             bits.append("另检出疑似混合样品（部分位点双峰），建议重新挑单克隆复测")
         if failed_reads:
             bits.append(f"另有 {failed_reads} 条 read 解析失败（{failed_names}），该部分未验证")
-        return "✗ 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
+        return f"{_sym or '✗'} 结论：" + "，".join(bits) + (f"；{tail}" if tail else "")
     # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常 → ✗，端部差异
     # 不再被局部比对静默解释成"没测到"（verdict 缺省的直调/旧记录不启用）
     hq_blks = [b for b in (verdict or {}).get("blocking") or []
                if b.get("kind") == "unaligned_hq_segment"]
     if hq_blks:
         who = "；".join(b["detail"] for b in hq_blks[:2])
-        return (f"✗ 结论：{who}"
+        return (f"{_sym or '✗'} 结论：{who}"
                 + ("等" if len(hq_blks) > 2 else "")
                 + (f"；{tail}" if tail else ""))
     # 引物校验未通过（goal T17）：verdict 判 fail——引物加错/方向搞反/模板
@@ -537,12 +545,12 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     if pm_blks:
         who = "；".join((b.get("detail") or "引物校验未通过")
                         for b in pm_blks[:2])
-        return (f"✗ 结论：{who}" + ("等" if len(pm_blks) > 2 else "")
+        return (f"{_sym or '✗'} 结论：{who}" + ("等" if len(pm_blks) > 2 else "")
                 + (f"；{tail}" if tail else ""))
     # 解析失败的 read（goal T4；B P0-3）：不再只在 read 表出现——结论头 △
     # 点名「哪几条没读出来」，失败的文件没有验证可言
     if failed_reads:
-        head = (f"△ 结论：{failed_reads} 条 read 解析失败（{failed_names}），"
+        head = (f"{_sym or '△'} 结论：{failed_reads} 条 read 解析失败（{failed_names}），"
                 "该部分未验证")
         if variants or unresolved_sites:
             bits = []
@@ -553,13 +561,13 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
             head += "；" + "、".join(bits) + "需核对峰图或补测"
         return head + (f"；{tail}" if tail else "")
     if has_mixed:
-        head = "△ 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
+        head = f"{_sym or '△'} 结论：疑似混合样品（部分位点双峰），主峰序列按多数碱基判读"
         return head + "——建议重新挑单克隆复测"
     # 无确认差异且目标零覆盖：△ 未能验证（✓ 会让没测到的目标隐身）
     if target and target.get("coverage_status") == "uncovered":
         low_note = (f"（{len(variants)} 处未决差异）"
                     if variants else "（已比对区域与设计一致）")
-        return f"△ 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
+        return f"{_sym or '△'} 结论：目的 CDS「{target['name']}」未被任何 read 覆盖，未能验证{low_note}"
     # ROI 覆盖分级进结论头（goal T5；A 4.2）：partial/insufficient 不得出 ✓
     # ——「测到的地方一致」不等于「构建验证完毕」。verdict 缺省（旧记录/
     # 直调兼容）不启用，维持原分支；status 优先级保证走到这里时无未决项
@@ -571,7 +579,7 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
                         and b.get("detail")), None)
         if roi_blk:
             head = ("部分验证——" if vd_status == "partial" else "")
-            return f"△ 结论：{head}{roi_blk['detail']}" + (f"；{tail}" if tail else "")
+            return f"{_sym or '△'} 结论：{head}{roi_blk['detail']}" + (f"；{tail}" if tail else "")
     # ✓ 资格门（A 3.3 / B P0-1）：还有未决项就不得 ✓，也不再把它们预判为
     # 「疑似测序伪影」——△ 如实说「未决」，让用户核对峰图或补测
     ins_variants = [v for v in variants if _in_scope_v(v)]

@@ -43,46 +43,23 @@ const gapSummary = computed(() => {
   return parts.join('、') + (gs.length > 3 ? ' 等' : '')
 })
 
-// 结论文本按组折叠（2026-11-08 复审 R6）：新记录优先用后端下发的
-// conclusion_groups 结构化分组（构建端显式标记，判定不依赖文案）；
-// 旧记录无该键 → 回退按文案匹配（低置信行（“低置信（/低置信度（”）
-// 连同紧随的 “↳ 破坏/新增酶切位点” 子注释一起收起；逐 read 双峰位点
-// 范围行（“↳ …双峰 N 处…”）单独一组默认收起）
+// 结论文本按组折叠（2026-11-08 复审 R6；W12 按 RV 遗留清除字符串分组）：
+// 只消费后端下发的 conclusion_groups 结构化分组（构建端显式标记，判定
+// 不依赖文案）；旧记录无该键 → 不折叠、正文整段常驻
 const conclusionParts = computed(() => {
   const allLines = (props.analysis.conclusion ?? '').split('\n')
   // 头行由 headLine 单独渲染，正文不再包含（2026-11-05 头行去重）
   const lines = allLines.slice(1)
   const g = props.analysis.conclusion_groups
-  if (g) {
-    const grouped = new Set([...(g.low ?? []), ...(g.mixed_detail ?? []), ...(g.resolved ?? [])])
-    const main = lines.filter((l) => l.trim() !== '' && !grouped.has(l)).join('\n')
-    return { main, low: g.low ?? [], mixed: g.mixed_detail ?? [], resolved: g.resolved ?? [] }
+  // W12（RV 遗留清除）：只消费后端下发的结构化分组，不再按「低置信（」
+  // 等文案猜测分组——R6 之后构建端始终下发该键，旧记录无键时正文整段
+  // 常驻（不折叠），分组判定彻底不依赖文案
+  if (!g) {
+    return { main: lines.filter((l) => l.trim() !== '').join('\n'), low: [], mixed: [], resolved: [] }
   }
-  const isLowHead = (l: string) => l.includes('低置信（') || l.includes('低置信度（')
-  const isSubNote = (l: string) => l.trimStart().startsWith('↳') && l.includes('酶切位点')
-  const isMixedDetail = (l: string) => l.trimStart().startsWith('↳') && l.includes('双峰')
-  // 区间裁决行（2026-11-05 定稿）：「差异区间 …已被 …覆盖排除，无需核对」
-  const isResolved = (l: string) => l.startsWith('差异区间') && l.includes('无需核对')
-  const main: string[] = []
-  const low: string[] = []
-  const mixed: string[] = []
-  const resolved: string[] = []
-  let prevFolded = false
-  for (const l of lines) {
-    if (isResolved(l)) {
-      resolved.push(l)
-      continue
-    }
-    if (isMixedDetail(l)) {
-      mixed.push(l)
-      prevFolded = false
-      continue
-    }
-    const folded: boolean = isLowHead(l) || (isSubNote(l) && prevFolded)
-    ;(folded ? low : main).push(l)
-    prevFolded = folded
-  }
-  return { main: main.join('\n'), low, mixed, resolved }
+  const grouped = new Set([...(g.low ?? []), ...(g.mixed_detail ?? []), ...(g.resolved ?? [])])
+  const main = lines.filter((l) => l.trim() !== '' && !grouped.has(l)).join('\n')
+  return { main, low: g.low ?? [], mixed: g.mixed_detail ?? [], resolved: g.resolved ?? [] }
 })
 
 /** 结论头判读：优先 verdict.status（goal T2；A 5.2 不做文案匹配），无
@@ -210,7 +187,7 @@ function soLevel(t: string): string {
     </div>
     <p class="conclusion-text">{{ conclusionParts.main }}</p>
     <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
-      {{ showLowConf ? '▾ 收起低置信' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处低置信已折叠（疑似测序噪声/混合峰，展开逐条核对）` }}
+      {{ showLowConf ? '▾ 收起未决差异' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处未决差异已折叠（需人工核对峰图，展开逐条核对）` }}
     </button>
     <p v-if="showLowConf && conclusionParts.low.length" class="conclusion-text lowconf-lines">{{ conclusionParts.low.join('\n') }}</p>
     <button v-if="conclusionParts.mixed.length" class="lowconf-toggle" @click="showMixedDetail = !showMixedDetail">
@@ -249,7 +226,7 @@ function soLevel(t: string): string {
           <span class="cds-cov" :class="c.coverage_status">{{ cdsCoverageLabel(c) }}</span>
           <span v-for="t in c.consequences ?? []" :key="t" class="cds-so" :class="soLevel(t)">{{ SO_LABELS[t] ?? t }}</span>
           <span v-if="c.pending_low_confidence" class="cds-so mid"
-                title="低置信变异（疑似测序噪声）未计入本结论，见结论末尾待复核说明">待复核 {{ c.pending_low_confidence }} 处</span>
+                title="未决变异（伪影与低频真实变异均无法排除）未计入本结论，见结论末尾待复核说明">待复核 {{ c.pending_low_confidence }} 处</span>
         </p>
         <p class="cds-verdict">{{ c.verdict }}</p>
         <p class="cds-detail" v-if="c.protein_identical === false">

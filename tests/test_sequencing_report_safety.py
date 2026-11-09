@@ -270,7 +270,7 @@ from app.sequencing_report import merge_result_cell  # noqa: E402
 TOOL_LINES = [
     "合格：与设计一致",
     "合格：编码区蛋白一致；编码区外 1 处确证差异（ori）",
-    "不合格：GFP 蛋白与设计不一致（移码）；测序覆盖 87%",
+    "不合格：GFP 蛋白与设计不一致（移码）",
     "疑似混合：T1.ab1 检出 5 处双峰，无法自动判定，建议重新挑单克隆复测",
     "疑似混合样品：T1.ab1 检出 5 处双峰",              # 旧版本措辞
     "无法判定：部分比对（T1.ab1），未比对部分未验证",
@@ -292,7 +292,7 @@ def test_merge_replaces_previous_tool_conclusion(prev):
 def test_merge_replaces_stacked_legacy_lines_keeps_user_text():
     old = ("客户要求加急\n"
            "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对\n"
-           "合格：与设计一致；测序覆盖 87%")
+           "合格：与设计一致")
     new = merge_result_cell(old, "不合格：GFP 蛋白与设计不一致")
     assert new == "客户要求加急\n不合格：GFP 蛋白与设计不一致"
     # 再跑一次结果稳定（幂等）

@@ -148,7 +148,8 @@ def test_excel_conclusion_编码区外差异():
     res = _res([v], cds, coverage=42.0)
     out = batch.excel_conclusion("MX", res, 1, True)
     assert out.startswith("不合格：检出 1 处确证差异")
-    assert "lac operator" in out and "测序覆盖 42%" in out
+    assert "lac operator" in out
+    assert "测序覆盖" not in out   # W12：覆盖信息移信息表新列与明细
 
 
 def test_excel_conclusion_完全一致与缺参考():
@@ -166,7 +167,7 @@ def test_excel_conclusion_互检矛盾合并为未决():
     res = _res([conflict, {"confidence": "low"}], [], coverage=42.0)
     out = batch.excel_conclusion("MX", res, 2, True)
     assert out.startswith("待定：2 处未决差异，需核对峰图或补测")
-    assert "测序覆盖 42%" in out
+    assert "测序覆盖" not in out   # W12：覆盖移新列
     assert "互检矛盾" not in out and "详见报告" not in out
 
 

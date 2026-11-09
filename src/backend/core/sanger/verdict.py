@@ -56,6 +56,33 @@ PENDING_KINDS = {
     "roi_unverified", "critical_element_unverified", "end_junction_unverified",
 }
 
+# 三出口统一（goal v3 W12，OC1/OC2；CM 审核三出口分叉的根因是各出口
+# 自行维护符号/词表）：网页头行符号、Excel 结论前缀词全部由
+# verdict.status 经这两个映射导出。headline 的中间状态词（部分验证等）
+# 是头行专属措辞，不在 Excel 词表内（Excel 以「待定：」承载细节）。
+STATUS_SYMBOLS = {
+    "pass": "✓", "fail": "✗",
+    # ✓/✗ 之外一律 △（证据不足/未决/混合/覆盖缺口都不是判读结果）
+    "pending": "△", "partial": "△", "mixed": "△",
+    "insufficient": "△", "failed_reads": "△",
+}
+STATUS_EXCEL_WORDS = {
+    "pass": "合格", "fail": "不合格", "pending": "待定",
+    "partial": "待定", "mixed": "疑似混合", "insufficient": "无法判定",
+    "failed_reads": "待定·读取失败",
+}
+
+
+def status_symbol(status: str) -> str:
+    """verdict.status → 网页/结论文本头行符号（✓/✗/△；W12 三出口同源）"""
+    return STATUS_SYMBOLS.get(status, "△")
+
+
+def status_excel_word(status: str) -> str:
+    """verdict.status → Excel 结论前缀词（合格/不合格/待定…；W12 同源）"""
+    return STATUS_EXCEL_WORDS.get(status, "待定")
+
+
 # 未决位点 kind → blocking.kind 映射
 _SITE_KIND_MAP = {
     "n_call": "unresolved_site",
