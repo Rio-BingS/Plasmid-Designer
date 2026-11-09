@@ -563,7 +563,7 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     vd_status = (verdict or {}).get("status")
     if vd_status in ("partial", "insufficient"):
         roi_blk = next((b for b in verdict.get("blocking") or []
-                        if b.get("kind") in ("roi_uncovered", "roi_unverified",
+                        if b.get("kind") in ("scope_uncovered", "scope_beyond_primer", "scope_read_shortfall", "roi_uncovered", "roi_unverified",
                              "roi_insufficient_bp")
                         and b.get("detail")), None)
         if roi_blk:

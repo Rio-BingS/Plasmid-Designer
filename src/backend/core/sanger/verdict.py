@@ -158,8 +158,10 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             **extra,
         })
 
-    def _info(kind: str, element, detail: str) -> None:
-        info.append({"kind": kind, "ref_start": None, "ref_end": None,
+    def _info(kind: str, element, detail: str,
+              ref_start=None, ref_end=None) -> None:
+        info.append({"kind": kind, "ref_start": ref_start,
+                     "ref_end": ref_end,
                      "element": element, "detail": detail, "action": "",
                      "refs": []})
 
@@ -242,7 +244,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             else:
                 _info("out_of_scope_variant", feats,
                       f"{rp} {v.get('type')}"
-                      f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，未评估")
+                      f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，未评估",
+                      ref_start=rp, ref_end=v_end)
             continue
         # 同义突变可配置（goal v3 §8 决策 3，W5）：确证替换落在 CDS 内且
         # 该 CDS 蛋白判定一致（蛋白一致却有确证替换 ⇒ 只能是同义）→ 默认
@@ -299,6 +302,12 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         elif pc.get("status") == "unverified":
             _info("primer_unverified", pc.get("read"),
                   pc.get("detail") or "未校验引物")
+        elif pc.get("status") == "no_signal":
+            # 引物无信号（goal v3 W7，PL B4）：承诺的引物没有对应 read，
+            # 属 read_shortfall 语义——策略性 partial，不判 pass（W3 契约）
+            _blk("scope_read_shortfall", None, None, pc.get("primer"),
+                 pc.get("detail") or "引物无对应 read——引物无信号",
+                 "重测该引物，或核对信息表引物列")
     # 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检的双峰）。
     # 范围闸（goal v3 §3.4，与变体循环同款）：范围外的未决位点不阻断
     # （未评估，SC10 构造复核时暴露——声明 301-1299 时 1301+ 的双峰
@@ -310,7 +319,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                 s <= rp <= e for s, e in scope_ranges):
             _info("out_of_scope_unresolved", u.get("ref_pos"),
                   f"参考位置 {rp} 的未决位点（{u.get('detail') or u.get('kind')}）"
-                  f"在需测范围外——未评估")
+                  f"在需测范围外——未评估", ref_start=rp, ref_end=rp)
             continue
         _blk(_SITE_KIND_MAP.get(u.get("kind"), "unresolved_site"),
              u.get("ref_pos"), u.get("ref_pos"), None,
@@ -502,14 +511,32 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     bp_gate_failed = (not full_cds and measured_bp < MIN_VERDICT_COVERED_BP)
     if declared:
         if measured_in_bp <= 0:
-            _blk("roi_uncovered", roi_start, roi_end, None,
+            _blk("scope_uncovered", roi_start, roi_end, None,
                  f"需测范围（{scope_obj.spans_text('、')}）未被任何 read 覆盖，目标未验证",
                  "补测覆盖目标的引物或核对参考选择")
         elif roi_measured_pct < 99:
-            _blk("roi_uncovered", roi_start, roi_end, None,
-                 f"需测范围实测覆盖 {roi_measured_pct}%（约 {roi_measured_bp}bp），"
-                 "未覆盖部分未验证",
-                 "补测缺口区域或核对参考选择")
+            # 缺口按 E 归因拆分（goal v3 W6，PL B2）：理论窗够不到 →
+            # scope_beyond_primer（加引物）；理论可达而实测未达 →
+            # scope_read_shortfall（看峰图/重测）；E 不可得或无 ≥100bp
+            # 缺口可归因 → scope_uncovered 兜底整段说法
+            _gaps = [g for g in (cov.get("gaps") or [])
+                     if g.get("cause") in ("beyond_primer", "read_shortfall")]
+            _emitted = False
+            for g in _gaps[:3]:
+                _kind = ("scope_beyond_primer" if g["cause"] == "beyond_primer"
+                         else "scope_read_shortfall")
+                _blk(_kind, g["start"], g["end"], None,
+                     f"需测范围缺口 {g['start']}–{g['end']}（{g['length']}bp）"
+                     + (f"——{g['detail']}" if g.get("detail") else ""),
+                     ("在缺口另一侧加一条引物覆盖该区域" if _kind == "scope_beyond_primer"
+                      else "查看峰图衰减位置信号，必要时重新测序或换引物"),
+                 )
+                _emitted = True
+            if not _emitted:
+                _blk("scope_uncovered", roi_start, roi_end, None,
+                     f"需测范围实测覆盖 {roi_measured_pct}%（约 {roi_measured_bp}bp），"
+                     "未覆盖部分未验证",
+                     "补测缺口区域或核对参考选择")
         elif roi_verified_pct < 100:
             _blk("roi_unverified", roi_start, roi_end, None,
                  f"需测范围验证覆盖 {roi_verified_pct}%"
@@ -525,10 +552,15 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     # 双链覆盖（goal T21；A 4.4）：占比随 roi 下发；「必须双链」策略默认
     # 关闭（单引物测整质粒是常规策略），启用时未满双链记 pending
     dsf = _double_strand_fraction(reads, roi_start, roi_end)
-    if (REQUIRE_DOUBLE_STRAND and dsf is not None
+    # 双链要求（goal T21/A 4.4 + W6 SC11）：全局策略开关或 scope 显式要求
+    # （require_double_strand）时，单链覆盖的 ROI 未经对侧验证 → 归因阻断
+    if ((REQUIRE_DOUBLE_STRAND
+         or bool(getattr(scope_obj, "require_double_strand", False)))
+            and dsf is not None
             and roi_measured_pct > 0 and dsf < 100):
-        _blk("unresolved_site", roi_start, roi_end, None,
-             f"ROI 双链覆盖 {dsf}%（策略：ROI 必须双链覆盖）——单链覆盖区域未经对侧验证",
+        _blk("scope_single_strand", roi_start, roi_end, None,
+             f"需测范围双链覆盖 {dsf}%（策略：必须双链覆盖）——"
+             "单链覆盖区域未经对侧验证",
              "补测对侧链引物，或在设置中关闭双链覆盖强制")
 
     has_fail = any(b.get("fail_impact") for b in blocking)
@@ -537,8 +569,14 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     has_mixed = any(b["kind"] in ("mixed_sample", "mixed_variant") for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
     # partial/insufficient 只由声明范围的覆盖缺口驱动（goal v3 W2：
-    # 未声明范围不判 partial，已测区段口径）
-    has_partial = declared and measured_in_bp > 0 and roi_measured_pct < 99
+    # 未声明范围不判 partial，已测区段口径）；例外（W6/W7）：策略性
+    # 阻断——双链要求下的单链区、引物无信号——是「承诺了但没验证到」
+    # 的 read_shortfall 语义，不依赖声明范围也判 partial
+    _policy_partial = any(b["kind"] in ("scope_single_strand",
+                                        "scope_read_shortfall")
+                          for b in blocking)
+    has_partial = _policy_partial or (
+        declared and measured_in_bp > 0 and roi_measured_pct < 99)
     has_insufficient = (any(b["kind"] == "partial_alignment" for b in blocking)
                         or (declared and measured_in_bp <= 0))
     # 优先级（goal §3）：fail > failed_reads > mixed > pending > partial

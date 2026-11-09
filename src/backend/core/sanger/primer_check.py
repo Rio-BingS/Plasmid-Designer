@@ -102,49 +102,92 @@ def locate_binding(primer_seq: str, ref: str) -> Optional[Dict]:
 def check_reads(primer: Optional[Dict], read_results: List[Dict],
                 ref: str, min_dist: int = MIN_3DIST,
                 max_dist: int = MAX_3DIST) -> List[Dict]:
-    """逐 read 校验（goal T17）。返回 [{read, status, detail}]：
+    """逐 read 校验（goal T17；goal v3 W7 逐 read 映射，PL B3/B4）。
 
-    - unverified：无法确定引物（info「未校验引物」，不推断）；
+    primer 三种形态：
+    - None → 全部 unverified（info「未校验引物」，不推断）；
+    - 单引物 dict（旧入参兼容：键为 name/seq/direction）→ 对所有 read 用
+      同一条引物；
+    - {read 文件名: 引物 dict} 映射（键与 read 文件名有交集时判定为映射）
+      → 逐 read 对应；映射未覆盖的 read 记 unverified。
+
+    返回 [{read, status, primer?, detail}]：
+    - unverified：无法确定引物；
     - mismatch：结合位点找不到 / 方向不一致 / 距离出窗（默认 fail）；
-    - ok：方向一致且距离在窗内。
+    - ok：方向一致且距离在窗内；
+    - no_signal：提供了引物但没有对应 read（映射键不在 read 集，或给了
+      单引物而 read 全部解析失败）→「引物无信号」，verdict 归
+      read_shortfall（goal v3 W7，PL B4）。
     """
-    resolved = resolve_primer(primer)
-    if resolved is None:
-        return [{"read": r["filename"], "status": "unverified",
-                 "detail": "未校验引物（信息表/上传参数未提供可用引物）"}
-                for r in read_results]
-    binding = locate_binding(resolved["seq"], ref)
-    if binding is None:
-        return [{"read": r["filename"], "status": "mismatch",
-                 "detail": (f"引物 {resolved['name']} 序列在参考上无结合位点"
-                            "——模板可能换位或引物加错"),
-                 "primer": resolved["name"]} for r in read_results]
-    # 引物 3′ 端：+ 链 = 结合区末端；− 链 = 结合区起点
-    three_end = binding["end"] if binding["strand"] == "+" else binding["start"]
-    out: List[Dict] = []
-    for r in read_results:
+    by_name = {r["filename"]: r for r in read_results}
+    # 形态判别：映射键是 read 文件名（必非引物属性键）；单引物 dict 的
+    # 键只会是 name/seq/direction/source
+    _PRIMER_KEYS = {"name", "seq", "direction", "source"}
+    is_mapping = bool(isinstance(primer, dict) and primer
+                      and any(k not in _PRIMER_KEYS for k in primer))
+    if is_mapping:
+        mapping: Dict[str, Optional[Dict]] = dict(primer)
+    else:
+        mapping = {r["filename"]: primer for r in read_results}
+
+    def _one(name: str, p) -> Dict:
+        resolved = resolve_primer(p)
+        if resolved is None:
+            return {"read": name, "status": "unverified",
+                    "detail": "未校验引物（信息表/上传参数未提供可用引物）"}
+        binding = locate_binding(resolved["seq"], ref)
+        if binding is None:
+            return {"read": name, "status": "mismatch",
+                    "primer": resolved["name"],
+                    "detail": (f"引物 {resolved['name']} 序列在参考上无结合位点"
+                               "——模板可能换位或引物加错")}
+        # 引物 3′ 端：+ 链 = 结合区末端；− 链 = 结合区起点
+        three_end = binding["end"] if binding["strand"] == "+" \
+            else binding["start"]
+        r = by_name.get(name) or {}
         aln = r.get("alignment") or {}
         rs, re_ = int(aln.get("ref_start") or 0), int(aln.get("ref_end") or 0)
         direction = aln.get("direction") or "+"
-        name = r["filename"]
         if direction != binding["strand"]:
-            out.append({"read": name, "status": "mismatch",
-                        "primer": resolved["name"],
-                        "detail": (f"引物 {resolved['name']} 为 {binding['strand']} 链，"
-                                   f"read 比对方向为 {direction}——方向不一致")})
-            continue
-        # read 比对起点：+ 链 = ref_start；− 链 = ref_end（5′ 起点在参考低坐标侧）
+            return {"read": name, "status": "mismatch",
+                    "primer": resolved["name"],
+                    "detail": (f"引物 {resolved['name']} 为 {binding['strand']} 链，"
+                               f"read 比对方向为 {direction}——方向不一致")}
+        # read 测序 5′ 锚：+ 链 = ref_start；− 链 = ref_end（负链 read 从
+        # 高坐标端起测）。goal v3 W7（PR1 构造暴露）：负链距离统一按
+        # 「5′ 锚 − 引物 3′ 端」计——旧式 (three_end - read_start) 把负链
+        # 锚在结合区远端，方向反了出负距离，正常 read 误判 mismatch
         read_start = rs if direction == "+" else re_
-        dist = (read_start - three_end) if direction == "+" \
-            else (three_end - read_start)
+        dist = read_start - three_end
         if not (min_dist <= dist <= max_dist):
-            out.append({"read": name, "status": "mismatch",
-                        "primer": resolved["name"],
-                        "detail": (f"read 比对起点距引物 {resolved['name']} 3′ 端 "
-                                   f"{dist}bp（合理区间 {min_dist}-{max_dist}bp）"
-                                   "——引物与 read 来源可能不匹配")})
+            return {"read": name, "status": "mismatch",
+                    "primer": resolved["name"],
+                    "detail": (f"read 比对起点距引物 {resolved['name']} 3′ 端 "
+                               f"{dist}bp（合理区间 {min_dist}-{max_dist}bp）"
+                               "——引物与 read 来源可能不匹配")}
+        return {"read": name, "status": "ok", "primer": resolved["name"],
+                "detail": f"引物 {resolved['name']} 方向与距离校验通过"
+                          f"（3′ 端下游 {dist}bp）"}
+
+    out: List[Dict] = [_one(n, p) for n, p in mapping.items() if n in by_name]
+    covered = {o["read"] for o in out}
+    out.extend({"read": r["filename"], "status": "unverified",
+                "detail": "信息表未给该 read 配引物"}
+               for r in read_results if r["filename"] not in covered)
+    # 引物无信号（goal v3 W7，PL B4）：映射键无对应 read；或给了单引物
+    # 而 read 全部解析失败（空 read 集）
+    for n, p in mapping.items():
+        if p is None or n in by_name:
             continue
-        out.append({"read": name, "status": "ok", "primer": resolved["name"],
-                    "detail": f"引物 {resolved['name']} 方向与距离校验通过"
-                              f"（3′ 端下游 {dist}bp）"})
+        resolved = resolve_primer(p)
+        _nm = (resolved or {}).get("name") or str(n)
+        out.append({"read": None, "status": "no_signal", "primer": _nm,
+                    "detail": f"引物 {_nm} 无对应 read——引物无信号"
+                              "（read_shortfall）"})
+    if not read_results and primer and not is_mapping:
+        resolved = resolve_primer(primer)
+        _nm = (resolved or {}).get("name") or "primer"
+        out.append({"read": None, "status": "no_signal", "primer": _nm,
+                    "detail": f"引物 {_nm} 无对应 read——引物无信号"
+                              "（read_shortfall）"})
     return out

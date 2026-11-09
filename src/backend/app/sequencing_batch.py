@@ -22,6 +22,7 @@ from core.sanger.batch import (
     match_reference_aliases, norm_stem,
 )
 from core.sanger.pipeline import analyze
+from core.sanger.primer_check import library_primers
 from core.sanger.reference_parser import parse_reference_topology
 
 # register(label, ref_seq, features, res) -> (analysis_id, record)
@@ -261,8 +262,23 @@ def run_batch_groups(
             ref_seq, features, circular = ref_entry
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
+                # goal v3 W7（PL B3）：信息表引物列 → 逐 read 引物映射。
+                # 引物名在 match_files/group_rows 归组时已回填到 read；
+                # 序列经引物库（data/primers/*.yaml）解析，库缺失或查无
+                # 此名时该 read 不进映射（unverified 口径不变）
+                _lib = library_primers()
+                _pmap = {}
+                for _r in g["reads"]:
+                    _pn = _r.get("primer")
+                    if not _pn:
+                        continue
+                    _pr = _lib.get(str(_pn).lower())
+                    if _pr:
+                        _pmap[_r["file"]["name"]] = {
+                            "name": _pr["name"], "seq": _pr["seq"],
+                            "direction": _pr["direction"]}
                 res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular,
-                              zone_params=zone)
+                              zone_params=zone, primer=(_pmap or None))
                 aid, rec = register(label, ref_seq, features, res)
                 item["analysis_id"] = aid
                 # 终审 C-07：打包用的记录快照随批次产出，避免事后回查全局

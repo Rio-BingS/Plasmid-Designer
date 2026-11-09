@@ -95,7 +95,9 @@ def test_double_strand_fraction():
 
 
 def test_require_double_strand_flag_default_off():
-    """默认关闭；启用后单链 ROI → pending（unresolved_site 阻断）"""
+    """默认关闭；启用后单链 ROI → partial（scope_single_strand 阻断；
+    goal v3 W6 重编码——原 unresolved_site kind 随单链区并入 partial 的
+    语义归因而更名，阻断仍然存在不回潮）"""
     assert REQUIRE_DOUBLE_STRAND is False
     import core.sanger.verdict as vd
     reads = [_read("f1", 100, 500, "+")]
@@ -112,8 +114,9 @@ def test_require_double_strand_flag_default_off():
     finally:
         vd.REQUIRE_DOUBLE_STRAND = False
     assert v["roi"]["double_strand_fraction"] == 0.0
-    assert any(b["kind"] == "unresolved_site" and "双链覆盖" in b["detail"]
+    assert any(b["kind"] == "scope_single_strand" and "双链覆盖" in b["detail"]
                for b in v["blocking"])
+    assert v["status"] == "partial"
 
 
 def test_e2e_m3_shape():

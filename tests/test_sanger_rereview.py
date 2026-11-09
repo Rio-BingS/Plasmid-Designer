@@ -56,7 +56,9 @@ def test_whole_roi_partial_measured_scope_wording():
     assert "roi_unverified" in _blocking_kinds(res2)
     res3 = analyze([("r.ab1", blob)], ref, [], circular=False, scope="1-2200")
     assert _status(res3) == "partial"
-    assert "roi_uncovered" in _blocking_kinds(res3)
+    # W6 起 roi_uncovered 按 E 归因拆分：read 只测 1-900，901-2200 超出
+    # 理论覆盖 → beyond_primer（加引物），语义仍是「实测缺口 → partial」
+    assert "scope_beyond_primer" in _blocking_kinds(res3)
 
 
 def test_critical_element_unverified_pending():

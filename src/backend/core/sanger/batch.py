@@ -167,6 +167,31 @@ def load_excel(src: Union[str, "Path", bytes, bytearray]):
     return open_excel_for_write(src), header_row, cols, rows
 
 
+def primer_name_for(stem: str, rows: List[Dict]) -> Optional[str]:
+    """read 文件主干 → 信息表引物列条目名（goal v3 W7，PL B3）。
+
+    匹配：主干精确等于条目主干 > 「分隔符+条目」结尾（克隆号-引物组合）
+    > 条目作为整段出现在主干中。唯一最长命中才回填；同长多个候选视为
+    歧义返回 None（不猜）。"""
+    ns = norm_stem(stem)
+    cands: List[str] = []
+    for r in rows:
+        for e in r["primers"]:
+            ne = norm_stem(e)
+            if not ne:
+                continue
+            if ns == ne:
+                cands.append(e)
+            elif ns.endswith(ne) and (len(ns) == len(ne)
+                                      or ns[len(ns) - len(ne) - 1] in "-_ ."):
+                cands.append(e)
+    if not cands:
+        return None
+    longest = max(len(norm_stem(e)) for e in cands)
+    top = {e for e in cands if len(norm_stem(e)) == longest}
+    return next(iter(top)) if len(top) == 1 else None
+
+
 def match_files(rows: List[Dict], files: List[Dict]):
     """按 Excel 引物列（=测序文件名）与质粒名称（=图谱文件名）匹配。
 
@@ -192,6 +217,8 @@ def match_files(rows: List[Dict], files: List[Dict]):
         if f["ext"] in READ_EXTS:
             hit = primer_map.get(f["stem"])
             if hit is None:
+                # 文件名包含引物条目（克隆号-引物组合等）：取包含关系的
+                # 引物名，供 W7 逐 read 引物映射（PL B3）落到具体 read
                 cands = {(p, how) for stem, (p, how) in primer_map.items() if stem in f["stem"]}
                 if len(cands) == 1:
                     hit = next(iter(cands))
@@ -199,8 +226,9 @@ def match_files(rows: List[Dict], files: List[Dict]):
             if hit is None:
                 unmatched.append({"file": f, "reason": "未出现在任何质粒的引物列中"})
                 continue
+            _primer_name = primer_name_for(f["stem"], rows)
             per_plasmid.setdefault(hit[0], {"reference": None, "reads": []})["reads"].append(
-                {"file": f, "how": hit[1]}
+                {"file": f, "how": hit[1], "primer": _primer_name}
             )
         else:  # 图谱文件 → 按质粒名称匹配（与克隆模式同口径的多级匹配：
             # 全名精确 > 忽略分隔符精确 > 与名称的某一段一致 > 双向包含）
@@ -513,6 +541,15 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
     ordered = list(groups.values())
     for g in ordered:
         g["reference"] = ref_by_plasmid.get(g["plasmid"])
+        # W7（PL B3）：逐 read 回填信息表引物列条目名——克隆模式下 read
+        # 经「克隆号+引物组合」归属，组合中的引物名即该行引物列的唯一
+        # 最长后缀命中（歧义不猜，留 None → unverified 口径）
+        _row = next((r for r in rows
+                     if r["name"] == g["plasmid"]
+                     and r.get("clone", "") == g["clone"]), None)
+        for rd in g["reads"]:
+            rd["primer"] = primer_name_for(rd["file"]["stem"],
+                                           [_row] if _row else [])
     return ordered, unmatched
 
 
@@ -698,7 +735,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     # 里没有；旧记录无 verdict → 走原分支，历史口径不变）
     vd_partial = vd.get("status") == "partial"
     vd_insufficient = (vd.get("status") == "insufficient"
-                       and any(b.get("kind") in ("roi_uncovered", "roi_unverified",
+                       and any(b.get("kind") in ("scope_uncovered", "scope_beyond_primer", "scope_read_shortfall", "roi_uncovered", "roi_unverified",
                                  "roi_insufficient_bp")
                                for b in vd.get("blocking") or []))
 
@@ -787,7 +824,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     elif vd_insufficient:
         out = ("无法判定："
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []
-                        if b.get("kind") in ("roi_uncovered", "roi_unverified",
+                        if b.get("kind") in ("scope_uncovered", "scope_beyond_primer", "scope_read_shortfall", "roi_uncovered", "roi_unverified",
                             "roi_insufficient_bp")),
                        "") or "实测数据不足以确认是否为目标质粒"))
     elif vd.get("status") == "pending":
@@ -804,7 +841,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     elif vd_partial:
         out = ("待定：部分验证——"
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []
-                        if b.get("kind") == "roi_uncovered"),
+                        if b.get("kind") in ("roi_uncovered", "scope_uncovered", "scope_beyond_primer", "scope_read_shortfall")),
                        "判定区域未完全覆盖")))
         if mixed_tails:
             out += "；" + "；".join(mixed_tails)

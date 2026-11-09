@@ -48,6 +48,72 @@
   10 skipped / 29 xfailed**。3 failed = test_plasmid_map_annotate 3 项性能
   断言（1.33s/1.44s>1.0s 预算等），**W0 基线日志中同样存在**——VPS CPU
   慢于预算的预存平台差异，与 sanger 无关。
+- Linux 回填（VPS，阶段 1 树 332579d，2026-11-09）：**2044 passed / 3 failed
+  （同上 map_annotate 预存）/ 10 skipped / 21 xfailed**——xfailed 21 与
+  Windows 一致，双平台同步确认。
+
+## W6 理论覆盖 E 与缺口归因（PL §B1/§B2）
+
+- `coverage.expected_ranges`：每条 read 的理论窗口 = 比对 5′ 锚沿测序方向
+  按原始 basecall 长度（raw_bases/raw_length）延伸、首端 front_gray=30 不
+  构成理论覆盖；basis="read_start"（引物结合位点 basis 随引物映射接入），
+  负链从 ref_end 端向低坐标延伸。随 result["coverage"] 下发（W13 画理论窗）。
+- `_coverage_gaps` 新增 expected/scope_ranges 参数：声明范围时缺口只保留
+  R 内部分（跨原点缺口逐段求交）；cause 归因——理论窗够不到 →
+  beyond_primer、可达而未达 → read_shortfall（detail 带「F.ab1 在 400 处
+  衰减（理论可达 1071）」式衰减位置）、E 不可得 → unknown。既有跨原点
+  合并逻辑原样保留。
+- verdict：`roi_uncovered` 拆 `scope_beyond_primer`（action 加引物）/
+  `scope_read_shortfall`（action 看峰图/重测）；E 不可得或无 ≥100bp 缺口
+  可归因 → `scope_uncovered` 兜底；R 内实测 0% → `scope_uncovered`。
+  batch/evidence 的 insufficient 分支 kind 表同步扩充。
+- 双链要求（SC11）：`scope.require_double_strand` 生效 →
+  `scope_single_strand` 阻断（策略性 partial，不依赖声明范围）；全局
+  REQUIRE_DOUBLE_STRAND 默认仍关。
+- SC10/SC6 构造重建（峰形退化 tail_width 会在段内造出强次峰判 mixed，
+  偏离「纯 verified 缺口/纯测序未达」场面）→ 均改 Q 衰减（SC10 尾端
+  Q=24、SC6 400bp 后 Q=15）；SC5/SC11/SC6 摘 xfail（SC6 经 W14 提前
+  接线的 build_queue，见下）。
+
+## W7 引物逐 read 对应（PL §B3/§B4）
+
+- `check_reads` 三形态入参：None → 全 unverified；单引物 dict（键
+  name/seq/direction）→ 所有 read 同引物（旧入参兼容）；{read 文件名:
+  引物} 映射（键含非引物属性键即判映射）→ 逐 read 校验，映射未覆盖的
+  read 记 unverified。
+- **引物无信号**（PL B4）：映射里提供了引物但没有对应 read → status=
+  no_signal；verdict 出 `scope_read_shortfall` 阻断（「引物 X 无对应
+  read——引物无信号」），策略性 partial（PR2 真值）。
+- 负链距离口径修正（PR1 构造暴露）：负链 read 的 5′ 锚是 ref_end，距离
+  统一按「5′ 锚 − 引物 3′ 端」计；旧式 (three_end − read_start) 把负链
+  锚在结合区远端出负距离，正常 read 误判 mismatch。
+- 批量路径：match_files/group_rows 归组时按信息表引物列回填
+  read→引物名（`primer_name_for`：精确 > 分隔符后缀 > 整段包含，唯一
+  最长命中才回填）；`run_batch_groups` 经引物库（data/primers/*.yaml）
+  解析序列后以映射传 analyze，库缺失时该 read 不进映射（unverified 口径
+  不变）。
+- SC9 直接重算修复：analyze 结果载荷补 `features` 键——build_verdict 以
+  result 直接重算 scope（元件名解析）不再依赖调用方另传注释（W11 重算
+  端点同源依赖）；PR1/SC7/SC9/PR2 摘 xfail。
+- 复核队列最小接线（W14 提前）：新增 `core/sanger/review.py::build_queue`
+  ——pending 级阻断条目入队并带 evidence（缺口带 E 归因与理论窗；双峰带
+  af；位点带 reads）；W14 扩展一键确认留痕与批量页汇总。
+
+## 【闸门 2】阶段 2 收口（SC5/SC6/SC11、PR1–PR3）
+
+- 场景：SC5（beyond_primer）、SC6（read_shortfall+复核队列+evidence）、
+  SC11（单链归因 partial）、PR1（逐 read 映射 ok）、PR2（引物无信号
+  partial）、PR3（距离出窗 fail 保持 T17 口径）全绿。
+- 测试数字（W6/W7 全落地树）：Windows 全量 **2018 passed / 0 failed /
+  46 skipped / 14 xfailed**（xfailed 21→14：SC5/SC11/SC6/SC9/PR1/PR2
+  摘除）；Linux（VPS）W3-W5 树 2044 passed / 3 failed（map_annotate
+  预存）/ 21 xfailed——W6/W7 推送后重跑回填。
+- W6/W7 期间修复的构造级残留（不计真值改动）：v2 旧 T17 负链构造
+  `ref_end = 3′端−20` 是「read 不含引物区」语义，与 W7 口径（负链
+  read 以引物区开头、5′ 锚 ref_end ≥ 3′ 端）相反——重编码并补负链
+  出窗反例，留痕于测试注释。
+- `SANGER_ALGO_VERSION` v10→v11（HANDOVER §2 登记）。
+
 
 ## W3 verified 口径与 pass 契约（RV P0-2）
 

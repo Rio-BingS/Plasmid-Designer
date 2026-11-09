@@ -514,7 +514,6 @@ def test_sc4_whole_partial_never_blanket_pass():
     assert "已测" in head and "构建与设计一致" not in head
 
 
-@XF(strict=True, reason="W6：缺口归因 beyond_primer")
 def test_sc5_scope_tail_beyond_primer():
     """SC5：scope=301-1500 只有正向 read（至 1250）→ partial；
     缺口 cause=beyond_primer（加引物动作）"""
@@ -526,7 +525,6 @@ def test_sc5_scope_tail_beyond_primer():
     assert "引物" in (blk[0].get("action") or "")
 
 
-@XF(strict=True, reason="W14：复核队列（缺口归因 read_shortfall 随 W6）")
 def test_sc6_read_shortfall_enters_review_queue():
     """SC6：read 400bp 处衰减 → partial；cause=read_shortfall；进复核队列"""
     from core.sanger.review import build_queue  # noqa: W14 落地
@@ -540,7 +538,6 @@ def test_sc6_read_shortfall_enters_review_queue():
     assert any(q.get("evidence") for q in queue), "队列项自带峰图证据"
 
 
-@XF(strict=True, reason="W2：范围外确证差异降 info")
 def test_sc7_out_of_scope_variant_info_only():
     """SC7：R 外骨架 1200 确证替换 → pass；out_of_scope_variant 单列不进 blocking"""
     spec, res = _run("SC7")
@@ -560,7 +557,6 @@ def test_sc8_out_of_scope_critical_element_pending():
     assert blk and blk[0].get("element") == "ori"
 
 
-@XF(strict=True, reason="W1：build_verdict 纯函数化 + scope 入参")
 def test_sc9_verdict_reproducible_across_scopes(monkeypatch):
     """SC9：同一份 result 依次 GeneX / 全质粒 / 不声明 重算 verdict，
     与本快照一致、不调用比对、重算可复现"""
@@ -604,7 +600,6 @@ def test_sc10_verified_gap_never_pass_with_blocking():
     assert 0.98 <= roi["verified_fraction"] < 1.0
 
 
-@XF(strict=True, reason="W6：双链要求按 E 归因")
 def test_sc11_double_strand_required_partial():
     """SC11：scope 要求双链、GeneX 后半段单链 → partial；阻断指向单链区"""
     spec, res = _run("SC11")
@@ -752,7 +747,6 @@ def test_af2_backbone_scattered_low_af_unresolved():
 
 # ---------- §4.4 PR：引物 ----------
 
-@XF(strict=True, reason="W7：逐 read 引物映射")
 def test_pr1_per_read_primer_mapping_ok():
     """PR1：正反两条引物各自对应自己的 read → 两条校验都 ok，不报方向不一致"""
     spec = S["PR1"].build()
@@ -763,7 +757,6 @@ def test_pr1_per_read_primer_mapping_ok():
     assert pcs["R.ab1"]["status"] == "ok", pcs["R.ab1"]
 
 
-@XF(strict=True, reason="W7：引物无对应 read 报「引物无信号」")
 def test_pr2_primer_without_read_no_signal():
     """PR2：提供了引物但没有对应的 read → 引物无信号，归 read_shortfall"""
     spec = S["PR2"].build()

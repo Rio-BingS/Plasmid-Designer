@@ -536,9 +536,13 @@ def _sc5():
 
 
 def _sc6():
-    """scope=GeneX，正向 read 在 read 坐标约 400 起信号退化 → 测序未达"""
+    """scope=GeneX，正向 read 在 read 坐标约 400 起信号退化 → 测序未达。
+    构造用 Q 衰减（400bp 后 Q=15，末端修剪截断实测）而非峰形退化——
+    tail_width=3.0 会在段内造出强次峰，经 W4 af 分带判 mixed，偏离
+    §4「纯测序未达」的场面（SC10 同款教训）"""
     ref, feats = _scope_base()
-    blob = make_trace_ab1(ref[200:1101], q=50, tail_width=(400, 3.0))
+    seq = ref[200:1101]
+    blob = make_trace_ab1(seq, q=[50] * 200 + [15] * (len(seq) - 200))
     return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
                 kwargs=dict(scope="GeneX", circular=True))
 
@@ -772,7 +776,7 @@ def _af2():
 def _pr_base():
     """PR 系列共用：1500bp 线性参考，正向引物结合 100-130、反向引物
     结合 1400-1430（负链）。正向 read 起点 200（距 F 3′ 端 70bp）、
-    反向 read 起点 1500（距 R 3′ 端 70bp）——均在 T17 窗口内"""
+    反向 read 5′ 锚 ref_end=1500（距 R 3′ 端 100bp）——均在 T17 窗口内"""
     rng = _rng("pr")
     ref = _rand_seq(rng, 1500)
     from core.seq_utils import revcomp
