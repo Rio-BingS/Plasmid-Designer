@@ -508,3 +508,154 @@ def test_parse_reference_scope_presets(client):
     assert "全质粒" in values and "TARGET" in values
     dp = data["default_preset"]
     assert dp["value"] == "TARGET" and dp["reason"]
+
+
+# ==================== W11 范围重算与记忆 ====================
+
+
+@pytest.fixture()
+def _mem_store(monkeypatch):
+    """范围记忆打桩为进程内 dict（W11：不依赖 sqlite，键=参考序列哈希）"""
+    import app.sequencing_store as st
+    mem: dict = {}
+    monkeypatch.setattr(st, "save_scope_memory",
+                        lambda ref, sc: mem.__setitem__(
+                            st._reference_hash(ref), json.loads(json.dumps(sc))))
+    monkeypatch.setattr(st, "load_scope_memory",
+                        lambda ref: mem.get(st._reference_hash(ref)))
+    return mem
+
+
+def _analyze_target(client, scope_text="TARGET"):
+    """TARGET 区间 read（带一处替换）跑一次分析，返回 (analysis_id, 响应, 令牌)
+
+    匿名记录按终审 B-02 只随创建响应下发一次 access_token，后续读取/
+    重算必须经 X-Access-Token 头携带。"""
+    seg = list(SEQ[59:161])
+    seg[40] = "A" if seg[40] != "A" else "G"
+    blob = make_ab1("".join(seg), [40] * 102)
+    data = {"scope": scope_text} if scope_text else {}
+    resp = client.post(
+        "/api/sequencing/analyze",
+        files={"reference": _ref_file(),
+               "reads": ("r1.ab1", blob, "application/octet-stream")},
+        data=data,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    return body["analysis_id"], body, body.get("access_token")
+
+
+def _recompute(client, aid, token, scope=None):
+    """POST /verdict 重算（匿名记录携带令牌）"""
+    headers = {"X-Access-Token": token} if token else {}
+    payload = {"scope": scope} if scope is not None else {}
+    return client.post(f"/api/sequencing/analyses/{aid}/verdict",
+                       json=payload, headers=headers)
+
+
+def test_recompute_verdict_endpoint_sc9(client, _mem_store, monkeypatch):
+    """SC9（端点路径）：同一份存档 result 依次按 TARGET / 全质粒 / 未声明
+    重算——三份 verdict 与直接 build_verdict 快照一致，且不调用比对"""
+    from app.routes import sequencing_routes as sr
+    from core.sanger.verdict import build_verdict
+
+    aid, _body, _tok = _analyze_target(client)
+    record = sr._ANALYSES[aid]
+
+    # 重算不触发比对：analyze 打桩计数
+    calls = {"n": 0}
+    _real_analyze = sr.analyze
+
+    def _counting_analyze(*a, **kw):
+        calls["n"] += 1
+        return _real_analyze(*a, **kw)
+
+    monkeypatch.setattr(sr, "analyze", _counting_analyze)
+
+    # SC9 步骤 1：scope=TARGET —— 端点 verdict == 直接 build_verdict 快照
+    expect1 = build_verdict(record, len(SEQ), "TARGET")
+    r1 = _recompute(client, aid, _tok, "TARGET")
+    assert r1.status_code == 200, r1.text
+    v1 = r1.json()["verdict"]
+    assert v1["status"] == expect1["status"] == "fail"
+    assert v1["scope"]["source"] == "user" and v1["scope"]["ranges"] == [[60, 161]]
+    assert v1 == expect1
+
+    # SC9 步骤 2：全质粒——同一份 result，换范围不重跑比对
+    expect2 = build_verdict({**record, "features": record["features"]},
+                            len(SEQ), "全质粒")
+    r2 = _recompute(client, aid, _tok, "全质粒")
+    assert r2.status_code == 200, r2.text
+    v2 = r2.json()["verdict"]
+    assert v2["scope"]["ranges"] == [[1, 600]]
+    assert v2["status"] == expect2["status"]
+
+    # SC9 步骤 3：未声明（清空）——退回 measured 口径，禁「构建与设计一致」
+    r3 = _recompute(client, aid, _tok, "")
+    assert r3.status_code == 200, r3.text
+    v3 = r3.json()["verdict"]
+    assert v3["scope"]["declared"] is False
+    assert v3["scope"]["source"] == "measured"
+
+    assert calls["n"] == 0            # 全程零比对
+    assert len(r3.json()["scope_history"]) == 3   # 三次重算都留痕
+    hs = r3.json()["scope_history"]
+    assert hs[0]["new"]["declared"] is True and hs[2]["new"]["declared"] is False
+
+
+def test_recompute_updates_conclusion_and_persists(client, _mem_store):
+    """重算后 conclusion 头行 = 新 verdict.headline（正文保留），verdict/
+    scope_history 落库可回读"""
+    aid, body, tok = _analyze_target(client)
+    old_conclusion = body["conclusion"]
+    r = _recompute(client, aid, tok, "全质粒")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    lines = data["conclusion"].split("\n")
+    old_lines = old_conclusion.split("\n")
+    assert lines[0] == data["verdict"]["headline"]   # 头行重建
+    assert lines[1:] == old_lines[1:]                # 正文保留
+    # 落库：内存淘汰后仍能回读（load_record 从库里取）
+    from app import sequencing_store as st
+    rec = st.load_record(aid)
+    assert rec is not None
+    assert rec["verdict"]["scope"]["ranges"] == [[1, 600]]
+    assert len(rec["scope_history"]) == 1
+    assert rec["scope_history"][0]["new"]["ranges"] == [[1, 600]]
+
+
+def test_recompute_parse_error_400(client, _mem_store):
+    aid, _, tok = _analyze_target(client)
+    r = _recompute(client, aid, tok, "乱写的范围")
+    assert r.status_code == 400 and "无法识别" in r.json()["detail"]
+
+
+def test_recompute_legacy_record_compat(client, _mem_store):
+    """历史兼容：旧记录无 verdict / scope_history 键 → 重算正常产出，
+    history 从 0 开始追加"""
+    from app.routes import sequencing_routes as sr
+    aid, body, tok = _analyze_target(client)
+    record = sr._ANALYSES[aid]
+    record.pop("verdict", None)          # 模拟老 payload（W2 之前落库）
+    record.pop("scope_history", None)
+    r = _recompute(client, aid, tok, "TARGET")
+    assert r.status_code == 200, r.text
+    v = r.json()["verdict"]
+    assert v["status"] == "fail" and v["scope"]["source"] == "user"
+    assert len(r.json()["scope_history"]) == 1
+    assert r.json()["scope_history"][0]["old"] is None
+
+
+def test_scope_memory_roundtrip_and_reuse(client, _mem_store):
+    """记忆回路：带声明分析 → 记忆按参考指纹保存；同参考不带 scope 再
+    分析 → 自动带出（source 保留、reason=沿用上次范围）"""
+    aid1, body1, _t1 = _analyze_target(client)     # scope=TARGET（user）
+    assert body1["verdict"]["scope"]["source"] == "user"
+    mem = _mem_store
+    assert len(mem) == 1 and list(mem.values())[0]["declared"] is True
+    aid2, body2, _t2 = _analyze_target(client, scope_text="")  # 不声明
+    sc = body2["verdict"]["scope"]
+    assert sc["declared"] is True and sc["source"] == "user"
+    assert sc["reason"] == "沿用上次范围"
+    assert sc["ranges"] == [[60, 161]]

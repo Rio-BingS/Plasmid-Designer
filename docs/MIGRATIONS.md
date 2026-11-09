@@ -31,6 +31,13 @@ python -m alembic -c alembic.ini upgrade head
 python -m alembic -c alembic.ini upgrade head
 ```
 
+## 修订历史
+
+| 修订 | 内容 |
+|---|---|
+| 35a49b81767c | baseline schema（2026-10-24，v2.18.1 接入 Alembic 时的全量基线） |
+| a1b2c3d4e5f6 | 新表 `sequencing_scope_memory`（goal v3 W11：参考指纹 → 最近一次声明的需测范围，重算/复测自动带出；纯新增表，无列变更） |
+
 ## 数据库地址解析
 
 优先级从高到低（见 `alembic/env.py`）：
