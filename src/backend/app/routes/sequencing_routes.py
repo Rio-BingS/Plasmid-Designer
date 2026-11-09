@@ -450,6 +450,10 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     record["_trace_data"] = {i: t for i, t in enumerate(result.get("traces", []))}
     # result["traces"] 与 _trace_data 是同一份峰图数据的原始副本，落盘/驻留都是双倍体积
     record.pop("traces", None)
+    # 复核队列（goal v3 W14，PL §F）：从 verdict 派生（确证差异/范围内缺口/
+    # 未决位点），随记录下发供前端复核卡片与批量页汇总；确认后重算时刷新
+    from core.sanger.review import build_queue
+    record["review_queue"] = build_queue(record)
     with _STORE_LOCK:  # 终审 C-07：登记 + 容量淘汰整体串行
         _ANALYSES[analysis_id] = record
         _enforce_caps_locked()
@@ -871,8 +875,23 @@ def _summary(record: Dict) -> Dict:
         "verdict": record.get("verdict"), "algo_version": record.get("algo_version"),
         "resolved_regions": record.get("resolved_regions", []), "unresolved_sites": record.get("unresolved_sites", []), "mixed_variants": record.get("mixed_variants", []),
         "mixed_corroboration": record.get("mixed_corroboration"), "errors": record["errors"], "warnings": record.get("warnings", []),  # T24 解析层告警；旧记录缺省 []
+        # 复核队列与人工确认留痕（goal v3 W14）；旧记录无键时从 verdict
+        # 惰性派生一次（不改存档，仅展示层补齐）
+        "review_queue": _review_queue_of(record),
+        "review_decisions": record.get("review_decisions", []),
         "reference_length": len(record["reference"]), "features": record["features"],
     }
+
+
+def _review_queue_of(record: Dict) -> List[Dict]:
+    """记录的复核队列：新记录随存档带出；旧记录从 verdict 现算（只读）"""
+    rq = record.get("review_queue")
+    if rq is not None:
+        return rq
+    if not record.get("verdict"):
+        return []
+    from core.sanger.review import build_queue
+    return build_queue(record)
 
 
 def _render_consensus_export(record: Dict, analysis_id: str, format: str,

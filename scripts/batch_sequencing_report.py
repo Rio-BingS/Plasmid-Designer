@@ -241,6 +241,9 @@ class OfflineBatch:
                "reference": ref_seq.upper(), "features": features,
                "created_at": datetime.now().isoformat(timespec="seconds"),
                **{k: v for k, v in res.items() if k != "traces"}}
+        # 复核队列与网页端记录同形（goal v3 W14；PL F1 三类条目）
+        from core.sanger.review import build_queue
+        rec["review_queue"] = build_queue(rec)
         return aid, rec
 
     @staticmethod

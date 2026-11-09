@@ -24,6 +24,7 @@ from core.sanger.batch import (
 )
 from core.sanger.pipeline import analyze
 from core.sanger.primer_check import library_primers
+from core.sanger.review import build_queue
 from core.sanger.reference_parser import parse_reference_topology
 
 # register(label, ref_seq, features, res) -> (analysis_id, record)
@@ -310,6 +311,12 @@ def run_batch_groups(
                 item["variant_count"] = len(confirmed)
                 item["pending_count"] = len(res["variants"]) - len(confirmed)
                 item["coverage_percent"] = res["consensus"]["coverage_percent"]
+                # W14（PL F4）：复核汇总——每样品需复核位点数与最高优先级
+                # （fail > read_shortfall > pending），前端顶部汇总条据此
+                # 统计「需复核 X 个样品、Y 个位点」并按优先级排序
+                _q = build_queue(res)
+                item["review_count"] = len(_q)
+                item["review_prio"] = _q[0]["prio"] if _q else None
             except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
                 item["status"] = "failed"
                 item["conclusion"] = f"分析失败：{e}"
