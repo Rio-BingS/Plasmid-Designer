@@ -464,3 +464,47 @@ def test_analyze_cds_mode_reads_miss_target(client):
     target = next(c for c in data["cds_reports"] if c["name"] == "TARGET")
     assert target["coverage_status"] == "uncovered"
 
+
+# ==================== W10 范围输入 ====================
+
+
+def test_analyze_form_scope_user_source(client):
+    """W10：Form scope 声明 → verdict.scope source=user（user > cds_target）"""
+    blob = make_ab1(SEQ[59:161], [40] * 102)
+    resp = client.post(
+        "/api/sequencing/analyze",
+        files={"reference": _ref_file(),
+               "reads": ("r1.ab1", blob, "application/octet-stream")},
+        data={"scope": "TARGET"},
+    )
+    assert resp.status_code == 200, resp.text
+    sc = resp.json()["verdict"]["scope"]
+    assert sc["source"] == "user" and sc["declared"] is True
+    assert sc["ranges"] == [[60, 161]]
+
+
+def test_analyze_form_scope_parse_error_400(client):
+    blob = make_ab1(SEQ[59:161], [40] * 102)
+    resp = client.post(
+        "/api/sequencing/analyze",
+        files={"reference": _ref_file(),
+               "reads": ("r1.ab1", blob, "application/octet-stream")},
+        data={"scope": "乱写的范围"},
+    )
+    assert resp.status_code == 400
+    assert "无法识别" in resp.json()["detail"]
+
+
+def test_parse_reference_scope_presets(client):
+    """W10（PL §C4）：parse-reference 返回范围预设与默认项（附 reason）"""
+    resp = client.post(
+        "/api/sequencing/parse-reference",
+        files={"reference": _ref_file()},
+        data={"read_names": ["r1-TARGET-seqF1.ab1"]},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    values = [p["value"] for p in data["scope_presets"]]
+    assert "全质粒" in values and "TARGET" in values
+    dp = data["default_preset"]
+    assert dp["value"] == "TARGET" and dp["reason"]

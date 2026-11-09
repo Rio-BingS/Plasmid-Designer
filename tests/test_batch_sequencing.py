@@ -10,6 +10,7 @@
 import importlib.util
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from abif_utils import make_ab1  # noqa: E402
+from core.genbank_format import format_locus_line  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -1176,3 +1178,111 @@ def test_fatal_and_usage_exit_codes_unchanged(tmp_path, monkeypatch):
         batch.main()
     assert exc.value.code == 2
     assert batch.EXIT_ANALYSIS_FAILED not in (1, 2)
+
+
+# ---------------------------------------------------------------- W10 验证范围列
+
+
+def test_excel_scope_column_parsed_and_grouped(tmp_path):
+    """W10（PL §C5）：信息表「验证范围」列 → 行解析 → 组内首个非空回填"""
+    xlsx = tmp_path / "测序.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["质粒名称", "测序引物", "验证范围", "测序结果"])
+    ws.append(["MX", "A.ab1", "GeneX", None])
+    ws.append(["pUC19", "T7.ab1", "", None])
+    wb.save(xlsx)
+    _wb, _hr, cols, rows = batch.load_excel(xlsx)
+    assert cols.get("scope") == 3
+    assert rows[0]["scope"] == "GeneX" and rows[1]["scope"] == ""
+    files = [_file(tmp_path, "A.ab1", ".ab1", "a"),
+             _file(tmp_path, "T7.ab1", ".ab1", "t7")]
+    per, _un = batch.match_files(rows, files)
+    assert per["MX"].get("scope_text") == "GeneX"
+    assert per["pUC19"].get("scope_text", "") in ("", None)
+
+
+def test_batch_group_scope_declared_and_parse_fail_note():
+    """W10：范围列声明生效（verdict.scope source=user）；解析失败回填
+    「范围无法识别」且按未声明口径分析，不阻塞"""
+    from app.sequencing_batch import run_batch_groups
+
+    rng = random.Random(41)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
+    blob = make_ab1(ref[300:800], [40] * 500)
+
+    def _group(scope_text):
+        return {
+            "plasmid": "P1", "clone": "",
+            "reference": {"file": {"name": "P1.gb", "bytes": _gb(ref, "circular")}},
+            "reads": [{"file": {"name": "P1_w.ab1", "bytes": blob}}],
+            "scope_text": scope_text,
+        }
+
+    captured = {}
+
+    def register(label, ref_seq, features, res):
+        captured["res"] = res
+        return "aid-1", {}
+
+    items, _recs = run_batch_groups([_group("GeneX")], min_q=20, register=register)
+    assert items[0]["status"] == "analyzed"
+    assert captured["res"]["verdict"]["scope"]["source"] == "user"
+    assert "范围无法识别" not in items[0]["conclusion"]
+
+    captured2 = {}
+    items2, _r2 = run_batch_groups([_group("胡乱写的范围")], min_q=20,
+                                   register=lambda l, r, f, x: (
+                                       captured2.setdefault("res", x), "aid-2", {})[1:])
+    assert "范围无法识别" in items2[0]["conclusion"]
+    assert "胡乱写的范围" in items2[0]["conclusion"]
+
+
+def _w10_gb(seq: str) -> bytes:
+    """环状 GenBank 图谱字节（W10 批量范围列测试用）"""
+    lines = []
+    for i in range(0, len(seq), 60):
+        chunk = seq[i:i + 60]
+        lines.append(f"{i + 1:>9} " + " ".join(chunk[j:j + 10] for j in range(0, len(chunk), 10)))
+    return (format_locus_line("P1", len(seq), topology="circular", date="01-JAN-2026") + "\n"
+            "DEFINITION w10 scope test.\nACCESSION   p1\n"
+            "FEATURES             Location/Qualifiers\n"
+            f"     CDS             301..600\n"
+            "                     /gene=\"GeneX\"\n"
+            f"ORIGIN\n" + "\n".join(lines) + "\n//\n").encode()
+
+
+def test_batch_group_scope_declared_and_parse_fail_note():
+    """W10：范围列声明生效（verdict.scope source=user）；解析失败回填
+    「范围无法识别」且按未声明口径分析，不阻塞"""
+    from app.sequencing_batch import run_batch_groups
+
+    rng = random.Random(41)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    blob = make_ab1(ref[300:800], [40] * 500)
+
+    def _group(scope_text):
+        return {
+            "plasmid": "P1", "clone": "",
+            "reference": {"file": {"name": "P1.gb", "bytes": _w10_gb(ref)}},
+            "reads": [{"file": {"name": "P1_w.ab1", "bytes": blob}}],
+            "scope_text": scope_text,
+        }
+
+    captured = {}
+
+    def register(label, ref_seq, features, res):
+        captured["res"] = res
+        return "aid-1", {}
+
+    items, _recs = run_batch_groups([_group("GeneX")], min_q=20, register=register)
+    assert items[0]["status"] == "analyzed", items[0]
+    assert captured["res"]["verdict"]["scope"]["source"] == "user"
+    assert "范围无法识别" not in items[0]["conclusion"]
+
+    items2, _r2 = run_batch_groups(
+        [_group("胡乱写的范围")], min_q=20,
+        register=lambda l, r, f, x: "aid-2")
+    assert "范围无法识别" in items2[0]["conclusion"]
+    assert "胡乱写的范围" in items2[0]["conclusion"]

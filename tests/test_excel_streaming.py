@@ -40,6 +40,10 @@ def _full_mode_reference(xlsx: bytes):
             cols["result"] = c.column
         elif "克隆" in v or "样品" in v:
             cols["clone"] = c.column
+        elif "范围" in v:
+            # W10 起信息表带「验证范围」列（rows 多 scope 字段），对照实现
+            # 同步，否则流式/完整模式逐字段对照永远不等
+            cols["scope"] = c.column
     cols.setdefault("primer", cols["plasmid"] + 1)
     cols.setdefault("result", cols["primer"] + 1)
     rows = []
@@ -54,6 +58,8 @@ def _full_mode_reference(xlsx: bytes):
             if "clone" in cols else "",
             "primers": [p.strip() for p in sb.PRIMER_SPLIT.split(prim) if p.strip()],
             "existing_result": ws.cell(row=r, column=cols["result"]).value,
+            "scope": sb._cell_str(ws.cell(row=r, column=cols["scope"]).value)
+            if "scope" in cols else "",
         })
     return header_row, cols, rows
 

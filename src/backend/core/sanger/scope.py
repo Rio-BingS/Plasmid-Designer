@@ -178,6 +178,50 @@ def junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
     return out
 
 
+def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
+                insert_range: Optional[Tuple[int, int]] = None,
+                ref_length: int = 0) -> Optional["Scope"]:
+    """按 §3.1 来源优先级推断需测范围（goal v3 W10，PL §C1/§C2）。
+
+    user 由调用方显式给出不走这里；cds_target 由目的基因模式直接构造。
+    本函数覆盖中间两级：
+
+    - design_insert：设计记录的插入边界（insert_range 给出时），接合区
+      两端 ±30 另算（junctions 字段，W8 口径）；
+    - filename_match：复用 cds_extract.resolve_auto——参考/read 文件名
+      唯一命中 CDS/gene 时以其为需测范围（+ 接合区）。
+
+    primer_window 需引物结合窗（W7 映射产出、E 的并集），接线在批量/
+    前端侧，这里不推断。都取不到 → None（调用方退回未声明 measured 口径）。
+    ref_length>0 时输出已 normalized。"""
+    if insert_range:
+        s, e = int(insert_range[0]), int(insert_range[1])
+        scope = Scope(
+            ranges=[(s, e)],
+            junctions=[(s - JUNCTION_HALF_WIDTH, s + JUNCTION_HALF_WIDTH),
+                       (e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH)],
+            source=SOURCE_DESIGN_INSERT,
+            reason="设计记录插入边界（两端 ±30 接合区）")
+        return scope.normalized(ref_length) if ref_length else scope
+
+    from core.sanger.cds_extract import cds_candidates, resolve_auto
+    cands = cds_candidates(features)
+    if cands:
+        cand, how = resolve_auto(cands, ref_stem, read_names)
+        if cand is not None:
+            ranges = [(int(p["start"]), int(p["end"])) for p in cand["parts"]]
+            junctions: List[Tuple[int, int]] = []
+            for s_, e_ in ranges:
+                junctions.extend(
+                    [(s_ - JUNCTION_HALF_WIDTH, s_ + JUNCTION_HALF_WIDTH),
+                     (e_ - JUNCTION_HALF_WIDTH, e_ + JUNCTION_HALF_WIDTH)])
+            scope = Scope(ranges=ranges, junctions=junctions,
+                          source=SOURCE_FILENAME_MATCH,
+                          elements=[cand["name"]],
+                          reason=f"文件名匹配目标 CDS（{how}）")
+            return scope.normalized(ref_length) if ref_length else scope
+    return None
+
 
 def _match_element(token: str, features: List[Dict]) -> Optional[Tuple[int, int, str]]:
     """元件名 → 区间。精确（忽略大小写/空白）优先，其次唯一包含；
