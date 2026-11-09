@@ -155,8 +155,25 @@ L ≈ 1 周以上。
 | 重叠区分歧 IUPAC 共识 | `core/sanger/overlap.py` | 近平局分歧不静默取边 |
 | 证据包 SVG 渲染 | `core/sanger/evidence_pack.py` | 逐位点四通道快照 |
 
+### 已实现（scope v3，goal v3 W0–W16，2026-11-10 收口）
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 三态范围模型与来源推断 | `core/sanger/scope.py` | declared/measured；来源优先级 user>design_insert>cds_target>filename_match>primer_window>measured（infer_scope） |
+| 范围记忆（参考指纹→上次声明范围） | `app/sequencing_store.py` + `sequencing_scope_memory` 表 | 增量迁移 a1b2c3d4e5f6；带出时 reason=沿用上次范围 |
+| 缺口三分类归因 | `core/sanger/coverage.py` + `primer_check.py` | beyond_primer/read_shortfall/unknown；Excel 列/前端色带/复核队列共用 |
+| 判定内核纯函数化 + 三出口同源 | `core/sanger/verdict.py` | build_verdict 换范围重算不重比对；pass⇒blocking 空；STATUS_SYMBOLS/EXCEL_WORDS 单一真相源 |
+| 引物逐 read 映射与 E 带 | `core/sanger/primer_check.py` | 信息表引物列→逐 read；理论覆盖 expected_ranges |
+| 低 AF 混合软带 | `core/sanger/verdict.py`（minor_af_site） | ratio_floor 0.30→0.20；AF 0.12–0.20 落 pending（宁可复核不可漏） |
+| 目的基因模式不裁参考 | `core/sanger/pipeline.py`（cds_mode） | 全质粒比对+scope=CDS±接合区；junctions 入需测范围；变体双坐标（c./p.） |
+| 复核队列与一键确认 | `core/sanger/review.py` + 端点 | 确证差异/范围内缺口/未决位点三类；artifact/mutation 留痕 by/at；headline「人工确认 N 处」 |
+| 范围可视化 | 前端 MatchMap/Panel/BatchView | 三层色带（需测/预期/已验证）+缺口着色+范围条重算；批量页需复核汇总 |
+| 真实 AB1 子集基准 | `tests/data/real_ab1/` + `test_real_ab1_subset.py` | MUTPK 3 处真实确证变异敏感度锁定（ins335/ins440/del4081） |
+
 ### 暂缓项（按需启动）
 
+0. **p_real 数值校准**：W15 起对外展示为 高/中/低 三档（数值不当概率
+   使用）；待真实数据校准集建立后再评估连续值展示（见 3）。
 1. **p_real 作为唯一裁决线**：基准集实测 p_real 分布双峰、判别力在分档
    不在连续阈值（SANGER_CALIBRATION §2），位置级上下文（分歧/互检）按
    设计覆盖证据分——单阈值化无增益，维持 hard tier + 层内修正结构。
