@@ -443,3 +443,25 @@
   10 skipped / 5 xfailed——3 failed 全为 test_plasmid_map_annotate
   性能/上限断言（52 分钟满负载下耗时超阈；该文件单跑 14 passed
   6.19s，与闸门3 同款负载效应，非回归）。
+
+
+## W15 可信度与防回潮（PL G2/G4；goal W15）
+
+- p_real 三档（PL G2）：「P(真实)」/「评分 0-100」口径全部下线——
+  VariantTable 差异表、EvidencePackPanel 证据表、Markdown 证据包表头
+  统一改「可信度」列，显示 高/中/低（档位=confidence，由后端
+  `_tier_of_p` 从 p_real 分档回填，两端同源）；数值 p_real 仍随
+  API 下发但仅内部排序用（同档内评分升序不变）。旧记录无 tier 时
+  前端降级显示「-」。evidence_pack rows 新增 tier 字段（从匹配
+  variant 的 confidence 取），Markdown 表「P(真实)」→「可信度」。
+- KNOWN_ISSUES「防回潮约束」补齐：1-5 条原有（2026-11-07 沉淀），
+  新增 6-10 = v2 goal 的五条防回潮（RV P1-5：unresolved/N/坏文件
+  不得出 ✓、覆盖判定只用 verified、判定只读 verdict、坐标换算只走
+  ReadRefMap、混合与变异互检同一标准）；11-15 = goal W15 新五条
+  （判定只对 scope 负责 / 未声明范围不得输出「构建与设计一致」/
+  目的基因模式不得以裁剪参考做未比对判定 / 缺口必须归因三选一 /
+  修改 scope 不得触发重新比对）。docs_sync 的裸 § 引用检查同步过。
+- 测试：test_sanger_evidence_pack 加 tier 断言（rows.tier 与 variant
+  confidence 同源 + md 表头三档）；T15 面板测试文案同步（评分 1 →
+  低）。Windows 全量 **2068 passed / 0 failed / 46 skipped**（docs_sync
+  一处引用悬空当场修复）；前端三件套绿（693/693、type-check、build）。

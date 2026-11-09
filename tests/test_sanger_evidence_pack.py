@@ -88,8 +88,14 @@ def test_build_pack_and_markdown_e2e():
     assert rows and rows[0]["read"] == "r1.ab1"
     assert rows[0]["call"] and rows[0]["q"] is not None
     assert rows[0]["svg"] and rows[0]["svg"].startswith("<svg")
+    # W15（PL G2）：rows 带 tier 三档（与 variant confidence 同源），
+    # p_real 数值仍保留（内部排序用），对外展示一律三档
+    assert rows[0].get("tier") in ("high", "medium", "low")
+    vd_var = next(v for v in res["variants"] if v.get("ref_pos") == 300)
+    assert rows[0]["tier"] == vd_var.get("confidence")
     md = render_markdown(pack)
     assert "## 1. 位点 300" in md
     assert "<svg" in md
     assert "| r1.ab1 |" in md
-    assert "P(真实)" in md
+    assert "可信度" in md  # W15（PL G2）：p_real 不当概率，展示改三档
+    assert "P(真实)" not in md
