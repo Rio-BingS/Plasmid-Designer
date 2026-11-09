@@ -95,7 +95,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v11"  # v11: goal v3 W6-W7——理论覆盖 expected_ranges 与缺口 cause 归因（beyond_primer/read_shortfall/unknown）、roi_uncovered 拆 scope_uncovered/beyond_primer/read_shortfall、require_double_strand→scope_single_strand、引物逐 read 映射与引物无信号→read_shortfall、负链距离按 5′ 锚口径
+SANGER_ALGO_VERSION = "v13"  # v13: goal v3 W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）；v12: W8——cds_mode 全质粒比对不裁参考、junctions 入需测范围、full_ref 窗口外重定位
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -1390,6 +1390,7 @@ def _signal_maps(r: Dict) -> Optional[Dict]:
 def _analyze_one_read(
     filename: str, blob: bytes, *, ref: str, align_fn, norm_variants,
     zone_params, min_q: int, signal_correct: bool, circular: bool,
+    full_ref: Optional[str] = None, full_circular: bool = False,
 ) -> Tuple[Optional[Dict], Optional[Dict]]:
     """analyze 的逐 read 阶段：解析→质量修剪→比对→tracy 交叉 basecall。
 
@@ -1469,8 +1470,22 @@ def _analyze_one_read(
     # split-read 二次定位（goal T19）：命中→结构断点坐标，未命中→未知序列
     hq_segments = check_unaligned_hq_segment(aln, trimmed_q)
     for seg in hq_segments:
-        seg["split_read"] = classify_segment(
-            trimmed[seg["start"] - 1:seg["end"]], ref, circular)
+        sr = classify_segment(trimmed[seg["start"] - 1:seg["end"]], ref, circular)
+        if sr.get("status") != "breakpoint" and full_ref:
+            # W8 裁剪窗口路径：段在窗口上无落点时按完整质粒再定位——
+            # 能连续定位 = 读取越过窗口边缘的正常延续，记 located_outside
+            # 不算异常（goal W8「能连续定位到窗口外的段不算异常」）
+            sr_full = classify_segment(trimmed[seg["start"] - 1:seg["end"]],
+                                       full_ref, full_circular)
+            if sr_full.get("status") == "breakpoint":
+                sr = {**sr_full, "status": "located_outside"}
+        seg["split_read"] = sr
+    # 未比对部分全部能在完整质粒上连续定位（窗口外已定位）→ 不判
+    # partial_alignment（W8 裁剪路径；仍有未定位段时照旧判）
+    if partial and full_ref and hq_segments and all(
+            (s.get("split_read") or {}).get("status") == "located_outside"
+            for s in hq_segments):
+        partial = None
 
     # 变体附加质量值，并归一化为最左表示（重复/同聚物区 anchor 漂移时
     # 不同 read / 不同 caller 报告的等价 indel 才能合并印证）
@@ -2453,6 +2468,8 @@ def analyze(
     primer: Optional[Dict] = None,
     scope=None,
     synonymous_action: str = "ok",
+    full_ref: Optional[str] = None,
+    full_circular: bool = False,
 ) -> Dict:
     """全自动分析入口
 
@@ -2475,6 +2492,11 @@ def analyze(
     analyze 只把它透传给 build_verdict 并写入 result["scope"]——per-read
     分析与覆盖计算不随 scope 变化（换范围不重跑分析，§0.6）；范围语义
     （缺口归因/未声明口径）在 build_verdict 侧（W2 起）。
+    full_ref: 完整质粒序列（goal v3 W8，可选关键字，只增不改）：参考被
+    裁剪取窗时（cds_mode 超 MAX_REF_BP 路径）传入完整质粒——端部未比对
+    高质量段在窗口上无落点时按完整质粒再定位，能连续定位 = 读取越过窗口
+    边缘的正常延续（记 located_outside，不算异常）；未比对部分全部定位
+    成功时不判 partial_alignment。full_circular 为完整质粒的拓扑。
     """
     features = features or []
     zone_params = zone_params or DEFAULT_ZONE
@@ -2504,7 +2526,8 @@ def analyze(
         rd, err = _analyze_one_read(
             filename, blob, ref=ref, align_fn=_align, norm_variants=_norm_all,
             zone_params=zone_params, min_q=min_q, signal_correct=signal_correct,
-            circular=circular)
+            circular=circular, full_ref=(full_ref or None),
+            full_circular=full_circular)
         if err is not None:
             errors.append(err)
         elif rd is not None:
@@ -2620,10 +2643,13 @@ def analyze(
     # 比对起点为默认依据（引物结合位点随 W7）；缺口只对声明范围判 cause，
     # 未声明范围整参考缺口照旧（报告用），cause 同步给出
     _expected = expected_ranges(read_results)
+    # W8：缺口按需测并集（含接合区窗口）归因——cds_target 的接合区属于
+    # 需测范围，其缺口同样要给 cause
     coverage_gaps = _coverage_gaps(
         coverage_ranges, len(ref), circular=circular, expected=_expected,
-        scope_ranges=(scope_obj.ranges if (scope_obj is not None
-                                           and scope_obj.declared) else None))
+        scope_ranges=(scope_obj.merged_ranges() if (scope_obj is not None
+                                                    and scope_obj.declared)
+                      else None))
 
     homopolymer_report = _homopolymer_report_pass(
         poly_runs, variants, read_results, coverage_ranges)

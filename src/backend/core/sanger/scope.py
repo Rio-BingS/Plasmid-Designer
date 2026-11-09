@@ -43,20 +43,51 @@ def _norm_text(s: str) -> str:
     return (s or "").strip().lower().replace("（", "(").replace("）", ")")
 
 
+def _normalize_ranges(ranges: List[Tuple[int, int]],
+                      ref_length: int) -> List[Tuple[int, int]]:
+    """区间裁剪到 [1, L] 并按起点排序合并（跨原点段保留 start > end 形态）"""
+    out: List[Tuple[int, int]] = []
+    for s, e in ranges:
+        if s <= e:                      # 普通段
+            s2, e2 = max(1, s), min(ref_length, e)
+            if s2 <= e2:
+                out.append((s2, e2))
+        else:                           # 跨原点：拆 [s, L] + [1, e]
+            if s <= ref_length:
+                out.append((s, ref_length))
+            if e >= 1:
+                out.append((1, min(e, ref_length)))
+    out.sort()
+    merged: List[Tuple[int, int]] = []
+    for s, e in out:
+        if merged and s <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
 @dataclass
 class Scope:
     """需测范围 R（goal v3 §3.1）。ranges 为 1-based 闭区间、可多段，
     环状跨原点用 start > end 表示折回；elements 是范围内的元件名（报告与
-    头行用）；reason 是自动推断的依据文案（如「参考文件名匹配 GeneX」）。"""
+    头行用）；reason 是自动推断的依据文案（如「参考文件名匹配 GeneX」）。
+
+    junctions（W8）：接合区窗口（CDS 目标两端 ±JUNCTION_HALF_WIDTH）——
+    属于需测范围（覆盖缺口按其判定、区内变异判 junction_variant），但不
+    并入 ranges：头行/区间渲染只显示 CDS 主段（cds_target 与全质粒
+    +scope 两种路径的结论才能逐字同源，CM5）。"""
     ranges: List[Tuple[int, int]] = field(default_factory=list)
     source: str = SOURCE_MEASURED
     declared: bool = False
     require_double_strand: bool = False
     elements: List[str] = field(default_factory=list)
     reason: str = ""
+    junctions: List[Tuple[int, int]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.ranges = [(int(s), int(e)) for s, e in (self.ranges or [])]
+        self.junctions = [(int(s), int(e)) for s, e in (self.junctions or [])]
         if self.source == SOURCE_MEASURED:
             self.declared = False
         elif self.source in DECLARED_SOURCES:
@@ -70,6 +101,7 @@ class Scope:
             "require_double_strand": bool(self.require_double_strand),
             "elements": list(self.elements),
             "reason": self.reason,
+            "junctions": [[s, e] for s, e in self.junctions],
         }
 
     @classmethod
@@ -84,35 +116,37 @@ class Scope:
             require_double_strand=bool(data.get("require_double_strand")),
             elements=[str(x) for x in (data.get("elements") or [])],
             reason=str(data.get("reason") or ""),
+            junctions=[(j[0], j[1]) for j in (data.get("junctions") or [])
+                       if len(j) >= 2],
         )
 
     def normalized(self, ref_length: int) -> "Scope":
         """裁剪到 [1, L] 并按起点排序合并（跨原点段保留 start > end 形态）"""
-        if not ref_length or not self.ranges:
+        if not ref_length:
             return self
-        out: List[Tuple[int, int]] = []
-        for s, e in self.ranges:
-            if s <= e:                      # 普通段
-                s2, e2 = max(1, s), min(ref_length, e)
-                if s2 <= e2:
-                    out.append((s2, e2))
-            else:                           # 跨原点：拆 [s, L] + [1, e]
-                if s <= ref_length:
-                    out.append((s, ref_length))
-                if e >= 1:
-                    out.append((1, min(e, ref_length)))
-        out.sort()
+        if self.ranges:
+            self.ranges = _normalize_ranges(self.ranges, ref_length)
+        if self.junctions:
+            self.junctions = _normalize_ranges(self.junctions, ref_length)
+        return self
+
+    def merged_ranges(self) -> List[Tuple[int, int]]:
+        """需测范围的并集区间（ranges + junctions 合并排序去重叠）。
+
+        接合区窗口与 CDS 主段重叠 ±30bp——覆盖分数/缺口的分子分母都必须
+        按并集计，否则重叠段在分母被重复计入（约 60bp/CDS）。"""
+        out = sorted(self.ranges + self.junctions)
         merged: List[Tuple[int, int]] = []
         for s, e in out:
             if merged and s <= merged[-1][1] + 1:
                 merged[-1] = (merged[-1][0], max(merged[-1][1], e))
             else:
                 merged.append((s, e))
-        self.ranges = merged
-        return self
+        return merged
 
     def total_bp(self) -> int:
-        return sum(max(0, e - s + 1) for s, e in self.ranges)
+        """需测总 bp（并集口径，含接合区——接合区属于需测范围，W8）"""
+        return sum(max(0, e - s + 1) for s, e in self.merged_ranges())
 
     def contains(self, start: int, end: Optional[int] = None) -> bool:
         """[start, end]（缺省单点）是否完整落在范围内"""
@@ -142,6 +176,7 @@ def junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
         out.append((max(1, s - JUNCTION_HALF_WIDTH), s + JUNCTION_HALF_WIDTH, name))
         out.append((e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH, name))
     return out
+
 
 
 def _match_element(token: str, features: List[Dict]) -> Optional[Tuple[int, int, str]]:

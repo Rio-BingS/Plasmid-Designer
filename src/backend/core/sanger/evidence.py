@@ -472,13 +472,16 @@ def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],
     vd_scope = (verdict or {}).get("scope") or {}
     declared = bool(vd_scope.get("declared"))
     scope_ranges = [(int(s), int(e)) for s, e in (vd_scope.get("ranges") or [])]
+    # W8：接合区窗口（cds_target）属于需测范围——头行归因与 verdict 同口径
+    junction_windows = [(int(s), int(e)) for s, e in (vd_scope.get("junctions") or [])]
 
     def _in_scope_v(v: Dict) -> bool:
         if not (declared and scope_ranges):
             return True
         rp = int(v.get("ref_pos") or 0)
         v_end = rp + int(v.get("length") or 1) - 1
-        return any(s <= v_end and rp <= e for s, e in scope_ranges)
+        return (any(s <= v_end and rp <= e for s, e in scope_ranges)
+                or any(s <= v_end and rp <= e for s, e in junction_windows))
 
     target = next((c for c in cds_reports if c.get("analysis_target")), None)
     tail = ""

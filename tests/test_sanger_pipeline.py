@@ -3038,3 +3038,28 @@ def test_tail_position_no_longer_forces_low():
     # 提示是噪声，变体的 low_reason 已写明具体灰区依据
     assert "read 首尾不可信区的差异按低置信处理" not in result["conclusion"]
     assert "↳ long.ab1：可信区" not in result["conclusion"]
+
+
+def test_cds_mode_crop_full_ref_relocation():
+    """W8 裁剪路径（goal：能连续定位到窗口外的段不算异常）：cds_mode 超
+    MAX_REF_BP 裁剪取窗后，越过窗口边缘的 read 段在完整质粒上连续定位
+    → located_outside，不判 unaligned/partial（该部分在需测范围外未评估）"""
+    from core.sanger.cds_extract import prepare_scope_mode
+
+    random.seed(31)
+    ref = "".join(random.choice("ACGT") for _ in range(4000))
+    feats = [dict(name="Big", type="CDS", start=1800, end=2000, strand="+")]
+    ref2, feats2, scope, circ = prepare_scope_mode(
+        ref, feats, "ref", ["b.ab1"], "Big", circular=True, max_ref_bp=3000)
+    assert circ is False and len(ref2) == 3201       # 窗口 [300, 3500]
+    # read 覆盖参考 3200-3900：窗口内只装得下 3200-3500，其余越过右缘
+    blob = make_ab1(ref[3199:3900], [40] * 701)
+    res = analyze([("b.ab1", blob)], ref2, feats2, scope=scope, circular=circ,
+                  full_ref=ref, full_circular=True)
+    kinds = {b["kind"] for b in res["verdict"]["blocking"]}
+    assert "unaligned_hq_segment" not in kinds
+    assert "partial_alignment" not in kinds
+    assert "structural_breakpoint" not in kinds
+    outs = [i for i in res["verdict"]["info"]
+            if i["kind"] == "outside_window_segment"]
+    assert outs and outs[0]["ref_start"] == 3501 and outs[0]["ref_end"] == 3900
