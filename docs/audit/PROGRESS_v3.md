@@ -465,3 +465,82 @@
   confidence 同源 + md 表头三档）；T15 面板测试文案同步（评分 1 →
   低）。Windows 全量 **2068 passed / 0 failed / 46 skipped**（docs_sync
   一处引用悬空当场修复）；前端三件套绿（693/693、type-check、build）。
+
+
+## 【闸门 5】阶段 5+6 收口（W13/W14/W15）
+
+- OC1/OC2 保持全绿（W12 摘除后无回潮）；前端三件套每阶段绿
+  （W13 693/693、W14 693/693、W15 693/693；type-check 0 错；build
+  成功）。npm audit 未跑（依赖未变更，本轮无新增第三方依赖）。
+- Linux（VPS，W14 树 a94f931 全量）：**2104 passed / 0 failed /
+  10 skipped / 0 xfailed**（407 s；W11 树那轮 52 分钟系机器满载，
+  map_annotate 耗时断言 3 处超阈——该文件单跑 14 passed 6.19 s 证
+  实负载效应，本轮满负载窗口重跑全绿）。Linux 比 Windows 多 34 个
+  通过 = 46 Windows skip 中 36 个 deploy bash/sh 用例在 Linux 可跑。
+- Windows（W14 树）：**2068 passed / 0 failed / 46 skipped**；
+  （W15 树）2068/0；（W16 树）**2070 passed / 0 failed / 46 skipped**
+  （+2 = 真实 AB1 子集基准）。通过数只增不减、skip 不增 ✓。
+
+
+## W16 基准与文档收尾（PL G5；goal W16）
+
+- **真实 AB1 子集入仓**（goal「必须包含真实变异」）：`tests/data/
+  real_ab1/`（1.5 MB）——17647 MUTPK 图谱（35 KB .dna）+ S99676 克隆
+  5 条 read（M13F/M13R/seqF/CseqR1/10855，~280 KB each）。来源：V1.01
+  交付的实验数据（用户自有、无第三方许可问题——判断依据：数据随项目
+  交付、HANDOVER/KNOWN_ISSUES 已作为回归基线语境存在；未停下询问）。
+  真值：status=fail，确证变异 ins@335（high）/ins@440（medium）/
+  del@4081（high），覆盖 ~63%，未声明范围（measured 口径）。
+- `test_real_ab1_subset.py` 2 测：敏感度（3 处真实变异的位置/类型/
+  档位逐一锁定）+ 判定形状（fail、measured、覆盖带宽 50-75%）。
+  真值先于断言由探针跑固定，后续实现改动不得改真值凑绿（口径变更
+  走递增 algo_version 流程）。
+- **文档四件**：SANGER_ALGORITHM_REPORT 新增 §5「范围与归因」（三态
+  范围语义表/来源优先级/缺口归因/判定内核契约/实证基线，原结论顺延
+  §6）；ALGORITHM_ROADMAP 补「已实现（scope v3）」10 项表 + 暂缓项
+  前置 p_real 数值校准条目；CHANGELOG [Unreleased] 写明 goal W16
+  指定 4 条用户可见变化 + 配套项 + 基准入仓；HANDOVER §1 登记
+  W0–W16 收口（SANGER_ALGO_VERSION 保持 v14——W11–W16 未改判定
+  阈值/真值，不递增；HANDOVER §2 版本链补记见下）。
+- **模块拆分回拨尺寸预算**（W12–W14 累积增长触发门禁）：match_clone_
+  files（229 行）→ `core/sanger/clone_match.py`（batch.py 末尾
+  re-export 保持 import 路径不变）；_summary（68 行）→
+  `app/sequencing_summary.py`；review 队列 helper（旧记录惰性派生/
+  构建写回）归 `core/sanger/review.py`。routes 1001→929、batch
+  911→689，门禁通过（白名单只减不增）。
+- Windows 全量 **2070 passed / 0 failed / 46 skipped**；门禁
+  check_file_size / check_docs_sync 绿。Linux 最终轮（W16 树
+  1230a8a）后台跑，数字回填本段下方。
+
+
+## 最终汇报数据采集（goal §10 汇报项）
+
+- **MX 真实回归差异**（baseline_before_W0.json vs W16 树同探针，未声明
+  范围口径）：verdict.status **fail→fail 不变**；确证差异 **2→2 不变**；
+  覆盖 **27.28%→27.28% 逐字不变**；互检排除 resolved_regions 1→1 不变；
+  mixed_corroboration 键集不变。逐条差异（全部为预期口径变化）：
+  ① critical_element_unverified 7 条 + roi_uncovered 1 条 → 消失
+  （W10 起「关键元件未验证」只在声明范围相交时判——未声明范围按
+  「范围外未评估」语义并入整体覆盖判定，不再单列）；
+  ② unresolved_site 13→10（3 处转归因，见③）；
+  ③ 新增 minor_af_site 41 条（W4 低 AF 软带：AF 0.12–0.23 落 pending
+  复核——「宁可多复核不可漏混合」的预期行为，CHANGELOG 已声明）；
+  ④ mixed_variant 89→83（ratio_floor 0.30→0.20 分带位移，部分低 AF
+  双峰转入 minor_af_site）。test_real_data_regression 6 passed（MX
+  结论形状锁定）、test_sequencing_batch_budget 7 passed。
+- **混合 FPR**（W4 后复测，PROGRESS W4 段口径）：3 个真实 AB1
+  （3730/3100/310）mixed TPR 1.0（4 项）、**FPR 0.0（误判 []）**；
+  对照组 benchmark verdict 混淆矩阵 35 项全对角不变红。
+- **性能**（goal §6.7/§6.7b）：
+  - 单样品 3 read / 10kb 参考：alpha.3 基线（worktree v2.37.0-alpha.3
+    实测 6.02/6.01/6.02 s）vs W16 树（6.09/6.00/6.03 s）——**比值
+    ≈1.01×，远低于 1.2× 上限**（比对仍是一次全质粒；scope 路径只加
+    build_verdict 纯函数）。
+  - 重算端点（W11，goal P95<200ms）：**P50 9.4ms / P95 40.4ms**
+    （TestClient 同进程 20 连测；第 20 次触发上传限流 429 属限流
+    机制非端点耗时）。
+- **场景对比（goal §4 前后）**：W0 基线 1988 passed / **13 failed
+  （v3 待落地项）** / 30 xfailed → W16 **72 场景全绿 / 0 xfail /
+  全平台 xfailed=0**（Windows/Linux 一致）。13 个失败项逐一对应
+  SC/CM/AF/PR/OC 真值（W1-W12 逐阶段转绿，见各段）；PR3/AF2 直接
+  真值锁定无 xfail。
