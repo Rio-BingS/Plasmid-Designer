@@ -17,6 +17,13 @@ from core.sanger.readmap import ReadRefMap
 
 # 次等位丰度门槛：低于此的双峰只记 info（噪声级或极低频亚群）
 MINOR_AF_MIN = 0.15
+# goal v3 W4 af 分带（RV P0-3）：≥MIXED_AF_MIN 判疑似混合（mixed）；
+# [MINOR_AF_MIN, MIXED_AF_MIN) 判 minor_af_site（pending 复核项——丰度不足
+# 判混但不得静默）；[MINOR_AF_SOFT, MINOR_AF_MIN) 软检出带（模型地板 0.18
+# 之下、soft_ratio_floor=0.13 之上；0.13 对应 af 0.115，与分带下限一致）
+# 仅在声明范围×功能区出 pending，否则 info
+MINOR_AF_SOFT = 0.115
+MIXED_AF_MIN = 0.23
 
 _COMP = str.maketrans("ACGTN", "TGCAN")
 
@@ -36,7 +43,8 @@ def collect_mixed_variants(read_results: List[Dict], ref_seq: str) -> List[Dict]
             continue
         bases = (r.get("trimmed_bases") or "").upper()
         reverse = rmap.direction == "-"
-        for e in r.get("mixed_detail") or []:
+        for e in (list(r.get("mixed_detail") or [])
+                  + list(r.get("mixed_soft") or [])):
             rp = rmap.read_to_ref(e.get("pos"))
             if not rp:
                 continue  # 插入列/无映射列：无参考位点可判

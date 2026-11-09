@@ -834,6 +834,10 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         tail.append(f"{len(pending)} 处未决差异")
     if n_sites:
         tail.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
+    if syn and out.startswith("合格"):
+        # goal v3 §8 决策 3（W5）：同义替换默认合格口径，但合格结论必须
+        # 注明（克隆筛查最常问「测到的差异动不动蛋白」）
+        tail.append(f"{len(syn)} 处同义突变（蛋白不变）")
     if undetermined and not out.startswith("无法判定"):
         # fail/待定主句不吸收的无法判定原因（如部分比对）落尾部，不丢信息
         tail.append(undetermined)

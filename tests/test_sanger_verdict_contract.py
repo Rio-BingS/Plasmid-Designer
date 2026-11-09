@@ -86,6 +86,21 @@ def test_status_consistent_across_outlets(request, spec):
         f"{spec.id}: status={status} 分拣应为 {bucket}，实际 {excel[:24]!r}"
 
 
+def test_pass_never_carries_blocking():
+    """W3 pass 契约（RV P0-2）：任何场景下 pass ⇒ blocking==[]（与
+    build_verdict 末尾断言同源的双保险）；反向不作要求——blocking 空
+    不蕴含 pass（如全 info 的场景照常 pass，但 insufficient 兜底也可能
+    空列表形态由 status 决定）"""
+    for spec in SCENARIOS:
+        if spec.id in NOT_VIA_ANALYZE:
+            continue
+        _spec, res = _run_scenario(spec)
+        vd = res["verdict"]
+        assert not (vd["status"] == "pass" and vd["blocking"]), (
+            f"{spec.id}: pass 与 blocking 并存 "
+            f"{sorted({b['kind'] for b in vd['blocking']})}")
+
+
 def test_status_ignores_wording_changes():
     """文案改写不改 status：detail/low_reason 等文案字段任意改写，
     verdict.status 不动（status 只由结构化证据推导）"""

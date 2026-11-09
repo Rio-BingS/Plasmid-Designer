@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
-from core.sanger.mixed_call import MINOR_AF_MIN
+from core.sanger.mixed_call import MINOR_AF_MIN, MINOR_AF_SOFT, MIXED_AF_MIN
 from core.sanger.overlap import (
     double_strand_fraction as _double_strand_fraction, REQUIRE_DOUBLE_STRAND,
 )
@@ -46,6 +46,9 @@ PENDING_KINDS = {
     "unresolved_variant", "unresolved_site", "n_in_cds", "poly_unreliable",
     "dropout", "overlap_discordance", "orf_annotation_suspect",
     "allele_mismatch", "junction_variant", "critical_element_variant",
+    # goal v3 W4：低丰度双峰（AF 0.15-0.23 及声明范围软带 0.12-0.15）——
+    # 不足以判混但必须复核（RV P0-3「要么真正生效要么删除」的生效形态）
+    "minor_af_site",
     # 2026-11-08 复审：cds_union 实测齐全但 verified<100% 的残余缺口
     # （首尾不可信区/N 列）——T12 复评挂账落地，不再出现 ✓ 头行与
     # 阻断项并存的矛盾；关键元件覆盖缺口同理（不能只写 info）；
@@ -114,16 +117,20 @@ def _junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
     return junction_ranges(features)
 
 
-def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
+def build_verdict(result: Dict, ref_length: int, scope=None,
+                  synonymous_action: str = "ok") -> Dict:
     """从 analyze 结果组装 Verdict（只读，不改 result 内其他键）。
 
     goal v3 W1：build_verdict 是纯函数——除 result/scope/ref_length 外不读
     任何状态、不调用比对；同一份 result 换 scope 重算可复现（goal v3 §0.6）。
     scope：None / Scope / dict / str（元件名、区间、关键字，见 scope.py）。
-    W1 只接线：声明范围时 ROI 取 scope 外包框（语义重构随 W2）。"""
+    synonymous_action（goal v3 §8 决策 3，W5）：确证同义替换（CDS 内、蛋白
+    不变）的处理——"ok" 默认合格口径（info 注明，不阻断）；"fail" 沿旧口径
+    按确证差异阻断。"""
     variants = result.get("variants") or []
     sites = result.get("unresolved_sites") or []
     cds_reports = result.get("cds_reports") or []
+    _cds_by_name = {c.get("name"): c for c in cds_reports if c.get("name")}
     errors = result.get("errors") or []
     reads = result.get("reads") or []
     profiles = result.get("mixed_profiles") or {}
@@ -237,6 +244,21 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
                       f"{rp} {v.get('type')}"
                       f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，未评估")
             continue
+        # 同义突变可配置（goal v3 §8 决策 3，W5）：确证替换落在 CDS 内且
+        # 该 CDS 蛋白判定一致（蛋白一致却有确证替换 ⇒ 只能是同义）→ 默认
+        # 合格口径只记 info（克隆筛选最常问「这个差异动不动蛋白」）；
+        # synonymous_action="fail" 沿旧口径走下面的确证差异阻断
+        if (st == "confirmed" and synonymous_action != "fail"
+                and v.get("type") == "substitution"):
+            _names = {f.get("name") for f in v.get("features") or []
+                      if f.get("type") == "CDS"}
+            if _names and all(
+                    (_cds_by_name.get(n) or {}).get("protein_identical") is True
+                    for n in _names):
+                _info("synonymous_variant", feats,
+                      f"{rp} 同义替换（蛋白不变，合格口径注明备查；"
+                      "如需按差异判定可在分析设置中改为「不合格」）")
+                continue
         if st == "confirmed":
             _blk("confirmed_variant", rp, v_end,
                  feats, f"{rp} {v.get('type')}（置信 {v.get('confidence')}）",
@@ -277,8 +299,19 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
         elif pc.get("status") == "unverified":
             _info("primer_unverified", pc.get("read"),
                   pc.get("detail") or "未校验引物")
-    # 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检的双峰）
+    # 未决位点（N/模糊调用、poly 不可判定、dropout、无法互检的双峰）。
+    # 范围闸（goal v3 §3.4，与变体循环同款）：范围外的未决位点不阻断
+    # （未评估，SC10 构造复核时暴露——声明 301-1299 时 1301+ 的双峰
+    # 曾误入 blocking 驱 pending）；无参考坐标（ref_pos 缺失）无法归因，
+    # 保留旧行为进 blocking
     for u in sites:
+        rp = int(u.get("ref_pos") or 0)
+        if rp >= 1 and scope_ranges and not any(
+                s <= rp <= e for s, e in scope_ranges):
+            _info("out_of_scope_unresolved", u.get("ref_pos"),
+                  f"参考位置 {rp} 的未决位点（{u.get('detail') or u.get('kind')}）"
+                  f"在需测范围外——未评估")
+            continue
         _blk(_SITE_KIND_MAP.get(u.get("kind"), "unresolved_site"),
              u.get("ref_pos"), u.get("ref_pos"), None,
              u.get("detail") or u.get("kind"), "核对峰图或换引物补测",
@@ -328,24 +361,40 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
         # 盲区提示（goal T5；A 4.1）：参考未注释抗性/ori 元件时不做元件级判读
         _info("unannotated_element", None,
               "参考未注释抗性/复制原点等关键元件，未做元件级判读（自动注释不在范围内）")
-    # 单点双峰次等位（goal T7；A 3.2；B P2-20）：AF ≥0.15 且在判定范围
-    # （ROI/关键元件/接合区）→ mixed_variant 阻断（status mixed）；其余
-    # 只记 info。与同位点 unresolved 替换合并为一条 blocking
+    # 单点双峰次等位（goal T7；A 3.2；B P2-20；W4 af 分带 RV P0-3）：
+    # 功能区（CDS/关键元件/接合区）内 AF ≥0.23 → mixed_variant（疑似混合，
+    # status mixed）；0.15-0.23 → minor_af_site（pending 复核项，丰度不足
+    # 判混但不得静默）；0.12-0.15 软检出带仅在声明范围内升级 pending
+    # （未声明范围按模型地板口径，软带=噪声级只记 info）；骨架散在双峰
+    # 一律 info（2026-11-06 定稿：个别双峰位点不升级，经 unresolved_sites
+    # 走 △待定）。与同位点 unresolved 替换合并为一条 blocking
     mixed_vars = result.get("mixed_variants") or []
+    _declared_scope = bool(scope_obj is not None and scope_obj.declared)
+    _mixed_pos: set = set()
     for m in mixed_vars:
         rp, af = int(m["ref_pos"]), float(m.get("af") or 0)
-        if af < MINOR_AF_MIN or not _in_scope(rp):
+        if af < MINOR_AF_SOFT or not _in_scope(rp):
             _info("mixed_variant", None,
                   f"{rp} 双峰次等位 {m.get('secondary_base')}（AF {af}，"
                   "低于门槛或不在判定范围，仅记录）")
             continue
-        _blk("mixed_variant", rp, rp, None,
-             f"{rp} 双峰 {m.get('called_base')}/{m.get('secondary_base')}"
-             f"（参考 {m.get('ref_base')}，次等位 AF {af}）——疑似混合样品",
-             "重新挑单克隆复测，或 tracy 解卷积分离等位",
-             refs=m.get("reads") or [], af=af)
-    _mixed_pos = {int(m["ref_pos"]) for m in mixed_vars
-                  if float(m.get("af") or 0) >= MINOR_AF_MIN and _in_scope(int(m["ref_pos"]))}
+        _pair = (f"{rp} 双峰 {m.get('called_base')}/{m.get('secondary_base')}"
+                 f"（参考 {m.get('ref_base')}，次等位 AF {af}）")
+        if af >= MIXED_AF_MIN:
+            _blk("mixed_variant", rp, rp, None,
+                 _pair + "——疑似混合样品",
+                 "重新挑单克隆复测，或 tracy 解卷积分离等位",
+                 refs=m.get("reads") or [], af=af)
+            _mixed_pos.add(rp)
+        elif af >= MINOR_AF_MIN or _declared_scope:
+            _blk("minor_af_site", rp, rp, None,
+                 _pair + "——次等位丰度低，疑似低频亚群或噪声双峰，无法判混",
+                 "重新挑单克隆复测，或换引物覆盖该位点互检",
+                 refs=m.get("reads") or [], af=af)
+            _mixed_pos.add(rp)
+        else:
+            _info("mixed_variant", None,
+                  _pair + "（软检出带且未声明范围，仅记录）")
     if _mixed_pos:
         # 同位点合并（goal T7）：位点级混合与未决替换是同一证据的两面，
         # 只留 mixed_variant 一条（detail 已含双峰判读）
@@ -509,6 +558,101 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
     else:
         status = "pass"
 
+    # pass 契约（goal v3 W3，RV P0-2）：verified 口径下任何 blocking
+    # （roi_unverified、关键元件未验证等 pending 级缺口在内）都不得与
+    # pass 并存——上面 status 优先级本应保证这一点，此处真断言兜底，
+    # 未来分支回归直接暴露而不是静默发出矛盾结论
+    if status == "pass":
+        assert not blocking, (
+            "pass 契约违反（pass 不得携带 blocking）："
+            + ", ".join(sorted({b["kind"] for b in blocking})))
+
+    # element_verdicts（goal v3 W5，PL A5）：CDS/关键元件/接合区各一条，
+    # 字段 覆盖（verified %）/单双链/问题数/是否在范围内。范围闸与关键
+    # 元件闸同款：声明范围相交才判、未声明范围须完整落入实测；范围外
+    # 一律 not_assessed（SC1：AmpR/ori 未评估）。问题数=相交 blocking
+    # 数（范围级 roi_* 不算到元件头上）
+    element_verdicts: List[Dict] = []
+    _el_seen = set()
+
+    def _el_in_scope(s_: int, e_: int) -> bool:
+        if declared:
+            return any(s_ <= e2 and s1 <= e_ for s1, e2 in scope_ranges)
+        return any(s1 <= s_ and e_ <= e2 for s1, e2 in scope_ranges)
+
+    def _push_el(name, typ, s_: int, e_: int) -> None:
+        key = (name, s_, e_)
+        if key in _el_seen:
+            return
+        _el_seen.add(key)
+        if not _el_in_scope(s_, e_):
+            element_verdicts.append({
+                "name": name, "type": typ, "start": s_, "end": e_,
+                "status": "not_assessed", "coverage": None,
+                "double_strand": None, "issues": 0, "in_scope": False})
+            return
+        el_cov = _ranges_cover(verified_ranges, s_, e_)
+        issues = sum(1 for b in blocking
+                     if b["kind"] not in ("roi_uncovered", "roi_unverified",
+                                          "roi_insufficient_bp")
+                     and (b.get("ref_start") is None
+                          or (b.get("ref_start") or 10**9) <= e_)
+                     and (b.get("ref_end") is None
+                          or (b.get("ref_end") or -1) >= s_))
+        el_dsf = _double_strand_fraction(reads, s_, e_) if el_cov > 0 else None
+        element_verdicts.append({
+            "name": name, "type": typ, "start": s_, "end": e_,
+            "status": "ok" if (el_cov >= 99 and issues == 0) else "issue",
+            "coverage": round(el_cov, 1), "double_strand": el_dsf,
+            "issues": issues, "in_scope": True})
+
+    for f in features:
+        if f.get("type") == "CDS":
+            _push_el(f.get("name") or "(未命名 CDS)", "CDS",
+                     int(f["start"]), int(f["end"]))
+    for f in critical:
+        _push_el(f.get("name") or "(未命名元件)", f.get("type") or "element",
+                 int(f["start"]), int(f["end"]))
+    for s_, e_, jname in junctions:
+        _push_el(jname or "接合区", "junction", int(s_), int(e_))
+
+    # headline（goal v3 W5，PL A6）：三段式「符号 状态 · 范围 · 证据」，
+    # W12 起作为三出口唯一文案来源（本阶段随 verdict 下发，出口尚各自措辞）。
+    # 范围段：声明范围用「元件名（起–止）」（元件数与段数对应时）或区间；
+    # 未声明范围只说「已测 x–y…；范围外未评估」（goal §0.1 禁整参考主张）
+    _HEAD = {"pass": ("✓", "合格"), "fail": ("✗", "不合格"),
+             "pending": ("△", "待定"), "partial": ("△", "部分验证"),
+             "mixed": ("△", "疑似混合"), "insufficient": ("△", "无法判定"),
+             "failed_reads": ("△", "读取失败")}
+    sym_, word_ = _HEAD[status]
+    if declared:
+        if scope_obj.elements and len(scope_obj.elements) == len(scope_ranges):
+            rng_txt = "、".join(
+                f"{n}（{s}–{e}）" for n, (s, e) in
+                zip(scope_obj.elements, scope_ranges[:3]))
+        else:
+            rng_txt = "、".join(f"{s}–{e}" for s, e in scope_ranges[:3])
+        range_part = f"范围：{rng_txt}"
+    else:
+        spans_ = "、".join(f"{s}–{e}" for s, e in scope_ranges[:3])
+        range_part = f"已测 {spans_}；范围外未评估"
+    if status == "pass":
+        n_syn = len([i for i in info if i.get("kind") == "synonymous_variant"])
+        ev_txt = (f"verified 覆盖 {roi_verified_pct:.0f}%，"
+                  + (f"{n_syn} 处同义替换（蛋白不变）" if n_syn else "未检出差异"))
+    elif status == "failed_reads":
+        ev_txt = f"{len(errors)} 条 read 解析失败"
+    elif status == "insufficient":
+        ev_txt = "实测数据不足以判定"
+    elif has_fail:
+        ev_txt = (f"{len([b for b in blocking if b.get('fail_impact')])}"
+                  " 处确证差异")
+    elif status == "mixed":
+        ev_txt = f"双峰判混（{len([b for b in blocking if b['kind'] == 'mixed_variant'])} 处）"
+    else:
+        ev_txt = f"{len(blocking)} 项待核"
+    headline = f"{sym_} {word_} · {range_part} · 证据：{ev_txt}"
+
     return {
         "status": status,
         "blocking": blocking,
@@ -531,5 +675,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None) -> Dict:
         },
         # 需测范围（goal v3 §3.3；None=未声明，W2 起合成 measured 口径）
         "scope": scope_obj.to_dict() if scope_obj is not None else None,
+        # goal v3 W5（PL A5/A6）：元件级判定与三段式头行
+        "element_verdicts": element_verdicts,
+        "headline": headline,
         "algo_version": result.get("algo_version"),
     }

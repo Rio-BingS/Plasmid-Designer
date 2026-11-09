@@ -12,7 +12,7 @@ import pytest
 from core.sanger.batch import excel_conclusion
 from core.sanger.homopolymer import _aligned_run_window, _read_ref_maps
 from core.sanger.pipeline import analyze
-from tests.sanger_scenarios import SCENARIOS
+from tests.sanger_scenarios import SCENARIOS, _af1_make
 from tests.abif_utils import make_trace_ab1
 
 S = {sc.id: sc for sc in SCENARIOS}
@@ -462,7 +462,6 @@ XF = pytest.mark.xfail
 
 # ---------- §4.1 SC：范围 ----------
 
-@XF(strict=True, reason="W5：headline 与 element_verdicts（PL A5/A6）")
 def test_sc1_scope_geneX_pass_headline_elements():
     """SC1：scope=GeneX 正反全覆盖 → pass；headline 含 GeneX（301–900）；
     AmpR/ori 元件结论 not_assessed"""
@@ -491,7 +490,6 @@ def test_sc2_filename_match_scope_pass():
     assert res["verdict"]["scope"]["source"] == "filename_match"
 
 
-@XF(strict=True, reason="W5：headline「已测区段」口径（§8 决策 1）")
 def test_sc3_undeclared_scope_measured_wording():
     """SC3：未声明范围 → declared=false、status=pass；headline 写「已测 x–y…
     …未评估」；任何出口不得出现「构建与设计一致」"""
@@ -506,7 +504,6 @@ def test_sc3_undeclared_scope_measured_wording():
     assert not excel_conclusion("P", res, 1, True).startswith("合格：与设计一致")
 
 
-@XF(strict=True, reason="W5：headline「已测区段」口径（§8 决策 1；RV P0-1）")
 def test_sc4_whole_partial_never_blanket_pass():
     """SC4：3000bp 只测 1-900 不声明范围 → 同 SC3：pass + 已测区段口径"""
     spec, res = _run("SC4")
@@ -593,16 +590,18 @@ def test_sc9_verdict_reproducible_across_scopes(monkeypatch):
     assert build_verdict(res, L, scope="GeneX") == v_gene
 
 
-@XF(strict=True, reason="W3：pass ⇏ blocking 契约（RV P0-2）")
 def test_sc10_verified_gap_never_pass_with_blocking():
-    """SC10：verified ≈99%、measured 100% → 不得出现 pass 同时带 blocking"""
+    """SC10（W3 落地，RV P0-2）：verified ≈99%、measured 100% → 不得出现
+    pass 同时带 blocking；verified 口径按 ROI 分数断言（goal W3「统一
+    verified 口径」——整参考 coverage_percent 混入范围外语义，不再使用）"""
     spec, res = _run("SC10")
     vd = res["verdict"]
     assert not (vd["status"] == "pass" and vd["blocking"]), "pass 与 blocking 并存"
     assert vd["status"] == "pending"
     assert any(b["kind"] == "roi_unverified" for b in vd["blocking"])
-    cov = res["coverage"]
-    assert 98.0 <= cov["verified_percent"] < 100.0
+    roi = vd["roi"]
+    assert roi["measured_fraction"] == 1.0
+    assert 0.98 <= roi["verified_fraction"] < 1.0
 
 
 @XF(strict=True, reason="W6：双链要求按 E 归因")
@@ -723,7 +722,6 @@ def test_cm8_negative_strand_dual_coords():
 
 # ---------- §4.3 MX-AF：混合 ----------
 
-@XF(strict=True, reason="W4：范围内低 AF 进入 pending（RV P0-3）")
 @pytest.mark.parametrize("af", [0.12, 0.15, 0.18, 0.20])
 def test_af1_low_af_in_cds_at_least_pending(af):
     """AF1：CDS 内单 read AF 0.12/0.15/0.18/0.20 → 至少 pending，不得 pass，

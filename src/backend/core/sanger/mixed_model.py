@@ -57,8 +57,17 @@ _IUPAC_EXPAND = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "AG", "Y": "CT",
 
 @dataclass(frozen=True)
 class MixedParams:
-    """双峰模型参数（JSON 可覆盖；缺省与 mixed_default.json 一致）"""
-    ratio_floor: float = 0.30
+    """双峰模型参数（JSON 可覆盖；缺省与 mixed_default.json 一致）
+
+    ratio_floor 缺省取 0.18 与 mixed_default.json 对齐（goal v3 W4：消灭
+    「dataclass 死默认 0.30」——运行时真值始终由 JSON 加载，0.30 从未生效，
+    留着只会误导调参；0.18 的标定依据见 params/mixed_default.json _doc）。
+    soft_ratio_floor（goal v3 W4 新增）：地板下的「软检出带」——ratio 高于
+    它但未过地板的位点以 soft 标记输出（af≈0.115 起），不进密度/分级统计，
+    供 verdict 在声明范围内的功能区出 pending 复核项（MINOR_AF 0.12-0.15
+    带不再静默）；0.30→0.20 的 W4 原案被 0.18 取代（R3 实测标定，见 _doc）。"""
+    ratio_floor: float = 0.18
+    soft_ratio_floor: float = 0.13
     adaptive_k: float = 4.0
     mad_scale: float = 1.4826
     window: int = 25
@@ -214,6 +223,13 @@ def _detect_from_table(table, bases: str, trace: Dict[str, List[int]],
         sec = max(ratios, key=ratios.get)
         ratio = ratios[sec]
         if ratio <= p.ratio_floor:
+            # 软检出带（goal v3 W4）：地板下但高于 soft_ratio_floor 的位点
+            # 以 soft 标记输出——不进分级统计（classify 用硬位点），af 带
+            # 由 verdict 按声明范围/功能区分流出 pending 或 info
+            if ratio > p.soft_ratio_floor:
+                detail.append({"pos": i + 1, "ratio": round(ratio, 3),
+                               "secondary_base": sec, "pullup": False,
+                               "soft": True, "pair": f"{base}>{sec}"})
             continue
         med, mad = _pair_background(table, i, base, sec, p)
         if med is None or mad is None:
@@ -269,7 +285,10 @@ def detect_and_classify(bases: str, trace: Dict[str, List[int]],
         i = e["pos"] - 1
         e["called_base"] = bases[i] if 0 <= i < len(bases) else None
         kept.append(e)
-    profile = classify_mixed(kept, len(bases), tracy_calls=tracy_calls,
+    # 软检出带位点只作展示/verdict 复核素材，不进密度/ widespread 分级
+    # （goal v3 W4：分级统计口径与地板 0.18 时代完全一致，FPR 不因 soft 带变化）
+    profile = classify_mixed([e for e in kept if not e.get("soft")],
+                             len(bases), tracy_calls=tracy_calls,
                              peaks=peak_indices, zone=zone, quality=quality,
                              table=table, params=p, exclude=ex)
     return kept, profile
