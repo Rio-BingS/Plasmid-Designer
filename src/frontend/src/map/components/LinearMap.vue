@@ -31,7 +31,13 @@ const props = withDefaults(defineProps<{
   showEnzymes?: boolean
 }>(), { tracks: () => [], interactive: true, showEnzymes: true })
 
-const emit = defineEmits<{ (e: 'track-click', trackId: string, itemId: string): void }>()
+const emit = defineEmits<{
+  (e: 'track-click', trackId: string, itemId: string): void
+  /** 点击主轴特征（goal v3 W13）：测序简图用它把元件加入/移出需测范围 */
+  (e: 'feature-click', featureId: string): void
+  /** 坐标轴拖拽框选完成（goal v3 W13）：测序简图把选中区间加入需测范围 */
+  (e: 'range-select', range: { start: number; end: number }): void
+}>()
 
 const { store, own } = useMapStore(() => props.doc)
 const wrap = ref<HTMLElement | null>(null)
@@ -519,12 +525,17 @@ function onPointerUp(e: PointerEvent) {
     if (key?.startsWith('t:')) {
       const ti = trackItem(key)
       if (ti) emit('track-click', ti.track.id, ti.item.id)
+    } else if (key?.startsWith('f:')) {
+      emit('feature-click', key.slice(2))
+      const info = resolveHit(store, key)
+      if (info) info.select()
     } else {
       const info = resolveHit(store, key)
       if (info) info.select()
       else store.setCaret(Math.max(0, Math.min(L.value, Math.round(anchor))))
     }
   } else if (mode === 'select' && store.selection.value) {
+    emit('range-select', { start: store.selection.value.start, end: store.selection.value.end })
     store.navigateTo(store.selection.value)
   }
   mode = 'none'

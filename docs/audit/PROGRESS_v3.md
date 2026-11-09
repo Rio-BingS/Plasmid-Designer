@@ -371,3 +371,30 @@
     W3-W5 推送后重跑回填。
 - `SANGER_ALGO_VERSION` v9→v10（HANDOVER §2 登记）。
 
+
+
+## W13 范围可视化与交互（PL §C3/§C4/§C5；RV P2 前端）
+
+- 范围选择条（选择文件区 + 结果区两处）：`scope_presets/default_preset`
+  驱动的预设按钮组（含 全质粒 / 各 CDS 特征 + 自定义输入），默认项
+  reason 落条下提示（「默认 MX——文件名命中目标 CDS…」）。目的基因
+  模式开关并入预设（§8 决策 4：选 CDS 预设 ⇔ cds_mode=true+cds_name），
+  旧 `.cds-toggle/.cds-pick` 控件下线；参考+read 就绪即解析（不挂
+  模式开关）；无 CDS 候选不再锁死分析入口——默认全质粒验证。
+- applyScope / recomputeVerdict 端点接通：结果区范围条可切换预设
+  （含「不声明」）并触发 W11 重算端点，scopeMatchesVerdict 比对
+  verdict.scope 防重复提交；重算期间保留当前结果（busy 提示）。
+- LinearMap → MatchMap 交互桥：LinearMap 新增 feature-click 与
+  range-select（框选拖拽）emit；MatchMap 点击元件 toggle scope、
+  选区提示条 + addSelectionToScope 发 add-scope-range。
+- MatchMap 三层色带重做（goal W13）：required（需测范围，蓝 +
+  范围外置灰）/ expected（预期位置，黄）/ verified（已验证，绿）
+  三轴轨道；缺口按 cause 着色（beyond_primer 橙 / read_shortfall 红 /
+  unknown 紫），图例同步；verified 带按 ref_segments 拆段渲染。
+- 元件状态表（ConclusionCards）：范围内逐行（✓/✗/△）、范围外
+  折叠一行汇总；VariantTable 位置列双坐标（质粒 bp 主行 + CDS
+  c./p. 副行，verdict scope 存在时显示）。
+- 前端三件套（W13 树）：vitest **693 passed / 0 failed**（90 文件）；
+  vue-tsc 0 错；vite build 成功。Panel cds_mode 4 测按范围条重编码
+  （预设预选/提交参数/手动切换不顶掉/无候选松绑）；T15 与 mixed 折叠
+  测试补 conclusion_groups 结构化 mock（分组回退已删）。

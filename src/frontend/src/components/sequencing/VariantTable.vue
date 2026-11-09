@@ -199,10 +199,17 @@ function reasonBadges(v: SequencingVariant) {
     <table class="seq-table clickable" v-if="allRows.length">
       <thead>
         <tr><th>位置</th><th>类型</th><th>变化</th><th>所在特征</th><th>氨基酸</th><th>移码</th><th>酶切位点</th><th>支持reads</th><th>Q</th><th>置信度</th><th>评分 / 行动</th></tr>
+        <!-- 位置列（goal v3 W9 CM P1-D）：主显质粒坐标，命中 CDS 时副行显示
+             c./p. 双坐标（负链按编码方向换算）；旧记录无 coords 只显质粒坐标 -->
       </thead>
       <tbody>
         <tr v-for="row in allRows" :key="`${row.rowKind}-${row.ref_pos}-${row.kind ?? row.variant?.alt_base ?? ''}`" @click="emit('jump', row)">
-          <td>{{ row.ref_pos }}</td>
+          <td>
+            {{ row.ref_pos }}
+            <div v-if="row.variant?.coords?.cds" class="cds-coord-line mono">
+              {{ row.variant.coords.cds.name }} {{ row.variant.coords.cds.c }}<template v-if="row.variant.coords.cds.p"> · {{ row.variant.coords.cds.p }}</template>
+            </div>
+          </td>
           <td>
             <template v-if="row.rowKind === 'variant'">{{ row.variant!.type === 'substitution' ? '替换' : row.variant!.type === 'insertion' ? '插入' : '缺失' }}</template>
             <template v-else-if="row.rowKind === 'site'"><span class="badge reason warn">{{ SITE_KIND_LABELS[row.kind!] ?? '未决位点' }}</span></template>
@@ -272,6 +279,7 @@ function reasonBadges(v: SequencingVariant) {
 .seq-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .seq-table th, .seq-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border-color, #eee); text-align: left; }
 .seq-table th { background: var(--bg-secondary, #f7f7f7); }
+.cds-coord-line { font-size: 0.72rem; color: #7f8c8d; white-space: nowrap; }
 .seq-table.clickable tr { cursor: pointer; }
 .seq-table.clickable tr:hover { background: var(--bg-secondary, #f7f7f7); }
 .section-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
