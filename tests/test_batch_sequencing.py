@@ -1287,3 +1287,32 @@ def test_batch_group_scope_declared_and_parse_fail_note():
         register=lambda l, r, f, x: "aid-2")
     assert "范围无法识别" in items2[0]["conclusion"]
     assert "胡乱写的范围" in items2[0]["conclusion"]
+
+
+def test_batch_items_carry_review_summary_fields():
+    """W14（PL F4）：批量 item 带 review_count/review_prio——确证差异样品
+    prio=fail 且计数>0；干净样品计数 0"""
+    from app.sequencing_batch import run_batch_groups
+
+    rng = random.Random(43)
+    ref = "".join(rng.choice("ACGT") for _ in range(900))
+    blob = make_ab1(ref[300:800], [40] * 500)
+    alt = "G" if ref[400] != "G" else "T"
+    # 造一处错配（read 相对参考 400 位点替换）→ 确证差异
+    seg = list(ref[300:800])
+    seg[100] = alt
+    blob_mut = make_ab1("".join(seg), [40] * 500)
+
+    def _group(name, b):
+        return {"plasmid": name, "clone": "",
+                "reference": {"file": {"name": f"{name}.gb", "bytes": _w10_gb(ref)}},
+                "reads": [{"file": {"name": f"{name}_w.ab1", "bytes": b}}]}
+
+    _items, _recs = run_batch_groups(
+        [_group("P1", blob_mut), _group("P2", blob)],
+        min_q=20, register=lambda l, r, f, x: (f"aid-{l}", {}))
+    by = {it["plasmid"]: it for it in _items}
+    assert by["P1"]["review_count"] >= 1
+    assert by["P1"]["review_prio"] == "fail"
+    # P2 无确证差异（随机参考的 ORF 护栏可能给 pending 级条目，但 prio 不得是 fail）
+    assert by["P2"]["review_prio"] != "fail"

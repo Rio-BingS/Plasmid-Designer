@@ -6,7 +6,7 @@
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import {
-  analyzeSequencingFiles, exportConsensus, formatApiError,
+  analyzeSequencingFiles, confirmReview, exportConsensus, formatApiError,
   parseSequencingReference, recomputeVerdict,
   type SequencingAnalysis, type SequencingReferenceParse
 } from '@/api'
@@ -21,6 +21,7 @@ import AlleleCard from '@/components/sequencing/AlleleCard.vue'
 import ConsensusCard from '@/components/sequencing/ConsensusCard.vue'
 import MatchMap from '@/components/sequencing/MatchMap.vue'
 import EvidencePackPanel from '@/components/sequencing/EvidencePackPanel.vue'
+import ReviewQueuePanel from '@/components/sequencing/ReviewQueuePanel.vue'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 import { cdsCoverageSummary, findCdsTarget } from '@/utils/cdsMode'
@@ -274,6 +275,36 @@ function scopeMatchesVerdict(value: string): boolean {
   if (!sc?.declared) return false
   const el = sc.elements ?? []
   return value === '全质粒' ? el.length === 0 : el.includes(value)
+}
+
+// 复核队列（goal v3 W14，PL §F）：确证差异/范围内缺口/未决位点——
+// 一键确认留痕（by/at）并重算 verdict；「证据」复用证据包面板出峰图
+const reviewBusy = ref(false)
+const reviewError = ref('')
+const reviewQueue = computed(() => analysis.value?.review_queue ?? [])
+const reviewedCount = computed(() => analysis.value?.verdict?.reviewed_count ?? 0)
+
+async function onReviewConfirm(refPos: number, decision: 'artifact' | 'mutation') {
+  if (!analysis.value?.analysis_id || reviewBusy.value) return
+  reviewBusy.value = true
+  reviewError.value = ''
+  try {
+    const r = await confirmReview(analysis.value.analysis_id, refPos, decision)
+    analysis.value = {
+      ...analysis.value,
+      verdict: r.verdict, conclusion: r.conclusion,
+      review_queue: r.review_queue ?? [], review_decisions: r.review_decisions ?? [],
+    }
+  } catch (e: any) {
+    reviewError.value = formatApiError(e, '确认失败')
+  } finally {
+    reviewBusy.value = false
+  }
+}
+
+function onReviewEvidence(refPos: number) {
+  packFocus.value = refPos
+  packOpen.value = true
 }
 
 /** MatchMap 点击元件 → 加入/移出需测范围（goal W13）：以当前声明元件集合
@@ -539,6 +570,13 @@ async function downloadConsensus(format: string) {
 
       <!-- 结论总览 + CDS 结论卡（子组件；低置信折叠态与突变表共享） -->
       <ConclusionCards v-model:show-low-conf="showLowConf" :analysis="analysis" />
+
+      <!-- 复核队列（goal v3 W14）：待人工条目 + 一键确认留痕；「证据」复用
+           证据包面板（±10bp 峰图 + 逐 read 调用/Q/次峰比） -->
+      <ReviewQueuePanel :queue="reviewQueue" :reviewed-count="reviewedCount"
+                        :busy="reviewBusy"
+                        @confirm="onReviewConfirm" @open-evidence="onReviewEvidence" />
+      <p v-if="reviewError" class="stage-note">{{ reviewError }}</p>
 
       <!-- poly 同聚物/重复结构（子组件，含阈值筛选与逐 read 判读） -->
       <PolyCard :homopolymers="analysis.homopolymers ?? []" />

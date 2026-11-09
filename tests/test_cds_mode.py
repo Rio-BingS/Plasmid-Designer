@@ -659,3 +659,82 @@ def test_scope_memory_roundtrip_and_reuse(client, _mem_store):
     assert sc["declared"] is True and sc["source"] == "user"
     assert sc["reason"] == "沿用上次范围"
     assert sc["ranges"] == [[60, 161]]
+
+
+# ==================== W14：复核队列与一键确认 ====================
+
+
+def test_review_confirm_endpoint_traces_and_refreshes(client, _mem_store):
+    """SC9 风格：fail 样品队列含确证差异；一键确认（突变）→ reviewed_count/
+    headline 留痕、条目出队；确认记录随 payload 落库（B-02 匿名令牌鉴权）"""
+    aid, body, tok = _analyze_target(client)
+    q = body["review_queue"]
+    assert q and all(i["prio"] in ("fail", "read_shortfall", "pending") for i in q)
+    pos = q[0]["ref_start"]
+    r = client.post(f"/api/sequencing/analyses/{aid}/review",
+                    json={"ref_pos": pos, "decision": "mutation"},
+                    headers={"X-Access-Token": tok})
+    assert r.status_code == 200, r.text
+    vd = r.json()["verdict"]
+    assert vd["reviewed_count"] == 1
+    assert "人工确认 1 处" in vd["headline"]
+    assert all(i["ref_start"] != pos for i in r.json()["review_queue"])
+    decisions = r.json()["review_decisions"]
+    assert decisions[0]["ref_pos"] == pos and decisions[0]["decision"] == "mutation"
+    assert decisions[0]["by"] and decisions[0]["at"]
+    # 留痕落库：重新读取记录（GET）仍带确认计数与队列
+    g = client.get(f"/api/sequencing/analyses/{aid}",
+                   headers={"X-Access-Token": tok})
+    assert g.status_code == 200
+    assert g.json()["verdict"]["reviewed_count"] == 1
+
+
+def test_review_confirm_artifact_resolves_pending(client, _mem_store):
+    """伪影确认：条目移出 blocking（info 留痕），重算后状态按剩余阻断收口"""
+    aid, body, tok = _analyze_target(client)
+    q = [i for i in body["review_queue"] if i["prio"] == "fail"]
+    assert q, "确证差异必须进复核队列"
+    pos = q[0]["ref_start"]
+    r = client.post(f"/api/sequencing/analyses/{aid}/review",
+                    json={"ref_pos": pos, "decision": "artifact", "note": "峰图重叠"},
+                    headers={"X-Access-Token": tok})
+    assert r.status_code == 200, r.text
+    vd = r.json()["verdict"]
+    assert vd["reviewed_count"] == 1
+    art = [i for i in vd["info"] if i["kind"] == "reviewed_artifact"]
+    assert art and "人工确认为测序伪影" in art[0]["detail"]
+    # 结论头行同步重建（正文保留）
+    assert r.json()["conclusion"].startswith(vd["headline"][:10])
+
+
+def test_review_confirm_rejects_bad_decision(client, _mem_store):
+    """decision 白名单外 400；未授权读取 403"""
+    aid, _body, tok = _analyze_target(client)
+    r = client.post(f"/api/sequencing/analyses/{aid}/review",
+                    json={"ref_pos": 100, "decision": "whatever"},
+                    headers={"X-Access-Token": tok})
+    assert r.status_code == 400
+    r2 = client.post(f"/api/sequencing/analyses/{aid}/review",
+                     json={"ref_pos": 100, "decision": "artifact"})
+    assert r2.status_code == 403  # 匿名记录无令牌不可确认（B-02）
+
+
+def test_recompute_keeps_review_state(client, _mem_store):
+    """换范围重算不清人工确认留痕：reviewed_count 保留、队列按新范围刷新"""
+    aid, _body, tok = _analyze_target(client)
+    q = [i for i in _body["review_queue"] if i["prio"] == "fail"]
+    pos = q[0]["ref_start"]
+    client.post(f"/api/sequencing/analyses/{aid}/review",
+                json={"ref_pos": pos, "decision": "artifact"},
+                headers={"X-Access-Token": tok})
+    r = _recompute(client, aid, tok, "TARGET")
+    assert r.status_code == 200, r.text
+    vd = r.json()["verdict"]
+    assert vd["reviewed_count"] == 1, "换范围重算不得清空人工确认"
+    assert not [i for i in _get_queue(client, aid, tok) if i["ref_start"] == pos]
+
+
+def _get_queue(client, aid, tok):
+    g = client.get(f"/api/sequencing/analyses/{aid}",
+                   headers={"X-Access-Token": tok})
+    return g.json()["review_queue"]

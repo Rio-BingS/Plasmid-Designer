@@ -398,3 +398,48 @@
   vue-tsc 0 错；vite build 成功。Panel cds_mode 4 测按范围条重编码
   （预设预选/提交参数/手动切换不顶掉/无候选松绑）；T15 与 mixed 折叠
   测试补 conclusion_groups 结构化 mock（分组回退已删）。
+
+
+## W14 复核队列与一键确认（PL §F；goal W14）
+
+- `core/sanger/review.py` 重写收口（此前 W6/W7 闸门为最小形态）：
+  队列只收三类且按 fail > read_shortfall > pending 排序——确证差异
+  （fail_impact 条目）、范围内覆盖缺口（scope_read_shortfall +
+  scope_uncovered/unknown——goal 点名 read_shortfall，unknown 缺口
+  同样「不看无法收口」，一并入队）、未决位点（PENDING_KINDS）。
+  `scope_beyond_primer` 不入队（动作明确：加引物，blocking 自带
+  action 建议）；混合样品另有逐 read 详情、读取失败单独成段，均不进。
+  队列从 blocking 派生（W8 起 blocking 即范围内口径），天然满足
+  「只收范围内」；已人工确认位点剔除。缺口项证据带 cause 归因。
+- 人工确认（PL F3）：`build_verdict` 新增可选 `review_decisions`
+  参数（纯函数契约不变——decisions 随 payload 存档、重算传入，同一份
+  result+decisions 可复现）：artifact → 条目移出 blocking（info 加
+  reviewed_artifact 留痕，status 可升级收口）；mutation → fail_impact
+  置位（按确证差异收口）。headline 追加「人工确认 N 处」；verdict
+  下发 reviewed_count。
+- 端点 `POST /sequencing/analyses/{id}/review`（PL F3）：ref_pos +
+  decision(artifact/mutation)+note；鉴权/400 校验同 recompute；留痕
+  `review_decisions=[{ref_pos, decision, by, at, note}]` 随 payload
+  落库，重算 verdict 后复核队列/结论头行同步刷新；换范围重算
+  （W11 端点）不清留痕。W11 recompute 同步刷新 review_queue。
+- 队列下发：`_register_analysis` 构建随记录落库；`_summary` 透传
+  review_queue/review_decisions（旧记录无键时 GET 层从 verdict 惰性
+  派生一次，不改存档）；离线 CLI `_register` 同形构建（逐字节对照
+  锁定不扩白名单）。
+- 批量页（PL F4）：item 新增 review_count/review_prio；前端顶部
+  「需复核 X 个样品、Y 个位点」+ 按优先级排序的可点 chips（跳详情）；
+  表行保持上传/信息表顺序不变（不影响回填 Excel 行序）。
+- 前端 `ReviewQueuePanel.vue`：prio 徽标（确证差异/覆盖缺口/未决）+
+  位置/元件/详情/建议 + 确认伪影/确认突变/证据三按钮；「证据」复用
+  EvidencePackPanel（±10bp 峰图 + 逐 read 调用/Q/次峰比——PL F2 的
+  内嵌证据由该面板承载）；确认结果就地刷新 verdict/队列/结论。
+- 测试：新增 test_review_queue.py 7 测（三类排序/beyond_primer 排除/
+  已确认剔除/artifact 收口/mutation 升级/无 decisions 行为不变/留痕
+  helper）+ 端点 4 测（确认留痕落库/伪影 resolve/400+403/重算保
+  留痕）+ 批量字段 1 测。Windows 全量 **2068 passed / 0 failed /
+  46 skipped**（2056 + 12）。前端三件套绿（693/693、type-check
+  0 错、build 成功）。
+- Linux（VPS，W11 树 9e262cd 全量）：2082 passed / 3 failed /
+  10 skipped / 5 xfailed——3 failed 全为 test_plasmid_map_annotate
+  性能/上限断言（52 分钟满负载下耗时超阈；该文件单跑 14 passed
+  6.19s，与闸门3 同款负载效应，非回归）。

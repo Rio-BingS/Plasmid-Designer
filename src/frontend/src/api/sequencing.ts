@@ -307,6 +307,10 @@ export interface SequencingAnalysis {
   mixed_variants?: { ref_pos: number; ref_base?: string; called_base?: string;
     secondary_base?: string; af?: number; reads?: string[] }[]
   mixed_corroboration?: Record<string, unknown> | null
+  /** 复核队列（goal v3 W14）：确证差异/范围内缺口/未决位点；旧记录惰性派生 */
+  review_queue?: ReviewQueueItem[]
+  /** 人工确认留痕（goal v3 W14，PL F3）：ref_pos/decision/by/at/note */
+  review_decisions?: ReviewDecision[]
   /** Sanger 判读算法版本（口径变更递增；旧记录缺省） */
   algo_version?: string
 }
@@ -365,7 +369,36 @@ export interface Verdict {
     double_strand_fraction?: number | null
   }
   reads: { total: number; analyzed: number; failed: { file: string; error: string }[] }
+  /** 人工确认计数（goal v3 W14）：headline 自带「人工确认 N 处」 */
+  reviewed_count?: number
   algo_version?: string
+}
+
+/** 复核队列项（goal v3 W14，PL §F）：确证差异 / 范围内缺口 / 未决位点；
+ * beyond_primer 只给动作建议不入队 */
+export interface ReviewQueueItem {
+  prio: 'fail' | 'read_shortfall' | 'pending'
+  kind: string
+  ref_start: number | null
+  ref_end: number | null
+  element?: string | null
+  detail: string
+  action: string
+  evidence: {
+    refs?: string[]
+    af?: number
+    gap?: { start: number; end: number; length?: number; cause?: string; detail?: string }
+    expected_ranges?: number[][]
+  }
+}
+
+/** 人工确认留痕（PL F3） */
+export interface ReviewDecision {
+  ref_pos: number
+  decision: 'artifact' | 'mutation'
+  by: string
+  at: string
+  note?: string
 }
 
 /** 区间裁决行（互检排除差异的 read×区段 聚合） */
@@ -474,6 +507,23 @@ export async function recomputeVerdict(
   return response.data
 }
 
+/** 复核队列一键确认（goal v3 W14，PL F3）：伪影移出阻断 / 突变升级确证，
+ * 留痕 review_decisions（by/at）并重算 verdict——headline 自带「人工确认 N 处」 */
+export async function confirmReview(
+  analysisId: string,
+  refPos: number,
+  decision: 'artifact' | 'mutation',
+  note = '',
+): Promise<{ verdict: Verdict; conclusion: string;
+             review_decisions: ReviewDecision[]; review_queue: ReviewQueueItem[] }> {
+  const response = await api.post(
+    `/sequencing/analyses/${encodeURIComponent(analysisId)}/review`,
+    { ref_pos: refPos, decision, note },
+    { headers: analysisTokenHeaders(analysisId) },
+  )
+  return response.data
+}
+
 export function rememberAnalysisToken(analysisId: string, token: string): void {
   try {
     const raw = sessionStorage.getItem(TOKEN_KEY)
@@ -577,6 +627,9 @@ export interface SequencingBatchItem {
   /** 低置信（疑似测序噪声）变异数 */
   pending_count: number
   coverage_percent?: number | null
+  /** 复核汇总（goal v3 W14，PL F4）：需复核位点数与最高优先级 */
+  review_count?: number
+  review_prio?: 'fail' | 'read_shortfall' | 'pending' | null
 }
 
 export interface SequencingBatchResult {

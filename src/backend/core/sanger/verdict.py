@@ -145,7 +145,8 @@ def _junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
 
 
 def build_verdict(result: Dict, ref_length: int, scope=None,
-                  synonymous_action: str = "ok") -> Dict:
+                  synonymous_action: str = "ok",
+                  review_decisions: Optional[List[Dict]] = None) -> Dict:
     """从 analyze 结果组装 Verdict（只读，不改 result 内其他键）。
 
     goal v3 W1：build_verdict 是纯函数——除 result/scope/ref_length 外不读
@@ -153,7 +154,10 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     scope：None / Scope / dict / str（元件名、区间、关键字，见 scope.py）。
     synonymous_action（goal v3 §8 决策 3，W5）：确证同义替换（CDS 内、蛋白
     不变）的处理——"ok" 默认合格口径（info 注明，不阻断）；"fail" 沿旧口径
-    按确证差异阻断。"""
+    按确证差异阻断。review_decisions（goal v3 W14，PL F3）：人工确认记录
+    [{ref_pos, decision: artifact|mutation, by, at, note}]——伪影条目移出
+    blocking（info 留痕），突变条目升级确证（fail_impact）；headline 追加
+    「人工确认 N 处」。"""
     variants = result.get("variants") or []
     sites = result.get("unresolved_sites") or []
     cds_reports = result.get("cds_reports") or []
@@ -609,6 +613,35 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
              "单链覆盖区域未经对侧验证",
              "补测对侧链引物，或在设置中关闭双链覆盖强制")
 
+    # 人工确认（goal v3 W14，PL F3）：按位点回填复核决定——伪影移出
+    # blocking（info 留痕，不再阻断），突变升级确证（fail_impact，按 fail
+    # 口径收口）。留痕条目带 by/at（复决可审计），N 进 headline。
+    for _d in review_decisions or []:
+        _pos = _d.get("ref_pos")
+        if _pos is None:
+            continue
+        _hit = [b for b in blocking if b.get("ref_start") == _pos]
+        for b in _hit:
+            b["reviewed"] = {"decision": _d.get("decision"),
+                             "by": _d.get("by"), "at": _d.get("at")}
+            if _d.get("decision") == "artifact":
+                blocking.remove(b)
+                info.append({
+                    "kind": "reviewed_artifact",
+                    "ref_start": b.get("ref_start"),
+                    "ref_end": b.get("ref_end"),
+                    "element": b.get("element"),
+                    "detail": (f"位置 {_pos} 人工确认为测序伪影"
+                               f"（{_d.get('by')}，{_d.get('at')}）——"
+                               + str(b.get("detail") or "")),
+                    "action": "", "refs": b.get("refs") or [],
+                })
+            elif _d.get("decision") == "mutation":
+                b["fail_impact"] = True
+                b["detail"] = (str(b.get("detail") or "")
+                               + f"（人工确认为真实突变：{_d.get('by')}，{_d.get('at')}）")
+    _reviewed_n = len(review_decisions or [])
+
     has_fail = any(b.get("fail_impact") for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
     # mixed：mixed_sample 或 ROI 内 mixed_variant（goal T2/T7）
@@ -736,6 +769,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     else:
         ev_txt = f"{len(blocking)} 项待核"
     headline = f"{sym_} {word_} · {range_part} · 证据：{ev_txt}"
+    if _reviewed_n:
+        headline += f"，人工确认 {_reviewed_n} 处"
 
     return {
         "status": status,
@@ -762,5 +797,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         # goal v3 W5（PL A5/A6）：元件级判定与三段式头行
         "element_verdicts": element_verdicts,
         "headline": headline,
+        # goal v3 W14：人工确认计数（review_decisions 留痕在 payload，重算
+        # 时随参数传入——同一份 result+decisions 重算可复现）
+        "reviewed_count": _reviewed_n,
         "algo_version": result.get("algo_version"),
     }
