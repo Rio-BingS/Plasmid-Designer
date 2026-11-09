@@ -509,8 +509,11 @@
   构建写回）归 `core/sanger/review.py`。routes 1001→929、batch
   911→689，门禁通过（白名单只减不增）。
 - Windows 全量 **2070 passed / 0 failed / 46 skipped**；门禁
-  check_file_size / check_docs_sync 绿。Linux 最终轮（W16 树
-  1230a8a）后台跑，数字回填本段下方。
+  check_file_size / check_docs_sync 绿。
+- **Linux 最终轮（W16 树，含 aa0046e 数据采集段文档）：2106 passed /
+  0 failed / 10 skipped / 0 xfailed（442 s）**——与 W14 树 2104 +
+  真实子集 2 测精确对账；goal §6 验收「Linux、Windows 均全绿、通过数
+  只增不减、skip 不增」达成。
 
 
 ## 最终汇报数据采集（goal §10 汇报项）
