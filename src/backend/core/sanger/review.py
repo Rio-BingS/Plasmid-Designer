@@ -85,6 +85,23 @@ def build_queue(res: Dict, review_decisions: Optional[List[Dict]] = None
     return queue
 
 
+def queue_for_record(record: Dict) -> List[Dict]:
+    """记录的复核队列：新记录随存档带出 review_queue；旧记录（W14 前落库、
+    无该键）从 verdict 现算一次（只读，不改存档）——展示层补齐入口。"""
+    rq = record.get("review_queue")
+    if rq is not None:
+        return rq
+    if not record.get("verdict"):
+        return []
+    return build_queue(record)
+
+
+def build_queue_for_record(record: Dict) -> List[Dict]:
+    """按记录当前 verdict/review_decisions 构建并应写回的队列
+    （新分析登记与重算/确认端点共用；调用方负责赋值回 record）。"""
+    return build_queue(record, record.get("review_decisions") or None)
+
+
 def apply_review_decision(decisions: List[Dict], ref_pos: int, decision: str,
                           by: str, note: str = "") -> Dict:
     """追加一条人工确认记录并返回它（PL F3：reviewed_by/at 留痕）。
