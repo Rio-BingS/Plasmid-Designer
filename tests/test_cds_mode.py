@@ -7,6 +7,7 @@ test_real_data_regression 的 CDS 模式断言真跑，本文件用合成 GenBan
 
 import json
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -130,6 +131,88 @@ def test_match_no_hit():
     assert cand is None and "未能唯一识别" in note
 
 
+# ==================== W8 prepare_scope_mode（全质粒 + scope） ====================
+
+
+def test_prepare_scope_mode_full_plasmid_passthrough():
+    """≤ max_ref_bp：参考/features 原样返回（同一对象），scope=CDS+接合区"""
+    ref2, feats2, scope, circ = cds_extract.prepare_scope_mode(
+        _gb_seq, _gb_feats, "ref", ["x-TARGET-seqF1.ab1"], circular=True)
+    assert ref2 is _gb_seq and feats2 is _gb_feats and circ is True
+    assert scope.ranges == [(60, 161)]
+    assert scope.junctions == [(30, 90), (131, 191)]     # 两端 ±30
+    assert scope.source == "cds_target" and scope.elements == ["TARGET"]
+    assert scope.declared is True
+
+
+def test_prepare_scope_mode_wrap_junctions():
+    """跨原点 CDS 的接合区窗口按折回形态给出（接合区跟随真实拓扑）"""
+    rng = random.Random(7)
+    ref = "".join(rng.choice("ACGT") for _ in range(400))
+    # CDS join(351..400, 1..50)：起点在终点之后 → 跨原点两段
+    feats = [
+        dict(name="Wrap", type="CDS", start=351, end=400, strand="+",
+             feature_id="w1", segment_index=0, segment_count=2),
+        dict(name="Wrap", type="CDS", start=1, end=50, strand="+",
+             feature_id="w1", segment_index=1, segment_count=2),
+    ]
+    _r, _f, scope, _c = cds_extract.prepare_scope_mode(
+        ref, feats, "ref", ["w.ab1"], "Wrap", circular=True)
+    assert scope.ranges == [(1, 50), (351, 400)]     # normalized 排序
+    # 接合区：段端窗口 (321,381)/(370,430)→wrap、(371,30)→wrap/(20,80)——
+    # 折回拆段后与相邻窗口重叠，归并成穿过原点的单一接合区
+    assert scope.junctions == [(1, 80), (321, 400)]
+
+
+def test_prepare_scope_mode_crop_window():
+    """超 max_ref_bp：环状绕回取窗、features 平移、目标 CDS 带标记、
+    拓扑转线性（W8 裁剪路径）"""
+    rng = random.Random(11)
+    ref = "".join(rng.choice("ACGT") for _ in range(4000))
+    feats = [
+        dict(name="Other", type="CDS", start=500, end=700, strand="+"),
+        dict(name="Big", type="CDS", start=1800, end=2000, strand="+"),
+        dict(name="FarAway", type="gene", start=3800, end=3900, strand="+"),
+    ]
+    ref2, feats2, scope, circ = cds_extract.prepare_scope_mode(
+        ref, feats, "ref", ["b.ab1"], "Big", circular=True, max_ref_bp=3000)
+    assert circ is False
+    # flank=1500 → 窗口 [300, 3500]，长 3201
+    assert len(ref2) == 3201 and ref2 == ref[299:3500]
+    by = {f["name"]: f for f in feats2}
+    assert "FarAway" not in by                       # 窗口外注释丢弃
+    t = by["Big"]
+    assert (t["start"], t["end"]) == (1501, 1701)    # 平移（-299）
+    assert t.get("analysis_target") is True
+    o = by["Other"]
+    assert (o["start"], o["end"]) == (201, 401)      # 窗口内注释保留（P1-F）
+    assert scope.ranges == [(1501, 1701)]
+    assert scope.junctions == [(1471, 1531), (1671, 1731)]
+    assert "已裁剪取窗" in scope.reason
+
+
+def test_prepare_scope_mode_crop_cross_origin():
+    """跨原点 CDS 的裁剪窗口穿过原点（等价「旋转使 CDS 连续」），
+    两段在窗口内连续"""
+    rng = random.Random(13)
+    ref = "".join(rng.choice("ACGT") for _ in range(4000))
+    feats = [
+        dict(name="Cross", type="CDS", start=3901, end=4000, strand="+",
+             feature_id="c1", segment_index=0, segment_count=2),
+        dict(name="Cross", type="CDS", start=1, end=100, strand="+",
+             feature_id="c1", segment_index=1, segment_count=2),
+    ]
+    ref2, feats2, scope, circ = cds_extract.prepare_scope_mode(
+        ref, feats, "ref", ["c.ab1"], "Cross", circular=True, max_ref_bp=3000)
+    assert circ is False
+    # 窗口起点 3901-1500=2401，跨原点 span=3200：2401..4000 + 1..1600
+    assert len(ref2) == 3200
+    assert ref2 == ref[2400:] + ref[:1600]
+    assert scope.ranges == [(1501, 1700)]            # 两段窗口内连续
+    tgts = [f for f in feats2 if f.get("analysis_target")]
+    assert len(tgts) == 2 and {f["start"] for f in tgts} == {1501, 1601}
+
+
 # ==================== 提取 ====================
 
 
@@ -226,7 +309,8 @@ def test_parse_reference_endpoint_no_match(client):
 
 
 def test_analyze_cds_mode(client):
-    """cds_mode：参考替换为 TARGET 编码序列，变体/结论坐标为 CDS 内坐标"""
+    """cds_mode（W8 全质粒口径）：参考不再裁剪、全注释保留，变体坐标即
+    质粒坐标，scope = 目标 CDS + 接合区（source=cds_target）"""
     read = list(SEQ[59:161])
     read[30] = "A" if read[30] != "A" else "G"
     blob = make_ab1("".join(read), [40] * 102)
@@ -238,21 +322,29 @@ def test_analyze_cds_mode(client):
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["reference_length"] == 311  # CDS ±150 侧翼（TARGET 60-161）
-    # 伪特征组：5′侧翼 / 目标 CDS / 3′侧翼——目标 CDS 区间即分析目标
-    names = {f["name"]: f for f in data["features"]}
-    assert set(names) == {"5′侧翼", "TARGET", "3′侧翼"}
-    assert (names["TARGET"]["start"], names["TARGET"]["end"]) == (60, 161)
-    # 变体落在目标 CDS 区间内且被 cds_reports 覆盖（伪特征）
+    assert data["reference_length"] == 600      # W8：不再裁参考
+    names = {f["name"] for f in data["features"]}
+    assert names == {"KanR", "TARGET", "NESTED", "MINUS"}   # 全注释保留（P1-F）
+    # 变体质粒坐标落在目标 CDS 区间内且被 cds_reports 覆盖
     assert len(data["variants"]) == 1
     assert 60 <= data["variants"][0]["ref_pos"] <= 161
-    cds_names = [c["name"] for c in data["cds_reports"]]
-    assert cds_names == ["TARGET"]
+    assert "TARGET" in [c["name"] for c in data["cds_reports"]]
+    # scope：目标 CDS + 接合区（两端 ±30，W8）
+    sc = data["verdict"]["scope"]
+    assert sc["declared"] is True and sc["source"] == "cds_target"
+    assert sc["ranges"] == [[60, 161]]
+    assert [30, 90] in sc["junctions"] and [131, 191] in sc["junctions"]
+    # read 只覆盖 CDS、接合区两侧在需测范围内未测 → 缺口归因加引物，
+    # 且确证替换 → fail
+    vd = data["verdict"]
+    assert vd["status"] == "fail"
+    kinds = {b["kind"] for b in vd["blocking"]}
+    assert "scope_beyond_primer" in kinds
 
 
 def test_analyze_cds_mode_explicit_name_and_400(client):
     blob = make_ab1(SEQ[59:161], [40] * 102)
-    # 显式指定存在名称 → 正常
+    # 显式指定存在名称 → 正常（W8：全质粒参考，不再裁剪）
     resp = client.post(
         "/api/sequencing/analyze",
         files={"reference": _ref_file(),
@@ -260,7 +352,7 @@ def test_analyze_cds_mode_explicit_name_and_400(client):
         data={"cds_mode": "true", "cds_name": "TARGET"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["reference_length"] == 311
+    assert resp.json()["reference_length"] == 600
     # 显式指定不存在名称 → 400 带候选清单
     resp = client.post(
         "/api/sequencing/analyze",
@@ -351,7 +443,8 @@ def test_conclusion_no_marker_unchanged():
 
 
 def test_analyze_cds_mode_reads_miss_target(client):
-    """端到端：read 全部落在 3′ 侧翼、目的 CDS 零覆盖 → 结论 △ 未能验证"""
+    """端到端：read 全部落在目的 CDS 之外 → 结论不 ✓，目标 CDS 零覆盖，
+    缺口按 E 归因加引物（W8：接合区属需测范围，CDS 未测 → partial）"""
     blob = make_ab1(SEQ[164:260], [40] * 96)
     resp = client.post(
         "/api/sequencing/analyze",
@@ -362,5 +455,12 @@ def test_analyze_cds_mode_reads_miss_target(client):
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert "✓" not in data["conclusion"]
-    assert "未能验证" in data["conclusion"]
-    assert data["cds_reports"][0]["coverage_status"] == "uncovered"
+    vd = data["verdict"]
+    # partial（纯缺口）或 pending（本 fixture 的 21bp MINUS CDS 会触发
+    # ORF 护栏位点、落在接合区窗口判 junction_variant）——都不是 ✓
+    assert vd["status"] in ("partial", "pending")
+    kinds = {b["kind"] for b in vd["blocking"]}
+    assert "scope_beyond_primer" in kinds
+    target = next(c for c in data["cds_reports"] if c["name"] == "TARGET")
+    assert target["coverage_status"] == "uncovered"
+

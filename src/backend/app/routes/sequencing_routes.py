@@ -365,10 +365,16 @@ def _run_full_analysis(
     circular: bool = True,
     zone: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
+    scope=None,
+    full_ref: Optional[str] = None,
+    full_circular: bool = False,
 ) -> Dict:
-    """同步执行全自动分析（调用方负责移交线程池）；primer 为可选引物（T17）"""
+    """同步执行全自动分析（调用方负责移交线程池）；primer 为可选引物（T17）；
+    scope/full_ref 为 goal v3 W8 内部入参（cds_target 范围与裁剪路径的
+    完整质粒重定位），非 Form 字段"""
     result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular,
-                     zone_params=zone, primer=primer)
+                     zone_params=zone, primer=primer, scope=scope,
+                     full_ref=full_ref, full_circular=full_circular)
 
     # 解卷积只对 read 级「疑似混合样品」（widespread）执行（tracy 可用时）
     # ——scattered 多为噪声，decompose 只会产出无意义等位
@@ -398,8 +404,9 @@ def _run_full_analysis(
         if alleles:
             result["engine"] = "internal+biopython+tracy"
             # decompose 在 analyze 之后：重建 verdict 纳入 allele_mismatch（T10）
+            # （W8：重建时带上 scope——此前漏传会丢范围语义）
             result["verdict"] = build_verdict({**result, "features": features or []},
-                                              len(reference))
+                                              len(reference), scope=scope)
     return result
 
 
@@ -456,11 +463,15 @@ def _analyze_and_register(
     circular: bool, owner_id: Optional[str],
     zone: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
+    scope=None,
+    full_ref: Optional[str] = None,
+    full_circular: bool = False,
 ) -> Tuple[Dict, Optional[str]]:
     """同步：全自动分析 + 登记落库 + 摘要（调用方负责并发闸与线程池）"""
     result = _run_full_analysis(reference, sample_name, features, ab1_blobs,
                                 min_q, allow_decompose, circular, zone,
-                                primer=primer)
+                                primer=primer, scope=scope, full_ref=full_ref,
+                                full_circular=full_circular)
     _aid, access_token, record = _register_analysis(
         sample_name, reference, features, result, owner_id=owner_id)
     return _summary(record), access_token
@@ -477,6 +488,9 @@ async def _analyze_endpoint(
     circular: bool = True,
     zone: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
+    scope=None,
+    full_ref: Optional[str] = None,
+    full_circular: bool = False,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
@@ -495,7 +509,7 @@ async def _analyze_endpoint(
         summary, access_token = await run_in_threadpool(
             _analyze_and_register, reference, sample_name, features, ab1_blobs,
             min_q, allow_decompose, circular, user.id if user else None, zone,
-            primer)
+            primer, scope, full_ref, full_circular)
     if access_token:
         # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
         summary["access_token"] = access_token

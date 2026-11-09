@@ -637,8 +637,11 @@ def _cm2():
 
 
 def _cm3():
-    """跨原点 CDS join(3701..4000,1..300)（干净 ORF 600bp）：ATG 前、终止
-    密码子后各一条含 1bp 插入的 read → 都检出并判 junction_variant（CM P0-B）"""
+    """跨原点 CDS join(3701..4000,1..300)（干净 ORF 600bp）：质粒带 ATG 前
+    与终止后各 1bp 插入（W8 构造重编码留痕——初版两条 read 各带一处插入，
+    同位点被对方 read 的干净覆盖互检排除，与「同一质粒的插入应出现在每条
+    覆盖 read」的真实场面矛盾）；正反两条 read 都覆盖两处 → 都确证并判
+    junction_variant（CM P0-B）"""
     rng = _rng("cm3")
     ref = list(_rand_seq(rng, 4000))
     stops = ("TAA", "TAG", "TGA")
@@ -652,10 +655,15 @@ def _cm3():
     ref[0:297] = list("".join(body[99:]))
     ref[297:300] = list("TAA")
     ref = "".join(ref)
-    ins = "T" if ref[3699] != "T" else "A"       # ATG 前插 1bp（3700/3701 之间）
-    ins2 = "T" if ref[300] != "T" else "A"       # 终止后插 1bp（300/301 之间）
-    r1 = make_trace_ab1(ref[3299:3700] + ins + ref[3700:4000] + ref[0:450], q=50)
-    r2 = make_trace_ab1(ref[3299:4000] + ref[0:300] + ins2 + ref[301:450], q=50)
+    # 插入碱基与两侧邻居都不同——避免比对器把插入左移/右移归一成替换
+    # （微同源边界的 indel 表示歧义；truth 关心的是「检出 + 接合区归因」）
+    ins = next(b for b in "ACGT" if b not in (ref[3699], ref[3700]))
+    ins2 = next(b for b in "ACGT" if b not in (ref[299], ref[300]))
+    # 变体质粒分子（两处插入都在）：3300..450 跨原点覆盖段，正反各测一条
+    from core.seq_utils import revcomp
+    mol = ref[3299:3700] + ins + ref[3700:4000] + ref[0:300] + ins2 + ref[301:450]
+    r1 = make_trace_ab1(mol, q=50)
+    r2 = make_trace_ab1(revcomp(mol), q=50)
     feats = [
         dict(name="CrossGene", type="CDS", start=3701, end=4000, strand="+",
              feature_id="cm3cds", segment_index=0, segment_count=2,
