@@ -130,6 +130,8 @@ def parse_excel(src: Union[str, "Path", bytes, bytearray]):
                         cols["result"] = col
                     elif "克隆" in v or "样品" in v:
                         cols["clone"] = col
+                    elif "范围" in v:
+                        cols["scope"] = col
                 cols.setdefault("primer", cols["plasmid"] + 1)
                 cols.setdefault("result", cols["primer"] + 1)
                 continue
@@ -148,6 +150,8 @@ def parse_excel(src: Union[str, "Path", bytes, bytearray]):
                 "clone": _cell_str(cell(cols["clone"])) if "clone" in cols else "",
                 "primers": entries,
                 "existing_result": cell(cols["result"]),
+                # W10（PL §C5）：验证范围列——留空走 filename_match/未声明
+                "scope": _cell_str(cell(cols["scope"])) if "scope" in cols else "",
             })
         if header_row is None:
             raise ValueError("Excel 中找不到含'质粒'的表头行")
@@ -210,7 +214,12 @@ def match_files(rows: List[Dict], files: List[Dict]):
         for e in row["primers"]:
             primer_map.setdefault(norm_stem(e), (row["name"], "Excel 引物列精确匹配"))
 
-    per_plasmid: Dict[str, Dict] = {row["name"]: {"reference": None, "reads": []} for row in rows}
+    per_plasmid: Dict[str, Dict] = {}
+    for row in rows:
+        g = per_plasmid.setdefault(row["name"], {"reference": None, "reads": []})
+        # W10（PL §C5）：验证范围列——组内首个非空值（同一质粒的各行应一致）
+        if row.get("scope") and not g.get("scope_text"):
+            g["scope_text"] = row["scope"]
     unmatched: List[Dict] = []
 
     for f in files:
@@ -359,7 +368,10 @@ def match_clone_files(rows: List[Dict], files: List[Dict]):
         key = (r["name"], r.get("clone", ""))
         if key not in groups:
             groups[key] = {"plasmid": r["name"], "clone": r.get("clone", ""),
-                           "reference": None, "reads": []}
+                           "reference": None, "reads": [],
+                           "scope_text": r.get("scope") or ""}
+        elif r.get("scope") and not groups[key].get("scope_text"):
+            groups[key]["scope_text"] = r["scope"]
     names = {r["name"] for r in rows if r["name"]}
 
     # ---- 图谱 → 质粒名称（返回 质粒名, 说明, 匹配强度 0=全名精确 1=忽略分隔符

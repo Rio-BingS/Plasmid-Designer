@@ -95,7 +95,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v13"  # v13: goal v3 W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）；v12: W8——cds_mode 全质粒比对不裁参考、junctions 入需测范围、full_ref 窗口外重定位
+SANGER_ALGO_VERSION = "v14"  # v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)

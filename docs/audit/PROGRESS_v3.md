@@ -199,6 +199,41 @@
   §2 登记）。
 
 
+## W10 scope 来源与输入（PL §C1/§C2；RV P1-7 部分）
+
+- `infer_scope(ref_stem, read_names, features, insert_range, ref_length)`
+  （scope.py）：中间两级来源推断——design_insert（插入边界 + 两端 ±30
+  junctions）> filename_match（复用 resolve_auto，唯一命中 CDS → 其主段
+  +接合区，reason 带命中方式）；都取不到 → None（调用方退回未声明
+  measured）。user 由调用方显式给出不走这里；cds_target 由目的基因模式
+  直接构造（既有路径）。
+- parse-reference 预设（RV P1-7）：返回 `scope_presets`（全质粒 + 各 CDS
+  候选，附 reason）与 `default_preset`（auto_match 命中 → 该 CDS，否则
+  全质粒）——前端下拉的数据源。
+- Form scope（W1 parse_scope_cell 接线端点）：`/sequencing/analyze` 新增
+  `scope: str = Form(default="")`；解析失败 400 带可用元件名提示；user
+  scope 存在时 cds_mode 跳过（显式声明优先于自动模式）。
+- 设计流 design_insert：`analyze_design_sequencing` 由 result.insert_start/
+  insert_end 构造 design_insert scope（插入=全长时不声明——整条都是目标，
+  无接合区可言）；非全长时插入边界 + ±30 junctions。
+- 批量「验证范围」列（PL §C2 批量出口）：parse_excel 读「验证范围」列；
+  match_files 组内首个非空回填 g["scope_text"]；run_batch_groups 逐组
+  parse_scope_cell——成功传 scope=scope_obj，失败回填
+  「范围无法识别：xxx（原因）。」前缀、不阻塞其他样品（解析失败不抛异常
+  的契约在此兑现）。
+- SC2（filename_match → pass）摘 xfail：场景走
+  infer_scope("pTarget-GeneX", reads, features) 推断后传入 analyze，
+  status=pass 且 headline 带「范围：GeneX」。
+- 新增单测：test_sanger_scope.py 7 个（infer_scope 两级来源/优先级/无命中
+  None + parse_scope_cell 多段/关键字/失败不抛）；test_cds_mode.py 3 个
+  端点测试（Form scope user source/解析失败 400/scope_presets）；
+  test_batch_sequencing.py 2 个（Excel 列解析+组传播 / run_batch_groups
+  e2e：声明成功 source=user + 胡乱写的范围回填「范围无法识别」）。
+- 影响面回归（Windows）：test_sanger_scenarios + test_batch_sequencing +
+  test_sequencing_batch + test_sequencing_routes = 164 passed / 5 xfailed；
+  test_cds_mode 28 passed；test_sanger_scope 7 passed。
+
+
 ## W3 verified 口径与 pass 契约（RV P0-2）
 
 - `build_verdict` 末尾新增真断言：status==pass ⇒ blocking==[]（契约违反

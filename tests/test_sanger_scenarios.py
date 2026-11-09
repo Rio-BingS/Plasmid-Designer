@@ -475,7 +475,6 @@ def test_sc1_scope_geneX_pass_headline_elements():
     assert els["ori"]["status"] == "not_assessed"
 
 
-@XF(strict=True, reason="W10：scope 来源推断（filename_match）")
 def test_sc2_filename_match_scope_pass():
     """SC2：不声明 scope，参考名 GeneX 命中 → source=filename_match，pass"""
     from core.sanger.scope import infer_scope  # noqa: W10 落地

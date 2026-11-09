@@ -51,6 +51,7 @@ async def analyze_sequencing_upload(
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，以其+接合区为需测范围分析（W8 起全质粒比对、不裁参考）"),
     cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
+    scope: str = Form(default="", description="需测范围（W10，可选）：元件名 / 301-900 / 多段(;) / 「全质粒」「插入片段」「接合区」；声明后结论只对范围负责"),
     primer: str = Form(default="", description='引物校验（T17，可选）：JSON {"name": "M13F", "seq"?: "ACGT...", "direction"?: "+"}；seq 省略时按 name 查 data/primers/*.yaml 引物库'),
     user: Optional[User] = Depends(get_current_user),
 ):
@@ -78,7 +79,14 @@ async def analyze_sequencing_upload(
     scope_obj = None
     full_ref = None
     full_circular = False
-    if cds_mode:
+    # W10（PL §C5）：用户 Form 声明的范围——来源优先级 user > cds_target，
+    # 显式范围存在时覆盖目的基因模式的自动范围
+    if scope.strip():
+        from core.sanger.scope import parse_scope_cell
+        scope_obj, scope_err = parse_scope_cell(scope, features, len(ref_seq))
+        if scope_obj is None and scope_err:
+            raise HTTPException(status_code=400, detail=scope_err)
+    if cds_mode and scope_obj is None:
         # 目的基因模式（goal v3 W8，CM P0-A/P0-B/P1-C/P1-F）：不再裁参考——
         # 全质粒按真实拓扑比对，scope = 目标 CDS + 接合区（source=cds_target），
         # 全部注释保留。只有质粒超 MAX_REF_BP 时才裁剪取窗（侧翼
@@ -160,6 +168,19 @@ async def parse_sequencing_reference(
     candidates = cds_extract.cds_candidates(features)
     ref_stem = os.path.splitext(os.path.basename(ref_name))[0]
     cand, note = cds_extract.resolve_auto(candidates, ref_stem, read_names)
+    # W10（PL §C4）：范围预设与默认项——前端「验证范围」下拉数据源，
+    # 默认项附带 reason（文件名命中 → 该 CDS；未命中 → 全质粒）
+    scope_presets = [{"value": "全质粒", "label": "全质粒",
+                      "reason": "整条参考都在需测范围"}]
+    for c in candidates:
+        scope_presets.append({
+            "value": c["name"],
+            "label": f"{c['name']}（{c['start']}–{c['end']}）",
+            "reason": f"以「{c['name']}」及其接合区为需测范围",
+        })
+    default_preset = ({"value": cand["name"], "reason": note} if cand else
+                      {"value": "全质粒",
+                       "reason": "文件名未命中目标 CDS，默认按全质粒验证"})
     return {
         "reference_length": len(ref_seq),
         "circular": _reference_circular(topology),
@@ -170,6 +191,8 @@ async def parse_sequencing_reference(
         ],
         "auto_match": ({"name": cand["name"], "note": note} if cand else None),
         "note": note,
+        "scope_presets": scope_presets,
+        "default_preset": default_preset,
     }
 
 
@@ -304,10 +327,19 @@ async def analyze_design_sequencing(
         vector = get_vector_library().get_vector(result.vector_id)
         circular = (_vector_is_circular(vector)
                     if vector is not None else result.insert_start != 1)
+    # W10（PL §C5）：设计流把插入边界作为 design_insert 来源传入——
+    # 声明范围后结论只对「插入片段 ± 接合区」负责；插入边界未知或即
+    # 全长时不声明（退回未声明口径）
+    scope_obj = None
+    _is, _ie = getattr(result, "insert_start", None), getattr(result, "insert_end", None)
+    if _is and _ie and not (_is == 1 and _ie == len(reference)):
+        from core.sanger.scope import infer_scope
+        scope_obj = infer_scope("", [], [], insert_range=(int(_is), int(_ie)),
+                                ref_length=len(reference))
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,
-        circular=circular, zone=zone,
+        circular=circular, zone=zone, scope=scope_obj,
     )
 
 @router.post(
