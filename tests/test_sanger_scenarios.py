@@ -775,7 +775,8 @@ def test_pr3_primer_window_mismatch():
 
 # ---------- §4.5 OC：出口一致 ----------
 
-@XF(strict=True, reason="W12：三出口统一由 verdict.status 导出")
+# W12 落地（2026-11-10）：网页头行/Excel 前缀由 verdict.status 经
+# status_symbol/status_excel_word 导出——xfail 摘除，OC1 全绿
 @pytest.mark.parametrize("sid", ["SC3", "SC5", "SC6", "S1"])
 def test_oc1_three_exits_status_derived(sid):
     """OC1：网页头行符号、Excel 结论前缀、（前端卡片 vitest 于 W13 断言）
@@ -789,7 +790,6 @@ def test_oc1_three_exits_status_derived(sid):
         f"{sid}: Excel 前缀与 status {st} 不一致：{excel[:30]}"
 
 
-@XF(strict=True, reason="W12：三出口统一（CM 审核三出口不一致例）")
 def test_oc2_cross_origin_exits_consistent():
     """OC2：跨原点探针不再出现 fail / △ / 不合格 三种说法并存"""
     from core.sanger.verdict import status_excel_word, status_symbol
@@ -801,3 +801,37 @@ def test_oc2_cross_origin_exits_consistent():
     assert excel.startswith(status_excel_word(st))
     # 网页 △ 而 Excel 不合格 的并存不再出现：符号与 Excel 词同源于 status
     assert (sym == "✗") == excel.startswith("不合格")
+
+
+# ---------- W12：三出口映射单元行为（符号/Excel 词由 status 导出） ----------
+
+
+def test_w12_status_maps_cover_all_statuses():
+    """STATUS_SYMBOLS/STATUS_EXCEL_WORDS 覆盖 status 全集；符号二值化
+    （✓/✗ 之外一律 △），Excel 词与各出口既有分支词一致"""
+    from core.sanger.verdict import STATUS_EXCEL_WORDS, STATUS_SYMBOLS, build_verdict
+    statuses = {"pass", "fail", "pending", "partial", "mixed",
+                "insufficient", "failed_reads"}
+    assert set(STATUS_SYMBOLS) == statuses and set(STATUS_EXCEL_WORDS) == statuses
+    assert all(s in ("✓", "✗", "△") for s in STATUS_SYMBOLS.values())
+    assert STATUS_SYMBOLS["pass"] == "✓" and STATUS_SYMBOLS["fail"] == "✗"
+    assert STATUS_EXCEL_WORDS["pass"] == "合格"
+    assert STATUS_EXCEL_WORDS["fail"] == "不合格"
+    assert STATUS_EXCEL_WORDS["pending"] == "待定"
+    assert STATUS_EXCEL_WORDS["insufficient"] == "无法判定"
+
+
+def test_w12_excel_conclusion_word_follows_verdict():
+    """有 verdict 的记录：excel_conclusion 前缀词由 verdict.status 导出
+    （不再由各分支硬编码）；无 verdict 的旧记录走降级词（历史口径）"""
+    from core.sanger.verdict import status_excel_word
+    _spec, res = _run("S1")                   # 确证差异 → fail
+    st = _status(res)
+    assert st == "fail"
+    excel = excel_conclusion("P", res, 1, True)
+    assert excel.startswith(status_excel_word("fail"))
+    # 旧记录形态（无 verdict）：降级词分支保持原口径
+    _spec2, res2 = _run("S1")
+    res2.pop("verdict", None)
+    excel2 = excel_conclusion("P", res2, 1, True)
+    assert excel2.startswith("不合格")

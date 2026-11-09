@@ -705,6 +705,11 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     # 用「已测区段」口径，禁止「与设计一致」整参考主张（goal v3 §0.1）。
     # 旧记录（无 scope 字段）不启用过滤，行为不变
     vd = res.get("verdict") or {}
+    # W12（OC1/OC2）：结论前缀词由 verdict.status 经统一映射导出——
+    # 各分支不再自行硬编码词（旧记录无 verdict → 走降级词，历史口径不变）
+    from core.sanger.verdict import status_excel_word as _status_word
+    vd_status = vd.get("status") or None
+    _w = _status_word(vd_status) if vd_status else None
     vd_scope = vd.get("scope") or {}
     vd_declared = bool(vd_scope.get("declared"))
     vd_scope_ranges = [(int(s), int(e)) for s, e in (vd_scope.get("ranges") or [])]
@@ -758,7 +763,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     if bad:
         names = "、".join(c["name"] for c in bad[:2]) + (" 等" if len(bad) > 2 else "")
         hint = "（移码）" if any(c.get("frameshift_count") for c in bad) else ""
-        out = f"不合格：{names} 蛋白与设计不一致{hint}"
+        out = f"{_w or '不合格'}：{names} 蛋白与设计不一致{hint}"
         if syn:
             out += f"；另有 {len(syn)} 处同义突变（蛋白不变）"
     elif hard:
@@ -766,16 +771,16 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         # 旧分支已在 T2 三出口统一时删除；T5 保持整参考差异判定口径，
         # ROI 收窄只用于覆盖分级，不缩小差异判定范围）
         feats = "、".join(sorted({f["name"] for v in hard for f in v.get("features", [])})) or "无特征区"
-        out = f"不合格：检出 {len(hard)} 处确证差异（{feats}）"
+        out = f"{_w or '不合格'}：检出 {len(hard)} 处确证差异（{feats}）"
         if syn:
             out += f"；另有 {len(syn)} 处同义突变（蛋白不变）"
     elif syn:
-        out = f"不合格：{len(syn)} 处同义突变（DNA 变、蛋白不变）"
+        out = f"{_w or '不合格'}：{len(syn)} 处同义突变（DNA 变、蛋白不变）"
     elif hq_segs:
         # 端部软剪切高质量段（goal T6；A 2.1）：连接/结构异常，判不合格
         who = "、".join(f"{fn} {s['side']}端 {s['length']}bp"
                         for fn, s in hq_segs[:2])
-        out = (f"不合格：{who} 高质量序列未比对上参考（连接/结构异常）"
+        out = (f"{_w or '不合格'}：{who} 高质量序列未比对上参考（连接/结构异常）"
                + ("等" if len(hq_segs) > 2 else "") + "，该部分未验证")
     elif any(b.get("kind") == "primer_mismatch"
              for b in vd.get("blocking") or []):
@@ -783,16 +788,14 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         # 分支会与 fail status 分叉出「合格」（PR3 真值锁定暴露，goal v3 W0）
         pm = next(b for b in vd.get("blocking") or []
                   if b.get("kind") == "primer_mismatch")
-        out = f"不合格：{pm.get('detail') or '引物校验未通过'}"
+        out = f"{_w or '不合格'}：{pm.get('detail') or '引物校验未通过'}"
     elif n_err:
         # 解析失败的 read（goal T4；B P0-3）：不再隐身——「待定·读取失败」
         # 前缀点名，分拣进 读取失败/；全部失败已在上面按 分析失败 返回
-        out = (f"待定·读取失败：{len(res['reads']) + n_err} 条 read 中 "
+        out = (f"{_w or '待定·读取失败'}：{len(res['reads']) + n_err} 条 read 中 "
                f"{n_err} 条解析失败（{err_names}），该部分未验证")
         if mixed_tails:
             out += "；" + "；".join(mixed_tails)
-        if cov < 95:
-            out += f"；测序覆盖 {cov:.0f}%"
         return out
     elif widespread or vd.get("status") == "mixed":
         if widespread:
@@ -803,7 +806,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
                 main = (f"{len(widespread)} 条 read 均检出双峰"
                         f"（每条 {_count_range([p for _f, p in widespread])} 处）")
             fr_txt = _frac_range([p for _f, p in widespread])
-            out = ("疑似混合：" + main
+            out = ((_w or "疑似混合") + "：" + main
                    + (f"，估计次要克隆占比{fr_txt}" if fr_txt else "")
                    + "，无法自动判定，建议重新挑单克隆复测")
         else:
@@ -815,7 +818,7 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             fr = f"{afs[0]}%-{afs[-1]}%" if afs and afs[0] != afs[-1] \
                 else (f"{afs[0]}%" if afs else "")
             pos_txt = "、".join(str(m["ref_pos"]) for m in mv[:4]) + ("等" if len(mv) > 4 else "")
-            out = (f"疑似混合：{len(mv)} 处双峰位点检出非参考次等位"
+            out = (f"{_w or '疑似混合'}：{len(mv)} 处双峰位点检出非参考次等位"
                    f"（{pos_txt}，次等位 AF {fr}），无法自动判定，建议重新挑单克隆复测")
         return out
     elif pending or n_sites:
@@ -825,16 +828,14 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             bits.append(f"{len(pending)} 处未决差异")
         if n_sites:
             bits.append(f"{len(n_sites)} 处未决位点（N/poly/双峰未定）")
-        out = "待定：" + "、".join(bits) + "，需核对峰图或补测"
+        out = (_w or "待定") + "：" + "、".join(bits) + "，需核对峰图或补测"
         if mixed_tails:
             out += "；" + "；".join(mixed_tails)
-        if cov < 95:
-            out += f"；测序覆盖 {cov:.0f}%"
         return out
     elif undetermined:
-        out = "无法判定：" + undetermined
+        out = (_w or "无法判定") + "：" + undetermined
     elif vd_insufficient:
-        out = ("无法判定："
+        out = ((_w or "无法判定") + "："
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []
                         if b.get("kind") in ("scope_uncovered", "scope_beyond_primer", "scope_read_shortfall", "roi_uncovered", "roi_unverified",
                             "roi_insufficient_bp")),
@@ -849,16 +850,14 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         from core.sanger.verdict import PENDING_KINDS as _PENDING_KINDS
         det = next((b.get("detail") or "" for b in vd.get("blocking") or []
                     if b.get("kind") in _PENDING_KINDS), "")
-        out = "待定：" + (det or "存在未验证或待核区域，需核对峰图或补测")
+        out = (_w or "待定") + "：" + (det or "存在未验证或待核区域，需核对峰图或补测")
     elif vd_partial:
-        out = ("待定：部分验证——"
+        out = ((_w or "待定") + "：部分验证——"
                + (next((b.get("detail") or "" for b in vd.get("blocking") or []
                         if b.get("kind") in ("roi_uncovered", "scope_uncovered", "scope_beyond_primer", "scope_read_shortfall")),
                        "判定区域未完全覆盖")))
         if mixed_tails:
             out += "；" + "；".join(mixed_tails)
-        if cov < 95:
-            out += f"；测序覆盖 {cov:.0f}%"
         return out
     else:
         # 合格的主张范围（goal v3 W2/§8 决策 1）：未声明范围只说「已测
@@ -870,11 +869,11 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
             if v_ranges:
                 spans = "、".join(f"{s}–{e}" for s, e in v_ranges[:3])
                 more = f" 等 {len(v_ranges)} 段" if len(v_ranges) > 3 else ""
-                out = f"合格：已测 {spans}{more} 与设计一致；范围外未评估"
+                out = f"{_w or '合格'}：已测 {spans}{more} 与设计一致；范围外未评估"
             else:
-                out = "合格：已测区段与设计一致；范围外未评估"
+                out = (_w or "合格") + "：已测区段与设计一致；范围外未评估"
         else:
-            out = "合格：与设计一致"
+            out = (_w or "合格") + "：与设计一致"
         if out_scope:
             out += f"；范围外 {len(out_scope)} 处差异未评估（见附带结果）"
 
@@ -903,8 +902,6 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         else:
             tail.append("poly 区计数存疑")
     tail.extend(mixed_tails)
-    if cov < 95:
-        tail.append(f"测序覆盖 {cov:.0f}%")
     if tail:
         out += "；" + "；".join(tail)
     return out

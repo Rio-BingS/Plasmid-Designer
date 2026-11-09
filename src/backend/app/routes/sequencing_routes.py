@@ -786,7 +786,8 @@ def _batch_pipeline(
             excel_name, excel_original, cols, rows = excel_pack
             # 回填需要可写的完整工作簿：只在真正打包时加载，用完即弃
             excel_filled = backfill_excel(open_excel_for_write(excel_original), cols,
-                                          rows, payload["items"], payload["clone_mode"])
+                                          rows, payload["items"], payload["clone_mode"],
+                                          records=records_by_id)
         # 终审 C-07：打包所需的记录来自本次 _run_batch 的直接产物
         # （records_by_id），不再事后回查全局 dict——回查会在记录被
         # 并发淘汰时 KeyError
