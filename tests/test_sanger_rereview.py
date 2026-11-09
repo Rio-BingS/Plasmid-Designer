@@ -92,7 +92,10 @@ def test_cds_verified_gap_pending_not_pass():
 
 
 def test_low_af_mixed_in_cds_detected():
-    """P0-3：CDS 内 AF≈0.22 双峰 → 不得静默 ✓，须检出并升级 mixed_variant"""
+    """P0-3（goal v3 W4 重编码，2026-11-09）：CDS 内次级/主峰面积比 0.22
+    （→ AF≈0.18）双峰 → 不得静默 ✓；落在 W4 分带 [0.15, 0.23) →
+    minor_af_site pending 复核项（判混须 AF≥0.23 或多位点互证，
+    「静默 ✓」与「直接判混」都被禁止）"""
     rng = _rng("rr4")
     ref = _rand_seq(rng, 1200)
     main = ref[449]
@@ -101,11 +104,44 @@ def test_low_af_mixed_in_cds_detected():
                           secondary={450: (alt, 0.22)}, q=50)
     feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
     res = analyze([("mix.ab1", blob)], ref, feats, circular=False)
-    assert _status(res) == "mixed"
-    assert "mixed_variant" in _blocking_kinds(res)
+    assert _status(res) == "pending"
+    assert _status(res) != "pass"
+    assert "minor_af_site" in _blocking_kinds(res)
 
 
-def test_front_short_junction_reported():
+def test_synonymous_substitution_configurable():
+    """goal v3 §8 决策 3（W5）：CDS 内确证同义替换默认「合格（注明同义）」
+    ——verdict pass + synonymous_variant info + Excel 合格注明；显式
+    synonymous_action="fail" 沿旧口径按确证差异阻断（可配置项锁双向）"""
+    rng = _rng("rr_syn")
+    ref = list(_rand_seq(rng, 1200))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(98)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    cds = list("".join(codons))
+    cds[3:6] = "CTT"                       # Leu
+    mut = list(cds)
+    mut[5] = "A"                           # CTT→CTA，仍 Leu（同义）
+    ref[300:600] = cds
+    ref = "".join(ref)
+    mut_full = list(ref)
+    mut_full[305] = mut[5]                 # 参考坐标 306
+    blob_f = make_trace_ab1("".join(mut_full)[200:1000], q=50)
+    blob_r = make_trace_ab1("".join(mut_full)[200:1000], q=50)
+    feats = [dict(name="GeneX", type="CDS", start=301, end=600, strand="+")]
+    res = analyze([("f.ab1", blob_f), ("r.ab1", blob_r)], ref, feats,
+                  scope="GeneX", circular=False)
+    vd = res["verdict"]
+    assert _status(res) == "pass"
+    assert vd["blocking"] == []
+    assert any(i.get("kind") == "synonymous_variant" for i in vd["info"])
+    assert "同义" in vd["headline"]
+    from core.sanger.batch import excel_conclusion
+    assert "同义" in excel_conclusion("P", res, 2, True)
+    # 可配置反向：按旧口径判确证差异
+    res2 = analyze([("f.ab1", blob_f), ("r.ab1", blob_r)], ref, feats,
+                   scope="GeneX", circular=False, synonymous_action="fail")
+    assert _status(res2) == "fail"
+    assert "confirmed_variant" in _blocking_kinds(res2)
     """P1-6：首端 20bp 高质量外源段（错误连接，落在 front_hard 豁免区）
     → 不得静默：出 end_junction_unverified 待核阻断（split-read 定位到
     断点仍按 structural_breakpoint fail）"""

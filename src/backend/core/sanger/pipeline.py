@@ -94,7 +94,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v9"  # v9: goal v3 W1/W2——scope 入参、未声明范围「已测区段」口径（禁整参考主张）、范围外差异/元件不阻断（out_of_scope_variant info、critical_element 未声明包含闸）、覆盖闸只对声明范围（roi_uncovered/unverified）
+SANGER_ALGO_VERSION = "v10"  # v10: goal v3 W3-W5——pass⇒blocking==[] 契约断言、范围外未决位点闸、af 分带（≥0.23 mixed / 0.15-0.23 minor_af_site pending / 声明×功能区软带 0.115-0.15 pending）、同义替换默认合格口径（synonymous_action 可配）、element_verdicts 与 headline 下发
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -1609,15 +1609,26 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             params=load_mixed_params(r.get("instrument")),
             exclude=slip | merged_span,
         )
-        r["mixed_positions"] = [e["pos"] for e in mixed_detail if not e["pullup"]]
+        # mixed_positions 只收硬检出位点（soft 带不进置信度/互检闸，
+        # goal v3 W4：软带仅供 verdict 在声明范围×功能区出 pending 复核项）
+        r["mixed_positions"] = [e["pos"] for e in mixed_detail
+                                if not e["pullup"] and not e.get("soft")]
         # 逐位证据（次级通道/占比/自适应 z 值）随结果下发，供前端峰图标注；
-        # call_disagrees_with_trace（T24.4）：调用碱基不在峰面积前两通道
+        # call_disagrees_with_trace（T24.4）：调用碱基不在峰面积前两通道。
+        # 软检出带（W4）单列 mixed_soft——所有既有消费方（互检分母、poly
+        # 判读、报告双峰计数）口径不变，verdict 侧合并读取
+        _md = [e for e in mixed_detail if not e["pullup"] and not e.get("soft")]
         r["mixed_detail"] = [
             {"pos": e["pos"], "ratio": round(e["ratio"], 3),
              "secondary_base": e["secondary_base"], "mixed_z": e.get("mixed_z"),
              **({"call_disagrees_with_trace": True}
                 if e.get("call_disagrees_with_trace") else {})}
-            for e in mixed_detail if not e["pullup"]
+            for e in _md
+        ]
+        r["mixed_soft"] = [
+            {"pos": e["pos"], "ratio": round(e["ratio"], 3),
+             "secondary_base": e["secondary_base"]}
+            for e in mixed_detail if not e["pullup"] and e.get("soft")
         ]
         if r.get("tracy_calls") is not None:
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
@@ -2440,6 +2451,7 @@ def analyze(
     zone_params: Optional[ZoneParams] = None,
     primer: Optional[Dict] = None,
     scope=None,
+    synonymous_action: str = "ok",
 ) -> Dict:
     """全自动分析入口
 
@@ -2640,7 +2652,8 @@ def analyze(
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
         "coverage": coverage, "features": features or [],
         "algo_version": SANGER_ALGO_VERSION,
-    }, len(ref), scope=scope_obj)
+    }, len(ref), scope=scope_obj,
+    synonymous_action=synonymous_action)
     conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
