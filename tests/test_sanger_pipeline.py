@@ -855,6 +855,7 @@ def test_coverage_gaps_circular_merges_across_origin_before_filter():
     assert gaps == [{
         "start": 951, "end": 60, "length": 110,
         "wraps_origin": True, "ref_segments": [[951, 1000], [1, 60]],
+        "cause": "unknown", "detail": "",
     }]
     # 同样覆盖按线性处理：两段分别过滤，全部丢弃（线性行为不变）
     assert _coverage_gaps([(61, 950)], 1000) == []
@@ -868,7 +869,8 @@ def test_coverage_gaps_circular_merged_still_filtered_by_min_len():
 def test_coverage_gaps_circular_wrapped_sorted_with_inner_gaps():
     gaps = _coverage_gaps([(101, 300), (601, 900)], 1000, circular=True)
     # 内部缺口 301-600（300bp）不跨原点、不带新字段；跨原点缺口 901-100 共 200bp
-    assert gaps[0] == {"start": 301, "end": 600, "length": 300}
+    assert gaps[0] == {"start": 301, "end": 600, "length": 300,
+                       "cause": "unknown", "detail": ""}
     assert gaps[1]["wraps_origin"] is True
     assert (gaps[1]["start"], gaps[1]["end"], gaps[1]["length"]) == (901, 100, 200)
     assert gaps[1]["ref_segments"] == [[901, 1000], [1, 100]]
@@ -877,20 +879,25 @@ def test_coverage_gaps_circular_wrapped_sorted_with_inner_gaps():
 def test_coverage_gaps_circular_one_side_covered_not_wrapped():
     # 覆盖到原点前的末端：只有头部缺口，无从合并
     assert _coverage_gaps([(201, 1000)], 1000, circular=True) == [
-        {"start": 1, "end": 200, "length": 200}]
+        {"start": 1, "end": 200, "length": 200,
+         "cause": "unknown", "detail": ""}]
     # 覆盖从 1 开始：只有尾部缺口
     assert _coverage_gaps([(1, 700)], 1000, circular=True) == [
-        {"start": 701, "end": 1000, "length": 300}]
+        {"start": 701, "end": 1000, "length": 300,
+         "cause": "unknown", "detail": ""}]
     # 完全无覆盖：整条参考一段缺口，不标跨原点
     assert _coverage_gaps([], 1000, circular=True) == [
-        {"start": 1, "end": 1000, "length": 1000}]
+        {"start": 1, "end": 1000, "length": 1000,
+         "cause": "unknown", "detail": ""}]
 
 
 def test_coverage_gaps_linear_unchanged_head_and_tail():
     # 线性参考头尾缺口独立判定，不合并
     gaps = _coverage_gaps([(151, 850)], 1000)
-    assert gaps == [{"start": 1, "end": 150, "length": 150},
-                    {"start": 851, "end": 1000, "length": 150}]
+    assert gaps == [{"start": 1, "end": 150, "length": 150,
+                     "cause": "unknown", "detail": ""},
+                    {"start": 851, "end": 1000, "length": 150,
+                     "cause": "unknown", "detail": ""}]
 
 
 def test_gap_span_text_wrapped_and_linear():
@@ -2734,6 +2741,9 @@ def test_circular_analyze_reports_wrapped_coverage_gap():
     assert circ["coverage_gaps"] == [{
         "start": 951, "end": 60, "length": 110,
         "wraps_origin": True, "ref_segments": [[951, 1000], [1, 60]],
+        # W6：缺口带 cause/detail（read 理论窗止于 ~890，缺口超出 → beyond_primer）
+        "cause": "beyond_primer",
+        "detail": "缺口超出全部 read/引物的理论覆盖——需加引物",
     }]
     assert "最大 951-1000、1-60，110bp" in circ["conclusion"]
     lin = _run(read, ref)
@@ -2815,12 +2825,16 @@ def test_read_wholly_inside_unchanged_by_circular_flag():
                 "cds_reports", "homopolymers"):
         assert lin[key] == circ[key], key
     # 覆盖缺口是唯一按拓扑区别对待的项：环状参考的尾部 501-800 与头部
-    # 1-100 在原点处相连，合并为一段跨原点缺口（线性仍是独立两段）
-    assert lin["coverage_gaps"] == [{"start": 501, "end": 800, "length": 300},
-                                    {"start": 1, "end": 100, "length": 100}]
+    # 1-100 在原点处相连，合并为一段跨原点缺口（线性仍是独立两段）；
+    # W6 起缺口带 cause/detail（单 read 理论窗止于 ~470 → beyond_primer）
+    _bp = {"cause": "beyond_primer",
+           "detail": "缺口超出全部 read/引物的理论覆盖——需加引物"}
+    assert lin["coverage_gaps"] == [{"start": 501, "end": 800, "length": 300, **_bp},
+                                    {"start": 1, "end": 100, "length": 100, **_bp}]
     assert circ["coverage_gaps"] == [{
         "start": 501, "end": 100, "length": 400,
         "wraps_origin": True, "ref_segments": [[501, 800], [1, 100]],
+        **_bp,
     }]
     assert lin["conclusion"].replace("共 2 段未覆盖缺口（最大 501-800，300bp）",
                                      "共 1 段未覆盖缺口（最大 501-800、1-100，400bp）") \

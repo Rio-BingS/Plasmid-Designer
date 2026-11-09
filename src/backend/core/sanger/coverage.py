@@ -128,9 +128,59 @@ def ref_to_cons_index(consensus: Dict, ref_length: int) -> Dict[int, int]:
     return mapping
 
 
+def expected_ranges(read_results: List[Dict],
+                    front_gray: int = 30) -> List[Dict]:
+    """理论覆盖 E（goal v3 W6，PL B1）：每条 read 的理论窗口 = 比对起点
+    沿测序方向按原始 basecall 长度延伸到尾端（首端 front_gray 灰区不构成
+    理论覆盖）。basis="read_start"（有引物序列时改以结合位点 3′ 端为起点，
+    basis="primer_binding" 随 W7 引物映射接入）。
+
+    返回 [{read, primer, ranges, measured_ranges, direction, basis}]；
+    无比对坐标或无原始 basecall 的 read 跳过——E 整体不可得时 verdict
+    走 scope_uncovered。反向 read 从 ref_end 端起测，理论窗口向低坐标延伸。"""
+    out: List[Dict] = []
+    for r in read_results:
+        aln = r.get("alignment") or {}
+        # 理论长度取原始 basecall（raw_bases 管线内可用；结果载荷已剔除
+        # 该键，回退 raw_length——衰减 read 的 raw > trimmed，正是 E 的意义）
+        raw_len = len(r.get("raw_bases") or "") or int(r.get("raw_length") or 0)
+        if not raw_len:
+            continue
+        direction = r.get("direction") or "+"
+        if direction == "-":
+            end_ = aln.get("ref_end")
+            if not end_:
+                continue
+            end_ = int(end_)
+            theory = (max(1, end_ - (raw_len - front_gray) + 1), end_)
+            measured = (aln.get("ref_start") or end_, end_)
+        else:
+            start_ = aln.get("ref_start")
+            if not start_:
+                continue
+            start_ = int(start_)
+            theory = (start_, start_ + (raw_len - front_gray) - 1)
+            measured = (start_, aln.get("ref_end") or start_)
+        out.append({
+            "read": r.get("filename"), "primer": r.get("primer"),
+            "ranges": [list(theory)], "measured_ranges": [list(measured)],
+            "direction": direction, "basis": "read_start"})
+    return out
+
+
+def _segments_of(gap: Dict) -> List[Tuple[int, int]]:
+    """缺口 → 线段列表（跨原点缺口拆 [x,L]+[1,y]，普通缺口单段）"""
+    if gap.get("wraps_origin") and gap.get("ref_segments"):
+        return [(int(a), int(b)) for a, b in gap["ref_segments"]]
+    return [(int(gap["start"]), int(gap["end"]))]
+
+
 def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
                    min_len: int = 100, cap: int = 10,
-                   circular: bool = False) -> List[Dict]:
+                   circular: bool = False,
+                   expected: Optional[List[Dict]] = None,
+                   scope_ranges: Optional[List[Tuple[int, int]]] = None
+                   ) -> List[Dict]:
     """覆盖缺口（未覆盖区间）按长度降序，供补测建议
 
     circular=True：环状参考的尾部缺口 [x, L] 与头部缺口 [1, y] 在原点处
@@ -138,7 +188,13 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
     各不足 min_len、合起来已够长的缺口整段漏掉。跨原点缺口与跨原点 read
     同口径：start/end 为折回坐标（start > end），wraps_origin=True，
     ref_segments 给出 [[x, L], [1, y]] 两段；length 为合并后总长。
-    线性参考（及未跨原点的缺口）不带新字段，结果与此前完全一致。"""
+    线性参考（及未跨原点的缺口）不带新字段，结果与此前完全一致。
+
+    goal v3 W6（PL B2）：scope_ranges 给出时（声明范围）缺口只保留 R 内
+    部分；expected（理论覆盖 E）给出时逐缺口归因 cause——beyond_primer
+    （任何 read/引物的理论窗都够不到 → 加引物）、read_shortfall（理论窗
+    可达但实测未达 → 看峰图/重测，detail 带衰减位置）；E 不可得 →
+    unknown（verdict 侧落 scope_uncovered）。"""
     raw: List[Dict] = []
     prev = 0
     for s, e in covered_ranges:
@@ -157,6 +213,50 @@ def _coverage_gaps(covered_ranges: List[Tuple[int, int]], length: int,
             "ref_segments": [[tail["start"], length], [1, head["end"]]],
         }
     gaps = [g for g in raw if g["length"] >= min_len]
+    if scope_ranges:
+        # R 内缺口（goal v3 W6）：整参考缺口与声明范围求交，跨原点缺口
+        # 逐段求交后按长度重算；范围外部分不归需测范围管
+        scoped: List[Dict] = []
+        for g in gaps:
+            for gs, ge in _segments_of(g):
+                for rs, re_ in scope_ranges:
+                    s_, e_ = max(gs, rs), min(ge, re_)
+                    if s_ <= e_ and e_ - s_ + 1 >= min_len:
+                        scoped.append({"start": s_, "end": e_,
+                                       "length": e_ - s_ + 1})
+        gaps = scoped
+    for g in gaps:
+        g.setdefault("cause", "unknown")
+        g.setdefault("detail", "")
+        if expected is None:
+            continue
+        segs = _segments_of(g)
+        # 理论窗与缺口相交的 read：有 → 理论可达而实测未达（衰减）；
+        # 无 → 可用引物/read 都够不到
+        hits = []
+        for e in expected:
+            for (ts, te) in [(int(a), int(b)) for a, b in e.get("ranges") or []]:
+                if any(ts <= ge_ and gs_ <= te for gs_, ge_ in segs):
+                    hits.append(e)
+                    break
+        if not hits:
+            g["cause"] = "beyond_primer"
+            g["detail"] = "缺口超出全部 read/引物的理论覆盖——需加引物"
+            continue
+        best = max(hits, key=lambda e: max(
+            (te - gs_ + 1) if (ts <= ge_ and gs_ <= te) else 0
+            for (ts, te) in [(int(a), int(b)) for a, b in e.get("ranges") or []]
+            for gs_, ge_ in segs) or 0)
+        # 衰减位置：该 read 实测段止于缺口起点前最近的位置
+        decay = None
+        for (ms, me) in [(int(a), int(b)) for a, b in best.get("measured_ranges") or []]:
+            if me < g["start"] and (decay is None or me > decay):
+                decay = me
+        theory_end = max(int(b) for a, b in best.get("ranges") or [])
+        g["cause"] = "read_shortfall"
+        g["detail"] = (
+            f"{best.get('read') or 'read'} 在 {decay if decay else '缺口起点'} "
+            f"处衰减（理论可达 {theory_end}）")
     gaps.sort(key=lambda g: -g["length"])
     return gaps[:cap]
 

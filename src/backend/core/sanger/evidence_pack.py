@@ -118,6 +118,9 @@ def render_site_svg(trace_entry: Dict, read_pos: int,
 _REGION_KINDS = frozenset({
     "roi_uncovered", "roi_unverified", "roi_insufficient_bp",
     "critical_element_unverified",
+    # goal v3 W6：范围级缺口归因与双链要求同属区域级阻断，不出峰图
+    "scope_uncovered", "scope_beyond_primer", "scope_read_shortfall",
+    "scope_single_strand",
 })
 
 
