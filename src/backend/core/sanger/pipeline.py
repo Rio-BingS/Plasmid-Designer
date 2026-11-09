@@ -80,6 +80,7 @@ from core.sanger.coverage import compute_coverage
 # 此处 re-export 维持既有导入路径
 from core.sanger.coverage import (  # noqa: F401
     _coverage_gaps, _coverage_ranges_text, _gap_span_text,
+    expected_ranges,
 )
 
 # 证据三态与结论资格门已迁至 core/sanger/evidence.py（T1 拆分，尺寸预算）；
@@ -94,7 +95,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v10"  # v10: goal v3 W3-W5——pass⇒blocking==[] 契约断言、范围外未决位点闸、af 分带（≥0.23 mixed / 0.15-0.23 minor_af_site pending / 声明×功能区软带 0.115-0.15 pending）、同义替换默认合格口径（synonymous_action 可配）、element_verdicts 与 headline 下发
+SANGER_ALGO_VERSION = "v11"  # v11: goal v3 W6-W7——理论覆盖 expected_ranges 与缺口 cause 归因（beyond_primer/read_shortfall/unknown）、roi_uncovered 拆 scope_uncovered/beyond_primer/read_shortfall、require_double_strand→scope_single_strand、引物逐 read 映射与引物无信号→read_shortfall、负链距离按 5′ 锚口径
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -2615,7 +2616,14 @@ def analyze(
         [sp for r in read_results for sp in aln_segments(r["alignment"])],
         len(ref),
     )
-    coverage_gaps = _coverage_gaps(coverage_ranges, len(ref), circular=circular)
+    # 理论覆盖 E 与缺口归因（goal v3 W6，PL B1/B2）：expected_ranges 以
+    # 比对起点为默认依据（引物结合位点随 W7）；缺口只对声明范围判 cause，
+    # 未声明范围整参考缺口照旧（报告用），cause 同步给出
+    _expected = expected_ranges(read_results)
+    coverage_gaps = _coverage_gaps(
+        coverage_ranges, len(ref), circular=circular, expected=_expected,
+        scope_ranges=(scope_obj.ranges if (scope_obj is not None
+                                           and scope_obj.declared) else None))
 
     homopolymer_report = _homopolymer_report_pass(
         poly_runs, variants, read_results, coverage_ranges)
@@ -2623,6 +2631,11 @@ def analyze(
     # 可信区 − N/模糊调用列；注入共识供 CDS 判定切 verified 口径
     coverage = compute_coverage(read_results, len(ref), coverage_ranges,
                                 circular=circular)
+    # E 与带 cause 的缺口随 coverage 下发（goal v3 W6）：verdict 据此把
+    # roi_uncovered 拆 scope_beyond_primer / scope_read_shortfall /
+    # scope_uncovered；前端 W13 用 expected_ranges 画理论窗
+    coverage["expected_ranges"] = _expected
+    coverage["gaps"] = coverage_gaps
     consensus["verified_ranges"] = coverage["verified_ranges"]
     consensus["trusted_ranges"] = coverage["trusted_ranges"]
     # 未决位点清单（goal T1；B P0-2）：N/模糊调用、poly 不可判定、dropout、
@@ -2720,6 +2733,10 @@ def analyze(
         "verdict": verdict,
         # 需测范围（goal v3 §3.1；None=未声明，W2 起合成 measured 口径）
         "scope": scope_obj.to_dict() if scope_obj is not None else None,
+        # 参考注释（goal v3 W9/SC9）：随结果下发，build_verdict 直接以
+        # result 重算 scope（元件名/区间解析）与 element_verdicts 不再
+        # 依赖调用方另行传 features
+        "features": features or [],
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）

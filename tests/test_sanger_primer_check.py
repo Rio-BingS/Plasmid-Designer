@@ -48,13 +48,19 @@ def test_distance_window_and_direction():
     # 方向反 → mismatch
     rev = check_reads(PRIMER, [_read("r.ab1", 77, 400, direction="-")], REF)
     assert rev[0]["status"] == "mismatch" and "方向不一致" in rev[0]["detail"]
-    # 负链引物：3′ 端 = 结合区起点；read（负链）ref_end 距其 20-150 → ok
+    # 负链引物：3′ 端 = 结合区起点；负链 read 的 5′ 锚 = ref_end，以引物区
+    # 开头（ref_end ≥ 3′ 端）——W7 口径 dist = ref_end − 3′ 端 ∈ [20,150]
+    # （v2 旧构造 ref_end = 3′端−20 是「read 不含引物区」语义，与真实 ABI
+    # 负链 read 相反，随 W7 口径重编码留痕）
     minus_primer = {"name": "R", "seq": "AATTTAACTTCTTTGTTCGT", "direction": "-"}
     ref2 = "ACGT" * 10 + "ACGAACAAAGAAGTTAAATT" + "ACGT" * 40
     b = locate_binding(minus_primer["seq"], ref2)
     assert b and b["strand"] == "-"
-    got = check_reads(minus_primer, [_read("r2.ab1", 10, b["start"] - 20, direction="-")], ref2)
-    assert got[0]["status"] == "ok"
+    got = check_reads(minus_primer, [_read("r2.ab1", 10, b["start"] + 20, direction="-")], ref2)
+    assert got[0]["status"] == "ok" and "20bp" in got[0]["detail"]
+    # 5′ 锚在 3′ 端下游（read 不含引物区，从结合区远端起测）→ 出窗 mismatch
+    got2 = check_reads(minus_primer, [_read("r2.ab1", 10, b["start"] - 20, direction="-")], ref2)
+    assert got2[0]["status"] == "mismatch" and "-20" in got2[0]["detail"]
 
 
 def test_unverified_and_library_resolution():
