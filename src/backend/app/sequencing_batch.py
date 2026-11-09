@@ -242,6 +242,10 @@ def run_batch_groups(
             continue
 
         res = None
+        # W10（PL §C5）：信息表「验证范围」列——按组解析；解析失败的组
+        # 结论回填「范围无法识别」，按未声明口径继续分析，不阻塞其他样品
+        scope_obj, scope_note = None, ""
+        _scope_text = (g.get("scope_text") or "").strip()
         if ref_file and n_reads:
             if deadline is not None and time.monotonic() > deadline:
                 item["status"] = "failed"
@@ -260,6 +264,10 @@ def run_batch_groups(
                 items.append(item)
                 continue
             ref_seq, features, circular = ref_entry
+            if _scope_text:
+                from core.sanger.scope import parse_scope_cell
+                scope_obj, scope_note = parse_scope_cell(
+                    _scope_text, features, len(ref_seq))
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 # goal v3 W7（PL B3）：信息表引物列 → 逐 read 引物映射。
@@ -278,7 +286,8 @@ def run_batch_groups(
                             "name": _pr["name"], "seq": _pr["seq"],
                             "direction": _pr["direction"]}
                 res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular,
-                              zone_params=zone, primer=(_pmap or None))
+                              zone_params=zone, primer=(_pmap or None),
+                              scope=scope_obj)
                 aid, rec = register(label, ref_seq, features, res)
                 item["analysis_id"] = aid
                 # 终审 C-07：打包用的记录快照随批次产出，避免事后回查全局
@@ -295,6 +304,9 @@ def run_batch_groups(
             except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
                 item["status"] = "failed"
                 item["conclusion"] = f"分析失败：{e}"
+                if scope_note:
+                    item["conclusion"] = (f"范围无法识别：{_scope_text}"
+                                          f"（{scope_note}）。" + item["conclusion"])
                 items.append(item)
                 continue
 
@@ -308,6 +320,10 @@ def run_batch_groups(
             item["conclusion"] = excel_conclusion(label, None, n_reads, False)
         else:
             item["conclusion"] = excel_conclusion(label, res, n_reads, True)
+        if scope_note:
+            # W10：范围无法识别——回填提示，该组按未声明口径分析，不阻塞
+            item["conclusion"] = (f"范围无法识别：{_scope_text}（{scope_note}）。"
+                                  + item["conclusion"])
         items.append(item)
     return items, records_by_id
 
