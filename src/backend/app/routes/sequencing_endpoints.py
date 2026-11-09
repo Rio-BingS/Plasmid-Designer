@@ -465,7 +465,11 @@ async def recompute_verdict(analysis_id: str, request: Request,
     from core.sanger.verdict import build_verdict
 
     def _recompute():
-        verdict = build_verdict(record, len(reference), scope_obj)
+        # W14：人工确认记录随重算传入（换范围不清留痕），复核队列同步刷新
+        from core.sanger.review import build_queue
+        _decisions = list(record.get("review_decisions") or [])
+        verdict = build_verdict(record, len(reference), scope_obj,
+                                review_decisions=_decisions or None)
         conclusion = record.get("conclusion") or ""
         headline = verdict.get("headline") or ""
         # 结论头行重建（三出口同源：头行=verdict.headline，正文保留）
@@ -473,6 +477,7 @@ async def recompute_verdict(analysis_id: str, request: Request,
             lines = conclusion.split("\n") if conclusion else []
             record["conclusion"] = "\n".join([headline] + lines[1:])
         record["verdict"] = verdict
+        record["review_queue"] = build_queue(record, _decisions or None)
         hist = list(record.get("scope_history") or [])
         hist.append({
             "at": datetime.now().isoformat(timespec="seconds"),
@@ -493,6 +498,67 @@ async def recompute_verdict(analysis_id: str, request: Request,
                                 reference, new_scope)
     return {"verdict": verdict, "conclusion": record.get("conclusion"),
             "scope_history": hist}
+
+
+class ReviewConfirmRequest(BaseModel):
+    """复核确认请求体（goal v3 W14，PL F3）：对复核队列某位点一键定夺。
+
+    decision：artifact（伪影，移出阻断）/ mutation（真实突变，升级确证）；
+    note 可选备注。留痕 review_decisions=[{ref_pos, decision, by, at,
+    note}]，重算 verdict 后 headline 追加「人工确认 N 处」。"""
+    ref_pos: int
+    decision: str
+    note: str = ""
+
+
+@router.post("/sequencing/analyses/{analysis_id}/review")
+async def confirm_review(analysis_id: str, request: Request,
+                         body: ReviewConfirmRequest,
+                         user: Optional[User] = Depends(get_current_user)):
+    """复核队列一键确认并重算判定（goal v3 W14，PL F3）。
+
+    纯函数重算（build_verdict 接 review_decisions）：伪影条目移出 blocking
+    （info 留痕 reviewed_artifact），突变条目升级确证（fail_impact）；结论
+    头行同步 verdict.headline（自带「人工确认 N 处」）；复核队列按已确认
+    位点刷新。留痕随 payload 落库（by/at/note 可审计）。"""
+    if body.decision not in ("artifact", "mutation"):
+        raise HTTPException(status_code=400,
+                            detail="decision 只支持 artifact（伪影）或 mutation（真实突变）")
+    record = await _aget_analysis(analysis_id, user,
+                                  _request_access_token(request))
+    reference = record.get("reference") or ""
+    if len(reference) < 50:
+        raise HTTPException(status_code=400, detail="存档记录缺参考序列，无法重算")
+    by = (getattr(user, "username", None) or getattr(user, "email", None)
+          or ("匿名" if user is None else str(getattr(user, "id", "?"))))
+    _scope_d = ((record.get("verdict") or {}).get("scope")) or None
+
+    def _confirm():
+        from core.sanger.scope import Scope as _Scope
+        from core.sanger.verdict import build_verdict
+        from core.sanger.review import build_queue, apply_review_decision
+        decisions = list(record.get("review_decisions") or [])
+        apply_review_decision(decisions, body.ref_pos, body.decision, by,
+                              body.note)
+        scope_obj = (_Scope.from_dict(_scope_d)
+                     if _scope_d and _scope_d.get("declared") else None)
+        verdict = build_verdict(record, len(reference), scope_obj,
+                                review_decisions=decisions)
+        conclusion = record.get("conclusion") or ""
+        headline = verdict.get("headline") or ""
+        if headline:
+            lines = conclusion.split("\n") if conclusion else []
+            record["conclusion"] = "\n".join([headline] + lines[1:])
+        record["verdict"] = verdict
+        record["review_decisions"] = decisions
+        record["review_queue"] = build_queue(record, decisions)
+        sequencing_store.persist_record(record)
+        return verdict
+
+    verdict = await run_in_threadpool(_confirm)
+    return {"verdict": verdict, "conclusion": record.get("conclusion"),
+            "review_decisions": record.get("review_decisions"),
+            "review_queue": record.get("review_queue")}
 
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")

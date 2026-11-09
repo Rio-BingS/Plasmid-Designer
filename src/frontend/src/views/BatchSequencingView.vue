@@ -235,6 +235,18 @@ const summary = computed(() => {
   return { ok: n('ok'), bad: n('bad'), warn: n('warn'), idle: n('idle') }
 })
 
+// 复核汇总（goal v3 W14，PL F4）：需复核 X 个样品、Y 个位点——按
+// fail > read_shortfall > pending 优先级排序（表行保持上传顺序， chips
+// 提供复核动线，点击跳详情）
+const REVIEW_PRIO_ORDER = { fail: 0, read_shortfall: 1, pending: 2 } as const
+const reviewSummary = computed(() => {
+  const items = (result.value?.items ?? []).filter(
+    (it) => (it.review_count ?? 0) > 0 && REVIEW_PRIO_ORDER[it.review_prio as 'fail'] !== undefined)
+  const sorted = [...items].sort((a, b) =>
+    (REVIEW_PRIO_ORDER[a.review_prio as 'fail'] ?? 9) - (REVIEW_PRIO_ORDER[b.review_prio as 'fail'] ?? 9))
+  return { samples: sorted.length, sites: sorted.reduce((s, it) => s + (it.review_count ?? 0), 0), sorted }
+})
+
 // 克隆模式：信息表带「克隆号」列，同一质粒的每个克隆独立成行
 const cloneMode = computed(() => (result.value?.items ?? []).some((it) => !!it.clone))
 const plasmidCount = computed(() => new Set((result.value?.items ?? []).map((it) => it.plasmid)).size)
@@ -360,6 +372,17 @@ async function downloadReport() {
           <span class="count ok">合格 {{ summary.ok }}</span> ·
           <span class="count bad">不合格/失败 {{ summary.bad }}</span> ·
           <span class="count warn">待补 {{ summary.warn }}</span>
+        </p>
+        <!-- 复核汇总（goal v3 W14，PL F4）：按 fail > 缺口 > pending 排序 -->
+        <p v-if="reviewSummary.samples" class="summary-line review-line">
+          需复核 {{ reviewSummary.samples }} 个样品、{{ reviewSummary.sites }} 个位点：
+          <span v-for="it in reviewSummary.sorted" :key="it.analysis_id || it.plasmid"
+                class="review-chip" :class="it.review_prio"
+                :title="it.conclusion"
+                @click="viewDetail(it)">
+            {{ it.plasmid }}<template v-if="it.clone">·{{ it.clone }}</template>
+            （{{ it.review_count }}）
+          </span>
         </p>
         <p class="report-row">
           <button v-if="result.report_ready" class="report-btn" :disabled="downloading" @click="downloadReport">
@@ -491,6 +514,14 @@ async function downloadReport() {
 .count.ok { color: #2E9E44; font-weight: 600; }
 .count.bad { color: #C0392B; font-weight: 600; }
 .count.warn { color: #9A6D00; font-weight: 600; }
+
+/* 复核汇总条（goal v3 W14，PL F4）：样品 chips 按优先级排序、点击跳详情 */
+.review-line { font-size: 0.88rem; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.review-chip { border: 1px solid var(--border, #ddd); border-radius: 999px;
+  padding: 2px 10px; cursor: pointer; font-size: 0.8rem; }
+.review-chip.fail { border-color: #C0392B; color: #C0392B; background: #FDECEA; }
+.review-chip.read_shortfall { border-color: #E67E22; color: #B26A00; background: #FFF3E0; }
+.review-chip.pending { border-color: #9A6D00; color: #9A6D00; background: #FFF8E1; }
 
 .report-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0 0 0.9rem; }
 .report-btn {
