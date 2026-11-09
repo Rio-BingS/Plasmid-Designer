@@ -55,8 +55,10 @@
 
 ## 防回潮约束（改相关代码前必读）
 
-**Sanger 判读链路的五条工程约束**（2026-11-07 全量修复 goal §2 沉淀，
-2026-11-08 复审 R8 登记为常读项——改 `core/sanger/` 与测序 API 前先对照）：
+**Sanger 判读链路的工程约束**（2026-11-07 全量修复 goal §2 沉淀 1-5 条；
+2026-11-08 复审 R8 登记为常读项；6-10 条为 v2 goal 的五条防回潮补齐
+（RV P1-5）；11-15 条为 goal v3 W15 新增——改 `core/sanger/` 与测序
+API 前先逐条对照）：
 
 1. **判定不依赖文案**：禁止用字符串匹配做判定/分组逻辑（`"疑似混合样品"
    in x`、`startswith("合格")`、前端 `includes('低置信（')` 一类）。结论
@@ -76,6 +78,38 @@
 5. **尺寸预算**：`scripts/size_budgets.json` 白名单文件只许变小；新文件
    ≤900 行；新逻辑放新模块并把被替换逻辑迁出（迁出后下调预算数字），
    不得 `--refresh` 调高预算。
+6. **unresolved/N/坏文件不得出 ✓**：N 调用、IUPAC 模糊、解析失败的
+   read 永远不构成验证证据——✓（pass）的资格门（✓ 资格门输入）必须
+   把这些位点算作未验证；别在解析端「宽容豁免」把它们洗成可信碱基。
+7. **覆盖判定只用 verified**：verified=可信区内的碱基才算验证（首尾
+   不可信区、N 列、Q 低于门槛的列不构成验证）；measured（测到的 raw
+   覆盖）只用于「已测范围」陈述，两者不得混用或互相替代。
+8. **判定只读 verdict**：一切出口（网页头行、Excel、前端卡片、批量
+   分拣、复核队列）从 `result["verdict"]` 的 status/blocking 派生，
+   不得绕过 verdict 直接读 variants/coverage 自行下结论。
+9. **坐标换算只走 ReadRefMap**：read↔ref 双向换算统一走
+   `core.sanger.alignment.ReadRefMap`（含环状跨原点/插入缺失形态），
+   禁止散点重算 `ref_start + offset` 一类算术——跨原点会立刻错位。
+10. **混合互检与变异互检同一标准**：混合双峰（mixed_variant）与普通
+    变异（confirmed/unresolved）走同一套跨 read 互检与三态裁决；混合
+    侧不得有更宽松的「直接判真」捷径。
+11. **判定只对 scope 负责**（goal v3 W15）：范围外一律「未评估」
+    （out_of_scope info），任何出口不得对范围外位点给出 pass/fail/
+    pending 判词——「测了哪里说哪里」。
+12. **未声明范围不得输出「构建与设计一致」**（goal v3 W15）：measured
+    口径下头行/Excel/前端都不得出现整参考一致性主张；「已测区段与
+    设计一致（范围外未评估）」是唯一允许的措辞形态。
+13. **目的基因模式不得以裁剪后的参考做未比对判定**（goal v3 W15，
+    CM P0-A/P0-B）：cds_mode 只改范围与展示，比对始终全质粒；裁窗
+    只允许 MAX_REF_BP 兜底（full_ref 窗口外 located_outside），禁止
+    把「read 落在窗外的未比对」误判成「与 CDS 一致」。
+14. **缺口必须归因**（goal v3 W15）：coverage.gaps 每条带 cause
+    （beyond_primer=引物够不到 / read_shortfall=应测未测 / unknown=
+    归因不明）；新增缺口路径必须三选一归因，不得回退到无 cause 的
+    裸缺口（前端按 cause 着色/入队依赖它）。
+15. **修改 scope 不得触发重新比对**（goal v3 W15）：范围变更一律走
+    `build_verdict` 纯函数重算（W11 重算端点契约，analyze 打桩计数
+    为 0 锁定）；任何把 scope 变更接到 analyze 重跑的改动都是契约破坏。
 
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并

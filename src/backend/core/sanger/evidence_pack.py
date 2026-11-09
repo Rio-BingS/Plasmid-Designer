@@ -192,6 +192,9 @@ def build_pack_data(record: Dict) -> Dict:
                 "q": (ev or {}).get("q"),
                 "mutant_pct": (ev or {}).get("mutant_pct"),
                 "p_real": p_real,
+                # 可信度三档（goal v3 W15，PL G2）：p_real 未校准不当概率
+                # 使用——对外只出 高/中/低（数值 p_real 仅内部排序用）
+                "tier": (v.get("confidence") or None) if p_real is not None else None,
                 "artifact": (ev or {}).get("artifact"),
                 "svg": render_site_svg(te, rp) if te else None,
             })
@@ -203,6 +206,10 @@ def build_pack_data(record: Dict) -> Dict:
         "sites": sites,
     }
 
+
+# 可信度三档（goal v3 W15，PL G2）：p_real 在完成真实数据校准前不当概率
+# 使用——对外统一显示 高/中/低
+_TIER_ZH = {"high": "高", "medium": "中", "low": "低"}
 
 _ACTION_LABELS = {
     "review_trace": "建议核对峰图",
@@ -230,14 +237,14 @@ def render_markdown(pack: Dict) -> str:
         if site.get("label") and site["label"] != site.get("detail"):
             lines.append(f"> {site['label']}")
             lines.append("")
-        lines.append("| read | read 位 | 调用 | Q | 峰强比 | P(真实) | 伪迹 |")
+        lines.append("| read | read 位 | 调用 | Q | 峰强比 | 可信度 | 伪迹 |")
         lines.append("|---|---|---|---|---|---|---|")
         for r in site.get("reads") or []:
             lines.append(
                 f"| {r['read']} | {r.get('read_pos') or '-'} | "
                 f"{r.get('call') or '-'} | {r.get('q') if r.get('q') is not None else '-'} | "
                 f"{r.get('mutant_pct') if r.get('mutant_pct') is not None else '-'} | "
-                f"{r.get('p_real') if r.get('p_real') is not None else '-'} | "
+                f"{_TIER_ZH.get(r.get('tier'), '-')} | "
                 f"{r.get('artifact') or '-'} |")
         lines.append("")
         for r in site.get("reads") or []:

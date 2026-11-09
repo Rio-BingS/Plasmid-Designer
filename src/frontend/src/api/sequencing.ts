@@ -51,6 +51,8 @@ export interface EvidencePackRead {
   q?: number | null
   mutant_pct?: number | null
   p_real?: number | null
+  /** 可信度三档（goal v3 W15）：high/medium/low；旧记录缺省 null */
+  tier?: string | null
   artifact?: string | null
   svg?: string | null
 }

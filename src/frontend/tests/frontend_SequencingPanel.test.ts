@@ -246,7 +246,8 @@ describe('SequencingPanel', () => {
     const rows = wrapper.findAll('.seq-table.clickable tbody tr')
     expect(rows[0].text()).toContain('380')
     expect(rows[0].text()).toContain('建议重测')
-    expect(rows[0].text()).toContain('评分 1')
+    // W15：p_real 展示为可信度三档（低）——数值不当概率使用
+    expect(rows[0].text()).toContain('低')
     expect(rows[1].text()).toContain('采信')
     // 结论文本的低置信折叠保留在结论卡（W12：未决口径文案）
     expect(text).toContain('1 处未决差异已折叠')

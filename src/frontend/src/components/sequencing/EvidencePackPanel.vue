@@ -53,6 +53,9 @@ function kindText(kind: string): string {
   return map[kind] ?? kind
 }
 
+/** 可信度三档（goal v3 W15，PL G2）：旧记录无 tier 时降级显示 '-' */
+const TIER_ZH: Record<string, string> = { high: '高', medium: '中', low: '低' }
+
 function artifactText(a: string | null | undefined): string {
   const map: Record<string, string> = {
     compression: '压缩区', dye_blob: '染料团', short_slippage: '短滑移',
@@ -92,7 +95,7 @@ async function download(): Promise<void> {
             <table class="seq-table">
               <thead>
                 <tr><th>read</th><th>read 位</th><th>调用</th><th>Q</th>
-                    <th>峰强比</th><th title="T15 规则评分（0-100，非校准概率）">评分</th><th>伪迹</th></tr>
+                    <th>峰强比</th><th title="可信度三档——p_real 未完成真实数据校准，不作为概率使用">可信度</th><th>伪迹</th></tr>
               </thead>
               <tbody>
                 <tr v-for="r in s.reads" :key="r.read">
@@ -101,7 +104,7 @@ async function download(): Promise<void> {
                   <td class="mono">{{ r.call || '-' }}</td>
                   <td>{{ r.q ?? '-' }}</td>
                   <td>{{ r.mutant_pct ?? '-' }}</td>
-                  <td>{{ r.p_real != null ? Math.round(r.p_real * 100) : '-' }}</td>
+                  <td>{{ TIER_ZH[r.tier ?? ''] ?? '-' }}</td>
                   <td>{{ artifactText(r.artifact) }}</td>
                 </tr>
               </tbody>
