@@ -291,6 +291,58 @@ def delete_record(analysis_id: str) -> None:
         db.close()
 
 
+# ---------- 范围记忆（goal v3 W11，PL §C7） ----------
+
+
+def _reference_hash(reference: str) -> str:
+    """参考序列指纹：sha256(大写序列)——与范围记忆的存取键一致"""
+    return hashlib.sha256((reference or "").upper().encode("utf-8")).hexdigest()
+
+
+def save_scope_memory(reference: str, scope: Dict) -> None:
+    """按参考指纹保存最近一次使用的声明范围（覆盖旧值；失败只留痕）"""
+    if not db_enabled() or not (scope or {}).get("declared"):
+        return
+    from app.database import SessionLocal, engine
+    from app.database.models import SequencingScopeMemoryDB
+
+    SequencingScopeMemoryDB.__table__.create(bind=engine, checkfirst=True)
+    db = SessionLocal()
+    try:
+        row = SequencingScopeMemoryDB(
+            reference_hash=_reference_hash(reference),
+            scope_json=json.dumps(scope, ensure_ascii=False, separators=(",", ":")),
+        )
+        db.merge(row)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("范围记忆保存失败: %s", e)
+    finally:
+        db.close()
+
+
+def load_scope_memory(reference: str) -> Optional[Dict]:
+    """按参考指纹取上次使用的范围 dict；无记录/库不可用返回 None"""
+    if not db_enabled():
+        return None
+    from app.database import SessionLocal, engine
+    from app.database.models import SequencingScopeMemoryDB
+
+    SequencingScopeMemoryDB.__table__.create(bind=engine, checkfirst=True)
+    db = SessionLocal()
+    try:
+        row = db.get(SequencingScopeMemoryDB, _reference_hash(reference))
+        if row is None:
+            return None
+        return json.loads(row.scope_json)
+    except Exception as e:
+        logger.error("范围记忆读取失败: %s", e)
+        return None
+    finally:
+        db.close()
+
+
 def list_records(user: Optional[object], is_admin: bool,
                  limit: int = 200, offset: int = 0) -> List[Dict]:
     """历史列表元数据（不加载 payload/trace 大列），按属主过滤，时间倒序。

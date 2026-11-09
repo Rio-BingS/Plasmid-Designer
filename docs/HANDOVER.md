@@ -43,6 +43,12 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 （预算顶格，本轮靠收敛 localStorage 读写到 batchHistory.ts 才保住）、连续两轮触发 CI
 尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
 
+goal v3（scope 报告）进行到 **W11 已收**（2026-11-10）：范围重算端点
+`POST /api/sequencing/analyses/{id}/verdict`（build_verdict 纯函数、不重跑
+比对）+ 范围记忆新表 `sequencing_scope_memory`（alembic a1b2c3d4e5f6，参考
+指纹 → 最近声明范围，单样品/批量自动带出）+ scope_history 留痕；进度见
+docs/audit/PROGRESS_v3.md。
+
 ## 2. 事实清单（2026-10-26/27 实测，可直接引用）
 
 | 项 | 值 |
