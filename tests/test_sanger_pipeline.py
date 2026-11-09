@@ -1171,8 +1171,8 @@ def test_low_quality_indel_unresolved_not_confirmed(reference):
     assert cr["pending_low_confidence"] == 1
     assert "另有 1 处低置信差异" in cr["verdict"]
     assert "核对峰图" in cr["verdict"]
-    # 自动结论的差异行也带低置信度提示
-    assert any("低置信度" in line for line in result["conclusion"].splitlines())
+    # 自动结论的差异行也带未决提示（W12：文案从「低置信度（」改「未决（」）
+    assert any("未决（" in line for line in result["conclusion"].splitlines())
 
 
 def test_consensus_skips_low_confidence_keys():
@@ -1210,12 +1210,12 @@ def test_synonymous_substitution_not_labeled_aa_change():
 
 
 def test_summarize_marks_low_confidence():
-    """低置信度变体在结论行附人工核对提示"""
+    """低置信度变体在结论行附未决提示（W12 口径：未决（…））"""
     v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v["confidence"] = "low"
     v["features"] = []
     note, kind = summarize_severity([v])[0]
-    assert "低置信度" in note and "人工核对" in note
+    assert "未决（" in note and "人工核对" in note
     assert kind == "low"  # R6：低置信行机器标记（前端折叠组数据源）
     v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v2["features"] = []
@@ -1432,18 +1432,19 @@ def test_baseline_correct_preserves_merged_plateau():
 # ==================== A4：报告层 ====================
 
 def test_summarize_slippage_wording():
-    """A4：带滑移标记的低置信变异点名“poly 下游疑似滑移伪影”（B4 落地后接入）"""
+    """A4：带滑移标记的低置信变异点名 poly 下游滑移（W12 未决口径：不再
+    预判「疑似滑移伪影」，如实说待定）"""
     v = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v["confidence"] = "low"
     v["features"] = []
     v["slippage_artifact"] = True
     note = summarize_severity([v])[0]
-    assert "滑移伪影" in note[0] and "混合峰" not in note[0]
-    # 无标记的低置信变异维持原口径
+    assert "未决（poly 下游滑移待定" in note[0] and "混合峰" not in note[0]
+    # 无标记的低置信变异：未决口径（原因不明、无法排除）
     v2 = _base_variant(ref_pos=5, type="deletion", ref_base="A", alt_base="-", length=1)
     v2["confidence"] = "low"
     v2["features"] = []
-    assert "疑似测序噪声或混合峰" in summarize_severity([v2])[0][0]
+    assert "未决（测序噪声或混合峰无法排除" in summarize_severity([v2])[0][0]
 
 
 def test_excel_conclusion_flags_poly_count_mismatch():

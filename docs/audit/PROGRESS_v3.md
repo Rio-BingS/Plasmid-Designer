@@ -275,6 +275,39 @@
   0 failed / 10 skipped / 5 xfailed（闸门3 段已记）；W11 推送后重跑回填。
 
 
+## W12 三出口统一（PL §E1/§E4/§E6；RV 遗留）
+
+- 单一真相源（OC1/OC2 的根治）：`verdict.py` 新增模块级
+  `STATUS_SYMBOLS`/`STATUS_EXCEL_WORDS` 与导出函数
+  `status_symbol(status)`（✓/✗/△，✓✗ 之外一律 △）、
+  `status_excel_word(status)`（合格/不合格/待定/疑似混合/无法判定/
+  待定·读取失败）——网页头行、Excel 结论前缀、前端卡片全部由
+  verdict.status 经同一映射导出，不再各自维护词表（CM 审核三出口
+  分叉的根因）。headline 的中间状态词（部分验证等）为头行专属措辞。
+- `excel_conclusion` 16 处分支前缀词改走映射（有 verdict 时 `_w` 出词、
+  旧记录无 verdict 保持原词——降级分支口径不变）；结论句删除
+  「；测序覆盖 x%」尾巴（goal W12「移到明细」——覆盖信息由信息表新列
+  「范围内验证覆盖」与整理包明细报告承载），连带同步 4 处测试断言。
+- evidence `_conclusion_summary` 头行符号：verdict 存在时由
+  status_symbol 导出（8 处分支），旧记录/直调保持字面量。
+- annotator 四处「低置信度（…疑似伪影…）」→「未决（…）」口径（RV）：
+  互检矛盾/poly 滑移/low_reason/默认支——去掉「疑似伪影」预判措辞，
+  机器标记 confidence=low 不变（前端折叠分组 R6 起由 kind 驱动）。
+- Excel 新列（goal W12）：回填信息表追加 验证范围 / 范围来源 /
+  范围内验证覆盖 / 缺口原因 / 范围外差异 / 补测建议 六列
+  （`backfill_excel` 新 records 参数；无 verdict 旧记录留空不编造；
+  列头幂等复用）；离线脚本 `run_to_dir` 返回 records 并同样回填——
+  网页 ZIP 与离线产物逐字节对照保持一致（test_offline_cli_matches_
+  web_endpoint_package 锁定）。
+- 前端 `ConclusionCards.vue`：删除按文案分组的旧回退（「低置信（」等
+  字符串匹配），只消费后端 conclusion_groups 结构化分组，无键时正文
+  整段常驻；折叠钮/待复核徽标话术同步「未决」口径。
+- OC1（SC3/SC5/SC6/S1 四场景）与 OC2（跨原点 CM3）摘 xfail 全绿；
+  新增映射单测 2 个（全集覆盖/词与既有分支一致 + verdict 驱动出词）。
+- 影响面：test_sanger_scenarios 72 passed、test_batch_sequencing 51
+  passed、test_sanger_pipeline + scenarios 237 passed。
+
+
 ## W3 verified 口径与 pass 契约（RV P0-2）
 
 - `build_verdict` 末尾新增真断言：status==pass ⇒ blocking==[]（契约违反

@@ -181,4 +181,5 @@ def test_conclusion_groups_structured():
     res2 = analyze([("r2.ab1", blob2)], ref, feats, circular=False)
     g2 = res2["conclusion_groups"]
     assert g2["low"], "首端硬区低置信变异应进 low 组"
-    assert any("低置信度" in l for l in g2["low"])
+    # W12：低置信行文案改「未决（」口径（机器分组 kind 驱动，文案不再参与判定）
+    assert any("未决（" in l for l in g2["low"])

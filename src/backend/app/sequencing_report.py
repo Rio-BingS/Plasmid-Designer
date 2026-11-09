@@ -450,11 +450,93 @@ def merge_result_cell(old, concl: str) -> str:
     return f"{user}\n{concl}" if user else concl
 
 
+# W12（goal）：信息表追加的范围与覆盖列——结论句不再带「测序覆盖 x%」，
+# 覆盖/缺口/补测细节由这些列与整理包明细报告承载
+_SCOPE_COL_TITLES = ["验证范围", "范围来源", "范围内验证覆盖", "缺口原因",
+                     "范围外差异", "补测建议"]
+_SCOPE_SOURCE_ZH = {
+    "user": "用户指定", "design_insert": "设计插入", "cds_target": "目的基因",
+    "filename_match": "文件名匹配", "primer_window": "引物窗口",
+    "measured": "未声明",
+}
+_GAP_KINDS = ("scope_uncovered", "scope_beyond_primer", "scope_read_shortfall",
+              "roi_uncovered", "roi_unverified", "roi_insufficient_bp")
+
+
+def _scope_cells(record: Optional[Dict]) -> tuple:
+    """分析记录 → 范围列 6 元组（验证范围/来源/范围内验证覆盖/缺口原因/
+    范围外差异/补测建议）。无 verdict 的旧记录给空串（不编造）"""
+    vd = (record or {}).get("verdict") or {}
+    if not vd:
+        return ("", "", "", "", "", "")
+    sc = vd.get("scope") or {}
+    src = _SCOPE_SOURCE_ZH.get(sc.get("source") or "measured",
+                               sc.get("source") or "")
+    if sc.get("declared"):
+        elems = sc.get("elements") or []
+        rngs = [(int(r[0]), int(r[1])) for r in (sc.get("ranges") or [])]
+        if elems and len(elems) == len(rngs):
+            rng_txt = "、".join(f"{n}（{s}–{e}）"
+                                for n, (s, e) in zip(elems, rngs[:3]))
+        else:
+            rng_txt = "、".join(f"{s}–{e}" for s, e in rngs[:3])
+    else:
+        rng_txt = "未声明（按已测区段判定）"
+    roi = vd.get("roi") or {}
+    vf = roi.get("verified_fraction")
+    cov_txt = f"{round(vf * 100)}%" if isinstance(vf, (int, float)) else ""
+    causes = []
+    for b in vd.get("blocking") or []:
+        if b.get("kind") in _GAP_KINDS:
+            el = b.get("element") or ""
+            d = b.get("detail") or ""
+            causes.append(f"{el}：{d}" if el and d else (el or d))
+    gap_txt = "；".join(causes[:3]) + ("等" if len(causes) > 3 else "")
+    oos = [i for i in vd.get("info") or [] if i.get("kind") == "out_of_scope_variant"]
+    oos_txt = f"{len(oos)} 处未评估" if oos else ""
+    acts, seen = [], set()
+    for b in vd.get("blocking") or []:
+        a = b.get("action") or ""
+        if a and a not in seen:
+            seen.add(a)
+            acts.append(a)
+    return (rng_txt, src, cov_txt, gap_txt, oos_txt, "；".join(acts[:2]))
+
+
+def _ensure_scope_columns(ws, cols: Dict) -> Dict[str, int]:
+    """信息表追加范围列头（幂等：已存在则复用），返回 列名→列号"""
+    hdr = None
+    for r in range(1, 21):
+        v = str(ws.cell(row=r, column=cols["plasmid"]).value or "")
+        if "质粒" in v:
+            hdr = r
+            break
+    if hdr is None:
+        return {}
+    col_map: Dict[str, int] = {}
+    for c in range(1, ws.max_column + 1):
+        v = str(ws.cell(row=hdr, column=c).value or "").strip()
+        if v in _SCOPE_COL_TITLES and v not in col_map:
+            col_map[v] = c
+    nxt = ws.max_column + 1
+    for t in _SCOPE_COL_TITLES:
+        if t not in col_map:
+            ws.cell(row=hdr, column=nxt).value = t
+            col_map[t] = nxt
+            nxt += 1
+    return col_map
+
+
 def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
-                   items: List[Dict], clone_mode: bool) -> Optional[bytes]:
+                   items: List[Dict], clone_mode: bool,
+                   records: Optional[Dict[str, Dict]] = None
+                   ) -> Optional[bytes]:
     """把各组结论回填信息表「测序结果」列（网页端与离线脚本共用：用户已写
     的内容保留，结论换行写在最后；此前本工具写入的结论被替换而不是叠加，
     见 merge_result_cell），返回回填后的 xlsx 字节；无可回填内容时返回 None。
+
+    W12：records（analysis_id → 分析记录）可用时追加范围列（验证范围/
+    来源/范围内验证覆盖/缺口原因/范围外差异/补测建议）。
 
     克隆模式按（质粒名, 克隆号）对应行——离线脚本不支持克隆模式，这是网页端
     的扩展；质粒模式按质粒名对应（多行同名质粒回填同一结论）。
@@ -470,8 +552,19 @@ def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
             concls[(it["plasmid"], it["clone"])] = concl
         else:
             concls.setdefault(it["plasmid"], concl)
+    cells_map: Dict = {}
+    for it in items:
+        rec = (records or {}).get(it.get("analysis_id"))
+        if rec is None:
+            continue
+        vals = _scope_cells(rec)
+        if clone_mode and it.get("clone"):
+            cells_map[(it["plasmid"], it["clone"])] = vals
+        else:
+            cells_map.setdefault(it["plasmid"], vals)
     filled = 0
     ws = wb.worksheets[0]
+    scope_cols = _ensure_scope_columns(ws, cols) if cells_map else {}
     for row in rows:
         key = (row["name"], row["clone"]) if clone_mode else row["name"]
         concl = concls.get(key)
@@ -479,6 +572,10 @@ def backfill_excel(wb, cols: Optional[Dict], rows: Optional[List[Dict]],
             continue
         cell = ws.cell(row=row["row"], column=cols["result"])
         cell.value = merge_result_cell(cell.value, concl)
+        vals = cells_map.get(key)
+        if vals and scope_cols:
+            for t, v in zip(_SCOPE_COL_TITLES, vals):
+                ws.cell(row=row["row"], column=scope_cols[t]).value = v or None
         filled += 1
     if not filled:
         return None

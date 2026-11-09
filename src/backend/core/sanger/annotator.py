@@ -277,8 +277,10 @@ def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
     R6：前端折叠分组由它驱动，不再靠「低置信度（」文案匹配）：
     - "low"：低置信变体行及其 ↳ 子注释（前端默认折叠组）；
     - "variant"：确证变体行 / 互检排除行及其子注释（正文常驻）。
-    与旧折叠口径逐行等价：low ⟺ 行文本含「低置信度（」⟹ confidence=low
-    且非互检排除（cross_read_resolved 行不带低置信文案，归正文）。"""
+    W12（RV 遗留）：低置信行文案改「未决（」口径——「疑似伪影」是对矛盾
+    证据的预判，未决如实说；前端折叠分组由 kind 驱动（R6），文案变更不影响
+    分组。low ⟺ confidence=low 且非互检排除（cross_read_resolved 行不带
+    未决文案，归正文）。"""
     notes: List[Tuple[str, str]] = []
     for v in variants:
         loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
@@ -307,13 +309,13 @@ def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
             elif v.get("cross_read_conflict"):
                 # 2026-11-08 复审 R6：「疑似伪影」是对矛盾证据的预判——
                 # 伪影与低频真实变异均无法排除，如实说
-                note += "，低置信度（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，伪影与低频真实变异均无法排除）"
+                note += "，未决（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，伪影与低频真实变异均无法排除）"
             elif v.get("slippage_artifact"):
-                note += "，低置信度（poly 下游疑似滑移伪影，建议人工核对峰图）"
+                note += "，未决（poly 下游滑移待定，需人工核对峰图）"
             elif v.get("low_reason"):
-                note += f"，低置信度（{v['low_reason']}，建议人工核对峰图）"
+                note += f"，未决（{v['low_reason']}，需人工核对峰图）"
             else:
-                note += "，低置信度（疑似测序噪声或混合峰，建议人工核对峰图）"
+                note += "，未决（测序噪声或混合峰无法排除，需人工核对峰图）"
             line_kind = "low"
         notes.append((note, line_kind))
         if v.get("enzyme_sites_lost"):
