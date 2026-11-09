@@ -43,11 +43,18 @@ v2.35.0（2026-10-31）= 限制性克隆预览三图分工（v2.34.1 后 main �
 （预算顶格，本轮靠收敛 localStorage 读写到 batchHistory.ts 才保住）、连续两轮触发 CI
 尺寸预算记账——预览表/载体池/参数区应拆成独立组件。见 §8 P1。
 
-goal v3（scope 报告）进行到 **W11 已收**（2026-11-10）：范围重算端点
-`POST /api/sequencing/analyses/{id}/verdict`（build_verdict 纯函数、不重跑
-比对）+ 范围记忆新表 `sequencing_scope_memory`（alembic a1b2c3d4e5f6，参考
-指纹 → 最近声明范围，单样品/批量自动带出）+ scope_history 留痕；进度见
-docs/audit/PROGRESS_v3.md。
+goal v3（scope 报告）**W0–W16 全部收口**（2026-11-10）：范围三态模型
+（declared/measured，范围外「未评估」）、范围重算端点与范围记忆表
+（`sequencing_scope_memory`，alembic a1b2c3d4e5f6）、三出口统一（网页头行/
+Excel/前端卡片全部由 verdict.status 导出）、Excel 回填新六列（验证范围/
+范围来源/范围内验证覆盖/缺口原因/范围外差异/补测建议）、范围预设条与
+MatchMap 三层色带（W13 前端）、复核队列三类收口与一键确认留痕（W14，
+headline「人工确认 N 处」）、p_real 三档展示（W15）、KNOWN_ISSUES 防回潮
+约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，MUTPK
+3 处真实确证变异敏感度锁定）。场景库 72 场景全绿（xfail 清零）；Windows
+全量 **2070 passed / 0 failed / 46 skipped**；SANGER_ALGO_VERSION 保持 v14
+（W11–W16 未改判定阈值/真值）。逐阶段数字与刻意未做事项见
+docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 
 ## 2. 事实清单（2026-10-26/27 实测，可直接引用）
 
