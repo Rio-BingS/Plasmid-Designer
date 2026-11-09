@@ -113,10 +113,12 @@ function actionText(v: SequencingVariant): string {
   const a = v.action ?? (v.confidence === 'low' ? 'review_trace' : 'accept')
   return ACTION_LABELS[a]?.label ?? a
 }
-/** 2026-11-08 复审 R5：p_real 是 T15 规则评分（锚点+层内修正，与旧
- * if 树逐位等价），不是校准概率——展示为 0-100 评分，不再伪作百分比 */
+/** goal v3 W15（PL G2）：p_real 在完成真实数据校准前不当概率使用——
+ * 对外只显示 高/中/低 三档（档位=confidence，由后端 p_real 分档回填）；
+ * 数值 p_real 仅内部排序用（同档内评分升序，最可疑在前） */
+const TIER_ZH: Record<string, string> = { high: '高', medium: '中', low: '低' }
 function pRealText(v: SequencingVariant): string {
-  return v.p_real != null ? `评分 ${Math.round(v.p_real * 100)}` : ''
+  return v.p_real != null ? (TIER_ZH[v.confidence ?? ''] ?? '-') : ''
 }
 
 /** 互检排除项按「源 read × 区段」聚合（间隔 ≤50bp 视为同一衰减区段，与后端结论同口径） */
@@ -261,7 +263,7 @@ function reasonBadges(v: SequencingVariant) {
           <td>
             <template v-if="row.rowKind === 'variant'">
               <span v-if="row.variant!.p_real != null" class="p-real"
-                    :title="'T15 规则评分（0-100，非校准概率），详见 SANGER_CALIBRATION §2/§3'">{{ pRealText(row.variant!) }}</span>
+                    :title="'可信度三档（高/中/低）——p_real 未完成真实数据校准，不作为概率使用'">{{ pRealText(row.variant!) }}</span>
               <span class="badge action" :class="row.variant!.action ? ACTION_LABELS[row.variant!.action]?.cls : 'act-review'">{{ actionText(row.variant!) }}</span>
             </template>
             <template v-else>
