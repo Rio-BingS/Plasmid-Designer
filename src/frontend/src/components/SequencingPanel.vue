@@ -7,7 +7,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import {
   analyzeSequencingFiles, exportConsensus, formatApiError,
-  parseSequencingReference,
+  parseSequencingReference, recomputeVerdict,
   type SequencingAnalysis, type SequencingReferenceParse
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
@@ -169,22 +169,29 @@ function normalizeMinQ() {
 
 const canAnalyze = computed(() => !!referenceFile.value && reads.value.length > 0
   && !validateReliableZone(reliableZone.value)
-  && (!cdsMode.value || !!cdsSelected.value))
+  && (scopeKind.value === 'custom'
+      ? !!customScope.value.trim()
+      : !!scopePreset.value))
 
-// ==================== 目的基因模式（CDS 对比） ====================
-// 开关打开且参考暂存后调 parse-reference：候选 CDS 下拉 + 文件名自动匹配
-// 预选。所有 read 照常参与比对（载体通用引物 read 直接可用，无需与 CDS
-// 同名），参考替换为选中 CDS 的编码序列——报告坐标即 CDS 内坐标。
-// 用户手动改过下拉后 read 增减不再自动重解析（不顶掉手动选择）；
-// 换参考或关掉开关才重置。
-const cdsMode = ref(false)
-const cdsCandidates = ref<SequencingReferenceParse['candidates']>([])
-const cdsSelected = ref('')
-const cdsAutoNote = ref('')
-const cdsManual = ref(false)
-const cdsLoading = ref(false)
-const cdsError = ref('')
-const cdsLastRefName = ref('')
+// ==================== 验证范围选择（goal v3 W13；§8 决策 4） ====================
+// 目的基因模式开关并入范围预设：预设=某 CDS ⇔ cds_mode=true + cds_name
+// （范围 = CDS + 接合区，W8 起全质粒比对不裁参考）；「全质粒」不声明 CDS；
+// 「自定义」= Form scope 文本（元件名 / 数字区间 / 关键字）。预设与默认项
+// 来自 parse-reference（W10 scope_presets/default_preset，默认项附 reason）。
+// 用户手动选过预设后 read 增减不再自动重解析（不顶掉手动选择）；
+// 换参考才重置。
+const scopePresets = ref<NonNullable<SequencingReferenceParse['scope_presets']>>([])
+const scopeDefault = ref<SequencingReferenceParse['default_preset']>(null)
+const scopeKind = ref<'preset' | 'custom'>('preset')
+const scopePreset = ref('全质粒')
+const customScope = ref('')
+const scopeLoading = ref(false)
+const scopeError = ref('')
+const scopeManual = ref(false)
+const scopeLastRefName = ref('')
+
+/** 选中的 CDS 预设 ⇔ 目的基因模式（W8 全质粒比对 + cds_target 范围） */
+const cdsMode = computed(() => scopeKind.value === 'preset' && scopePreset.value !== '全质粒')
 
 const cdsReadsKey = computed(() => reads.value.map((f) => f.name).join('\n'))
 
@@ -195,46 +202,103 @@ const cdsTargetFeature = computed(() => findCdsTarget(analysis.value?.features))
 const cdsCoverageLine = computed(() => analysis.value && cdsTargetFeature.value
   ? cdsCoverageSummary(analysis.value.reads, cdsTargetFeature.value) : '')
 
-async function loadCdsCandidates() {
+async function loadScopePresets() {
   const ref = referenceFile.value
   if (!ref) return
-  cdsLoading.value = true
-  cdsError.value = ''
+  scopeLoading.value = true
+  scopeError.value = ''
   try {
     const parsed = await parseSequencingReference(ref, reads.value.map((f) => f.name))
-    cdsCandidates.value = parsed.candidates
-    cdsSelected.value = parsed.auto_match?.name || ''
-    cdsAutoNote.value = parsed.auto_match?.note || ''
-    if (!parsed.candidates.length) {
-      cdsError.value = parsed.note || '参考内没有可作目标的 CDS/gene 特征'
+    scopePresets.value = parsed.scope_presets
+      ?? [{ value: '全质粒', label: '全质粒', reason: '整条参考都在需测范围' }]
+    scopeDefault.value = parsed.default_preset ?? null
+    if (scopeDefault.value) {
+      scopePreset.value = scopeDefault.value.value
+      scopeKind.value = 'preset'
+    }
+    if (!parsed.candidates.length && !parsed.scope_presets?.length) {
+      scopeError.value = parsed.note || '参考解析未得到可用范围预设'
     }
   } catch (e: any) {
-    cdsCandidates.value = []
-    cdsSelected.value = ''
-    cdsError.value = formatApiError(e, '参考解析失败')
+    scopePresets.value = []
+    scopeDefault.value = null
+    scopeError.value = formatApiError(e, '参考解析失败')
   } finally {
-    cdsLoading.value = false
+    scopeLoading.value = false
   }
 }
 
-watch([cdsMode, () => referenceFile.value, cdsReadsKey], async ([on, rf]) => {
-  if (!on || !rf) {
-    cdsCandidates.value = []
-    cdsSelected.value = ''
-    cdsAutoNote.value = ''
-    cdsError.value = ''
-    cdsManual.value = false
-    cdsLastRefName.value = ''
+watch([() => referenceFile.value, cdsReadsKey], async ([rf]) => {
+  if (!rf) {
+    scopePresets.value = []
+    scopeDefault.value = null
+    scopeError.value = ''
+    scopeManual.value = false
+    scopeLastRefName.value = ''
     return
   }
-  // 参考文件换人 → 候选全部重来（手动选择自然失效）
-  if (rf.name !== cdsLastRefName.value) {
-    cdsManual.value = false
-    cdsLastRefName.value = rf.name
+  // 参考文件换人 → 预设全部重来（手动选择自然失效）
+  if (rf.name !== scopeLastRefName.value) {
+    scopeManual.value = false
+    scopeLastRefName.value = rf.name
   }
-  if (cdsManual.value && cdsSelected.value) return
-  await loadCdsCandidates()
+  if (scopeManual.value && scopePreset.value) return
+  await loadScopePresets()
 })
+
+// ==================== 范围重算（goal v3 W11/W13） ====================
+// 结果页改范围 → POST /verdict：build_verdict 纯函数重算，不重跑比对。
+// 等待返回期间沿用旧 element_verdicts/结论（本地预览），返回后整体刷新
+const scopeBusy = ref(false)
+const scopeBarError = ref('')
+const scopeHistory = ref<unknown[]>([])
+
+async function applyScope(text: string) {
+  if (!analysis.value?.analysis_id || scopeBusy.value) return
+  scopeBusy.value = true
+  scopeBarError.value = ''
+  try {
+    const r = await recomputeVerdict(analysis.value.analysis_id, text)
+    analysis.value = { ...analysis.value, verdict: r.verdict, conclusion: r.conclusion }
+    scopeHistory.value = r.scope_history ?? []
+  } catch (e: any) {
+    scopeBarError.value = formatApiError(e, '范围重算失败')
+  } finally {
+    scopeBusy.value = false
+  }
+}
+
+/** 预设按钮是否命中当前 verdict.scope（高亮用；元件名精确匹配） */
+function scopeMatchesVerdict(value: string): boolean {
+  const sc = analysis.value?.verdict?.scope
+  if (!sc?.declared) return false
+  const el = sc.elements ?? []
+  return value === '全质粒' ? el.length === 0 : el.includes(value)
+}
+
+/** MatchMap 点击元件 → 加入/移出需测范围（goal W13）：以当前声明元件集合
+ * 增删后重组 scope 文本，经 W11 重算端点生效；未声明时从全质粒转入该元件 */
+function toggleFeatureScope(name: string) {
+  const sc = analysis.value?.verdict?.scope
+  const els = (sc?.declared ? sc.elements ?? [] : [])
+  const next = els.includes(name)
+    ? els.filter((x) => x !== name)
+    : [...els, name]
+  applyScope(next.join('; ') || '全质粒')
+}
+
+/** MatchMap 拖拽框选区间 → 追加进当前声明（与既有元件名并列，; 分隔） */
+function addScopeRange([s, e]: [number, number]) {
+  const sc = analysis.value?.verdict?.scope
+  const parts: string[] = []
+  if (sc?.declared && sc.elements?.length) parts.push(...sc.elements)
+  // 已声明但无元件名（纯区间/关键字）时保留原区间文本的数字段
+  else if (sc?.declared && !sc.elements?.length) {
+    for (const [rs, re] of sc.ranges ?? []) parts.push(`${rs}-${re}`)
+  }
+  parts.push(`${s}-${e}`)
+  applyScope(parts.join('; '))
+}
 
 async function runAnalysis() {
   if (!referenceFile.value || !reads.value.length) return
@@ -245,7 +309,8 @@ async function runAnalysis() {
     analysis.value = await analyzeSequencingFiles(
       referenceFile.value, reads.value, minQ.value, allowDecompose.value,
       reliableZoneFormValue(reliableZone.value),
-      { mode: cdsMode.value, name: cdsSelected.value || undefined }
+      { mode: cdsMode.value, name: cdsMode.value ? scopePreset.value : undefined },
+      scopeKind.value === 'custom' ? customScope.value.trim() : ''
     )
     resetSeqViz()
     if (analysis.value.reads.length) {
@@ -404,28 +469,31 @@ async function downloadConsensus(format: string) {
       </div>
       <p v-else class="stage-empty">尚未选择文件：需要 1 个参考序列文件 + 至少 1 个 .ab1</p>
 
-      <div class="cds-mode">
-        <label class="cds-toggle">
-          <input type="checkbox" v-model="cdsMode" />
-          <b>目的基因模式</b>
+      <div class="cds-mode scope-picker">
+        <label class="scope-title"><b>验证范围</b>
+          <span class="scope-hint">结论只对声明的范围负责；选中 CDS 预设即目的基因模式（范围 = CDS + 两端接合区，全质粒比对不裁参考），通用引物（M13F/T7 等）无需与 CDS 同名</span>
         </label>
-        <span class="cds-hint">流程：按参考文件名（.dna/.gb 等）识别目的片段（CDS）→ 匹配引物（每条 read 与目的 CDS 求交，报告覆盖关系）→ 分析 → 报告结果。参考两侧各保留 150bp 侧翼作比对上下文（标注为 5′/3′侧翼）；通用引物（M13F/T7 等）无需与 CDS 同名，未覆盖目的 CDS 的 read 会明确标注</span>
-        <template v-if="cdsMode">
-          <p v-if="!referenceFile" class="stage-note">选择参考序列后自动列出候选 CDS</p>
-          <p v-else-if="cdsLoading" class="stage-note">正在解析参考特征…</p>
-          <template v-else-if="cdsCandidates.length">
-            <label class="cds-pick">
-              目的 CDS
-              <select v-model="cdsSelected" @change="cdsManual = true">
-                <option v-for="c in cdsCandidates" :key="c.name + c.start" :value="c.name">
-                  {{ c.name }}（{{ c.start }}-{{ c.end }}，{{ c.length }} bp{{ c.strand === '-' ? '，负链' : '' }}）
-                </option>
-              </select>
-            </label>
-            <span v-if="cdsAutoNote" class="stage-note">自动匹配：{{ cdsAutoNote }}</span>
-          </template>
-          <p v-if="cdsError" class="error-msg">{{ cdsError }}</p>
-        </template>
+        <div v-if="referenceFile" class="scope-presets">
+          <button v-for="p in scopePresets" :key="p.value" type="button"
+                  class="scope-btn"
+                  :class="{ active: scopeKind === 'preset' && scopePreset === p.value }"
+                  :title="p.reason"
+                  @click="scopeKind = 'preset'; scopePreset = p.value; scopeManual = true">
+            {{ p.label }}
+          </button>
+          <button type="button" class="scope-btn"
+                  :class="{ active: scopeKind === 'custom' }"
+                  title="输入元件名 / 数字区间 / 多段（; 分隔）/ 「全质粒」「插入片段」「接合区」"
+                  @click="scopeKind = 'custom'">自定义…</button>
+        </div>
+        <input v-if="scopeKind === 'custom'" v-model="customScope"
+               class="scope-custom-input" type="text"
+               placeholder="元件名 / 301-900 / 多段用 ; 分隔 / 「插入片段」「接合区」" />
+        <p v-if="!referenceFile" class="stage-note">选择参考序列后显示范围预设</p>
+        <p v-else-if="scopeLoading" class="stage-note">正在解析参考特征…</p>
+        <p v-else-if="scopeDefault && scopeKind === 'preset'"
+           class="stage-note">默认 {{ scopeDefault.value }}——{{ scopeDefault.reason }}；可切换预设或自定义</p>
+        <p v-if="scopeError" class="error-msg">{{ scopeError }}</p>
       </div>
 
       <details class="advanced">
@@ -447,6 +515,28 @@ async function downloadConsensus(format: string) {
     </div>
 
     <template v-if="analysis">
+      <!-- 范围条（goal v3 W13）：改范围 → W11 重算端点（不重跑比对） -->
+      <div v-if="analysis.verdict" class="scope-bar">
+        <span class="scope-bar-label">验证范围</span>
+        <button v-for="p in scopePresets" :key="p.value" type="button"
+                class="scope-btn sm"
+                :class="{ active: analysis.verdict?.scope?.declared
+                  && analysis.verdict.scope.source !== 'measured'
+                  && scopeMatchesVerdict(p.value) }"
+                :title="p.reason" :disabled="scopeBusy"
+                @click="applyScope(p.value)">{{ p.label }}</button>
+        <button type="button" class="scope-btn sm" :disabled="scopeBusy"
+                :class="{ active: !(analysis.verdict?.scope?.declared) }"
+                title="不声明范围：结论只对已测区段负责（范围外未评估）"
+                @click="applyScope('')">不声明</button>
+        <span v-if="analysis.verdict.scope?.declared" class="scope-bar-note">
+          {{ analysis.verdict.scope.elements?.join('、') || '' }}
+          <template v-if="analysis.verdict.scope.reason">（{{ analysis.verdict.scope.reason }}）</template>
+        </span>
+        <span v-if="scopeBusy" class="stage-note">重算中…（等待期间展示当前结果）</span>
+        <span v-else-if="scopeBarError" class="error-msg">{{ scopeBarError }}</span>
+      </div>
+
       <!-- 结论总览 + CDS 结论卡（子组件；低置信折叠态与突变表共享） -->
       <ConclusionCards v-model:show-low-conf="showLowConf" :analysis="analysis" />
 
@@ -458,7 +548,13 @@ async function downloadConsensus(format: string) {
                 :reads="analysis.reads" :variants="analysis.variants"
                 :features="analysis.features" :coverage-ranges="analysis.coverage_ranges"
                 :reference-length="analysis.reference_length" :circular="analysis.circular"
-                @open-read="openReadInSeqviz" @jump-variant="jumpToVariant" />
+                :scope="analysis.verdict?.scope ?? null"
+                :expected-ranges="analysis.coverage?.expected_ranges ?? []"
+                :verified-ranges="analysis.coverage?.verified_ranges ?? []"
+                :coverage-gaps="analysis.coverage_gaps ?? []"
+                @open-read="openReadInSeqviz" @jump-variant="jumpToVariant"
+                @toggle-feature-scope="toggleFeatureScope"
+                @add-scope-range="addScopeRange" />
 
       <!-- Read 摘要（子组件；查看按钮回传给峰图联动）。
            目的基因模式下额外展示 read↔CDS 覆盖关系（匹配引物） -->

@@ -75,7 +75,9 @@ describe('ConclusionCards verdict 渲染（T2/M13）', () => {
     expect(lines[0].text()).toContain('无需核对')
   })
 
-  it('旧记录（无 verdict/resolved_regions）退回符号与文本行匹配', () => {
+  it('旧记录（无 verdict/resolved_regions/conclusion_groups）正文整段常驻', () => {
+    // W12（RV 遗留清除）：分组不再按文案匹配——旧记录无结构化分组时
+    // 正文整段常驻（裁决行文本不丢，只是没有结构化高亮样式）
     const legacy: SequencingAnalysis = {
       ...baseAnalysis,
       conclusion: '✓ 结论：构建与设计一致\n差异区间 120-120：r2.ab1（正向）报出 1 处差异 → 已被 r1.ab1 高质量覆盖排除，无需核对',
@@ -85,9 +87,8 @@ describe('ConclusionCards verdict 渲染（T2/M13）', () => {
     const w = mount(ConclusionCards, { props: { analysis: legacy } })
     expect(w.find('.verdict-badge').exists()).toBe(false)
     expect(w.find('.verdict-blocking').exists()).toBe(false)
-    const lines = w.findAll('.resolved-region-line')
-    expect(lines.length).toBe(1)
-    expect(lines[0].text()).toContain('无需核对')
+    expect(w.findAll('.resolved-region-line').length).toBe(0)
+    expect(w.text()).toContain('无需核对')
     // ✓ 头行退回绿色强调
     expect(w.find('.conclusion-head').classes()).toContain('ok')
   })
