@@ -48,6 +48,7 @@ from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
 )
+from core.sanger import peak_shape
 from core.sanger.reliable_zone import (
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
 )
@@ -766,6 +767,31 @@ def _build_consensus(reference: str, read_results: List[Dict],
     covered_ranges = merge_coverage(
         [(i + 1, i + 1) for i, c in enumerate(covered) if c], L
     )
+    # 峰形退化区段（goal v3.1 X1，read 级占比 ≥30%）不算实测覆盖：从共识
+    # 覆盖区间里扣除，使 measured 口径与 coverage_ranges 同源（SC6 的
+    # 500bp 退化段 → measured 掉到缺口口径 → partial + read_shortfall）。
+    # 小段退化（SC10 的尾端 3%）保留为实测、由 verified 排除——那是
+    # 「读了但读不清」，不是「没测到」。
+    _bad_ref = set()
+    for r in read_results:
+        if _degraded_share(r) < DEGRADED_READ_SHARE:
+            continue
+        rmap = ReadRefMap.from_alignment(r)
+        zone = r.get("reliable_zone") or {}
+        z0, z1 = int(zone.get("start") or 1), int(zone.get("end") or 0)
+        for ds, de in (r.get("degraded_ranges") or []):
+            for rp in range(ds, de + 1):
+                # 只扣「本来算实测」的碱基：可信区外（含尾端硬区）已被
+                # verified/trusted 排除，重复扣除会把 S17 的实测覆盖切掉
+                if z1 and not (z0 <= rp <= z1):
+                    continue
+                rf = rmap.read_to_ref(rp)
+                if rf:
+                    _bad_ref.add(int(rf))
+    if _bad_ref:
+        covered_ranges = merge_coverage(
+            [(i + 1, i + 1) for i, c in enumerate(covered)
+             if c and (i + 1) not in _bad_ref], L)
     coverage = sum(1 for c in covered if c) / L if L else 0.0
     sequence = "".join(consensus_chars)
     segments = _read_segments(sequence, char_ref, char_cov)
@@ -1556,6 +1582,9 @@ def _analyze_one_read(
         # read 可信区：位置先验（首端硬区/灰区、尾端灰区/硬区）+ Q 值与峰型
         "reliable_zone": compute_reliable_zone(
             len(bases), s, trimmed_q, read["trace"], trimmed_peaks, zone_params),
+        # degraded_ranges 在 _signal_analysis_pass 里算（需要 poly_merged_zones
+        # 排除同聚物高台——goal v3.1 X1）
+        "degraded_ranges": [],
     }, None)
 
 def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
@@ -1614,16 +1643,29 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
         merged_span: set = set()
         for z in merged_zones:
             merged_span.update(z["positions"])
+        # 峰形退化区段（goal v3.1 X1 / RB P0-1）：read 坐标（修剪后 1-based）。
+        # exclude 传入合并压缩区 + 滑移 echo——同聚物高台/滑移处峰宽同样变大，
+        # 但那是结构本身的形态（已有专门处理），不是「尾端展宽」。
+        r["degraded_ranges"] = peak_shape.read_degraded(
+            r["trace"], r["trimmed_peaks"], exclude=merged_span | slip)
         # 双峰检出 + read 级分级走 mixed_model 自适应背景模型（goal T11；
         # A 3.1）：滑移 echo / 合并压缩区剔除、可信区外剔除（末端拖尾不凭空
         # 触发「连续双峰段」误报），通道对比值表一次构图，站点检测与
         # floor 兜底路径共用
+        # 峰形退化区段（goal v3.1 X1 / RB P0-1）：段内双峰是峰展宽的产物
+        # （相邻峰半高宽交叠冒充次峰），不是独立次等位——剔除出 mixed，
+        # 与 Q 衰减同等计入「测序未达」。exclude 用 read 坐标（1-based）
+        _degr = peak_shape.expand_runs(
+            r.get("degraded_ranges") or [], len(r.get("trimmed_bases") or ""))
+        _degr_span = set()
+        for _ds, _de in _degr:
+            _degr_span.update(range(max(1, _ds), _de + 1))
         mixed_detail, r["mixed_profile"] = detect_and_classify(
             r["trimmed_bases"], r["trace"], r["trimmed_peaks"],
             quality=r.get("trimmed_quality"), zone=r.get("reliable_zone"),
             tracy_calls=r.get("tracy_calls"),
             params=load_mixed_params(r.get("instrument")),
-            exclude=slip | merged_span,
+            exclude=slip | merged_span | _degr_span,
         )
         # mixed_positions 只收硬检出位点（soft 带不进置信度/互检闸，
         # goal v3 W4：软带仅供 verdict 在声明范围×功能区出 pending 复核项）
@@ -1650,6 +1692,54 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
             for d in r["mixed_detail"]:
                 d["tracy"] = tags.get(d["pos"])
+
+# 退化区段占该 read 实测覆盖的比例阈值（goal v3.1 §3.2；与 review 的
+# read 级折叠共用同一常量语义）
+DEGRADED_READ_SHARE = 0.30
+
+
+def _degraded_share(r: Dict) -> float:
+    """退化区段占该 read 覆盖碱基的比例（无退化 → 0）"""
+    runs = r.get("degraded_ranges") or []
+    total = len(r.get("trimmed_bases") or "")
+    if not runs or total <= 0:
+        return 0.0
+    covered = set()
+    for a, b in runs:
+        covered.update(range(max(1, a), min(total, b) + 1))
+    return len(covered) / total
+
+
+def _trim_degraded_span(span, r: Dict):
+    """把一条 read 的参考坐标覆盖段按峰形退化区段切开（大面积退化用）。
+
+    退化段内的碱基不算「实测覆盖」——后续缺口归因按 read_shortfall 处理。
+    参考坐标换算走 ReadRefMap（防回潮约束 9）。"""
+    runs = r.get("degraded_ranges") or []
+    if not runs:
+        return [span]
+    rmap = ReadRefMap.from_alignment(r)
+    bad = set()
+    for ds, de in runs:
+        for rp in range(ds, de + 1):
+            rf = rmap.read_to_ref(rp)
+            if rf:
+                bad.add(int(rf))
+    if not bad:
+        return [span]
+    s0, e0 = int(span[0]), int(span[1])
+    out = []
+    cur = s0
+    for p in sorted(bad):
+        if p < s0 or p > e0:
+            continue
+        if p > cur:
+            out.append((cur, p - 1))
+        cur = max(cur, p + 1)
+    if cur <= e0:
+        out.append((cur, e0))
+    return [x for x in out if x[0] <= x[1]]
+
 
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                              poly_local_ratio: bool) -> None:
@@ -2440,16 +2530,24 @@ def _build_conclusion(
         # has_mixed 用机器判定（A 5.2：不靠文案匹配）：widespread 分级 +
         # 跨引物互检降级例外，与 mixed_lines 的分叉同源（mixed_sample_confirmed）
         has_mixed = mixed_sample_confirmed(read_results, mixed_corroboration)
-        conclusion = (_conclusion_summary(shown_variants, cds_reports, has_mixed,
-                                          partial_reads=len(partial_reads),
-                                          resolved=len(resolved_variants),
-                                          unresolved_sites=len(unresolved_sites or []),
-                                          failed_reads=len(errors or []),
-                                          failed_names="、".join(
-                                              e.get("filename", "?") for e in (errors or [])[:2])
-                                          + ("等" if len(errors or []) > 2 else ""),
-                                          verdict=verdict)
-                      + "\n" + conclusion)
+        # goal v3.1 X3（RB P0-3）：结论首行**只**由 verdict.headline 生成——
+        # 网页/Excel/前端三出口逐字同源，不再各自拼接。下方 else 分支是
+        # 「旧记录无 verdict」的降级路径，保留 _conclusion_summary 旧文案。
+        _head = (verdict or {}).get("headline") or ""
+        if _head:
+            # 首行逐字 = headline，正文不再另起判读句（X3：三出口同源）
+            conclusion = "\n".join([_head, conclusion])
+        else:
+            conclusion = (_conclusion_summary(
+                shown_variants, cds_reports, has_mixed,
+                partial_reads=len(partial_reads),
+                resolved=len(resolved_variants),
+                unresolved_sites=len(unresolved_sites or []),
+                failed_reads=len(errors or []),
+                failed_names="、".join(
+                    e.get("filename", "?") for e in (errors or [])[:2])
+                + ("等" if len(errors or []) > 2 else ""),
+                verdict=verdict) + "\n" + conclusion)
 
     return conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups
 
@@ -2635,10 +2733,23 @@ def analyze(
 
     # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
     # （线性比对即 (ref_start, ref_end)，与此前一致）
-    coverage_ranges = merge_coverage(
-        [sp for r in read_results for sp in aln_segments(r["alignment"])],
-        len(ref),
-    )
+    # 峰形退化区段（goal v3.1 X1 / RB P0-1）：
+    # - 小段退化（< 覆盖的 30%）→ 仍算实测，但不可信 → verified 收缩
+    #   （SC10：11bp 尾巴 → measured 100%、verified 98.9% → pending）；
+    # - 大面积退化（≥ 30%）→ 该 read 后半程已无有效信号，按「测序未达」
+    #   扣除实测覆盖，缺口随之归因 read_shortfall（SC6：read 一半以上
+    #   峰宽 ×3.0 → partial + scope_read_shortfall）。
+    # 30% 与 X2 的 read 级折叠阈值同源（goal §3.2「退化区段占其范围内
+    # ≥30%」），两处必须一致。
+    _cov_spans = []
+    for r in read_results:
+        _segs = aln_segments(r["alignment"])
+        if _degraded_share(r) >= DEGRADED_READ_SHARE:
+            _cov_spans.extend(sp for seg in _segs
+                              for sp in _trim_degraded_span(seg, r))
+        else:
+            _cov_spans.extend(_segs)
+    coverage_ranges = merge_coverage(_cov_spans, len(ref))
     # 理论覆盖 E 与缺口归因（goal v3 W6，PL B1/B2）：expected_ranges 以
     # 比对起点为默认依据（引物结合位点随 W7）；缺口只对声明范围判 cause，
     # 未声明范围整参考缺口照旧（报告用），cause 同步给出

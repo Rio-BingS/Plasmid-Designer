@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from core.sanger.aligner import fold_pos
 from core.sanger.homopolymer import _read_ref_maps
+from core.sanger.peak_shape import in_degraded as _in_degraded
 from core.sanger.reliable_zone import in_zone
 
 
@@ -43,6 +44,10 @@ def _verified_positions(read_results: List[Dict], ref_length: int,
             if not (1 <= rf <= ref_length):
                 continue
             if not in_zone(zone, i):
+                continue
+            # 峰形退化区段（goal v3.1 X1）：与 Q 衰减/尾端硬区同等对待——
+            # 段内碱基「测到但读不清」，不构成验证证据（verified 收缩）
+            if _in_degraded(i, r.get("degraded_ranges")):
                 continue
             trusted.add(rf)
             if bases[i - 1] in "ACGT":
