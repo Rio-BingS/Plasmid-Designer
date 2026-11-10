@@ -73,7 +73,7 @@ docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 | 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v14"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
-| CI | `.github/workflows/ci.yml`（push main / PR 触发）：**尺寸预算** `scripts/check_file_size.py`（新文件 ≤900 行、白名单 11 个只许变小，`scripts/size_budgets.json` 记账）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
+| CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
 | 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出） |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
 
@@ -212,9 +212,9 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
-| **P1** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 连续两轮 CI 尺寸预算记账（900→1195→1318），再涨就要频繁动白名单；拆完白名单应只减不增 |
+| **P2** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 体积已大但不是痛点；推进期不做（2026-11-10 解除行数门禁），留到维护期与 pipeline.py/design_service.py 一起集中重构 |
 | **P0** | **Sanger 审计修复**（[SANGER_AUDIT_2026-11-06.md](SANGER_AUDIT_2026-11-06.md)）：P0×5 全部已复现——证据三态化+✓资格门 → verified 覆盖口径 → errors 进批量结论 → 混合互检对齐 `_region_ok` → `resolved_regions` 进 API 下发 | 5 项 P0 都是直接漏报（N 隐身、坏 read 判合格、真混合翻 ✓、低置信=伪影预判决、覆盖虚高），先固化探针为回归用例再修；改口径按 §6 约束 5 的纪律：先按旧口径取证、再改断言并递增结果版本 |
-| **P1** | CI 尺寸预算纪律：动代码后本地先跑 `python scripts/check_file_size.py`；白名单文件**有理由的小增量**（接线、新参数等）直接 `--refresh` 记账即可，**大增长/无意识增长**先拆分 | 2026-11-05 与所有者议定放宽：小增量记账不算欠账，不为 +15 行强制先重构；预演仍纳入收尾动作防「本地绿 CI 红」复发（v2.30.0 教训）。当日 refresh 顺带修正分支白名单滞后：construct_assembly.py 降到 900 以下掉出白名单，白名单 11→10 |
+| **已解除** | 尺寸预算纪律（2026-11-10） | 项目处于**推进期**：为过行数门禁而先拆分，把资源花在结构调整上，反而拖慢功能推进。门禁改为**只提示不阻断**（`check_file_size.py` 永远退出码 0，`--top N` 看最大的几个）。大文件（pipeline.py 2871、design_service.py 2328、BatchDesignView.vue 1318 等）重构留到维护期集中做 |
 | P2 | **目的基因模式推广到批量测序页**（讨论已定：缺图谱兜底优先，按名从参考/设计拉 CDS；`core/sanger/cds_extract.py` 的候选/匹配/提取可直接复用） | 单样品已随 v2.37.0-alpha.1 上线，批量工作流是自然延伸 |
 | P3 | 多段 CDS（GenBank join）在目的基因模式下暂不加侧翼（纯编码序列拼接），接缝边界效应留观察 | 真实多段 CDS 数据出现后再议 |
 | P2 | 批量二期候选：每条序列更多参数覆盖、服务端批量历史列表 API（现为 localStorage 本地恢复，换设备不可见） | 用户工作流可能需要 |

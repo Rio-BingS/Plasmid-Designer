@@ -516,7 +516,7 @@ npm run type-check
 基线（实时数字以 [docs/HANDOVER.md](docs/HANDOVER.md) §1/§2 为准）：后端 pytest、
 前端 vitest + `vue-tsc --noEmit`。CI（`.github/workflows/ci.yml`）在 push main
 与 PR 时跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，并有文档同步门禁
-`scripts/check_docs_sync.py` 与尺寸预算 `scripts/check_file_size.py`。
+`scripts/check_docs_sync.py` 与文件尺寸统计 `scripts/check_file_size.py`（只提示不阻断）。
 
 ## 模块接线状态
 
