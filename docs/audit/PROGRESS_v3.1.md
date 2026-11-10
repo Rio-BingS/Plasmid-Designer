@@ -322,3 +322,78 @@ r2 在序列上等价于 `301 G>T` 替换而非「终止后插入」。任何「
 
 CM3 由 xfail 原因 `X4` 改为 `CM3 构造 off-by-one（§7 停止条件，已汇报）`，
 docstring 写明证据链与不可自修的理由。
+
+---
+
+## 门禁调整：解除单文件行数限制（2026-11-10，所有者决定）
+
+**决定**：项目处于**推进期**而非维护期。为过「单文件 ≤900 行」门禁而先拆分，
+把大量资源花在结构调整上（本轮 X2/X4/X5 各有一半时间在处理行数），功能推进
+被显著拖慢。大文件的重构放到维护期集中做效果更好、总资源更少。
+
+**改动**：
+- `scripts/check_file_size.py`：改为**只统计、只提示**，永远退出码 0；
+  新增 `--top N` 直接列出最大的 N 个文件（作为后期重构的输入）；
+- `.github/workflows/ci.yml`：`Check file size budgets`（阻断）→
+  `Report file sizes`（只打印清单）；
+- `AGENTS.md` / `docs/HANDOVER.md` / `README.md` / `docs/KNOWN_ISSUES.md`：
+  同步口径，KNOWN_ISSUES 新增「大文件重构」待办清单（pipeline.py ~2870、
+  design_service.py ~2330、BatchDesignView.vue ~1320 等，含建议切分线）。
+
+**已做的拆分不回退**：`conclusion_fold.py` / `indel_norm.py` /
+`mutual_support.py` 是按职责边界切的，本身是合理结构，留着比合回去更好
+（只是不再为「再涨 3 行」去做无意义压缩——本轮为过门禁压缩过的排版已还原）。
+
+---
+
+## X5 范围记忆（RB P1-3 / P2-3）— 完成
+
+### 键从「参考哈希」改为「用户 + 参考哈希」
+
+| 项 | 旧 | X5 后 |
+|---|---|---|
+| 存储键 | `reference_hash` 单主键 | `(owner_id, reference_hash)` 复合主键 |
+| 匿名/单用户 | — | owner 归一为 `ANONYMOUS_OWNER`，行为与旧版一致 |
+| 多用户 | 会串味 | 各记各的（SM1） |
+| 迁移 | 无 | `b7c8d9e0f1a2`（`batch_alter_table`，SQLite 重建表搬数据） |
+| 运行时建表 | `__table__.create` ×2 | **已删除**（只走 alembic） |
+
+### 只记忆显式声明
+
+`REMEMBERED_SOURCES = {"user"}`：`save_scope_memory` 对 `cds_target` /
+`filename_match` / `primer_window` 等自动来源直接返回（SM2）。否则下次换
+目标 CDS 时会被上一次的自动选择污染。
+
+### 套用记忆时的标记
+
+- `scope.source` 保持原来源；
+- `scope.reason = "沿用上次范围"`；
+- **新增 `scope.remembered = true`**；
+- headline 末尾追加「（沿用上次范围）」——范围是记忆带出的而不是这次声明的，
+  不标注会让用户以为真的检查了这个范围；
+- 前端范围条显示「沿用上次范围（元件）· 清除」按钮。
+
+### 批量路径不套用记忆
+
+`sequencing_batch.py` 原有的「留空则按参考带出上次范围」已删除（§3.5）：
+信息表一行一个构建，若某行留空就套记忆，整批会被上一次的单一范围污染。
+
+### 新增 DELETE 端点
+
+`DELETE /api/sequencing/scope-memory?reference_hash=<sha256>`：只删本人那一行，
+幂等（无记录返回 `deleted=false`）。`verdict.scope` 新增 `reference_hash` 字段
+供前端直接回传，不必重传整条参考序列。
+
+### 测试
+
+| 场景 | 结果 |
+|---|---|
+| SM1 记忆按用户隔离 | 通过 |
+| SM2 自动来源不记忆 | 通过 |
+| SM3 remembered/reason/headline 注记 + 可清除 | 通过 |
+| 后端（Windows） | **2091 passed / 0 failed** / 46 skipped / **1 xfailed（CM3）** |
+| 前端 `test:run` | 693 passed（90 files） |
+| 前端 `type-check` | clean |
+| `test_migrations.py` | 通过（升级后 model 与迁移一致） |
+| `check_docs_sync.py` | 通过 |
+| `check_file_size.py` | 只提示（11 个文件超参考线，退出码 0） |

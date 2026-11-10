@@ -41,6 +41,15 @@ from app.routes.sequencing_routes import (
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
 
+def _owner_id(user: Optional[User]) -> Optional[str]:
+    """范围记忆的 owner（goal v3.1 X5）：登录用户取其 ID，匿名返回 None。
+
+    None 由 store 归一为 `ANONYMOUS_OWNER`——单用户部署下所有记忆仍按参考
+    隔离；多用户库则各记各的，不会串味（SM1）。
+    """
+    return getattr(user, "id", None) if user is not None else None
+
+
 @router.post(
     "/sequencing/analyze",
     dependencies=[Depends(require_feature("sequencing"))],
@@ -89,14 +98,16 @@ async def analyze_sequencing_upload(
         if scope_obj is None and scope_err:
             raise HTTPException(status_code=400, detail=scope_err)
     if scope_obj is None and not cds_mode:
-        # W11（PL §C7）：范围记忆——同一参考序列上次使用的声明范围自动
-        # 带出（source 保留原来源、reason 注明沿用）；读取失败/无记录时
-        # 沉默退回未声明口径
+        # W11 / v3.1 X5：范围记忆——同一用户在同一参考上的上次**显式声明**
+        # 范围自动带出。source 保留原来源，另标 remembered=true 与
+        # reason「沿用上次范围」（headline 据此加注记、前端显示「清除」）
         from core.sanger.scope import Scope as _Scope
-        _mem = await run_in_threadpool(sequencing_store.load_scope_memory, ref_seq)
+        _mem = await run_in_threadpool(
+            sequencing_store.load_scope_memory, ref_seq, _owner_id(user))
         if _mem:
             scope_obj = _Scope.from_dict(_mem)
             scope_obj.reason = "沿用上次范围"
+            scope_obj.remembered = True
     if cds_mode and scope_obj is None:
         # 目的基因模式（goal v3 W8，CM P0-A/P0-B/P1-C/P1-F）：不再裁参考——
         # 全质粒按真实拓扑比对，scope = 目标 CDS + 接合区（source=cds_target），
@@ -495,7 +506,7 @@ async def recompute_verdict(analysis_id: str, request: Request,
     new_scope = verdict.get("scope") or {}
     if new_scope.get("declared"):
         await run_in_threadpool(sequencing_store.save_scope_memory,
-                                reference, new_scope)
+                                reference, new_scope, _owner_id(user))
     return {"verdict": verdict, "conclusion": record.get("conclusion"),
             "scope_history": hist}
 
@@ -638,4 +649,19 @@ async def delete_analysis(analysis_id: str, request: Request,
         _ANALYSES.pop(analysis_id, None)
     await run_in_threadpool(sequencing_store.delete_record, analysis_id)
     return {"deleted": True, "analysis_id": analysis_id}
+
+
+@router.delete("/sequencing/scope-memory")
+async def delete_scope_memory(reference_hash: str = Query(
+                                  ..., min_length=16,
+                                  description="参考序列 sha256 指纹（64 位小写十六进制）"),
+                              user: Optional[User] = Depends(get_current_user)):
+    """清除当前用户在该参考上的范围记忆（goal v3.1 X5 §3.5）。
+
+    只删本人那一行（键含 owner），不影响其他用户；幂等——没有记录时
+    `deleted=false` 而非报错。前端范围条「沿用上次范围 · 清除」调用它。
+    """
+    deleted = await run_in_threadpool(
+        sequencing_store.clear_scope_memory_hash, reference_hash, _owner_id(user))
+    return {"deleted": bool(deleted), "reference_hash": reference_hash}
 

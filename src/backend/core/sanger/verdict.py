@@ -28,6 +28,7 @@ T5：
 """
 
 import re
+import hashlib
 from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
@@ -852,10 +853,20 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     headline = f"{sym_} {word_} · {range_part} · 证据：{ev_txt}"
     if _reviewed_n:
         headline += f"，人工确认 {_reviewed_n} 处"
+    # 沿用上次范围（goal v3.1 X5）：范围是记忆带出的，不是这次声明的——
+    # 必须在头行标注，否则用户会以为这次真的检查了这个范围
+    if getattr(scope_obj, "remembered", False):
+        headline += "（沿用上次范围）"
     # X3：Excel 结论列 = 去掉符号后的 headline（RB P0-3：三出口逐字同源）。
     # 明细列（缺口原因/范围外差异/补测建议）由 _scope_cells 从结构化字段填
     excel_txt = headline.lstrip("✓✗△ ").strip()
 
+    # 范围字典 + 参考指纹（X5）：前端「清除记忆」按指纹调 DELETE 端点，
+    # 不必回传整条参考序列（sha256 是序列的纯函数，不影响 build_verdict 的纯函数性）
+    _sc_out = scope_obj.to_dict() if scope_obj is not None else None
+    if _sc_out is not None and result.get("reference"):
+        _sc_out["reference_hash"] = hashlib.sha256(
+            str(result["reference"]).upper().encode("utf-8")).hexdigest()
     return {
         "status": status,
         "blocking": blocking,
@@ -876,8 +887,9 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             "failed": [{"file": e.get("filename"), "error": e.get("error", "")}
                        for e in errors],
         },
-        # 需测范围（goal v3 §3.3；None=未声明，W2 起合成 measured 口径）
-        "scope": scope_obj.to_dict() if scope_obj is not None else None,
+        # 需测范围（goal v3 §3.3；None=未声明）。X5 起附 reference_hash：
+        # 前端「清除记忆」按它调 DELETE，不必回传整条参考序列
+        "scope": _sc_out,
         # goal v3 W5（PL A5/A6）：元件级判定与三段式头行
         "element_verdicts": element_verdicts,
         "headline": headline,

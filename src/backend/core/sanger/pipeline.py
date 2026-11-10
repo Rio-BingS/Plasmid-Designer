@@ -326,14 +326,23 @@ from core.sanger.decompose import (  # noqa: F401
 _try_tracy_decompose = try_tracy_decompose  # 公开化前的私有名（历史引用兼容）
 # X4 拆分后保留旧名（decompose / 测试按此导入）；实现在 indel_norm
 _normalize_indel = indel_norm.normalize_left
-_normalize_indel_all = lambda ref, vs: [indel_norm.normalize_left(ref, v) for v in vs]  # noqa: E731
+_normalize_indel_all = lambda ref, vs: [indel_norm.normalize_left(ref, v) for v in vs]
+
+
 def _variant_key(v: Dict) -> Tuple[int, str, str, int]:
-    """归一化后的合并 key（长度入 key：同锚点不同长度的删除是不同构建体）"""
+    """归一化后的合并 key：同一 indel 无论被哪个 caller/read 报在哪一等价位都聚合。
+
+    长度必须入 key：同一锚点上长度不同的删除（如 polyA 少 2 个 vs 少 3 个）
+    是不同的构建体，不能合并——否则 support_reads 虚增、长度取决于 read 顺序。
+    """
     return (int(v["ref_pos"]), v.get("type", ""), v.get("alt_base", "").upper(),
             int(v.get("length") or 1))
 
 
-_TRACY_VERSION_CACHE: Dict[str, Optional[Tuple[int, ...]]] = {}  # 按可执行路径缓存
+# tracy 版本探测结果按可执行路径缓存（每次 basecall 都跑 --version 太贵）
+_TRACY_VERSION_CACHE: Dict[str, Optional[Tuple[int, ...]]] = {}
+
+
 def _tracy_version(tracy: str) -> Optional[Tuple[int, ...]]:
     """`tracy --version` → (major, minor, patch)；无法判定返回 None"""
     if tracy in _TRACY_VERSION_CACHE:

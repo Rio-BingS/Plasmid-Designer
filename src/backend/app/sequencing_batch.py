@@ -270,14 +270,9 @@ def run_batch_groups(
                 from core.sanger.scope import parse_scope_cell
                 scope_obj, scope_note = parse_scope_cell(
                     _scope_text, features, len(ref_seq))
-            elif scope_obj is None:
-                # W11（PL §C7）：范围列留空时按参考指纹带出上次声明范围
-                # （与单样品入口同口径；无记录/读取失败退回未声明）
-                from core.sanger.scope import Scope as _Scope
-                _mem = sequencing_store.load_scope_memory(ref_seq)
-                if _mem:
-                    scope_obj = _Scope.from_dict(_mem)
-                    scope_obj.reason = "沿用上次范围"
+            # goal v3.1 X5 §3.5：批量路径**不套用**范围记忆——信息表里
+            # 一行一个构建，若某行留空就从记忆带出范围，整批会被上一次的
+            # 单一范围污染；批量必须逐行显式声明（留空即未声明口径）
             try:
                 ab1s = [(r["file"]["name"], r["file"]["bytes"]) for r in g["reads"]]
                 # goal v3 W7（PL B3）：信息表引物列 → 逐 read 引物映射。

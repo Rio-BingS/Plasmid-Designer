@@ -515,14 +515,21 @@ def test_parse_reference_scope_presets(client):
 
 @pytest.fixture()
 def _mem_store(monkeypatch):
-    """范围记忆打桩为进程内 dict（W11：不依赖 sqlite，键=参考序列哈希）"""
+    """范围记忆打桩为进程内 dict（W11；X5 起键=(owner, 参考哈希)）
+
+    桩函数的签名必须与 store 的真实签名一致（`owner_id` 为可选位置参数），
+    否则端点按新签名调用时会 TypeError。"""
     import app.sequencing_store as st
     mem: dict = {}
+
+    def _key(ref, owner_id=None):
+        return (owner_id or "__anonymous__", st._reference_hash(ref))
+
     monkeypatch.setattr(st, "save_scope_memory",
-                        lambda ref, sc: mem.__setitem__(
-                            st._reference_hash(ref), json.loads(json.dumps(sc))))
+                        lambda ref, sc, owner_id=None: mem.__setitem__(
+                            _key(ref, owner_id), json.loads(json.dumps(sc))))
     monkeypatch.setattr(st, "load_scope_memory",
-                        lambda ref: mem.get(st._reference_hash(ref)))
+                        lambda ref, owner_id=None: mem.get(_key(ref, owner_id)))
     return mem
 
 
