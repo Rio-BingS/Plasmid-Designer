@@ -337,6 +337,7 @@ def test_offline_rerun_replaces_backfilled_result(tmp_path, monkeypatch):
     # goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径；
     # 已测区间随覆盖而定，回填只替换结论不层层叠加
     second = run()
-    assert second.startswith("加急\n合格：已测") and "与设计一致" in second
+    # X3：结论串改为 headline 派生（「合格 · 已测 …」），用户行仍在最前
+    assert second.startswith("加急\n合格 · 已测") and "范围外未评估" in second
     assert "构建与设计一致" not in second
     assert run() == second
