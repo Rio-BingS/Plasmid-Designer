@@ -291,26 +291,51 @@ def delete_record(analysis_id: str) -> None:
         db.close()
 
 
-# ---------- 范围记忆（goal v3 W11，PL §C7） ----------
+# ---------- 范围记忆（goal v3 W11 / v3.1 X5） ----------
+
+# 记忆里允许写入的来源（goal v3.1 §3.5：只记用户**显式声明**的范围；
+# cds_target / filename_match / primer_window 等自动推断不记忆，
+# 否则下次换目标 CDS 时会被上一次的自动选择污染）
+REMEMBERED_SOURCES = {"user"}
 
 
 def _reference_hash(reference: str) -> str:
-    """参考序列指纹：sha256(大写序列)——与范围记忆的存取键一致"""
+    """参考序列指纹：sha256(大写序列)——范围记忆的键之一（X5 起与 owner 复合）"""
     return hashlib.sha256((reference or "").upper().encode("utf-8")).hexdigest()
 
 
-def save_scope_memory(reference: str, scope: Dict) -> None:
-    """按参考指纹保存最近一次使用的声明范围（覆盖旧值；失败只留痕）"""
+def _scope_memory_key(reference: str, owner_id: Optional[str] = None) -> Dict:
+    """范围记忆的复合键：用户 + 参考指纹（goal v3.1 X5）。
+
+    匿名/单用户部署时 owner 归一为固定值 `ANONYMOUS_OWNER`——键仍是
+    （owner, hash），因此多用户库不会串味，单用户行为与旧版一致。
+    """
+    from app.database.models import ANONYMOUS_OWNER
+
+    return {
+        "owner_id": (owner_id or ANONYMOUS_OWNER)[:64],
+        "reference_hash": _reference_hash(reference),
+    }
+
+
+def save_scope_memory(reference: str, scope: Dict,
+                      owner_id: Optional[str] = None) -> None:
+    """保存用户显式声明的范围（覆盖同键旧值；失败只留痕）。
+
+    goal v3.1 §3.5：自动来源（cds_target / filename_match）一律不写——
+    `scope["source"]` 不在 REMEMBERED_SOURCES 时直接返回（SM2）。
+    """
     if not db_enabled() or not (scope or {}).get("declared"):
         return
-    from app.database import SessionLocal, engine
+    if str(scope.get("source") or "") not in REMEMBERED_SOURCES:
+        return
+    from app.database import SessionLocal
     from app.database.models import SequencingScopeMemoryDB
 
-    SequencingScopeMemoryDB.__table__.create(bind=engine, checkfirst=True)
     db = SessionLocal()
     try:
         row = SequencingScopeMemoryDB(
-            reference_hash=_reference_hash(reference),
+            **_scope_memory_key(reference, owner_id),
             scope_json=json.dumps(scope, ensure_ascii=False, separators=(",", ":")),
         )
         db.merge(row)
@@ -322,17 +347,19 @@ def save_scope_memory(reference: str, scope: Dict) -> None:
         db.close()
 
 
-def load_scope_memory(reference: str) -> Optional[Dict]:
-    """按参考指纹取上次使用的范围 dict；无记录/库不可用返回 None"""
+def load_scope_memory(reference: str,
+                      owner_id: Optional[str] = None) -> Optional[Dict]:
+    """取该用户在该参考上的上次范围；无记录/库不可用返回 None"""
     if not db_enabled():
         return None
-    from app.database import SessionLocal, engine
+    from app.database import SessionLocal
     from app.database.models import SequencingScopeMemoryDB
 
-    SequencingScopeMemoryDB.__table__.create(bind=engine, checkfirst=True)
+    key = _scope_memory_key(reference, owner_id)
     db = SessionLocal()
     try:
-        row = db.get(SequencingScopeMemoryDB, _reference_hash(reference))
+        row = db.get(SequencingScopeMemoryDB,
+                     (key["owner_id"], key["reference_hash"]))
         if row is None:
             return None
         return json.loads(row.scope_json)
@@ -341,6 +368,36 @@ def load_scope_memory(reference: str) -> Optional[Dict]:
         return None
     finally:
         db.close()
+
+
+def clear_scope_memory(reference: str,
+                       owner_id: Optional[str] = None) -> bool:
+    """清除该用户在该参考上的范围记忆（DELETE 端点用）。
+
+    返回是否真的删掉了一行（幂等：没有记录也返回 False 而非报错）。
+    """
+    if not db_enabled():
+        return False
+    from app.database import SessionLocal
+    from app.database.models import SequencingScopeMemoryDB
+
+    key = _scope_memory_key(reference, owner_id)
+    db = SessionLocal()
+    try:
+        row = db.get(SequencingScopeMemoryDB,
+                     (key["owner_id"], key["reference_hash"]))
+        if row is None:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error("范围记忆清除失败: %s", e)
+        return False
+    finally:
+        db.close()
+
 
 
 def list_records(user: Optional[object], is_admin: bool,
@@ -391,5 +448,34 @@ def list_records(user: Optional[object], is_admin: bool,
         # 列表读失败返回空列表会掩盖存储层故障，必须留痕
         logger.warning("测序分析记录列表读取失败", exc_info=True)
         return []
+    finally:
+        db.close()
+
+
+def clear_scope_memory_hash(reference_hash: str,
+                            owner_id: Optional[str] = None) -> bool:
+    """按参考**哈希**清除范围记忆（DELETE 端点用；端点只有哈希）。
+
+    与 `clear_scope_memory` 同语义，只是键的来源不同——前端读到的
+    `scope.reference_hash` 直接回传，不必重传整条参考序列。
+    """
+    if not db_enabled() or not reference_hash:
+        return False
+    from app.database import SessionLocal
+    from app.database.models import ANONYMOUS_OWNER, SequencingScopeMemoryDB
+
+    db = SessionLocal()
+    try:
+        row = db.get(SequencingScopeMemoryDB,
+                     ((owner_id or ANONYMOUS_OWNER)[:64], reference_hash[:64]))
+        if row is None:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error("范围记忆清除失败: %s", e)
+        return False
     finally:
         db.close()

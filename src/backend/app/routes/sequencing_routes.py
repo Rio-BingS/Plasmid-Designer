@@ -464,7 +464,7 @@ def _register_analysis(sample_name: str, reference: str, features: List[Dict], r
     # 只存声明过的 scope（measured 未声明不记忆），失败已在 save 侧留痕
     _vd_scope = (result.get("verdict") or {}).get("scope") or {}
     if _vd_scope.get("declared"):
-        sequencing_store.save_scope_memory(reference, _vd_scope)
+        sequencing_store.save_scope_memory(reference, _vd_scope, owner_id)
     return analysis_id, access_token, record
 
 

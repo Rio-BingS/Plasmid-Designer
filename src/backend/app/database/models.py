@@ -11,6 +11,10 @@ from pathlib import Path
 from app.config import settings
 from app.timeutil import utcnow_naive
 
+# 匿名/单用户部署的范围记忆 owner（goal v3.1 X5）：键为（owner, 参考指纹），
+# 未登录或单用户时全部落在这一 owner 下，语义等同旧版的按参考记忆
+ANONYMOUS_OWNER = "__anonymous__"
+
 # 数据库连接串 — 单一来源 settings.DATABASE_URL（读 .env / 环境变量）。
 # 此前此处用 os.getenv 直读进程环境变量、不读 .env，导致 .env 里的 DATABASE_URL
 # 对实际建库静默不生效（KNOWN_ISSUES 2.4）
@@ -349,13 +353,18 @@ class SequencingAnalysisDB(Base):
 
 
 class SequencingScopeMemoryDB(Base):
-    """参考序列指纹 → 最近一次使用的需测范围（goal v3 W11，PL §C7）。
+    """（用户, 参考序列指纹）→ 最近一次使用的需测范围（goal v3 W11 / v3.1 X5）。
 
     同一质粒再次测序时自动带出上次范围（source 保留原来源、reason 改
-    「沿用上次范围」）；只存声明过的 scope（measured 未声明不记忆）。
-    每个参考哈希一行，重算范围时覆盖。"""
+    「沿用上次范围」、scope.remembered=true）；只存用户**显式声明**过的
+    scope——cds_target / filename_match 等自动来源不记忆（X5 §3.5）。
+    键为（owner_id, reference_hash）：匿名/单用户部署时 owner 取固定值
+    `ANONYMOUS_OWNER`，因此不会跨用户串味（SM1）。
+    """
     __tablename__ = "sequencing_scope_memory"
 
+    owner_id = Column(String(64), primary_key=True,
+                      default=ANONYMOUS_OWNER)
     reference_hash = Column(String(64), primary_key=True)  # sha256(reference.upper())
     scope_json = Column(Text, nullable=False)              # Scope.to_dict()
     updated_at = Column(DateTime, default=utcnow_naive)

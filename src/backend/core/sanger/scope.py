@@ -84,6 +84,8 @@ class Scope:
     elements: List[str] = field(default_factory=list)
     reason: str = ""
     junctions: List[Tuple[int, int]] = field(default_factory=list)
+    # 沿用上次范围（goal v3.1 X5）：source 保留原来源，只标记「这次是记忆带出」
+    remembered: bool = False
 
     def __post_init__(self) -> None:
         self.ranges = [(int(s), int(e)) for s, e in (self.ranges or [])]
@@ -102,6 +104,7 @@ class Scope:
             "elements": list(self.elements),
             "reason": self.reason,
             "junctions": [[s, e] for s, e in self.junctions],
+            "remembered": bool(self.remembered),
         }
 
     @classmethod
@@ -118,6 +121,7 @@ class Scope:
             reason=str(data.get("reason") or ""),
             junctions=[(j[0], j[1]) for j in (data.get("junctions") or [])
                        if len(j) >= 2],
+            remembered=bool(data.get("remembered")),
         )
 
     def normalized(self, ref_length: int) -> "Scope":
