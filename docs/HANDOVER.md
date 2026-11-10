@@ -1,7 +1,11 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-11-08（`v2.37.0-alpha.3`：**2026-11-08 复审修复**（8 条：
+> **更新**：2026-11-10（`v2.37.0-alpha.4`：**Sanger scope v3 W0–W16 收口**——
+> 三态范围模型/范围重算端点与记忆/三出口统一/Excel 新六列/范围条与三层
+> 色带/复核队列与一键确认/p_real 三档/真实 AB1 子集基准，变更明细见
+> CHANGELOG 2.37.0-alpha.4；上一版 2026-11-08 `v2.37.0-alpha.3` 复审修复）
+> 
 > 假 ✓ 三处——整质粒部分覆盖/verified 口径/低 AF 混合静默，加首端硬区
 > 连接段上报、p_real 展示改评分、结论分组结构化、基准集独立正例与诚实
 > 声明、五条防回潮约束登记），变更明细见 CHANGELOG 2.37.0-alpha.3；
@@ -16,7 +20,7 @@
 ## 1. 一句话现状
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前分支
-`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.3**（2026-11-08 复审修复；
+`experiment/preview-visual-tuning` 上 **v2.37.0-alpha.4**（2026-11-10 scope v3 收口；
 alpha.2 = 2026-11-07 全量修复收口）：
 **Sanger 判读链路全量修复收口**（goal_sanger_full_fix_v2 T0-T25）——证据三态
 （rejected/confirmed/unresolved）+ 结构化 verdict 统一四出口、verified 覆盖

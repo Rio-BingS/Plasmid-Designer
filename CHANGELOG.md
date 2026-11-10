@@ -134,6 +134,8 @@
 
 ## [Unreleased]
 
+## [2.37.0-alpha.4] - 2026-11-10
+
 > Sanger scope v3（goal v3 W0–W16，分支 experiment/preview-visual-tuning；
 > 未发版未打 tag）。判定口径锚点 `SANGER_ALGO_VERSION="v14"`（W11–W16
 > 未改判定阈值/真值，不递增）。
@@ -1986,7 +1988,8 @@
 - 设计/批量/测序分析记录属主校验；验证码防爆破与并发注册竞态。
 - FormData 上传 422；负链 CDS 密码子注释方向；ab1 通道映射。
 
-[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.37.0-alpha.3...HEAD
+[Unreleased]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.37.0-alpha.4...HEAD
+[2.37.0-alpha.4]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.37.0-alpha.3...v2.37.0-alpha.4
 [2.37.0-alpha.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.36.1-alpha.1...v2.37.0-alpha.1
 [2.36.1-alpha.1]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.36.0...v2.36.1-alpha.1
 [2.36.0]: https://github.com/Rio-BingS/Plasmid-Designer/compare/v2.35.0...v2.36.0
