@@ -41,3 +41,6 @@ data/batch_uploads/
 # 备份产物（backup.sh 默认输出到 data/backups/，含全库明文数据，严禁入库）
 data/backups/
 work/
+
+# 本地真实测序数据（不入库，skip-if-missing 机制下 CI 自动跳过回归）
+tests/data/real_ab1/
