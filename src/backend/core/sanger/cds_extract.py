@@ -332,7 +332,12 @@ def prepare_scope_mode(ref_seq: str, features: List[Dict], ref_stem: str,
 def resolve_reference(ref_seq: str, features: List[Dict], ref_stem: str,
                       read_names: List[str],
                       explicit_name: Optional[str] = None) -> Tuple[str, List[Dict]]:
-    """目的基因模式的参考替换（v2 旧路径，W8 起仅测试与回退对照使用）：
+    """目的基因模式的参考替换（v2 旧路径，**仅测试与回退对照使用**）。
+
+    **生产代码不得调用**（goal v3.1 X6 / RB P2-2）：W8 起走
+    `prepare_scope_mode`（全质粒 + scope，不裁参考）。tests/test_scope_mode_guard.py
+    会扫源码，出现调用即红——这个函数保留只为对照它定义的侧翼口径。
+
     确定目标 CDS → 提取编码区段 + 侧翼 → 伪特征。
 
     explicit_name（前端下拉显式选择）优先于自动匹配。返回 (ext_seq, feats)：
