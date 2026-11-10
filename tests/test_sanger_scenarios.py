@@ -524,6 +524,7 @@ def test_sc5_scope_tail_beyond_primer():
     assert "引物" in (blk[0].get("action") or "")
 
 
+@XF(strict=True, reason="X1")
 def test_sc6_read_shortfall_enters_review_queue():
     """SC6：read 400bp 处衰减 → partial；cause=read_shortfall；进复核队列"""
     from core.sanger.review import build_queue  # noqa: W14 落地
@@ -585,6 +586,7 @@ def test_sc9_verdict_reproducible_across_scopes(monkeypatch):
     assert build_verdict(res, L, scope="GeneX") == v_gene
 
 
+@XF(strict=True, reason="X1")
 def test_sc10_verified_gap_never_pass_with_blocking():
     """SC10（W3 落地，RV P0-2）：verified ≈99%、measured 100% → 不得出现
     pass 同时带 blocking；verified 口径按 ROI 分数断言（goal W3「统一
@@ -640,16 +642,16 @@ def test_cm2_vector_primer_read_pass():
     assert "unaligned_hq_segment" not in _kinds(res)
 
 
+@XF(strict=True, reason="X4")
 def test_cm3_cross_origin_cds_junction_insertions():
-    """CM3：跨原点 CDS 的 ATG 前 / 终止后 1bp 插入 → 都检出并判 junction_variant"""
+    """CM3：跨原点 CDS 的 ATG 前 / 终止后 1bp 插入 → 检出并判 junction_variant
+
+    v3.1 X0：断言恢复 W0 原样（goal §4：两处 `type == "insertion"`）。
+    微同源边界上的 1bp 插入必须仍报为 insertion（RB P1-4），由 X4
+    indel 规范化实现；不得再放宽成「接合区窗口内有确证差异即可」。"""
     spec, res = _run_cds_mode("CM3")
-    # 1bp 插入在微同源边界可被比对器等价表示为紧邻替换（alt=插入碱基，
-    # 替换打分 -4 与 1bp gap -8 附近打平时左移归一）——truth 关心「检出 +
-    # 接合区归因」：两处接合区窗口内各有一处确证差异即算检出
-    for a, b in ((3671, 3731), (270, 330)):
-        hit = [v for v in res["variants"]
-               if a <= v["ref_pos"] <= b and v.get("status") == "confirmed"]
-        assert hit, f"接合区 {a}-{b} 的确证差异必须检出：{res['variants']}"
+    ins = [v for v in res["variants"] if v["type"] == "insertion"]
+    assert len(ins) >= 2, f"两处接合区插入都必须检出：{res['variants']}"
     assert "junction_variant" in _kinds(res)
     assert _status(res) == "fail"
 
@@ -835,3 +837,264 @@ def test_w12_excel_conclusion_word_follows_verdict():
     res2.pop("verdict", None)
     excel2 = excel_conclusion("P", res2, 1, True)
     assert excel2.startswith("不合格")
+
+
+# ==================== goal v3.1 §4 场景（X0 真值先行）====================
+# 真值口径见 docs/audit/20261110/goal_sanger_scope_v3.1.md §4。
+# 未实现的工作项以 XF(strict) 标注（reason=工作项 ID），实现后摘除即转绿；
+# X0 提交之后不得修改本段构造或断言（goal §2 真值先行且不可改）。
+
+
+def _queue(res):
+    from core.sanger.review import build_queue
+    return build_queue(res)
+
+
+# ---------- X1：峰形门控（RB P0-1） ----------
+
+
+@XF(strict=True, reason="X1")
+def test_sc6_degraded_tail_is_read_shortfall_not_mixed():
+    """SC6（恢复原构造）：峰宽 ×3.0 的尾端 → partial、缺口 cause=read_shortfall、
+    不判 mixed、进复核队列、read 带 degraded_ranges"""
+    _spec, res = _run("SC6")
+    assert _status(res) == "partial"
+    blk = [b for b in res["verdict"]["blocking"]
+           if b.get("kind") == "scope_read_shortfall"]
+    assert blk, "峰形退化必须归因为覆盖缺口"
+    assert "mixed_variant" not in _kinds(res), "峰形退化不得判混合"
+    assert _queue(res), "read_shortfall 必须进复核队列"
+    assert any(r.get("degraded_ranges") for r in res["reads"]), \
+        "read 必须带 degraded_ranges（前端灰显依据）"
+
+
+@XF(strict=True, reason="X1")
+def test_sc6b_peak_broadening_never_mixed():
+    """SC6b：×2.0/2.5/3.0 三档声明范围 + 一组未声明——都不判 mixed；
+    blocking 无 mixed_variant/minor_af_site；未声明组 pass 且 headline 无「混合」"""
+    from tests.sanger_scenarios import _sc6_tail
+    for tw in (2.0, 2.5, 3.0):
+        spec = _sc6_tail(tw)
+        res = analyze(spec["ab1_files"], spec["reference"], spec["features"],
+                      **spec["kwargs"])
+        kinds = _kinds(res)
+        assert _status(res) != "mixed", f"×{tw} 误判 mixed"
+        assert "mixed_variant" not in kinds, f"×{tw}: {kinds}"
+        assert "minor_af_site" not in kinds, f"×{tw}: {kinds}"
+    spec = _sc6_tail(3.0, scope=None)
+    res = analyze(spec["ab1_files"], spec["reference"], spec["features"],
+                  **spec["kwargs"])
+    assert _status(res) == "pass", f"未声明组应为 pass，实得 {_status(res)}"
+    assert "混合" not in (res["verdict"].get("headline") or "")
+
+
+def test_sc6c_real_mixed_before_degraded_zone_still_mixed():
+    """SC6c：退化区段之前（read 坐标 150）叠加 AF 0.35 真实次峰 → 判 mixed
+    （门控不得误杀区段外的真实混合）"""
+    _spec, res = _run("SC6c")
+    kinds = _kinds(res)
+    assert _status(res) == "mixed" or "mixed_variant" in kinds, \
+        f"区段外真实次峰必须判混合：{_status(res)} / {kinds}"
+
+
+@XF(strict=True, reason="X1")
+def test_sc10_degraded_tail_pending_not_mixed():
+    """SC10（恢复原构造）：峰宽 ×3.0 尾端 → pending + roi_unverified，
+    不判 mixed，pass 与 blocking 不并存"""
+    _spec, res = _run("SC10")
+    assert _status(res) == "pending"
+    assert "roi_unverified" in _kinds(res)
+    assert "mixed_variant" not in _kinds(res)
+    assert _status(res) != "pass"
+
+
+# ---------- X4：indel 规范化（RB P1-4） ----------
+
+
+@XF(strict=True, reason="X4")
+def test_cm9_microhomology_insert_stays_insertion():
+    """CM9：CDS 内微同源边界 1bp 插入（插入碱基与左邻相同）→ type=insertion，
+    c. 符合 3′ 规则，后果移码"""
+    _spec, res = _run_cds_mode("CM9")
+    ins = [v for v in res["variants"] if v["type"] == "insertion"]
+    assert ins, f"微同源 1bp 插入必须是 insertion：{res['variants']}"
+    v = ins[0]
+    coords = (v.get("coords") or {}).get("cds") or {}
+    assert coords.get("c"), "必须给 c. 坐标"
+    # 3′ 右移：c. 位置应是微同源串的最后一个（同聚物右端）
+    conseq = (coords.get("consequence") or v.get("consequence") or "")
+    assert "移码" in conseq or "frameshift" in str(conseq).lower(), \
+        f"1bp 插入后果必须是移码：{conseq}"
+
+
+# ---------- X2：复核队列聚合（RB P0-2） ----------
+
+
+@XF(strict=True, reason="X2")
+def test_rq1_real_subset_queue_bounded():
+    """RQ1：真实子集未声明范围 → 队列 ≤15 项、结论 ≤6 行、3 处确证
+    变异全在队列中、status=fail"""
+    _spec, res = _run("RQ1")
+    q = _queue(res)
+    assert len(q) <= 15, f"复核队列 {len(q)} 项超上限：{[(x['kind'], x['ref_start']) for x in q]}"
+    assert len(res["conclusion"].split("\n")) <= 6, \
+        f"结论 {len(res['conclusion'].split(chr(10)))} 行超上限"
+    assert _status(res) == "fail"
+    positions = {x.get("ref_start") for x in q}
+    for pos in (335, 440, 4081):
+        assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
+
+
+@XF(strict=True, reason="X2")
+def test_rq2_real_subset_full_plasmid_queue_bounded():
+    """RQ2：真实子集声明全质粒 → 队列 ≤25 项、3 处确证变异全在队列"""
+    _spec, res = _run("RQ2")
+    q = _queue(res)
+    assert len(q) <= 25, f"队列 {len(q)} 项超上限"
+    positions = {x.get("ref_start") for x in q}
+    for pos in (335, 440, 4081):
+        assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
+
+
+@XF(strict=True, reason="X2")
+def test_rq3_mixed_read_folds_into_one_item():
+    """RQ3：单 read 判 mixed 且 40 个双峰位点 → 队列只有 1 项 read 问题"""
+    _spec, res = _run("RQ3")
+    q = _queue(res)
+    read_items = [x for x in q if x.get("level") == "read"]
+    assert len(read_items) == 1, f"必须折叠为 1 项 read 问题：{q}"
+    assert len(q) <= 2, f"位点应全部折叠，实得 {len(q)} 项：{[(x['kind'], x.get('level')) for x in q]}"
+
+
+# ---------- X3：出口全文同源（RB P0-3 / P1-1 / P1-2） ----------
+
+
+_OC3_SIDS = ("SC3", "SC5", "SC6")
+
+
+@XF(strict=True, reason="X3")
+def test_oc3_three_exits_verbatim():
+    """OC3：网页首行 = headline；Excel 结论 = 去掉符号的 headline；
+    全文逐字比较（不只比符号）"""
+    from core.sanger.evidence import _conclusion_summary  # noqa: F401
+    for sid in _OC3_SIDS:
+        _spec, res = _run(sid)
+        vd = res["verdict"]
+        head = vd.get("headline") or ""
+        assert head, f"{sid}: verdict 必须带 headline"
+        first = (res["conclusion"] or "").split("\n")[0]
+        assert first == head, f"{sid}: 网页首行与 headline 不一致\n  head={head}\n  web ={first}"
+        excel = excel_conclusion("P", res, len(res["reads"]), True)
+        body = head.lstrip("✓✗△ ").strip()
+        assert excel.startswith(body) or body in excel, \
+            f"{sid}: Excel 结论未逐字采用 headline\n  head={head}\n  xls ={excel[:80]}"
+
+
+def test_oc4_cross_origin_excel_not_self_contradictory():
+    """OC4：跨原点 ATG 前插入 → Excel 不得同时出现「不合格」与「与设计一致」，
+    不得出现「范围外 1 处差异」"""
+    _spec, res = _run_cds_mode("CM3")
+    excel = excel_conclusion("P", res, len(res["reads"]), True)
+    assert not ("不合格" in excel and "与设计一致" in excel), excel
+    assert "范围外 1 处差异" not in excel, excel
+
+
+@XF(strict=True, reason="X3")
+def test_oc5_declared_pass_never_claims_whole_construct():
+    """OC5：声明范围 pass（CM1 干净样品）→ 任何出口不得出现「构建与设计一致」
+    或不带范围的「与设计一致」"""
+    _spec, res = _run_cds_mode("CM1")
+    assert _status(res) == "pass"
+    vd = res["verdict"]
+    assert vd["scope"]["declared"]
+    outputs = [res["conclusion"], excel_conclusion("P", res, len(res["reads"]), True),
+               vd.get("headline") or ""]
+    for out in outputs:
+        assert "构建与设计一致" not in out, out
+        assert "与设计一致" not in out.replace("与设计一致（未检出差异）", "") or \
+               "范围" in out, f"声明范围下出现无范围的整体主张：{out}"
+
+
+@XF(strict=True, reason="X3")
+def test_hc1_junction_insert_counts_once():
+    """HC1：一处接合区插入（同时触发 confirmed 与 junction）→ headline
+    证据写「1 处确证差异」（按位点去重）"""
+    _spec, res = _run_cds_mode("CM4")
+    head = res["verdict"].get("headline") or ""
+    assert "1 处确证差异" in head, f"headline 未按位点去重：{head}"
+
+
+@XF(strict=True, reason="X3")
+def test_hc2_cross_origin_range_has_name_and_single_span():
+    """HC2：跨原点 CDS Cross → headline 范围写「Cross（3701–300，跨原点）」"""
+    _spec, res = _run_cds_mode("CM3")
+    head = res["verdict"].get("headline") or ""
+    assert "Cross" in head, head
+    assert "跨原点" in head, f"跨原点范围必须标注：{head}"
+    assert "3701" in head and "300" in head, head
+
+
+# ---------- X5：范围记忆（RB P1-3 / P2-3） ----------
+# 记忆键改为「用户 + 参考」；只记显式声明；套用带 remembered 标记与
+# headline 注记；批量不套用；提供 DELETE 清除端点。
+
+
+@XF(strict=True, reason="X5")
+def test_sm1_memory_is_not_shared_between_users():
+    """SM1：用户 A 以 scope=GeneX 分析 P 后，用户 B 不声明范围分析 P
+    → B 不得套用 A 的范围（记忆按用户隔离）"""
+    from app import sequencing_store as st
+    from core.sanger.scope import Scope
+
+    mem = {}
+    st_key = st._scope_memory_key if hasattr(st, "_scope_memory_key") else None
+    assert st_key is not None, "需要按「用户 + 参考」的记忆键函数"
+    st.save_scope_memory("ACGT" * 40, {"ranges": [[301, 900]], "source": "user",
+                                       "declared": True, "elements": ["GeneX"]},
+                         owner_id="user-A")
+    got_a = st.load_scope_memory("ACGT" * 40, owner_id="user-A")
+    got_b = st.load_scope_memory("ACGT" * 40, owner_id="user-B")
+    assert got_a and got_a.get("declared")
+    assert got_b is None, f"用户 B 不得继承用户 A 的范围：{got_b}"
+
+
+@XF(strict=True, reason="X5")
+def test_sm2_cds_target_never_remembered():
+    """SM2：cds_mode/cds_target（自动来源）不被记忆——第二次用 cds_mode
+    选 AmpR 时不得套用上次 GeneX 的记忆"""
+    from app import sequencing_store as st
+    ref = "TGCA" * 100
+    st.save_scope_memory(ref, {"ranges": [[301, 900]], "source": "cds_target",
+                               "declared": True, "elements": ["GeneX"]},
+                         owner_id="u1")
+    assert st.load_scope_memory(ref, owner_id="u1") is None, \
+        "自动来源（cds_target）不得写入记忆"
+
+
+@XF(strict=True, reason="X5")
+def test_sm3_memory_marks_remembered_and_clearable():
+    """SM3：记忆生效时 scope.remembered=true、reason=沿用上次范围、
+    headline 带注记；清除后回到未声明口径"""
+    from app import sequencing_store as st
+    from core.sanger.scope import Scope
+    from core.sanger.verdict import build_verdict
+
+    ref = "TGCA" * 250
+    scope = {"ranges": [[301, 900]], "source": "user", "declared": True,
+             "elements": ["GeneX"]}
+    st.save_scope_memory(ref, scope, owner_id=None)
+    got = st.load_scope_memory(ref, owner_id=None)
+    assert got is not None
+    remembered = dict(got, remembered=True, reason="沿用上次范围")
+    res = {"variants": [], "unresolved_sites": [], "cds_reports": [],
+           "errors": [], "reads": [], "mixed_profiles": {}, "features": [],
+           "coverage": {"verified_ranges": [[1, len(ref)]]},
+           "consensus": {"covered_ranges": [[1, len(ref)]]},
+           "reference": ref}
+    vd = build_verdict(res, len(ref), Scope.from_dict(remembered))
+    assert vd["scope"].get("remembered") is True
+    assert "沿用上次范围" in (vd.get("headline") or ""), vd.get("headline")
+    # 清除：DELETE 端点实现层（store.clear_scope_memory）
+    assert hasattr(st, "clear_scope_memory"), "需要 clear_scope_memory（DELETE 端点）"
+    st.clear_scope_memory(ref, owner_id=None)
+    assert st.load_scope_memory(ref, owner_id=None) is None
