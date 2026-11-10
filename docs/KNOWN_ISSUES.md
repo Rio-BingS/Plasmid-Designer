@@ -90,9 +90,10 @@ API 前先逐条对照）：
 4. **口径变更必须递增 `SANGER_ALGO_VERSION`**（`core/sanger/pipeline.py`，
    写入 result["algo_version"]），并在 HANDOVER §2 版本常量处登记；
    判定口径/阈值/真值修订的提交正文要写清依据（复审 R1-R4 先例）。
-5. **尺寸预算**：`scripts/size_budgets.json` 白名单文件只许变小；新文件
-   ≤900 行；新逻辑放新模块并把被替换逻辑迁出（迁出后下调预算数字），
-   不得 `--refresh` 调高预算。
+5. ~~**尺寸预算**~~（**2026-11-10 解除**）：推进期不为行数强制拆分——
+   `scripts/check_file_size.py` 只提示不阻断。但**新逻辑仍应放新模块**
+   （按职责切分，而不是把什么都塞进 pipeline.py）；大文件重构清单见
+   「未解决 / 挂账」第 7 条。
 6. **unresolved/N/坏文件不得出 ✓**：N 调用、IUPAC 模糊、解析失败的
    read 永远不构成验证证据——✓（pass）的资格门（✓ 资格门输入）必须
    把这些位点算作未验证；别在解析端「宽容豁免」把它们洗成可信碱基。
@@ -125,6 +126,34 @@ API 前先逐条对照）：
 15. **修改 scope 不得触发重新比对**（goal v3 W15）：范围变更一律走
     `build_verdict` 纯函数重算（W11 重算端点契约，analyze 打桩计数
     为 0 锁定）；任何把 scope 变更接到 analyze 重跑的改动都是契约破坏。
+
+**v3.1 新增（2026-11-10，X7 沉淀；改 Sanger 判读链路前逐条对照）**
+
+16. **峰形退化区段内的双峰不得判混**（X1 / RB P0-1）：退化判据是
+    `峰宽 FWHM ÷ 相邻峰间距 > resolution(1.0)` 连续 ≥15bp（`peak_shape.py`，
+    参数在 `params/peak_shape.json`）。区段内的双峰一律作「测序未达」
+    （unresolved），不进 `mixed_positions`、不进 widespread 计数、不进
+    af 分带。**不得**为了让某个场景过而放宽 resolution、加回窗口平滑
+    （`smooth_window>1` 会在真实数据上虚构退化段）或加大 `pad_bp`
+    （相邻峰窗必然重叠，>1 会误杀正常位点）——三者在 X1 都实测过并回退，
+    依据与分布见 PROGRESS_v3.1「X1 峰形阈值来源与分布」。
+17. **头行唯一来源是 `verdict.headline`**（X3 / RB P0-3）：网页结论首行、
+    Excel 结论列（`verdict.excel_conclusion`，= headline 去符号）、前端卡片
+    三者逐字同源。任何出口都不得自行拼接头行或另行判断状态/区间；
+    没有 verdict 的旧记录走 `_conclusion_summary` 降级分支（保留旧文案）。
+    新增出口时先问「这个串是否等于 headline」。
+18. **复核队列按 read / 区段 / 位点三级聚合**（X2 / RB P0-2）：read 已判
+    mixed（widespread/local）、整体低质量或退化 ≥30% 时折成一项「read 问题」，
+    其位点收在下面；同类相邻 ≤20bp 合并为区段项；位点级只收确证差异与
+    范围内孤立未决位点。**未声明范围的 `unresolved_site`/`minor_af_site`
+    只计数不入队**，且 `minor_af_site` 任何范围下都不入队（它是丰度判据
+    结论，不是「读不清」的未决位点）。网页结论正文限 6 行（头行 + 5 行要点，
+    `conclusion_fold.py`），折叠优先级见该模块 docstring——确证差异行、
+    差异摘要、变异注记（↳ 酶切位点）、CDS 结论**永不折叠**。
+19. **X0 之后不得修改场景构造或断言**（goal v3.1 第三条）：`tests/sanger_scenarios.py`
+    的构造与 `tests/test_sanger_scenarios.py` 的断言在 X0（628e3b1）后冻结。
+    实现做不到时停下汇报，不得为过测试放宽断言或改构造。自检：
+    `git log -p 628e3b1..HEAD -- tests/sanger_scenarios.py` 应只有注释改动。
 
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并

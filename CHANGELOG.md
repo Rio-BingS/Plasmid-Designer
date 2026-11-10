@@ -134,6 +134,52 @@
 
 ## [Unreleased]
 
+### Sanger scope v3.1（2026-11-10，复审 b39b46a 后的三项 P0 修复）
+
+> 分支 `fix/sanger-scope-v3.1`，基线 `experiment/preview-visual-tuning@b39b46a`。
+> 判定口径锚点 `SANGER_ALGO_VERSION="v15"`。
+
+#### 升级注意
+- **SANGER_ALGO_VERSION v14→v15**：峰形门控、复核队列聚合、indel 坐标与
+  范围记忆键均属口径变更，缓存/重放按版本区分；旧记录的既有判定不受影响
+  （重放仍走旧文案降级分支）。
+- **范围记忆改为按用户隔离**：`sequencing_scope_memory` 主键从
+  `reference_hash` 改为 `(owner_id, reference_hash)`，迁移
+  `b7c8d9e0f1a2`（SQLite 下重建表搬数据）。匿名/单用户部署行为不变
+  （owner 归一为 `__anonymous__`）；多用户库不再互相串味。**升级前请备份
+  数据库**（虽然迁移是增量的，改主键仍会重建该表）。
+- **复核队列条目数会明显下降**：真实子集 330 → 14 项、MX → 3 项。这是
+  聚合后的预期结果，未决位点并非消失——`minor_af_site` 改为只计数
+  （见下），完整清单仍在 `verdict.blocking` 与明细表。
+
+#### 修复
+- **尾端峰展宽不再误判混合**（P0-1）：新增峰形门控，`峰宽 ÷ 相邻峰间距
+  > 1.0` 连续 ≥15bp 判为退化区段，区内双峰作「测序未达」，不再给出
+  「疑似混合、建议重新挑单克隆」的错误动作。
+- **复核量爆炸**（P0-2）：队列按 read / 区段 / 位点三级聚合；未声明范围
+  的 `unresolved_site`、任何范围下的 `minor_af_site` 只计数不入队；网页
+  结论正文限 6 行（头行 + 5 行要点），明细进折叠组。
+- **三出口自相矛盾**（P0-3）：头行唯一来源 `verdict.headline`，Excel 结论
+  列 = 去掉符号的 headline；修掉了「不合格：与设计一致；范围外 1 处差异
+  未评估」这类自相矛盾输出；跨原点范围带名称显示。
+- **indel 坐标与后果**（P1-4）：同时给质粒左对齐（`coords.plasmid`）与
+  HGVS 3′（`coords.plasmid_3p`），CDS 内并给 `c.`/`c_3p`，新增
+  `variant["consequence"]`。
+- **范围记忆按用户隔离并可清除**（P1-3/P2-3）：键改为（用户, 参考哈希）；
+  只记显式声明的范围；套用时标记 `remembered` 并在头行加注记；新增
+  `DELETE /api/sequencing/scope-memory`；删除运行时的 `__table__.create`。
+- **清理**（P2-1/P2-2）：删除误入库的 `docs/sanger_scope_v3_docs/`；
+  新增守卫测试禁止生产代码调用裁参考的旧口径 `resolve_reference`。
+
+#### 已知未修
+- **CM3 场景构造 off-by-one**：其 r2 读段 `ref[0:300] + ins2 + ref[301:450]`
+  跳过 `ref[300]`，read 与参考等长，序列上等价于替换而非插入。修它需改
+  X0 冻结的场景构造（goal v3.1 的停止条件），保持 xfail 待裁决。
+
+#### 工程
+- **解除单文件行数门禁**：推进期不为行数强制拆分，`check_file_size.py`
+  改为只提示不阻断（新增 `--top N`）；大文件重构清单记入 KNOWN_ISSUES。
+
 ## [2.37.0-alpha.4] - 2026-11-10
 
 > Sanger scope v3（goal v3 W0–W16，分支 experiment/preview-visual-tuning；
