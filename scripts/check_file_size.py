@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""源码文件尺寸预算检查（防回潮）
+"""源码文件尺寸统计（信息性，不阻断）
 
-审查后的约定：单文件默认预算 **900 行**；拆分前已超限的历史大文件
-（SIZE_BUDGETS 白名单）按其入库时的行数封顶——白名单文件只许变小、
-不许增长，新文件一律按默认预算。超限即退出码 1。
+**2026-11-10 解除限制**：项目处于推进期而非维护期，行数上限频繁迫使
+「为了过门禁而先拆分」，把推进期的资源花在结构调整上。大文件的重构放到
+后期集中做更划算（那时没有功能压力，也能一次看清真实切分线）。
+
+因此本脚本只统计、只提示，**永远退出码 0**，CI 不再因行数变红。
+仍然保留的用途：
+  - 收尾时看一眼哪些文件偏大，作为后续重构的输入；
+  - `--top N` 直接给出最大的 N 个文件，便于挑重点。
 
 用法：
-    python scripts/check_file_size.py            # 检查
-    python scripts/check_file_size.py --refresh  # 把当前超限文件写入白名单
-                                                 # （拆分收敛后白名单应只减不增）
+    python scripts/check_file_size.py            # 列出超参考线的文件
+    python scripts/check_file_size.py --top 20   # 按行数取前 20
 """
 
 import json
@@ -17,6 +21,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 BUDGET_FILE = REPO / "scripts" / "size_budgets.json"
+# 参考线（不再是预算，只是「值得关注」的阈值）
 DEFAULT_BUDGET = 900
 SCAN_ROOTS = ("src/backend", "src/frontend/src")
 SCAN_SUFFIXES = (".py", ".ts", ".vue")
@@ -38,31 +43,34 @@ def scan() -> dict:
 
 def main() -> int:
     sizes = scan()
-    budgets = {}
-    if BUDGET_FILE.exists():
-        budgets = json.loads(BUDGET_FILE.read_text(encoding="utf-8"))
 
     if "--refresh" in sys.argv:
         over = {p: n for p, n in sizes.items() if n > DEFAULT_BUDGET}
         BUDGET_FILE.write_text(
             json.dumps(dict(sorted(over.items())), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
-        print(f"白名单已刷新：{len(over)} 个文件（{BUDGET_FILE.relative_to(REPO)}）")
+        print(f"参考清单已刷新：{len(over)} 个文件（{BUDGET_FILE.relative_to(REPO)}）")
         return 0
 
-    violations = []
-    for path, n in sorted(sizes.items()):
-        cap = budgets.get(path, DEFAULT_BUDGET)
-        if n > cap:
-            origin = "（白名单文件不得增长）" if path in budgets else ""
-            violations.append(f"  {path}: {n} 行 > 预算 {cap} 行{origin}")
-    if violations:
-        print("文件超出尺寸预算：")
-        print("\n".join(violations))
-        print("\n拆分该文件（参考 docs 与既有拆分先例），"
-              "确属新的历史包袱可用 scripts/check_file_size.py --refresh 记账。")
-        return 1
-    print(f"尺寸预算通过：{len(sizes)} 个源码文件，白名单 {len(budgets)} 个")
+    if "--top" in sys.argv:
+        try:
+            n = int(sys.argv[sys.argv.index("--top") + 1])
+        except (IndexError, ValueError):
+            n = 15
+        print(f"最大的 {n} 个源码文件：")
+        for path, lines in sorted(sizes.items(), key=lambda kv: -kv[1])[:n]:
+            print(f"  {path}: {lines} 行")
+        return 0
+
+    over = [(p, n) for p, n in sorted(sizes.items()) if n > DEFAULT_BUDGET]
+    if over:
+        print(f"超过参考线 {DEFAULT_BUDGET} 行的文件（仅供参考，不阻断）：")
+        for path, n in over:
+            print(f"  {path}: {n} 行")
+        print("\n项目推进期不做强制拆分；重构计划见 docs/KNOWN_ISSUES.md "
+              "「大文件重构」一项。")
+    print(f"尺寸统计完成：{len(sizes)} 个源码文件，"
+          f"超参考线 {len(over)} 个。")
     return 0
 
 
