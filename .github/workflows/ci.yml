@@ -49,10 +49,10 @@ jobs:
           echo "::add-mask::$key"
           echo "SECRET_KEY=$key" >> "$GITHUB_ENV"
 
-      # 文件尺寸预算：新文件 ≤900 行，白名单里的历史大文件只许变小
-      # （scripts/size_budgets.json 记账；拆分收敛后白名单应只减不增）
-      - name: Check file size budgets
-        run: python scripts/check_file_size.py
+      # 文件尺寸统计（信息性，不阻断）：项目推进期不强制拆分大文件，
+      # 大文件重构放到后期集中做。脚本永远退出码 0，CI 不会因行数变红
+      - name: Report file sizes
+        run: python scripts/check_file_size.py --top 15
 
       - name: Run tests
         run: python -m pytest tests -q -p no:cacheprovider

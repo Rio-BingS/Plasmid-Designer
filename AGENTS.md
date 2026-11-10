@@ -86,10 +86,9 @@ vue-tsc **0**、build/npm audit/尺寸预算/文档同步门禁全绿。46 skipp
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（[postmortems 索引](docs/HANDOVER.md#7-已修问题留档索引)）；v2.18.0→v2.29.2 的 CI 红灯链也已清零（[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，
-另有**尺寸预算门禁** `scripts/check_file_size.py`（新文件 ≤900 行，白名单文件超线即红，
-`scripts/size_budgets.json` 记账；白名单文件**有理由的小增量**（接线、新参数等）可直接
-`--refresh` 记账通过，**大增长/无意识增长**先拆分——2026-11-05 与所有者议定）。
-**本地只跑测试不够，动代码后要把门禁本地预演一遍**（v2.18.0→v2.29.2 连续红灯的教训，[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
+另有**文件尺寸统计** `scripts/check_file_size.py`——2026-11-10 起**只提示、不阻断**
+（推进期不为行数强制拆分，大文件重构放到后期集中做；`--top N` 看最大的几个）。
+**本地只跑测试不够，动代码后要把其他门禁本地预演一遍**（v2.18.0→v2.29.2 连续红灯的教训，[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
 
 Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/requirements.backend.in`
 （直接依赖、精确 pin、两份同名包同版本；仅测试用的包放 `requirements-dev.in`），然后 `bash scripts/lock_requirements.sh`
@@ -267,9 +266,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
   （conftest.py 会重新注入正确路径）
 - **测试里改 site_settings 必须用真实 `app.database.SessionLocal`**，结束时恢复默认并
   `invalidate_cache()`，否则污染后续模块（设计端点 403）
-- **本地绿 ≠ CI 绿**：CI 比本地多四道门禁（尺寸预算 `scripts/check_file_size.py`、
-  pip-audit、npm build、npm audit ×2，全部阻断）。改完代码先本地预演尺寸预算，
-  否则「测试全绿但 CI 红」（v2.18.0→v2.29.2 连续 23 次红灯的教训，详见 [ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）
+- **本地绿 ≠ CI 绿**：CI 比本地多几道门禁（pip-audit、npm build、npm audit ×2，
+  全部阻断；尺寸统计只提示不阻断）。否则容易「测试全绿但 CI 红」
+  （v2.18.0→v2.29.2 连续 23 次红灯的教训，详见 [ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）
 - **被 skip 的测试等于不存在的测试**：平台相关测试（`skipif(platform=="win")`）写入时
   就要在真实 Linux 上跑一次（可借 VPS）；`test_deploy_backup.py` 曾因此带着漏传脚本
   路径的 bug 存活多轮，还连带掩盖了 backup.sh 的两个真实缺陷
