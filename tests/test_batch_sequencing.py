@@ -249,7 +249,8 @@ def test_excel_conclusion_错质粒不入正确(label, read_fn):
     res = _h1_case(read_fn)
     out = batch.excel_conclusion("P1", res, 1, True)
     assert not out.startswith("合格"), (label, out)
-    assert out.startswith("不合格："), (label, out)
+    # goal v3.1 X3：结论列 = headline 去符号（「不合格 · 范围… · 证据…」）
+    assert out.startswith("不合格 ·"), (label, out)
     assert _conclusion_bucket(out) == "错误"
 
 
@@ -261,7 +262,10 @@ def test_excel_conclusion_完整比对_verified缺口待定():
     from app.sequencing_report import _conclusion_bucket
     res = _h1_case(lambda ref, rs: ref[:700], scope="1-300")
     out = batch.excel_conclusion("P1", res, 1, True)
-    assert out.startswith("待定：需测范围验证覆盖 90.0%"), out
+    # X3：结论列 = headline 去符号；缺口明细（verified 覆盖 90%）在信息表
+    # 「缺口原因」列（_scope_cells）里，结论本体只说范围与待核项数
+    assert out.startswith("待定 · 范围：1–300"), out
+    assert res["verdict"]["roi"]["verified_fraction"] < 1
     assert _conclusion_bucket(out) == "待定"
 
 
@@ -306,11 +310,12 @@ def test_end_to_end(tmp_path, monkeypatch):
     # 禁整参考主张「构建与设计一致」；已测区间随 read 覆盖而定，不做精确匹配）
     ws = openpyxl.load_workbook(data_dir / "测序.xlsx").worksheets[0]
     result = ws.cell(row=2, column=3).value
-    assert result.startswith("合格：已测") and "与设计一致" in result
+    # X3：Excel 结论列 = verdict.headline 去符号（逐字同源）
+    assert result.startswith("合格 · 已测")
     assert "范围外未评估" in result and "构建与设计一致" not in result
     # 报告内容：read 概况 + 一致结论
     report = (folder / "测序分析报告.md").read_text(encoding="utf-8")
-    assert "合格：已测" in report and "与设计一致" in report and "T1.ab1" in report
+    assert "合格 · 已测" in report and "范围外未评估" in report and "T1.ab1" in report
     payload = json.loads((folder / "分析结果.json").read_text(encoding="utf-8"))
     assert payload["variants"] == [] and "traces" not in payload
 
@@ -429,10 +434,12 @@ def _strip_volatile(md: str) -> str:
 
 
 _EXPECTED_CONCLUSIONS = {
-    "MX": "不合格：MX 蛋白与设计不一致",
+    # goal v3.1 X3：结论列 = verdict.headline 去符号（三段式「状态 · 范围 ·
+    # 证据」），Excel 不再自行拼一句话
+    "MX": "不合格 · 已测 31–110；范围外未评估 · 证据：1 处确证差异（MX蛋白与设计不一致）",
     # goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 「已测区段」口径，
-    # 禁整参考主张；已测区间取 verified_ranges（端部软剪切后 31–111）
-    "PX": "合格：已测 31–111 与设计一致；范围外未评估",
+    # 禁整参考主张；已测区间取 verified_ranges（端部软剪切后 31–110）
+    "PX": "合格 · 已测 31–111；范围外未评估 · 证据：verified 覆盖 73%，未检出差异",
     "NOREF": "已整理 1 个测序文件，但缺少同名参考图谱（.dna/.gb/.fasta），无法自动比对",
 }
 
@@ -500,7 +507,8 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
             w = w.replace("网页批量分析", "本地批处理").replace("服务器未安装", "本机未安装")
         assert o == w, arc
     mx_md = off["MX/错误/测序分析报告.md"].decode("utf-8")
-    assert "> **不合格：MX 蛋白与设计不一致**" in mx_md
+    assert ("> **不合格 · 已测 31–110；范围外未评估 · 证据：1 处确证差异"
+            "（MX蛋白与设计不一致）**") in mx_md
     assert "- 参考图谱：MX.gb（111 bp，1 个特征）" in mx_md
     assert ("各编码区（CDS）结论：\n\n- ✅ **MX**（100.0% 覆盖）：CDS 已完整覆盖。"
             "MX 蛋白与设计不一致：1 处氨基酸替换（K11E）\n") in mx_md
@@ -555,7 +563,7 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
     assert by_file["M1.ab1"] == _EXPECTED_CONCLUSIONS["MX"]
     assert by_file["P1.ab1"] == by_file["P2.ab1"] == _EXPECTED_CONCLUSIONS["PX"]
     assert by_file["Q1.ab1"] == _EXPECTED_CONCLUSIONS["NOREF"]
-    assert by_file["X1.ab1"].startswith("疑似混合：X1.ab1 检出")
+    assert by_file["X1.ab1"].startswith("疑似混合 ·") and "read 检出双峰" in by_file["X1.ab1"]
 
     # 6) 批次总览：除生成时间外逐字一致
     o_txt = off["批次总览.txt"].decode("utf-8").splitlines()
@@ -743,7 +751,7 @@ def test_interrupted_run_keeps_finished_plasmids(tmp_path, monkeypatch):
     assert (ok / "T1.ab1").read_bytes() == (data_dir / "T1.ab1").read_bytes()
     # goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径
     _ok_md = (ok / "测序分析报告.md").read_text(encoding="utf-8")
-    assert "合格：已测" in _ok_md and "与设计一致" in _ok_md
+    assert "合格 · 已测" in _ok_md and "范围外未评估" in _ok_md
     assert "构建与设计一致" not in _ok_md
     assert json.loads((ok / "分析结果.json").read_text(encoding="utf-8"))["sample_name"] == "TST"
     assert not (out / "TS2").exists()

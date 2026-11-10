@@ -66,11 +66,15 @@ STATUS_SYMBOLS = {
     "pending": "△", "partial": "△", "mixed": "△",
     "insufficient": "△", "failed_reads": "△",
 }
-STATUS_EXCEL_WORDS = {
+# 头行中间状态词（X3，goal §3.3）：Excel 结论列 = headline 去掉符号，
+# 因此这张表同时是 Excel 结论的前缀词源——两个出口不能再各有一套词
+# （OC1/OC2 分叉的根因就是词表分家）。
+STATUS_HEAD_WORDS = {
     "pass": "合格", "fail": "不合格", "pending": "待定",
-    "partial": "待定", "mixed": "疑似混合", "insufficient": "无法判定",
-    "failed_reads": "待定·读取失败",
+    "partial": "部分验证", "mixed": "疑似混合", "insufficient": "无法判定",
+    "failed_reads": "读取失败",
 }
+STATUS_EXCEL_WORDS = dict(STATUS_HEAD_WORDS)
 
 
 def status_symbol(status: str) -> str:
@@ -142,6 +146,73 @@ def _junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
     """接合区（goal T5；B P1-11）：实现收敛到 core.sanger.junction_ranges
     （goal v3 W1）；保留私有别名兼容既有调用"""
     return junction_ranges(features)
+
+
+def _range_text(scope_obj, ranges, ref_length: int,
+                verified_ranges: List) -> str:
+    """头行范围段（X3：三出口唯一来源，goal §3.3）。
+
+    - 声明范围：有元件名时带名——单段「名称（a–b）」；多段同属一个元件
+      「名称（a–b、c–d）」；环状参考上跨原点被拆成首尾两段的写成一段
+      「名称（3701–300，跨原点）」（HC2）；
+    - 未声明范围：只说已测区段，且区间取 **verified**（实测含首尾不可信
+      区，不构成验证；measured 只在明细列出现，goal §3.3），无 verified
+      时退回实测区段。
+    """
+    _MAX = 3
+    if scope_obj is not None and scope_obj.declared and ranges:
+        name = scope_obj.elements[0] if len(scope_obj.elements) == 1 else None
+        if (name and len(ranges) >= 2 and ranges[0][0] == 1
+                and ranges[-1][1] == ref_length):
+            return (f"范围：{name}（{ranges[-1][0]}–{ranges[0][1]}，跨原点）")
+        if name and len(ranges) == 1:
+            return f"范围：{name}（{ranges[0][0]}–{ranges[0][1]}）"
+        if name:
+            inner = "、".join(f"{a}–{b}" for a, b in ranges[:_MAX])
+            more = f" 等 {len(ranges)} 段" if len(ranges) > _MAX else ""
+            return f"范围：{name}（{inner}{more}）"
+        if scope_obj.elements and len(scope_obj.elements) == len(ranges):
+            rng_txt = "、".join(
+                f"{n}（{a}–{b}）" for n, (a, b) in
+                zip(scope_obj.elements, ranges[:_MAX]))
+        else:
+            rng_txt = "、".join(f"{a}–{b}" for a, b in ranges[:_MAX])
+        return f"范围：{rng_txt}"
+    spans_src = verified_ranges or ranges
+    spans = "、".join(f"{a}–{b}" for a, b in spans_src[:_MAX])
+    more = f" 等 {len(spans_src)} 段" if len(spans_src) > _MAX else ""
+    return f"已测 {spans}{more}；范围外未评估"
+
+
+def _fail_site_count(blocking: List[Dict]) -> int:
+    """确证差异**按位点去重计数**（X3；goal §3.3 / RB P1-1）。
+
+    同一处变异会同时落成多条 fail 条目：普通确证差异 + 接合区变体（位置
+    在接合区窗口内）+ CDS 蛋白不一致（移码，范围是整段 CDS）。三者对用户
+    是 1 处差异，头行不得按条目数报成 2–3 处（HC1）。
+    """
+    pts, spans = set(), []
+    for b in blocking:
+        if not b.get("fail_impact"):
+            continue
+        p = b.get("site")
+        if p is None and b.get("ref_start") is not None \
+                and b.get("ref_start") == b.get("ref_end"):
+            p = b.get("ref_start")
+        if p is not None:
+            pts.add(int(p))
+        else:
+            spans.append(b)
+    n = len(pts)
+    for b in spans:
+        s_, e_ = b.get("ref_start"), b.get("ref_end")
+        if s_ is None or e_ is None:
+            n += 1
+            continue
+        # 区间型条目（接合区窗口 / CDS 整段）已被其中某个具体位点代表
+        if not any(int(s_) <= p <= int(e_) for p in pts):
+            n += 1
+    return n
 
 
 def build_verdict(result: Dict, ref_length: int, scope=None,
@@ -273,7 +344,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                      f"接合区 {rp} {v.get('type')}（{'确证' if st == 'confirmed' else '未决'}，"
                      "范围外）——载体-基因接合处差异直接影响插入正确性",
                      "核对峰图；必要时换引物覆盖接合区",
-                     fail_impact=st == "confirmed")
+                     fail_impact=st == "confirmed", site=rp)
             elif ce:
                 _blk("critical_element_variant", int(ce["start"]), int(ce["end"]),
                      ce.get("name"),
@@ -313,11 +384,12 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                  + (f"（{v['low_reason']}）" if v.get("low_reason") else ""),
                  "核对峰图或补测")
         if jh:
+            # site=rp：头行证据按位点去重（X3/HC1），接合区窗口本身不是位点
             _blk("junction_variant", jh[0], jh[1], jh[2],
                  f"接合区 {rp} {v.get('type')}（{'确证' if st == 'confirmed' else '未决'}）"
                  "——载体-基因接合处差异直接影响插入正确性",
                  "核对峰图；必要时换引物覆盖接合区",
-                 fail_impact=st == "confirmed")
+                 fail_impact=st == "confirmed", site=rp)
         # 关键元件内的范围内差异：critical_element_variant 与通用条目并列
         # （功能元件序列必须逐字正确；goal T5 沿用）
         ce_in = next((f for f in critical
@@ -737,22 +809,9 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     # W12 起作为三出口唯一文案来源（本阶段随 verdict 下发，出口尚各自措辞）。
     # 范围段：声明范围用「元件名（起–止）」（元件数与段数对应时）或区间；
     # 未声明范围只说「已测 x–y…；范围外未评估」（goal §0.1 禁整参考主张）
-    _HEAD = {"pass": ("✓", "合格"), "fail": ("✗", "不合格"),
-             "pending": ("△", "待定"), "partial": ("△", "部分验证"),
-             "mixed": ("△", "疑似混合"), "insufficient": ("△", "无法判定"),
-             "failed_reads": ("△", "读取失败")}
-    sym_, word_ = _HEAD[status]
-    if declared:
-        if scope_obj.elements and len(scope_obj.elements) == len(scope_ranges):
-            rng_txt = "、".join(
-                f"{n}（{s}–{e}）" for n, (s, e) in
-                zip(scope_obj.elements, scope_ranges[:3]))
-        else:
-            rng_txt = "、".join(f"{s}–{e}" for s, e in scope_ranges[:3])
-        range_part = f"范围：{rng_txt}"
-    else:
-        spans_ = "、".join(f"{s}–{e}" for s, e in scope_ranges[:3])
-        range_part = f"已测 {spans_}；范围外未评估"
+    sym_, word_ = status_symbol(status), STATUS_HEAD_WORDS[status]
+    range_part = _range_text(scope_obj, scope_ranges, ref_length,
+                             verified_ranges)
     if status == "pass":
         n_syn = len([i for i in info if i.get("kind") == "synonymous_variant"])
         ev_txt = (f"verified 覆盖 {roi_verified_pct:.0f}%，"
@@ -762,15 +821,40 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     elif status == "insufficient":
         ev_txt = "实测数据不足以判定"
     elif has_fail:
-        ev_txt = (f"{len([b for b in blocking if b.get('fail_impact')])}"
-                  " 处确证差异")
+        # X3（RB P1-1、goal §3.3）：证据计数**按位点去重**——同一处变异
+        # 可能同时进 confirmed_variant 与 junction_variant（接合区插入），
+        # 甚至再加一条 CDS 蛋白不一致条目；按位点合计只算 1 处
+        ev_txt = f"{_fail_site_count(blocking)} 处确证差异"
+        # 蛋白层面的后果是用户第一关心的信息（此前只在 Excel 明细里），
+        # 现在并入证据段——头行仍是唯一来源，出口不得重复判断
+        bad_cds = [c for c in cds_reports
+                   if c.get("coverage_status") != "uncovered"
+                   and c.get("protein_identical") is False]
+        if bad_cds:
+            names_ = "、".join(str(c.get("name")) for c in bad_cds[:2]) \
+                + (" 等" if len(bad_cds) > 2 else "")
+            ev_txt += (f"（{names_}蛋白与设计不一致"
+                       + ("，移码" if any(c.get("frameshift_count")
+                                          for c in bad_cds) else "")
+                       + "）")
     elif status == "mixed":
-        ev_txt = f"双峰判混（{len([b for b in blocking if b['kind'] == 'mixed_variant'])} 处）"
+        # 两种判混形态（goal T2/T7）：read 级 widespread（mixed_sample）与
+        # 位点级次等位（mixed_variant）。证据段按实际命中的形态说，避免出现
+        # 「双峰判混（0 处）」这种自相矛盾的计数（X3）
+        _n_site = len([b for b in blocking if b["kind"] == "mixed_variant"])
+        _samp = [b for b in blocking if b["kind"] == "mixed_sample"]
+        if _samp:
+            ev_txt = (_samp[0].get("detail") or "").split("（")[0]                 or f"{len(_samp)} 条 read 检出双峰"
+        else:
+            ev_txt = f"双峰判混（{_n_site} 处）"
     else:
         ev_txt = f"{len(blocking)} 项待核"
     headline = f"{sym_} {word_} · {range_part} · 证据：{ev_txt}"
     if _reviewed_n:
         headline += f"，人工确认 {_reviewed_n} 处"
+    # X3：Excel 结论列 = 去掉符号后的 headline（RB P0-3：三出口逐字同源）。
+    # 明细列（缺口原因/范围外差异/补测建议）由 _scope_cells 从结构化字段填
+    excel_txt = headline.lstrip("✓✗△ ").strip()
 
     return {
         "status": status,
@@ -797,6 +881,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         # goal v3 W5（PL A5/A6）：元件级判定与三段式头行
         "element_verdicts": element_verdicts,
         "headline": headline,
+        # X3：Excel 一句话结论（= headline 去符号，出口不得自行拼接）
+        "excel_conclusion": excel_txt,
         # goal v3 W14：人工确认计数（review_decisions 留痕在 payload，重算
         # 时随参数传入——同一份 result+decisions 重算可复现）
         "reviewed_count": _reviewed_n,
