@@ -111,8 +111,10 @@ def downgrade() -> None:
                 "DELETE FROM " + _TABLE + " "
                 "WHERE reference_hash = :h AND owner_id = :o").bindparams(
                     h=ref_hash, o=owner_id))
-    # 主键同样要显式换回来：PG 上 copy_from 不生效，若不重建，降级后表
-    # 会**完全没有主键**——再升级时 _pk_name 取不到真名就无从下手
+    # 主键必须显式换回来，且**在 batch 之外**逐条执行：PG 上
+    # batch_alter_table 一次性提交，batch 内的 drop/create 与随后的
+    # drop_column 顺序不受控（实测报 "column owner_id is in a primary key"）。
+    # 顺序：删复合主键 → 放非空 → 删列 → 建单列主键。
     old_pk = _pk_name(conn) if is_pg else None
     with op.batch_alter_table(
             _TABLE,
@@ -120,9 +122,9 @@ def downgrade() -> None:
     ) as batch:
         batch.alter_column('owner_id',
                            existing_type=sa.String(length=64), nullable=True)
-        if is_pg:
-            if old_pk:
-                batch.drop_constraint(old_pk, type_='primary')
-            batch.create_primary_key('sequencing_scope_memory_pkey',
-                                     ['reference_hash'])
+    if is_pg and old_pk:
+        op.drop_constraint(old_pk, _TABLE, type_='primary')
     op.drop_column(_TABLE, 'owner_id')
+    if is_pg:
+        op.create_primary_key('sequencing_scope_memory_pkey', _TABLE,
+                              ['reference_hash'])
