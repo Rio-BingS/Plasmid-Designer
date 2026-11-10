@@ -90,8 +90,11 @@ def test_reasons_by_zone():
     z = compute_reliable_zone(1000, 0, [40] * 1000)
     assert "硬不可信区" in zone_reason(z, 10)
     # tail_gray/tail_hard 保留为 zone_reason 文案参照（T12：区界由信号定）
-    assert "尾端灰区 701–900bp" in zone_reason(z, 750)
+    # 2026-11-10：700bp 之后、信号区之内为尾端扩展区（计入覆盖，单 read
+    # 差异不确证）；无 trace 时信号区止于 tail_hard 900，950 在信号区外
+    assert "尾端扩展区" in zone_reason(z, 750)
     assert "900bp 之后" in zone_reason(z, 950)
+    assert z["core_end"] == 700 and z["raw_core_end"] == 700
     assert zone_text(z).startswith("可信区 31–900bp")
 
 

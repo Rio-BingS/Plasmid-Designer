@@ -25,7 +25,7 @@ from core.sanger.noise import peak_snr as _noise_peak_snr
 # W12：头行符号映射（verdict.py 顶部反向 import 本模块——循环风险在
 # verdict 侧已按惰性导入处理，此处为正向依赖，安全）
 from core.sanger.verdict import status_symbol
-from core.sanger.reliable_zone import in_zone, zone_reason
+from core.sanger.reliable_zone import core_zone, in_zone, zone_class, zone_reason
 
 
 def _variant_status(v: Dict) -> str:
@@ -68,17 +68,18 @@ def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT-" for c in alt_up):
         codes.append("n_call")
-    if zone and rp and support < 2 and not in_zone(zone, rp):
+    if zone and rp and support < 2 and not in_zone(core_zone(zone), rp):
         z = zone.get("params") or {}
         if rp <= (z.get("front_gray") or 60):
             codes.append("front_hard_zone" if rp <= (z.get("front_hard") or 30)
                          else "front_gray_zone")
         else:
-            codes.append("tail_zone")
+            codes.append("tail_ext_zone" if zone_class(zone, rp) == "tail_ext"
+                         else "tail_zone")
     # 双证尾端等「跨过 zone 规则」的确证变体（goal T3；B P1-7）：支持证据
     # 全部来自可信区外时明示——判定成立但不属于可信区内的证据
     if (v.get("confidence") in ("medium", "high") and zone and rp
-            and not in_zone(zone, rp)):
+            and not in_zone(core_zone(zone), rp)):
         codes.append("all_evidence_out_of_zone")
     if rp and rp in mixed_positions:
         codes.append("mixed_bg_high")
@@ -373,9 +374,25 @@ def _collect_unresolved_sites(read_results: List[Dict],
                  f"{d.get('base', '?')} run 后信号骤降"
                  f"（{d.get('ref_start')}-{d.get('ref_end')}）")
     # 无法互检的双峰位点：其他引物未覆盖，既不能定噪声也不能定混合
+    # 次等位 AF 随位点下发（2026-11-10）：verdict 按 AF 分流——AF≥0.23 的
+    # 孤立双峰（S16 0.30、M7 0.50）进待核；低于此的是真实单克隆常见噪声
+    # （M13F/M13R/11131/17647 及 Biopython 3730/3100 的散在位点 AF 0.15-0.21）
+    _af_by: Dict[str, Dict[int, float]] = {}
+    for r in read_results:
+        r2ref, _ = _read_ref_maps(r)
+        m = _af_by.setdefault(r.get("filename"), {})
+        for e in r.get("mixed_detail") or []:
+            rp0 = r2ref.get(e.get("pos"))
+            if rp0:
+                ratio = float(e.get("ratio") or 0)
+                m[int(rp0)] = max(m.get(int(rp0), 0.0), round(ratio / (1 + ratio), 3))
     for fn, chk in ((mixed_corroboration or {}).get("by_read") or {}).items():
         for rp in chk.get("uncovered_ref") or []:
             _add(rp, "mixed_uncorroborated", fn, "双峰位点无其他引物覆盖，无法互检")
+            af = (_af_by.get(fn) or {}).get(int(rp)) if rp else None
+            if af is not None:
+                ent = sites[(int(rp), "mixed_uncorroborated")]
+                ent["af"] = max(ent.get("af") or 0.0, af)
     return [sites[k] for k in sorted(sites, key=lambda k: (k[0], k[1]))]
 
 
@@ -412,7 +429,7 @@ def _low_confidence_reason(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT-" for c in alt_up):
         return "碱基判读为 N/模糊碱基（basecaller 未能解析）"
-    if zone and rp and support < 2 and not in_zone(zone, rp):
+    if zone and rp and support < 2 and zone_class(zone, rp) != "core":
         return zone_reason(zone, rp)
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if rp and rp in mixed_positions and (ins_ratio is None or ins_ratio < 0.6):

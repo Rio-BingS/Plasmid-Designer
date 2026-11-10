@@ -76,11 +76,49 @@ def in_zone(zone: Optional[Dict], rp: Optional[int]) -> bool:
     return zone["start"] <= rp <= zone["end"]
 
 
+def zone_core_end(zone: Optional[Dict]) -> Optional[int]:
+    """核心区终点（修剪后坐标）；旧记录无 core_end 时等于可信区终点"""
+    if not zone:
+        return None
+    ce = zone.get("core_end")
+    return zone["end"] if ce is None else min(int(ce), zone["end"])
+
+
+def core_zone(zone: Optional[Dict]) -> Optional[Dict]:
+    """只含核心区的可信区副本（单 read 确证、双峰分级用）"""
+    if not zone:
+        return zone
+    z = dict(zone)
+    z["end"] = zone_core_end(zone)
+    return z
+
+
+def zone_class(zone: Optional[Dict], rp: Optional[int]) -> Optional[str]:
+    """位点所在分区：front（首端不可信）/ core（核心区）/ tail_ext（尾端
+    扩展区：tail_gray 之后但信号达标）/ outside（信号区之外）。无可信区
+    信息返回 None"""
+    if not zone or rp is None:
+        return None
+    if rp < zone["start"]:
+        return "front"
+    if rp <= zone_core_end(zone):
+        return "core"
+    if rp <= zone["end"]:
+        return "tail_ext"
+    return "outside"
+
+
+TAIL_EXT_REASON = ("位于 read 尾端扩展区（{g}bp 之后、信号仍达标）——单 read "
+                   "差异不确证，需其他引物覆盖确认")
+
+
 def zone_reason(zone: Dict, rp: int) -> str:
     """rp 落在可信区外时的具体原因（tail_gray/tail_hard 仅为文案参照，
     区界本身由信号窗口决定，T12）"""
     p = zone["params"]
     raw = rp + (zone["raw_start"] - zone["start"])
+    if zone_class(zone, rp) == "tail_ext":
+        return TAIL_EXT_REASON.format(g=p["tail_gray"])
     if rp < zone["start"]:
         if raw <= p["front_hard"]:
             return f"位于 read 首端 1–{p['front_hard']}bp 硬不可信区"

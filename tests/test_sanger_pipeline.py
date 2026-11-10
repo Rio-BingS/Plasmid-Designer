@@ -2042,8 +2042,15 @@ def test_mixed_sample_scattered_stays_unmixed():
     # 2026-11-06 定稿：待核双峰与区间裁决行同款表述（差异区间 + 参考位置）
     assert "差异区间 81、261：s.ab1 报出 2 处双峰" in result["conclusion"]
     assert "无其他引物覆盖" in result["conclusion"]
-    # T1 资格门：单 read 双峰无其他引物覆盖 → 未决位点 → △
-    assert result["conclusion"].startswith("△")
+    # 2026-11-10【待产品拍板，默认值】：AF<0.23 的孤立双峰列出不阻断（见
+    # test_af2 注释）；AF≥0.23 的孤立双峰仍 △（S16/M7）
+    _af = [u.get("af") for u in result["unresolved_sites"]
+           if u["kind"] == "mixed_uncorroborated"]
+    assert _af and all(a is not None for a in _af)
+    if max(_af) >= 0.23:
+        assert result["conclusion"].startswith("△")
+    else:
+        assert result["conclusion"].startswith("✓")
     kinds = {u["kind"] for u in result["unresolved_sites"]}
     assert "mixed_uncorroborated" in kinds
     from core.sanger.batch import excel_conclusion
@@ -2189,11 +2196,12 @@ def test_mixed_end_margin_positions_ignored():
     sites = {p: _ALT_OF[ref[p]] for p in (10, 25, 80, 130, 200, 260, 330, 750)}
     result = analyze([("m.ab1", _mixed_ab1(ref, sites))], ref, [], circular=False)
     prof = result["mixed_profiles"]["m.ab1"]
-    # 首 30bp 硬区与首端未稳定段的双峰（11/26）不计——T12 保留；750 处信号
-    # 良好 → 可信区延伸覆盖（旧口径 700 封顶不计，T12 取消硬顶）
-    assert prof["count"] == 6
-    assert prof["positions"] == [81, 131, 201, 261, 331, 751]
-    assert "↳ m.ab1：双峰 6 处，位于 read 81、131、201、261、331、751" in result["conclusion"]
+    # 首 30bp 硬区与首端未稳定段的双峰（11/26）不计；750 位于尾端扩展区
+    # （信号达标、计入覆盖，但双峰分级只采核心区 ≤700bp——2026-11-10，真实
+    # 单克隆 11131 尾端 15 处 Q45-57 次峰曾把它误判 widespread）
+    assert prof["count"] == 5
+    assert prof["positions"] == [81, 131, 201, 261, 331]
+    assert "↳ m.ab1：双峰 5 处，位于 read 81、131、201、261、331" in result["conclusion"]
 
 
 def test_n_call_variants_always_low_confidence():

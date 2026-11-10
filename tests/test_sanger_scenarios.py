@@ -167,9 +167,12 @@ def test_s13_coverage_by_untrusted_not_verified():
     spec, res = _run("S13")
     excel = excel_conclusion("P", res, 1, True)
     assert not excel.startswith("合格")
-    # 950 确证差异（可信区外但峰证据齐全，S17 同口径）→ fail；覆盖语义：
-    # verified（≈1-700）< measured（1-1000）如实下发，不可信尾段不构成验证
-    assert _status(res) == "fail"
+    # 950 位于信号区外（zone 止于 ~705）的单 read 替换（2026-11-10 分区口径）：
+    # 不确证（真实 17647 的 969bp 信号区外替换即为假确证），但 Q≥40、突变
+    # 主峰清晰 → 进待核不静默。S17 是两条 read 支持，仍 ✗（另由 S17 锁）。
+    # 覆盖语义不变：verified（≈1-700）< measured（1-1000）如实下发
+    assert _status(res) == "pending"
+    assert _v(res, 950)["status"] == "unresolved"
     cov = res.get("coverage") or {}
     assert cov, "coverage 必须下发"
     assert cov["verified_percent"] < cov["measured_percent"]
@@ -744,7 +747,14 @@ def test_af2_backbone_scattered_low_af_unresolved():
     us = [u for u in res.get("unresolved_sites") or []
           if u.get("ref_pos") in (300, 700)]
     assert us and any(u.get("kind") == "mixed_uncorroborated" for u in us)
-    assert _status(res) == "pending"
+    # 2026-11-10【待产品拍板，默认值】：单 read、无他 read 覆盖、AF<0.23 的
+    # 孤立双峰只列出（info，结论附注可见）不阻断 ✓——真实单克隆 M13F/M13R/
+    # 11131/17647 与 Biopython 3730/3100 均有 AF 0.15-0.21 的此类位点，单 read
+    # 无法与 AF2 区分（work/real_vs_synth_af.md）。AF≥0.23 仍进待核（S16/M7）
+    assert _status(res) == "pass"
+    info = [i for i in res["verdict"].get("info") or []
+            if i.get("kind") == "unresolved_site" and i.get("ref_start") in (300, 700)]
+    assert info, "孤立低 AF 双峰必须留痕（info）"
     assert _status(res) != "mixed"
 
 
@@ -939,9 +949,23 @@ def test_rq1_real_subset_queue_bounded():
     assert len(res["conclusion"].split("\n")) <= 6, \
         f"结论 {len(res['conclusion'].split(chr(10)))} 行超上限"
     assert _status(res) == "fail"
+    _assert_real_335_440_4081(res, q)
+
+
+def _assert_real_335_440_4081(res, q):
+    """真实子集三处位点的口径（2026-11-10 改，【335/440 待峰图确认】）：
+    4081 del38 核心区高置信 → 确证、进队列首项；335 ins 位于 10855 尾端
+    扩展区（read 725bp）、单 read → 未决，随判混 read 折叠进 read 项；440 ins
+    位于信号区外（read 831bp，Q12）→ 只列出。依据：main 两处均未报出；
+    同 read 700bp 后 Q45-57 仍出现成串次峰（work/local_signal.py）"""
     positions = {x.get("ref_start") for x in q}
-    for pos in (335, 440, 4081):
-        assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
+    assert 4081 in positions, sorted(positions)
+    by = {v["ref_pos"]: v for v in res["variants"]}
+    assert by[4081]["status"] == "confirmed"
+    assert by[335]["status"] == "unresolved" and by[335]["zone_class"] == "tail_ext"
+    assert by[440]["status"] == "unresolved" and by[440]["zone_class"] == "outside"
+    read_items = [x for x in q if x.get("level") == "read"]
+    assert read_items and any("10855" in (x.get("detail") or "") for x in read_items)
 
 
 def test_rq2_real_subset_full_plasmid_queue_bounded():
@@ -949,9 +973,7 @@ def test_rq2_real_subset_full_plasmid_queue_bounded():
     _spec, res = _run("RQ2")
     q = _queue(res)
     assert len(q) <= 25, f"队列 {len(q)} 项超上限"
-    positions = {x.get("ref_start") for x in q}
-    for pos in (335, 440, 4081):
-        assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
+    _assert_real_335_440_4081(res, q)
 
 
 def test_rq3_mixed_read_folds_into_one_item():

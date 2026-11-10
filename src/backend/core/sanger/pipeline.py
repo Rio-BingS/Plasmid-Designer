@@ -49,11 +49,9 @@ from core.sanger.signal import (
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
 )
 from core.sanger import conclusion_fold, indel_norm, peak_shape
-from core.sanger.mutual_support import (
-    opposite_side_single_indels as _opposite_side_single_indels,
-    MUTUAL_SIDE_FRAC as _MUTUAL_SIDE_FRAC,
-)
+from core.sanger.zone_signal import TAIL_CLEAN_WIDTH_MAX, local_width_ratio
 from core.sanger.reliable_zone import (
+    zone_class, core_zone,
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
 )
 
@@ -100,7 +98,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v15"  # v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
+SANGER_ALGO_VERSION = "v16"  # v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -170,10 +168,12 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT" for c in alt_up):
         return "low"
-    if zone and rp and support < 2 and not in_zone(zone, rp) \
-            and rp < zone.get("start", 0):
-        # T12：位置对置信度的强制仅保留首端（front_hard 硬区 + 首端未稳定
-        # 段——引物 3′ 端信号固有不可靠）；尾端由信号证据决定（S1 确证口径）
+    # 2026-11-10：单 read 差异只在核心区（首端不可信区之后、tail_gray 之前）
+    # 按证据定置信；首端、尾端扩展区（信号达标但 >700bp）、信号区外一律
+    # 低置信，多 read 支持才升级。尾端扩展区的差异在 verdict 进待核（不
+    # 静默、不确证，T12 原意），信号区外的只列出备查
+    if (zone and rp and support < 2 and zone_class(zone, rp) != "core"
+            and not v.get("tail_clean")):
         return "low"
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
@@ -1641,7 +1641,9 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             _degr_span.update(range(max(1, _ds), _de + 1))
         mixed_detail, r["mixed_profile"] = detect_and_classify(
             r["trimmed_bases"], r["trace"], r["trimmed_peaks"],
-            quality=r.get("trimmed_quality"), zone=r.get("reliable_zone"),
+            # 双峰分级只采核心区（2026-11-10）：尾端扩展区的成串次峰是衰减
+            # 段常态（真实单克隆 11131 尾端 15 处，Q45-57），不作混合证据
+            quality=r.get("trimmed_quality"), zone=core_zone(r.get("reliable_zone")),
             tracy_calls=r.get("tracy_calls"),
             params=load_mixed_params(r.get("instrument")),
             exclude=slip | merged_span | _degr_span,
@@ -1706,6 +1708,18 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         attach_evidence_by_read(v, by_read, mixed_by_read)
         evidence = v.get("peak_evidence")
         src = by_read.get(v.get("read", ""))
+        # 尾端扩展区干净替换（2026-11-10，保留 T12/S1 原意）：Q≥40、主峰为
+        # 突变碱基（mutant_pct≥85）、局部峰宽 ≤ 中段 1.2 倍 → 按证据定置信；
+        # 其余尾端扩展区单 read 差异（indel、峰展宽、次峰高）低置信进待核
+        v.pop("tail_clean", None)
+        if (src is not None and v.get("type") == "substitution"
+                and (v.get("support_reads") or 1) < 2
+                and zone_class(src.get("reliable_zone"), v.get("read_pos")) == "tail_ext"
+                and (v.get("read_q") or 0) >= 40
+                and ((evidence or {}).get("mutant_pct") or 0) >= 85):
+            _wr = local_width_ratio(src, v.get("read_pos"))
+            if _wr is not None and _wr <= TAIL_CLEAN_WIDTH_MAX:
+                v["tail_clean"] = True
         # poly 区 indel 的峰压缩评估：决定重复数计数是否可靠（参与置信度分级）
         hp = v.get("homopolymer")
         if hp and v.get("type") in ("insertion", "deletion") and src is not None:
@@ -1771,6 +1785,30 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             zone=src.get("reliable_zone") if src is not None else None,
         )
+        # 分区标记（2026-11-10，verdict 据此决定低置信差异进待核还是只列出）：
+        # 单 read 才有意义；首端干净替换（Q≥30、非双峰位）单独标记——引物
+        # 3′ 附近的真实连接错误不能静默（S9），而首端 indel/低 Q/双峰是噪声
+        _z = src.get("reliable_zone") if src is not None else None
+        if (v.get("support_reads") or 1) < 2:
+            v["zone_class"] = zone_class(_z, v.get("read_pos"))
+            if v["zone_class"] == "core" and _z and v.get("read_pos"):
+                # 首端灰区（原始 31–60bp，front_gray）：信号刚稳定，与首端同一
+                # 处置（M13R-88 在原始 31bp 的 Q30 双峰插入，main 判 ✓）
+                _raw = v["read_pos"] + (_z["raw_start"] - _z["start"])
+                if _raw <= ((_z.get("params") or {}).get("front_gray") or 60):
+                    v["zone_class"] = "front_gray"
+            if v["zone_class"] == "outside":
+                # 信号区外仍有 Q≥40 清晰突变主峰：不确证，但进待核不静默
+                # （S13）；真实 17647 的 969bp Q12 替换不满足，只列出
+                v["outside_clean"] = bool(
+                    v.get("type") == "substitution"
+                    and (v.get("read_q") or 0) >= 40
+                    and ((evidence or {}).get("mutant_pct") or 0) >= 85)
+            if v["zone_class"] in ("front", "front_gray"):
+                v["front_clean"] = bool(
+                    v.get("type") == "substitution"
+                    and (v.get("read_q") or 0) >= 30
+                    and v.get("read_pos") not in mixed_by_read.get(v.get("read", ""), set()))
         # 互检定案：单 read 差异被其他引物在可靠区干净读出参考碱基——
         # 判为源 read 的测序误差，直接排除，不再作为"不确定"写进结论。
         # indel 是伪影高发形态，一律定案；替换只有源 read 自身证据不强
@@ -1816,28 +1854,6 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             src.get("reliable_zone") if src is not None else None,
             mixed_by_read.get(v.get("read", ""), set()),
         )
-    # 双侧独立 indel 互证（goal v3.1 X4，RB P1-4）——一轮互检之后才能判定：
-    # 只有**都**处于互检矛盾状态的单 read indel 才互相佐证（判据见
-    # mutual_support）。真实变异（如 MX 的 5076）不进入集合，6653/6666 仍被排除。
-    multi_side = _opposite_side_single_indels(variants, conflicted_ids)
-    if multi_side:
-        for v in variants:
-            if id(v) not in multi_side:
-                continue
-            v.pop("cross_read_resolved", None)
-            v.pop("low_reason", None)
-            v["cross_read_mutual_support"] = {
-                "partners": sorted(multi_side[id(v)]),
-                "reason": "接合区两侧各自独立的单 read indel 互相佐证",
-            }
-            _zone = (by_read.get(v.get("read", "")) or {}).get("reliable_zone")
-            _mix = mixed_by_read.get(v.get("read", ""), set())
-            v["confidence"] = _variant_confidence(
-                v, _mix, v.get("peak_evidence"), zone=_zone)
-            if v["confidence"] == "low":
-                v["low_reason"] = _low_confidence_reason(
-                    v, _mix, v.get("peak_evidence"), zone=_zone)
-            attach_score(v, v.get("peak_evidence"), _zone)
 
 
 def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
@@ -2805,7 +2821,7 @@ def analyze(
     return {
         "reads": [
             {k: v for k, v in r.items()
-             if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps",
+             if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps", "_width_cache",
                           "raw_bases", "trim_start")}
             for r in read_results
         ],

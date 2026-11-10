@@ -216,6 +216,24 @@ def _fail_site_count(blocking: List[Dict]) -> int:
     return n
 
 
+def _unres_blocks(v: Dict) -> bool:
+    """未决差异是否进待核（2026-11-10 分区口径）：
+
+    - 核心区 / 多 read / 无分区信息（旧记录）→ 待核（T1：证据不足 ≠ 一致）；
+    - 尾端扩展区（tail_gray 之后、信号达标）→ 待核：不静默也不确证（T12）；
+    - 首端（含 31–60bp 灰区）：仅干净替换（Q≥30、非双峰位）待核（S9），
+      其余为引物区噪声；
+    - 信号区外 → 只列出备查；Q≥40 且突变主峰 ≥85% 的替换例外，进待核（S13）。"""
+    zc = v.get("zone_class")
+    if zc in (None, "core", "tail_ext"):
+        return True
+    if zc in ("front", "front_gray"):
+        return bool(v.get("front_clean"))
+    if zc == "outside":
+        return bool(v.get("outside_clean"))
+    return False
+
+
 def build_verdict(result: Dict, ref_length: int, scope=None,
                   synonymous_action: str = "ok",
                   review_decisions: Optional[List[Dict]] = None) -> Dict:
@@ -346,7 +364,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                      "范围外）——载体-基因接合处差异直接影响插入正确性",
                      "核对峰图；必要时换引物覆盖接合区",
                      fail_impact=st == "confirmed", site=rp)
-            elif ce:
+            elif ce and (st == "confirmed" or _unres_blocks(v)):
                 _blk("critical_element_variant", int(ce["start"]), int(ce["end"]),
                      ce.get("name"),
                      f"{ce.get('name')}（{ce.get('type')}）内 {rp} {v.get('type')}"
@@ -378,12 +396,23 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             _blk("confirmed_variant", rp, v_end,
                  feats, f"{rp} {v.get('type')}（置信 {v.get('confidence')}）",
                  "核对差异清单，必要时换引物复测", fail_impact=True)
-        else:
+        elif _unres_blocks(v):
+            # refs 带上来源 read（2026-11-10）：复核队列按 read 折叠靠 refs，
+            # 缺 refs 时判混 read 上的未决位点散落成独立条目（RQ1 实测 4 条）
             _blk("unresolved_variant", rp, v_end,
                  feats,
                  f"{rp} {v.get('type')}"
                  + (f"（{v['low_reason']}）" if v.get("low_reason") else ""),
-                 "核对峰图或补测")
+                 "核对峰图或补测",
+                 refs=[v["read"]] if v.get("read") else [])
+        else:
+            # 2026-11-10：信号区外 / 首端噪声（indel、低 Q、双峰位）的单 read
+            # 低置信差异只列出备查、不阻断——真实单克隆 17647 的 969bp Q12
+            # 替换、M13R 首端 Q25 双峰插入均属此类（work/fp_features.py）
+            _info("unresolved_variant", feats,
+                  f"{rp} {v.get('type')}（低置信，未计入判定）"
+                  + (f"：{v['low_reason']}" if v.get("low_reason") else ""),
+                  ref_start=rp, ref_end=v_end)
         if jh:
             # site=rp：头行证据按位点去重（X3/HC1），接合区窗口本身不是位点
             _blk("junction_variant", jh[0], jh[1], jh[2],
@@ -397,7 +426,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                       if int(f["start"]) <= (rp or 0) <= int(f["end"])
                       or (v.get("type") == "deletion"
                           and int(f["start"]) <= v_end <= int(f["end"]))), None)
-        if ce_in:
+        if ce_in and (st == "confirmed" or _unres_blocks(v)):
             _blk("critical_element_variant", int(ce_in["start"]), int(ce_in["end"]),
                  ce_in.get("name"),
                  f"{ce_in.get('name')}（{ce_in.get('type')}）内 {rp} {v.get('type')}"
@@ -433,6 +462,17 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             _info("out_of_scope_unresolved", u.get("ref_pos"),
                   f"参考位置 {rp} 的未决位点（{u.get('detail') or u.get('kind')}）"
                   f"在需测范围外——未评估", ref_start=rp, ref_end=rp)
+            continue
+        if (u.get("kind") == "mixed_uncorroborated"
+                and float(u.get("af") or 0) < MIXED_AF_MIN):
+            # 2026-11-10：非混合 read 上 AF<0.23 的孤立双峰（无他 read 覆盖、
+            # 无法互检）列出备查、不阻断 ✓——真实单克隆普遍存在；AF≥0.23
+            # 的孤立双峰仍进待核（T1 原意，S16/M7）
+            _info("unresolved_site", u.get("ref_pos"),
+                  f"参考位置 {rp} 个别双峰位点（{u.get('detail') or u.get('kind')}"
+                  + (f"，次等位 AF {u['af']}" if u.get("af") is not None else "")
+                  + "）——低于 0.23，可能为碱基噪声，未计入判定",
+                  ref_start=rp, ref_end=rp)
             continue
         _blk(_SITE_KIND_MAP.get(u.get("kind"), "unresolved_site"),
              u.get("ref_pos"), u.get("ref_pos"), None,
@@ -508,12 +548,21 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                  "重新挑单克隆复测，或 tracy 解卷积分离等位",
                  refs=m.get("reads") or [], af=af)
             _mixed_pos.add(rp)
-        elif af >= MINOR_AF_MIN or _declared_scope:
+        elif (af >= MINOR_AF_MIN or _declared_scope) and len(m.get("reads") or []) >= 2:
+            # 低丰度双峰被 ≥2 条 read 同位点同次等位印证 → 待核（W4 原意：
+            # AF 15-23% 带不得静默）
             _blk("minor_af_site", rp, rp, None,
-                 _pair + "——次等位丰度低，疑似低频亚群或噪声双峰，无法判混",
-                 "重新挑单克隆复测，或换引物覆盖该位点互检",
+                 _pair + "——多条 read 同位点印证的低丰度次等位，疑似低频亚群",
+                 "重新挑单克隆复测",
                  refs=m.get("reads") or [], af=af)
             _mixed_pos.add(rp)
+        elif af >= MINOR_AF_MIN or _declared_scope:
+            # 单 read 低丰度双峰（2026-11-10）：真实单克隆 17647 在 CDS 内有 5 处
+            # AF 0.15-0.18 的噪声双峰，单 read 无法区分噪声与低频亚群——
+            # 列出备查，由另一条引物覆盖印证后才进待核
+            _info("minor_af_site", None,
+                  _pair + "——单 read 低丰度双峰，无法区分噪声与低频亚群，未计入判定",
+                  ref_start=rp, ref_end=rp)
         else:
             _info("mixed_variant", None,
                   _pair + "（软检出带且未声明范围，仅记录）")

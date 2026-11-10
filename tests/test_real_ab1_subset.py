@@ -9,10 +9,14 @@ ins@440、del@4081）——合成数据造不出真实病态峰型（染料压�
 按口径变更流程处理（递增 algo_version + 提交正文写依据），不得改
 真值凑绿（W16 防回潮）。
 
-S99676 真值（2026-11-10 Windows/Linux 双跑一致，与 V1.01 回归集同源）：
-- status=fail（3 处确证变异）
-- 确证变异（confidence != low）：335 ins（high）/ 440 ins（medium）/
-  4081 del（high）
+S99676 真值（algo v16 口径变更，2026-11-10；原 v15 真值见 git 历史）：
+- status=fail（4081 del38 确证）
+- 确证变异：4081 del（high）。335 ins / 440 ins 由 v15 的 high/medium 改为
+  unresolved【待峰图确认】——两处只由 10855 一条 read 支持，335 位于 read
+  725bp（尾端扩展区）、440 位于 read 831bp（信号区外，Q12）；main(v2.36.0)
+  两处均未报出；同 read 700bp 后 Q45-57 仍成串出现次峰
+  （work/local_signal.py、work/fp_features.py 可重跑）
+- 其余 4 条 read（11131/17647/M13F/M13R）各自单独分析均为 ✓（与 main 一致）
 - 覆盖 ~63%（单克隆 5 引物，范围未声明——measured 口径）
 - 混合：无 mixed 判定（S99675 才是 mixed 真实样本，未入库）
 """
@@ -54,13 +58,16 @@ def test_real_subset_confirms_true_variants():
     res = _real_result()
     conf = {v["ref_pos"]: v for v in res["variants"]
             if v.get("confidence") in ("high", "medium")}
-    for pos, typ, tier in ((335, "insertion", "high"),
-                           (440, "insertion", "medium"),
-                           (4081, "deletion", "high")):
+    for pos, typ, tier in ((4081, "deletion", "high"),):
         v = conf.get(pos)
         assert v is not None, f"真实变异 {pos} {typ} 未检出（敏感度回潮）"
         assert v["type"] == typ, (pos, v["type"], typ)
         assert v.get("confidence") == tier, (pos, v.get("confidence"), tier)
+    # v16：335/440 仍检出并留痕（unresolved），不得消失
+    allv = {v["ref_pos"]: v for v in res["variants"]}
+    for pos in (335, 440):
+        assert pos in allv and allv[pos]["status"] == "unresolved", pos
+    assert set(conf) == {4081}, sorted(conf)
 
 
 def test_real_subset_verdict_shape():
@@ -70,7 +77,7 @@ def test_real_subset_verdict_shape():
     assert vd["status"] == "fail", vd["status"]
     n_conf = len([v for v in res["variants"]
                   if v.get("confidence") in ("high", "medium")])
-    assert n_conf >= 3, n_conf
+    assert n_conf == 1, n_conf  # v16：仅 4081
     sc = vd["scope"]
     assert not sc["declared"], sc
     cov = res["consensus"]["coverage_percent"]

@@ -70,7 +70,10 @@ _LEVEL_ORDER = ("confirmed", "junction", "read", "segment", "site")
 _PRIO_KINDS = {
     "fail": None,  # None = 按 fail_impact 标记收（确证差异，kind 不限）
     "read_shortfall": {"scope_read_shortfall", "scope_uncovered"},
-    "pending": PENDING_KINDS,
+    # mixed_variant 补入（2026-11-10）：verdict 判 mixed 时双峰位点只在
+    # MIXED 类，不在 PENDING_KINDS——此前队列靠 unresolved_site 顺带折叠出
+    # read 项，unresolved_site 改 info 后判混 read 的队列变空（RQ3 暴露）
+    "pending": PENDING_KINDS | {"mixed_variant"},
 }
 
 

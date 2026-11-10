@@ -38,15 +38,15 @@ scenarios:
   S10: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
   S11: {verdict: pending,       sites: [], mixed: false, unresolved: [{pos: 500, kind: n_call}]}
   S12: {verdict: failed_reads,  sites: [], mixed: false}   # 3 read 2 条损坏
-  S13: {verdict: fail,          sites: [{pos: 950, type: substitution, status: confirmed}, {pos: 15, type: substitution, status: unresolved}], mixed: false}
+  S13: {verdict: pending,       sites: [{pos: 950, type: substitution, status: unresolved}, {pos: 15, type: substitution, status: unresolved}], mixed: false}   # 2026-11-10：950 在信号区外、单 read → 不确证但 Q≥40 清晰进待核（真实 17647 信号区外替换为假确证）
   S14: {verdict: mixed,         sites: [], mixed: true, mixed_sites: [{pos: 100, af: 0.45}, {pos: 200, af: 0.44}, {pos: 300, af: 0.45}, {pos: 400, af: 0.46}, {pos: 500, af: 0.44}, {pos: 600, af: 0.46}]}
   S15: {verdict: fail,          sites: [{pos: 140, type: substitution, status: confirmed}], mixed: false, unresolved: [{pos: 151, kind: poly}]}
   S16: {verdict: pending,       sites: [], mixed: false, mixed_sites: [{pos: 150, af: 0.30}]}   # 双峰保留为未决、不升级混合（2026-11-06 定稿）
   S17: {verdict: fail,          sites: [{pos: 800, type: substitution, status: confirmed}], mixed: false}   # 749-755 双峰=尾端滑移伪影，不升级
   S18: {verdict: fail,          sites: [{pos: 500, type: deletion, status: confirmed}], mixed: false}   # 独立正例（2026-11-08 复审 R7）：CDS 内框内缺失 3bp，真值来自构造（planted）
   S19: {verdict: fail,          sites: [{pos: 650, type: substitution, status: confirmed}], mixed: false}   # 独立正例（R7）：骨架确证替换 + read 全覆盖，期望由构造决定
-  F1:  {verdict: pending,       sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰不升级混合（2026-11-07 实测）；R1：自拼参考含首端低质量段实测 <99%→partial；R3（2026-11-08）：地板 0.30→0.18 后 4 处 af 0.155-0.193 散在双峰单 read 无法互检 → 待定（af<0.15 的 3 处只记 info），不升级混合
-  F2:  {verdict: pending,       sites: [], mixed: false, file: 3100.ab1}   # 衰减段次峰不升级混合（2026-11-07 实测）；R3（2026-11-08）：地板 0.30→0.18 后 7 处 af 0.153-0.208 散在双峰（含衰减段外 249/265）单 read 无法互检 → 待定（1 处 af<0.15 只记 info）
+  F1:  {verdict: pass,          sites: [], mixed: false, file: 3730.ab1}   # 染料肩峰不升级混合（2026-11-07 实测）；R1：自拼参考含首端低质量段实测 <99%→partial；R3（2026-11-08）：地板 0.30→0.18 后 4 处 af 0.155-0.193 散在双峰单 read 无法互检 → 待定（af<0.15 的 3 处只记 info），不升级混合；2026-11-10：AF<0.23 孤立双峰列出不阻断（参考由 read 自拼、无真实变异，待定即假阳性）
+  F2:  {verdict: pass,          sites: [], mixed: false, file: 3100.ab1}   # 衰减段次峰不升级混合（2026-11-07 实测）；R3（2026-11-08）：地板 0.30→0.18 后 7 处 af 0.153-0.208 散在双峰（含衰减段外 249/265）单 read 无法互检 → 待定（1 处 af<0.15 只记 info）；2026-11-10：AF<0.23 孤立双峰列出不阻断（参考由 read 自拼、无真实变异，待定即假阳性）
   F3:  {verdict: pending,       sites: [], mixed: false, file: 310.ab1}    # 无 PCON：T24 峰型估 Q 恢复分析（quality_source=peak_estimate，2026-11-07 实测）
   M1:  {verdict: fail,          sites: [{pos: 104, type: substitution, status: confirmed}, {pos: 106, type: substitution, status: confirmed}], mixed: false}
   M2:  {verdict: fail,          sites: [{pos: 300, type: substitution, status: confirmed}], mixed: false}
@@ -60,7 +60,7 @@ scenarios:
   M12: {verdict: pass,          sites: [], mixed: false}   # PLOC<PBAS 告警（T24）；−1 修正后边界伪双峰位点消失（2026-11-07 实测）；goal v3 §8 决策 1（2026-11-09 W2）：未声明范围 → 已测区段口径 pass（R1 的 partial 语义被 v3 取代；PLOC 截短告警仍下发 warnings）
   M13: {verdict: fail,          sites: [{pos: 780, type: substitution, status: confirmed}], mixed: false}   # 与 S1 同构造（契约测试）
   M14: {verdict: pending,       sites: [{pos: 999, type: insertion, status: unresolved}], mixed: false}
-  M15: {verdict: pending,       sites: [{pos: 29, type: insertion, status: unresolved}], mixed: false}
+  M15: {verdict: pass,          sites: [{pos: 29, type: insertion, status: unresolved}], mixed: false}   # 2026-11-10：首端硬区单 read indel=引物区噪声，列出不阻断（真实 M13R-88 原始 31bp Q30 插入，main ✓）；位点仍 unresolved
 
 # raw 场景（不经 analyze）：M8（PLOC 峰窗基准，abif_reader 级；T24.1 修正 −1 偏移）、
 # M11（会话预检，app 级）

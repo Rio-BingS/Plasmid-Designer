@@ -21,7 +21,12 @@ from typing import Dict, List, Optional, Tuple
 
 from core.seq_utils import revcomp as _seq_revcomp
 
-MAX_ANNOT_SHIFT = 3   # 起点/终点允许的标注偏差（同读框内）
+MAX_ANNOT_SHIFT = 3   # 任意读框下允许的边界偏差
+# 2026-11-10 回归修复：同读框（偏移为 3 的倍数）内允许更大的起止点校正。
+# 真实参考 MUTPK 的 CDS 标注 2273-3934、实际 ORF 2279-3931（起点 +6）；
+# ±3bp 护栏下不再校正，导致按错框翻译、报假提前终止。换读框的偏差
+# （如 128bp）仍按 suspect 处理。
+MAX_INFRAME_SHIFT = 12
 STOP_CODONS = {"TAA", "TAG", "TGA"}
 EUKARYOTIC_TABLES = {1}   # transl_table=1 标准表（真核核基因）
 PROK_STARTS = ("ATG", "GTG", "TTG")
@@ -92,9 +97,11 @@ def find_guarded_orf(ref: str, start: int, end: int, strand: str,
     # 护栏：两端偏差 ≤3bp（1-3bp 的边界标注偏差照常校正——起点多含上游
     # 碱基本身就是 1bp 级读框平移），且校正后区间是完整读框（长度为 3 的
     # 倍数）。超出 → 保留原标注、标疑
-    guarded = (abs(orf_start - start) <= MAX_ANNOT_SHIFT
-               and abs(orf_end - end) <= MAX_ANNOT_SHIFT
-               and (orf_end - orf_start + 1) % 3 == 0)
+    d_s, d_e = abs(orf_start - start), abs(orf_end - end)
+    in_frame = ((orf_start - start) % 3 == 0) if strand != "-" else ((end - orf_end) % 3 == 0)
+    guarded = ((orf_end - orf_start + 1) % 3 == 0) and (
+        (d_s <= MAX_ANNOT_SHIFT and d_e <= MAX_ANNOT_SHIFT)
+        or (in_frame and d_s <= MAX_INFRAME_SHIFT and d_e <= MAX_INFRAME_SHIFT))
     if guarded:
         return {"orf_start": orf_start, "orf_end": orf_end, "suspect": False}
     # 超出护栏：保留原标注，标疑（A 4.3——标注错误不该被静默改写）
@@ -108,6 +115,6 @@ def suspect_site(feat_start: int, feat_end: int, name: str = "") -> Dict:
         "kind": "orf_annotation_suspect",
         "reads": [],
         "detail": (f"CDS {name} 标注 {feat_start}-{feat_end} 与区间内最佳 ORF "
-                   f"偏差超出 ±{MAX_ANNOT_SHIFT}bp（同读框）护栏，保留原标注"
+                   f"偏差超出护栏（同读框 ≤{MAX_INFRAME_SHIFT}bp、换读框 ≤{MAX_ANNOT_SHIFT}bp），保留原标注"
                    "——请核对特征边界或起始密码子"),
     }
