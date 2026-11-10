@@ -76,12 +76,14 @@ powershell -ExecutionPolicy Bypass -File smoke_test.ps1
 .venv/Scripts/python scripts/smoke_online_sources.py --run
 ```
 
-测试基线（本机 Windows，2026-11-07 实测，分支 `experiment/preview-visual-tuning`）：
+测试基线（2026-11-10 实测，分支 `fix/sanger-scope-v3.1`）：
 pytest
-**1975 passed / 46 skipped / 0 failed / 0 xfailed**（约 152 s），vitest **693 passed**，
-vue-tsc **0**、build/npm audit/尺寸预算/文档同步门禁全绿。46 skipped = 42 deploy
-需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11
-不经 analyze）；Sanger 场景库 36 项 0 xfail。其中 5 项真实数据回归
+**2093 passed / 46 skipped / 0 failed / 1 xfailed**（约 247 s，Windows）、
+**2135 passed / 4 skipped / 0 failed / 1 xfailed**（约 521 s，Linux/VPS），vitest **693 passed**，
+vue-tsc **0**、build/npm audit/文档同步门禁全绿。Windows 的 46 skipped = 42 deploy
+需 bash/sh（Linux 上真跑）+ 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记
+（M5/M8/M11 不经 analyze）；Sanger 场景库 67 个场景 / 88 个测试函数 = 87 passed +
+1 xfailed（CM3，构造 off-by-one，待裁决）。真实数据回归
 （`test_real_data_regression`）
 只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（[postmortems 索引](docs/HANDOVER.md#7-已修问题留档索引)）；v2.18.0→v2.29.2 的 CI 红灯链也已清零（[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
