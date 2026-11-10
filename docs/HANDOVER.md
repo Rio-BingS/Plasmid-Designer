@@ -60,17 +60,37 @@ headline「人工确认 N 处」）、p_real 三档展示（W15）、KNOWN_ISSUE
 （W11–W16 未改判定阈值/真值）。逐阶段数字与刻意未做事项见
 docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 
+**v3.1（scope 复审修复，2026-11-10，分支 `fix/sanger-scope-v3.1`）**：
+复审 b39b46a 的 3 个 P0 + 7 个 P1 + 3 个 P2 逐条落地（X0–X7）。核心三处：
+①**峰形门控**（`core/sanger/peak_shape.py` + `params/peak_shape.json`）——
+尾端峰展宽不再误判混合（判据 `FWHM ÷ 相邻峰间距 > 1.0` 连续 ≥15bp）；
+②**复核队列三级聚合 + 结论行预算**（`review.py` / `conclusion_fold.py`）——
+真实子集队列 330→14 项、MX→3 项，网页结论限 6 行；
+③**头行唯一来源 `verdict.headline`**——Excel 结论列 = 去符号的 headline，
+三出口逐字同源。另有 indel 双坐标（左对齐 + HGVS 3′，`indel_norm.py`）、
+范围记忆按用户隔离 + DELETE 端点（`mutual_support.py` 处理接合区双侧
+独立 indel 互证）。**SANGER_ALGO_VERSION v14→v15**。
+实测：后端 **2093 passed / 0 failed / 46 skipped / 1 xfailed**，场景库
+67 个场景（88 个测试函数）**87 passed / 1 xfailed**；唯一 xfail 是 CM3——
+其 r2 读段构造 `ref[0:300] + ins2 + ref[301:450]` 跳过 `ref[300]`，read 与
+参考等长，序列上等价于替换而非插入；修它必须改 X0 冻结的场景构造
+（goal 的停止条件），**待所有者裁决**。逐项取证见 docs/audit/PROGRESS_v3.1.md。
+
+**门禁调整（2026-11-10）**：解除「单文件 ≤900 行」限制。推进期不为行数
+强制拆分——`scripts/check_file_size.py` 改为只提示不阻断（`--top N` 看
+最大的几个），CI 只打印清单。大文件重构清单见 KNOWN_ISSUES「未解决」第 7 条。
+
 ## 2. 事实清单（2026-10-26/27 实测，可直接引用）
 
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.3`（2026-11-08：复审修复 8 条——覆盖闸收紧/双峰地板 0.18/首端连接段上报/结论分组结构化/基准集诚实化）。此前 `v2.37.0-alpha.2`（2026-11-07：Sanger 判读链路全量修复 T0-T25）。此前 v2.37.0-alpha.1（2026-11-05：目的基因模式 + 结论覆盖资格门）、v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
-| 后端测试 | **1975 passed / 46 skipped / 0 failed / 0 xfailed**（约 152 秒，2026-11-08；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记（M5/M8/M11 不经 analyze）；Sanger 场景库 38 项 0 xfail，含 R7 独立正例 S18/S19） |
+| 后端测试 | **2093 passed / 46 skipped / 0 failed / 1 xfailed**（约 247 秒，2026-11-10，Windows；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记；场景库 67 个场景/88 个测试函数 = 87 passed + 1 xfailed（CM3，构造 off-by-one 待裁决）） |
 | 前端测试 | **693 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-08；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
-| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v14"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
+| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v15"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）、v3.1 v14→v15（峰形门控、队列三级聚合、头行唯一来源、indel 双坐标、范围记忆按用户隔离）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
