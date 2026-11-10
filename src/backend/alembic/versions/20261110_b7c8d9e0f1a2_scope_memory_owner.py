@@ -51,9 +51,11 @@ def _pk_name(conn) -> str:
     已被占用（多次 upgrade/downgrade 循环会留下名字），会自动改成 `..._pkey1`，
     再按原名 drop 就是 UndefinedObject。这里按目录查真名。
     """
+    # 用 CAST(...) 而非 `:t::regclass`——SQLAlchemy 的 text() 会把 `::`
+    # 当成参数名的一部分（KeyError: 't'）
     row = conn.execute(sa.text(
         "SELECT conname FROM pg_constraint "
-        "WHERE conrelid = :t::regclass AND contype = 'p'"
+        "WHERE conrelid = CAST(:t AS regclass) AND contype = 'p'"
     ).bindparams(t=_TABLE)).fetchone()
     return row[0] if row else _FALLBACK_PK_NAME
 
