@@ -40,8 +40,17 @@ def _table(*pk_cols: str) -> sa.Table:
     )
 
 
+_PK_NAME = 'sequencing_scope_memory_pkey'
+
+
 def upgrade() -> None:
-    # 先加可空列并回填匿名 owner，再收窄为复合主键——三步都是增量操作
+    # 单列主键 -> (owner_id, reference_hash) 复合主键。四步都增量：
+    # 加可空列 → 回填匿名 owner → 删旧主键 → 收窄非空并建复合主键。
+    #
+    # 主键必须显式 drop/create：batch_alter_table 在 PostgreSQL 上走原生
+    # ALTER，`copy_from` 里的主键只在 SQLite 重建表时才有意义——早先只在
+    # batch 里 alter_column 的话，列加上了、主键仍是单列，两个用户对同一
+    # 质粒的记忆会互相覆盖（SM1 失效）。
     op.add_column('sequencing_scope_memory',
                   sa.Column('owner_id', sa.String(length=64), nullable=True))
     op.execute(
@@ -53,12 +62,42 @@ def upgrade() -> None:
     ) as batch:
         batch.alter_column('owner_id',
                            existing_type=sa.String(length=64), nullable=False)
+        # SQLite 分支：重建表时 copy_from 已给出复合主键，这里删旧名会报
+        # 找不到约束——按方言分支，别让一次迁移在两种库里行为不同
+        if op.get_context().dialect.name != 'sqlite':
+            batch.drop_constraint(_PK_NAME, type_='primary')
+            batch.create_primary_key(_PK_NAME, ['owner_id', 'reference_hash'])
 
 
 def downgrade() -> None:
+    # 复合主键收回单列。顺序：去重 → 删复合主键（仅 PG）→ 删列。
+    # 去重必须在前：旧结构一个 reference_hash 只能留一行，同参考有多用户
+    # 记忆时保留 updated_at 最新的一条（属预期损失，记在迁移说明里）。
+    # 在 Python 侧选keep键再逐条删——`rowid` 只有 SQLite 有，不能写进通用谓词。
+    is_pg = op.get_context().dialect.name != 'sqlite'
+    conn = op.get_bind()
+    rows = conn.execute(sa.text(
+        "SELECT owner_id, reference_hash, updated_at FROM sequencing_scope_memory"
+    )).fetchall()
+    keeper: dict = {}
+    for owner_id, ref_hash, updated in rows:
+        cur = keeper.get(ref_hash)
+        if cur is None or (updated or "") > (cur[1] or ""):
+            keeper[ref_hash] = (owner_id, updated)
+    keep_pairs = {(oid, h) for h, (oid, _u) in keeper.items()}
+    for owner_id, ref_hash, _updated in rows:
+        if (owner_id, ref_hash) not in keep_pairs:
+            conn.execute(sa.text(
+                "DELETE FROM sequencing_scope_memory "
+                "WHERE reference_hash = :h AND owner_id = :o").bindparams(
+                    h=ref_hash, o=owner_id))
+    if is_pg:
+        op.drop_constraint(_PK_NAME, 'sequencing_scope_memory', type_='primary')
     with op.batch_alter_table(
             'sequencing_scope_memory',
             copy_from=_table('reference_hash'),
     ) as batch:
-        batch.drop_constraint('sequencing_scope_memory_pkey', type_='primary')
+        # 非 PG：重建表时 copy_from 已按单列主键收口，只需放掉非空约束
+        batch.alter_column('owner_id',
+                           existing_type=sa.String(length=64), nullable=True)
     op.drop_column('sequencing_scope_memory', 'owner_id')
