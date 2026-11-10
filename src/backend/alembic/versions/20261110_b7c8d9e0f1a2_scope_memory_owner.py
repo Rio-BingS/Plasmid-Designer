@@ -82,7 +82,9 @@ def downgrade() -> None:
     keeper: dict = {}
     for owner_id, ref_hash, updated in rows:
         cur = keeper.get(ref_hash)
-        if cur is None or (updated or "") > (cur[1] or ""):
+        # updated_at 是 datetime（可能为 NULL）——不能和字符串混比
+        if cur is None or (updated is not None
+                           and (cur[1] is None or updated > cur[1])):
             keeper[ref_hash] = (owner_id, updated)
     keep_pairs = {(oid, h) for h, (oid, _u) in keeper.items()}
     for owner_id, ref_hash, _updated in rows:
