@@ -11,6 +11,7 @@
 "path"（原始文件路径，供整理清单追溯）。
 """
 
+import logging
 import time
 import uuid
 from datetime import datetime
@@ -26,6 +27,8 @@ from core.sanger.pipeline import analyze
 from core.sanger.primer_check import library_primers
 from core.sanger.review import build_queue
 from core.sanger.reference_parser import parse_reference_topology
+
+logger = logging.getLogger(__name__)
 
 # register(label, ref_seq, features, res) -> (analysis_id, record)
 Register = Callable[[str, str, List[Dict], Dict], Tuple[str, Dict]]
@@ -201,6 +204,7 @@ def run_batch_groups(
     ref_cache: Optional[Dict[str, object]] = None,
     soft_timeout: Optional[float] = None,
     zone=None,
+    batch_controls: Optional[List[Optional[Dict]]] = None,
 ) -> Tuple[List[Dict], Dict[str, Dict]]:
     """逐组跑管线并给出一句话结论，返回 (items, records_by_id)
 
@@ -209,16 +213,20 @@ def run_batch_groups(
     报告与 分析结果.json 的数据来源。单组失败不阻断批次。
 
     ref_cache：parse_group_references 的结果（已解析的图谱直接复用）。
+    batch_controls：与 groups 对齐的批内对照证据（离线流式批次逐组调用时
+    由全批预扫描算好传入，见 scripts/batch_sequencing_report.py）；None 时
+    在本次调用的分组之间计算（网页端整批一次调用）。
     soft_timeout：批次墙钟软时限（秒）。只在开始比对下一组之前检查——
     工作线程无法被安全中断，正在比对的组总会跑完；超时后剩余分组不再
     比对，结论记为「分析失败：…超过时限…」，已完成的分组照常返回。
     """
     records_by_id: Dict[str, Dict] = {}
     items: List[Dict] = []
+    pending: List[Dict] = []
     # 同一质粒多个克隆共用一张图谱：解析结果（或异常）按质粒缓存
     ref_cache = {} if ref_cache is None else ref_cache
     deadline = (time.monotonic() + soft_timeout) if soft_timeout else None
-    for g in groups:
+    for gi, g in enumerate(groups):
         plasmid, clone = g["plasmid"], g["clone"]
         ref_file = g["reference"]
         n_reads = len(g["reads"])
@@ -290,28 +298,17 @@ def run_batch_groups(
                         _pmap[_r["file"]["name"]] = {
                             "name": _pr["name"], "seq": _pr["seq"],
                             "direction": _pr["direction"]}
-                res = analyze(ab1s, ref_seq, features, min_q=min_q, circular=circular,
-                              zone_params=zone, primer=(_pmap or None),
-                              scope=scope_obj)
-                aid, rec = register(label, ref_seq, features, res)
-                item["analysis_id"] = aid
-                # 终审 C-07：打包用的记录快照随批次产出，避免事后回查全局
-                # dict（并发淘汰时会 KeyError）
-                records_by_id[aid] = rec
-                item["reference_length"] = len(ref_seq)
-                # 分拣目录由 verdict.status 驱动（goal T25/§6.3：不再字符串
-                # 匹配「合格/不合格」文案）；无 verdict 的失败/缺件分支不设
-                item["verdict_status"] = res["verdict"]["status"]
-                confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
-                item["variant_count"] = len(confirmed)
-                item["pending_count"] = len(res["variants"]) - len(confirmed)
-                item["coverage_percent"] = res["consensus"]["coverage_percent"]
-                # W14（PL F4）：复核汇总——每样品需复核位点数与最高优先级
-                # （fail > read_shortfall > pending），前端顶部汇总条据此
-                # 统计「需复核 X 个样品、Y 个位点」并按优先级排序
-                _q = build_queue(res)
-                item["review_count"] = len(_q)
-                item["review_prio"] = _q[0]["prio"] if _q else None
+                _kw = dict(min_q=min_q, circular=circular, zone_params=zone,
+                           primer=(_pmap or None), scope=scope_obj)
+                res = analyze(ab1s, ref_seq, features, **_kw)
+                # 批内同引物对照（2026-11-11）：登记与结论推迟到全部分组
+                # 第一遍分析完成之后（_finalize_batch_controls）
+                pending.append({"gi": gi, "item": item, "label": label, "ref_seq": ref_seq,
+                                "features": features, "ab1s": ab1s, "kw": _kw,
+                                "res": res, "n_reads": n_reads,
+                                "scope_note": scope_note, "scope_text": _scope_text})
+                items.append(item)
+                continue
             except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
                 item["status"] = "failed"
                 item["conclusion"] = f"分析失败：{e}"
@@ -336,7 +333,77 @@ def run_batch_groups(
             item["conclusion"] = (f"范围无法识别：{_scope_text}（{scope_note}）。"
                                   + item["conclusion"])
         items.append(item)
+    _finalize_batch_controls(pending, register, records_by_id, deadline,
+                             batch_controls=batch_controls)
     return items, records_by_id
+
+
+def compute_batch_evidence(entries: List[Tuple[str, str, Dict]]) -> Dict[str, Dict]:
+    """[(组键, 参考序列, 第一遍结果)] → {组键: 单组对照证据}（网页/离线共用）"""
+    from core.sanger import batch_control as bc
+    return bc.compute([{"clone": k, "ref_key": bc.ref_key(seq), "ref_len": len(seq),
+                        "result": res} for k, seq, res in entries])
+
+
+def _finalize_batch_controls(pending: List[Dict], register: Register,
+                             records_by_id: Dict[str, Dict],
+                             deadline: Optional[float],
+                             batch_controls: Optional[List[Optional[Dict]]] = None) -> None:
+    """批内同引物克隆互为对照（2026-11-11，core.sanger.batch_control）。
+
+    第一遍各组独立分析完成后：同参考、同引物（同方向且比对起点相近）、
+    不同克隆的 read 互为对照，判出「批内背景」双峰位点；有背景位点的组
+    带证据重跑一遍 analyze，使 verdict、结论正文、Excel 全部同源更新。
+    再统一登记与回填结论。重跑失败或超时则保留第一遍结果（不阻断）。"""
+    from core.sanger import batch_control as bc
+    evidence: Dict[str, Dict] = {}
+    if batch_controls is not None:
+        evidence = {str(p["gi"]): batch_controls[p["gi"]] for p in pending
+                    if p["gi"] < len(batch_controls) and batch_controls[p["gi"]]}
+    elif len(pending) >= 2:
+        try:
+            evidence = compute_batch_evidence(
+                [(str(p["gi"]), p["ref_seq"], p["res"]) for p in pending])
+        except Exception:  # noqa: BLE001 对照计算失败不影响第一遍结果
+            logger.exception("批内对照计算失败，保留第一遍结果")
+            evidence = {}
+    if evidence:
+        for p in pending:
+            ev = evidence.get(str(p["gi"]))
+            if not ev:
+                continue
+            if deadline is not None and time.monotonic() > deadline:
+                continue
+            if bc.background_positions(ev) and any(bc.background_positions(ev).values()):
+                try:
+                    p["res"] = analyze(p["ab1s"], p["ref_seq"], p["features"],
+                                       batch_control=ev, **p["kw"])
+                except Exception:  # noqa: BLE001
+                    logger.exception("批内对照重跑失败，保留第一遍结果")
+            else:
+                p["res"]["batch_control"] = ev
+    for p in pending:
+        item, res, label = p["item"], p["res"], p["label"]
+        try:
+            aid, rec = register(label, p["ref_seq"], p["features"], res)
+            item["analysis_id"] = aid
+            records_by_id[aid] = rec
+            item["reference_length"] = len(p["ref_seq"])
+            item["verdict_status"] = res["verdict"]["status"]
+            confirmed = [v for v in res["variants"] if v.get("confidence") != "low"]
+            item["variant_count"] = len(confirmed)
+            item["pending_count"] = len(res["variants"]) - len(confirmed)
+            item["coverage_percent"] = res["consensus"]["coverage_percent"]
+            _q = build_queue(res)
+            item["review_count"] = len(_q)
+            item["review_prio"] = _q[0]["prio"] if _q else None
+            item["conclusion"] = excel_conclusion(label, res, p["n_reads"], True)
+        except Exception as e:  # noqa: BLE001 单个质粒失败不阻断批次
+            item["status"] = "failed"
+            item["conclusion"] = f"分析失败：{e}"
+        if p["scope_note"]:
+            item["conclusion"] = (f"范围无法识别：{p['scope_text']}（{p['scope_note']}）。"
+                                  + item["conclusion"])
 
 
 def batch_payload(items: List[Dict], unmatched: List[Dict], min_q: int,

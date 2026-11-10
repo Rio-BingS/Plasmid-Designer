@@ -269,7 +269,58 @@ class OfflineBatch:
             chunk.rows += rows
         return chunk
 
+    def _batch_controls(self) -> List[Optional[Dict]]:
+        """批内同引物对照预扫描（2026-11-11）：离线逐组流式产出，无法像网页
+        端那样整批一次调用 run_batch_groups——先逐组跑第一遍，只留对照所需的
+        reads/traces（字节随即释放），全批算出证据后逐组传入，保证与网页端
+        结论逐字节一致。代价：有对照的组分析两遍。"""
+        from app.sequencing_batch import _parse_group_reference, compute_batch_evidence
+        from core.sanger.batch_control import ref_key
+        # 只有与别组共用同一参考序列的组才可能互为对照：先只读图谱分桶，
+        # 其余组不做预扫描（保持逐组流式与中断续跑语义）
+        keys: Dict[int, str] = {}
+        for i, g in enumerate(self.groups):
+            if not g["reference"] or not g["reads"]:
+                continue
+            load_bytes([g["reference"]["file"]])
+            try:
+                ent = _parse_group_reference(g["reference"], None)
+            finally:
+                release_bytes([g["reference"]["file"]])
+            if not isinstance(ent, Exception):
+                keys[i] = ref_key(ent[0])
+        # 同参考的组里 read 字节完全相同的（同一份文件复制）互不为对照
+        sigs: Dict[int, frozenset] = {}
+        for i in keys:
+            files_ = [r["file"] for r in self.groups[i]["reads"]]
+            load_bytes(files_)
+            sigs[i] = frozenset(hashlib.sha1(f["bytes"]).hexdigest() for f in files_)
+            release_bytes(files_)
+        distinct: Dict[str, Set[frozenset]] = {}
+        for i, k in keys.items():
+            distinct.setdefault(k, set()).add(sigs[i])
+        counts: Dict[str, int] = {k: len(v) for k, v in distinct.items()}
+        kept: List[Tuple[str, str, Dict]] = []
+
+        for i, g in enumerate(self.groups):
+            if counts.get(keys.get(i, ""), 0) < 2:
+                continue
+            load_bytes(self._group_files(g))
+
+            def _cap(label, ref_seq, features, res, _i=i):
+                kept.append((str(_i), ref_seq, {"reads": res.get("reads"),
+                                                "traces": res.get("traces")}))
+                return f"pre_{_i}", {}
+            try:
+                run_batch_groups([g], self.min_q, _cap, max_ref_bp=None,
+                                 batch_controls=[None])
+            finally:
+                release_bytes(self._group_files(g))
+        ev = compute_batch_evidence(kept) if len(kept) >= 2 else {}
+        return [ev.get(str(i)) for i in range(len(self.groups))]
+
     def chunks(self) -> Iterator[ArchiveChunk]:
+        controls = self._batch_controls()
         folder_of = [self.archive.folder_of(g) for g in self.groups]
         last = {f: i for i, f in enumerate(folder_of) if f is not None}
         pending: Dict[str, List[int]] = {}
@@ -279,7 +330,8 @@ class OfflineBatch:
             # 逐组调用：离线不设参考长度上限（网页端的 MAX_REF_BP 是服务器
             # 资源防护）
             (item,), recs = run_batch_groups([g], self.min_q, self._register,
-                                             max_ref_bp=None)
+                                             max_ref_bp=None,
+                                             batch_controls=[controls[i]])
             self.items.append(item)
             records.update(recs)
             self.records.update(recs)

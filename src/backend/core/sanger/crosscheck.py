@@ -96,7 +96,20 @@ def region_quality_text(ev: Dict) -> str:
             f"≥Q20 占 {round(ev.get('region_hq_frac', 0) * 100)}%")
 
 
-def _corroborate_mixed(read_results: List[Dict]) -> Dict:
+def mixed_noise_like(chk: Dict, count: int, n_reads: int) -> bool:
+    """唯一 widespread read 的「倾向该 read 自身信号问题」判据（四处共用：
+    verdict mixed_sample、结论文本、Excel 尾注、mixed_sample_confirmed）。
+
+    无同报（multi=0）且多数双峰位点有反证：其他引物干净读出（clean）或
+    同批同引物其他克隆同位点同样有次峰（batch，2026-11-11 批内对照）。
+    单条 read 的分析只有批内对照一种反证来源。"""
+    crossable = n_reads >= 2 or chk.get("batch", 0) > 0
+    return (crossable and chk.get("multi", 0) == 0
+            and chk.get("clean", 0) + chk.get("batch", 0) >= max(1, count // 2))
+
+
+def _corroborate_mixed(read_results: List[Dict],
+                       batch_bg: Optional[Dict[str, set]] = None) -> Dict:
     """跨 read 双峰互检：一条引物的双峰位点映射到参考坐标后，看其他引物
     在同一位点的表现——用户视角的关键一层：另一条引物测过且峰形单一、
     判读碱基一致 → 多半是这条 read 自己的信号噪声（常见于引物首端）；
@@ -106,7 +119,12 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
     uncovered_ref}},
           multi_sites: [(ref_pos, [filenames])], total, clean_total,
           multi_total, uncov_total}；单条 read 的分析互检无意义，字段照常
-          返回（clean/multi 均为 0），由结论层判断是否展示。"""
+          返回（clean/multi 均为 0），由结论层判断是否展示。
+
+    batch_bg（2026-11-11）：{filename: {ref_pos}}——批内对照判为背景的位点
+    （core.sanger.batch_control）。只作用于既非同报（multi）也非 clean 的
+    位点：本该归 uncovered（无法互检）的改归 batch，不再进未决位点。"""
+    batch_bg = batch_bg or {}
     maps = [(r, *_read_ref_maps(r)) for r in read_results]
     # 环状跨原点 read 的折回坐标在原点处不单调，内插用展开坐标再折回
     unfolded = {r["filename"]: (_read_ref_maps(r, fold=False)[0], _circ_len(r["alignment"]))
@@ -160,6 +178,8 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         multi: List[int] = []
         uncovered: List[int] = []
         uncovered_ref: List[int] = []
+        batch: List[int] = []
+        _bg = batch_bg.get(fname) or set()
         for e in r.get("mixed_detail") or []:
             # 2026-11-08 复审 R3：低于次等位门槛的双峰（AF < MINOR_AF_MIN，
             # ratio_floor 降到 0.15 后检测带随之打开）是噪声级——不进互检/
@@ -203,14 +223,20 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
                 if _region_ok(rq):
                     ok = True
                     break
-            (clean if ok else uncovered).append(e["pos"])
-            if not ok:
+            if ok:
+                clean.append(e["pos"])
+            elif rp in _bg:
+                batch.append(e["pos"])
+            else:
+                uncovered.append(e["pos"])
                 uncovered_ref.append(rp)
         by_read[fname] = {
             "clean": len(clean), "multi": len(multi), "uncovered": len(uncovered),
             "clean_ref": sorted({r2ref[p] for p in clean if p in r2ref}),
             "multi_ref": sorted({r2ref[p] for p in multi if p in r2ref}),
             "uncovered_ref": sorted(set(uncovered_ref)),
+            "batch": len(batch),
+            "batch_ref": sorted({r2ref[p] for p in batch if p in r2ref}),
         }
     total = sum(d["clean"] + d["multi"] + d["uncovered"] for d in by_read.values())
     return {
@@ -220,6 +246,7 @@ def _corroborate_mixed(read_results: List[Dict]) -> Dict:
         "clean_total": sum(d["clean"] for d in by_read.values()),
         "multi_total": sum(d["multi"] for d in by_read.values()),
         "uncov_total": sum(d["uncovered"] for d in by_read.values()),
+        "batch_total": sum(d["batch"] for d in by_read.values()),
     }
 
 
@@ -231,6 +258,8 @@ def _mixed_check_phrase(chk: Dict) -> str:
         parts.append(f"{chk['multi']} 处其他引物同报双峰（倾向真实混合）")
     if chk["clean"]:
         parts.append(f"{chk['clean']} 处其他引物覆盖且峰形单一（倾向噪声）")
+    if chk.get("batch"):
+        parts.append(f"{chk['batch']} 处同批同引物其他克隆同位点同样有次峰（批内背景）")
     if chk["uncovered"]:
         ref_txt = pos_ranges_str(chk.get("uncovered_ref") or [])
         parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核"

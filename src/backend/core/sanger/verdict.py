@@ -535,6 +535,19 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     _mixed_pos: set = set()
     for m in mixed_vars:
         rp, af = int(m["ref_pos"]), float(m.get("af") or 0)
+        if m.get("noise_evidence") and af >= MINOR_AF_SOFT and _in_scope(rp):
+            # 2026-11-11：报该位点的每条 read 都有反证——其他引物在该位点
+            # 高质量单峰读出设计碱基（互检否决同一口径），或批内同引物其他
+            # 克隆同位点同碱基次峰且本 read 主峰未降（批内背景）——真实亚群
+            # 会同时出现在同一模板的其他 read 上，且会压低主峰，故记 info
+            _src = "、".join({"cross_primer": "其他引物干净读出",
+                             "batch_background": "同批同引物其他克隆同位点同样有次峰"}[k]
+                            for k in m["noise_evidence"])
+            _info("mixed_variant", None,
+                  f"{rp} 双峰 {m.get('called_base')}/{m.get('secondary_base')}"
+                  f"（参考 {m.get('ref_base')}，次等位 AF {af}）——{_src}，"
+                  "判为噪声，未计入判定", ref_start=rp, ref_end=rp)
+            continue
         if af < MINOR_AF_SOFT or not _in_scope(rp):
             _info("mixed_variant", None,
                   f"{rp} 双峰次等位 {m.get('secondary_base')}（AF {af}，"

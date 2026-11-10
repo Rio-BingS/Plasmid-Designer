@@ -375,8 +375,8 @@ def _mixed_tails(res) -> Tuple[List[str], List[Tuple[str, Dict]]]:
     if len(widespread) == 1:
         fn, p = widespread[0]
         chk = by_read.get(fn) or {}
-        if n_reads >= 2 and chk.get("multi", 0) == 0 \
-                and chk.get("clean", 0) >= max(1, p["count"] // 2):
+        from core.sanger.crosscheck import mixed_noise_like
+        if mixed_noise_like(chk, p["count"], n_reads):
             tails.append(f"{fn} 检出 {p['count']} 处双峰，互检倾向该 read 信号噪声")
             return tails, []
         tails.append(f"疑似混合样品：{fn} 检出 {p['count']} 处双峰"
