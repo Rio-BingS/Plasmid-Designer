@@ -163,3 +163,87 @@ FWHM 达到峰间距即相邻两峰在半高处无法分开——这是「测序
 `noise`（低 Q 衰减噪声），MX 从未升级「疑似混合样品」。因此这 37 个位点本身属于
 **应当被门控压制的噪声双峰**——但 MX 是 v3 三轮取证锁定的基线，压低它就是回归，
 所以判据必须做到「真实数据零退化段」，而不是「少剔除几个」。
+
+---
+
+## X2 复核队列三级聚合（RB P0-2）— 完成
+
+### 口径裁定（用户裁决：方案 3）
+
+§3.2 第 1 条「read 已判 mixed → 位点全部折叠」中的 `mixed_profile.class` 有四档
+（`widespread`/`local`/`noise`/`scattered`）。折叠哪些档决定所有计数，两种极端都不满足
+§5 验收：
+
+| read 折叠口径 | RQ1 ≤15 | RQ2 ≤25 | RQ3 ≤2 | MX |
+|---|---|---|---|---|
+| 只折 `widespread`+`local` | 14 ✅ | 30 ❌ | 1 ✅ | 3 |
+| 折全部 mixed 分级 | 17 ❌ | 17 ✅ | 1 ✅ | 6 |
+
+根因是真实子集里 118 个 `minor_af_site`（次等位丰度不足、判不了混）被切成 13 个区段，
+全折则 RQ1 的孤立未决位点一起被折走（涨到 17），不折则 RQ2 停在 30。
+
+**取方案 3**：`minor_af_site` 在任何范围下只计数不入队，依据是 §3.2 第 3 条
+「位点级只保留确证差异和范围内的孤立**未决**位点」——`minor_af_site` 是有明确丰度
+判据的结论，不是「读不清」的未决位点。完整清单仍在 `verdict.blocking` 与明细表。
+
+read 折叠只收 `widespread`/`local`：这两档是「该 read 有真实双峰问题」；`noise`/`scattered`
+是信号噪声，X1 峰形门控与 Q 比判别器已挡下降级，其位点仍需逐个核对（MX 正是靠这条
+判据不升级「疑似混合样品」，压掉它等于让 MX 的 50 个真实双峰位点静默消失）。
+
+### 队列前后对比
+
+| 数据集 | 旧口径 | X2 后 | 构成（后） |
+|---|---|---|---|
+| RQ1 真实子集·未声明 | **330** | **14** | confirmed 3 / read 2 / segment 1 / site 8；只计数 60 |
+| RQ2 真实子集·全质粒 | **393** | **17** | confirmed 3 / read 2 / segment 2 / site 10；只计数 118 |
+| RQ3 单 read 40 双峰 | 40 项位点 | **1** | 1 项 read 问题，37 处位点全折叠 |
+| MX 真实回归 | **330 量级** | **3** | 仅 3 处确证差异；只计数 50 |
+
+MX 的 3 项即 3 处确证差异（5076 ins / 5269 C>T / MX 蛋白不一致），无位点级噪声项。
+
+### 结论行预算
+
+`conclusion_fold.apply_budget`：头行 + 最多 5 行要点 = 6 行（含头行）。折叠优先级
+（低→高）低置信未决行 → ↳ 证据锚点 → 区间裁决 → 「注意：」→ ⚠ 混合汇总。
+**永不折叠**：确证差异行、差异摘要、变异注记（↳ 酶切位点）、CDS 结论。
+
+| 数据集 | 折叠前 | 折叠后 |
+|---|---|---|
+| RQ1 | 28 行 | **6 行** |
+| RQ2 | 28 行 | **6 行** |
+| MX | 10 行 → 折叠后 6 行（预算内不动） | **6 行**（逐字与 b39b46a 基线一致） |
+
+预算判断放在**加入 head 之后**（此前错放在之前，导致 6 行预算实际放行 7 行）。
+移行走后按非空行收口，避免尾部空行把行数算多。
+
+### 前端
+
+- `ReviewQueuePanel.vue`：默认展开前 10 项，其余折叠为「其余 N 项」；
+- 每项级别徽标：整条 read / 区段 · N 处 / 位点 / 确证 / 接合区；
+- `api/sequencing.ts`：`level`/`sites`/扩展 `evidence`（max_af/min_q/read/reason/positions/zone）。
+
+### 为过尺寸门禁做的拆分
+
+`pipeline.py` 已用满 2863 行预算，X2/X1 逻辑不得让它增长。拆出两个模块（净减 130 行）：
+
+- `core/sanger/conclusion_fold.py`（新，约 125 行）：`CONCLUSION_BUDGET`、`fold_tier`、
+  `apply_budget`——折叠判定按构建端的结构化归属，不靠文案前缀匹配；
+- `peak_shape.py` 增收 `degraded_share()` 与 `split_span_by_degraded(span, r, to_ref)`：
+  退化区段占比与覆盖段切分本来就属该模块职责（`to_ref` 回调，换算仍只有
+  `ReadRefMap` 一处，符合防回潮约束 9）。
+
+### 测试
+
+- 删除 X2 的三处 `@XF(strict=True, reason="X2")`（RQ1/RQ2/RQ3 转正）；
+- `test_review_queue`：组内排序补 prio 级（缺口先于孤立未决位点）；`scope` 缺失时
+  按已声明处理（缺信息 ≠ 未声明，否则未决位点静默从队列消失）；
+- `test_real_data_regression`：MX 逐读待核行与区间裁决行的逐字断言改到
+  `conclusion_detail`（全量正文）与折叠组上——判定词一个不少，正文按预算让位。
+
+| 套件 | 结果 |
+|---|---|
+| 后端（Windows） | **2087 passed / 0 failed / 46 skipped / 5 xfailed** |
+| 前端 `test:run` | **693 passed**（90 files） |
+| 前端 `type-check` | clean |
+| `check_file_size.py` | 通过（235 文件，白名单 10 个） |
+| `check_docs_sync.py` | 通过 |
