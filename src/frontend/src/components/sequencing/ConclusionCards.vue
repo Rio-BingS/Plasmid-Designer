@@ -95,8 +95,17 @@ const statusBadge = computed(() => {
   return st ? { status: st, label: labels[st] ?? st } : null
 })
 
-/** 阻断项按 verdict.blocking 结构化列出（T2；每项给位置/元件与建议动作） */
-const blockingItems = computed(() => props.analysis.verdict?.blocking ?? [])
+/** 阻断项按 verdict.blocking 结构化列出（T2；每项给位置/元件与建议动作）。
+ * 2026-11-10（cf77c3a 复审 P0-1）：结论卡只列前 CARD_BLOCKING_MAX 项（确证
+ * 差异优先），其余交给复核队列——真实子集曾在卡片上铺开 379 行黄条 */
+const CARD_BLOCKING_MAX = 5
+const allBlocking = computed(() => props.analysis.verdict?.blocking ?? [])
+const blockingItems = computed(() =>
+  [...allBlocking.value]
+    .sort((a, b) => Number(!!b.fail_impact) - Number(!!a.fail_impact))
+    .slice(0, CARD_BLOCKING_MAX))
+const blockingOverflow = computed(() => allBlocking.value.length - blockingItems.value.length)
+const queueCount = computed(() => props.analysis.review_queue?.length ?? 0)
 
 const KIND_LABELS: Record<string, string> = {
   confirmed_variant: '确证差异',
@@ -182,6 +191,9 @@ function soLevel(t: string): string {
         <span v-if="b.element" class="vb-element">{{ b.element }}</span>
         <span class="vb-detail">{{ b.detail }}</span>
         <span class="vb-action">{{ b.action }}</span>
+      </li>
+      <li v-if="blockingOverflow > 0" class="verdict-blocking-more">
+        另 {{ blockingOverflow }} 项未展开<template v-if="queueCount">，复核队列已合并为 {{ queueCount }} 项</template>
       </li>
     </ul>
     <!-- 区间裁决行：优先 resolved_regions 结构化渲染（T2），旧记录退回文本行匹配 -->
@@ -347,6 +359,7 @@ function soLevel(t: string): string {
 .verdict-blocking-item { padding: 3px 0; border-bottom: 1px dashed #EEE; display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: baseline; }
 .vb-kind { font-weight: 600; color: #555; }
 .verdict-blocking-item .vb-kind { color: #9A6D00; }
+.verdict-blocking-more { padding: 3px 0; color: #666; font-size: 0.78rem; }
 .vb-pos { font-family: monospace; color: #555; }
 .vb-element { color: #2277A0; }
 .vb-detail { color: #444; }

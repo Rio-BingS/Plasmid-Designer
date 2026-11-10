@@ -328,6 +328,7 @@ export interface VerdictItem {
   detail: string
   action: string
   refs?: string[]
+  fail_impact?: boolean
 }
 
 /** 需测范围 R（goal v3 §3.1；W2 起随 verdict 下发，未声明为合成 measured） */
