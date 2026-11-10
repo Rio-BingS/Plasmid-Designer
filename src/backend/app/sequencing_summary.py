@@ -53,6 +53,8 @@ def summarize(record: Dict) -> Dict:
         "created_at": record["created_at"], "engine": record["engine"],
         "conclusion": record["conclusion"],
         "conclusion_groups": record.get("conclusion_groups"),  # R6 折叠组；旧记录 None→前端回退
+        # goal v3.1 X2：正文只留要点，逐条明细在此（报告/导出与前端展开用）
+        "conclusion_detail": record.get("conclusion_detail"),
         "reads": reads,
         "variants": record["variants"],
         "consensus": record["consensus"],

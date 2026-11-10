@@ -925,7 +925,6 @@ def test_cm9_microhomology_insert_stays_insertion():
 # ---------- X2：复核队列聚合（RB P0-2） ----------
 
 
-@XF(strict=True, reason="X2")
 def test_rq1_real_subset_queue_bounded():
     """RQ1：真实子集未声明范围 → 队列 ≤15 项、结论 ≤6 行、3 处确证
     变异全在队列中、status=fail"""
@@ -940,7 +939,6 @@ def test_rq1_real_subset_queue_bounded():
         assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
 
 
-@XF(strict=True, reason="X2")
 def test_rq2_real_subset_full_plasmid_queue_bounded():
     """RQ2：真实子集声明全质粒 → 队列 ≤25 项、3 处确证变异全在队列"""
     _spec, res = _run("RQ2")
@@ -951,7 +949,6 @@ def test_rq2_real_subset_full_plasmid_queue_bounded():
         assert pos in positions, f"真实变异 {pos} 必须进队列：{sorted(positions)}"
 
 
-@XF(strict=True, reason="X2")
 def test_rq3_mixed_read_folds_into_one_item():
     """RQ3：单 read 判 mixed 且 40 个双峰位点 → 队列只有 1 项 read 问题"""
     _spec, res = _run("RQ3")

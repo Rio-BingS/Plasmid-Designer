@@ -311,6 +311,8 @@ export interface SequencingAnalysis {
   mixed_corroboration?: Record<string, unknown> | null
   /** 复核队列（goal v3 W14）：确证差异/范围内缺口/未决位点；旧记录惰性派生 */
   review_queue?: ReviewQueueItem[]
+  /** goal v3.1 X2：结论正文只留要点，逐条明细在此（折叠展开/导出用） */
+  conclusion_detail?: string[]
   /** 人工确认留痕（goal v3 W14，PL F3）：ref_pos/decision/by/at/note */
   review_decisions?: ReviewDecision[]
   /** Sanger 判读算法版本（口径变更递增；旧记录缺省） */
@@ -378,17 +380,32 @@ export interface Verdict {
 
 /** 复核队列项（goal v3 W14，PL §F）：确证差异 / 范围内缺口 / 未决位点；
  * beyond_primer 只给动作建议不入队 */
+/**
+ * 复核队列条目（goal v3.1 X2 三级聚合）
+ *
+ * level：read（整条 read 折叠，位点收在下面）/ segment（相邻 ≤20bp 合并）/
+ * site（孤立位点）/ confirmed（确证差异）/ junction（接合区）。sites 为聚合
+ * 的位点数（>1 时给出）。
+ */
 export interface ReviewQueueItem {
   prio: 'fail' | 'read_shortfall' | 'pending'
+  level?: 'read' | 'segment' | 'site' | 'confirmed' | 'junction'
   kind: string
   ref_start: number | null
   ref_end: number | null
   element?: string | null
   detail: string
   action: string
+  sites?: number
   evidence: {
     refs?: string[]
     af?: number
+    max_af?: number
+    min_q?: number
+    read?: string
+    reason?: string
+    positions?: (number | null)[]
+    zone?: { start?: number; end?: number }
     gap?: { start: number; end: number; length?: number; cause?: string; detail?: string }
     expected_ranges?: number[][]
   }

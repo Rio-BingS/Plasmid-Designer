@@ -226,3 +226,51 @@ def in_degraded(pos: int, runs: List[List[int]]) -> bool:
 def degraded_text(first_pos: int) -> str:
     """退化区段的证据行话术（goal §3.1：evidence 给 read 一句话）"""
     return f"自 {first_pos} 起峰形退化，已按测序未达处理"
+
+
+def degraded_share(r: Dict) -> float:
+    """退化区段占该 read 修剪后碱基的比例（无退化 → 0）。
+
+    与 read 级折叠共用同一阈值语义（`pipeline.DEGRADED_READ_SHARE`）：
+    占比 ≥ 30% 时该 read 的覆盖段按「测序未达」处理，不计入实测覆盖。
+    """
+    runs = r.get("degraded_ranges") or []
+    total = len(r.get("trimmed_bases") or "")
+    if not runs or total <= 0:
+        return 0.0
+    covered = set()
+    for a, b in runs:
+        covered.update(range(max(1, a), min(total, b) + 1))
+    return len(covered) / total
+
+
+def split_span_by_degraded(span, r: Dict, to_ref) -> List:
+    """把一条 read 的参考坐标覆盖段按退化区段切开（大面积退化用）。
+
+    退化段内的碱基不算「实测覆盖」——后续缺口归因按 read_shortfall 处理。
+    `to_ref` 是 read 坐标 → 参考坐标的换算函数（pipeline 传
+    `ReadRefMap.from_alignment(r).read_to_ref`，防回潮约束 9：换算只有一处）。
+    """
+    runs = r.get("degraded_ranges") or []
+    if not runs:
+        return [span]
+    bad = set()
+    for ds, de in runs:
+        for rp in range(ds, de + 1):
+            rf = to_ref(rp)
+            if rf:
+                bad.add(int(rf))
+    if not bad:
+        return [span]
+    s0, e0 = int(span[0]), int(span[1])
+    out = []
+    cur = s0
+    for p in sorted(bad):
+        if p < s0 or p > e0:
+            continue
+        if p > cur:
+            out.append((cur, p - 1))
+        cur = max(cur, p + 1)
+    if cur <= e0:
+        out.append((cur, e0))
+    return [x for x in out if x[0] <= x[1]]

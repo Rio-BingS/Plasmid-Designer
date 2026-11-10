@@ -48,7 +48,7 @@ from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
 )
-from core.sanger import peak_shape
+from core.sanger import conclusion_fold, peak_shape
 from core.sanger.reliable_zone import (
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
 )
@@ -774,7 +774,7 @@ def _build_consensus(reference: str, read_results: List[Dict],
     # 「读了但读不清」，不是「没测到」。
     _bad_ref = set()
     for r in read_results:
-        if _degraded_share(r) < DEGRADED_READ_SHARE:
+        if peak_shape.degraded_share(r) < DEGRADED_READ_SHARE:
             continue
         rmap = ReadRefMap.from_alignment(r)
         zone = r.get("reliable_zone") or {}
@@ -1693,53 +1693,13 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             for d in r["mixed_detail"]:
                 d["tracy"] = tags.get(d["pos"])
 
+# 结论正文行数预算（goal v3.1 §3.2「头行 + 最多 5 行要点」；含头行共 6 行）。
+# 折叠逻辑见 conclusion_fold（真实子集 15 行 → 6 行，短结论不受影响）
+_CONCLUSION_BUDGET = conclusion_fold.CONCLUSION_BUDGET
+
 # 退化区段占该 read 实测覆盖的比例阈值（goal v3.1 §3.2；与 review 的
 # read 级折叠共用同一常量语义）
 DEGRADED_READ_SHARE = 0.30
-
-
-def _degraded_share(r: Dict) -> float:
-    """退化区段占该 read 覆盖碱基的比例（无退化 → 0）"""
-    runs = r.get("degraded_ranges") or []
-    total = len(r.get("trimmed_bases") or "")
-    if not runs or total <= 0:
-        return 0.0
-    covered = set()
-    for a, b in runs:
-        covered.update(range(max(1, a), min(total, b) + 1))
-    return len(covered) / total
-
-
-def _trim_degraded_span(span, r: Dict):
-    """把一条 read 的参考坐标覆盖段按峰形退化区段切开（大面积退化用）。
-
-    退化段内的碱基不算「实测覆盖」——后续缺口归因按 read_shortfall 处理。
-    参考坐标换算走 ReadRefMap（防回潮约束 9）。"""
-    runs = r.get("degraded_ranges") or []
-    if not runs:
-        return [span]
-    rmap = ReadRefMap.from_alignment(r)
-    bad = set()
-    for ds, de in runs:
-        for rp in range(ds, de + 1):
-            rf = rmap.read_to_ref(rp)
-            if rf:
-                bad.add(int(rf))
-    if not bad:
-        return [span]
-    s0, e0 = int(span[0]), int(span[1])
-    out = []
-    cur = s0
-    for p in sorted(bad):
-        if p < s0 or p > e0:
-            continue
-        if p > cur:
-            out.append((cur, p - 1))
-        cur = max(cur, p + 1)
-    if cur <= e0:
-        out.append((cur, e0))
-    return [x for x in out if x[0] <= x[1]]
-
 
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                              poly_local_ratio: bool) -> None:
@@ -2408,7 +2368,8 @@ def _build_conclusion(
         lines = list(resolved_lines)  # 区间裁决行紧跟头行（2026-11-05 定稿结构）
         lines.append(f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
                      f"{_coverage_ranges_text(coverage_ranges)}）：")
-        lines.extend(mixed_lines)  # 疑似混合样品影响整份判读，紧跟首行
+        # 疑似混合样品影响整份判读，紧跟首行（⚠ 汇总行 + ↳ 逐 read 明细）
+        lines.extend(mixed_lines)
         lines.extend(mixed_signal_lines)
         severity_tagged = summarize_severity(shown_variants)
         lines.extend(text for text, _kind in severity_tagged)
@@ -2511,31 +2472,30 @@ def _build_conclusion(
         conclusion = "\n".join(lines)
 
     # 结论头部一句话总结：✓/✗/△ 先给判读结果，区间裁决行紧跟其后
-    # （2026-11-05 定稿结构，头行与正文间不再空行）
-    # （scattered 双峰只提示不升级，不算混合）
+    # （2026-11-05 定稿结构；scattered 双峰只提示不升级，不算混合）
     partial_reads = [r for r in read_results if r.get("partial_alignment")]
     if partial_reads:
         conclusion = "\n".join(
             [conclusion] + [_partial_alignment_note(r["filename"], r["partial_alignment"])
                             for r in partial_reads])
     # R6 结构化分组（goal §2 判定不依赖文案）：前端折叠组由构建端显式给出，
-    # 不再靠「低置信度（/↳+双峰/差异区间」文案匹配（旧记录无该键走前端回退）
+    # 不靠文案匹配。X2 起混合判读行（⚠ 汇总 + ↳ 逐 read）归 mixed_detail——
+    # 它是 read 级问题，由复核队列承载，正文只在预算允许时展示
     conclusion_groups = {
         "low": [text for text, kind in (severity_tagged if shown_variants else [])
                 if kind == "low"],
-        "mixed_detail": list(mixed_lines),
+        "mixed_detail": list(mixed_lines) + list(mixed_signal_lines),
         "resolved": list(resolved_lines),
     }
+    # 正文全量（原顺序）：报告/导出按行消费，折叠只是正文展示层面的取舍
+    conclusion_detail: List[str] = [ln for ln in conclusion.split("\n") if ln.strip()]
     if read_results:
-        # has_mixed 用机器判定（A 5.2：不靠文案匹配）：widespread 分级 +
-        # 跨引物互检降级例外，与 mixed_lines 的分叉同源（mixed_sample_confirmed）
+        # has_mixed 用机器判定（A 5.2：不靠文案匹配），与 mixed_lines 同源
         has_mixed = mixed_sample_confirmed(read_results, mixed_corroboration)
-        # goal v3.1 X3（RB P0-3）：结论首行**只**由 verdict.headline 生成——
-        # 网页/Excel/前端三出口逐字同源，不再各自拼接。下方 else 分支是
-        # 「旧记录无 verdict」的降级路径，保留 _conclusion_summary 旧文案。
+        # goal v3.1 X3（RB P0-3）：结论首行**只**由 verdict.headline 生成，
+        # 三出口逐字同源；else 支是「旧记录无 verdict」的降级路径（旧文案）
         _head = (verdict or {}).get("headline") or ""
         if _head:
-            # 首行逐字 = headline，正文不再另起判读句（X3：三出口同源）
             conclusion = "\n".join([_head, conclusion])
         else:
             conclusion = (_conclusion_summary(
@@ -2548,8 +2508,14 @@ def _build_conclusion(
                     e.get("filename", "?") for e in (errors or [])[:2])
                 + ("等" if len(errors or []) > 2 else ""),
                 verdict=verdict) + "\n" + conclusion)
+        # 正文预算（goal v3.1 §3.2，RB P0-2）：头行 + 最多 5 行要点，明细
+        # 按优先级进折叠组。优先级与判读要点的白名单见 conclusion_fold。
+        conclusion = conclusion_fold.apply_budget(
+            conclusion, conclusion_groups, mixed_lines, mixed_signal_lines,
+            budget=_CONCLUSION_BUDGET)
 
-    return conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups
+    return (conclusion, cds_reports, mixed_profiles, resolved_regions,
+            conclusion_groups, conclusion_detail)
 
 
 def analyze(
@@ -2744,9 +2710,10 @@ def analyze(
     _cov_spans = []
     for r in read_results:
         _segs = aln_segments(r["alignment"])
-        if _degraded_share(r) >= DEGRADED_READ_SHARE:
+        if peak_shape.degraded_share(r) >= DEGRADED_READ_SHARE:
             _cov_spans.extend(sp for seg in _segs
-                              for sp in _trim_degraded_span(seg, r))
+                              for sp in peak_shape.split_span_by_degraded(seg, r,
+                                      ReadRefMap.from_alignment(r).read_to_ref))
         else:
             _cov_spans.extend(_segs)
     coverage_ranges = merge_coverage(_cov_spans, len(ref))
@@ -2804,7 +2771,8 @@ def analyze(
         "algo_version": SANGER_ALGO_VERSION,
     }, len(ref), scope=scope_obj,
     synonymous_action=synonymous_action)
-    conclusion, cds_reports, mixed_profiles, resolved_regions, conclusion_groups = _build_conclusion(
+    (conclusion, cds_reports, mixed_profiles, resolved_regions,
+     conclusion_groups, conclusion_detail) = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features, unresolved_sites=unresolved_sites, errors=errors,
@@ -2855,6 +2823,9 @@ def analyze(
         "homopolymers": homopolymer_report,
         "conclusion": conclusion,
         "conclusion_groups": conclusion_groups,  # R6 结构化折叠组（low/mixed_detail/resolved）
+        # goal v3.1 §3.2：正文只留要点，未决明细逐条在此（结论正文已剔除，
+        # 报告与导出用它恢复完整清单）
+        "conclusion_detail": conclusion_detail,
         # 未决位点（goal T1 三态）：判定区域内「没读清」的地方，✓ 资格门输入
         "unresolved_sites": unresolved_sites,
         "primer_checks": primer_checks,
