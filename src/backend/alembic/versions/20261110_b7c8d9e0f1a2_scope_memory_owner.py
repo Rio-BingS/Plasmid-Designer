@@ -82,13 +82,14 @@ def upgrade() -> None:
         # SQLite 分支：重建表时 copy_from 已给出复合主键，不能再删→建，
         # 否则一次迁移在两种库里行为不同
         if is_pg:
-            batch.drop_constraint(old_pk, type_='primary')
+            if old_pk:
+                batch.drop_constraint(old_pk, type_='primary')
             batch.create_primary_key('sequencing_scope_memory_pkey',
                                      ['owner_id', 'reference_hash'])
 
 
 def downgrade() -> None:
-    # 复合主键收回单列。顺序：去重 → 删复合主键（仅 PG）→ 放非空 → 删列。
+    # 复合主键收回单列。顺序：去重 → 放非空 → 换主键 → 删列。
     # 去重必须在前：旧结构一个 reference_hash 只能留一行，同参考有多用户
     # 记忆时保留 updated_at 最新的一条（属预期损失，记在迁移说明里）。
     # 在 Python 侧选 keep 键再逐条删——`rowid` 只有 SQLite 有，不能进通用谓词。
@@ -110,13 +111,18 @@ def downgrade() -> None:
                 "DELETE FROM " + _TABLE + " "
                 "WHERE reference_hash = :h AND owner_id = :o").bindparams(
                     h=ref_hash, o=owner_id))
-    if is_pg:
-        op.drop_constraint(_pk_name(conn), _TABLE, type_='primary')
+    # 主键同样要显式换回来：PG 上 copy_from 不生效，若不重建，降级后表
+    # 会**完全没有主键**——再升级时 _pk_name 取不到真名就无从下手
+    old_pk = _pk_name(conn) if is_pg else None
     with op.batch_alter_table(
             _TABLE,
             copy_from=_table('reference_hash'),
     ) as batch:
-        # 非 PG：重建表时 copy_from 已按单列主键收口，只需放掉非空约束
         batch.alter_column('owner_id',
                            existing_type=sa.String(length=64), nullable=True)
+        if is_pg:
+            if old_pk:
+                batch.drop_constraint(old_pk, type_='primary')
+            batch.create_primary_key('sequencing_scope_memory_pkey',
+                                     ['reference_hash'])
     op.drop_column(_TABLE, 'owner_id')
