@@ -1,20 +1,21 @@
 <script setup lang="ts">
 /**
- * 复核队列卡片（goal v3 W14，PL §F）
+ * 复核队列卡片（goal v3 W14，PL §F；v3.1 X2 三级聚合展示）
  *
  * 只收「人工不看无法收口」的条目：确证差异（fail）、范围内覆盖缺口
  * （read_shortfall/unknown）、未决位点（pending）——beyond_primer 只给
  * 动作建议不入队。每项可一键确认（伪影/突变，留痕 by/at）或打开证据
  * 包（位点 ±10bp 峰图 + 逐 read 调用/Q/次峰比，复用 EvidencePackPanel）。
+ *
+ * goal v3.1 X2：队列按三级聚合后条目数已可控（真实子集 330 → 12），
+ * 前端默认展开**前 10 项**，其余折叠为「其余 N 项」（展开不丢信息）——
+ * 与后端聚合配合，长队列不再铺满整屏。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ReviewQueueItem } from '@/api'
 
-defineProps<{
-  queue: ReviewQueueItem[]
-  reviewedCount: number
-  busy: boolean
-}>()
+/** 默认展开条数（goal v3.1 §3.2：每个样品默认展开前 10 项） */
+const DEFAULT_VISIBLE = 10
 
 const emit = defineEmits<{
   (e: 'confirm', refPos: number, decision: 'artifact' | 'mutation'): void
@@ -22,6 +23,21 @@ const emit = defineEmits<{
 }>()
 
 const expanded = ref(true)
+const showAll = ref(false)
+
+const props = defineProps<{
+  queue: ReviewQueueItem[]
+  reviewedCount: number
+  busy: boolean
+}>()
+
+/** 默认只渲染前 DEFAULT_VISIBLE 项；「其余 N 项」可一键展开 */
+const visibleQueue = computed(() =>
+  showAll.value ? props.queue : props.queue.slice(0, DEFAULT_VISIBLE),
+)
+const hiddenCount = computed(() =>
+  Math.max(0, props.queue.length - DEFAULT_VISIBLE),
+)
 
 const PRIO_BADGE: Record<string, { label: string; cls: string }> = {
   fail: { label: '确证差异', cls: 'bad' },
@@ -31,6 +47,21 @@ const PRIO_BADGE: Record<string, { label: string; cls: string }> = {
 
 function prioBadge(item: ReviewQueueItem): { label: string; cls: string } {
   return PRIO_BADGE[item.prio] ?? { label: item.prio, cls: 'warn' }
+}
+
+/** 聚合级别标注（goal v3.1 X2）：read 问题 / N 处合并 / 单点 */
+const LEVEL_BADGE: Record<string, string> = {
+  read: '整条 read',
+  segment: '区段',
+  site: '位点',
+  confirmed: '确证',
+  junction: '接合区',
+}
+
+function levelBadge(item: ReviewQueueItem): string {
+  const lv = item.level ?? 'site'
+  const base = LEVEL_BADGE[lv] ?? lv
+  return item.sites && item.sites > 1 ? `${base} · ${item.sites} 处` : base
 }
 
 function posText(item: ReviewQueueItem): string {
@@ -56,8 +87,9 @@ function posText(item: ReviewQueueItem): string {
       引物够不到的缺口（需加引物）不入队列，见覆盖缺口标注；确认前请核对峰图证据
     </p>
     <ul class="rq-list" v-if="expanded">
-      <li v-for="(it, i) in queue" :key="`${it.kind}-${it.ref_start}-${i}`" class="rq-item">
+      <li v-for="(it, i) in visibleQueue" :key="`${it.kind}-${it.ref_start}-${i}`" class="rq-item">
         <span class="rq-badge" :class="prioBadge(it).cls">{{ prioBadge(it).label }}</span>
+        <span class="rq-level">{{ levelBadge(it) }}</span>
         <span class="mono rq-pos">位置 {{ posText(it) }}</span>
         <span v-if="it.element" class="rq-element">{{ it.element }}</span>
         <span class="rq-detail" :title="it.detail">{{ it.detail }}</span>
@@ -73,6 +105,11 @@ function posText(item: ReviewQueueItem): string {
                   title="峰图确认为真实序列差异，按确证差异收口"
                   @click="emit('confirm', it.ref_start, 'mutation')">确认突变</button>
         </span>
+      </li>
+      <li v-if="hiddenCount" class="rq-more">
+        <button class="mini-btn" type="button" @click="showAll = !showAll">
+          {{ showAll ? '收起其余项' : `其余 ${hiddenCount} 项` }}
+        </button>
       </li>
     </ul>
     <p class="rq-empty" v-else-if="reviewedCount">队列已清空——所有条目均已人工确认并留痕</p>
@@ -92,6 +129,8 @@ function posText(item: ReviewQueueItem): string {
 .rq-badge.bad { background: #fdecea; color: #c0392b; }
 .rq-badge.gap { background: #fff3e0; color: #e67e22; }
 .rq-badge.warn { background: #fff8e1; color: #b26a00; }
+.rq-level { font-size: 0.72rem; color: var(--text-3, #888); }
+.rq-more { padding: 8px 0 2px; border-top: 1px dashed var(--border, #eee); text-align: center; }
 .rq-pos { font-size: 0.8rem; }
 .rq-element { font-size: 0.8rem; color: #2563eb; }
 .rq-detail { font-size: 0.82rem; color: var(--text-2, #555); flex: 1 1 260px; min-width: 200px; }

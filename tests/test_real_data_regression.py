@@ -138,18 +138,26 @@ def test_real_analysis_mixed_baseline_and_corroboration():
     # 尾端低 Q 双峰是衰减噪声而非混合克隆，Q 比判别器正确挡下升级。
     # verdict 仍 fail（5269/5076 确证变异驱动）。
     assert "疑似混合样品" not in res["conclusion"]
-    assert "双峰 25 处中 9 处无其他引物覆盖待核" in res["conclusion"]
-    assert "双峰 15 处中 4 处无其他引物覆盖待核" in res["conclusion"]
+    # v3.1 X2（RB P0-2）起结论正文有行数上限（头行 + 5 行要点），逐读待核
+    # 明细移入 conclusion_groups.mixed_detail 折叠组（前端可展开）与
+    # conclusion_detail（全量正文，报告/导出逐条列）。判定词一个不少，
+    # 逐字基线改为在 conclusion_detail 上锁。
+    detail = "\n".join(res.get("conclusion_detail") or [])
+    assert "双峰 25 处中 9 处无其他引物覆盖待核" in detail
+    assert "双峰 15 处中 4 处无其他引物覆盖待核" in detail
+    md = res.get("conclusion_groups") or {}
+    assert any("25 处中 9 处" in x for x in md.get("mixed_detail") or [])
+    assert any("15 处中 4 处" in x for x in md.get("mixed_detail") or [])
     # 2026-11-05 定稿：跨引物互检汇总只保留「多引物同报双峰」信号行；
     # MX 批次 multi_sites 为空（双峰全是各 read 独立信号噪声）→ 不出该行
-    assert "同报双峰" not in res["conclusion"]
+    assert "同报双峰" not in detail
     # T8+T12 互检口径基线（先取证再改断言）：待核 = 互检 uncovered（验证
     # read 可信区内对应列未读出设计碱基）。T12 可信区延伸后互检覆盖面
     # 扩大：seqF 的双峰全部被其他 read 延伸后的可信区高质量覆盖 → seqF
     # 待核行消失；pET-Up 保留 9 处待核（5075–5085，引物 5' 端互检盲区，
     # T24.1 后分母 18→16 但待核集合不变）；T7-Term 尾端 3 处无法互检
     # （6868–6872，T24.1 后 6873 掉档）→ 待核行仍为 2 条，逐字锁新基线
-    concl_lines = res["conclusion"].splitlines()
+    concl_lines = detail.splitlines()
     pending = [x for x in concl_lines if x.strip().startswith("↳") and "待核" in x]
     assert len(pending) == 2
     assert any("SZ15674-pET-Up.ab1" in x and "25 处中 9 处" in x
@@ -171,13 +179,17 @@ def test_real_analysis_cross_read_conflicts_and_cds_verdict():
     assert confs[5076] in ("medium", "high")
     assert confs[6653] == "low" and confs[6666] == "low"
     concl = res["conclusion"]
-    # read×区段 注记口径（2026-11-05 定稿）：逐条证据行删，按源 read 归并
-    assert "报出" in concl and "高质量覆盖排除" in concl and "无需核对" in concl
+    # v3.1 X2：区间裁决行（互检已排除）在全量正文与 resolved 折叠组里，
+    # 正文按预算让位给确证差异与 CDS 结论——判定词仍逐字存在
+    detail = "\n".join(res.get("conclusion_detail") or [])
+    assert "报出" in detail and "高质量覆盖排除" in detail and "无需核对" in detail
+    assert any("高质量覆盖排除" in x
+               for x in (res.get("conclusion_groups") or {}).get("resolved") or [])
     # 位置级核对走变体清单的结构化标注
     resolved = {v["ref_pos"] for v in res["variants"] if v.get("cross_read_resolved")}
     assert {6653, 6666} <= resolved
-    assert "↳ 位置 6653" not in concl and "↳ 位置 6666" not in concl
-    assert "互检矛盾" not in concl                     # v2.15.1 起改为直接排除
+    assert "↳ 位置 6653" not in detail and "↳ 位置 6666" not in detail
+    assert "互检矛盾" not in detail                    # v2.15.1 起改为直接排除
     assert "MX 蛋白与设计不一致" in concl  # 头行（has_mixed 分支）
 
 

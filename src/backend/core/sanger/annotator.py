@@ -323,6 +323,8 @@ def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
         if v.get("enzyme_sites_gained"):
             notes.append((f"  ↳ 新增酶切位点: {', '.join(v['enzyme_sites_gained'])}", line_kind))
         if v.get("enzyme_sites_pending") and v.get("status") == "unresolved":
+            # 酶位归属待定是「下游实验要先确认」的判读要点，不随低置信明细
+            # 折叠（goal v3.1 X2：结论正文 ≤5 要点，但判读要点必须常驻）
             notes.append(("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
-                          + " 在 ±10bp 内、indel 归属未定：位点归属待定", line_kind))
+                          + " 在 ±10bp 内、indel 归属未定：位点归属待定", "variant"))
     return notes
