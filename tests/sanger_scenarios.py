@@ -536,13 +536,14 @@ def _sc5():
 
 
 def _sc6():
-    """scope=GeneX，正向 read 在 read 坐标约 400 起信号退化 → 测序未达。
-    构造用 Q 衰减（400bp 后 Q=15，末端修剪截断实测）而非峰形退化——
-    tail_width=3.0 会在段内造出强次峰，经 W4 af 分带判 mixed，偏离
-    §4「纯测序未达」的场面（SC10 同款教训）"""
+    """scope=GeneX，正向 read 在 read 坐标约 400 起峰形退化（峰宽 ×3.0，
+    Q 不变——真实 read 尾端的典型形态）→ 测序未达，不是混合。
+
+    v3.1 X0：恢复 W0 原构造（goal §4）。W12 前曾被改成「只降 Q」以避开
+    W4 af 分带误判 mixed——那是改场景而非改实现（RB P0-1）；本轮由
+    X1 峰形门控实现修复，构造回到原样且不得再改。"""
     ref, feats = _scope_base()
-    seq = ref[200:1101]
-    blob = make_trace_ab1(seq, q=[50] * 200 + [15] * (len(seq) - 200))
+    blob = make_trace_ab1(ref[200:1101], q=50, tail_width=(400, 3.0))
     return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
                 kwargs=dict(scope="GeneX", circular=True))
 
@@ -576,12 +577,11 @@ def _sc9():
 
 
 def _sc10():
-    """CDS 301-1299（干净 ORF），read 覆盖到 1320 → measured 100%；
-    尾端 50bp Q=24（高于修剪阈值不被切、低于可信窗均值 TRUST_MEAN_Q=25
-    → 可信区止于 ~1289，ROI verified ≈98.6%）。构造刻意不叠加峰形退化
-    ——早期 tail_width=3.0 会在段内造出密集次峰触发 widespread 判
-    mixed，偏离 §4「纯 verified 缺口」的场面：pending + roi_unverified，
-    pass 与 blocking 不得并存（RV P0-2）"""
+    """CDS 301-1299（干净 ORF），read 覆盖到 1320 但尾端 ~1289 起峰形退化
+    → verified ≈99%、measured 100%：pass 与 blocking 不得并存（RV P0-2）。
+
+    v3.1 X0：恢复 W0 原构造（goal §4）：tail_width=(1050, 3.0)，Q 保持 50。
+    退化段必须被判「不可信」(verified 收缩)，而不得触发 mixed（RB P0-1）。"""
     rng = _rng("sc10")
     ref = list(_rand_seq(rng, 1800))
     codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(331)] + ["TAA"]
@@ -589,8 +589,7 @@ def _sc10():
     ref[300:1299] = list("".join(codons))
     ref = "".join(ref)
     feats = [dict(name="Solo", type="CDS", start=301, end=1299, strand="+")]
-    seq = ref[240:1320]
-    blob = make_trace_ab1(seq, q=[50] * (len(seq) - 50) + [24] * 50)
+    blob = make_trace_ab1(ref[240:1320], q=50, tail_width=(1050, 3.0))
     return dict(ab1_files=[("r.ab1", blob)], reference=ref, features=feats,
                 kwargs=dict(scope="301-1299", circular=False))
 
@@ -637,11 +636,11 @@ def _cm2():
 
 
 def _cm3():
-    """跨原点 CDS join(3701..4000,1..300)（干净 ORF 600bp）：质粒带 ATG 前
-    与终止后各 1bp 插入（W8 构造重编码留痕——初版两条 read 各带一处插入，
-    同位点被对方 read 的干净覆盖互检排除，与「同一质粒的插入应出现在每条
-    覆盖 read」的真实场面矛盾）；正反两条 read 都覆盖两处 → 都确证并判
-    junction_variant（CM P0-B）"""
+    """跨原点 CDS join(3701..4000,1..300)（干净 ORF 600bp）：ATG 前、终止
+    密码子后各一条含 1bp 插入的 read → 都检出并判 junction_variant（CM P0-B）
+
+    v3.1 X0：恢复 W0 原构造与构造意图（goal §4）；上一轮的「两条 read 同带
+    两处插入」是改构造绕过微同源表示问题，本轮由 X4 indel 规范化解决。"""
     rng = _rng("cm3")
     ref = list(_rand_seq(rng, 4000))
     stops = ("TAA", "TAG", "TGA")
@@ -655,15 +654,13 @@ def _cm3():
     ref[0:297] = list("".join(body[99:]))
     ref[297:300] = list("TAA")
     ref = "".join(ref)
-    # 插入碱基与两侧邻居都不同——避免比对器把插入左移/右移归一成替换
-    # （微同源边界的 indel 表示歧义；truth 关心的是「检出 + 接合区归因」）
-    ins = next(b for b in "ACGT" if b not in (ref[3699], ref[3700]))
-    ins2 = next(b for b in "ACGT" if b not in (ref[299], ref[300]))
-    # 变体质粒分子（两处插入都在）：3300..450 跨原点覆盖段，正反各测一条
-    from core.seq_utils import revcomp
-    mol = ref[3299:3700] + ins + ref[3700:4000] + ref[0:300] + ins2 + ref[301:450]
-    r1 = make_trace_ab1(mol, q=50)
-    r2 = make_trace_ab1(revcomp(mol), q=50)
+    # v3.1 X0：恢复 W0 原构造（goal §4）——插入碱基取「与左邻不同」，
+    # 微同源边界的 indel 表示歧义由 X4 的规范化解决（RB P1-4），
+    # 不得再用构造绕开（上一轮改成双侧邻居都不同即属绕开）
+    ins = "T" if ref[3699] != "T" else "A"       # ATG 前插 1bp（3700/3701 之间）
+    ins2 = "T" if ref[300] != "T" else "A"       # 终止后插 1bp（300/301 之间）
+    r1 = make_trace_ab1(ref[3299:3700] + ins + ref[3700:4000] + ref[0:450], q=50)
+    r2 = make_trace_ab1(ref[3299:4000] + ref[0:300] + ins2 + ref[301:450], q=50)
     feats = [
         dict(name="CrossGene", type="CDS", start=3701, end=4000, strand="+",
              feature_id="cm3cds", segment_index=0, segment_count=2,
@@ -820,6 +817,97 @@ def _pr3():
                 kwargs=dict(circular=False, primer=fwd_primer))
 
 
+
+# ==================== goal v3.1 §4（X0 真值先行）====================
+
+
+def _sc6_tail(tw: float, scope="GeneX"):
+    """SC6b/SC6c 共用：scope_base + read[200:1101] 自 read 坐标 400 起
+    峰宽 ×tw（Q 保持 50）。scope=None 表示不声明范围。"""
+    ref, feats = _scope_base()
+    blob = make_trace_ab1(ref[200:1101], q=50, tail_width=(400, tw))
+    kw = dict(circular=True) if scope is None else dict(scope=scope, circular=True)
+    return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
+                kwargs=kw)
+
+
+def _sc6b():
+    """峰展宽三档（×2.0/2.5/3.0）都不判 mixed；未声明组判 pass 且 headline
+    不含「混合」（goal v3.1 §4 SC6b；RB P0-1）——本场景取 ×3.0 声明组，
+    三档与未声明组由测试参数化复用 _sc6_tail。"""
+    return _sc6_tail(3.0)
+
+
+def _sc6c():
+    """同 SC6b 的 3.0 档，但在退化区段之前（read 坐标 150，即参考 350）
+    叠加一个真实次峰 AF 0.35 → 判 mixed（门控不得误杀区段外的真实混合）"""
+    ref, feats = _scope_base()
+    pos = 350                      # 参考 1-based：read[200:1101] 的第 150 位
+    alt = next(b for b in "ACGT" if b != ref[pos - 1])
+    blob = make_trace_ab1(ref[200:1101], q=50, tail_width=(400, 3.0),
+                          secondary={150: (alt, 0.35 / 0.65)})
+    return dict(ab1_files=[("F.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(scope="GeneX", circular=True))
+
+
+def _cm9():
+    """CDS 内部 1bp 插入，插入碱基与左邻或右邻相同（微同源）：
+    3 个位置（CDS 内 400/600/800 附近，取与左邻相同）→ type 必须为
+    insertion，c. 符合 3′ 规则，后果为移码（RB P1-4 / goal §4 CM9）"""
+    ref, feats = _cm_base()      # GeneX CDS 1001-1600，干净 ORF
+    from core.sanger.pipeline import analyze  # noqa: F401  （仅供 spec 说明）
+    # 选 CDS 内三个位置，插入碱基 = 左邻（制造微同源）
+    pos = 1100
+    ins = ref[pos - 1]           # 与左邻相同 → 可左移归一到该位点
+    mol = ref[999:1500] + ins + ref[1500:1750]
+    return dict(ab1_files=[("GeneX_F.ab1", make_trace_ab1(mol, q=50))],
+                reference=ref, features=feats,
+                kwargs=dict(circular=True), ref_name="GeneX.gb", cds_mode=True)
+
+
+def _rq_real_files():
+    """真实子集（tests/data/real_ab1）：MUTPK 图谱 + S99676 5 条 read"""
+    from core.sanger.reference_parser import parse_reference_topology
+    d = Path(__file__).parent / "data" / "real_ab1"
+    ref, feats, topo = parse_reference_topology(
+        "MUTPK.dna", (d / "MUTPK.dna").read_bytes())
+    files = [(p.name, p.read_bytes()) for p in sorted(d.glob("*.ab1"))]
+    return ref, feats, topo, files
+
+
+def _rq1():
+    """真实子集，不声明范围 → 复核队列 ≤15 项、结论 ≤6 行、
+    3 处确证变异（335 ins/440 ins/4081 del）全在队列中、status=fail"""
+    ref, feats, topo, files = _rq_real_files()
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(circular=topo is not False))
+
+
+def _rq2():
+    """真实子集，声明全质粒范围 → 队列 ≤25 项、3 处确证变异全在队列"""
+    ref, feats, topo, files = _rq_real_files()
+    return dict(ab1_files=files, reference=ref, features=feats,
+                kwargs=dict(scope="全质粒", circular=topo is not False))
+
+
+def _rq3():
+    """合成数据：单 read 判 mixed，且有 40 个双峰位点（间隔 5bp，均在同一
+    read 上）→ 队列中只有 1 项「read 问题」，位点全部折叠其下"""
+    rng = _rng("rq3")
+    ref = list(_rand_seq(rng, 2000))
+    codons = ["ATG"] + [_rand_seq(rng, 3) for _ in range(298)] + ["TAA"]
+    codons = [c if c not in ("TAA", "TAG", "TGA") else "GCT" for c in codons]
+    ref[300:1200] = list("".join(codons))
+    ref = "".join(ref)
+    sec = {}
+    for i in range(40):
+        pos = 501 + i * 5          # 501..696，间隔 5bp 的密集双峰
+        sec[pos] = (next(b for b in "ACGT" if b != ref[pos - 1]), 0.4 / 0.6)
+    blob = make_trace_ab1(ref[300:1400], q=50, secondary=sec)
+    feats = [dict(name="GeneX", type="CDS", start=301, end=1200, strand="+")]
+    return dict(ab1_files=[("mix.ab1", blob)], reference=ref, features=feats,
+                kwargs=dict(circular=False))
+
 SCENARIOS: List[Scenario] = [
     Scenario("S1", "A 1.1 / B P0-1", "T12", "尾端灰区 Q50 错义被强制 low → ✓", _s1),
     Scenario("S2", "A 3.2", "T7", "CDS 单点 35% 混合静默 ✓", _s2),
@@ -883,4 +971,11 @@ SCENARIOS: List[Scenario] = [
     Scenario("PR1", "goal v3 §4.4", "W7", "逐 read 引物对应 → 两条都 ok", _pr1),
     Scenario("PR2", "goal v3 §4.4", "W7", "引物无对应 read → 引物无信号", _pr2),
     Scenario("PR3", "goal v3 §4.4", "", "引物距离出窗 → primer_mismatch（T17 既有口径）", _pr3),
+    # ---- goal v3.1 §4（X0 真值先行；task = 使其转绿的工作项）----
+    Scenario("SC6b", "goal v3.1 §4", "X1", "峰展宽 ×2.0/2.5/3.0 不判 mixed；未声明组 pass", _sc6b),
+    Scenario("SC6c", "goal v3.1 §4", "X1", "退化区段外的真实次峰 AF0.35 → 判 mixed", _sc6c),
+    Scenario("CM9", "goal v3.1 §4", "X4", "微同源边界 1bp 插入仍为 insertion（3′ 规则）", _cm9),
+    Scenario("RQ1", "goal v3.1 §4", "X2", "真实子集未声明范围：队列≤15、结论≤6 行", _rq1),
+    Scenario("RQ2", "goal v3.1 §4", "X2", "真实子集全质粒范围：队列≤25", _rq2),
+    Scenario("RQ3", "goal v3.1 §4", "X2", "单 read 40 双峰 → 只 1 项 read 问题", _rq3),
 ]
