@@ -659,3 +659,59 @@ MX 的 `blocking` 明细仍是 262 `unresolved_site` + 55 `minor_af_site` + 48
 
 两平台差 42 项 = Windows 上 skip 的 42 个部署 shell 测试（Linux 真跑）+ 真实数据
 回归。场景库 67 个场景（88 个测试函数）两平台都是 87 passed + 1 xfailed（CM3）。
+
+---
+
+## 部署（2026-11-10，生产 VPS）
+
+分支 `fix/sanger-scope-v3.1` 已推到 origin 并部署到 `/opt/plasmid-designer`。
+
+### 部署中发现并修掉的真 bug：迁移没改主键
+
+原迁移只 `add_column` + `batch.alter_column(nullable=False)`，`copy_from` 里的
+复合主键只在 SQLite 重建表时生效；**PostgreSQL 上走原生 ALTER，主键仍是单列
+`reference_hash`**。在真实备份副本上实测：
+
+```
+INSERT ... ON CONFLICT (owner_id, reference_hash) DO UPDATE ...
+→ ERROR: there is no unique or exclusion constraint matching the ON CONFLICT specification
+```
+
+即 SM1（按用户隔离）在生产上根本不会生效——两个用户对同一质粒写范围记忆会
+互相覆盖。单元测试没抓到，是因为 `test_migrations.py` 只跑 SQLite 并比对
+autogenerate 差异，不覆盖「PG 上主键是否真的换了」。
+
+修法（`e6180df`…`f1ec184` 共 6 个提交，全是同一处迁移的迭代）：
+
+1. 显式 `drop_constraint` + `create_primary_key`（PG），SQLite 仍走 batch 重建；
+2. 主键名按 `pg_constraint` 目录查真名——PG 在原名被占用时会自动改名成
+   `..._pkey1`，硬编码让第二次 upgrade 报 UndefinedObject；
+3. `text()` 里 `:t::regclass` 的 `::` 会被当参数名分隔（`KeyError: 't'`），改 `CAST(:t AS regclass)`；
+4. 降级里 `updated_at` 是 datetime 且可 NULL，不能与空串混比；
+5. 降级必须显式重建单列主键——否则表变成无主键，再升级无从下手；
+6. 两侧都改成原生命令 + 按方言分支：`batch_alter_table` 进入即反射旧主键，
+   与后续换主键/删列打架（实测 `column owner_id is in a primary key`）。
+
+### 部署步骤与实测结果
+
+1. 备份：`pg_dump` → 53 MB，存 `/root/pd-backup/pre-v31-20261110-101426.sql`
+2. 演练：把备份灌进临时 PG，`stamp a1b2c3d4e5f6` → `upgrade head`，跑
+   **3 轮 up→down→up** 全部通过，主键在 `reference_hash` 与
+   `(owner_id, reference_hash)` 间正确来回切，数据行数不变
+3. 生产迁移：`stamp a1b2c3d4e5f6` → `upgrade head`，主键变为复合键
+4. 构建 + `up -d --force-recreate backend frontend`
+5. 验证：
+   - 后端横幅 `🧬 Plasmid Designer API v2.37.0-alpha.4`，`/health` = 200，`db:"ok"`
+   - 容器内 `SANGER_ALGO_VERSION = v15`，四个新模块均已加载
+   - **真实 MX 数据端到端**：`status=fail`、确证 [5076, 5269]、队列 3、结论 7 行、
+     双峰 [35,15,25]、零退化段——与本地逐项一致
+   - **跨用户隔离实测**：A 存 `[[1,200]]`、B 存 `[[9,9]]` 各自读回；清除 A 不影响 B
+   - 新端点 `DELETE /api/sequencing/scope-memory`：带 hash 200、无参 422
+   - 前端容器 healthy，首页 200
+
+### 部署路径已写进 HANDOVER
+
+`.env` 里 `MAIL_FROM` 等值带空格与尖括号，`source .env` 会语法错——改用
+`docker compose config --format json` 取解析后的值；临时容器用 `--network host`
+并把 `@db:` 换 `@127.0.0.1:`（`--link` 对已存在的旧容器不可靠）。完整命令见
+HANDOVER §5「数据库迁移」。

@@ -100,7 +100,7 @@ read 与参考等长，序列上等价于替换而非插入；修它必须改 X0
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
-| 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出） |
+| 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出）。**有迁移的版本要先迁移再重建容器**，见下方「数据库迁移」 |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
 
 ## 3. 版本主线（v2.12 之后）
@@ -189,6 +189,37 @@ git -c http.proxy= -c https.proxy= -c http.schannelCheckRevoke=false push --foll
   dist/ + systemctl restart」已废弃。
 - nginx：`deploy/*/nginx.conf` 有 `location ^~ /api/map/`（请求体 17 m）等更新，改过
   就要一起上。新增环境变量要同步 `docker-compose.yml` 透传。
+
+**数据库迁移（有 alembic 版本时必读）**
+
+生产的表由 `init_db()` 的 `create_all` 建立，`alembic_version` 长期停在基线
+`35a49b81767c`——**老库不重放建表迁移，只对齐版本号**。因此带新迁移的版本要按
+下面的顺序走，否则会撞「relation already exists」或漏掉主键变更：
+
+```bash
+cd /opt/plasmid-designer/deploy/docker
+# .env 里 MAIL_FROM 这类值带空格和尖括号，`source .env` 会语法错——用 compose 解析
+DB=$(docker compose config --format json | python3 -c "import json,sys;print(json.load(sys.stdin)['services']['backend']['environment']['DATABASE_URL'])" | sed 's/@db:/@127.0.0.1:/')
+SK=$(docker compose config --format json | python3 -c "import json,sys;print(json.load(sys.stdin)['services']['backend']['environment']['SECRET_KEY'])")
+run() { docker run --rm --network host -e ALEMBIC_DATABASE_URL="$DB" -e SECRET_KEY="$SK" \
+  --workdir /app/backend -v /opt/plasmid-designer/src/backend:/app/backend:ro \
+  --entrypoint alembic docker-backend "$@"; }
+
+pg_dump -U plasmid plasmid_designer > /root/pd-backup/pre-$(date +%Y%m%d).sql   # 先备份
+run stamp <上一个 head>   # 老库：把新迁移的父版本标记为已应用（表已存在）
+run upgrade head          # 只跑新增的那一条
+```
+
+- `stamp` 用**新迁移的父 revision**，不是 `head`。当前链：
+  `35a49b81767c`（基线）→ `a1b2c3d4e5f6`（scope_memory 建表）→
+  `b7c8d9e0f1a2`（加 owner_id）。v3.1 部署时是
+  `stamp a1b2c3d4e5f6` 再 `upgrade head`。
+- `--network host` + 把 `@db:` 换成 `@127.0.0.1:`：临时容器不在 plasmid-network 上，
+  `--link` 对先有的旧容器已不可靠。
+- 迁移在 PG 上必须显式 drop/create 主键：`batch_alter_table` 的 `copy_from` 只在
+  SQLite 重建表时生效，PG 上走原生 ALTER——只写 `alter_column` 会「列加上了、
+  主键没变」，多用户范围记忆互相覆盖。
+- 迁移做完整轮 up→down→up 演练（v3.1 已在真实备份副本上跑过 3 轮）。
 
 ## 6. 一碰就容易出事的约束（Top 9）
 
