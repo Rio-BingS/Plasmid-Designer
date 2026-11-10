@@ -1,7 +1,7 @@
 """目的基因模式（CDS 对比）测试：候选去重、名称匹配、CDS 提取与端点集成
 
 匹配口径与批量归组同源（batch._match_ref_name，label 参数化）；真实数据的
-候选形状与匹配路径（MX.dna→「MX」、17647 MUTPK read 名兜底）由
+候选形状与匹配路径（MX.dna→「MX」、40001 DEMO1 read 名兜底）由
 test_real_data_regression 的 CDS 模式断言真跑，本文件用合成 GenBank 锁口径。
 """
 
@@ -109,8 +109,8 @@ def test_match_by_reference_stem():
 
 def test_match_by_read_token_fallback():
     """参考名未命中时 read 文件名兜底：组成段一致
-    （真实原型：改名后 S99675-17647-seqF1 ⊇ CDS「17647 MUTPK」的 17647）"""
-    cand, note = cds_extract.resolve_auto(_cands(), "测序验证", ["S99675-TARGET-seqF1.ab1"])
+    （真实原型：改名后 S00001-40001-seqF1 ⊇ CDS「40001 DEMO1」的 40001）"""
+    cand, note = cds_extract.resolve_auto(_cands(), "测序验证", ["S00001-TARGET-seqF1.ab1"])
     assert cand["name"] == "TARGET"
     assert "read 文件名匹配" in note
     # 通用引物 read 不带 CDS 名：不影响（未命中 → 无候选），也不报错
@@ -284,7 +284,7 @@ def test_parse_reference_endpoint(client):
     resp = client.post(
         "/api/sequencing/parse-reference",
         files={"reference": _ref_file()},
-        data={"read_names": ["S99675-TARGET-seqF1.ab1", "M13F-75.ab1"]},
+        data={"read_names": ["S00001-TARGET-seqF1.ab1", "M13F-75.ab1"]},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()

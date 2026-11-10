@@ -168,7 +168,7 @@ L ≈ 1 周以上。
 | 目的基因模式不裁参考 | `core/sanger/pipeline.py`（cds_mode） | 全质粒比对+scope=CDS±接合区；junctions 入需测范围；变体双坐标（c./p.） |
 | 复核队列与一键确认 | `core/sanger/review.py` + 端点 | 确证差异/范围内缺口/未决位点三类；artifact/mutation 留痕 by/at；headline「人工确认 N 处」 |
 | 范围可视化 | 前端 MatchMap/Panel/BatchView | 三层色带（需测/预期/已验证）+缺口着色+范围条重算；批量页需复核汇总 |
-| 真实 AB1 子集基准 | `tests/data/real_ab1/` + `test_real_ab1_subset.py` | MUTPK 3 处真实确证变异敏感度锁定（ins335/ins440/del4081） |
+| 真实 AB1 子集基准 | `tests/data/real_ab1/` + `test_real_ab1_subset.py` | DEMO1 3 处真实确证变异敏感度锁定（ins335/ins440/del4081） |
 
 ### 暂缓项（按需启动）
 

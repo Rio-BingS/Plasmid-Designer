@@ -866,11 +866,11 @@ def _cm9():
 
 
 def _rq_real_files():
-    """真实子集（tests/data/real_ab1）：MUTPK 图谱 + S99676 5 条 read"""
+    """真实子集（tests/data/real_ab1）：DEMO1 图谱 + S00001 5 条 read"""
     from core.sanger.reference_parser import parse_reference_topology
     d = Path(__file__).parent / "data" / "real_ab1"
     ref, feats, topo = parse_reference_topology(
-        "MUTPK.dna", (d / "MUTPK.dna").read_bytes())
+        "DEMO1.dna", (d / "DEMO1.dna").read_bytes())
     files = [(p.name, p.read_bytes()) for p in sorted(d.glob("*.ab1"))]
     return ref, feats, topo, files
 

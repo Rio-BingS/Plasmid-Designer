@@ -199,7 +199,7 @@ describe('SequencingPanel', () => {
         peak_measured: 106, peak_missing: 1, peak_inserted: 0, run_covered: 107,
         length_estimate: 100, length_method: 'width', length_ci: [98, 101],
         read_counts: [
-          { filename: 'S99680-10855-1seqF1.ab1', direction: '+', peak_count: 100, coverage: 'partial', covered_span: [3925, 4025], called_count: 100 },
+          { filename: 'S00001-40002-1seqF1.ab1', direction: '+', peak_count: 100, coverage: 'partial', covered_span: [3925, 4025], called_count: 100 },
           { filename: 'S99680-M13F-75.ab1', direction: '-', peak_count: 100, coverage: 'partial', covered_span: [3931, 4031], called_count: 101 },
         ],
       }],
@@ -214,10 +214,10 @@ describe('SequencingPanel', () => {
     expect(text).toContain('宽度法约 100 个 A（区间 98–101）')
     // 第二行：引物覆盖情况（覆盖段 + 调用/峰）
     expect(text).toContain('引物覆盖：')
-    expect(text).toContain('S99680-10855-1seqF1.ab1正向覆盖段3925-4025调用100/峰100')
+    expect(text).toContain('S00001-40002-1seqF1.ab1正向覆盖段3925-4025调用100/峰100')
     expect(text).toContain('S99680-M13F-75.ab1反向覆盖段3931-4031调用101/峰100')
     // 第三行：逐引物判读（调用 vs 可分辨峰 → 出入标记；覆盖情况）
-    expect(text).toContain('S99680-10855-1seqF1.ab1（正向）：调用 100，可分辨峰 100 → 峰图与调用一致；仅覆盖该结构 3925-4025，未完整跨过')
+    expect(text).toContain('S00001-40002-1seqF1.ab1（正向）：调用 100，可分辨峰 100 → 峰图与调用一致；仅覆盖该结构 3925-4025，未完整跨过')
     expect(text).toContain('S99680-M13F-75.ab1（反向）：调用 101，可分辨峰 100 → 峰图与调用有出入（差 1），标记矛盾')
     // 证据边界：无完整覆盖 read 时明示合成口径
     expect(text).toContain('无完整覆盖的 read：主判读由各覆盖段峰图合成（缺失取各段最大值）')

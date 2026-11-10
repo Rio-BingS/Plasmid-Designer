@@ -54,8 +54,8 @@ Excel/前端卡片全部由 verdict.status 导出）、Excel 回填新六列（�
 范围来源/范围内验证覆盖/缺口原因/范围外差异/补测建议）、范围预设条与
 MatchMap 三层色带（W13 前端）、复核队列三类收口与一键确认留痕（W14，
 headline「人工确认 N 处」）、p_real 三档展示（W15）、KNOWN_ISSUES 防回潮
-约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，MUTPK
-3 处真实确证变异敏感度锁定）。场景库 72 场景全绿（xfail 清零）；Windows
+约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，DEMO1
+3 处真实确证变异敏感度锁定；2026-11-10 数据已脱敏改名）。场景库 72 场景全绿（xfail 清零）；Windows
 全量 2070 passed / 0 failed / 46 skipped；SANGER_ALGO_VERSION 保持 v14
 （W11–W16 未改判定阈值/真值）。逐阶段数字与刻意未做事项见
 docs/audit/PROGRESS_v3.md 与 goal 终版汇报。

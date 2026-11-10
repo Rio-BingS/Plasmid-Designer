@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """真实 AB1 子集基准（goal v3 W16，PL G5）
 
-数据：tests/data/real_ab1/ ——脱敏真实测序子集（17647 MUTPK 图谱 +
-S99676 克隆 5 条 read，1.5MB）。数据来源：V1.01 交付的实验数据（用户
+数据：tests/data/real_ab1/ ——脱敏真实测序子集（40001 DEMO1 图谱 +
+S00001 克隆 5 条 read，1.5MB）。数据来源：V1.01 交付的实验数据（用户
 自有，无第三方许可问题）。**包含 3 处真实确证变异**（ins@335、
 ins@440、del@4081）——合成数据造不出真实病态峰型（染料压缩/拖尾/
 衰减），这份子集让 CI 真正跑出敏感度：真值若因实现改动而变化，
 按口径变更流程处理（递增 algo_version + 提交正文写依据），不得改
 真值凑绿（W16 防回潮）。
 
-S99676 真值（2026-11-10 Windows/Linux 双跑一致，与 V1.01 回归集同源）：
+S00001 真值（2026-11-10 Windows/Linux 双跑一致，与 V1.01 回归集同源）：
 - status=fail（3 处确证变异）
 - 确证变异（confidence != low）：335 ins（high）/ 440 ins（medium）/
   4081 del（high）
 - 覆盖 ~63%（单克隆 5 引物，范围未声明——measured 口径）
-- 混合：无 mixed 判定（S99675 才是 mixed 真实样本，未入库）
+- 混合：无 mixed 判定（另一 mixed 真实样本未入库，脱敏前编号 S99675）
 """
 import os
 import sys
@@ -38,7 +38,7 @@ def _real_result():
     if _ctx is None:
         from core.sanger.pipeline import analyze
         from core.sanger.reference_parser import parse_reference_topology
-        ref_name = "MUTPK.dna"
+        ref_name = "DEMO1.dna"
         ref_seq, feats, topo = parse_reference_topology(
             ref_name, (DATA_DIR / ref_name).read_bytes())
         ab1s = [(p.name, p.read_bytes()) for p in sorted(DATA_DIR.glob("*.ab1"))]

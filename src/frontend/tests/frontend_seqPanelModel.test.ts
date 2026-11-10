@@ -144,7 +144,7 @@ describe('shortName', () => {
     expect(shortName('r1.ab1')).toBe('r1.ab1')
     expect(shortName('S99680-M13F-75.ab1')).toHaveLength(18)  // 恰好 18 不截
     expect(shortName('S99680-M13F-75.ab1x')).toBe('S99680-M13F-75.ab…')  // 19 → 截断（17+…）
-    expect(shortName('S99680-10855-1seqF1.ab1')).toBe('S99680-10855-1seq…')
+    expect(shortName('S00001-40002-1seqF1.ab1')).toBe('S00001-40002-1seq…')
   })
 })
 
