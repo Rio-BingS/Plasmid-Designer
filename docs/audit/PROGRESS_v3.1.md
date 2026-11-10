@@ -397,3 +397,34 @@ docstring 写明证据链与不可自修的理由。
 | `test_migrations.py` | 通过（升级后 model 与迁移一致） |
 | `check_docs_sync.py` | 通过 |
 | `check_file_size.py` | 只提示（11 个文件超参考线，退出码 0） |
+
+---
+
+## X6 清理（RB P2-1 / P2-2）— 完成
+
+### 删除误入库的重复目录
+
+`docs/sanger_scope_v3_docs/`（4 个文件）是压缩包解压位置不对造成的重复目录，
+内容与 `docs/audit/` 下的文件重复，已 `git rm -r` 删除。
+
+### `resolve_reference` 守卫
+
+按 §5 给的第二个选项（保留函数 + 禁止生产调用），不删函数——它定义了
+「CDS ± FLANK_BP 侧翼」的口径，那组提取测试（正链/负链/多段/报错）验证的
+正是这个口径，删掉会丢掉回归覆盖。
+
+- 函数 docstring 标为「**仅测试与回退对照使用**，生产代码不得调用」；
+- 新增 `tests/test_scope_mode_guard.py`：扫 `src/backend/**/*.py` 源码文本，
+  出现 `resolve_reference(` 调用形态即红（注释与 `def` 行豁免，
+  文档字符串里不带括号的提及不算调用——用正则而不是子串匹配）；
+- 同时断言 `prepare_scope_mode` 仍是 `cds_extract` 的公开入口。
+
+实测：生产代码已无任何调用点（只有 `cds_extract.py` 自身的定义与注释）。
+
+### 测试
+
+| 套件 | 结果 |
+|---|---|
+| 后端（Windows） | **2093 passed / 0 failed** / 46 skipped / 1 xfailed（CM3） |
+| 新增 | `test_scope_mode_guard.py` 2 项 |
+| `check_docs_sync.py` | 通过 |
