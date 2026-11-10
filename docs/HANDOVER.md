@@ -100,7 +100,7 @@ read 与参考等长，序列上等价于替换而非插入；修它必须改 X0
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
-| 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出）。**有迁移的版本要先迁移再重建容器**，见下方「数据库迁移」 |
+| 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出）。**有迁移的版本要先迁移再重建容器**，见下方「数据库迁移」。**当前线上代码是 `fix/sanger-scope-v3.1` 分支（2026-11-10 v3.1 部署，所有者决定保持），不是常驻分支——下次按 tag 重置前先确认这个分支是否已合回 main/实验分支** |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
 
 ## 3. 版本主线（v2.12 之后）
