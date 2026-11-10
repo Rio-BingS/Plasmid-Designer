@@ -93,3 +93,46 @@ describe('ConclusionCards verdict 渲染（T2/M13）', () => {
     expect(w.find('.conclusion-head').classes()).toContain('ok')
   })
 })
+
+
+// 2026-11-10（cf77c3a 复审 P0-1 / P0-4）：结论卡不再铺开全部 blocking；
+// 验证范围按钮必须有可见的选中样式
+describe('ConclusionCards 阻断项截断（P0-1）', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    kind: 'unresolved_variant', ref_start: 100 + i, ref_end: 100 + i,
+    detail: `${100 + i} substitution`, action: '核对峰图或补测',
+  }))
+  const withFail = [...many, { kind: 'confirmed_variant', ref_start: 4081, ref_end: 4081,
+    detail: '4081 deletion（置信 high）', action: '核对', fail_impact: true }]
+  const a: SequencingAnalysis = {
+    ...baseAnalysis,
+    verdict: { ...baseAnalysis.verdict!, status: 'fail', blocking: withFail },
+    review_queue: [{ level: 'confirmed' } as never, { level: 'read' } as never],
+  }
+
+  it('最多列 5 项，确证差异排第一，其余给出队列合并数', () => {
+    const w = mount(ConclusionCards, { props: { analysis: a } })
+    const items = w.findAll('.verdict-blocking-item')
+    expect(items.length).toBe(5)
+    expect(items[0].classes()).toContain('confirmed_variant')
+    const more = w.find('.verdict-blocking-more')
+    expect(more.exists()).toBe(true)
+    expect(more.text()).toContain('另 8 项未展开')
+    expect(more.text()).toContain('复核队列已合并为 2 项')
+  })
+
+  it('不超过 5 项时不出截断行', () => {
+    const w = mount(ConclusionCards, { props: { analysis: baseAnalysis } })
+    expect(w.find('.verdict-blocking-more').exists()).toBe(false)
+  })
+})
+
+describe('验证范围按钮样式（P0-4）', () => {
+  it('全局样式定义 .scope-btn 与选中态 .scope-btn.active', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const css = fs.readFileSync(path.resolve(__dirname, '../src/style.css'), 'utf-8')
+    expect(css).toMatch(/\.scope-btn\s*\{/)
+    expect(css).toMatch(/\.scope-btn\.active\s*\{[^}]*background/)
+  })
+})

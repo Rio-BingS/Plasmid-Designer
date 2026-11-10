@@ -143,3 +143,19 @@ input, select, textarea {
     transform: rotate(360deg);
   }
 }
+
+
+/* 验证范围按钮（2026-11-10，cf77c3a 复审 P0-4）：此前全前端无此类样式，
+   选中态不可见、点击看似无反应。放全局：SequencingPanel 与 MatchMap 共用 */
+.scope-btn {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.3rem 0.7rem; margin: 0 0.35rem 0.35rem 0;
+  border: 1px solid #C9CED6; border-radius: 6px;
+  background: #FFF; color: #333; font-size: 0.85rem; cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.scope-btn:hover:not(:disabled) { border-color: #3B82F6; color: #1D4ED8; }
+.scope-btn.active { background: #1D4ED8; border-color: #1D4ED8; color: #FFF; font-weight: 600; }
+.scope-btn.sm { padding: 0.15rem 0.5rem; font-size: 0.78rem; }
+.scope-btn.ghost { background: transparent; border-color: transparent; color: #666; }
+.scope-btn:disabled { opacity: 0.5; cursor: not-allowed; }
