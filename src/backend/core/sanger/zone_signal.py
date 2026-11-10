@@ -197,6 +197,13 @@ def compute_signal_zone(raw_len: int, trim_start: int, trimmed_q: List[int],
         "end": zone_hi - s,
         "raw_start": zone_lo,
         "raw_end": zone_hi,
+        # 核心区终点（2026-11-10）：tail_gray（默认 700bp，原始坐标）之内。
+        # 核心区之外、信号区之内为「尾端扩展区」：计入覆盖（T12 原意：好
+        # read 的 700bp 之后不白丢），但单 read 差异不确证、双峰不计入混合
+        # 分级——真实 read 在该段 Q45-57、峰宽 1.3-1.4 倍仍出现尾端滑移
+        # 插入与成串次峰（work/local_signal.py），信号指标区分不开
+        "core_end": max(0, min(zone_hi, zp.tail_gray) - s),
+        "raw_core_end": min(zone_hi, zp.tail_gray),
         "front_reason": front_reason,
         "tail_reason": tail_reason,
         "params": zp.as_dict(),
@@ -228,3 +235,30 @@ def _pair_table_for_zone(trace, trimmed_peaks, n: int) -> List[Optional[tuple]]:
         out.append((main_b, {c: areas[c] / main_a for c in areas if c != main_b},
                     areas))
     return out
+
+
+# 尾端扩展区单 read 替换的「干净」判据（2026-11-10）：局部峰宽 ≤ 中段 1.2 倍。
+# 真实 read 700bp 后峰宽 1.14-1.43 倍且伴随滑移/成串次峰，合成干净峰 1.0
+TAIL_CLEAN_WIDTH_MAX = 1.2
+
+
+def local_width_ratio(read: Dict, rp: int, half: int = 10) -> Optional[float]:
+    """修剪后 read 坐标 rp（1-based）±half 内峰宽中位数 / 中段峰宽中位数。
+    结果按 read 缓存（read["_width_cache"]）；无 trace 返回 None"""
+    trace = read.get("trace")
+    peaks = read.get("trimmed_peaks")
+    if not trace or not peaks or rp is None:
+        return None
+    w = read.get("_width_cache")
+    if w is None:
+        w = peak_widths(trace, [p if p is not None else -1 for p in peaks])
+        read["_width_cache"] = w
+    n = len(w)
+    def _med(a):
+        a = sorted(x for x in a if x and x > 0)
+        return a[len(a) // 2] if a else 0
+    base = _med(w[n // 3: 2 * n // 3])
+    i = rp - 1
+    if not base or not (0 <= i < n):
+        return None
+    return round(_med(w[max(0, i - half): i + half + 1]) / base, 2)

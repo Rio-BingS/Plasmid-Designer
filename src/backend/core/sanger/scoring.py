@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from core.sanger.homopolymer import POLY_COMPRESSION_RATIO
-from core.sanger.reliable_zone import in_zone
+from core.sanger.reliable_zone import in_zone, zone_class  # noqa: F401
 
 try:
     import numpy as np
@@ -129,10 +129,12 @@ def confidence_tier(v: Dict, mixed_positions: set,
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT" for c in alt_up):
         return "low"
-    if zone and rp and support < 2 and not in_zone(zone, rp) \
-            and rp < zone.get("start", 0):
-        # T12：位置对置信度的强制仅保留首端（front_hard 硬区 + 首端未稳定
-        # 段）；尾端由信号证据决定（S1 确证口径）
+    # 2026-11-10：单 read 差异只在核心区（首端不可信区之后、tail_gray 之前）
+    # 按证据定置信；首端、尾端扩展区（信号达标但 >700bp）、信号区外一律
+    # 低置信，多 read 支持才升级。尾端扩展区的差异在 verdict 进待核（不
+    # 静默、不确证，T12 原意），信号区外的只列出备查
+    if (zone and rp and support < 2 and zone_class(zone, rp) != "core"
+            and not v.get("tail_clean")):
         return "low"
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if v.get("read_pos") and v["read_pos"] in mixed_positions:
