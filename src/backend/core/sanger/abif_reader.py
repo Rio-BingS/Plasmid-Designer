@@ -319,10 +319,36 @@ def extract_read(data: bytes) -> Dict:
     trace 通道映射优先读 FWO_1（机器自带声明）；无 FWO_1 时按信号内容
     检测，检测不可靠时回退 DATA9-12 → G/A/T/C 惯例（见 _build_trace）。
     """
+    from core.sanger.abif_repair import repair_abif, structure_problem
+
+    def _extract(blob: bytes) -> Dict:
+        try:
+            return _extract_read_biopython(blob)
+        except ImportError:
+            return _extract_read_internal(blob)
+
+    # 2026-11-11 结构自检：改名/脱敏工具把文本字段改短而不改偏移时，
+    # 目录与 PBAS/PLOC 整体错位——带病分析会把「文件损坏」误报成「样品
+    # 混合」。先自检，有硬伤尝试平移修复，修不好明确报损坏
     try:
-        return _extract_read_biopython(data)
-    except ImportError:
-        return _extract_read_internal(data)
+        read = _extract(data)
+        problem = structure_problem(read)
+    except Exception as e:  # noqa: BLE001 解析器异常同样尝试修复
+        read, problem = None, f"解析异常：{e}"
+    if problem is None:
+        return read
+    fixed, info = repair_abif(data)
+    if fixed is not None:
+        try:
+            read2 = _extract(fixed)
+        except Exception:  # noqa: BLE001
+            read2 = None
+        if read2 is not None and structure_problem(read2) is None:
+            read2["abif_repair"] = {**info, "problem": problem}
+            return read2
+    raise AbiParseError(
+        f"ab1 文件结构损坏（{problem}）——常见于改名/编辑工具改写文件后"
+        "未更新内部偏移，自动修复未成功；请向测序公司索取原始 ab1")
 
 
 def _extract_read_biopython(data: bytes) -> Dict:

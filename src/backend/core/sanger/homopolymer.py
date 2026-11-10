@@ -443,12 +443,11 @@ def mixed_sample_confirmed(read_results: List[Dict],
     if len(wide) >= 2:
         return True
     if len(wide) == 1:
-        crossable = len(read_results) >= 2
+        from core.sanger.crosscheck import mixed_noise_like
         chk = ((mixed_corroboration or {}).get("by_read") or {}).get(
             wide[0]["filename"], {})
-        downgraded = (crossable and chk.get("multi", 0) == 0
-                      and chk.get("clean", 0) >= max(1, wide[0]["mixed_profile"]["count"] // 2))
-        return not downgraded
+        return not mixed_noise_like(chk, wide[0]["mixed_profile"]["count"],
+                                    len(read_results))
     return False
 
 

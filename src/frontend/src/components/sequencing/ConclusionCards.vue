@@ -182,6 +182,11 @@ function soLevel(t: string): string {
       {{ headLine.text }}
       <span v-if="statusBadge" class="verdict-badge" :class="statusBadge.status">{{ statusBadge.label }}</span>
     </p>
+    <!-- 解析层告警（PLOC 截短 / 质量值估算 / ab1 结构损坏已自动修复，2026-11-11）：
+         后端早已下发 warnings，前端此前从未渲染——文件修复等事实必须让用户看到 -->
+    <ul v-if="analysis.warnings?.length" class="parse-warnings">
+      <li v-for="(w, i) in analysis.warnings" :key="i" class="parse-warning">⚠ {{ w }}</li>
+    </ul>
     <!-- 阻断项按 verdict.blocking 结构化列出（goal T2；M13）——文案改写不影响；
          旧记录无 verdict 时退回纯文本正文 -->
     <ul v-if="blockingItems.length" class="verdict-blocking">
@@ -307,6 +312,12 @@ function soLevel(t: string): string {
 .conclusion-head.ok { color: #1F7A33; }
 .conclusion-head.fail { color: #C0392B; }
 .conclusion-head.warn { color: #9A6D00; }
+.parse-warnings { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+.parse-warning {
+  font-size: 0.84rem; color: #7A4F00; background: #FFF8E6;
+  border: 1px solid #F0D9A0; border-left: 3px solid #D99A00;
+  border-radius: 6px; padding: 0.35rem 0.7rem; margin-bottom: 0.3rem;
+}
 .resolved-regions { margin: 0.35rem 0 0.6rem; }
 .resolved-region-line {
   font-size: 0.84rem; color: #555; background: #F7FBF8;

@@ -135,4 +135,18 @@ describe('验证范围按钮样式（P0-4）', () => {
     expect(css).toMatch(/\.scope-btn\s*\{/)
     expect(css).toMatch(/\.scope-btn\.active\s*\{[^}]*background/)
   })
+
+  it('解析层告警（ab1 结构损坏已自动修复）在结论卡显式渲染且有样式类', () => {
+    const msg = 'x.ab1：ab1 文件结构损坏（未读到碱基记录），已自动修复（目录平移 -4 字节）后分析'
+    const w = mount(ConclusionCards, { props: { analysis: { ...baseAnalysis, warnings: [msg] } } })
+    const items = w.findAll('.parse-warnings .parse-warning')
+    expect(items.length).toBe(1)
+    expect(items[0].text()).toContain('结构损坏')
+    expect(items[0].text()).toContain('已自动修复')
+  })
+
+  it('无 warnings 时不渲染告警区', () => {
+    const w = mount(ConclusionCards, { props: { analysis: baseAnalysis } })
+    expect(w.find('.parse-warnings').exists()).toBe(false)
+  })
 })

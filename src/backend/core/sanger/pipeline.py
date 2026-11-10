@@ -1540,6 +1540,7 @@ def _analyze_one_read(
         "quality_source": quality_source,
         # PLOC 比 PBAS 短的条数（goal T24.2/M12；0=正常），管线汇总告警
         "ploc_shortfall": read.get("ploc_shortfall") or 0,
+        **({"abif_repair": read["abif_repair"]} if read.get("abif_repair") else {}),
         **({"low_q_ranges": low_q_ranges} if low_q_ranges else {}),
         "trimmed_bases": trimmed,
         "trimmed_quality": trimmed_q,
@@ -2231,12 +2232,16 @@ def _build_conclusion(
         frac_txt = _frac_range([p])
         # 互检主导措辞：多数双峰位点被其他引物覆盖且峰形单一、无同报 →
         # 倾向该 read 自身信号问题（常见于引物首端），而非真实混合
-        noise_like = (crossable and chk.get("multi", 0) == 0
-                      and chk.get("clean", 0) >= max(1, p["count"] // 2))
+        noise_like = mixed_noise_like(chk, p["count"], len(read_results))
         if noise_like:
+            _src = ("跨引物互检：多数双峰位点被其他引物测过且峰形单一、判读一致，"
+                    if not chk.get("batch") else
+                    "批内同引物对照：多数双峰位点在同批同引物其他克隆的同一位点同样"
+                    "出现同碱基次峰（序列上下文背景）"
+                    + ("或被其他引物干净读出，" if chk.get("clean") else "，"))
             line = (f"⚠ {r['filename']} 检出 {p['count']} 处双峰位点"
                     + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
-                    + "——跨引物互检：多数双峰位点被其他引物测过且峰形单一、判读一致，"
+                    + f"——{_src}"
                     "更倾向该 read 自身信号问题（信号不稳区以引物首端为主）"
                     "而非真实混合，建议核对峰图与互检位置后复测该段")
             if p["longest_stretch"] >= MIXED_STRETCH_MIN and p.get("span"):
@@ -2541,6 +2546,31 @@ def _build_conclusion(
             conclusion_groups, conclusion_detail)
 
 
+from core.sanger.crosscheck import mixed_noise_like  # noqa: E402
+
+
+def _bc_background_positions(batch_control: Optional[Dict]) -> Dict[str, set]:
+    from core.sanger.batch_control import background_positions
+    return background_positions(batch_control)
+
+
+def _mark_mixed_noise_evidence(mixed_variants: List[Dict], corroboration: Dict) -> None:
+    by_read = (corroboration or {}).get("by_read") or {}
+    for m in mixed_variants:
+        srcs = []
+        for fn in m.get("reads") or []:
+            chk = by_read.get(fn) or {}
+            if m["ref_pos"] in (chk.get("clean_ref") or []):
+                srcs.append("cross_primer")
+            elif m["ref_pos"] in (chk.get("batch_ref") or []):
+                srcs.append("batch_background")
+            else:
+                srcs = []
+                break
+        if srcs:
+            m["noise_evidence"] = sorted(set(srcs))
+
+
 def analyze(
     ab1_files: List[Tuple[str, bytes]],
     reference: str,
@@ -2557,6 +2587,7 @@ def analyze(
     synonymous_action: str = "ok",
     full_ref: Optional[str] = None,
     full_circular: bool = False,
+    batch_control: Optional[Dict] = None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2584,6 +2615,8 @@ def analyze(
     高质量段在窗口上无落点时按完整质粒再定位，能连续定位 = 读取越过窗口
     边缘的正常延续（记 located_outside，不算异常）；未比对部分全部定位
     成功时不判 partial_alignment。full_circular 为完整质粒的拓扑。
+    batch_control：批内同引物克隆对照证据（core.sanger.batch_control.compute
+    的单样品切片，2026-11-11）；只由批量路径第二遍传入，None 时行为不变。
     """
     features = features or []
     zone_params = zone_params or DEFAULT_ZONE
@@ -2688,11 +2721,16 @@ def analyze(
     # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
     # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
     # 其他引物同报双峰才倾向真实混合。结论与建议均按互检结果措辞
-    mixed_corroboration = _corroborate_mixed(read_results)
+    mixed_corroboration = _corroborate_mixed(
+        read_results, batch_bg=_bc_background_positions(batch_control))
 
     _variant_confidence_pass(variants, read_results, poly_local_ratio)
     # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流
     mixed_variants = collect_mixed_variants(read_results, ref)
+    # 反证标注（2026-11-11）：报该位点的每条 read 都有反证——其他引物干净
+    # 读出（互检否决口径）或批内同引物对照判背景——才标 noise_evidence，
+    # verdict 降 info；任一 read 无反证即保持原判
+    _mark_mixed_noise_evidence(mixed_variants, mixed_corroboration)
     # tracy 交叉印证仅作标记、不改置信度：两个 caller 读的是同一条 read 的
     # 同一个信号，信号弱点（峰压缩/低 Q 区）的错误高度相关，call 一致并不
     # 构成独立证据。是否真实仍由峰级证据、多 read 支持与 Q 值决定。
@@ -2813,6 +2851,12 @@ def analyze(
             warnings.append(
                 f"PLOC 比 PBAS 短 {k} 条（{r['filename']}，read 尾端 {k}bp）："
                 "缺失区段峰位置不可用，峰级证据按缺失处理")
+        if r.get("abif_repair"):
+            _rp = r["abif_repair"]
+            warnings.append(
+                f"{r['filename']}：ab1 文件结构损坏（{_rp.get('problem')}），已自动"
+                f"修复（目录平移 {_rp.get('dir_shift')} 字节、{_rp.get('shifted_blocks')}"
+                " 个数据块复位）后分析；建议向测序公司索取原始文件核对")
         if r.get("quality_source") == "peak_estimate":
             warnings.append(
                 f"{r['filename']}：PCON 质量值缺失/全 0，已按峰型估 Q"
@@ -2873,6 +2917,8 @@ def analyze(
         "mixed_profiles": mixed_profiles,
         "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）
         "mixed_corroboration": mixed_corroboration,
+        # 批内同引物对照证据（2026-11-11；仅批量第二遍有，单样品分析为 None）
+        "batch_control": batch_control,
         "errors": errors,
         # 解析层告警（goal T24.2/T24.5；旧结果无此键，API 向后兼容）
         "warnings": warnings,
