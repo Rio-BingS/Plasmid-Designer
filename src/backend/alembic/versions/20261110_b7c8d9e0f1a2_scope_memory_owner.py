@@ -62,30 +62,31 @@ def _pk_name(conn) -> str:
 
 def upgrade() -> None:
     # 单列主键 -> (owner_id, reference_hash) 复合主键。四步都增量：
-    # 加可空列 → 回填匿名 owner → 删旧主键 → 收窄非空并建复合主键。
+    # 加可空列 → 回填匿名 owner → 换主键 → 收窄非空。
     #
-    # 主键必须显式 drop/create：batch_alter_table 在 PostgreSQL 上走原生
-    # ALTER，`copy_from` 里的主键只在 SQLite 重建表时才有意义——早先只在
-    # batch 里 alter_column 的话，列加上了、主键仍是单列，两个用户对同一
-    # 质粒的记忆会互相覆盖（SM1 失效）。
+    # PG 侧逐条原生 DDL：batch_alter_table 的 `copy_from` 只在 SQLite 重建
+    # 表时生效，PG 上走原生 ALTER——早先只在 batch 里 alter_column，列加上
+    # 了、主键仍是单列，两个用户对同一质粒的记忆会互相覆盖（SM1 失效）。
     op.add_column(_TABLE, sa.Column('owner_id', sa.String(length=64), nullable=True))
     op.execute(
         "UPDATE %s SET owner_id = '%s' WHERE owner_id IS NULL" % (_TABLE, _ANON))
     is_pg = op.get_context().dialect.name != 'sqlite'
-    old_pk = _pk_name(op.get_bind()) if is_pg else None
+    if is_pg:
+        old_pk = _pk_name(op.get_bind())
+        if old_pk:
+            op.drop_constraint(old_pk, _TABLE, type_='primary')
+        op.alter_column(_TABLE, 'owner_id',
+                        existing_type=sa.String(length=64), nullable=False)
+        op.create_primary_key('sequencing_scope_memory_pkey', _TABLE,
+                              ['owner_id', 'reference_hash'])
+        return
+    # SQLite：batch 重建表，copy_from 已给出目标主键与列属性
     with op.batch_alter_table(
             _TABLE,
             copy_from=_table('owner_id', 'reference_hash'),
     ) as batch:
         batch.alter_column('owner_id',
                            existing_type=sa.String(length=64), nullable=False)
-        # SQLite 分支：重建表时 copy_from 已给出复合主键，不能再删→建，
-        # 否则一次迁移在两种库里行为不同
-        if is_pg:
-            if old_pk:
-                batch.drop_constraint(old_pk, type_='primary')
-            batch.create_primary_key('sequencing_scope_memory_pkey',
-                                     ['owner_id', 'reference_hash'])
 
 
 def downgrade() -> None:
@@ -111,20 +112,22 @@ def downgrade() -> None:
                 "DELETE FROM " + _TABLE + " "
                 "WHERE reference_hash = :h AND owner_id = :o").bindparams(
                     h=ref_hash, o=owner_id))
-    # 主键必须显式换回来，且**在 batch 之外**逐条执行：PG 上
-    # batch_alter_table 一次性提交，batch 内的 drop/create 与随后的
-    # drop_column 顺序不受控（实测报 "column owner_id is in a primary key"）。
-    # 顺序：删复合主键 → 放非空 → 删列 → 建单列主键。
+    # 降级不用 batch_alter_table：它进入时就按 copy_from 反射旧主键，在 PG
+    # 上会与随后的 drop_column 打架（实测 "column owner_id is in a primary
+    # key"）。PG 侧逐条原生 DDL 即可，SQLite 侧才需要 batch 重建表。
+    # 顺序：删复合主键 → 删列 → 建单列主键。
     old_pk = _pk_name(conn) if is_pg else None
+    if is_pg:
+        if old_pk:
+            op.drop_constraint(old_pk, _TABLE, type_='primary')
+        op.drop_column(_TABLE, 'owner_id')
+        op.create_primary_key('sequencing_scope_memory_pkey', _TABLE,
+                              ['reference_hash'])
+        return
     with op.batch_alter_table(
             _TABLE,
             copy_from=_table('reference_hash'),
     ) as batch:
         batch.alter_column('owner_id',
                            existing_type=sa.String(length=64), nullable=True)
-    if is_pg and old_pk:
-        op.drop_constraint(old_pk, _TABLE, type_='primary')
     op.drop_column(_TABLE, 'owner_id')
-    if is_pg:
-        op.create_primary_key('sequencing_scope_memory_pkey', _TABLE,
-                              ['reference_hash'])
