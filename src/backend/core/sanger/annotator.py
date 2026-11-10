@@ -8,6 +8,7 @@
 from typing import Dict, List, Tuple
 
 from core.enzyme_sites import find_enzyme_sites
+from core.sanger import indel_norm
 from core.seq_utils import revcomp as _revcomp
 from core.seq_utils import CODON_TO_AA as _STD_TABLE
 
@@ -136,12 +137,37 @@ def annotate_variant(variant: Dict, features: List[Dict], reference: str) -> Dic
             # 跨原点缺失只有一段落在该特征时按该段长度判移码
             variant["frameshift"] = sum(n for _s, n in hit_segs) % 3 != 0
 
-    # 双坐标（goal v3 W9，CM P1-D）：质粒坐标 + CDS 编码坐标并列——
-    # 图谱上找「质粒 1100」，蛋白/密码子口径看「GeneX c.501」（负链按
-    # 编码方向，coding_offset 已处理）；蛋白变化可导出时并列 p.
+    # 双坐标（goal v3 W9，CM P1-D；v3.1 X4 增 HGVS 3′）：质粒坐标 + CDS 编码
+    # 坐标并列——图谱上找「质粒 1100」，蛋白/密码子口径看「GeneX c.501」
+    # （负链按编码方向，coding_offset 已处理）；蛋白变化可导出时并列 p.
+    #
+    # X4（§3.4 第 1 条）：indel 的质粒坐标保持**左对齐**（稳定可比、与
+    # 数据库一致），同时给 HGVS 3′ 形式——写构建记录/送检单时 HGVS 惯例要求
+    # 3′ 位置，只留一种都会在对端产生无法解释的 1–3bp 位移。
     variant["coords"] = {"plasmid": ref_pos, "cds": _coords_cds}
+    if variant.get("type") in ("insertion", "deletion"):
+        right = indel_norm.normalize_right(ref, variant)
+        variant["coords"]["plasmid_3p"] = int(right.get("ref_pos") or ref_pos)
+        if _coords_cds is not None and right.get("ref_pos") != ref_pos:
+            # c. 按 3′ 规则给出（HGVS 惯例）；左对齐形式保留在 cds.c
+            for parts in hit_groups:
+                feat = parts[0]
+                if feat.get("type") not in ("CDS", "gene"):
+                    continue
+                c3 = coding_offset(parts, int(right["ref_pos"]))
+                if c3 is None:
+                    continue
+                clen = len(coding_sequence(ref, parts))
+                val = (f"c.{clen - c3}" if feat.get("strand", "+") == "-"
+                       else f"c.{c3 + 1}")
+                _coords_cds["c_3p"] = val
+                break
     if _coords_cds and variant.get("aa_change"):
         _coords_cds["p"] = "p." + variant["aa_change"].split(":", 1)[-1]
+    # 后果注释（goal v3.1 X4 §3.4 第 3 条）：基于**规范化后**的结果回答
+    # 「这个变异对产物做了什么」。indel 的规范化在变异层已完成（左对齐 +
+    # 邻位替换折叠为插入），这里的移码/整码判定与 `frameshift` 同源。
+    variant["consequence"] = indel_norm.consequence_text(variant)
 
     # 酶切位点变化：在变体附近 ±14bp 窗口比较参考与突变序列。
     # 插入/缺失会使下游位点整体平移 delta，直接按 (名称, 位置) 对比会把"平移"
