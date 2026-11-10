@@ -103,12 +103,14 @@ def annotate_decomposed_allele(al: Dict, ref: str, features: List[Dict]) -> None
     不拖垮整份分析（终审 C-09 同款隔离）。等位无跨 read 互检，蛋白判定
     按单 read 口径。"""
     from core.sanger.aligner import align_read, merge_coverage
-    from core.sanger.pipeline import _cds_reports_safe, _normalize_indel_all
+    from core.sanger.pipeline import _cds_reports_safe
+    from core.sanger import indel_norm
 
     try:
         aln = align_read(al.get("sequence") or "", ref)
         # 等位序列是线性化产物，indel 归一化按线性口径（环状折回不适用）
-        vs = _normalize_indel_all(ref, aln.get("variants") or [])
+        vs = [indel_norm.normalize_left(ref, v)
+              for v in (aln.get("variants") or [])]
         covered = merge_coverage([(int(aln["ref_start"]), int(aln["ref_end"]))],
                                  len(ref))
         cov = sum(e - s + 1 for s, e in covered) / max(1, len(ref)) * 100

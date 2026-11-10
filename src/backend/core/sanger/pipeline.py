@@ -48,7 +48,11 @@ from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length,
     detect_phase_shift, detect_post_poly_dropout, continuous_read_length,
 )
-from core.sanger import conclusion_fold, peak_shape
+from core.sanger import conclusion_fold, indel_norm, peak_shape
+from core.sanger.mutual_support import (
+    opposite_side_single_indels as _opposite_side_single_indels,
+    MUTUAL_SIDE_FRAC as _MUTUAL_SIDE_FRAC,
+)
 from core.sanger.reliable_zone import (
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
 )
@@ -320,52 +324,18 @@ from core.sanger.decompose import (  # noqa: F401
     try_tracy_decompose, decompose_and_annotate,
 )
 _try_tracy_decompose = try_tracy_decompose  # 公开化前的私有名（历史引用兼容）
-def _normalize_indel(ref: str, v: Dict) -> Dict:
-    """indel 归一化为最左最简表示（Tan 2015，bcftools norm/GATK 同款算法）
-
-    同一 indel 在重复/同聚物区可被比对到多个等价位置：不同 read（或不同
-    basecaller）报告的 anchor 常差 1-3bp，不归一化则无法按 key 合并印证，
-    支持数被人为分裂。左移不改变其序列效果（数学等价），替换变体原样返回。
-    """
-    if v.get("type") == "insertion":
-        seq = v["alt_base"].upper()
-        pos = int(v["ref_pos"])  # anchor：插入点左侧参考位置（1-based）
-        # 等价左移：插入点右侧第一位参考碱基 == 插入序列末位 → 整体左移一位
-        while pos >= 1 and pos < len(ref) and ref[pos - 1] == seq[-1]:
-            seq = seq[-1] + seq[:-1]
-            pos -= 1
-        return {**v, "ref_pos": pos, "alt_base": seq}
-    if v.get("type") == "deletion":
-        pos = int(v["ref_pos"])
-        length = int(v.get("length") or 1)
-        seq = ref[pos - 1:pos - 1 + length]
-        # 等价左移：删除区间的上一位参考碱基 == 删除序列末位 → 整体左移一位
-        while pos >= 2 and ref[pos - 2] == seq[-1]:
-            seq = ref[pos - 2] + seq[:-1]
-            pos -= 1
-        return {**v, "ref_pos": pos}
-    return v
-
-
-def _normalize_indel_all(ref: str, variants: List[Dict]) -> List[Dict]:
-    return [_normalize_indel(ref, v) for v in variants]
-
-
+# X4 拆分后保留旧名（decompose / 测试按此导入）；实现在 indel_norm
+_normalize_indel = indel_norm.normalize_left
+_normalize_indel_all = lambda ref, vs: [indel_norm.normalize_left(ref, v) for v in vs]  # noqa: E731
 def _variant_key(v: Dict) -> Tuple[int, str, str, int]:
-    """归一化后的合并 key：同一 indel 无论被哪个 caller/read 报在哪一等价位都聚合。
-
-    长度必须入 key：同一锚点上长度不同的删除（如 polyA 少 2 个 vs 少 3 个）
-    是不同的构建体，不能合并——否则 support_reads 虚增、长度取决于 read 顺序。
-    """
+    """归一化后的合并 key（长度入 key：同锚点不同长度的删除是不同构建体）"""
     return (int(v["ref_pos"]), v.get("type", ""), v.get("alt_base", "").upper(),
             int(v.get("length") or 1))
 
 
-_TRACY_VERSION_CACHE: Dict[str, Optional[Tuple[int, ...]]] = {}
-
-
+_TRACY_VERSION_CACHE: Dict[str, Optional[Tuple[int, ...]]] = {}  # 按可执行路径缓存
 def _tracy_version(tracy: str) -> Optional[Tuple[int, ...]]:
-    """`tracy --version` → (major, minor, patch)；无法判定返回 None（按进程缓存）"""
+    """`tracy --version` → (major, minor, patch)；无法判定返回 None"""
     if tracy in _TRACY_VERSION_CACHE:
         return _TRACY_VERSION_CACHE[tracy]
     ver = None
@@ -1715,6 +1685,10 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         r["filename"]: {_variant_key(vv) for vv in r["alignment"]["variants"]}
         for r in read_results
     }
+    # 双侧独立插入互证的候选集要等逐位互检跑完才知道（只有**都**处于互检
+    # 矛盾状态的 indel 才能互相佐证；真实变异不能给伪影背书）。先收集，
+    # 循环后再判定，见下方 `multi_side_indels`。
+    conflicted_ids: set = set()
     for v in variants:
         # T14 多 read 证据聚合（A 3.4 / B P1-6）：evidence_by_read + 代表
         # read 择强（重绑 read/read_pos/read_q——后续置信度分级、混合背景、
@@ -1783,6 +1757,7 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                     "reads": [h["read"] for h in contradicts],
                     "evidence": contradicts,
                 }
+                conflicted_ids.add(id(v))
         v["confidence"] = _variant_confidence(
             v, mixed_by_read.get(v.get("read", ""), set()), evidence,
             zone=src.get("reliable_zone") if src is not None else None,
@@ -1832,6 +1807,29 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             src.get("reliable_zone") if src is not None else None,
             mixed_by_read.get(v.get("read", ""), set()),
         )
+    # 双侧独立 indel 互证（goal v3.1 X4，RB P1-4）——一轮互检之后才能判定：
+    # 只有**都**处于互检矛盾状态的单 read indel 才互相佐证（判据见
+    # mutual_support）。真实变异（如 MX 的 5076）不进入集合，6653/6666 仍被排除。
+    multi_side = _opposite_side_single_indels(variants, conflicted_ids)
+    if multi_side:
+        for v in variants:
+            if id(v) not in multi_side:
+                continue
+            v.pop("cross_read_resolved", None)
+            v.pop("low_reason", None)
+            v["cross_read_mutual_support"] = {
+                "partners": sorted(multi_side[id(v)]),
+                "reason": "接合区两侧各自独立的单 read indel 互相佐证",
+            }
+            _zone = (by_read.get(v.get("read", "")) or {}).get("reliable_zone")
+            _mix = mixed_by_read.get(v.get("read", ""), set())
+            v["confidence"] = _variant_confidence(
+                v, _mix, v.get("peak_evidence"), zone=_zone)
+            if v["confidence"] == "low":
+                v["low_reason"] = _low_confidence_reason(
+                    v, _mix, v.get("peak_evidence"), zone=_zone)
+            attach_score(v, v.get("peak_evidence"), _zone)
+
 
 def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
                              read_results: List[Dict],
@@ -2579,10 +2577,11 @@ def analyze(
 
     def _norm_all(vs: List[Dict]) -> List[Dict]:
         if not circular:
-            return _normalize_indel_all(ref, vs)
+            return [indel_norm.normalize_left(ref, v) for v in vs]
         out = []
         for v in vs:
-            nv = _normalize_indel(ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
+            nv = indel_norm.normalize_left(
+                ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
             out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
         return out
 

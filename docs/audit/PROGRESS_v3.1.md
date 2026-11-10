@@ -247,3 +247,78 @@ MX 的 3 项即 3 处确证差异（5076 ins / 5269 C>T / MX 蛋白不一致）�
 | 前端 `type-check` | clean |
 | `check_file_size.py` | 通过（235 文件，白名单 10 个） |
 | `check_docs_sync.py` | 通过 |
+
+---
+
+## X4 indel 规范化（RB P1-4）— 完成（CM3 触发 §7 停止条件）
+
+### 已落地
+
+**1. HGVS 3′ 与质粒左对齐双坐标**（§3.4 第 1 条），`coords` 同时给两者：
+
+| 字段 | 含义 | 例（CM9 的 1bp 插入） |
+|---|---|---|
+| `coords.plasmid` | 质粒左对齐（规范表示，数据库用） | `1499` |
+| `coords.plasmid_3p` | HGVS 3′ 形式（写构建记录用） | `1500` |
+| `coords.cds.c` | c. 左对齐 | `c.499` |
+| `coords.cds.c_3p` | c. 按 3′ 规则（HGVS 惯例） | `c.500` |
+
+左对齐稳定可比、3′ 与 SnapGene/送检单一致；只留一种会在对端产生无法解释的
+1–3bp 位移。
+
+**2. 后果注释**（§3.4 第 3 条）：新增 `variant["consequence"]`，基于**规范化后**
+的结果，取值顺序 移码 > 氨基酸改变 > 同义 > 编码区内 > 非编码区。CM9 实测
+`插入 1bp 导致移码`。
+
+**3. 双侧独立 indel 互证**（新模块 `mutual_support.py`）：跨原点 CDS 的
+「F read 带 ATG 前插入 + R read 带终止后插入」形态下，两处各由不同 read 报出、
+分布在对侧，逐位互检的前提（clonal 变异必被每条覆盖 read 独立复现）不成立——
+两条 read 并不冗余覆盖同一事件。判据：都是 indel、都单 read 支持、read 不同、
+间距 ≥ 跨度一半、**且两处都处于互检矛盾状态**。
+
+最后一条是关键：真实变异（如 MX 的 5076，被其他 read 支持、无矛盾）不得给
+伪影背书。**MX 的 6653/6666 仍被互检排除、5076 仍 confirmed**，真实基线守住。
+
+### CM3 触发 §7 停止条件：场景构造 off-by-one
+
+**证据**（可复现）：
+
+```
+场景构造（tests/sanger_scenarios.py:663）
+  r2 = ref[3299:4000] + ref[0:300] + ins2 + ref[301:450]
+                                          ^^^^^^^^^^ 跳过 ref[300]（G）
+
+实测
+  CG_R read 长度 1151  ==  不含插入的参考片段长度 1151   → 没有多出 1bp
+  CG_F read 长度 1152  >   参考片段 1151                 → 真正的插入 ✓
+```
+
+r2 在序列上等价于 `301 G>T` 替换而非「终止后插入」。任何「把替换读成插入」的
+规范化都会把真实错义突变一起误报——实测按此实现后 **34 个场景变红**（含 S1 的
+780 错义），已回退。
+
+要修只能改场景构造（`ref[301:450]` → `ref[300:450]`），属 §7「需要修改 X0 之后
+的场景构造」，因此 **CM3 保持 xfail 并在最终汇报中列明**；r1 的插入已被 X4 正确
+检出为 insertion，CM9 全绿。
+
+### 拆分（尺寸门禁）
+
+`pipeline.py` 已用满 2863 行预算，X4 逻辑净增不得让它增长。拆出：
+
+- `core/sanger/indel_norm.py`（新，约 130 行）：`normalize_left`（Tan 2015）、
+  `normalize_right`（HGVS 3′）、`indel_coords`、`consequence_text`；
+- `core/sanger/mutual_support.py`（新，约 70 行）：`opposite_side_single_indels`；
+- `pipeline.py` 保留 `_normalize_indel` / `_normalize_indel_all` 兼容别名
+  （`decompose.py` 与既有测试按此导入），实际实现只在 `indel_norm` 一处。
+
+### 测试
+
+| 套件 | 结果 |
+|---|---|
+| 后端（Windows） | **2088 passed / 0 failed** / 46 skipped / 4 xfailed |
+| 前端 `test:run` | 693 passed（本轮无前端改动） |
+| `check_file_size.py` | 通过（2862 ≤ 2863） |
+| `check_docs_sync.py` | 通过 |
+
+CM3 由 xfail 原因 `X4` 改为 `CM3 构造 off-by-one（§7 停止条件，已汇报）`，
+docstring 写明证据链与不可自修的理由。

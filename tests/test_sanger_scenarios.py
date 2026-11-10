@@ -640,13 +640,19 @@ def test_cm2_vector_primer_read_pass():
     assert "unaligned_hq_segment" not in _kinds(res)
 
 
-@XF(strict=True, reason="X4")
+@XF(strict=True, reason="CM3 构造 off-by-one（§7 停止条件，已汇报）")
 def test_cm3_cross_origin_cds_junction_insertions():
     """CM3：跨原点 CDS 的 ATG 前 / 终止后 1bp 插入 → 检出并判 junction_variant
 
     v3.1 X0：断言恢复 W0 原样（goal §4：两处 `type == "insertion"`）。
-    微同源边界上的 1bp 插入必须仍报为 insertion（RB P1-4），由 X4
-    indel 规范化实现；不得再放宽成「接合区窗口内有确证差异即可」。"""
+
+    **X4 实测结论（§7 停止条件）**：r1（ATG 前）构造正确——`ref[3299:3700] +
+    ins + ref[3700:4000]` 保留右翼，read 1152bp 比参考多 1bp，X4 后正确报
+    insertion。r2（终止后）构造 off-by-one——`ref[0:300] + ins2 + ref[301:450]`
+    跳过了 `ref[300]`（G），read 仍 1151bp，序列上等价于 `301 G>T` 替换而非
+    插入；任何「把替换读成插入」的规范化都会把真实错义突变一起误报（实测
+    令 34 个场景变红）。要修只能改场景构造（`ref[301:450]` → `ref[300:450]`），
+    属 §7 禁止事项，因此保持 xfail 并汇报，不自行放宽断言。"""
     spec, res = _run_cds_mode("CM3")
     ins = [v for v in res["variants"] if v["type"] == "insertion"]
     assert len(ins) >= 2, f"两处接合区插入都必须检出：{res['variants']}"
@@ -906,7 +912,6 @@ def test_sc10_degraded_tail_pending_not_mixed():
 # ---------- X4：indel 规范化（RB P1-4） ----------
 
 
-@XF(strict=True, reason="X4")
 def test_cm9_microhomology_insert_stays_insertion():
     """CM9：CDS 内微同源边界 1bp 插入（插入碱基与左邻相同）→ type=insertion，
     c. 符合 3′ 规则，后果移码"""
