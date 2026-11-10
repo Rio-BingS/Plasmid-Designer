@@ -29,11 +29,11 @@ alpha.2 = 2026-11-07 全量修复收口）：
 估 Q）与基准集 CI 断言（33/33 对角、FPR=0）；「待定」结论明显增多是预期
 （诚实呈现证据不足）。上一版 v2.37.0-alpha.1（2026-11-05：目的基因模式 +
 结论覆盖资格门）；**main 仍停在 v2.35.0**，alpha 验收后合回 main 发正式版。
-2026-11-08 实测：后端 **1975 passed / 46 skipped / 0 failed / 0 xfailed**
+2026-11-08（alpha.3 时点）实测：后端 1975 passed / 46 skipped / 0 failed / 0 xfailed
 （约 152 s；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可
 触发 + 3 契约测试对不经 analyze 场景的显式登记），
-前端 **693 passed**，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步
-门禁全绿。
+前端 693 passed，`vue-tsc --noEmit` **0 error**，build/尺寸预算/文档同步
+门禁全绿。**当前基线见下方 v3.1 段落。**
 线上为 Docker Compose 部署（VPS，ssh 别名 `vps-direct`（直连 23.95.78.18；旧别名 myvps 已不存在；ControlMaster 残留时加 `-o ControlMaster=no -o ControlPath=none`），
 `/opt/plasmid-designer`），发版即 `git fetch --tags && git reset --hard <tag>` + 重建
 backend/frontend 容器（流程见 §2「线上部署」行）。
@@ -56,7 +56,7 @@ MatchMap 三层色带（W13 前端）、复核队列三类收口与一键确认�
 headline「人工确认 N 处」）、p_real 三档展示（W15）、KNOWN_ISSUES 防回潮
 约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，MUTPK
 3 处真实确证变异敏感度锁定）。场景库 72 场景全绿（xfail 清零）；Windows
-全量 **2070 passed / 0 failed / 46 skipped**；SANGER_ALGO_VERSION 保持 v14
+全量 2070 passed / 0 failed / 46 skipped；SANGER_ALGO_VERSION 保持 v14
 （W11–W16 未改判定阈值/真值）。逐阶段数字与刻意未做事项见
 docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 
@@ -70,10 +70,16 @@ docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 三出口逐字同源。另有 indel 双坐标（左对齐 + HGVS 3′，`indel_norm.py`）、
 范围记忆按用户隔离 + DELETE 端点（`mutual_support.py` 处理接合区双侧
 独立 indel 互证）。**SANGER_ALGO_VERSION v14→v15**。
-实测：后端 **2093 passed / 0 failed / 46 skipped / 1 xfailed**，场景库
-67 个场景（88 个测试函数）**87 passed / 1 xfailed**；唯一 xfail 是 CM3——
-其 r2 读段构造 `ref[0:300] + ins2 + ref[301:450]` 跳过 `ref[300]`，read 与
-参考等长，序列上等价于替换而非插入；修它必须改 X0 冻结的场景构造
+实测（两平台同分支同用例集）：
+- **Windows** 后端 **2093 passed / 0 failed / 46 skipped / 1 xfailed**（约 247 s，
+  46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支 + 3 契约测试显式登记）
+- **Linux**（VPS，`/tmp/pdtest/repo`，含真实 V1.01 数据）后端 **2135 passed /
+  0 failed / 4 skipped / 1 xfailed**（约 521 s；多出的 42 项是部署 shell 测试与
+  真实数据回归在 Linux 上真正执行）
+
+场景库 67 个场景（88 个测试函数）**87 passed / 1 xfailed**，两平台一致；唯一
+xfail 是 CM3——其 r2 读段构造 `ref[0:300] + ins2 + ref[301:450]` 跳过 `ref[300]`，
+read 与参考等长，序列上等价于替换而非插入；修它必须改 X0 冻结的场景构造
 （goal 的停止条件），**待所有者裁决**。逐项取证见 docs/audit/PROGRESS_v3.1.md。
 
 **门禁调整（2026-11-10）**：解除「单文件 ≤900 行」限制。推进期不为行数
@@ -85,7 +91,7 @@ docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
 | 项 | 值 |
 |---|---|
 | 版本 / 标签 | 分支 `experiment/preview-visual-tuning`：`v2.37.0-alpha.3`（2026-11-08：复审修复 8 条——覆盖闸收紧/双峰地板 0.18/首端连接段上报/结论分组结构化/基准集诚实化）。此前 `v2.37.0-alpha.2`（2026-11-07：Sanger 判读链路全量修复 T0-T25）。此前 v2.37.0-alpha.1（2026-11-05：目的基因模式 + 结论覆盖资格门）、v2.36.1-alpha.1（2026-11-04：轨道宽度两轮弹性求解）、v2.36.0（2026-11-04：预览三图分工）。**main 停在 v2.35.0**（2026-10-31：预览三图分工 + 第三轮审计修复。此前 v2.34.1：v2.34.0 引物视图+审计批次、v2.34.1 回滚健康检查误改。更早的 v2.33.x 引物名牌复刻系列见 CHANGELOG） |
-| 后端测试 | **2093 passed / 46 skipped / 0 failed / 1 xfailed**（约 247 秒，2026-11-10，Windows；46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记；场景库 67 个场景/88 个测试函数 = 87 passed + 1 xfailed（CM3，构造 off-by-one 待裁决）） |
+| 后端测试 | **Windows 2093 passed / 46 skipped / 0 failed / 1 xfailed**（约 247 秒）；**Linux 2135 passed / 4 skipped / 0 failed / 1 xfailed**（约 521 秒，VPS，含真实数据）。2026-11-10 分支 `fix/sanger-scope-v3.1` 实测；Windows 的 46 skipped = 42 deploy 需 bash/sh + 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记，Linux 上这 42 项真正执行。场景库 67 个场景/88 个测试函数 = 87 passed + 1 xfailed（CM3，构造 off-by-one 待裁决），两平台一致 |
 | 前端测试 | **693 passed**；`vue-tsc --noEmit` **0 error**；`npm run build` 通过（2026-11-08；npm audit 2026-10-29 实测 0 漏洞） |
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
