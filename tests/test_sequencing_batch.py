@@ -144,8 +144,9 @@ def test_batch_with_excel_analyzes_each_plasmid(client):
         assert it["status"] == "analyzed"
         # goal v3 §8 决策 1（W2）：未声明范围 → 「已测区段」口径，
         # 禁整参考主张「构建与设计一致」
-        assert it["conclusion"].startswith("合格：已测")
-        assert "与设计一致" in it["conclusion"]
+        # X3：结论串 = verdict.headline 去符号（「合格 · 已测 …」）
+        assert it["conclusion"].startswith("合格 · 已测")
+        assert "范围外未评估" in it["conclusion"]
         assert "构建与设计一致" not in it["conclusion"]
         assert it["analysis_id"] and it["read_count"] == 1
         assert it["variant_count"] == 0 and it["coverage_percent"] == 100.0
@@ -811,7 +812,7 @@ def test_batch_report_merges_alias_writings_and_splits_by_conclusion(client):
     # goal v3 §8 决策 1（2026-11-09 W2 重编码）：单 read 测整质粒只覆盖
     # 一部分 → 未声明范围按「已测区段」口径 ✓合格（R1 的 partial 语义被
     # v3 取代，SC4 为真值锁）；T2 确证错义仍「不合格」
-    assert data["items"][0]["conclusion"].startswith("合格：已测")
+    assert data["items"][0]["conclusion"].startswith("合格 · 已测")
     assert "构建与设计一致" not in data["items"][0]["conclusion"]
     assert data["items"][1]["conclusion"].startswith("不合格")
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
@@ -915,8 +916,11 @@ def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
     data = resp.json()
     it = data["items"][0]
     assert it["status"] == "analyzed"
-    assert it["conclusion"].startswith("疑似混合：")
-    assert "无法自动判定" in it["conclusion"]
+    # X3：结论串 = verdict.headline 去符号；分拣桶仍由 verdict.status 驱动
+    assert it["conclusion"].startswith("疑似混合 ·")
+    # X3：结论串 = headline 去符号——「无法自动判定」这类动作提示在正文，
+    # 结论列只说状态与证据（分拣桶仍由 verdict.status 驱动）
+    assert "read 检出双峰" in it["conclusion"]
 
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()

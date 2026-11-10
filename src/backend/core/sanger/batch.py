@@ -465,6 +465,14 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     if not res["reads"]:
         errs = "；".join(e.get("error", "") for e in res["errors"][:2]) or "无可分析 read"
         return f"分析失败：{errs}"
+    # goal v3.1 X3（RB P0-3）：有 verdict 时结论列**逐字**取 verdict.headline
+    # 去掉符号的形态——Excel 不再自行拼一句话结论（三出口唯一来源）。
+    # 明细列（缺口原因/范围外差异/补测建议）由 _scope_cells 从结构化字段
+    # 填写；只有旧记录（无 verdict）才走下面的降级分支（历史文案不变）。
+    _vd_head = (res.get("verdict") or {}).get("excel_conclusion") \
+        or (res.get("verdict") or {}).get("headline")
+    if _vd_head:
+        return _vd_head.lstrip("✓✗△ ").strip()
     n_err = len(res.get("errors") or [])
     err_names = "、".join(e.get("filename", "?") for e in res["errors"][:2]) \
         + ("等" if n_err > 2 else "")

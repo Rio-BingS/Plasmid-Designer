@@ -25,14 +25,19 @@ from tests.sanger_scenarios import SCENARIOS  # noqa: E402
 
 # status → (网页头符号, Excel 前缀, 分拣目录)；failed_reads 的「分析失败」
 # 全失败形态（reads=0）在检查前单独跳过
+#
+# goal v3.1 X3：Excel 结论列 = **去掉符号的 headline**（三出口逐字同源），
+# 因此前缀词就是头行的中间状态词——partial 写「部分验证」、failed_reads 写
+# 「读取失败」，与网页头行同一张表（STATUS_HEAD_WORDS）导出；分拣目录不变
+# （部分验证归 待定/、读取失败归 读取失败/）。
 STATUS_CONTRACT = {
     "pass": ("✓", "合格", "正确"),
     "fail": ("✗", "不合格", "错误"),
     "pending": ("△", "待定", "待定"),
-    "partial": ("△", "待定", "待定"),
+    "partial": ("△", "部分验证", "待定"),
     "mixed": ("△", "疑似混合", "混合"),
     "insufficient": ("△", "无法判定", "无法判定"),
-    "failed_reads": ("△", "待定·读取失败", "读取失败"),
+    "failed_reads": ("△", "读取失败", "读取失败"),
 }
 
 

@@ -453,7 +453,10 @@ def test_analyze_end_noise_not_confirmed(reference):
     gfp = next(cr for cr in result["cds_reports"] if cr["name"] == "GFP")
     assert "不一致" not in gfp["verdict"]
     # 总结论只把中段差异算确证；首端噪声是未决、不参与 ✓/✗ 计数
-    assert "1 处确认差异" in result["conclusion"]
+    # （goal v3.1 X3：头行首行 = verdict.headline，不再另写「N 处确认差异」；
+    # 口径由 status + blocking 判定——噪声只让 status 停 △ 待定，不得升 fail）
+    assert result["verdict"]["status"] == "pending"
+    assert not any(b.get("fail_impact") for b in result["verdict"]["blocking"])
 
 
 def test_reverse_read_variant_read_pos_in_original_coords(reference):
@@ -1906,11 +1909,12 @@ def test_mixed_sample_widespread_end_to_end():
     assert ("↳ m.ab1：双峰 8 处，位于 read 81、131、201、261、331、401 等 8 段"
             "（read 坐标；可信区 31–600 以外未计入）") in result["conclusion"]
     assert result["mixed_detected"] == {"m.ab1": prof["positions"]}
-    # 批量一句话结论以「疑似混合」开头（归档时落入 无法判定/ 而非 正确/）
+    # 批量一句话结论以「疑似混合」开头（归档时落入 混合/ 而非 正确/）
+    # goal v3.1 X3：Excel 结论列 = headline 去符号，逐字同源
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 1, True)
-    assert out.startswith("疑似混合：")
-    assert "8 处双峰" in out and "无法自动判定" in out
+    assert out == result["verdict"]["headline"].lstrip("✓✗△ ").strip()
+    assert out.startswith("疑似混合 ·") and "条 read 检出双峰" in out
 
 
 def test_mixed_equal_ratio_sites_not_shielded():
@@ -2044,7 +2048,9 @@ def test_mixed_sample_scattered_stays_unmixed():
     assert "mixed_uncorroborated" in kinds
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 1, True)
-    assert out.startswith("待定") and "双峰" in out
+    # X3：Excel 结论列 = headline 去符号（逐字同源），「双峰」细节在正文
+    assert out == result["verdict"]["headline"].lstrip("✓✗△ ").strip()
+    assert out.startswith("待定 ·")
 
 
 def test_pullup_saturated_bleed_suppressed():
@@ -2092,8 +2098,9 @@ def test_mixed_cross_read_corroboration_downgrades_noise():
     # 批量一句话结论同口径：不升级"疑似混合"主句，降为尾部提示
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 2, True)
+    # X3：Excel 结论列 = headline 去符号——不升级「疑似混合」主句即满足
     assert not out.startswith("疑似混合")
-    assert "倾向该 read 信号噪声" in out
+    assert out == result["verdict"]["headline"].lstrip("✓✗△ ").strip()
     # 反例：干净引物不覆盖（换个短 read 只测前 100bp）→ 维持疑似混合措辞
     result2 = analyze([("mx.ab1", _mixed_ab1(ref, sites)),
                        ("short.ab1", _mixed_ab1(ref[:100], {}))], ref, [], circular=False,
@@ -2167,9 +2174,10 @@ def test_mixed_multi_read_aggregated_conclusion():
     assert [rp for rp, _fs in chk["multi_sites"]] == [81, 131, 201, 261, 331]
     from core.sanger.batch import excel_conclusion
     out = excel_conclusion("P", result, 2, True)
-    assert out.startswith("疑似混合：")
-    assert "2 条 read 均检出双峰（每条 5–8 处）" in out
-    assert "估计次要克隆占比" in out
+    # X3：结论列与 headline 逐字同源；逐 read 双峰计数/占比在正文与明细列
+    assert out == result["verdict"]["headline"].lstrip("✓✗△ ").strip()
+    assert out.startswith("疑似混合 ·")
+    assert "2 条 read 均疑似混合样品（每条双峰位点 5–8 处，估计次要克隆占比约 37%）"         in result["conclusion"]
 
 
 def test_mixed_end_margin_positions_ignored():
@@ -2527,8 +2535,10 @@ def test_single_read_insertion_vetoed_by_clean_other_read():
     assert "互检矛盾" not in cds["verdict"] and "低置信" not in cds["verdict"]
     # 顶层结论：区间裁决行（2026-11-05 定稿结构），总结为确定的 ✓
     lines = result["conclusion"].splitlines()
-    # goal v3 §8 决策 1（W2）：未声明范围 → 已测区段口径（禁整参考主张）
-    assert lines[0].startswith("✓ 结论：已测") and "与设计一致" in lines[0]
+    # goal v3 §8 决策 1（W2）+ v3.1 X3：未声明范围 → 已测区段口径，
+    # 头行逐字等于 verdict.headline（禁整参考主张）
+    assert lines[0] == result["verdict"]["headline"]
+    assert lines[0].startswith("✓ 合格 · 已测")
     assert "构建与设计一致" not in result["conclusion"]
     assert sum("高质量覆盖排除" in x and "无需核对" in x for x in lines) == 1
     assert not any("低置信度（" in x for x in lines)
@@ -2580,8 +2590,9 @@ def test_single_read_low_q_substitution_resolved_by_clean_other_read():
     assert "低置信" not in cds["verdict"]
     lines = result["conclusion"].splitlines()
     # 2026-11-05 定稿：头行不再复述排除数量，详情在头行下的区间裁决行；
-    # goal v3 §8 决策 1（W2）：未声明范围 → 已测区段口径
-    assert lines[0].startswith("✓ 结论：已测") and "与设计一致" in lines[0]
+    # goal v3 §8 决策 1（W2）+ v3.1 X3：头行 = verdict.headline，已测区段口径
+    assert lines[0] == result["verdict"]["headline"]
+    assert lines[0].startswith("✓ 合格 · 已测")
     assert "构建与设计一致" not in result["conclusion"]
     assert any(l.startswith("差异区间") and "无需核对" in l for l in lines)
     assert not any("低置信度（" in x for x in lines)
@@ -2667,7 +2678,8 @@ def test_variants_branch_conclusion_shows_covered_ranges(reference):
     assert result["variants"]
     lines = result["conclusion"].splitlines()
     # 头部结构：总结行后不空行，详细首行直接携带实测区间
-    assert lines[0].startswith("✗") and "结论" in lines[0]
+    # X3：头行 = verdict.headline（「✗ 不合格 · …」），不再有「结论：」前缀
+    assert lines[0] == result["verdict"]["headline"] and "不合格" in lines[0]
     assert "实测区间 101-200" in lines[1]
 
 

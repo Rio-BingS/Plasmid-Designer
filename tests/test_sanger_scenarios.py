@@ -524,7 +524,6 @@ def test_sc5_scope_tail_beyond_primer():
     assert "引物" in (blk[0].get("action") or "")
 
 
-@XF(strict=True, reason="X1")
 def test_sc6_read_shortfall_enters_review_queue():
     """SC6：read 400bp 处衰减 → partial；cause=read_shortfall；进复核队列"""
     from core.sanger.review import build_queue  # noqa: W14 落地
@@ -586,7 +585,6 @@ def test_sc9_verdict_reproducible_across_scopes(monkeypatch):
     assert build_verdict(res, L, scope="GeneX") == v_gene
 
 
-@XF(strict=True, reason="X1")
 def test_sc10_verified_gap_never_pass_with_blocking():
     """SC10（W3 落地，RV P0-2）：verified ≈99%、measured 100% → 不得出现
     pass 同时带 blocking；verified 口径按 ROI 分数断言（goal W3「统一
@@ -853,7 +851,6 @@ def _queue(res):
 # ---------- X1：峰形门控（RB P0-1） ----------
 
 
-@XF(strict=True, reason="X1")
 def test_sc6_degraded_tail_is_read_shortfall_not_mixed():
     """SC6（恢复原构造）：峰宽 ×3.0 的尾端 → partial、缺口 cause=read_shortfall、
     不判 mixed、进复核队列、read 带 degraded_ranges"""
@@ -868,7 +865,6 @@ def test_sc6_degraded_tail_is_read_shortfall_not_mixed():
         "read 必须带 degraded_ranges（前端灰显依据）"
 
 
-@XF(strict=True, reason="X1")
 def test_sc6b_peak_broadening_never_mixed():
     """SC6b：×2.0/2.5/3.0 三档声明范围 + 一组未声明——都不判 mixed；
     blocking 无 mixed_variant/minor_af_site；未声明组 pass 且 headline 无「混合」"""
@@ -897,7 +893,6 @@ def test_sc6c_real_mixed_before_degraded_zone_still_mixed():
         f"区段外真实次峰必须判混合：{_status(res)} / {kinds}"
 
 
-@XF(strict=True, reason="X1")
 def test_sc10_degraded_tail_pending_not_mixed():
     """SC10（恢复原构造）：峰宽 ×3.0 尾端 → pending + roi_unverified，
     不判 mixed，pass 与 blocking 不并存"""
@@ -972,7 +967,6 @@ def test_rq3_mixed_read_folds_into_one_item():
 _OC3_SIDS = ("SC3", "SC5", "SC6")
 
 
-@XF(strict=True, reason="X3")
 def test_oc3_three_exits_verbatim():
     """OC3：网页首行 = headline；Excel 结论 = 去掉符号的 headline；
     全文逐字比较（不只比符号）"""
@@ -999,7 +993,6 @@ def test_oc4_cross_origin_excel_not_self_contradictory():
     assert "范围外 1 处差异" not in excel, excel
 
 
-@XF(strict=True, reason="X3")
 def test_oc5_declared_pass_never_claims_whole_construct():
     """OC5：声明范围 pass（CM1 干净样品）→ 任何出口不得出现「构建与设计一致」
     或不带范围的「与设计一致」"""
@@ -1015,7 +1008,6 @@ def test_oc5_declared_pass_never_claims_whole_construct():
                "范围" in out, f"声明范围下出现无范围的整体主张：{out}"
 
 
-@XF(strict=True, reason="X3")
 def test_hc1_junction_insert_counts_once():
     """HC1：一处接合区插入（同时触发 confirmed 与 junction）→ headline
     证据写「1 处确证差异」（按位点去重）"""
@@ -1024,7 +1016,6 @@ def test_hc1_junction_insert_counts_once():
     assert "1 处确证差异" in head, f"headline 未按位点去重：{head}"
 
 
-@XF(strict=True, reason="X3")
 def test_hc2_cross_origin_range_has_name_and_single_span():
     """HC2：跨原点 CDS Cross → headline 范围写「Cross（3701–300，跨原点）」"""
     _spec, res = _run_cds_mode("CM3")
