@@ -428,3 +428,104 @@ docstring 写明证据链与不可自修的理由。
 | 后端（Windows） | **2093 passed / 0 failed** / 46 skipped / 1 xfailed（CM3） |
 | 新增 | `test_scope_mode_guard.py` 2 项 |
 | `check_docs_sync.py` | 通过 |
+
+---
+
+## X7 防回潮与文档 — 完成
+
+### KNOWN_ISSUES 新增四条约束
+
+1. **峰形退化区段内的双峰不得判混**：`peak_shape.split_span_by_degraded` 先切退化
+   区段，区段内双峰只归因 `noise`/未达，不得升级「疑似混合」、不得建议重挑克隆。
+   依据：MX 的 37 个噪声双峰曾把 read 尾端降分辨率误读成混合。
+2. **头行唯一来源 `verdict.headline`**：`excel_conclusion` 是 headline 去掉符号的
+   派生值；前端、Excel、批量三处都不得自行拼接头行。守卫在
+   `tests/test_three_exits.py`（逐字比对四个出口）。
+3. **复核队列按 read / 区段 / 位点三级聚合，未声明范围不收位点项**：
+   `minor_af_site` 只计数不入队；`unresolved_site` 在 scope 未声明时跳过。
+   阈值 `READ_FOLD_SHARE=0.30`，区段合并 ≤20bp。
+4. **X0 之后不得修改场景构造或断言**：`tests/sanger_scenarios.py` 与
+   `tests/test_sanger_scenarios.py` 中 X0 提交（`628e3b1`）写定的构造/断言为本轮
+   真值基线。实现做不到时按 goal v3.1 的停止条件停下汇报，不得改断言凑绿。
+
+### SANGER_ALGORITHM_REPORT §5 增补
+
+「v3.1 增补」小节记录三处含金量修正（峰形门控、队列三级聚合+行预算、
+三出口同源+indel 双坐标），并把基线数字改正为「67 个场景定义（88 个测试函数），
+87 通过 / 1 xfail（CM3）」。
+
+### CHANGELOG [Unreleased]
+
+`### Sanger scope v3.1` 分「升级注意 / 修复 / 已知未修 / 工程」四块。
+
+### HANDOVER
+
+- §1 现状新增 v3.1 段落（三处核心修复 + CM3 说明 + 门禁调整）；
+- §2 缓存版本常量：`SANGER_ALGO_VERSION` v14→**v15** 并登记递增理由；
+- 事实清单「后端测试」行更新为 **2093 passed / 46 skipped / 1 xfailed**。
+
+### 测试
+
+| 套件 | 结果 |
+|---|---|
+| 后端（Windows，全量） | **2093 passed / 46 skipped / 1 xfailed**，0 failed，247s |
+| `check_docs_sync.py` | 通过（最新 tag v2.37.0-alpha.4） |
+| `check_file_size.py` | 只提示，退出码 0 |
+
+### 刻意未做
+
+`CHANGELOG` 未升版本号、未打 tag：本轮是分支上的修复收口，发版留给你决定。
+
+### 性能（新增 `docs/audit/bench_v31.py`）
+
+同一台 Windows 机器、同一 venv、同参数各跑 7 次取中位数，只测
+`analyze()` 纯计算（不含 tracy 外部进程）。基线用 `git worktree` 检出
+`b39b46a`，`PD_REAL_DIR` 指向真实数据目录。
+
+| 用例 | b39b46a | v3.1 | 比值 |
+|---|---|---|---|
+| synth（900bp 单 read + 2 替换） | 277.3 ms | 292.0 ms | 1.053× |
+| long（1600bp 单 read + 1 替换） | 666.3 ms | 694.1 ms | 1.042× |
+| real_mx（真实 MX 3 条 read，7039bp 参考） | 1348.3 ms | 1397.9 ms | 1.037× |
+| **合计** | **2291.9 ms** | **2384.1 ms** | **1.040×** |
+
+goal §6 第 7 条限 1.15×，**达标**。新增开销来自逐碱基峰宽计算
+（`signal.peak_widths` + 滑窗中位数），随 read 长度近似线性。
+
+### Linux 实测（VPS）
+
+Windows 的 46 个 skip 里有 42 个是「需要 bash/sh」的部署测试，在 Linux 上会
+真正执行；真实数据回归也依赖本机 V1.01 目录。为了拿到可对比的两套数字，
+把分支打成 bundle 传到 VPS（Python 3.12 venv + 真实数据目录），全量跑：
+
+| 平台 | 结果 | 耗时 |
+|---|---|---|
+| Windows（本机） | **2093 passed / 46 skipped / 0 failed / 1 xfailed** | 250 s |
+| Linux（VPS） | **2135 passed / 4 skipped / 0 failed / 1 xfailed** | 521 s |
+
+差 42 项正是那 42 个部署 shell 测试 + 真实数据回归（Linux 上执行、Windows 上 skip）。
+两个平台的 xfail 都只有 CM3 一项，0 failed。
+
+首次在 Linux 跑时 `test_docs_sync` 报了「仓库没有任何 v* tag」——bundle 克隆默认
+不打包 tag。补一次 `git fetch <bundle> "refs/tags/*:refs/tags/*"` 后通过，与代码无关。
+
+### 前端（本轮改了 `SequencingPanel.vue` + `api/sequencing.ts`）
+
+| 检查 | 结果 |
+|---|---|
+| `vitest run` | **693 passed**（90 files） |
+| `vue-tsc --noEmit` | clean（exit 0） |
+| `npm run build` | 通过（979 ms） |
+
+### 验收标准逐条
+
+| goal §6 | 结果 |
+|---|---|
+| 1. §4 全部场景通过，无 xfail/skip | **不完全**：CM3 保持 xfail（§7 停止条件，见 X4） |
+| 2. X0 后未改场景构造/断言 | 满足（CM3 只改了 xfail 的 reason 文案） |
+| 3. 双平台 0 failed、通过数只增不减 | 满足：Windows 2093、Linux 2135 |
+| 4. 门禁全绿 | 满足（尺寸门禁已按所有者决定改为只提示） |
+| 5. MX 确证 2 处 / fail 不变；队列明显下降 | 满足：330→3，2 处确证差异与 status=fail 逐字节不变 |
+| 6. 真实子集队列 ≤15，3 变异全在 | 满足：14 项，3 处确证全在 |
+| 7. 性能 ≤1.15× | 满足：**1.040×** |
+| 8. 「构建与设计一致」只在降级分支 | 满足（仅 `evidence.py:617/621` 的无 verdict 分支） |
