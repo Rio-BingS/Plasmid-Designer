@@ -340,6 +340,11 @@ export interface ScopeInfo {
   reason?: string
   /** 接合区窗口（W8）：属需测范围但不并入 ranges（头行/区间渲染只显示主段） */
   junctions?: [number, number][]
+  /** 沿用上次范围（X5）：source 保留原来源，此时 reason=沿用上次范围、
+   *  头行带注记、范围条显示「清除」 */
+  remembered?: boolean
+  /** 参考序列指纹（X5）：清除范围记忆的 DELETE 参数 */
+  reference_hash?: string
 }
 
 /** 元件级判定（goal v3 W5）：范围内元件逐行，范围外 not_assessed */
@@ -523,6 +528,17 @@ export async function recomputeVerdict(
     { scope },
     { headers: analysisTokenHeaders(analysisId) },
   )
+  return response.data
+}
+
+/** 清除范围记忆（goal v3.1 X5）：按参考指纹删掉本人那一行，之后的同参考
+ * 分析回到未声明口径；幂等（没有记录时 deleted=false，不报错） */
+export async function deleteScopeMemory(
+  referenceHash: string,
+): Promise<{ deleted: boolean; reference_hash: string }> {
+  const response = await api.delete('/sequencing/scope-memory', {
+    params: { reference_hash: referenceHash },
+  })
   return response.data
 }
 

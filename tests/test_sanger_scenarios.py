@@ -1032,7 +1032,6 @@ def test_hc2_cross_origin_range_has_name_and_single_span():
 # headline 注记；批量不套用；提供 DELETE 清除端点。
 
 
-@XF(strict=True, reason="X5")
 def test_sm1_memory_is_not_shared_between_users():
     """SM1：用户 A 以 scope=GeneX 分析 P 后，用户 B 不声明范围分析 P
     → B 不得套用 A 的范围（记忆按用户隔离）"""
@@ -1051,7 +1050,6 @@ def test_sm1_memory_is_not_shared_between_users():
     assert got_b is None, f"用户 B 不得继承用户 A 的范围：{got_b}"
 
 
-@XF(strict=True, reason="X5")
 def test_sm2_cds_target_never_remembered():
     """SM2：cds_mode/cds_target（自动来源）不被记忆——第二次用 cds_mode
     选 AmpR 时不得套用上次 GeneX 的记忆"""
@@ -1064,7 +1062,6 @@ def test_sm2_cds_target_never_remembered():
         "自动来源（cds_target）不得写入记忆"
 
 
-@XF(strict=True, reason="X5")
 def test_sm3_memory_marks_remembered_and_clearable():
     """SM3：记忆生效时 scope.remembered=true、reason=沿用上次范围、
     headline 带注记；清除后回到未声明口径"""

@@ -7,7 +7,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import {
   analyzeSequencingFiles, confirmReview, exportConsensus, formatApiError,
-  parseSequencingReference, recomputeVerdict,
+  deleteScopeMemory, parseSequencingReference, recomputeVerdict,
   type SequencingAnalysis, type SequencingReferenceParse
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
@@ -275,6 +275,27 @@ function scopeMatchesVerdict(value: string): boolean {
   if (!sc?.declared) return false
   const el = sc.elements ?? []
   return value === '全质粒' ? el.length === 0 : el.includes(value)
+}
+
+/** 清除范围记忆（goal v3.1 X5）：DELETE /sequencing/scope-memory，
+ *  成功后重算到未声明口径——与「不声明」按钮同一路径 */
+async function clearScopeMemory() {
+  const cur = analysis.value
+  const aid = cur?.analysis_id
+  const hash = cur?.verdict?.scope?.reference_hash
+  if (!cur || !aid || !hash || scopeBusy.value) return
+  scopeBusy.value = true
+  scopeBarError.value = ''
+  try {
+    await deleteScopeMemory(hash)
+    const r = await recomputeVerdict(aid, '')
+    analysis.value = { ...cur, verdict: r.verdict, conclusion: r.conclusion }
+    scopeHistory.value = r.scope_history ?? []
+  } catch (e: any) {
+    scopeBarError.value = formatApiError(e, '清除范围记忆失败')
+  } finally {
+    scopeBusy.value = false
+  }
 }
 
 // 复核队列（goal v3 W14，PL §F）：确证差异/范围内缺口/未决位点——
@@ -561,8 +582,18 @@ async function downloadConsensus(format: string) {
                 title="不声明范围：结论只对已测区段负责（范围外未评估）"
                 @click="applyScope('')">不声明</button>
         <span v-if="analysis.verdict.scope?.declared" class="scope-bar-note">
-          {{ analysis.verdict.scope.elements?.join('、') || '' }}
-          <template v-if="analysis.verdict.scope.reason">（{{ analysis.verdict.scope.reason }}）</template>
+          <!-- goal v3.1 X5：沿用上次范围时必须能一键清除，否则用户无法
+               回到未声明口径（记忆会一直跟着这条参考） -->
+          <template v-if="analysis.verdict.scope.remembered">
+            沿用上次范围（{{ analysis.verdict.scope.elements?.join('、') || '已声明范围' }}）
+            <button type="button" class="scope-btn sm" :disabled="scopeBusy"
+                    title="清除这条参考上的范围记忆，之后分析回到未声明口径"
+                    @click="clearScopeMemory">清除</button>
+          </template>
+          <template v-else>
+            {{ analysis.verdict.scope.elements?.join('、') || '' }}
+            <template v-if="analysis.verdict.scope.reason">（{{ analysis.verdict.scope.reason }}）</template>
+          </template>
         </span>
         <span v-if="scopeBusy" class="stage-note">重算中…（等待期间展示当前结果）</span>
         <span v-else-if="scopeBarError" class="error-msg">{{ scopeBarError }}</span>
