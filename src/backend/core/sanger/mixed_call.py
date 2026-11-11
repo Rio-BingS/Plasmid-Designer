@@ -70,4 +70,5 @@ def collect_mixed_variants(read_results: List[Dict], ref_seq: str) -> List[Dict]
                 ent["secondary_base"] = f"{ent['secondary_base']}/{sec}"
             if r["filename"] not in ent["reads"]:
                 ent["reads"].append(r["filename"])
+            ent.setdefault("read_pos", {}).setdefault(r["filename"], int(e["pos"]))
     return [by_pos[k] for k in sorted(by_pos)]
