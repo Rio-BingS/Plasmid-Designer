@@ -234,6 +234,29 @@ def _unres_blocks(v: Dict) -> bool:
     return False
 
 
+def _mixed_site_artifact(m: Dict, profiles: Dict, reads: List[Dict]) -> str:
+    """v3.4：mixed_variant 的伪影形态判别，返回原因（空串=不是伪影形态）。
+    全部报告 read 的 mixed_profile 判为 noise，或位点 read 原始坐标全部
+    ≤ 该 read 可信区参数 front_gray（复用既有参数，不新增阈值）"""
+    rds = m.get("reads") or []
+    if not rds:
+        return ""
+    if all((profiles.get(fn) or {}).get("class") == "noise" for fn in rds):
+        return "read 级双峰模型判为噪声（比值不一致或位点 Q 低）"
+    rp_by = m.get("read_pos") or {}
+    by_fn = {r.get("filename"): r for r in reads}
+    raws = []
+    for fn in rds:
+        z = (by_fn.get(fn) or {}).get("reliable_zone") or {}
+        pos = rp_by.get(fn)
+        if pos is None or not z.get("params"):
+            return ""
+        raws.append((pos + (z["raw_start"] - z["start"]), z["params"]["front_gray"]))
+    if raws and all(raw <= fg for raw, fg in raws):
+        return "位于 read 首端 front_gray 区（峰展宽/染料团区）"
+    return ""
+
+
 def build_verdict(result: Dict, ref_length: int, scope=None,
                   synonymous_action: str = "ok",
                   review_decisions: Optional[List[Dict]] = None) -> Dict:
@@ -555,6 +578,14 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
             continue
         _pair = (f"{rp} 双峰 {m.get('called_base')}/{m.get('secondary_base')}"
                  f"（参考 {m.get('ref_base')}，次等位 AF {af}）")
+        _demote = _mixed_site_artifact(m, profiles, reads)
+        if af >= MIXED_AF_MIN and _demote:
+            # v3.4：read 级模型已判该 read 双峰为噪声，或位点落在 read 首端
+            # front_gray 区内——不判混合，降为待核（仍阻断 ✓，只加强不削弱）
+            _blk("unresolved_site", rp, rp, None,
+                 _pair + f"——{_demote}，不判混合，需复核",
+                 "核对峰图或换引物补测", refs=m.get("reads") or [], af=af)
+            continue
         if af >= MIXED_AF_MIN:
             _blk("mixed_variant", rp, rp, None,
                  _pair + "——疑似混合样品",

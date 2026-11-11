@@ -353,8 +353,17 @@ def _collect_unresolved_sites(read_results: List[Dict],
     # N/IUPAC 调用列（比对列上的模糊碱基，无论是否被投票压制都记录）
     for r in read_results:
         r2ref, _ = _read_ref_maps(r)
+        _z = r.get("reliable_zone") or {}
+        _zs, _ze = _z.get("start"), _z.get("end")
         for i, b in enumerate((r.get("trimmed_bases") or "").upper()):
             if b in "ACGT":
+                continue
+            if _zs is not None and _ze is not None and not (_zs <= i + 1 <= _ze):
+                # v3.4（2026-11-11，公开数据 PKS 7 条）：可信区外的 N/IUPAC 调用
+                # 与头行「已测」同源排除——可信区外本就不计入 verified，
+                # 不能再以未决位点阻断（原口径用整段比对跨度，两口径不一致）
+                r.setdefault("n_outside_zone", 0)
+                r["n_outside_zone"] += 1
                 continue
             rp = r2ref.get(i + 1)
             if rp:
