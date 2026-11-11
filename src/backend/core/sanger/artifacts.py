@@ -35,6 +35,16 @@ BLOB_WIDTH_MIN = 6.0       # 半高宽 ≥6 采样点（正常峰 2-5）
 BLOB_DOMINANCE_MAX = 0.45  # 主通道占比上限（真实峰 >0.6）
 BLOB_CHAN_BALANCE = 0.4    # 最弱通道 ≥ 最强通道的比例下限
 BLOB_MIN_PEAKS = 2         # 连续 blob 峰数下限
+# v3.5（2026-11-12）单通道染料团：Thermo MAN0014435——未掺入终止子多与
+# ~60–140bp 片段共迁移，表现为**单一通道**（多为 C/T，也见 G）的宽峰，
+# 压在正常碱基峰之下。旧检测器要求四通道同时宽峰，真实数据（shasgg 15
+# 克隆 T7 read 第 70–90 位宽 T 鼓包）一处都不命中
+BLOB1_BP = 250              # 只看修剪后 read 前 250 碱基
+BLOB1_WIDTH_SPACINGS = 1.4  # 半高宽 ≥ 1.4 个峰间距（正常峰 0.6–0.9；shasgg 实测染料团 1.3–3）
+BLOB1_MIN_HEIGHT = 0.15     # 高度 ≥ 局部主峰高中位数 ×0.15
+BLOB1_OWN_MAX = 0.5         # 区内调用碱基属该通道的占比 <0.5（排除同聚物/压缩）
+BLOB1_MIN_BASES = 2
+BLOB1_MAX_REGIONS = 4       # 合并后区段数 >4：整段宽背景（低信号/杂峰 read），不是孤立染料团
 SHORT_RUN_BP = (3, 7)      # 短同聚物长度范围（≥8 归 poly 链路）
 SHORT_SLIP_MIN_RATIO = 0.2  # echo 下限高于 poly 链路（5%）：滤相邻峰尾漏（~15%）
 
@@ -129,6 +139,88 @@ def detect_dye_blob(trace: Dict[str, List[int]], peaks: List[int],
     return [a for a in out if len(a["positions"]) >= BLOB_MIN_PEAKS]
 
 
+def detect_dye_blob_single(trace: Dict[str, List[int]], peaks: List[int],
+                           called_bases: str) -> List[Dict]:
+    """v3.5：单通道宽峰型染料团。
+
+    对每个通道找局部极大值，按半高向两侧走出半高宽；半高宽 ≥
+    BLOB1_WIDTH_SPACINGS 个峰间距、高度 ≥ 局部主峰高中位数 ×
+    BLOB1_MIN_HEIGHT、所覆盖碱基中被调用成该通道碱基的占比 < BLOB1_OWN_MAX
+    （同聚物/GC 压缩的宽峰本身就是被调用的碱基，不算）→ 染料团区段。
+    返回 read 碱基坐标（1-based）区段，带 channel/height_ratio/width_spacings。
+    """
+    chans = _channels(trace)
+    bases = (called_bases or "").upper()
+    if len(chans) < 4 or not peaks or not bases:
+        return []
+    n = min(len(v) for v in trace.values())
+    limit = min(len(bases), len(peaks), BLOB1_BP)
+    idx = [i for i in range(min(len(peaks), 300)) if peaks[i] is not None]
+    if len(idx) < 20:
+        return []
+    gaps = sorted(peaks[b] - peaks[a] for a, b in zip(idx, idx[1:]) if peaks[b] > peaks[a])
+    sp = gaps[len(gaps) // 2] if gaps else 0
+    if sp < 4:   # 合成 trace（每碱基 1 采样点）：峰宽判据无意义
+        return []
+    prim = []
+    for i in range(limit):
+        pk = peaks[i]
+        prim.append(max(trace[c][pk] for c in chans) if pk is not None and 0 <= pk < n else 0)
+    first = next((peaks[i] for i in range(limit) if peaks[i] is not None), None)
+    last = next((peaks[i] for i in range(limit - 1, -1, -1) if peaks[i] is not None), None)
+    if first is None or last is None:
+        return []
+    out: List[Dict] = []
+    for c in chans:
+        y = trace[c]
+        x = max(1, first)
+        seen_until = -1
+        while x < min(last, n - 1):
+            if not (y[x] >= y[x - 1] and y[x] > y[x + 1]) or x <= seen_until:
+                x += 1
+                continue
+            h = y[x]
+            half = h / 2.0
+            lo = x
+            while lo > 0 and y[lo - 1] >= half:
+                lo -= 1
+            hi = x
+            while hi + 1 < n and y[hi + 1] >= half:
+                hi += 1
+            seen_until = hi
+            if (hi - lo + 1) < BLOB1_WIDTH_SPACINGS * sp:
+                x = hi + 1
+                continue
+            span = [i for i in range(limit) if peaks[i] is not None and lo <= peaks[i] <= hi]
+            if len(span) < BLOB1_MIN_BASES:
+                x = hi + 1
+                continue
+            ci = span[len(span) // 2]
+            loc_prim = sorted(v for v in prim[max(0, ci - 15):ci + 16] if v > 0)
+            ref = loc_prim[len(loc_prim) // 2] if loc_prim else 0
+            own = sum(1 for i in span if bases[i] == c) / len(span)
+            if ref > 0 and h >= BLOB1_MIN_HEIGHT * ref and own < BLOB1_OWN_MAX:
+                out.append({"kind": "dye_blob", "channel": c,
+                            "start": span[0] + 1, "end": span[-1] + 1,
+                            "positions": [i + 1 for i in span],
+                            "height_ratio": round(h / ref, 2),
+                            "width_spacings": round((hi - lo + 1) / sp, 1)})
+            x = hi + 1
+    # 孤立性：真实染料团是一两处孤立宽峰（shasgg T7 read 第 ~74、~210 位）；
+    # 合并后 >BLOB1_MAX_REGIONS 处说明整段都是宽背景（SeqComp 低信号 read
+    # 前 250 位有 30+ 处），此时单通道判据不可分辨，不报染料团（回到原口径）
+    spans = sorted((a["start"], a["end"]) for a in out)
+    merged: List[List[int]] = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    if len(merged) > BLOB1_MAX_REGIONS:
+        return []
+    return out
+
+
 def detect_short_slippage(trace: Dict[str, List[int]], peaks: List[int],
                           called_bases: str) -> List[Dict]:
     """短同聚物（3-7bp）末端滑移 echo：复用 detect_phase_shift（run 锚定）。
@@ -164,9 +256,20 @@ def detect_artifacts(trace: Dict[str, List[int]], peaks: List[int],
     out: List[Dict] = []
     out.extend(detect_compression(trace, peaks))
     out.extend(detect_dye_blob(trace, peaks, called_bases))
+    out.extend(detect_dye_blob_single(trace, peaks, called_bases))
     out.extend(detect_short_slippage(trace, peaks, called_bases))
     out.sort(key=lambda a: a.get("start") or 0)
     return out
+
+
+def dye_blob_at(artifacts: List[Dict], read_pos: Optional[int]) -> Optional[Dict]:
+    """v3.5：read 位置（1-based）落在哪个染料团区段内，返回该区段或 None"""
+    if not read_pos:
+        return None
+    for a in artifacts or []:
+        if a.get("kind") == "dye_blob" and int(a["start"]) <= read_pos <= int(a["end"]):
+            return a
+    return None
 
 
 def artifact_at(artifacts: List[Dict], read_pos: Optional[int]) -> Optional[str]:

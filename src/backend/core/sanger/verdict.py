@@ -254,6 +254,21 @@ def _mixed_site_artifact(m: Dict, profiles: Dict, reads: List[Dict]) -> str:
         raws.append((pos + (z["raw_start"] - z["start"]), z["params"]["front_gray"]))
     if raws and all(raw <= fg for raw, fg in raws):
         return "位于 read 首端 front_gray 区（峰展宽/染料团区）"
+    # v3.5：每条报告 read 的该位点都落在本 read 检出的单通道染料团区（±1 位）
+    from core.sanger.artifacts import dye_blob_at
+    hits = []
+    for fn in rds:
+        arts = (by_fn.get(fn) or {}).get("artifacts") or []
+        pos = rp_by.get(fn)
+        a = (dye_blob_at(arts, pos) or dye_blob_at(arts, pos - 1)
+             or dye_blob_at(arts, pos + 1)) if pos else None
+        if not a or not a.get("channel"):
+            return ""
+        hits.append(a)
+    if hits:
+        a = hits[0]
+        return (f"落在染料团区（{a['channel']} 通道宽峰，read 第 {a['start']}–{a['end']} 位，"
+                f"峰宽 {a['width_spacings']} 个碱基间距）")
     return ""
 
 
@@ -581,7 +596,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         _demote = _mixed_site_artifact(m, profiles, reads)
         if af >= MIXED_AF_MIN and _demote:
             # v3.4：read 级模型已判该 read 双峰为噪声，或位点落在 read 首端
-            # front_gray 区内——不判混合，降为待核（仍阻断 ✓，只加强不削弱）
+            # front_gray 区内；v3.5：或落在单通道染料团区——不判混合，降为
+            # 待核（仍阻断 ✓，只加强不削弱）
             _blk("unresolved_site", rp, rp, None,
                  _pair + f"——{_demote}，不判混合，需复核",
                  "核对峰图或换引物补测", refs=m.get("reads") or [], af=af)
