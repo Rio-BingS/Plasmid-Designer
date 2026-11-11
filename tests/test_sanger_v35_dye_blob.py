@@ -1,10 +1,9 @@
-"""v3.5：单通道染料团检测 + 单 read indel 两侧低 Q（ACE ±4）规则"""
+"""v3.5：单通道染料团检测"""
 import math
 
 from core.sanger.artifacts import (
     BLOB1_MAX_REGIONS, detect_dye_blob_single, dye_blob_at,
 )
-from core.sanger.pipeline import LOW_Q_FLANK_Q, _flank_min_q
 
 SP = 12  # 每碱基 12 个采样点（真实 3730 量级）
 
@@ -65,13 +64,3 @@ def test_synthetic_one_sample_per_base_skipped():
         tr[b][i] = 500
     assert detect_dye_blob_single(tr, list(range(len(BASES))), BASES) == []
 
-
-def test_flank_min_q_window():
-    q = [40] * 30
-    q[12] = 8
-    src = {"trimmed_quality": q}
-    # read_pos 15（0-based 14）：窗口 10..18 覆盖 q[12]
-    assert _flank_min_q(src, {"read_pos": 15, "type": "deletion"}) == 8
-    # read_pos 25：窗口 20..28 不含低 Q
-    assert _flank_min_q(src, {"read_pos": 25, "type": "insertion", "length": 1}) == 40
-    assert 8 < LOW_Q_FLANK_Q <= 40

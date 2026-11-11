@@ -1683,22 +1683,6 @@ _CONCLUSION_BUDGET = conclusion_fold.CONCLUSION_BUDGET
 # read 级折叠共用同一常量语义）
 DEGRADED_READ_SHARE = 0.30
 
-# v3.5：单 read indel 两侧最低 Q 门槛（ACE 低置信差异口径，窗口 ±4bp）
-LOW_Q_FLANK_Q = 20
-LOW_Q_FLANK_BP = 4
-
-
-def _flank_min_q(src: Dict, v: Dict) -> Optional[int]:
-    """read 上 indel 位点本身及两侧各 LOW_Q_FLANK_BP 个碱基的最低 Q（read_pos 1-based）"""
-    q = src.get("trimmed_quality") or []
-    rp = v.get("read_pos")
-    if not q or not rp:
-        return None
-    L = max(1, int(v.get("length") or 1)) if v.get("type") == "insertion" else 1
-    a, b = max(0, rp - 1 - LOW_Q_FLANK_BP), min(len(q), rp - 1 + L + LOW_Q_FLANK_BP)
-    return int(min(q[a:b])) if b > a else None
-
-
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                              poly_local_ratio: bool) -> None:
     """变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持），
@@ -1851,18 +1835,6 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                 and v.get("confidence") != "low"
                 and v["cross_read_weak"][0].get("core_min_q", 0) >= CROSS_CHECK_MIN_Q):
             v["confidence"] = "low"
-        # v3.5（2026-11-12，借鉴 ACE 自动克隆验证 Taycher 2007：差异本身或
-        # 两侧各 4 个碱基内任一 Phred 低于阈值 → 低置信差异）：单 read indel
-        # 若该窗口最低 Q < LOW_Q_FLANK_Q → 不得确证。克隆样品的真实 indel 两侧
-        # 峰形干净、Q 高；shasgg S00072 6477 ins1（窗口最低 Q8，仅 T7t 一条
-        # read）是该形态的假 ✗
-        if (src is not None and (v.get("support_reads") or 1) < 2
-                and v.get("type") in ("insertion", "deletion")
-                and v.get("confidence") != "low"):
-            _mq = _flank_min_q(src, v)
-            if _mq is not None and _mq < LOW_Q_FLANK_Q:
-                v["confidence"] = "low"
-                v["low_q_flank"] = _mq
         # v3.5：单 read 差异落在该 read 的单通道染料团区（±1 位）→ 不得确证
         if (src is not None and (v.get("support_reads") or 1) < 2
                 and v.get("confidence") != "low"):
@@ -1879,9 +1851,6 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             v["low_reason"] = _low_confidence_reason(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
                 zone=src.get("reliable_zone") if src is not None else None)
-            if v.get("low_q_flank") is not None:
-                v["low_reason"] += (f"；indel 两侧 4bp 内最低 Q{v['low_q_flank']}"
-                                    f"（< Q{LOW_Q_FLANK_Q}），单 read 不足以确证")
             if v.get("dye_blob"):
                 _b = v["dye_blob"]
                 v["low_reason"] += (f"；位于染料团区（{_b['channel']} 通道宽峰，"
