@@ -207,51 +207,9 @@ def p_real_for(v: Dict, tier: str, evidence: Optional[Dict] = None) -> float:
     return round(_sigmoid(z), 4)
 
 
-def _tier_of_p(p_real: float, p: ScoreParams) -> str:
-    """confidence 由 p_real 分档回填（goal T15）"""
-    if p_real > p.accept_p:
-        return "high"
-    if p_real >= p.confirmed_min:
-        return "medium"
-    return "low"
-
-
-def _action_of(v: Dict, p_real: float, p: ScoreParams,
-               evidence: Optional[Dict]) -> str:
-    """四档行动（goal T15）：accept / exclude / review_trace / resequence"""
-    if p_real < p.exclude_p and v.get("cross_read_resolved"):
-        return "exclude"
-    if p_real > p.accept_p:
-        return "accept"
-    # 待处理两档：有峰级证据可看 → review_trace；无峰可看 → resequence
-    ev = evidence or {}
-    if any(ev.get(k) is not None
-           for k in ("mutant_pct", "snr", "insertion_peak_ratio")):
-        return "review_trace"
-    return "resequence"
-
-
 def attach_score(v: Dict, evidence: Optional[Dict] = None,
                  zone: Optional[Dict] = None) -> None:
-    """在置信度定级与全部降级之后调用（就地写 v）：
-
-    - p_real：以 v["confidence"]（终局 tier）为锚计算；
-    - action：四档行动；
-    - confidence：由 p_real 分档回填（与终局 tier 构造性相等——降级路径
-      写回的 low 同样落回 low）；
-    - status：三态由 p_real + 反证导出（rejected 仅当 P<0.01 且有反证，
-      confirmed = P≥confirmed_min，其余 unresolved）——与既有
-      _variant_status 逐位等价。
-    """
-    p = load_params()
-    tier = v.get("confidence") or "low"
-    p_real = p_real_for(v, tier, evidence)
-    v["p_real"] = p_real
-    v["action"] = _action_of(v, p_real, p, evidence)
-    v["confidence"] = _tier_of_p(p_real, p)
-    if p_real < p.exclude_p and v.get("cross_read_resolved"):
-        v["status"] = "rejected"
-    elif p_real >= p.confirmed_min:
-        v["status"] = "confirmed"
-    else:
-        v["status"] = "unresolved"
+    """兼容入口：p_real + 三态/四档 action/confidence 回填已归 SiteCall
+    （sitecall.decide_variant，S4 第 2 步）。zone 参数保留未用。"""
+    from core.sanger.sitecall import decide_variant
+    decide_variant(v, evidence)

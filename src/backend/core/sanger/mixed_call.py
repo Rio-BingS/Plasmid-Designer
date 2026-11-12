@@ -11,9 +11,8 @@ verdict 侧再按区域与 AF 分流：AF ≥ MINOR_AF_MIN 且在 ROI/CDS/关键
 管线现有 30% 双峰判定（MIXED_PEAK_RATIO），T11 后改自适应模型输出。
 """
 
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
-from core.sanger.readcall import in_mixed_segment
 from core.sanger.readmap import ReadRefMap
 
 # 次等位丰度门槛：低于此的双峰只记 info（噪声级或极低频亚群）
@@ -29,14 +28,19 @@ MIXED_AF_MIN = 0.23
 _COMP = str.maketrans("ACGTN", "TGCAN")
 
 
-def collect_mixed_variants(read_results: List[Dict], ref_seq: str) -> List[Dict]:
+def collect_mixed_variants(read_results: List[Dict], ref_seq: str,
+                           skip: Optional[Callable[[str, int], bool]] = None,
+                           ) -> List[Dict]:
     """从各 read 的 mixed_detail 收集参考链口径的混合位点记录。
 
     返回按 ref_pos 合并的 [{ref_pos, ref_base, called_base, secondary_base,
     af, reads}]：同一参考位点多条 read 同报时取最大 AF 并合并 read 名
     （阻断按位点一条）；两条 read 报的次等位不同时以 AF 大者为主记录，
     另一条的碱基并入 secondary_base 备查。两个等位折回参考链后都是参考
-    碱基的位点（纯噪声双峰）不收。"""
+    碱基的位点（纯噪声双峰）不收。
+
+    skip(filename, read_pos) 为真的双峰不收（调用方注入，如 ReadCalls.covers
+    ——套峰段由 read 级结论报出）。本模块不依赖 ReadCall。"""
     by_pos: Dict[int, Dict] = {}
     for r in read_results:
         rmap = ReadRefMap.from_alignment(r)
@@ -46,8 +50,8 @@ def collect_mixed_variants(read_results: List[Dict], ref_seq: str) -> List[Dict]
         reverse = rmap.direction == "-"
         for e in (list(r.get("mixed_detail") or [])
                   + list(r.get("mixed_soft") or [])):
-            if in_mixed_segment(r.get("read_mixing"), e.get("pos")):
-                continue  # 二期：套峰段由 read 级 mixed_template 一条报出，不逐位记
+            if skip is not None and skip(r.get("filename"), e.get("pos")):
+                continue
             rp = rmap.read_to_ref(e.get("pos"))
             if not rp:
                 continue  # 插入列/无映射列：无参考位点可判

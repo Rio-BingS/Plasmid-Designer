@@ -20,13 +20,22 @@ read 会落 noise，而低密度长 read 又可能落 widespread，不适合作�
 门槛，不会被当成套峰。阈值来自金标准 30 例（套峰 read 段密度 21–65/100bp，
 正常 read 段密度 ≤15/100bp），集中在 ReadMixParams，可整体关闭：
 SANGER_READ_MIXED_CALL=0 回到旧口径。
+
+阶段边界（S4 第 2 步解耦，2026-11-12）：`build_read_calls(read_results)` 是
+唯一入口，纯函数、不改 read_results，产出 `ReadCalls`（每条 read 一个
+ReadCall，含参考坐标 ref_spans 与跨 read 印证 corroborated）。下游只经
+ReadCalls 的接口读取：
+- SiteCall：`blocking_hit(evidence_by_read)` → UNR_IN_MIXED_TEMPLATE；
+- mixed_call：`covers(filename, read_pos)` 过滤段内双峰；
+- verdict：`template_reads()` / `local_reads()` / `overlapping(filename)`。
+本模块不生成任何面向用户的文案（文案在 verdict 呈现层）。
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 OK = "OK"
 MIXED_TEMPLATE = "MIXED_TEMPLATE"
@@ -45,6 +54,7 @@ class ReadMixParams:
     seg_density_min: float = 20.0
     shift_offset: int = 100
     template_cov: float = 0.5
+    corroborate_overlap: int = 30  # 不同 read 套峰段在参考上重叠 ≥ 此长度才算印证
 
 
 PARAMS = ReadMixParams()
@@ -141,42 +151,8 @@ def in_mixed_segment(read_mixing: Optional[Dict], read_pos) -> bool:
     return bool(read_mixing.get("state") == SHIFT_AFTER_POINT and bp and rp >= bp)
 
 
-def describe(read_mixing: Dict) -> str:
-    st = read_mixing.get("state")
-    segs = read_mixing.get("segments") or []
-    n = sum(s[2] for s in segs)
-    if st == MIXED_TEMPLATE:
-        return f"全程套峰（{n} 处双峰）"
-    if st == SHIFT_AFTER_POINT:
-        return f"第 {read_mixing.get('breakpoint')} 位起整体套峰（{n} 处双峰）"
-    if st == LOCAL_MIXED:
-        rng = "、".join(f"{a}–{b}" for a, b, _n in segs[:3])
-        return f"局部套峰（read 第 {rng} 位，{n} 处双峰）"
-    return ""
-
-
-def annotate_ref_spans(read_results: List[Dict]) -> None:
-    """套峰段映射到参考坐标（read_mixing.ref_spans，[[lo, hi], ...]），供
-    verdict 做跨 read 互检：不同 read 在同一参考区段都套峰才指向模板。"""
-    from core.sanger.readmap import ReadRefMap
-    for r in read_results:
-        rm = r.get("read_mixing") or {}
-        if rm.get("state") not in MIXED_STATES:
-            continue
-        try:
-            rmap = ReadRefMap.from_alignment(r)
-        except Exception:  # noqa: BLE001 — 比对缺失时不做互检
-            continue
-        spans = []
-        for a, b, _n in rm.get("segments") or []:
-            mapped = [rmap.read_to_ref(x) for x in range(a, b + 1)]
-            mapped = [m for m in mapped if m]
-            if mapped:
-                spans.append([min(mapped), max(mapped)])
-        rm["ref_spans"] = spans
-
-
-def corroborated(read_results: List[Dict], min_overlap: int = 30) -> List[str]:
+def corroborated(read_results: List[Dict],
+                 min_overlap: int = PARAMS.corroborate_overlap) -> List[str]:
     """套峰（全程/某点后）read 中，另有一条不同 read 的套峰段在参考上与之
     重叠 ≥ min_overlap bp 的文件名——指向模板问题而非单条测序问题。"""
     hit = [r for r in read_results
@@ -194,3 +170,149 @@ def corroborated(read_results: List[Dict], min_overlap: int = 30) -> List[str]:
                 out.append(r.get("filename"))
                 break
     return out
+
+
+# ---------------------------------------------------------------------------
+# 阶段：ReadCalls（结构化结果 + 只读接口）
+# ---------------------------------------------------------------------------
+
+def _ref_spans(r: Dict, segments) -> Optional[List[List[int]]]:
+    """套峰段映射到参考坐标 [[lo, hi], ...]；比对缺失时返回 None（不做互检）"""
+    from core.sanger.readmap import ReadRefMap
+    try:
+        rmap = ReadRefMap.from_alignment(r)
+    except Exception:  # noqa: BLE001 — 比对缺失时不做互检
+        return None
+    spans = []
+    for a, b, _n in segments or []:
+        mapped = [rmap.read_to_ref(x) for x in range(a, b + 1)]
+        mapped = [m for m in mapped if m]
+        if mapped:
+            spans.append([min(mapped), max(mapped)])
+    return spans
+
+
+@dataclass
+class ReadCall:
+    filename: str
+    state: str = OK
+    segments: List[List[int]] = field(default_factory=list)
+    breakpoint: Optional[int] = None
+    coverage: float = 0.0
+    params: Dict = field(default_factory=dict)
+    ref_spans: Optional[List[List[int]]] = None
+    corroborated: bool = False
+
+    @classmethod
+    def from_dict(cls, filename: str, d: Optional[Dict]) -> "ReadCall":
+        d = d or {}
+        return cls(filename=filename, state=d.get("state") or OK,
+                   segments=[list(x) for x in d.get("segments") or []],
+                   breakpoint=d.get("breakpoint"),
+                   coverage=d.get("coverage") or 0.0,
+                   params=dict(d.get("params") or {}),
+                   ref_spans=d.get("ref_spans"),
+                   corroborated=bool(d.get("corroborated")))
+
+    def legacy(self) -> Dict:
+        """旧 reads[].read_mixing 形状（API 兼容镜像，内部不再读取）"""
+        out = {"state": self.state, "segments": self.segments,
+               "breakpoint": self.breakpoint, "coverage": self.coverage,
+               "params": self.params}
+        if self.ref_spans is not None:
+            out["ref_spans"] = self.ref_spans
+        return out
+
+    def to_dict(self) -> Dict:
+        return {"filename": self.filename, **self.legacy(),
+                "corroborated": self.corroborated}
+
+    @property
+    def overlapping(self) -> bool:
+        return self.state in (MIXED_TEMPLATE, SHIFT_AFTER_POINT)
+
+    def covers(self, read_pos) -> bool:
+        return in_mixed_segment(self.legacy(), read_pos)
+
+    @property
+    def n_sites(self) -> int:
+        return sum(s[2] for s in self.segments)
+
+
+class ReadCalls:
+    """全部 read 的 ReadCall（按文件名）。下游唯一读取入口。"""
+
+    def __init__(self, calls: Iterable[ReadCall] = ()):
+        self._by = {c.filename: c for c in calls}
+
+    def __iter__(self):
+        return iter(self._by.values())
+
+    def get(self, filename) -> ReadCall:
+        return self._by.get(filename) or ReadCall(filename=filename)
+
+    def covers(self, filename, read_pos) -> bool:
+        c = self._by.get(filename)
+        return bool(c) and c.covers(read_pos)
+
+    def overlapping(self, filename) -> bool:
+        c = self._by.get(filename)
+        return bool(c) and c.overlapping
+
+    def blocking_hit(self, evidence_by_read: Optional[List[Dict]]) -> Optional[Dict]:
+        """支持差异的每条 read 在此处都落在套峰段内 → 不得确证。返回首条
+        支持 read 的套峰事实（read/state/breakpoint），否则 None。"""
+        ebr = evidence_by_read or []
+        if not ebr or not all(self.covers(e.get("read"), e.get("read_pos"))
+                              for e in ebr):
+            return None
+        c = self.get(ebr[0].get("read"))
+        return {"read": ebr[0].get("read"), "state": c.state,
+                "breakpoint": c.breakpoint}
+
+    def template_reads(self) -> List[ReadCall]:
+        """全程 / 某点后套峰的 read（read 级结论受影响）"""
+        return [c for c in self if c.overlapping]
+
+    def local_reads(self) -> List[ReadCall]:
+        return [c for c in self if c.state == LOCAL_MIXED]
+
+    def to_list(self) -> List[Dict]:
+        return [c.to_dict() for c in self]
+
+    @classmethod
+    def from_result(cls, result: Dict) -> "ReadCalls":
+        """从分析结果重建（verdict 等只拿到 result 的消费者用）。旧结果
+        没有 read_calls 时回退读 reads[].read_mixing。"""
+        rows = result.get("read_calls")
+        if rows is not None:
+            return cls(ReadCall.from_dict(d.get("filename"), d) for d in rows)
+        reads = result.get("reads") or []
+        calls = [ReadCall.from_dict(r.get("filename"), r.get("read_mixing"))
+                 for r in reads if r.get("read_mixing")]
+        corr = set(corroborated([{"filename": c.filename, "read_mixing": c.legacy()}
+                                 for c in calls]))
+        for c in calls:
+            c.corroborated = c.filename in corr
+        return cls(calls)
+
+
+def build_read_calls(read_results: List[Dict],
+                     p: ReadMixParams = PARAMS) -> ReadCalls:
+    """ReadCall 阶段（纯函数）：需要 read 的 mixed_positions、reliable_zone、
+    trimmed_bases 与比对结果。"""
+    from core.sanger.reliable_zone import core_zone
+    calls = []
+    for r in read_results:
+        d = classify_read_mixing(r.get("mixed_positions") or [],
+                                 core_zone(r.get("reliable_zone")),
+                                 len(r.get("trimmed_bases") or ""), p)
+        c = ReadCall.from_dict(r.get("filename"), d)
+        if c.state in MIXED_STATES:
+            c.ref_spans = _ref_spans(r, c.segments)
+        calls.append(c)
+    corr = set(corroborated([{"filename": c.filename, "read_mixing": c.legacy()}
+                             for c in calls], p.corroborate_overlap))
+    for c in calls:
+        c.corroborated = c.filename in corr
+    return ReadCalls(calls)
