@@ -32,6 +32,7 @@ from core.sanger.noise import peak_snr
 from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
+from core.sanger.sitecall import build_site_calls, dual_run_diffs
 from core.sanger.split_read import classify_segment
 from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at, dye_blob_at
 from core.sanger.overlap import (
@@ -2880,7 +2881,20 @@ def analyze(
                 f"{r['filename']}：PCON 质量值缺失/全 0，已按峰型估 Q"
                 "（quality_source=peak_estimate），置信口径相应保守")
 
+    # S4 SiteCall 影子双跑（重构一期 strangler）：唯一判定表从结构化事实
+    # 重算位点结论，与旧路径写出的 status/confidence/action 比对，不一致只
+    # 记日志、不改结果。SANGER_SITECALL_SHADOW=1 时把 site_calls 挂进结果
+    # 备查（默认不挂，避免结果体积翻倍）；任何出口都还不消费它
+    _site_calls = build_site_calls(variants, mixed_variants)
+    _sc_diffs = dual_run_diffs(variants, mixed_variants, _site_calls)
+    if _sc_diffs:
+        logger.warning("SiteCall 双跑不一致 %d 处，首条 %s",
+                       len(_sc_diffs), _sc_diffs[0])
+    _shadow = ({"site_calls": _site_calls, "site_call_diffs": _sc_diffs}
+               if os.environ.get("SANGER_SITECALL_SHADOW") == "1" else {})
+
     return {
+        **_shadow,
         "reads": [
             {k: v for k, v in r.items()
              if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps", "_width_cache",
