@@ -13,6 +13,7 @@ verdict 侧再按区域与 AF 分流：AF ≥ MINOR_AF_MIN 且在 ROI/CDS/关键
 
 from typing import Dict, List
 
+from core.sanger.readcall import in_mixed_segment
 from core.sanger.readmap import ReadRefMap
 
 # 次等位丰度门槛：低于此的双峰只记 info（噪声级或极低频亚群）
@@ -45,6 +46,8 @@ def collect_mixed_variants(read_results: List[Dict], ref_seq: str) -> List[Dict]
         reverse = rmap.direction == "-"
         for e in (list(r.get("mixed_detail") or [])
                   + list(r.get("mixed_soft") or [])):
+            if in_mixed_segment(r.get("read_mixing"), e.get("pos")):
+                continue  # 二期：套峰段由 read 级 mixed_template 一条报出，不逐位记
             rp = rmap.read_to_ref(e.get("pos"))
             if not rp:
                 continue  # 插入列/无映射列：无参考位点可判

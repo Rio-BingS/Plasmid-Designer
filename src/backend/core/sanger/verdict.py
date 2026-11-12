@@ -33,6 +33,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
+from core.sanger import readcall as _rc
 from core.sanger.mixed_call import MINOR_AF_MIN, MINOR_AF_SOFT, MIXED_AF_MIN
 from core.sanger.overlap import (
     double_strand_fraction as _double_strand_fraction, REQUIRE_DOUBLE_STRAND,
@@ -55,6 +56,8 @@ PENDING_KINDS = {
     # 阻断项并存的矛盾；关键元件覆盖缺口同理（不能只写 info）；
     # 首端硬区内未比对的高质量段（≤30bp 连接错误原来被解析端豁免）
     "roi_unverified", "critical_element_unverified", "end_junction_unverified",
+    # 二期 ReadCall：单条 read 套峰（未经其他 read 印证）→ 待定、建议重测
+    "seq_overlap_peaks", "structural_breakpoint_unconfirmed",
 }
 
 # 三出口统一（goal v3 W12，OC1/OC2；CM 审核三出口分叉的根因是各出口
@@ -639,8 +642,47 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                                and b.get("ref_start") in _mixed_pos)]
     # 混合样品（widespread 分级 + 跨引物互检降级例外；scattered 只进
     # unresolved_sites 的 mixed_uncorroborated，不升级 mixed_sample）
+    # 二期 ReadCall（readcall.py）：read 级套峰（全程 / 某点后）优先——一条
+    # mixed_template 报全部套峰 read，取代 widespread 分级的 mixed_sample；
+    # 局部套峰只记 info（段内位点已不予确证，经 unresolved_variant 待核）
+    _tmpl = [r for r in reads
+             if (r.get("read_mixing") or {}).get("state")
+             in (_rc.MIXED_TEMPLATE, _rc.SHIFT_AFTER_POINT)]
+    for r in reads:
+        _rm = r.get("read_mixing") or {}
+        if _rm.get("state") == _rc.LOCAL_MIXED:
+            _info("read_local_mixed", None,
+                  f"{r.get('filename')}：{_rc.describe(_rm)}，段内差异不作确证")
+    if _tmpl:
+        # 互检（用户 2026-11-12 22:39）：单条 read 套峰更可能是测序本身的问题
+        # （引物多位点结合、引物二聚体、模板含杂带）→ seq_overlap_peaks 待定、
+        # 建议重测；不同 read 在同一参考区段都套峰才指向模板 → mixed_template
+        _corr = set(_rc.corroborated(reads))
+        _tm = [r for r in _tmpl if r.get("filename") in _corr]
+        _sq = [r for r in _tmpl if r.get("filename") not in _corr]
+        if _tm:
+            _blk("mixed_template", None, None, None,
+                 f"{len(_tm)} 条 read 在同一区段套峰（疑似混合模板）：" + "；".join(
+                     f"{r.get('filename')} {_rc.describe(r['read_mixing'])}"
+                     for r in _tm),
+                 "重新挑单克隆复测；CRISPR 样品可做峰图分解或 TA 克隆分别测序",
+                 refs=[r.get("filename") for r in _tm])
+        if _sq:
+            _shift = [r for r in _sq
+                      if r["read_mixing"]["state"] == _rc.SHIFT_AFTER_POINT]
+            if _shift and len(_shift) == len(_sq):
+                _act = ("从另一侧引物测序确认；若复现，可能是该点附近的 indel "
+                        "杂合，可做峰图分解")
+            else:
+                _act = "重测；若复现，检查引物特异性（多位点结合、二聚体）与模板纯度"
+            _blk("seq_overlap_peaks", None, None, None,
+                 f"{len(_sq)} 条 read 测序套峰（单条 read，未经其他 read 印证）："
+                 + "；".join(f"{r.get('filename')} {_rc.describe(r['read_mixing'])}"
+                             for r in _sq),
+                 _act, refs=[r.get("filename") for r in _sq])
     wide = [p for p in profiles.values() if p.get("class") == "widespread"]
-    if wide and mixed_sample_confirmed(reads, result.get("mixed_corroboration")):
+    if (wide and not _tmpl
+            and mixed_sample_confirmed(reads, result.get("mixed_corroboration"))):
         counts = sorted(int(p.get("count") or 0) for p in wide)
         cr = str(counts[0]) if counts[0] == counts[-1] else f"{counts[0]}-{counts[-1]}"
         _blk("mixed_sample", None, None, None,
@@ -686,6 +728,18 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                       f"{sr_.get('ref_start')}-{sr_.get('ref_end')}"
                       "（分析窗口外，已定位不算异常；该部分不在需测范围）",
                       ref_start=sr_.get("ref_start"), ref_end=sr_.get("ref_end"))
+            elif (sr_.get("status") == "breakpoint"
+                  and _rc.overlapping(r.get("read_mixing"))):
+                # 二期 ReadCall：套峰 read 上的 split-read 断点来自混合信号的
+                # 软剪切，不作确证——降待核（不 fail），段仍列出供核对
+                _blk("structural_breakpoint_unconfirmed", sr_.get("ref_start"),
+                     sr_.get("ref_end"), None,
+                     f"{r.get('filename')} {hq.get('side')}端 "
+                     f"{hq.get('length')}bp 序列 split-read 定位到参考 "
+                     f"{sr_.get('ref_start')}-{sr_.get('ref_end')}"
+                     "，但该 read 套峰，断点不作确证",
+                     "解决套峰后复核（重测或换引物）；CRISPR 样品可能是一个"
+                     "等位的大片段缺失，可做 TA 克隆分别测序")
             elif sr_.get("status") == "breakpoint":
                 _blk("structural_breakpoint", sr_.get("ref_start"),
                      sr_.get("ref_end"), None,
@@ -832,7 +886,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     has_fail = any(b.get("fail_impact") for b in blocking)
     has_failed_reads = any(b["kind"] == "read_failed" for b in blocking)
     # mixed：mixed_sample 或 ROI 内 mixed_variant（goal T2/T7）
-    has_mixed = any(b["kind"] in ("mixed_sample", "mixed_variant") for b in blocking)
+    has_mixed = any(b["kind"] in ("mixed_sample", "mixed_variant", "mixed_template")
+                    for b in blocking)
     has_pending = any(b["kind"] in PENDING_KINDS for b in blocking)
     # partial/insufficient 只由声明范围的覆盖缺口驱动（goal v3 W2：
     # 未声明范围不判 partial，已测区段口径）；例外（W6/W7）：策略性
@@ -958,12 +1013,21 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         # 「双峰判混（0 处）」这种自相矛盾的计数（X3）
         _n_site = len([b for b in blocking if b["kind"] == "mixed_variant"])
         _samp = [b for b in blocking if b["kind"] == "mixed_sample"]
-        if _samp:
+        _tb = [b for b in blocking if b["kind"] == "mixed_template"]
+        if _tb:
+            ev_txt = (_tb[0].get("detail") or "").split("（")[0] + "（疑似混合模板）"
+        elif _samp:
             ev_txt = (_samp[0].get("detail") or "").split("（")[0]                 or f"{len(_samp)} 条 read 检出双峰"
         else:
             ev_txt = f"双峰判混（{_n_site} 处）"
     else:
-        ev_txt = f"{len(blocking)} 项待核"
+        _sqb = [b for b in blocking if b["kind"] == "seq_overlap_peaks"]
+        if status == "pending" and _sqb:
+            _rest = len(blocking) - 1
+            ev_txt = ((_sqb[0].get("detail") or "").split("（")[0]
+                      + (f"，另 {_rest} 项待核" if _rest else ""))
+        else:
+            ev_txt = f"{len(blocking)} 项待核"
     headline = f"{sym_} {word_} · {range_part} · 证据：{ev_txt}"
     if _reviewed_n:
         headline += f"，人工确认 {_reviewed_n} 处"

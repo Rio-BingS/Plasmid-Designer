@@ -65,6 +65,8 @@ def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
         codes.append("poly_compressed")
     if v.get("slippage_artifact"):
         codes.append("slip_artifact")
+    if v.get("in_mixed_template"):
+        codes.append("in_mixed_template")
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT-" for c in alt_up):
         codes.append("n_call")
