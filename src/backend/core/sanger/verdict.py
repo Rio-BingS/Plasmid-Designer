@@ -104,8 +104,13 @@ _SITE_KIND_MAP = {
 # 亲和标签）。type 用 GenBank 惯用词；名称匹配不区分大小写。扩充即改表。
 CRITICAL_TYPES = {"promoter", "rbs", "rep_origin", "polya_signal", "terminator",
                   "protein_bind", "misc_recomb"}
+# 名称须是独立词（两侧不是字母；数字/符号/下划线/空格可）——旧式纯子串匹配会把
+# alpha/Shank/chaperone 里的「ha」、this/whisker 里的「his」误认为亲和标签，
+# 进而把范围外普通元件当关键元件处理。标签允许 6xHis/3xFLAG 前缀与 -tag/II 后缀。
 CRITICAL_NAME_RE = re.compile(
-    r"kozak|loxp|att[bplr]|frt|ampr|kanr|cmr|neor|his|flag|ha|myc|strep|gst|mbp",
+    r"(?<![a-z])(?:kozak|loxp|att[bplr]|frt|ampr|kanr|cmr|neor"
+    r"|(?:\d+\s*x\s*)?(?:his|flag|ha|myc|strep|gst|mbp)"
+    r"(?:[-_ ]?tag)?(?:[-_ ]?ii)?)(?![a-z])",
     re.IGNORECASE)
 # 抗性/ori 盲区提示的名称线索（参考未注释这些元件时只提示，不自动注释）
 _RESIST_ORI_NAME_RE = re.compile(r"ampr|kanr|cmr|neor|puc|ori|f1", re.IGNORECASE)
