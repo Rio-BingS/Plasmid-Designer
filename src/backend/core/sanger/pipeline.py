@@ -33,6 +33,8 @@ from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
 from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
 from core.sanger.sitecall import build_site_calls, dual_run_diffs
+from core.sanger.readcall import (
+    annotate_ref_spans, classify_read_mixing, in_mixed_segment)
 from core.sanger.split_read import classify_segment
 from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at, dye_blob_at
 from core.sanger.overlap import (
@@ -99,7 +101,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v16"  # v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
+SANGER_ALGO_VERSION = "v17"  # v17: 2026-11-12 二期 ReadCall——read 级套峰判定（全程/某点后/局部，readcall.py），套峰段内差异与 split-read 断点不作确证、不逐位记 mixed_variant；单条 read 套峰报 seq_overlap_peaks 待定，不同 read 同区段套峰才报 mixed_template 疑似混合模板；SANGER_READ_MIXED_CALL=0 回旧口径；v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -1675,6 +1677,12 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
             for d in r["mixed_detail"]:
                 d["tracy"] = tags.get(d["pos"])
+        # ReadCall 套峰判定（二期，readcall.py）：硬检出双峰的局部密度——
+        # 全程套峰 / 某点后套峰 / 局部套峰。套峰段内的位点不予确证、不逐条
+        # 记 mixed_variant，由 verdict 以 read 级 mixed_template 一条报出
+        r["read_mixing"] = classify_read_mixing(
+            r["mixed_positions"], core_zone(r.get("reliable_zone")),
+            len(r.get("trimmed_bases") or ""))
 
 # 结论正文行数预算（goal v3.1 §3.2「头行 + 最多 5 行要点」；含头行共 6 行）。
 # 折叠逻辑见 conclusion_fold（真实子集 15 行 → 6 行，短结论不受影响）
@@ -1848,6 +1856,18 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             if _bl and _bl.get("channel"):
                 v["confidence"] = "low"
                 v["dye_blob"] = {k: _bl[k] for k in ("channel", "start", "end")}
+        # 二期 ReadCall：支持该差异的每条 read 在此处都落在套峰段内 → 主峰
+        # 差异来自混合模板，不得确证（任一 read 在干净区支持则不受影响）
+        _ebr = v.get("evidence_by_read") or []
+        if _ebr and all(in_mixed_segment(
+                (by_read.get(e.get("read")) or {}).get("read_mixing"),
+                e.get("read_pos")) for e in _ebr):
+            v["confidence"] = "low"
+            _e0 = _ebr[0]
+            _rm = (by_read.get(_e0.get("read")) or {}).get("read_mixing") or {}
+            v["in_mixed_template"] = {"read": _e0.get("read"),
+                                      "state": _rm.get("state"),
+                                      "breakpoint": _rm.get("breakpoint")}
         if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
             v["low_reason"] = _low_confidence_reason(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
@@ -1856,6 +1876,13 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                 _b = v["dye_blob"]
                 v["low_reason"] += (f"；位于染料团区（{_b['channel']} 通道宽峰，"
                                     f"read 第 {_b['start']}–{_b['end']} 位）")
+            if v.get("in_mixed_template"):
+                _mt = v["in_mixed_template"]
+                v["low_reason"] += (
+                    f"；{_mt['read']} 在此处套峰（"
+                    + (f"第 {_mt['breakpoint']} 位起整体套峰" if _mt.get("breakpoint")
+                       else "混合模板")
+                    + "），主峰差异不能作确证")
             wk = (v.get("cross_read_weak") or [None])[0]
             if wk:
                 v["low_reason"] += (
@@ -2745,6 +2772,7 @@ def analyze(
 
     _variant_confidence_pass(variants, read_results, poly_local_ratio)
     # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流
+    annotate_ref_spans(read_results)
     mixed_variants = collect_mixed_variants(read_results, ref)
     # 反证标注（2026-11-11）：报该位点的每条 read 都有反证——其他引物干净
     # 读出（互检否决口径）或批内同引物对照判背景——才标 noise_evidence，
