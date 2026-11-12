@@ -333,7 +333,8 @@ def _iupac_merge(a: str, b: str) -> str:
 
 def _collect_unresolved_sites(read_results: List[Dict],
                               homopolymer_report: List[Dict],
-                              mixed_corroboration: Optional[Dict]) -> List[Dict]:
+                              mixed_corroboration: Optional[Dict],
+                              poly_calls: Optional[List[Dict]] = None) -> List[Dict]:
     """未决位点清单（goal T1；B P0-2 / A 3.3）：N/IUPAC 调用列、poly 不可判定、
     poly 下游骤降（dropout）区段、无法互检的双峰位点。
 
@@ -372,12 +373,21 @@ def _collect_unresolved_sites(read_results: List[Dict],
                 _add(rp, "n_call" if b == "N" else "iupac", r["filename"],
                      f"read 调用 {b}（未解析）")
     # poly 不可判定：峰图计数矛盾 / 不可判定 / 缺失证据（accepted 不算）
-    for e in homopolymer_report or []:
-        if e.get("tier") == "poly" and e.get("run_verdict") in (
-                "contradictory", "undetermined", "deficit_observed"):
-            _add(e.get("start"), "poly_undetermined", "",
-                 f"poly({e.get('base')}) {e.get('start')}-{e.get('end')} "
-                 f"峰图判读 {e.get('run_verdict')}")
+    if poly_calls is not None:
+        # S4 PolyCall：只读结构化状态（CONFLICTING / UNDETERMINABLE /
+        # DEFICIT_SUSPECTED）
+        from core.sanger.polycall import LEGACY_VERDICT, unresolved_polys
+        for pc in unresolved_polys(poly_calls):
+            _add(pc["ref_start"], "poly_undetermined", "",
+                 f"poly({pc.get('base')}) {pc['ref_start']}-{pc['ref_end']} "
+                 f"峰图判读 {LEGACY_VERDICT[pc['state']]}")
+    else:  # 兼容：未传 PolyCall 时按旧条目字段
+        for e in homopolymer_report or []:
+            if e.get("tier") == "poly" and e.get("run_verdict") in (
+                    "contradictory", "undetermined", "deficit_observed"):
+                _add(e.get("start"), "poly_undetermined", "",
+                     f"poly({e.get('base')}) {e.get('start')}-{e.get('end')} "
+                     f"峰图判读 {e.get('run_verdict')}")
     # poly 下游信号骤降区段
     for r in read_results:
         for d in r.get("post_poly_dropouts") or []:

@@ -73,7 +73,8 @@ from core.sanger.batch import (
 from core.sanger.coverage import mark_unverified_bases, _mask_uncovered  # noqa: F401  (历史引用兼容)
 from app.sequencing_summary import summarize
 from core.sanger import review
-from core.sanger.pipeline import analyze, build_verdict
+from core.sanger.pipeline import analyze, build_verdict  # noqa: F401
+from core.sanger.judge import rejudge
 from core.sanger.decompose import decompose_and_annotate
 from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
@@ -407,8 +408,10 @@ def _run_full_analysis(
             result["engine"] = "internal+biopython+tracy"
             # decompose 在 analyze 之后：重建 verdict 纳入 allele_mismatch（T10）
             # （W8：重建时带上 scope——此前漏传会丢范围语义）
-            result["verdict"] = build_verdict({**result, "features": features or []},
-                                              len(reference), scope=scope)
+            # S6：经唯一判定入口重算，结论头行同步（此前只换 verdict、结论
+            # 头行仍是 decompose 前的旧判定）
+            result["verdict"], result["conclusion"] = rejudge(
+                {**result, "features": features or []}, len(reference), scope)
     return result
 
 
