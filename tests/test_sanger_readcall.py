@@ -56,3 +56,65 @@ def test_corroborated_needs_two_reads_same_region():
     c = _r("c.ab1", rc.SHIFT_AFTER_POINT, [[2000, 2300]])
     assert set(rc.corroborated([a, b, c])) == {"a.ab1", "b.ab1"}
     assert rc.corroborated([c]) == []
+
+
+# ---- S4 第 2 步：ReadCall 阶段与下游接口（解耦） ----
+
+def _calls(*items):
+    return rc.ReadCalls(rc.ReadCall.from_dict(fn, d) for fn, d in items)
+
+
+def test_readcalls_blocking_hit_needs_every_supporting_read():
+    mixed = rc.classify_read_mixing(_dense(30, 350), {"start": 16, "end": 355}, 355)
+    calls = _calls(("a.ab1", mixed), ("b.ab1", {"state": rc.OK}))
+    hit = calls.blocking_hit([{"read": "a.ab1", "read_pos": 100}])
+    assert hit == {"read": "a.ab1", "state": rc.MIXED_TEMPLATE, "breakpoint": None}
+    # 另一条 read 在干净区支持 → 不阻断
+    assert calls.blocking_hit([{"read": "a.ab1", "read_pos": 100},
+                               {"read": "b.ab1", "read_pos": 100}]) is None
+    assert calls.blocking_hit([]) is None
+    assert not calls.covers("unknown.ab1", 100)
+
+
+def test_build_read_calls_is_pure_and_mirrors_legacy():
+    r = {"filename": "a.ab1", "mixed_positions": list(_dense(30, 350)),
+         "reliable_zone": {"start": 16, "end": 355}, "trimmed_bases": "A" * 355}
+    before = dict(r)
+    calls = rc.build_read_calls([r])
+    assert r == before  # 不改输入
+    c = calls.get("a.ab1")
+    assert c.state == rc.MIXED_TEMPLATE and c.ref_spans == []  # 无比对 → 无参考区段
+    assert c.legacy()["ref_spans"] == []
+    assert not c.corroborated
+
+
+def test_readcalls_from_result_fallback_recomputes_corroboration():
+    res = {"reads": [_r("a.ab1", rc.MIXED_TEMPLATE, [[100, 400]]),
+                     _r("b.ab1", rc.SHIFT_AFTER_POINT, [[350, 600]]),
+                     {"filename": "c.ab1"}]}
+    calls = rc.ReadCalls.from_result(res)
+    assert [c.filename for c in calls.template_reads()] == ["a.ab1", "b.ab1"]
+    assert all(c.corroborated for c in calls.template_reads())
+    again = rc.ReadCalls.from_result({"read_calls": calls.to_list()})
+    assert [c.to_dict() for c in again] == calls.to_list()
+
+
+def test_decide_variant_blocks_in_mixed_template():
+    from core.sanger.sitecall import decide_variant
+    mixed = rc.classify_read_mixing(_dense(30, 350), {"start": 16, "end": 355}, 355)
+    calls = _calls(("a.ab1", mixed))
+    v = {"type": "substitution", "ref_pos": 10, "alt_base": "T", "read": "a.ab1",
+         "confidence": "high", "support_reads": 1,
+         "evidence_by_read": [{"read": "a.ab1", "read_pos": 100}]}
+    sc = decide_variant(v, None, calls)
+    assert v["in_mixed_template"]["state"] == rc.MIXED_TEMPLATE
+    assert v["status"] != "confirmed" and v["confidence"] == "low"
+    assert sc["state"] == "UNRESOLVED"
+    assert "UNR_IN_MIXED_TEMPLATE" in sc["reasons"]
+
+
+def test_collect_mixed_variants_skip_is_injected():
+    import inspect
+    from core.sanger import mixed_call
+    assert "skip" in inspect.signature(mixed_call.collect_mixed_variants).parameters
+    assert "readcall" not in inspect.getsource(mixed_call)

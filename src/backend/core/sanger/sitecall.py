@@ -1,4 +1,13 @@
-"""S4 SiteCall：位点结论的唯一判定表（重构一期，strangler 影子运行）
+"""S4 SiteCall：位点结论的唯一判定表
+
+第 2 步（2026-11-12，v17 等价）：SiteCall 成为判定方——管线对每条变体调用
+`decide_variant`（ReadCall 阻断 + p_real + 裁决表），再由 `to_legacy` 反写
+status/confidence/action；重叠区分歧降级改为 `apply_overlap_discordance`
+（显式硬阻断后重新裁决）。scoring.attach_score 与
+overlap.downgrade_overlap_conflicts 只保留为委托本模块的兼容入口。
+末尾的 build_site_calls + dual_run_diffs 仍保留，校验反写字段与表一致。
+
+以下为一期说明（保留备查）：
 
 契约：sitecall_contract v1.0（测试结果优化2 项目）。
 
@@ -19,9 +28,9 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional
 
-from core.sanger.scoring import load_params
+from core.sanger.scoring import load_params, p_real_for
 
-SITECALL_VERSION = "s4-1"
+SITECALL_VERSION = "s4-2"
 
 CONFIRMED = "CONFIRMED"
 MIXED = "MIXED"
@@ -71,7 +80,7 @@ _UNR_PRIORITY = (
 # 显式硬阻断：命中则不能 CONFIRMED。一期只放「旧路径事后改写 status」的
 # 那一条（overlap 分歧降级）；其余阻断在旧路径里已折进 p_real（把
 # confidence 降为 low），二期再逐条显式化并与快照对齐。
-_HARD_BLOCKS = frozenset({"UNR_OVERLAP_DISCORDANCE"})
+_HARD_BLOCKS = frozenset({"UNR_OVERLAP_DISCORDANCE", "UNR_IN_MIXED_TEMPLATE"})
 
 _EVIDENCE_KEYS = ("mutant_pct", "snr", "insertion_peak_ratio")
 
@@ -97,8 +106,11 @@ def _variant_reasons(v: Dict) -> List[str]:
     return _dedup(codes)
 
 
-def _has_peak_evidence(v: Dict) -> bool:
-    ev = v.get("peak_evidence") or {}
+_FROM_RECORD = object()
+
+
+def _has_peak_evidence(v: Dict, evidence=_FROM_RECORD) -> bool:
+    ev = (v.get("peak_evidence") if evidence is _FROM_RECORD else evidence) or {}
     return any(ev.get(k) is not None for k in _EVIDENCE_KEYS)
 
 
@@ -106,10 +118,12 @@ def _site_id(ref_pos, vtype: str, alt: str) -> str:
     return f"{ref_pos}:{vtype}:{(alt or '').upper()}"
 
 
-def call_variant(v: Dict, params=None) -> Dict:
+def call_variant(v: Dict, params=None,
+                 extra_reasons: Iterable[str] = (),
+                 evidence=_FROM_RECORD) -> Dict:
     """一条 variants 记录 → SiteCall（裁决表按序命中即停）"""
     p = params or load_params()
-    reasons = _variant_reasons(v)
+    reasons = _dedup(list(_variant_reasons(v)) + list(extra_reasons))
     p_real = v.get("p_real")
     pr = p_real if p_real is not None else 0.0
     art = [c for c in reasons if c.startswith("ART_")]
@@ -139,7 +153,8 @@ def call_variant(v: Dict, params=None) -> Dict:
     elif pr > p.accept_p:
         action = "accept"
     else:
-        action = "review_trace" if _has_peak_evidence(v) else "resequence"
+        action = ("review_trace" if _has_peak_evidence(v, evidence)
+                  else "resequence")
 
     tier = ("high" if pr > p.accept_p
             else "medium" if pr >= p.confirmed_min else "low")
@@ -160,6 +175,51 @@ def call_variant(v: Dict, params=None) -> Dict:
         "review": review,
         "stage_version": SITECALL_VERSION,
     }
+
+
+def decide_variant(v: Dict, evidence: Optional[Dict] = None,
+                   read_calls=None, params=None) -> Dict:
+    """S4 第 2 步：位点结论的唯一判定入口（就地反写旧字段，返回 SiteCall）。
+
+    输入是上游已写好的结构化事实（confidence 锚点与各降级标志、
+    evidence_by_read、peak_evidence）与 ReadCall 阶段结果。
+    - ReadCall 阻断：支持该差异的每条 read 都落在套峰段内 →
+      UNR_IN_MIXED_TEMPLATE（硬阻断），p_real 以 low 为锚；
+    - p_real：p_real_for(锚点 tier, 峰级证据)；
+    - 裁决表 call_variant → to_legacy 反写 status/confidence/action。
+    """
+    p = params or load_params()
+    extra: List[str] = []
+    if read_calls is not None:
+        hit = read_calls.blocking_hit(v.get("evidence_by_read"))
+        if hit:
+            v["in_mixed_template"] = hit
+            v["confidence"] = "low"
+            extra.append("UNR_IN_MIXED_TEMPLATE")
+    v["p_real"] = p_real_for(v, v.get("confidence") or "low", evidence)
+    sc = call_variant(v, p, extra, evidence)
+    v.update(to_legacy(sc))
+    return sc
+
+
+def apply_overlap_discordance(variants: List[Dict], discordances: List[Dict],
+                              params=None) -> int:
+    """重叠区近平局分歧（共识之后才知道）：该位点已确证的替换加
+    UNR_OVERLAP_DISCORDANCE 硬阻断后重新裁决（goal：pending 而非双 ✗）。
+    p_real 与评分字段保留。返回降级数。"""
+    p = params or load_params()
+    pos_set = {d["ref_pos"] for d in discordances}
+    n = 0
+    for v in variants:
+        if (v.get("type") == "substitution" and v.get("status") == "confirmed"
+                and v.get("ref_pos") in pos_set):
+            rc = v.get("reason_codes") or []
+            if "overlap_discordance" not in rc:
+                rc.append("overlap_discordance")
+            v["reason_codes"] = rc
+            v.update(to_legacy(call_variant(v, p)))
+            n += 1
+    return n
 
 
 def call_mixed(m: Dict) -> Dict:

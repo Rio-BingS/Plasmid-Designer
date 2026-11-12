@@ -31,14 +31,14 @@ from core.sanger.abif_reader import (  # noqa: F401
 from core.sanger.noise import peak_snr
 from core.sanger.orf_guard import find_guarded_orf, suspect_site
 from core.sanger.primer_check import check_reads
-from core.sanger.scoring import attach_score, confidence_tier as _variant_confidence
-from core.sanger.sitecall import build_site_calls, dual_run_diffs
-from core.sanger.readcall import (
-    annotate_ref_spans, classify_read_mixing, in_mixed_segment)
+from core.sanger.scoring import confidence_tier as _variant_confidence
+from core.sanger.sitecall import (
+    apply_overlap_discordance, build_site_calls, decide_variant, dual_run_diffs)
+from core.sanger.readcall import ReadCalls, build_read_calls
 from core.sanger.split_read import classify_segment
 from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at, dye_blob_at
 from core.sanger.overlap import (
-    find_discordances, downgrade_overlap_conflicts,
+    find_discordances,
     double_strand_fraction as _double_strand_fraction,
 )
 from core.sanger.aligner import (
@@ -1677,12 +1677,6 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
             tags = {e["pos"]: e.get("tracy") for e in mixed_detail if not e["pullup"]}
             for d in r["mixed_detail"]:
                 d["tracy"] = tags.get(d["pos"])
-        # ReadCall 套峰判定（二期，readcall.py）：硬检出双峰的局部密度——
-        # 全程套峰 / 某点后套峰 / 局部套峰。套峰段内的位点不予确证、不逐条
-        # 记 mixed_variant，由 verdict 以 read 级 mixed_template 一条报出
-        r["read_mixing"] = classify_read_mixing(
-            r["mixed_positions"], core_zone(r.get("reliable_zone")),
-            len(r.get("trimmed_bases") or ""))
 
 # 结论正文行数预算（goal v3.1 §3.2「头行 + 最多 5 行要点」；含头行共 6 行）。
 # 折叠逻辑见 conclusion_fold（真实子集 15 行 → 6 行，短结论不受影响）
@@ -1693,7 +1687,8 @@ _CONCLUSION_BUDGET = conclusion_fold.CONCLUSION_BUDGET
 DEGRADED_READ_SHARE = 0.30
 
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
-                             poly_local_ratio: bool) -> None:
+                             poly_local_ratio: bool,
+                             read_calls: Optional[ReadCalls] = None) -> None:
     """变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持），
     含跨 read 干净覆盖反证与互检定案、合并压缩区降级（就地修改 variants）。
     """
@@ -1856,18 +1851,10 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
             if _bl and _bl.get("channel"):
                 v["confidence"] = "low"
                 v["dye_blob"] = {k: _bl[k] for k in ("channel", "start", "end")}
-        # 二期 ReadCall：支持该差异的每条 read 在此处都落在套峰段内 → 主峰
-        # 差异来自混合模板，不得确证（任一 read 在干净区支持则不受影响）
-        _ebr = v.get("evidence_by_read") or []
-        if _ebr and all(in_mixed_segment(
-                (by_read.get(e.get("read")) or {}).get("read_mixing"),
-                e.get("read_pos")) for e in _ebr):
-            v["confidence"] = "low"
-            _e0 = _ebr[0]
-            _rm = (by_read.get(_e0.get("read")) or {}).get("read_mixing") or {}
-            v["in_mixed_template"] = {"read": _e0.get("read"),
-                                      "state": _rm.get("state"),
-                                      "breakpoint": _rm.get("breakpoint")}
+        # S4 第 2 步：位点结论由 SiteCall 唯一判定（sitecall.decide_variant）
+        # ——含 ReadCall 套峰阻断（UNR_IN_MIXED_TEMPLATE）、p_real、三态、
+        # 四档 action 与 confidence 回填；本函数此后只生成说明文案
+        decide_variant(v, evidence, read_calls)
         if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
             v["low_reason"] = _low_confidence_reason(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
@@ -1888,12 +1875,7 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                 v["low_reason"] += (
                     f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
                     f"质量不足以互检")
-        # 证据三态 + 机器可读原因码（goal T1；A 3.3 / B P0-1）：在定案与
-        # 全部降级之后计算——rejected 仅当互检定案，confirmed=中高置信，
-        # 其余（低置信）=unresolved。放前面会拿到滞后的 status
-        # T15 校准评分（A 5.3）：p_real + 四档 action + 三态/confidence 由
-        # p_real 分档回填（T23 前与既有规则逐位等价，行为不倒退）
-        attach_score(v, evidence, src.get("reliable_zone") if src is not None else None)
+        # 机器可读原因码（goal T1）：在 SiteCall 定案之后计算
         v["reason_codes"] = _variant_reason_codes(
             v, evidence,
             src.get("reliable_zone") if src is not None else None,
@@ -2764,16 +2746,24 @@ def analyze(
                 "filename": r["filename"], "hits": hits})
 
     _signal_analysis_pass(read_results, poly_runs, poly_local_ratio)
+    # ReadCall 阶段（readcall.build_read_calls，纯函数）：read 级套峰判定
+    # （全程 / 某点后 / 局部）+ 参考区段 + 跨 read 印证。下游只经 ReadCalls
+    # 接口读取；reads[].read_mixing 仅作 API 兼容镜像
+    read_calls = build_read_calls(read_results)
+    for r in read_results:
+        _rc_call = read_calls.get(r["filename"])
+        r["read_mixing"] = _rc_call.legacy()
     # 跨 read 双峰互检：一条引物的双峰位点若被其他引物测过且峰形单一、判读
     # 一致，多半是这条 read 自己的信号噪声（常见于引物首端信号爬升区）；
     # 其他引物同报双峰才倾向真实混合。结论与建议均按互检结果措辞
     mixed_corroboration = _corroborate_mixed(
         read_results, batch_bg=_bc_background_positions(batch_control))
 
-    _variant_confidence_pass(variants, read_results, poly_local_ratio)
-    # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流
-    annotate_ref_spans(read_results)
-    mixed_variants = collect_mixed_variants(read_results, ref)
+    _variant_confidence_pass(variants, read_results, poly_local_ratio, read_calls)
+    # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流；
+    # 套峰段内的双峰由 read 级结论报出，不逐位记
+    mixed_variants = collect_mixed_variants(read_results, ref,
+                                            skip=read_calls.covers)
     # 反证标注（2026-11-11）：报该位点的每条 read 都有反证——其他引物干净
     # 读出（互检否决口径）或批内同引物对照判背景——才标 noise_evidence，
     # verdict 降 info；任一 read 无反证即保持原判
@@ -2804,7 +2794,7 @@ def analyze(
     # 降 unresolved（共识已在 _build_consensus 内按 IUPAC 合并）
     discordances = consensus.get("overlap_discordances") or []
     if discordances:
-        downgrade_overlap_conflicts(variants, discordances)
+        apply_overlap_discordance(variants, discordances)
 
     # 覆盖区间按折回坐标合并：环状跨原点 read 拆成 [s, L] + [1, e-L] 两段
     # （线性比对即 (ref_start, ref_end)，与此前一致）
@@ -2923,6 +2913,7 @@ def analyze(
 
     return {
         **_shadow,
+        "read_calls": read_calls.to_list(),
         "reads": [
             {k: v for k, v in r.items()
              if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps", "_width_cache",

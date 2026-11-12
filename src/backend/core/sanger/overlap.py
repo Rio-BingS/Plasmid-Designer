@@ -93,22 +93,9 @@ def find_discordances(voter_info: Dict[int, List[Dict]],
 
 def downgrade_overlap_conflicts(variants: List[Dict],
                                 discordances: List[Dict]) -> int:
-    """分歧位点的冲突变体双方降 unresolved（goal：pending 而非双 ✗）。
-
-    只动 substitution 且 status=confirmed 的；返回降级数。p_real/评分字段
-    保留（证据还在，前端按 pending 展示）。"""
-    pos_set = {d["ref_pos"] for d in discordances}
-    n = 0
-    for v in variants:
-        if (v.get("type") == "substitution" and v.get("status") == "confirmed"
-                and v.get("ref_pos") in pos_set):
-            v["status"] = "unresolved"
-            rc = v.get("reason_codes") or []
-            if "overlap_discordance" not in rc:
-                rc.append("overlap_discordance")
-            v["reason_codes"] = rc
-            n += 1
-    return n
+    """兼容入口：分歧位点降级已归 SiteCall（sitecall.apply_overlap_discordance）"""
+    from core.sanger.sitecall import apply_overlap_discordance
+    return apply_overlap_discordance(variants, discordances)
 
 
 def _intersect(a: List[Tuple[int, int]], b: List[Tuple[int, int]],

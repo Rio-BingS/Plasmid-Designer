@@ -280,6 +280,18 @@ def _mixed_site_artifact(m: Dict, profiles: Dict, reads: List[Dict]) -> str:
     return ""
 
 
+def _read_mixing_text(c) -> str:
+    """ReadCall → 呈现文案（read 级套峰）"""
+    if c.state == _rc.MIXED_TEMPLATE:
+        return f"全程套峰（{c.n_sites} 处双峰）"
+    if c.state == _rc.SHIFT_AFTER_POINT:
+        return f"第 {c.breakpoint} 位起整体套峰（{c.n_sites} 处双峰）"
+    if c.state == _rc.LOCAL_MIXED:
+        rng = "、".join(f"{a}–{b}" for a, b, _n in c.segments[:3])
+        return f"局部套峰（read 第 {rng} 位，{c.n_sites} 处双峰）"
+    return ""
+
+
 def build_verdict(result: Dict, ref_length: int, scope=None,
                   synonymous_action: str = "ok",
                   review_decisions: Optional[List[Dict]] = None) -> Dict:
@@ -645,41 +657,34 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     # 二期 ReadCall（readcall.py）：read 级套峰（全程 / 某点后）优先——一条
     # mixed_template 报全部套峰 read，取代 widespread 分级的 mixed_sample；
     # 局部套峰只记 info（段内位点已不予确证，经 unresolved_variant 待核）
-    _tmpl = [r for r in reads
-             if (r.get("read_mixing") or {}).get("state")
-             in (_rc.MIXED_TEMPLATE, _rc.SHIFT_AFTER_POINT)]
-    for r in reads:
-        _rm = r.get("read_mixing") or {}
-        if _rm.get("state") == _rc.LOCAL_MIXED:
-            _info("read_local_mixed", None,
-                  f"{r.get('filename')}：{_rc.describe(_rm)}，段内差异不作确证")
+    # 只消费 ReadCall 阶段的结构化结果（result["read_calls"]），文案在此生成
+    _read_calls = _rc.ReadCalls.from_result(result)
+    _tmpl = _read_calls.template_reads()
+    for c in _read_calls.local_reads():
+        _info("read_local_mixed", None,
+              f"{c.filename}：{_read_mixing_text(c)}，段内差异不作确证")
     if _tmpl:
         # 互检（用户 2026-11-12 22:39）：单条 read 套峰更可能是测序本身的问题
         # （引物多位点结合、引物二聚体、模板含杂带）→ seq_overlap_peaks 待定、
         # 建议重测；不同 read 在同一参考区段都套峰才指向模板 → mixed_template
-        _corr = set(_rc.corroborated(reads))
-        _tm = [r for r in _tmpl if r.get("filename") in _corr]
-        _sq = [r for r in _tmpl if r.get("filename") not in _corr]
+        _tm = [c for c in _tmpl if c.corroborated]
+        _sq = [c for c in _tmpl if not c.corroborated]
         if _tm:
             _blk("mixed_template", None, None, None,
                  f"{len(_tm)} 条 read 在同一区段套峰（疑似混合模板）：" + "；".join(
-                     f"{r.get('filename')} {_rc.describe(r['read_mixing'])}"
-                     for r in _tm),
+                     f"{c.filename} {_read_mixing_text(c)}" for c in _tm),
                  "重新挑单克隆复测；CRISPR 样品可做峰图分解或 TA 克隆分别测序",
-                 refs=[r.get("filename") for r in _tm])
+                 refs=[c.filename for c in _tm])
         if _sq:
-            _shift = [r for r in _sq
-                      if r["read_mixing"]["state"] == _rc.SHIFT_AFTER_POINT]
-            if _shift and len(_shift) == len(_sq):
+            if all(c.state == _rc.SHIFT_AFTER_POINT for c in _sq):
                 _act = ("从另一侧引物测序确认；若复现，可能是该点附近的 indel "
                         "杂合，可做峰图分解")
             else:
                 _act = "重测；若复现，检查引物特异性（多位点结合、二聚体）与模板纯度"
             _blk("seq_overlap_peaks", None, None, None,
                  f"{len(_sq)} 条 read 测序套峰（单条 read，未经其他 read 印证）："
-                 + "；".join(f"{r.get('filename')} {_rc.describe(r['read_mixing'])}"
-                             for r in _sq),
-                 _act, refs=[r.get("filename") for r in _sq])
+                 + "；".join(f"{c.filename} {_read_mixing_text(c)}" for c in _sq),
+                 _act, refs=[c.filename for c in _sq])
     wide = [p for p in profiles.values() if p.get("class") == "widespread"]
     if (wide and not _tmpl
             and mixed_sample_confirmed(reads, result.get("mixed_corroboration"))):
@@ -729,7 +734,7 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                       "（分析窗口外，已定位不算异常；该部分不在需测范围）",
                       ref_start=sr_.get("ref_start"), ref_end=sr_.get("ref_end"))
             elif (sr_.get("status") == "breakpoint"
-                  and _rc.overlapping(r.get("read_mixing"))):
+                  and _read_calls.overlapping(r.get("filename"))):
                 # 二期 ReadCall：套峰 read 上的 split-read 断点来自混合信号的
                 # 软剪切，不作确证——降待核（不 fail），段仍列出供核对
                 _blk("structural_breakpoint_unconfirmed", sr_.get("ref_start"),
