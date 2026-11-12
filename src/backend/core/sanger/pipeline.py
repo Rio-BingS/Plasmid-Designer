@@ -2013,7 +2013,9 @@ def _homopolymer_report_pass(poly_runs: List[Dict], variants: List[Dict],
         cis = [x["length_ci"] for x in use if x["length_ci"] is not None]
         methods = [x["length_method"] for x in use if x["length_method"]]
         entry["length_estimate"] = sorted(ests)[len(ests) // 2] if ests else None
-        entry["length_method"] = max(set(methods), key=methods.count) if methods else None
+        # 众数平票时取 read 顺序中先出现者：旧写法 max(set(...)) 的平票结果依赖
+        # 字符串哈希随机化，同一输入每次运行可能在 width/peaks 间跳变
+        entry["length_method"] = max(methods, key=methods.count) if methods else None
         entry["length_ci"] = ([min(c[0] for c in cis), max(c[1] for c in cis)]
                               if cis else None)
         # Step B：跨 read / 跨链综合评判（后综合评判）
