@@ -473,20 +473,16 @@ async def recompute_verdict(analysis_id: str, request: Request,
                                        "（可用元件名 / 数字区间 / 「全质粒」「插入片段」）")
     else:
         scope_obj = None  # 显式清空声明 → 退回未声明（measured）口径
-    from core.sanger.verdict import build_verdict
+    from core.sanger.judge import rejudge
 
     def _recompute():
         # W14：人工确认记录随重算传入（换范围不清留痕），复核队列同步刷新
         from core.sanger.review import build_queue
         _decisions = list(record.get("review_decisions") or [])
-        verdict = build_verdict(record, len(reference), scope_obj,
-                                review_decisions=_decisions or None)
-        conclusion = record.get("conclusion") or ""
-        headline = verdict.get("headline") or ""
-        # 结论头行重建（三出口同源：头行=verdict.headline，正文保留）
-        if headline:
-            lines = conclusion.split("\n") if conclusion else []
-            record["conclusion"] = "\n".join([headline] + lines[1:])
+        # S6 唯一判定入口：重算 Verdict 并重新拼装结论（judge.rejudge）
+        verdict, record["conclusion"] = rejudge(
+            record, len(reference), scope_obj,
+            review_decisions=_decisions or None)
         record["verdict"] = verdict
         record["review_queue"] = build_queue(record, _decisions or None)
         hist = list(record.get("scope_history") or [])
@@ -546,20 +542,15 @@ async def confirm_review(analysis_id: str, request: Request,
 
     def _confirm():
         from core.sanger.scope import Scope as _Scope
-        from core.sanger.verdict import build_verdict
+        from core.sanger.judge import rejudge
         from core.sanger.review import build_queue, apply_review_decision
         decisions = list(record.get("review_decisions") or [])
         apply_review_decision(decisions, body.ref_pos, body.decision, by,
                               body.note)
         scope_obj = (_Scope.from_dict(_scope_d)
                      if _scope_d and _scope_d.get("declared") else None)
-        verdict = build_verdict(record, len(reference), scope_obj,
-                                review_decisions=decisions)
-        conclusion = record.get("conclusion") or ""
-        headline = verdict.get("headline") or ""
-        if headline:
-            lines = conclusion.split("\n") if conclusion else []
-            record["conclusion"] = "\n".join([headline] + lines[1:])
+        verdict, record["conclusion"] = rejudge(
+            record, len(reference), scope_obj, review_decisions=decisions)
         record["verdict"] = verdict
         record["review_decisions"] = decisions
         record["review_queue"] = build_queue(record, decisions)
