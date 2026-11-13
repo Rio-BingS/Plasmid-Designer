@@ -235,6 +235,12 @@ def poly_call(entry: Dict) -> Dict:
         "delta": (measured - ref_n) if (measured is not None and ref_n is not None)
         else None,
         "missing_max": entry.get("peak_missing"),
+        "inserted_max": entry.get("peak_inserted"),
+        # 峰图实测（参考 − 缺失 + 插入）；峰数法失效时为 None
+        "peak_measured": entry.get("peak_measured"),
+        "anchor_grade": entry.get("vote_anchor_grade"),
+        # 落在本 poly 内、由它解释的 indel（S4 位点）
+        "site": (dict(entry["variant"]) if entry.get("variant") else None),
         "width_est": entry.get("length_estimate"),
         "width_ci": entry.get("length_ci"),
         "per_read": [{k: x.get(k) for k in (
@@ -253,7 +259,8 @@ def not_covered(run: Dict) -> Dict:
         "period": run.get("period"),
         "ref_start": run.get("start"), "ref_end": run.get("end"),
         "ref_len": run.get("repeat_count"), "measured": None, "delta": None,
-        "missing_max": None, "width_est": None, "width_ci": None,
+        "missing_max": None, "inserted_max": None, "peak_measured": None,
+        "anchor_grade": None, "site": None, "width_est": None, "width_ci": None,
         "per_read": [], "covered_ranges": [], "reasons": [],
         "stage_version": POLYCALL_VERSION,
     }

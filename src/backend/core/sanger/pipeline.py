@@ -35,7 +35,8 @@ from core.sanger.scoring import confidence_tier as _variant_confidence
 from core.sanger.sitecall import (
     apply_overlap_discordance, build_site_calls, decide_variant, dual_run_diffs)
 from core.sanger.readcall import ReadCalls, build_read_calls
-from core.sanger.polycall import aggregate_run, build_poly_calls
+from core.sanger.polycall import aggregate_run, build_poly_calls, poly_call
+from core.sanger import render_poly
 from core.sanger.split_read import classify_segment
 from core.sanger.artifacts import detect_artifacts, artifact_at as _artifact_at, dye_blob_at
 from core.sanger.overlap import (
@@ -2057,6 +2058,7 @@ def _build_conclusion(
     cds_reports: Optional[List[Dict]] = None,
     mixed_profiles: Optional[Dict] = None,
     verdict: Optional[Dict] = None,
+    poly_calls: Optional[List[Dict]] = None,
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
@@ -2069,6 +2071,9 @@ def _build_conclusion(
     # 任何判读文本：变体清单保留并标注，结论只用一句话交代排除了几处
     shown_variants = [v for v in variants if not v.get("cross_read_resolved")]
     resolved_variants = [v for v in variants if v.get("cross_read_resolved")]
+    # S7：poly 文案只读 PolyCall（未传时由条目转换，兼容直调）
+    if poly_calls is None:
+        poly_calls = [poly_call(e) for e in homopolymer_report]
 
     if cds_reports is None:
         cds_reports = _cds_reports_safe(ref, features, shown_variants, consensus,
@@ -2245,22 +2250,10 @@ def _build_conclusion(
         body_lines.extend(mixed_lines + mixed_signal_lines)
         body_lines.extend(cds_lines)
         # poly 重复数峰图计数存疑时不能只报“一致”（观察级 run 不告警）；
-        # 三态 verdict 分措辞（Step B）：矛盾→不可信，不可判定→需换引物
-        _verdict_warn = {
-            "contradictory": "可分辨 read 之间计数互证矛盾，不可信",
-            "undetermined": "无可分辨峰证据，重复数不可判定（建议换引物或人工核对峰图）",
-            "deficit_observed": "峰图缺失证据，以峰图可分辨峰为准，建议人工复核",
-        }
-        poly_warnings = [
-            f"注意：poly({e['base']}) 同聚物 {e['start']}-{e['end']} 峰图判读："
-            f"{peak_verdict_phrase(e)}——{_verdict_warn.get(e.get('run_verdict'), '以峰图可分辨峰为准，建议人工复核')}"
-            for e in homopolymer_report
-            if e["tier"] == "poly" and not e["count_reliable"]
-        ]
-        # 端点歧义按 verdict 豁免（与变体分支同口径）：run 已 accepted 时
-        # 端点滑动不影响判定，不再提示
-        _verdict_ok0 = {(e["base"], e["start"]) for e in homopolymer_report
-                        if e.get("run_verdict") == "accepted"}
+        # 按 PolyCall 状态分措辞（render_poly.warning_lines）
+        poly_warnings = render_poly.warning_lines(poly_calls)
+        # 端点歧义按 PolyCall 豁免：已确证计数时端点滑动不影响判定
+        _verdict_ok0 = render_poly.confirmed_keys(poly_calls)
         edge_notes0 = [x for x in edge_ambiguous_reads
                        if not any((h["base"], h["start"]) in _verdict_ok0
                                   for h in x["hits"])]
@@ -2275,7 +2268,7 @@ def _build_conclusion(
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
-        poly_warnings.extend(_poly_anchor_notes(homopolymer_report))
+        poly_warnings.extend(render_poly.anchor_notes(poly_calls))
         body_lines.extend(poly_warnings)
         body_lines.extend(dropout_notes)
         body_lines.append(end_note)
@@ -2296,19 +2289,7 @@ def _build_conclusion(
         # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
         # 线——变体锚点 + 峰图实测 + 逐 read 调用/峰数。此前变体行与峰图判读
         # 行两条 ↳ 各说一遍，同一事件在结论里出现两次
-        emitted_runs = {(e["base"], e["unit"], e["start"])
-                        for e in homopolymer_report
-                        if e["tier"] == "poly" and not e["count_reliable"]
-                        and e["read_counts"]}
-
-        def _rc_label(x: Dict) -> str:
-            d = "反向" if x["direction"] == "-" else "正向"
-            n = x["peak_count"] if x["peak_count"] is not None else "?"
-            if x.get("coverage") == "partial":
-                s, t = x["covered_span"]
-                return (f"{x['filename']}{d}覆盖段{s}-{t}"
-                        f"调用{x['called_count']}/峰{n}个")
-            return f"{x['filename']}{d}调用{x['called_count']}/峰{n}个"
+        emitted_runs = render_poly.detail_keys(poly_calls)
 
         # poly 判读：计数可靠的重复区 indel 单列重复数变化（实验员关心的
         # “多了/少了几个”）；峰图矛盾的结构由下面的峰图判读行统一覆盖
@@ -2328,42 +2309,13 @@ def _build_conclusion(
                 f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
                 f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
             )
-        # 峰图计数与调用不一致（即使无 indel 变体）：长同聚物的碱基调用可能
-        # 整段偏差——一条线给全 变体锚点/实测数/逐 read 证据
-        for e in homopolymer_report:
-            if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
-                continue
-        # 峰图判读行按三态 verdict 分措辞（Step B）：
-        # contradictory 互证矛盾 → 不可信；undetermined 无可分辨证据 → 不可
-        # 判定（宽度法仅供参考）；accepted 但整体计数不可靠的（如仅 partial
-        # read 覆盖）仍走旧提示。同一 run 只出一条线，逐 read 证据随行
-        _verdict_phrase = {
-            "contradictory": "可分辨 read 之间计数互证矛盾，不可信",
-            "undetermined": "无可分辨峰证据，长度不可判定（宽度法估计仅供参考）",
-            "deficit_observed": "峰图缺失证据，以峰图可分辨峰为准",
-        }
-        for e in homopolymer_report:
-            if e["tier"] != "poly" or e["count_reliable"] or not e["read_counts"]:
-                continue
-            var = e.get("variant")
-            anchor = ""
-            if var:
-                kind = "插入" if var["type"] == "insertion" else "缺失"
-                anchor = f"位置 {var['ref_pos']} {kind} {var['length']}bp；"
-            detail = " / ".join(_rc_label(x) for x in e["read_counts"])
-            vt = _verdict_phrase.get(
-                e.get("run_verdict"), "峰压缩区，以峰图可分辨峰为准")
-            lines.append(
-                f"  ↳ {run_label(e)} {e['start']}-{e['end']} 峰图判读："
-                f"{peak_verdict_phrase(e)}（{anchor}{detail}）"
-                f"——{vt}，建议人工核对峰图"
-            )
+        # 峰图判读行（PolyCall 状态分措辞，同一 run 只出一条，逐 read 证据随行）
+        lines.extend(render_poly.detail_lines(poly_calls))
         lines.extend(dropout_notes)
         # 端点歧义行按 verdict 豁免（Step B）：run 已有可分辨 read 互证出
         # 确定重复数（accepted）时，端点滑动不再影响判定——只有无判决或
         # 判决存疑的 run 才提示定位偏差
-        _verdict_ok = {(e["base"], e["start"]) for e in homopolymer_report
-                       if e.get("run_verdict") == "accepted"}
+        _verdict_ok = render_poly.confirmed_keys(poly_calls)
         edge_notes = [x for x in edge_ambiguous_reads
                       if not any((h["base"], h["start"]) in _verdict_ok
                                  for h in x["hits"])]
@@ -2377,7 +2329,7 @@ def _build_conclusion(
                 f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
                 "互检定位可能有数 bp 偏差，建议对照图谱核对")
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
-        lines.extend(_poly_anchor_notes(homopolymer_report))
+        lines.extend(render_poly.anchor_notes(poly_calls))
         lines.append(end_note)
         # 覆盖 % 首行已有；「部分测序是常规策略」安抚话术删（2026-11-05 用户
         # 定稿）——只保留未覆盖缺口的位置提示（判断是否补引物用得上）
@@ -2739,7 +2691,8 @@ def analyze(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features, unresolved_sites=unresolved_sites, errors=errors,
-        cds_reports=cds_reports, mixed_profiles=mixed_profiles, verdict=verdict)
+        cds_reports=cds_reports, mixed_profiles=mixed_profiles, verdict=verdict,
+        poly_calls=poly_calls)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
