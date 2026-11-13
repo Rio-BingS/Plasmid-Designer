@@ -73,3 +73,27 @@ def test_rejudge_keeps_body_and_replaces_headline(monkeypatch):
     assert rec["conclusion"] == "OLD\nline1\nline2"  # 不改 record
     v, c = rejudge({"conclusion": "only", "reads": []}, 1000)
     assert c == "NEW\nonly"
+
+
+# ---- S7 呈现：render_poly 只读 PolyCall，措辞与旧口径一致 ----
+from core.sanger import render_poly as rp
+from core.sanger.homopolymer import peak_verdict_phrase, _poly_anchor_notes
+
+
+def test_render_phrase_matches_legacy():
+    e = _entry([_rd("f", "full", [101, 130], 28, 28, "resolvable"),
+                _rd("r", "full", [101, 130], 30, 30, "resolvable", "-")])
+    call = pc.poly_call(e)
+    assert rp.phrase(call) == peak_verdict_phrase(e)
+    assert rp.warning_lines([call])[0].startswith("注意：poly(A) 同聚物 101-130 峰图判读：")
+    assert len(rp.detail_lines([call])) == 1
+    assert rp.detail_keys([call]) == {("A", "A", 101)}
+
+
+def test_render_anchor_notes_match_legacy():
+    reads = [_rd("f", "full", [101, 130], 30, 30, "resolvable")]
+    reads[0]["anchor_grade"] = "unreliable"
+    e = _entry(reads)
+    call = pc.poly_call(e)
+    assert rp.anchor_notes([call]) == _poly_anchor_notes([e])
+    assert rp.confirmed_keys([call]) == {("A", 101)}

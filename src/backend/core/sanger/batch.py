@@ -673,10 +673,17 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
         tail.append(undetermined)
     # A4：poly 区峰图判读存疑——按 run_verdict 分态（contradictory 互证
     # 矛盾对克隆批量筛查最致命，单独点名）
-    hp_bad = [e for e in (res.get("homopolymers") or [])
-              if e.get("tier", "poly") == "poly" and e.get("count_reliable") is False]
-    if hp_bad:
-        vt = {e.get("run_verdict") for e in hp_bad}
+    # S7：优先读 PolyCall；旧存档无 poly_calls 时按旧条目字段
+    if res.get("poly_calls") is not None:
+        from core.sanger.polycall import LEGACY_VERDICT, UNRESOLVED_STATES
+        vt = {LEGACY_VERDICT[pc["state"]] for pc in res["poly_calls"]
+              if pc.get("tier", "poly") == "poly"
+              and pc["state"] in UNRESOLVED_STATES}
+    else:
+        vt = {e.get("run_verdict") for e in (res.get("homopolymers") or [])
+              if e.get("tier", "poly") == "poly"
+              and e.get("count_reliable") is False}
+    if vt:
         if "contradictory" in vt:
             tail.append("poly 区计数互证矛盾")
         elif "undetermined" in vt:
