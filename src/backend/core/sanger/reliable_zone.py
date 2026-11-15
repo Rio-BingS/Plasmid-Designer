@@ -112,23 +112,32 @@ TAIL_EXT_REASON = ("位于 read 尾端扩展区（{g}bp 之后、信号仍达标
                    "差异不确证，需其他引物覆盖确认")
 
 
-def zone_reason(zone: Dict, rp: int) -> str:
-    """rp 落在可信区外时的具体原因（tail_gray/tail_hard 仅为文案参照，
-    区界本身由信号窗口决定，T12）"""
+def zone_cause(zone: Dict, rp: int) -> Dict:
+    """rp 落在可信区外时的结构化原因（S7：文案见 render_site.zone_text_of）。
+    tail_gray/tail_hard 仅为文案参照，区界本身由信号窗口决定（T12）"""
     p = zone["params"]
     raw = rp + (zone["raw_start"] - zone["start"])
     if zone_class(zone, rp) == "tail_ext":
-        return TAIL_EXT_REASON.format(g=p["tail_gray"])
-    if rp < zone["start"]:
-        if raw <= p["front_hard"]:
-            return f"位于 read 首端 1–{p['front_hard']}bp 硬不可信区"
-        return f"位于 read 首端不可信区（{zone['front_reason']}）"
-    if raw > p["tail_hard"]:
-        return f"位于 read {p['tail_hard']}bp 之后，一律不可信"
-    if raw > p["tail_gray"]:
-        return (f"位于 read 尾端灰区 {p['tail_gray'] + 1}–{p['tail_hard']}bp"
-                f"（默认不可信，需其他引物覆盖）")
-    return f"位于 read 尾端不可信区（{zone['tail_reason']}）"
+        kind = "tail_ext"
+    elif rp < zone["start"]:
+        kind = "front_hard" if raw <= p["front_hard"] else "front"
+    elif raw > p["tail_hard"]:
+        kind = "tail_hard"
+    elif raw > p["tail_gray"]:
+        kind = "tail_gray"
+    else:
+        kind = "tail"
+    return {"code": "zone", "zone_kind": kind,
+            "front_hard": p["front_hard"], "tail_gray": p["tail_gray"],
+            "tail_hard": p["tail_hard"],
+            "front_reason": zone.get("front_reason"),
+            "tail_reason": zone.get("tail_reason")}
+
+
+def zone_reason(zone: Dict, rp: int) -> str:
+    """rp 落在可信区外时的具体原因文案（兼容入口，委托呈现层）"""
+    from core.sanger.render_site import zone_text_of
+    return zone_text_of(zone_cause(zone, rp))
 
 
 def zone_text(zone: Dict) -> str:

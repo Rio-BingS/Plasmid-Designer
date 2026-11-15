@@ -47,7 +47,8 @@ from core.sanger.aligner import (
     align_read, align_read_circular, aln_segments, fold_pos, merge_coverage,
     check_unaligned_hq_segment,
 )
-from core.sanger.annotator import annotate_variants, summarize_severity
+from core.sanger.annotator import annotate_variants
+from core.sanger import render_site
 from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length,
@@ -97,6 +98,7 @@ from core.sanger.coverage import (  # noqa: F401
 from core.sanger.evidence import (  # noqa: F401
     _IUPAC_MERGE, _collect_unresolved_sites, _conclusion_summary,
     _insertion_peak_ratio, _iupac_merge, _low_confidence_reason,
+    low_confidence_cause,
     _variant_peak_evidence, _variant_reason_codes, _variant_status,
     attach_evidence_by_read, covering_not_supporting, variant_type_text,
 )
@@ -1859,25 +1861,11 @@ def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
         # 四档 action 与 confidence 回填；本函数此后只生成说明文案
         decide_variant(v, evidence, read_calls)
         if v.get("confidence") == "low" and not v.get("cross_read_resolved"):
-            v["low_reason"] = _low_confidence_reason(
+            # S7 第 2 片：分析阶段只给结构化原因，文案由呈现层生成
+            v["low_cause"] = low_confidence_cause(
                 v, mixed_by_read.get(v.get("read", ""), set()), evidence,
                 zone=src.get("reliable_zone") if src is not None else None)
-            if v.get("dye_blob"):
-                _b = v["dye_blob"]
-                v["low_reason"] += (f"；位于染料团区（{_b['channel']} 通道宽峰，"
-                                    f"read 第 {_b['start']}–{_b['end']} 位）")
-            if v.get("in_mixed_template"):
-                _mt = v["in_mixed_template"]
-                v["low_reason"] += (
-                    f"；{_mt['read']} 在此处套峰（"
-                    + (f"第 {_mt['breakpoint']} 位起整体套峰" if _mt.get("breakpoint")
-                       else "混合模板")
-                    + "），主峰差异不能作确证")
-            wk = (v.get("cross_read_weak") or [None])[0]
-            if wk:
-                v["low_reason"] += (
-                    f"；{wk['read']} 读出设计碱基，但{region_quality_text(wk)}，"
-                    f"质量不足以互检")
+            v["low_reason"] = render_site.low_reason_text(v)
         # 机器可读原因码（goal T1）：在 SiteCall 定案之后计算
         v["reason_codes"] = _variant_reason_codes(
             v, evidence,
@@ -2282,7 +2270,7 @@ def _build_conclusion(
         # 疑似混合样品影响整份判读，紧跟首行（⚠ 汇总行 + ↳ 逐 read 明细）
         lines.extend(mixed_lines)
         lines.extend(mixed_signal_lines)
-        severity_tagged = summarize_severity(shown_variants)
+        severity_tagged = render_site.severity_lines(shown_variants)
         lines.extend(text for text, _kind in severity_tagged)
         # CDS 结论紧随其后（整段编码区有没有问题是第一信息，此前重构时遗漏）
         lines.extend(cds_lines)

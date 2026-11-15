@@ -25,7 +25,7 @@ from core.sanger.noise import peak_snr as _noise_peak_snr
 # W12：头行符号映射（verdict.py 顶部反向 import 本模块——循环风险在
 # verdict 侧已按惰性导入处理，此处为正向依赖，安全）
 from core.sanger.verdict import status_symbol
-from core.sanger.reliable_zone import core_zone, in_zone, zone_class, zone_reason
+from core.sanger.reliable_zone import core_zone, in_zone, zone_cause, zone_class
 
 
 def _variant_status(v: Dict) -> str:
@@ -431,51 +431,61 @@ def variant_type_text(v: Dict) -> str:
     return f"替换 {v.get('ref_base', '')}>{v.get('alt_base', '')}"
 
 
-def _low_confidence_reason(v: Dict, mixed_positions: set,
-                           evidence: Optional[Dict] = None,
-                           zone: Optional[Dict] = None) -> str:
-    """低置信的具体原因（与 _variant_confidence 的判定分支一一对应），
+def low_confidence_cause(v: Dict, mixed_positions: set,
+                         evidence: Optional[Dict] = None,
+                         zone: Optional[Dict] = None) -> Dict:
+    """低置信的主要原因（结构化，S7 第 2 片）：与 _variant_confidence 的判定
+    分支一一对应，按 v17 顺序命中即停。文案由 render_site.cause_text 生成——
     把"疑似测序噪声"这种笼统说法换成人工核对时能直接对照峰图的错误类型"""
     q = int(v.get("read_q") or 0)
     rp = v.get("read_pos")
     support = v.get("support_reads") or 1
     if v.get("cross_read_conflict") and not v.get("cross_read_resolved"):
-        rd = "、".join(v["cross_read_conflict"].get("reads", [])[:2])
-        return f"互检矛盾：{rd} 在同一位点读出设计碱基"
+        return {"code": "cross_conflict",
+                "reads": list(v["cross_read_conflict"].get("reads", [])[:2])}
     if v.get("merged_zone_artifact"):
-        return "落在同聚物峰合并压缩区，该 read 此处无可分辨峰"
+        return {"code": "merged_zone"}
     if v.get("slippage_artifact"):
-        return "poly 下游滑移伪影（同聚物后信号错位）"
+        return {"code": "slippage"}
     alt_up = (v.get("alt_base") or "").upper()
     if v.get("type") in ("substitution", "insertion") and any(
             c not in "ACGT-" for c in alt_up):
-        return "碱基判读为 N/模糊碱基（basecaller 未能解析）"
+        return {"code": "n_call"}
     if zone and rp and support < 2 and zone_class(zone, rp) != "core":
-        return zone_reason(zone, rp)
+        return zone_cause(zone, rp)
     ins_ratio = evidence.get("insertion_peak_ratio") if evidence else None
     if rp and rp in mixed_positions and (ins_ratio is None or ins_ratio < 0.6):
-        return "该位点双峰（次级峰占比 >30%，疑似混合样品或杂峰）"
+        return {"code": "mixed_bg"}
     hp = v.get("homopolymer")
     if (hp and v.get("type") in ("insertion", "deletion")
             and hp.get("peak_amplitude_ratio") is not None
             and hp["peak_amplitude_ratio"] < POLY_COMPRESSION_RATIO):
-        return f"同聚物峰压缩（峰幅为局部主峰的 {round(hp['peak_amplitude_ratio'] * 100)}%），重复数计数不可靠"
+        return {"code": "poly_compressed",
+                "pct": round(hp["peak_amplitude_ratio"] * 100)}
     if evidence is not None:
         if ins_ratio is not None:
             pct = round(ins_ratio * 100)
             if ins_ratio < 0.3:
-                return f"插入位置几乎无独立峰（插入峰为邻峰的 {pct}%），疑似 basecaller 伪影"
+                return {"code": "ins_none", "pct": pct}
             if ins_ratio >= 0.6:
-                return f"插入峰可见（为邻峰的 {pct}%），但仅单条 read 支持（Q{q}）"
-            return f"插入峰偏弱（为邻峰的 {pct}%）且 Q 值低，Q{q}"
+                return {"code": "ins_visible", "pct": pct, "q": q}
+            return {"code": "ins_weak", "pct": pct, "q": q}
         mp, snr = evidence.get("mutant_pct"), evidence.get("snr")
         if mp is not None and mp < 30:
-            return f"突变峰明显弱于参考峰（突变峰占比 {mp}%），疑似误读"
+            return {"code": "mutant_weak", "mp": mp}
         if mp is not None and mp < 70:
-            return f"突变峰与参考峰高度相当（突变峰占比 {mp}%），双峰/混合"
+            return {"code": "mutant_equal", "mp": mp}
         if snr is not None and snr < 5:
-            return f"突变峰信噪比低（SNR {snr}），接近本底"
-    return f"Q 值偏低，Q{q}" + ("，仅单条 read 支持" if support < 2 else "")
+            return {"code": "low_snr", "snr": snr}
+    return {"code": "low_q", "q": q, "single": support < 2}
+
+
+def _low_confidence_reason(v: Dict, mixed_positions: set,
+                           evidence: Optional[Dict] = None,
+                           zone: Optional[Dict] = None) -> str:
+    """兼容入口：结构化原因 → 主句文案（委托呈现层）"""
+    from core.sanger.render_site import cause_text
+    return cause_text(low_confidence_cause(v, mixed_positions, evidence, zone))
 
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],

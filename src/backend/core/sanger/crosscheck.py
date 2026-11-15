@@ -13,6 +13,7 @@ from core.sanger.aligner import fold_pos
 from core.sanger.mixed_call import MINOR_AF_MIN
 from core.sanger.readmap import _circ_len, _read_ref_maps
 from core.sanger.reliable_zone import in_zone
+from core.sanger.render_site import region_quality_text  # noqa: F401（兼容导出）
 
 # 互检常量（自 homopolymer 迁入；语义见行内注释）
 CROSS_CHECK_MIN_Q = 20   # 跨 read 反证：junction 处 Q 低于此值时"未报"不构成反证
@@ -88,12 +89,6 @@ def _region_ok(rq: Optional[Dict]) -> bool:
             and rq["region_mean_q"] >= CROSS_REGION_MEAN_Q
             and rq["region_hq_frac"] >= CROSS_REGION_HQ_FRAC
             and rq["core_min_q"] >= CROSS_CHECK_MIN_Q)
-
-
-def region_quality_text(ev: Dict) -> str:
-    """验证 read 区域质量的文字（结论/悬停共用）"""
-    return (f"该区 {ev.get('region_cols', '?')}bp 平均 Q{ev['region_mean_q']:g}、"
-            f"≥Q20 占 {round(ev.get('region_hq_frac', 0) * 100)}%")
 
 
 def mixed_noise_like(chk: Dict, count: int, n_reads: int) -> bool:

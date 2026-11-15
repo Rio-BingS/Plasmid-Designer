@@ -297,60 +297,6 @@ def annotate_variants(variants: List[Dict], features: List[Dict], reference: str
 
 
 def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
-    """生成变体影响摘要（供自动结论使用）。
-
-    返回 [(行文本, kind)]——kind 是机器可读的分组标记（2026-11-08 复审
-    R6：前端折叠分组由它驱动，不再靠「低置信度（」文案匹配）：
-    - "low"：低置信变体行及其 ↳ 子注释（前端默认折叠组）；
-    - "variant"：确证变体行 / 互检排除行及其子注释（正文常驻）。
-    W12（RV 遗留）：低置信行文案改「未决（」口径——「疑似伪影」是对矛盾
-    证据的预判，未决如实说；前端折叠分组由 kind 驱动（R6），文案变更不影响
-    分组。low ⟺ confidence=low 且非互检排除（cross_read_resolved 行不带
-    未决文案，归正文）。"""
-    notes: List[Tuple[str, str]] = []
-    for v in variants:
-        loc = "、".join(f"{f['name']}({f['type']})" for f in v.get("features", [])) or "非编码区"
-        if v.get("frameshift"):
-            kind = {"insertion": "插入", "deletion": "缺失"}.get(v["type"], v["type"])
-            n = int(v.get("length") or 1)
-            note = f"位置 {v['ref_pos']} {kind} {n}bp（{loc}）导致移码"
-        elif v.get("aa_change"):
-            bc = (f"{v['ref_base']}>{v['alt_base']} " if v.get("type") == "substitution"
-                  else "")
-            note = f"位置 {v['ref_pos']} {bc}氨基酸改变 {v['aa_change']}（{loc}）"
-        elif v.get("synonymous"):
-            note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）同义突变（蛋白不变）"
-        elif v["type"] == "substitution":
-            note = f"位置 {v['ref_pos']} {v['ref_base']}>{v['alt_base']}（{loc}）"
-        else:
-            kind = "插入" if v["type"] == "insertion" else "缺失"
-            note = f"位置 {v['ref_pos']} {kind} {v['length']}bp（{loc}）"
-        line_kind = "variant"
-        if v.get("confidence") == "low":
-            # 低置信文案分三支（A4 + 互检反证）：poly 下游滑移 echo 与跨 read
-            # 互检矛盾各有明确原因点名，其余维持原口径
-            if v.get("cross_read_resolved"):
-                rd = "、".join(((v.get("cross_read_conflict") or {}).get("reads") or [])[:2])
-                note += f"，已被 {rd} 互检排除（该处读出设计碱基，判为测序误差）"
-            elif v.get("cross_read_conflict"):
-                # 2026-11-08 复审 R6：「疑似伪影」是对矛盾证据的预判——
-                # 伪影与低频真实变异均无法排除，如实说
-                note += "，未决（仅单 read 报告，其他 read 跨过同一位点未见差异——互检矛盾，伪影与低频真实变异均无法排除）"
-            elif v.get("slippage_artifact"):
-                note += "，未决（poly 下游滑移待定，需人工核对峰图）"
-            elif v.get("low_reason"):
-                note += f"，未决（{v['low_reason']}，需人工核对峰图）"
-            else:
-                note += "，未决（测序噪声或混合峰无法排除，需人工核对峰图）"
-            line_kind = "low"
-        notes.append((note, line_kind))
-        if v.get("enzyme_sites_lost"):
-            notes.append((f"  ↳ 破坏酶切位点: {', '.join(v['enzyme_sites_lost'])}", line_kind))
-        if v.get("enzyme_sites_gained"):
-            notes.append((f"  ↳ 新增酶切位点: {', '.join(v['enzyme_sites_gained'])}", line_kind))
-        if v.get("enzyme_sites_pending") and v.get("status") == "unresolved":
-            # 酶位归属待定是「下游实验要先确认」的判读要点，不随低置信明细
-            # 折叠（goal v3.1 X2：结论正文 ≤5 要点，但判读要点必须常驻）
-            notes.append(("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
-                          + " 在 ±10bp 内、indel 归属未定：位点归属待定", "variant"))
-    return notes
+    """兼容入口：变体影响摘要已移到呈现层 render_site.severity_lines（S7）"""
+    from core.sanger.render_site import severity_lines
+    return severity_lines(variants)
