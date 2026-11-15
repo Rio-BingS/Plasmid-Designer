@@ -247,17 +247,62 @@ def _corroborate_mixed(read_results: List[Dict],
 
 
 def _mixed_check_phrase(chk: Dict) -> str:
-    """单条 read 互检摘要短语（仅统计非零项，全零返回空串）"""
-    parts = []
-    if chk["multi"]:
-        parts.append(f"{chk['multi']} 处其他引物同报双峰（倾向真实混合）")
-    if chk["clean"]:
-        parts.append(f"{chk['clean']} 处其他引物覆盖且峰形单一（倾向噪声）")
-    if chk.get("batch"):
-        parts.append(f"{chk['batch']} 处同批同引物其他克隆同位点同样有次峰（批内背景）")
-    if chk["uncovered"]:
-        ref_txt = pos_ranges_str(chk.get("uncovered_ref") or [])
-        parts.append(f"{chk['uncovered']} 处无其他引物覆盖待核"
-                     + (f"（参考位置 {ref_txt}）" if ref_txt else ""))
-    return "互检：" + "、".join(parts) if parts else ""
+    """兼容入口：互检摘要短语已移到呈现层 render_mixed.check_phrase（S7）"""
+    from core.sanger.render_mixed import check_phrase
+    return check_phrase(chk)
 
+
+MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
+
+
+def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict) -> Dict:
+    """S7 第 3 片：结论里双峰（疑似混合）几类行所需的结构化判定（纯函数）。
+
+    判断都在这里做完（互检主导的 noise_like、连续双峰段阈值、哪些 read 要
+    单列待核子行、多引物同报位点），呈现层 render_mixed 只读本结果拼文案。
+    scattered 待核行仍由 resolved_regions.scattered_pending_lines 生成。"""
+    by_read = mixed_corroboration.get("by_read") or {}
+    crossable = len(read_results) >= 2   # 单条 read 无从互检
+
+    def _chk(fn: str) -> Dict:
+        c = by_read.get(fn) or {}
+        return {k: c.get(k, 0) for k in ("multi", "clean", "batch", "uncovered")} | {
+            "uncovered_ref": sorted(c.get("uncovered_ref") or [])}
+
+    wide = []
+    for r in read_results:
+        p = r["mixed_profile"]
+        if p["class"] != "widespread":
+            continue
+        chk_raw = by_read.get(r["filename"]) or {}
+        span = p.get("span")
+        wide.append({
+            "filename": r["filename"], "count": p["count"],
+            "frac": (round(p["minor_fraction"] * 100)
+                     if p.get("minor_fraction") else None),
+            "stretch": p["longest_stretch"] >= MIXED_STRETCH_MIN,
+            "span_start": span[0] if span else None,
+            "noise_like": mixed_noise_like(chk_raw, p["count"], len(read_results)),
+            "chk": _chk(r["filename"]),
+        })
+    pending = []
+    for r in read_results:
+        p = r["mixed_profile"]
+        if p["class"] not in ("widespread", "local", "noise"):
+            continue
+        uncov = sorted((by_read.get(r["filename"]) or {}).get("uncovered_ref") or [])
+        if crossable and not uncov:
+            continue
+        row = {"filename": r["filename"], "count": p["count"]}
+        if crossable:
+            row["uncovered_ref"] = uncov
+        else:
+            z = r["reliable_zone"]
+            row["positions"] = list(p["positions"])
+            row["zone"] = {k: z[k] for k in ("start", "end", "raw_start", "raw_end")}
+        pending.append(row)
+    multi = []
+    if crossable and mixed_corroboration.get("total", 0) > 0:
+        multi = [rp for rp, _fs in mixed_corroboration.get("multi_sites") or []]
+    return {"crossable": crossable, "wide": wide, "pending": pending,
+            "multi_sites": multi}

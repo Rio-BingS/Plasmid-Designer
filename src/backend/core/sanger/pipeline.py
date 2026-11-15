@@ -48,7 +48,8 @@ from core.sanger.aligner import (
     check_unaligned_hq_segment,
 )
 from core.sanger.annotator import annotate_variants
-from core.sanger import render_site
+from core.sanger import render_mixed, render_site
+from core.sanger.crosscheck import MIXED_STRETCH_MIN, mixed_summary as build_mixed_summary  # noqa: F401
 from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
     baseline_correct, property_maps, estimate_run_length,
@@ -113,7 +114,6 @@ TRACY_JSON_MIN_VERSION = (0, 3, 10)
 MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
 MIXED_WIDESPREAD_MIN = 5   # 双峰位点 ≥ 此数 → read 级判「疑似混合样品」
 MIXED_SCATTERED_MIN = 2    # 2-4 个 → 「个别双峰位点」提示（不升级结论）
-MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
 PULLUP_HEIGHT_FACTOR = 3.0  # 主峰高 ≥ 全 read 峰高中位 × 此倍数视为饱和峰
 PULLUP_MAX_RATIO = 0.5      # 饱和峰位次级峰占比 ≤ 此值且与主峰同期 → 按染料拖影（pull-up）抑制
 MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
@@ -2047,6 +2047,7 @@ def _build_conclusion(
     mixed_profiles: Optional[Dict] = None,
     verdict: Optional[Dict] = None,
     poly_calls: Optional[List[Dict]] = None,
+    mixed_summary: Optional[Dict] = None,
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
@@ -2095,112 +2096,19 @@ def _build_conclusion(
     if mixed_profiles is None:
         mixed_profiles = {r["filename"]: r["mixed_profile"] for r in read_results
                           if r["mixed_profile"]["count"] > 0}
-    mixed_lines: List[str] = []  # 待折叠组（R6：↳ 逐 read 双峰行 + scattered 待核行）
-    mixed_signal_lines: List[str] = []
-
-    def _frac_range(ps: List[Dict]) -> str:
-        fr = sorted(round(p["minor_fraction"] * 100) for p in ps
-                    if p.get("minor_fraction"))
-        if not fr:
-            return ""
-        lo, hi = fr[0], fr[-1]
-        return f"约 {lo}%" if lo == hi else f"约 {lo}–{hi}%"
-
-    wide = [(r, r["mixed_profile"]) for r in read_results
-            if r["mixed_profile"]["class"] == "widespread"]
-    crossable = len(read_results) >= 2   # 单条 read 无从互检
-    if len(wide) == 1:
-        r, p = wide[0]
-        chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
-        frac_txt = _frac_range([p])
-        # 互检主导措辞：多数双峰位点被其他引物覆盖且峰形单一、无同报 →
-        # 倾向该 read 自身信号问题（常见于引物首端），而非真实混合
-        noise_like = mixed_noise_like(chk, p["count"], len(read_results))
-        if noise_like:
-            _src = ("跨引物互检：多数双峰位点被其他引物测过且峰形单一、判读一致，"
-                    if not chk.get("batch") else
-                    "批内同引物对照：多数双峰位点在同批同引物其他克隆的同一位点同样"
-                    "出现同碱基次峰（序列上下文背景）"
-                    + ("或被其他引物干净读出，" if chk.get("clean") else "，"))
-            line = (f"⚠ {r['filename']} 检出 {p['count']} 处双峰位点"
-                    + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
-                    + f"——{_src}"
-                    "更倾向该 read 自身信号问题（信号不稳区以引物首端为主）"
-                    "而非真实混合，建议核对峰图与互检位置后复测该段")
-            if p["longest_stretch"] >= MIXED_STRETCH_MIN and p.get("span"):
-                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
-                         "（若互检未覆盖该段，需警惕两个克隆相差插入/缺失）")
-        else:
-            line = (f"⚠ 疑似混合样品：{r['filename']} 检出 {p['count']} 处双峰位点"
-                    + (f"（估计次要克隆占比{frac_txt}）" if frac_txt else "")
-                    + "，主峰序列按多数碱基判读——建议重新挑单克隆划线培养后复测")
-            if p["longest_stretch"] >= MIXED_STRETCH_MIN:
-                line += (f"；自位置 {p['span'][0]} 起存在连续双峰段"
-                         "（两个克隆相差插入/缺失时的典型形态）")
-            note = _mixed_check_phrase(chk) if crossable else ""
-            if note:
-                line += f"；{note}"
-        mixed_lines.append(line)
-    elif wide:
-        counts = sorted(p["count"] for _r, p in wide)
-        cr = (str(counts[0]) if counts[0] == counts[-1]
-              else f"{counts[0]}–{counts[-1]}")
-        frac_txt = _frac_range([p for _r, p in wide])
-        line = (f"⚠ {len(wide)} 条 read 均疑似混合样品（每条双峰位点 {cr} 处"
-                + (f"，估计次要克隆占比{frac_txt}" if frac_txt else "")
-                + "）——样品为两种质粒的混合，主峰序列按多数碱基判读，"
-                "建议重新挑单克隆划线培养后复测")
-        stretchy = [r["filename"] for r, p in wide
-                    if p["longest_stretch"] >= MIXED_STRETCH_MIN and p.get("span")]
-        if stretchy:
-            names = "、".join(stretchy[:2])
-            line += f"；{names} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
-        mixed_lines.append(line)
-    # 逐 read 位点范围子行（2026-11-05 用户定稿：收敛）——双峰位点能被互检
-    # 归为噪声的 read 不再单独成行（read 质量细节，与构建判读无关）；只有
-    # 含「无覆盖待核位点」的 read 保留一行，直接带待核参考位置（用户可对照
-    # 图谱核对），read 坐标细节在报告双峰章节（前端折叠组）。
-    # T11：local（局部信号异常）/noise（信号质量）read 的位点同样待核，
-    # 与 widespread 同等保留子行（scattered 走 resolved_regions 的差异区
-    # 间款，不在此列避免双行）
-    for r, p in [(r, r["mixed_profile"]) for r in read_results
-                 if r["mixed_profile"]["class"] in ("widespread", "local", "noise")]:
-        chk = mixed_corroboration["by_read"].get(r["filename"]) or {}
-        uncov_refs = sorted(chk.get("uncovered_ref") or [])
-        if crossable and not uncov_refs:
-            continue
-        if crossable:
-            mixed_lines.append(
-                f"  ↳ {r['filename']}：双峰 {p['count']} 处中 "
-                f"{len(uncov_refs)} 处无其他引物覆盖待核"
-                f"（参考位置 {pos_ranges_str(uncov_refs)}）")
-            continue
-        # 单条 read 无从互检：保留原坐标行（此时坐标是唯一的核对线索）
-        z = r["reliable_zone"]
-        zone_txt = f"{z['start']}–{z['end']}"
-        if (z["raw_start"], z["raw_end"]) != (z["start"], z["end"]):
-            zone_txt += f"（原始 {z['raw_start']}–{z['raw_end']}）"
-        mixed_lines.append(
-            f"  ↳ {r['filename']}：双峰 {p['count']} 处，位于 read "
-            f"{pos_ranges_str(p['positions'])}"
-            f"（read 坐标；可信区 {zone_txt} 以外未计入）")
+    # S7 第 3 片：判定在 crosscheck.mixed_summary，文案在 render_mixed
+    if mixed_summary is None:
+        mixed_summary = build_mixed_summary(read_results, mixed_corroboration)
+    crossable = mixed_summary["crossable"]
+    mixed_lines: List[str] = render_mixed.read_lines(mixed_summary)  # 待折叠组（R6）
     # scattered（个别双峰位点）只提示不升级结论：待核行与区间裁决行同款
     # 表述（2026-11-06 用户定稿），构建在 resolved_regions 模块（T0 拆分）
     mixed_lines.extend(
         scattered_pending_lines(read_results, mixed_corroboration, crossable,
                                 features))
-    # 跨引物互检汇总：只保留「多引物同报双峰」（真实混合的最强信号）——
-    # 倾向噪声/无法互检的计数是 read 质量细节（2026-11-05 用户定稿：结论不列）
-    if crossable and mixed_corroboration["total"] > 0:
-        mc = mixed_corroboration
-        if mc["multi_sites"]:
-            pos_txt = "、".join(str(rp) for rp, _fs in mc["multi_sites"][:4])
-            more = " 等" if len(mc["multi_sites"]) > 4 else ""
-            # R6：⚠ 信号行不进折叠组（前端正文常驻），mixed_lines 只留
-            # 待折叠的 ↳ 逐 read/scattered 行
-            mixed_signal_lines.append(
-                f"⚠ {len(mc['multi_sites'])} 处参考位点被多条引物同报双峰"
-                f"（参考位置 {pos_txt}{more}，倾向真实混合）——建议重新挑单克隆复测")
+    # 跨引物互检汇总：只保留「多引物同报双峰」（真实混合的最强信号）；
+    # R6：⚠ 信号行不进折叠组（前端正文常驻）
+    mixed_signal_lines: List[str] = render_mixed.signal_lines(mixed_summary)
 
     # read 可信区提示（2026-11-06 用户定稿）：默认边界的「首尾不可信区按低置信
     # 处理」教育行删——差异该标低置信的已在变体表标注，结论里这句话是噪声；
@@ -2634,6 +2542,8 @@ def analyze(
         poly_runs, variants, read_results, coverage_ranges)
     # S4 PolyCall：全部结构级 poly 的结构化判定（含未覆盖的 NOT_COVERED）
     poly_calls = build_poly_calls(poly_runs, homopolymer_report)
+    # S7：双峰结论行所需的结构化判定（呈现层只读它）
+    mixed_summary = build_mixed_summary(read_results, mixed_corroboration)
     # measured/verified 双覆盖口径（goal T3；B P0-4）：verified = measured ∩
     # 可信区 − N/模糊调用列；注入共识供 CDS 判定切 verified 口径
     coverage = compute_coverage(read_results, len(ref), coverage_ranges,
@@ -2680,7 +2590,7 @@ def analyze(
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features, unresolved_sites=unresolved_sites, errors=errors,
         cds_reports=cds_reports, mixed_profiles=mixed_profiles, verdict=verdict,
-        poly_calls=poly_calls)
+        poly_calls=poly_calls, mixed_summary=mixed_summary)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
@@ -2720,6 +2630,7 @@ def analyze(
         **_shadow,
         "read_calls": read_calls.to_list(),
         "poly_calls": poly_calls,
+        "mixed_summary": mixed_summary,
         "reads": [
             {k: v for k, v in r.items()
              if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps", "_width_cache",
