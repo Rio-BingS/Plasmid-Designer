@@ -2,7 +2,7 @@
 
 职责：poly 结构的发现（find_repeat_runs / find_homopolymers）、峰图证据
 评估（_poly_peak_*）、跨 read 反证与可信区校验（_cross_region_quality /
-_anchor_verdict_for_read）、以及报告文案（run_label / peak_verdict_phrase /
+_anchor_verdict_for_read）、以及报告文案（run_label /
 region_quality_text）。pipeline 经 re-export 维持全部旧导入路径。
 """
 
@@ -461,50 +461,8 @@ def run_label(run: Dict) -> str:
     return "重复序列"
 
 
-def peak_verdict_phrase(e: Dict) -> str:
-    """峰图主判读短语（以可分辨峰为准，basecaller 调用数只在逐 read 里出现）"""
-    ref = e["ref_repeat_count"]
-    m = e.get("peak_measured")
-    if m is None:
-        ci = e.get("length_ci")
-        est = f"宽度法估计 {e.get('length_estimate')} 个"
-        if ci:
-            est += f"（区间 {ci[0]}–{ci[1]}）"
-        return f"峰图计数不可用，{est}"
-    if e.get("peak_missing"):
-        return f"缺失 {e['peak_missing']} 个 {e['base']}：实测 {m} 个，参考 {ref} 个"
-    if e.get("peak_inserted"):
-        return f"插入 {e['peak_inserted']} 个 {e['base']}：实测 {m} 个，参考 {ref} 个"
-    return f"poly({e['base']}) 碱基类型完整：实测 {m} 个，参考 {ref} 个"
-
-
 # 锚定分级劣序（rank 越大越差）：取投票 read 的最差分级用
 _ANCHOR_RANK = {"reliable": 0, "one-sided": 1, "marginal": 2, "unreliable": 3}
-
-
-def _poly_anchor_notes(homopolymer_report: List[Dict]) -> List[str]:
-    """accepted 但投票 read 的锚定分级不可靠的 run → 「计数确证但定位存疑」
-
-    run_verdict=accepted 只由可分辨峰计数互证产生，确证的是「重复数」；
-    run 起止定位依赖两侧路标碱基（锚），锚踩在信号异常区（边缘/低 Q/
-    混合峰/压缩区）时位置仍可能整体偏移。此前该信息只藏在逐 read 的
-    anchor_grade 字段里，结论不体现——用户容易误以为位置也确证了。
-    """
-    notes: List[str] = []
-    for e in homopolymer_report:
-        if e.get("run_verdict") != "accepted":
-            continue
-        g = e.get("vote_anchor_grade") or "reliable"
-        if _ANCHOR_RANK.get(g, 1) < _ANCHOR_RANK["marginal"]:
-            continue
-        reason = ("路标落在信号异常区" if g == "unreliable"
-                  else "路标处于信号边缘或单侧锚定")
-        notes.append(
-            f"注意：{run_label(e)} {e['start']}-{e['end']} 重复数已由峰图"
-            f"计数确证（{e.get('observed_repeat_count', '?')} 个），但该 run"
-            f"的锚定路标不可靠（{reason}）——计数确证但定位存疑，run 起止"
-            "可能整体偏移数 bp，建议对照图谱核对边界")
-    return notes
 
 
 def _anchor_quality(r: Dict, pos: int) -> Tuple[str, List[str]]:

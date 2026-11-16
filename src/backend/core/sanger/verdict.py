@@ -124,11 +124,8 @@ _RESIST_ORI_NAME_RE = re.compile(r"ampr|kanr|cmr|neor|puc|ori|f1", re.IGNORECASE
 
 # 旧记录兼容（无 status 字段）的三态推导，与 batch._variant_status_of 同口径
 def _vstatus(v: Dict) -> str:
-    if v.get("status"):
-        return v["status"]
-    if v.get("cross_read_resolved"):
-        return "rejected"
-    return "confirmed" if v.get("confidence") != "low" else "unresolved"
+    from core.sanger.sitecall import site_status
+    return site_status(v)
 
 
 def _critical_features(features: List[Dict]) -> List[Dict]:

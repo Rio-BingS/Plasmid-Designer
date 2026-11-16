@@ -250,6 +250,18 @@ def call_mixed(m: Dict) -> Dict:
     }
 
 
+def site_status(v: Dict) -> str:
+    """变体三态（S5 下游唯一读取入口）：读 decide_variant 写回的 status；
+    旧存档无 status 时按旧口径推导（互检定案 → rejected，低置信 → unresolved）。
+    原 batch._variant_status_of、verdict._vstatus、pipeline CDS 内联 _cstat 三处同口径。"""
+    st = v.get("status")
+    if st:
+        return st
+    if v.get("cross_read_resolved"):
+        return "rejected"
+    return "confirmed" if v.get("confidence") != "low" else "unresolved"
+
+
 def build_site_calls(variants: Optional[List[Dict]],
                      mixed_variants: Optional[List[Dict]]) -> List[Dict]:
     p = load_params()

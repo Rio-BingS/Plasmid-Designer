@@ -35,7 +35,9 @@ from typing import Dict, List, Optional, Tuple, Union
 from core.sanger.batch import squash_name
 # 报告里 poly 结构的名称与峰图判读短语与网页卡共用同一实现（同一事件在
 # 网页、结论文本、整理包报告里说法一致，避免各写各的）
-from core.sanger.pipeline import (END_MARGIN, peak_verdict_phrase,
+from core.sanger import render_poly
+from core.sanger.polycall import count_ok as poly_count_ok, poly_calls_of
+from core.sanger.pipeline import (END_MARGIN,
                                   pos_ranges_str, run_label,
                                   alignment_span_text)
 
@@ -286,8 +288,9 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
     regular_variants = [v for v in record_variants if not _is_repeat_indel(v)]
     # poly 同聚物 / 重复结构判读（与网页 poly 卡同口径）：poly 级结构 +
     # 带变体的观察级结构；峰图矛盾的结构附逐 read 调用/峰数证据
-    hp_entries = [e for e in ((record or {}).get("homopolymers") or [])
-                  if e.get("tier") == "poly" or e.get("variant")]
+    # S5：只读 PolyCall（旧存档由 homopolymers 即时转换）
+    hp_entries = [pc for pc in poly_calls_of(record)
+                  if pc.get("tier") == "poly" or pc.get("site")]
     if hp_entries or repeat_indels:
         lines += [
             "## poly 同聚物 / 重复结构判读", "",
@@ -297,18 +300,19 @@ def _group_report_md(item: Dict, record: Optional[Dict], copied: List[Dict],
         if hp_entries:
             lines += ["| 结构 | 区间 | 参考重复数 | 峰图判读 | 计数可靠性 |",
                       "|---|---|---|---|---|"]
-            for e in hp_entries:
-                rel_txt = ("可靠" if e.get("count_reliable", True)
+            for pc in hp_entries:
+                rel_txt = ("可靠" if poly_count_ok(pc)
                            else "**不可靠**（峰图与调用不一致，建议核对峰图）")
-                lines.append(_md_row(run_label(e), f"{e['start']}–{e['end']}",
-                                     e['ref_repeat_count'], peak_verdict_phrase(e),
-                                     rel_txt))
+                lines.append(_md_row(render_poly.label(pc),
+                                     f"{pc['ref_start']}–{pc['ref_end']}",
+                                     pc['ref_len'], render_poly.phrase(pc), rel_txt))
             lines.append("")
-        for e in hp_entries:
-            if e.get("count_reliable", True) or not e.get("read_counts"):
+        for pc in hp_entries:
+            if poly_count_ok(pc) or not pc.get("per_read"):
                 continue
-            lines.append(f"- **{run_label(e)} {e['start']}-{e['end']}**（峰图矛盾）逐 read 证据：")
-            for x in e["read_counts"]:
+            lines.append(f"- **{render_poly.label(pc)} {pc['ref_start']}-{pc['ref_end']}**"
+                         "（峰图矛盾）逐 read 证据：")
+            for x in pc["per_read"]:
                 d = "反向" if x["direction"] == "-" else "正向"
                 n = x["peak_count"] if x["peak_count"] is not None else "?"
                 cov = (f"，覆盖段 {x['covered_span'][0]}–{x['covered_span'][1]}"

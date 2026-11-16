@@ -238,6 +238,8 @@ def poly_call(entry: Dict) -> Dict:
         "inserted_max": entry.get("peak_inserted"),
         # 峰图实测（参考 − 缺失 + 插入）；峰数法失效时为 None
         "peak_measured": entry.get("peak_measured"),
+        # 呈现用重复数（accepted 为峰图实测，其余为调用数/变体观测数）
+        "observed": entry.get("observed_repeat_count"),
         "anchor_grade": entry.get("vote_anchor_grade"),
         # 落在本 poly 内、由它解释的 indel（S4 位点）
         "site": (dict(entry["variant"]) if entry.get("variant") else None),
@@ -275,6 +277,33 @@ def build_poly_calls(poly_runs: List[Dict],
         e = by_key.get((run.get("unit"), run.get("start"), run.get("end")))
         out.append(poly_call(e) if e is not None else not_covered(run))
     return out
+
+
+def poly_calls_of(record: Optional[Dict]) -> List[Dict]:
+    """记录里已覆盖结构的 PolyCall（S5 下游唯一读取入口）。
+
+    新记录读 record["poly_calls"]（去掉 NOT_COVERED，与 homopolymers 一一对应、
+    同序）；旧存档无 poly_calls 时由 homopolymers 条目即时转换。"""
+    record = record or {}
+    pcs = record.get("poly_calls")
+    if pcs is not None:
+        out = [pc for pc in pcs if pc["state"] != NOT_COVERED]
+        if any("observed" not in pc for pc in out):
+            # p4-1 存档（2026-11-16 前）未带 observed：按结构键从条目补齐
+            hp = {(e.get("unit"), e.get("start"), e.get("end")): e
+                  for e in record.get("homopolymers") or []}
+            out = [pc if "observed" in pc else {
+                **pc, "observed": (hp.get((pc.get("unit"), pc.get("ref_start"),
+                                           pc.get("ref_end"))) or {}
+                                   ).get("observed_repeat_count")}
+                   for pc in out]
+        return out
+    return [poly_call(e) for e in record.get("homopolymers") or []]
+
+
+def count_ok(pc: Dict) -> bool:
+    """重复数计数是否可信（旧 count_reliable 的结构化读法）"""
+    return pc["state"] not in UNRESOLVED_STATES
 
 
 def unresolved_polys(poly_calls: Optional[List[Dict]]) -> List[Dict]:

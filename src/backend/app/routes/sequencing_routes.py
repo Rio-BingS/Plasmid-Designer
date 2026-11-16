@@ -75,6 +75,8 @@ from app.sequencing_summary import summarize
 from core.sanger import review
 from core.sanger.pipeline import analyze, build_verdict  # noqa: F401
 from core.sanger.judge import rejudge
+from core.sanger.polycall import (COUNT_CONFIRMED, CONFLICTING, LEGACY_VERDICT,
+                                  UNDETERMINABLE, poly_calls_of)
 from core.sanger.decompose import decompose_and_annotate
 from core.sanger.reliable_zone import ZoneParams
 from core.sanger.reference_parser import parse_reference_topology
@@ -863,17 +865,20 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
             "undetermined": "峰合并不可判读，重复数不可判定（宽度法估计 {est} 个）",
         }
         feats: List[str] = []
-        for e in record.get("homopolymers") or []:
-            if e.get("tier") != "poly" or e.get("run_verdict") not in verdict_note:
+        # S5：只读 PolyCall（旧存档由 homopolymers 即时转换）
+        for pc in poly_calls_of(record):
+            vt = LEGACY_VERDICT.get(pc["state"])
+            if pc.get("tier") != "poly" or vt not in verdict_note:
                 continue
-            label = f"poly({e['base']})" if e.get("base") else "repeat"
-            txt = verdict_note[e["run_verdict"]].format(
-                obs=e.get("observed_repeat_count"),
-                joint="；联合覆盖拼接" if e.get("joint_coverage") else "",
-                est=e.get("length_estimate"),
+            label = f"poly({pc['base']})" if pc.get("base") else "repeat"
+            txt = verdict_note[vt].format(
+                obs=pc.get("observed"),
+                joint="；联合覆盖拼接" if "JOINT_COVERAGE" in (pc.get("reasons") or []) else "",
+                est=pc.get("width_est"),
             )
-            feats.append(format_feature_line("misc_feature", f"{e['start']}..{e['end']}\n")
-                         + format_qualifier("note", f"{label} {e['start']}-{e['end']}：{txt}"))
+            s_, e_ = pc["ref_start"], pc["ref_end"]
+            feats.append(format_feature_line("misc_feature", f"{s_}..{e_}\n")
+                         + format_qualifier("note", f"{label} {s_}-{e_}：{txt}"))
         definition = "Sanger consensus sequence"
         if segs:
             # 未测位置 N 屏蔽：坐标与特征不位移，下游软件可直接定位实测段
@@ -903,12 +908,12 @@ def _render_consensus_export(record: Dict, analysis_id: str, format: str,
         ext = "gb"
     else:
         # FASTA 头带判读摘要：确证 run 数 / 存疑 run 数
-        hps = [e for e in record.get("homopolymers") or [] if e.get("tier") == "poly"]
-        ok_n = sum(1 for e in hps if e.get("run_verdict") == "accepted")
-        bad = [e for e in hps if e.get("run_verdict") in ("contradictory", "undetermined")]
+        hps = [pc for pc in poly_calls_of(record) if pc.get("tier") == "poly"]
+        ok_n = sum(1 for pc in hps if pc["state"] == COUNT_CONFIRMED)
+        bad = [pc for pc in hps if pc["state"] in (CONFLICTING, UNDETERMINABLE)]
         flag = ""
         if bad:
-            spans = "、".join(f"{e['start']}-{e['end']}" for e in bad[:3])
+            spans = "、".join(f"{pc['ref_start']}-{pc['ref_end']}" for pc in bad[:3])
             flag = f" poly_unverified={spans}" + ("..." if len(bad) > 3 else "")
         elif hps:
             flag = f" poly_verified={ok_n}/{len(hps)}"

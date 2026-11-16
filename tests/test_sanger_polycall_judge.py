@@ -77,14 +77,13 @@ def test_rejudge_keeps_body_and_replaces_headline(monkeypatch):
 
 # ---- S7 呈现：render_poly 只读 PolyCall，措辞与旧口径一致 ----
 from core.sanger import render_poly as rp
-from core.sanger.homopolymer import peak_verdict_phrase, _poly_anchor_notes
 
 
 def test_render_phrase_matches_legacy():
     e = _entry([_rd("f", "full", [101, 130], 28, 28, "resolvable"),
                 _rd("r", "full", [101, 130], 30, 30, "resolvable", "-")])
     call = pc.poly_call(e)
-    assert rp.phrase(call) == peak_verdict_phrase(e)
+    assert rp.phrase(call) == "缺失 2 个 A：实测 28 个，参考 30 个"
     assert rp.warning_lines([call])[0].startswith("注意：poly(A) 同聚物 101-130 峰图判读：")
     assert len(rp.detail_lines([call])) == 1
     assert rp.detail_keys([call]) == {("A", "A", 101)}
@@ -95,5 +94,7 @@ def test_render_anchor_notes_match_legacy():
     reads[0]["anchor_grade"] = "unreliable"
     e = _entry(reads)
     call = pc.poly_call(e)
-    assert rp.anchor_notes([call]) == _poly_anchor_notes([e])
+    assert rp.anchor_notes([call]) == [
+        "注意：poly(A) 同聚物 101-130 重复数已由峰图计数确证（30 个），但该 run的锚定路标不可靠"
+        "（路标落在信号异常区）——计数确证但定位存疑，run 起止可能整体偏移数 bp，建议对照图谱核对边界"]
     assert rp.confirmed_keys([call]) == {("A", 101)}

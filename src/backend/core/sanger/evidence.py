@@ -373,21 +373,15 @@ def _collect_unresolved_sites(read_results: List[Dict],
                 _add(rp, "n_call" if b == "N" else "iupac", r["filename"],
                      f"read 调用 {b}（未解析）")
     # poly 不可判定：峰图计数矛盾 / 不可判定 / 缺失证据（accepted 不算）
-    if poly_calls is not None:
-        # S4 PolyCall：只读结构化状态（CONFLICTING / UNDETERMINABLE /
-        # DEFICIT_SUSPECTED）
-        from core.sanger.polycall import LEGACY_VERDICT, unresolved_polys
-        for pc in unresolved_polys(poly_calls):
-            _add(pc["ref_start"], "poly_undetermined", "",
-                 f"poly({pc.get('base')}) {pc['ref_start']}-{pc['ref_end']} "
-                 f"峰图判读 {LEGACY_VERDICT[pc['state']]}")
-    else:  # 兼容：未传 PolyCall 时按旧条目字段
-        for e in homopolymer_report or []:
-            if e.get("tier") == "poly" and e.get("run_verdict") in (
-                    "contradictory", "undetermined", "deficit_observed"):
-                _add(e.get("start"), "poly_undetermined", "",
-                     f"poly({e.get('base')}) {e.get('start')}-{e.get('end')} "
-                     f"峰图判读 {e.get('run_verdict')}")
+    # S4 PolyCall：只读结构化状态（CONFLICTING / UNDETERMINABLE /
+    # DEFICIT_SUSPECTED）；未传入时由旧条目即时转换（S5 唯一入口）
+    from core.sanger.polycall import LEGACY_VERDICT, poly_calls_of, unresolved_polys
+    if poly_calls is None:
+        poly_calls = poly_calls_of({"homopolymers": homopolymer_report or []})
+    for pc in unresolved_polys(poly_calls):
+        _add(pc["ref_start"], "poly_undetermined", "",
+             f"poly({pc.get('base')}) {pc['ref_start']}-{pc['ref_end']} "
+             f"峰图判读 {LEGACY_VERDICT[pc['state']]}")
     # poly 下游信号骤降区段
     for r in read_results:
         for d in r.get("post_poly_dropouts") or []:

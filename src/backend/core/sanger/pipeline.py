@@ -73,11 +73,11 @@ from core.sanger.homopolymer import (  # noqa: F401
     _circ_len, _ANCHOR_RANK, _COMPLEMENT, _aligned_run_window,
     _anchor_quality, _anchor_verdict_for_read, _annotate_homopolymer,
     _clean_cover_reads, _clean_cover_reads_sub, _corroborate_mixed,
-    _poly_anchor_notes, _poly_peak_amplitude_ratio,
+    _poly_peak_amplitude_ratio,
     _poly_peak_count, _read_ref_maps, _read_run_verdict, _region_ok,
     _unit_run, _overlapping_run, collect_post_poly_dropouts, find_homopolymers,
     find_repeat_runs, mixed_sample_confirmed,
-    peak_verdict_phrase, pos_ranges_str, region_quality_text, run_label,
+    pos_ranges_str, region_quality_text, run_label,
 )
 from core.sanger.resolved_regions import (
     build_resolved_regions, scattered_pending_lines,
@@ -1101,14 +1101,10 @@ def _build_cds_reports(
         in_cds = [v for v in variants if _affects(v)]
         # 置信度分层：低置信变异（峰级证据/Q 值不支持，疑似测序噪声）不计入
         # 确证判定，单独提示待复核——避免噪声推翻整段 CDS 结论。
-        # 显式 status 优先（T21 重叠分歧降级写回 unresolved），旧记录按置信推导
-        def _cstat(v: Dict) -> str:
-            st = v.get("status")
-            if st:
-                return st
-            return "confirmed" if v.get("confidence", "high") != "low" else "unresolved"
-        confirmed = [v for v in in_cds if _cstat(v) == "confirmed"]
-        pending = [v for v in in_cds if _cstat(v) != "confirmed"]
+        # S5：三态只读 SiteCall 写回的 status（sitecall.site_status 唯一入口）
+        from core.sanger.sitecall import site_status
+        confirmed = [v for v in in_cds if site_status(v) == "confirmed"]
+        pending = [v for v in in_cds if site_status(v) != "confirmed"]
         # 重建不掺 N：N 位点按参考填充参与翻译，N 的影响只体现为「判定待定」
         # （protein_identical=None）——若把 N 强制掺进产物，X 残基会把
         # 「没读清」误算成「与设计不一致」（未决 ≠ 反证）
@@ -2581,4 +2577,3 @@ def analyze(
 _try_tracy_decompose = try_tracy_decompose  # 公开化前的私有名（历史引用兼容）
 _pos_ranges_str = pos_ranges_str  # 公开化前的私有名（历史引用兼容）
 _run_label = run_label  # 公开化前的私有名（历史引用兼容）
-_peak_verdict_phrase = peak_verdict_phrase  # 公开化前的私有名（历史引用兼容）
