@@ -93,8 +93,9 @@ async def analyze_sequencing_upload(
     # W10（PL §C5）：用户 Form 声明的范围——来源优先级 user > cds_target，
     # 显式范围存在时覆盖目的基因模式的自动范围
     if scope.strip():
-        from core.sanger.scope import parse_scope_cell
-        scope_obj, scope_err = parse_scope_cell(scope, features, len(ref_seq))
+        from core.sanger.scope import resolve_scope
+        scope_obj, scope_err = resolve_scope(scope, features, len(ref_seq),
+                                             normalize=False)
         if scope_obj is None and scope_err:
             raise HTTPException(status_code=400, detail=scope_err)
     if scope_obj is None and not cds_mode:

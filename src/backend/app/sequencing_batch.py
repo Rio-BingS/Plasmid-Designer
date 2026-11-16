@@ -275,9 +275,9 @@ def run_batch_groups(
                 continue
             ref_seq, features, circular = ref_entry
             if _scope_text:
-                from core.sanger.scope import parse_scope_cell
-                scope_obj, scope_note = parse_scope_cell(
-                    _scope_text, features, len(ref_seq))
+                from core.sanger.scope import resolve_scope
+                scope_obj, scope_note = resolve_scope(
+                    _scope_text, features, len(ref_seq), normalize=False)
             # goal v3.1 X5 §3.5：批量路径**不套用**范围记忆——信息表里
             # 一行一个构建，若某行留空就从记忆带出范围，整批会被上一次的
             # 单一范围污染；批量必须逐行显式声明（留空即未声明口径）

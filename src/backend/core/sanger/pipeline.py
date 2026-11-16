@@ -85,6 +85,7 @@ from core.sanger.resolved_regions import (
 from core.sanger.judge import compose_conclusion, judge
 from core.sanger.verdict import build_verdict  # noqa: F401  兼容旧导入（sequencing_routes 等）
 from core.sanger.scope import coerce_scope  # goal v3 W1：scope 入参归一
+from core.sanger.refprofile import build_reference_profile  # S0a 参考画像
 from core.sanger.readmap import ReadRefMap
 from core.sanger.mixed_call import collect_mixed_variants
 from core.sanger.coverage import compute_coverage
@@ -2234,10 +2235,12 @@ def analyze(
     """
     features = features or []
     zone_params = zone_params or DEFAULT_ZONE
-    ref = reference.upper().replace("U", "T")
+    # S0a/S0b：参考画像（归一参考、重复结构、声明范围）一次算好，下游只读
+    ref_profile = build_reference_profile(reference, features, circular, scope)
+    ref = ref_profile["ref"]
     if not ref:
         raise ValueError("参考序列为空，无法进行比对分析")
-    scope_obj = coerce_scope(scope, features, len(ref))
+    scope_obj = ref_profile["scope"]
 
     read_results: List[Dict] = []
     errors: List[Dict] = []
@@ -2302,7 +2305,7 @@ def analyze(
     variants = annotate_variants(variants, features, ref)
 
     # poly 重复结构：参考序列扫描（B3：period 1-3 + 观察级）+ 变体归属
-    poly_runs = find_repeat_runs(ref)
+    poly_runs = ref_profile["poly_runs"]
     _annotate_homopolymer(ref, variants, poly_runs)
 
     # 比对端点落在同聚物区内部 → 落点歧义标注（不改变判定）：

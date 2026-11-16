@@ -320,25 +320,34 @@ def parse_scope_cell(text: str, features: List[Dict], ref_length: int = 0,
     return scope.normalized(ref_length), ""
 
 
-def coerce_scope(scope, features: List[Dict], ref_length: int = 0,
-                 insert_range: Optional[Tuple[int, int]] = None
-                 ) -> Optional[Scope]:
-    """analyze/build_verdict 的 scope 入参归一：None / Scope / dict / str。
+def resolve_scope(scope, features: List[Dict], ref_length: int = 0,
+                  insert_range: Optional[Tuple[int, int]] = None,
+                  normalize: bool = True
+                  ) -> Tuple[Optional[Scope], Optional[str]]:
+    """S0b 唯一范围入口：None / Scope / dict / str → (Scope | None, 错误说明)。
 
-    str 按 parse_scope_cell 解析（解析失败原样返回 None——范围无法识别时
-    由调用方回填错误，判定退回未声明口径，不抛异常）。"""
+    str 按 parse_scope_cell 解析；解析失败返回 (None, 错误)，由调用方决定
+    报 400 / 回填备注 / 退回未声明口径。normalize=True 时按参考长度归一
+    （analyze、build_verdict 口径）；Form/批量表格入口沿用解析原样
+    （normalize=False），与改造前逐字一致。"""
     if scope is None:
-        return None
+        return None, None
+    err: Optional[str] = None
     if isinstance(scope, Scope):
         out = scope
     elif isinstance(scope, dict):
         out = Scope.from_dict(scope)
     elif isinstance(scope, str):
-        parsed, _err = parse_scope_cell(scope, features, ref_length,
-                                        insert_range)
-        out = parsed
+        out, err = parse_scope_cell(scope, features, ref_length, insert_range)
     else:
-        return None
-    if out is not None:
-        out = out.normalized(ref_length) if ref_length else out
-    return out
+        return None, None
+    if out is not None and normalize and ref_length:
+        out = out.normalized(ref_length)
+    return out, err
+
+
+def coerce_scope(scope, features: List[Dict], ref_length: int = 0,
+                 insert_range: Optional[Tuple[int, int]] = None
+                 ) -> Optional[Scope]:
+    """analyze/build_verdict 的 scope 入参归一（resolve_scope 的只取结果形态）"""
+    return resolve_scope(scope, features, ref_length, insert_range)[0]
