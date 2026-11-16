@@ -4,11 +4,11 @@
 比，实现本位见 zone_signal.compute_signal_zone）；本模块保留：
 
 - ZoneParams：四参数配置载体。front_hard（首端 30bp 硬区）保留；tail_gray
-  不再封顶（仅作 zone_reason 文案的灰区参照，goal「取消 700bp 硬顶」）；
+  不再封顶（仅作区外原因文案（render_site.zone_text_of）的灰区参照，goal「取消 700bp 硬顶」）；
   tail_hard 仅无峰图（旧记录重放）时兜底封顶；
 - parse()/DEFAULT_ZONE：表单与默认配置（"30,60,700,900"）；
 - compute_reliable_zone：委托 zone_signal，签名与返回结构不变；
-- in_zone / zone_reason / zone_text：判属与文案。
+- in_zone / zone_cause / zone_text：判属与结构化原因（区外原因文案在 render_site.zone_text_of）。
 
 旧三段式位置先验（front_gray 逐窗起点 / tail_gray 700 封顶 / tail_hard
 900 硬界）随 T12 退役；位置对变体置信度的强制仅保留 front 硬区
@@ -132,12 +132,6 @@ def zone_cause(zone: Dict, rp: int) -> Dict:
             "tail_hard": p["tail_hard"],
             "front_reason": zone.get("front_reason"),
             "tail_reason": zone.get("tail_reason")}
-
-
-def zone_reason(zone: Dict, rp: int) -> str:
-    """rp 落在可信区外时的具体原因文案（兼容入口，委托呈现层）"""
-    from core.sanger.render_site import zone_text_of
-    return zone_text_of(zone_cause(zone, rp))
 
 
 def zone_text(zone: Dict) -> str:

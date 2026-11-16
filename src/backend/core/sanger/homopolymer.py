@@ -17,7 +17,7 @@ from core.sanger.readmap import _circ_len, _read_ref_maps  # noqa: F401  坐标�
 from core.sanger.crosscheck import (  # noqa: F401  跨 read 互检簇迁 crosscheck（T8/T10）
     CROSS_CHECK_MIN_Q, CROSS_CLEAN_HALF, CROSS_CORE_HALF, CROSS_REGION_HALF,
     CROSS_REGION_HQ_FRAC, CROSS_REGION_MEAN_Q, CROSS_REGION_MIN_COLS,
-    _corroborate_mixed, _cross_region_quality, _mixed_check_phrase, _region_ok,
+    _corroborate_mixed, _cross_region_quality, _region_ok,
     pos_ranges_str, region_quality_text,
 )
 

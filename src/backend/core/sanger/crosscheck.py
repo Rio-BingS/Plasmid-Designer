@@ -246,12 +246,6 @@ def _corroborate_mixed(read_results: List[Dict],
 
 
 
-def _mixed_check_phrase(chk: Dict) -> str:
-    """兼容入口：互检摘要短语已移到呈现层 render_mixed.check_phrase（S7）"""
-    from core.sanger.render_mixed import check_phrase
-    return check_phrase(chk)
-
-
 MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
 
 

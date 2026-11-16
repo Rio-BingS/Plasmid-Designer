@@ -54,7 +54,7 @@ def _vstatus_of(v: Dict) -> str:
 def _variant_reason_codes(v: Dict, evidence: Optional[Dict],
                           zone: Optional[Dict], mixed_positions: set) -> List[str]:
     """机器可读的原因码（goal §3 Variant.reason_codes），从结构化事实推导、
-    不做文案匹配。置信度分支与 _low_confidence_reason 一一对应。"""
+    不做文案匹配。置信度分支与 low_confidence_cause 一一对应。"""
     codes: List[str] = []
     support = v.get("support_reads") or 1
     rp = v.get("read_pos")
@@ -478,14 +478,6 @@ def low_confidence_cause(v: Dict, mixed_positions: set,
         if snr is not None and snr < 5:
             return {"code": "low_snr", "snr": snr}
     return {"code": "low_q", "q": q, "single": support < 2}
-
-
-def _low_confidence_reason(v: Dict, mixed_positions: set,
-                           evidence: Optional[Dict] = None,
-                           zone: Optional[Dict] = None) -> str:
-    """兼容入口：结构化原因 → 主句文案（委托呈现层）"""
-    from core.sanger.render_site import cause_text
-    return cause_text(low_confidence_cause(v, mixed_positions, evidence, zone))
 
 
 def _conclusion_summary(variants: List[Dict], cds_reports: List[Dict],

@@ -296,7 +296,3 @@ def annotate_variants(variants: List[Dict], features: List[Dict], reference: str
     return out
 
 
-def summarize_severity(variants: List[Dict]) -> List[Tuple[str, str]]:
-    """兼容入口：变体影响摘要已移到呈现层 render_site.severity_lines（S7）"""
-    from core.sanger.render_site import severity_lines
-    return severity_lines(variants)

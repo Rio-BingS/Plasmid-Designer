@@ -23,7 +23,7 @@ verified 覆盖的边界（coverage.verified = measured ∩ zone − N）。
 
 reliable_zone.compute_reliable_zone 保留原签名委托本模块；ZoneParams
 （front_hard/front_gray/tail_gray/tail_hard）仍是配置载体——front_hard
-硬区保留，tail_gray 不再封顶（仅作 zone_reason 文案的灰区参照），
+硬区保留，tail_gray 不再封顶（仅作区外原因文案（render_site.zone_text_of）的灰区参照），
 tail_hard 仅无峰图兜底。
 """
 

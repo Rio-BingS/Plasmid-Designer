@@ -17,7 +17,8 @@ from core.sanger.abif_reader import (  # noqa: E402
     extract_read,
     parse_abif,
 )
-from core.sanger.annotator import annotate_variant, summarize_severity  # noqa: E402
+from core.sanger.annotator import annotate_variant  # noqa: E402
+from core.sanger.render_site import severity_lines as summarize_severity  # noqa: E402
 from core.sanger.aligner import align_read, revcomp, merge_coverage  # noqa: E402
 from core.sanger.signal import (  # noqa: E402
     baseline_correct,
@@ -3004,7 +3005,12 @@ def test_cross_check_tolerates_isolated_low_q_base_in_wide_region():
 
 
 def test_low_confidence_reason_names_concrete_error_type():
-    from core.sanger.pipeline import _low_confidence_reason, variant_type_text
+    from core.sanger.pipeline import variant_type_text
+    from core.sanger.evidence import low_confidence_cause
+    from core.sanger.render_site import cause_text
+
+    def _low_confidence_reason(v, mixed, evidence=None, zone=None):
+        return cause_text(low_confidence_cause(v, mixed, evidence, zone))
     assert variant_type_text({"type": "substitution", "ref_base": "C", "alt_base": "A"}) == "替换 C>A"
     assert variant_type_text({"type": "insertion", "alt_base": "G", "length": 1}) == "插入 1bp（G）"
     assert variant_type_text({"type": "deletion", "ref_base": "AT", "length": 2}) == "缺失 2bp（AT）"

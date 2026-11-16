@@ -60,7 +60,7 @@ from core.sanger.zone_signal import TAIL_CLEAN_WIDTH_MAX, local_width_ratio
 from core.sanger.reliable_zone import (
     zone_class, core_zone,
     DEFAULT_ZONE, ZoneParams, compute_reliable_zone, custom_zone_params, in_zone,
-    zone_reason, zone_text,
+    zone_text,
 )
 
 # 同聚物判读簇已迁至 core/sanger/homopolymer.py（纯搬运）；此处 re-export
@@ -73,7 +73,7 @@ from core.sanger.homopolymer import (  # noqa: F401
     _circ_len, _ANCHOR_RANK, _COMPLEMENT, _aligned_run_window,
     _anchor_quality, _anchor_verdict_for_read, _annotate_homopolymer,
     _clean_cover_reads, _clean_cover_reads_sub, _corroborate_mixed,
-    _mixed_check_phrase, _poly_anchor_notes, _poly_peak_amplitude_ratio,
+    _poly_anchor_notes, _poly_peak_amplitude_ratio,
     _poly_peak_count, _read_ref_maps, _read_run_verdict, _region_ok,
     _unit_run, _overlapping_run, collect_post_poly_dropouts, find_homopolymers,
     find_repeat_runs, mixed_sample_confirmed,
@@ -99,7 +99,7 @@ from core.sanger.coverage import (  # noqa: F401
 # 此处 re-export 维持既有导入路径（tests / app 层仍从 pipeline 取名）
 from core.sanger.evidence import (  # noqa: F401
     _IUPAC_MERGE, _collect_unresolved_sites, _conclusion_summary,
-    _insertion_peak_ratio, _iupac_merge, _low_confidence_reason,
+    _insertion_peak_ratio, _iupac_merge,
     low_confidence_cause,
     _variant_peak_evidence, _variant_reason_codes, _variant_status,
     attach_evidence_by_read, covering_not_supporting, variant_type_text,

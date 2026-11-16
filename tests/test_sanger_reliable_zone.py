@@ -9,9 +9,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "backend"))
 
 from core.sanger.reliable_zone import (  # noqa: E402
-    ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
+    ZoneParams, compute_reliable_zone, in_zone, zone_cause, zone_text,
 )
 
+
+
+def zone_reason(zone, rp):
+    from core.sanger.render_site import zone_text_of
+    return zone_text_of(zone_cause(zone, rp))
 
 def _trace(n: int, width_of=lambda i: 4, spacing=12):
     """合成单通道 trace：第 i 个峰半高宽约 width_of(i)"""
