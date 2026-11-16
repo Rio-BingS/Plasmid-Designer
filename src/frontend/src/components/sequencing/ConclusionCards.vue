@@ -128,6 +128,25 @@ const KIND_LABELS: Record<string, string> = {
   orf_annotation_suspect: 'ORF 校正存疑',
   overlap_discordance: '重叠区分歧',
   allele_mismatch: '等位基因不符',
+  // 步骤 8（2026-11-17）：补齐 verdict 产出但此前无标签的 kind
+  seq_overlap_peaks: '单 read 套峰',
+  mixed_template: '疑似混合模板',
+  structural_breakpoint_unconfirmed: '结构断点（未印证）',
+  minor_af_site: '低丰度双峰',
+  critical_element_unverified: '关键元件未验证',
+  end_junction_unverified: '端部接合未验证',
+  roi_insufficient_bp: '目标覆盖不足',
+  scope_uncovered: '范围未覆盖',
+  scope_beyond_primer: '范围超出引物',
+  scope_read_shortfall: '范围 read 不足',
+  scope_single_strand: '范围仅单链',
+  read_local_mixed: 'read 局部套峰',
+  reviewed_artifact: '复核判伪',
+  synonymous_variant: '同义突变',
+  out_of_scope_variant: '范围外差异',
+  out_of_scope_unresolved: '范围外未决',
+  unannotated_element: '未注释元件',
+  primer_unverified: '引物未验证',
 }
 
 const blockingPos = (b: VerdictItem) =>
