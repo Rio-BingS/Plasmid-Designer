@@ -91,13 +91,6 @@ def find_discordances(voter_info: Dict[int, List[Dict]],
     return out
 
 
-def downgrade_overlap_conflicts(variants: List[Dict],
-                                discordances: List[Dict]) -> int:
-    """兼容入口：分歧位点降级已归 SiteCall（sitecall.apply_overlap_discordance）"""
-    from core.sanger.sitecall import apply_overlap_discordance
-    return apply_overlap_discordance(variants, discordances)
-
-
 def _intersect(a: List[Tuple[int, int]], b: List[Tuple[int, int]],
                ) -> List[Tuple[int, int]]:
     """两个已合并区段列表的交集"""

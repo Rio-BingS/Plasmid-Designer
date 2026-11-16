@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/backend"))
 
 from core.sanger.overlap import (  # noqa: E402
     DISCORDANCE_TOP_FRAC, REQUIRE_DOUBLE_STRAND, double_strand_fraction,
-    downgrade_overlap_conflicts, find_discordances, iupac_merge,
+    find_discordances, iupac_merge,
 )
 
 
@@ -59,7 +59,7 @@ def test_find_discordances_majority_wins():
     assert find_discordances(info2, "C" * 800) == []
 
 
-def test_downgrade_overlap_conflicts():
+def test_apply_overlap_discordance():
     """分歧位点 confirmed 替换双方 → unresolved + reason_codes；他位不动"""
     variants = [
         {"ref_pos": 500, "type": "substitution", "status": "confirmed"},
@@ -67,7 +67,8 @@ def test_downgrade_overlap_conflicts():
         {"ref_pos": 700, "type": "substitution", "status": "confirmed"},
         {"ref_pos": 500, "type": "deletion", "status": "confirmed"},
     ]
-    n = downgrade_overlap_conflicts(
+    from core.sanger.sitecall import apply_overlap_discordance
+    n = apply_overlap_discordance(
         variants, [{"ref_pos": 500, "calls": []}])
     assert n == 2
     assert all(v["status"] == "unresolved" for v in variants[:2])

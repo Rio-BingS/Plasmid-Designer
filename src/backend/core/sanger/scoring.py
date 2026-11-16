@@ -205,11 +205,3 @@ def p_real_for(v: Dict, tier: str, evidence: Optional[Dict] = None) -> float:
         z = p.low_z + p.w_q_low * _clip(q / 40) \
             + (p.w_counter_low if v.get("cross_read_resolved") else 0.0)
     return round(_sigmoid(z), 4)
-
-
-def attach_score(v: Dict, evidence: Optional[Dict] = None,
-                 zone: Optional[Dict] = None) -> None:
-    """兼容入口：p_real + 三态/四档 action/confidence 回填已归 SiteCall
-    （sitecall.decide_variant，S4 第 2 步）。zone 参数保留未用。"""
-    from core.sanger.sitecall import decide_variant
-    decide_variant(v, evidence)

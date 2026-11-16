@@ -3,8 +3,8 @@
 第 2 步（2026-11-12，v17 等价）：SiteCall 成为判定方——管线对每条变体调用
 `decide_variant`（ReadCall 阻断 + p_real + 裁决表），再由 `to_legacy` 反写
 status/confidence/action；重叠区分歧降级改为 `apply_overlap_discordance`
-（显式硬阻断后重新裁决）。scoring.attach_score 与
-overlap.downgrade_overlap_conflicts 只保留为委托本模块的兼容入口。
+（显式硬阻断后重新裁决）。旧兼容入口 scoring.attach_score 与
+overlap.downgrade_overlap_conflicts 已于步骤 7 删除。
 末尾的 build_site_calls + dual_run_diffs 仍保留，校验反写字段与表一致。
 
 以下为一期说明（保留备查）：
@@ -77,10 +77,18 @@ _UNR_PRIORITY = (
     "UNR_ZONE_OUTSIDE", "UNR_NO_INSERTION_PEAK", "UNR_WEAK_MUTANT_PEAK",
     "UNR_LOW_SNR", "UNR_SNR_UNAVAILABLE", "UNR_CROSS_WEAK",
 )
-# 显式硬阻断：命中则不能 CONFIRMED。一期只放「旧路径事后改写 status」的
-# 那一条（overlap 分歧降级）；其余阻断在旧路径里已折进 p_real（把
-# confidence 降为 low），二期再逐条显式化并与快照对齐。
-_HARD_BLOCKS = frozenset({"UNR_OVERLAP_DISCORDANCE", "UNR_IN_MIXED_TEMPLATE"})
+# 显式硬阻断：命中则不能 CONFIRMED。步骤 7 起显式列出合并压缩区、互检矛盾、
+# 染料团——这三条在旧路径里已折进 p_real（confidence 降为 low，p_real 低于
+# confirmed_min），显式列出是等价表示（293 例 0 差异），此后阻断不再依赖
+# 打分阈值的巧合。
+_HARD_BLOCKS = frozenset({
+    "UNR_OVERLAP_DISCORDANCE",   # 正反向重叠区分歧（旧路径事后改写 status）
+    "UNR_IN_MIXED_TEMPLATE",     # ReadCall：不同 read 同区段套峰
+    "UNR_MERGED_ZONE",           # 合并压缩区（poly_compressed / merged_zone_artifact）
+    "UNR_CROSS_CONFLICT",        # 跨 read 互检矛盾
+    "UNR_DYE_BLOB",              # 染料团
+})
+HARD_BLOCKS = _HARD_BLOCKS  # 公开只读视图（文档 / 测试用）
 
 _EVIDENCE_KEYS = ("mutant_pct", "snr", "insertion_peak_ratio")
 

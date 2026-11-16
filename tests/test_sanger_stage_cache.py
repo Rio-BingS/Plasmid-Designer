@@ -38,3 +38,16 @@ def test_params_grouped():
     for names in params.STAGE_PARAMS.values():
         for n in names:
             assert hasattr(params, n)
+
+
+def test_hard_blocks_explicit():
+    """步骤 7：合并压缩、互检矛盾、染料团为显式硬阻断——即使 p_real 高也不 CONFIRMED"""
+    from core.sanger.sitecall import HARD_BLOCKS, call_variant, UNRESOLVED
+    assert {"UNR_MERGED_ZONE", "UNR_CROSS_CONFLICT", "UNR_DYE_BLOB",
+            "UNR_OVERLAP_DISCORDANCE", "UNR_IN_MIXED_TEMPLATE"} <= HARD_BLOCKS
+    for flag, code in (("merged_zone_artifact", "UNR_MERGED_ZONE"),
+                       ("cross_read_conflict", "UNR_CROSS_CONFLICT"),
+                       ("dye_blob", "UNR_DYE_BLOB")):
+        sc = call_variant({"ref_pos": 10, "type": "substitution", "alt": "A",
+                           "p_real": 0.999, "support_reads": 2, flag: True})
+        assert sc["state"] == UNRESOLVED and sc["primary_reason"] == code, sc

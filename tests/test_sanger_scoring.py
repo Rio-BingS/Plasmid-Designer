@@ -10,8 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/backend"))
 
+from core.sanger.sitecall import decide_variant  # noqa: E402
 from core.sanger.scoring import (  # noqa: E402
-    attach_score, confidence_tier, p_real_for,
+    confidence_tier, p_real_for,
 )
 
 
@@ -61,11 +62,11 @@ def test_p_real_within_tier_bounds():
                 assert 0.001 <= pl < 0.01, (q, mp, snr, pl)
 
 
-def test_attach_score_status_confidence_equivalent_to_rules():
-    """attach_score 回填的 status/confidence 与既有三态/置信逐位等价"""
+def test_decide_variant_status_confidence_equivalent_to_rules():
+    """decide_variant 回填的 status/confidence 与既有三态/置信逐位等价"""
     v = _v(read_q=45)
     v["confidence"] = confidence_tier(v, set(), EV_CLEAN)
-    attach_score(v, EV_CLEAN)
+    decide_variant(v, EV_CLEAN)
     assert v["confidence"] == "high"
     assert v["status"] == "confirmed"
     assert v["action"] == "accept"
@@ -73,7 +74,7 @@ def test_attach_score_status_confidence_equivalent_to_rules():
 
     v2 = _v(read_q=30)
     v2["confidence"] = confidence_tier(v2, set(), EV_CLEAN)
-    attach_score(v2, EV_CLEAN)
+    decide_variant(v2, EV_CLEAN)
     assert v2["confidence"] == "medium"
     assert v2["status"] == "confirmed"
     assert v2["action"] == "review_trace"
@@ -82,7 +83,7 @@ def test_attach_score_status_confidence_equivalent_to_rules():
     v3 = _v(read_q=20)
     v3["confidence"] = "low"
     v3["cross_read_resolved"] = True
-    attach_score(v3, None)
+    decide_variant(v3, None)
     assert v3["status"] == "rejected"
     assert v3["action"] == "exclude"
     assert v3["p_real"] < 0.01
@@ -90,7 +91,7 @@ def test_attach_score_status_confidence_equivalent_to_rules():
     # 低置信无反证、无峰可看 → unresolved + resequence
     v4 = _v(read_q=20)
     v4["confidence"] = "low"
-    attach_score(v4, None)
+    decide_variant(v4, None)
     assert v4["status"] == "unresolved"
     assert v4["action"] == "resequence"
     assert 0.001 <= v4["p_real"] < 0.01
