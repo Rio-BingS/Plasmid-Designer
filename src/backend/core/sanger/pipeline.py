@@ -86,6 +86,12 @@ from core.sanger.judge import compose_conclusion, judge
 from core.sanger.verdict import build_verdict  # noqa: F401  兼容旧导入（sequencing_routes 等）
 from core.sanger.scope import coerce_scope  # goal v3 W1：scope 入参归一
 from core.sanger.refprofile import build_reference_profile  # S0a 参考画像
+from core.sanger import stage_cache  # 步骤 6：按阶段缓存（默认关）
+from core.sanger.params import (  # noqa: F401  步骤 6：参数按阶段集中（re-export 旧名）
+    DEGRADED_READ_SHARE, END_MARGIN, MIN_TRIM_Q, MIN_WINDOW, MIXED_PEAK_RATIO,
+    MIXED_SCATTERED_MIN, MIXED_WIDESPREAD_MIN, PARTIAL_ALIGN_RATIO,
+    PULLUP_HEIGHT_FACTOR, PULLUP_MAX_RATIO,
+)
 from core.sanger.readmap import ReadRefMap
 from core.sanger.mixed_call import collect_mixed_variants
 from core.sanger.coverage import compute_coverage
@@ -113,16 +119,6 @@ SANGER_ALGO_VERSION = "v17"  # v17: 2026-11-12 二期 ReadCall——read 级套�
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
-MIXED_PEAK_RATIO = 0.30  # 次级峰 / 主峰 高于此比例视为疑似混合
-MIXED_WIDESPREAD_MIN = 5   # 双峰位点 ≥ 此数 → read 级判「疑似混合样品」
-MIXED_SCATTERED_MIN = 2    # 2-4 个 → 「个别双峰位点」提示（不升级结论）
-PULLUP_HEIGHT_FACTOR = 3.0  # 主峰高 ≥ 全 read 峰高中位 × 此倍数视为饱和峰
-PULLUP_MAX_RATIO = 0.5      # 饱和峰位次级峰占比 ≤ 此值且与主峰同期 → 按染料拖影（pull-up）抑制
-MIN_TRIM_Q = 20          # 默认末端修剪质量阈值
-MIN_WINDOW = 50          # 修剪后最短保留长度
-# poly 下游骤降判定的 read 末端豁免宽度（END_MARGIN×2）。read 首尾不可信区
-# 已改为逐条 read 判定（reliable_zone：位置先验 + Q 值与峰型），不再固定扣 20bp
-END_MARGIN = 20
 
 
 
@@ -231,8 +227,6 @@ def _variant_confidence(v: Dict, mixed_positions: set,
     return "high" if support >= 2 else "medium"
 
 
-# 比对上的 read 长度低于修剪后长度的该比例即视为「部分比对」
-PARTIAL_ALIGN_RATIO = 0.8
 
 
 def alignment_span_text(aln: Dict, sep: str = "–") -> str:
@@ -1634,9 +1628,6 @@ def _signal_analysis_pass(read_results: List[Dict], poly_runs: List[Dict],
 # 折叠逻辑见 conclusion_fold（真实子集 15 行 → 6 行，短结论不受影响）
 _CONCLUSION_BUDGET = conclusion_fold.CONCLUSION_BUDGET
 
-# 退化区段占该 read 实测覆盖的比例阈值（goal v3.1 §3.2；与 review 的
-# read 级折叠共用同一常量语义）
-DEGRADED_READ_SHARE = 0.30
 
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                              poly_local_ratio: bool,
@@ -2186,6 +2177,99 @@ def _mark_mixed_noise_evidence(mixed_variants: List[Dict], corroboration: Dict) 
             m["noise_evidence"] = sorted(set(srcs))
 
 
+# ==================== S1 / S2 阶段函数（步骤 6：拆阶段）====================
+
+def _make_norm_all(ref: str, circular: bool):
+    """indel 最左归一化：环状参考上可越过原点左移——在三倍参考的中间一份
+    上归一化（坐标 +L 抬升），结果折回；线性参考维持原口径"""
+    L_ref = len(ref)
+    ref3 = ref * 3 if circular else ""
+
+    def _norm_all(vs: List[Dict]) -> List[Dict]:
+        if not circular:
+            return [indel_norm.normalize_left(ref, v) for v in vs]
+        out = []
+        for v in vs:
+            nv = indel_norm.normalize_left(
+                ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
+            out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
+        return out
+    return _norm_all
+
+
+def read_stage(ab1_files: List[Tuple[str, bytes]], ref: str, *, circular: bool,
+               zone_params: ZoneParams, min_q: int, signal_correct: bool,
+               full_ref: Optional[str] = None, full_circular: bool = False
+               ) -> Tuple[List[Dict], List[Dict]]:
+    """S1：每条 read 独立分析（不看其他 read），返回 (read_results, errors)。
+
+    按阶段缓存（stage_cache，SANGER_STAGE_CACHE=1 开启，默认关）：键为
+    read 内容哈希 + 参考哈希 + 本阶段参数，命中时返回深拷贝。"""
+    _align = align_read_circular if circular else align_read
+    _norm_all = _make_norm_all(ref, circular)
+    read_results: List[Dict] = []
+    errors: List[Dict] = []
+    for filename, blob in ab1_files:
+        key = stage_cache.read_key(
+            filename, blob, ref, circular=circular, zone_params=zone_params,
+            min_q=min_q, signal_correct=signal_correct,
+            full_ref=full_ref or None, full_circular=full_circular)
+        hit = stage_cache.get(key)
+        if hit is not None:
+            rd, err = hit
+        else:
+            rd, err = _analyze_one_read(
+                filename, blob, ref=ref, align_fn=_align, norm_variants=_norm_all,
+                zone_params=zone_params, min_q=min_q, signal_correct=signal_correct,
+                circular=circular, full_ref=(full_ref or None),
+                full_circular=full_circular)
+            stage_cache.put(key, (rd, err))
+        if err is not None:
+            errors.append(err)
+        elif rd is not None:
+            read_results.append(rd)
+    # 可信区折算到参考坐标（展开坐标，与 alignment.ref_start/ref_end 同系）：
+    # 报告「read 概况」按参考坐标列出每条 read 的不可信区段
+    for r in read_results:
+        zone = r.get("reliable_zone")
+        if not zone:
+            continue
+        r2ref, _ = _read_ref_maps(r, fold=False)
+        inside = [rf for rp, rf in r2ref.items() if in_zone(zone, rp)]
+        zone["ref_trusted"] = [min(inside), max(inside)] if inside else None
+    return read_results, errors
+
+
+def merge_variants_stage(read_results: List[Dict], features: List[Dict], ref: str,
+                         poly_runs: List[Dict]) -> List[Dict]:
+    """S2：跨 read 合并变体（变体已按最左表示归一化，key 聚合等价 indel）→
+    注释 → poly 结构归属。返回新列表，不改 read_results。"""
+    all_variants: List[Dict] = []
+    for r in read_results:
+        for v in r["alignment"]["variants"]:
+            vv = {**v, "read": r["filename"], "read_q": v.get("quality", 0)}
+            all_variants.append(vv)
+    # 按 (ref_pos, type, alt) 去重合并（多 read 支持计数）
+    merged: Dict[Tuple, Dict] = {}
+    for v in all_variants:
+        key = _variant_key(v)
+        # T14：逐 read 证据聚合的原料——每条支持 read 的 read_pos/Q 记入
+        # _per_read（attach_evidence_by_read 消费后弹出，不外发）
+        pr = {"read": v["read"], "read_pos": v.get("read_pos"),
+              "read_q": v["read_q"]}
+        if key in merged:
+            merged[key]["support_reads"] += 1
+            merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
+            merged[key]["_per_read"].append(pr)
+        else:
+            merged[key] = {**v, "support_reads": 1, "_per_read": [pr]}
+    variants = list(merged.values())
+    variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
+    variants = annotate_variants(variants, features, ref)
+    _annotate_homopolymer(ref, variants, poly_runs)
+    return variants
+
+
 def analyze(
     ab1_files: List[Tuple[str, bytes]],
     reference: str,
@@ -2242,71 +2326,15 @@ def analyze(
         raise ValueError("参考序列为空，无法进行比对分析")
     scope_obj = ref_profile["scope"]
 
-    read_results: List[Dict] = []
-    errors: List[Dict] = []
     L_ref = len(ref)
-    _align = align_read_circular if circular else align_read
-    # indel 最左归一化：环状参考上可越过原点左移——在三倍参考的中间一份
-    # 上归一化（坐标 +L 抬升），结果折回；线性参考维持原口径
-    ref3 = ref * 3 if circular else ""
-
-    def _norm_all(vs: List[Dict]) -> List[Dict]:
-        if not circular:
-            return [indel_norm.normalize_left(ref, v) for v in vs]
-        out = []
-        for v in vs:
-            nv = indel_norm.normalize_left(
-                ref3, {**v, "ref_pos": int(v["ref_pos"]) + L_ref})
-            out.append({**nv, "ref_pos": fold_pos(nv["ref_pos"], L_ref)})
-        return out
-
-    for filename, blob in ab1_files:
-        rd, err = _analyze_one_read(
-            filename, blob, ref=ref, align_fn=_align, norm_variants=_norm_all,
-            zone_params=zone_params, min_q=min_q, signal_correct=signal_correct,
-            circular=circular, full_ref=(full_ref or None),
-            full_circular=full_circular)
-        if err is not None:
-            errors.append(err)
-        elif rd is not None:
-            read_results.append(rd)
-    # 可信区折算到参考坐标（展开坐标，与 alignment.ref_start/ref_end 同系）：
-    # 报告「read 概况」按参考坐标列出每条 read 的不可信区段
-    for r in read_results:
-        zone = r.get("reliable_zone")
-        if not zone:
-            continue
-        r2ref, _ = _read_ref_maps(r, fold=False)
-        inside = [rf for rp, rf in r2ref.items() if in_zone(zone, rp)]
-        zone["ref_trusted"] = [min(inside), max(inside)] if inside else None
-
-    # 合并全部变体 → 注释 → 汇总（变体已按最左表示归一化，key 聚合等价 indel）
-    all_variants: List[Dict] = []
-    for r in read_results:
-        for v in r["alignment"]["variants"]:
-            vv = {**v, "read": r["filename"], "read_q": v.get("quality", 0)}
-            all_variants.append(vv)
-    # 按 (ref_pos, type, alt) 去重合并（多 read 支持计数）
-    merged: Dict[Tuple, Dict] = {}
-    for v in all_variants:
-        key = _variant_key(v)
-        # T14：逐 read 证据聚合的原料——每条支持 read 的 read_pos/Q 记入
-        # _per_read（attach_evidence_by_read 消费后弹出，不外发）
-        pr = {"read": v["read"], "read_pos": v.get("read_pos"),
-              "read_q": v["read_q"]}
-        if key in merged:
-            merged[key]["support_reads"] += 1
-            merged[key]["read_q"] = max(merged[key]["read_q"], v["read_q"])
-            merged[key]["_per_read"].append(pr)
-        else:
-            merged[key] = {**v, "support_reads": 1, "_per_read": [pr]}
-    variants = list(merged.values())
-    variants.sort(key=lambda x: (x["ref_pos"], x["type"]))
-    variants = annotate_variants(variants, features, ref)
-
-    # poly 重复结构：参考序列扫描（B3：period 1-3 + 观察级）+ 变体归属
+    # S1 read 阶段：逐 read 修剪/比对/可信区/信号（可按阶段缓存，见 read_stage）
+    read_results, errors = read_stage(
+        ab1_files, ref, circular=circular, zone_params=zone_params, min_q=min_q,
+        signal_correct=signal_correct, full_ref=full_ref,
+        full_circular=full_circular)
+    # S2 变体汇总：跨 read 合并 → 注释 → poly 归属（参考画像的重复结构）
     poly_runs = ref_profile["poly_runs"]
-    _annotate_homopolymer(ref, variants, poly_runs)
+    variants = merge_variants_stage(read_results, features, ref, poly_runs)
 
     # 比对端点落在同聚物区内部 → 落点歧义标注（不改变判定）：
     # local 比对在同聚物内的起止随打分滑移，read 端部悬空也源于此——
