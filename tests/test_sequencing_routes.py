@@ -322,6 +322,8 @@ def test_export_consensus_carries_poly_verdict(client):
         {"tier": "poly", "base": "T", "start": 70, "end": 95,
          "run_verdict": "undetermined"},
     ]
+    # 构造的是旧存档形态（只有 homopolymers）：导出经 poly_calls_of 即时转换
+    rec.pop("poly_calls", None)
     gb = client.get(f"/api/sequencing/analyses/{aid}/consensus/export?format=genbank",
                     headers=tok)
     assert gb.status_code == 200

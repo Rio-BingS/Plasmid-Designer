@@ -251,6 +251,11 @@ def poly_call(entry: Dict) -> Dict:
         "covered_ranges": covered,
         "reasons": reasons,
         "stage_version": POLYCALL_VERSION,
+        # Step B 之前的旧存档：无 run_verdict 但单 read 判计数不可靠——
+        # 状态记 CALLER_ONLY（不作未决位点），呈现仍按「不可靠/存疑」
+        **({"legacy_unreliable": True}
+           if entry.get("run_verdict") is None and entry.get("count_reliable") is False
+           else {}),
     }
 
 
@@ -303,7 +308,7 @@ def poly_calls_of(record: Optional[Dict]) -> List[Dict]:
 
 def count_ok(pc: Dict) -> bool:
     """重复数计数是否可信（旧 count_reliable 的结构化读法）"""
-    return pc["state"] not in UNRESOLVED_STATES
+    return pc["state"] not in UNRESOLVED_STATES and not pc.get("legacy_unreliable")
 
 
 def unresolved_polys(poly_calls: Optional[List[Dict]]) -> List[Dict]:

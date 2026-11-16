@@ -671,9 +671,10 @@ def excel_conclusion(plasmid: str, res, n_reads: int, has_ref: bool) -> str:
     # 矛盾对克隆批量筛查最致命，单独点名）
     # S7：优先读 PolyCall；旧存档无 poly_calls 时按旧条目字段
     from core.sanger.polycall import LEGACY_VERDICT, UNRESOLVED_STATES, poly_calls_of
-    vt = {LEGACY_VERDICT[pc["state"]] for pc in poly_calls_of(res)
+    vt = {(None if pc.get("legacy_unreliable") else LEGACY_VERDICT[pc["state"]])
+          for pc in poly_calls_of(res)
           if (pc.get("tier") or "poly") == "poly"
-          and pc["state"] in UNRESOLVED_STATES}
+          and (pc["state"] in UNRESOLVED_STATES or pc.get("legacy_unreliable"))}
     if vt:
         if "contradictory" in vt:
             tail.append("poly 区计数互证矛盾")
