@@ -141,3 +141,28 @@ def severity_lines(variants: List[Dict]) -> List[Tuple[str, str]]:
             notes.append(("  ↳ 酶位 " + ", ".join(v["enzyme_sites_pending"])
                           + " 在 ±10bp 内、indel 归属未定：位点归属待定", "variant"))
     return notes
+
+
+def custom_zone_note(zp: Optional[Dict]) -> str:
+    """自定义可信区边界的说明行（默认边界不出，返回空串）"""
+    if not zp:
+        return ""
+    return (f"read 可信区为自定义边界（首端 {zp['front_hard']}bp 硬区、"
+            f"{zp['front_hard'] + 1}–{zp['front_gray']}bp 按 Q 值与峰型判定，"
+            f"{zp['tail_gray']}bp 之后不可信），区外差异按低置信处理")
+
+
+def diff_header(n: int, coverage_percent: float, coverage_ranges) -> str:
+    from core.sanger.coverage import _coverage_ranges_text
+    return (f"共检出 {n} 处差异（覆盖 {coverage_percent:.1f}%"
+            f"{_coverage_ranges_text(coverage_ranges)}）：")
+
+
+def gap_note(coverage_percent: float, coverage_gaps) -> str:
+    """覆盖 <95% 时的最大未覆盖缺口提示（否则空串）"""
+    from core.sanger.coverage import _gap_span_text
+    if not (coverage_percent < 95 and coverage_gaps):
+        return ""
+    g = coverage_gaps[0]
+    return (f"注意：共 {len(coverage_gaps)} 段未覆盖缺口"
+            f"（最大 {_gap_span_text(g)}，{g['length']}bp），未测区域按设计序列对待")

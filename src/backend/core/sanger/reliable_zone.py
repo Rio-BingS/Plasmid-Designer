@@ -146,3 +146,12 @@ def zone_text(zone: Dict) -> str:
         return "无可信区"
     why = "；".join(x for x in (zone.get("front_reason"), zone.get("tail_reason")) if x)
     return f"可信区 {zone['raw_start']}–{zone['raw_end']}bp" + (f"（{why}）" if why else "")
+
+
+def custom_zone_params(read_results) -> Optional[Dict]:
+    """S7 第 4 片：用户自定义了可信区边界时返回其参数，默认边界返回 None"""
+    zp = ((read_results[0].get("reliable_zone") or {}).get("params")
+          if read_results else None)
+    if zp and zp != DEFAULT_ZONE.as_dict():
+        return zp
+    return None

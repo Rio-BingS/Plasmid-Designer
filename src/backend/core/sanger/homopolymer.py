@@ -653,3 +653,27 @@ def _anchor_verdict_for_read(r: Dict, run: Dict, aln: Dict) -> Tuple[str, List[s
     if len(grades) == 1 and worst == "reliable":
         return "one-sided", issues + ["单侧锚定"]
     return worst, issues
+
+
+def collect_post_poly_dropouts(read_results: List[Dict]) -> List[Dict]:
+    """S7 第 4 片：poly 下游信号骤降的 run 级汇总（纯函数）。
+
+    跨 read 按 (base, ref_start, ref_end) 去重，保留首次出现的记录；
+    end_truncation（read 末端正常下降）不算。文案在 render_poly.dropout_lines。"""
+    out: List[Dict] = []
+    seen: set = set()
+    for r in read_results:
+        for d in r.get("post_poly_dropouts") or []:
+            if d.get("end_truncation"):
+                continue
+            key = (d["base"], d["ref_start"], d["ref_end"])
+            if key in seen:
+                continue
+            seen.add(key)
+            ratio = d.get("ratio")
+            out.append({"base": d["base"], "ref_start": int(d["ref_start"]),
+                        "ref_end": int(d["ref_end"]),
+                        "ratio": float(ratio) if ratio is not None else None,
+                        "recovered": bool(d.get("recovered")),
+                        "read": r.get("filename")})
+    return out

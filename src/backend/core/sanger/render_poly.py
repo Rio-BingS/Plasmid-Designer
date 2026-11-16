@@ -129,3 +129,59 @@ def anchor_notes(pcs: Optional[List[Dict]]) -> List[str]:
             f"的锚定路标不可靠（{reason}）——计数确证但定位存疑，run 起止"
             "可能整体偏移数 bp，建议对照图谱核对边界")
     return notes
+
+
+def dropout_lines(dropouts: Optional[List[Dict]]) -> List[str]:
+    """poly 下游信号骤降注记（只读 homopolymer.collect_post_poly_dropouts）"""
+    out = []
+    for d in dropouts or []:
+        ratio_txt = f"{round((d['ratio'] or 0) * 100)}%" if d.get("ratio") is not None else "?"
+        rec = "" if d.get("recovered") else "且未见恢复"
+        out.append(
+            f"  ↳ poly({d['base']}) 同聚物 {d['ref_start']}-{d['ref_end']} 下游检测到信号骤降"
+            f"（降至约 {ratio_txt}{rec}）：该段碱基判读不可信（区别于未覆盖），"
+            "建议人工核对峰图或换引物复测"
+        )
+    return out
+
+
+def edge_lines(edge_ambiguous_reads: List[Dict], pcs: Optional[List[Dict]]) -> List[str]:
+    """比对端点落在同聚物内部的提示；按 PolyCall 豁免（已确证计数的 run
+    端点滑动不影响判定）"""
+    ok = confirmed_keys(pcs)
+    notes = [x for x in edge_ambiguous_reads or []
+             if not any((h["base"], h["start"]) in ok for h in x["hits"])]
+    if not notes:
+        return []
+    names = "、".join(x["filename"] for x in notes[:3])
+    more = f" 等 {len(notes)} 条" if len(notes) > 3 else ""
+    first = notes[0]["hits"][0]
+    run_txt = (f"poly({first['base']}) {first['start']}-{first['end']}"
+               if first["base"] else f"{first['start']}-{first['end']}")
+    return [f"注意：{names}{more} 的比对端点落在同聚物区内部"
+            f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
+            "互检定位可能有数 bp 偏差，建议对照图谱核对"]
+
+
+def repeat_variant_lines(shown_variants: List[Dict], pcs: Optional[List[Dict]]) -> List[str]:
+    """重复区 indel 的重复数变化行（峰图判读行已覆盖的 run 不重复出）"""
+    from core.sanger.homopolymer import run_label
+    emitted = detail_keys(pcs)
+    out = []
+    for v in shown_variants:
+        hp = v.get("homopolymer")
+        if not (hp and v.get("type") in ("insertion", "deletion")):
+            continue
+        if (hp.get("base"), hp.get("unit"), hp.get("start")) in emitted:
+            continue
+        kind = "插入" if v["type"] == "insertion" else "缺失"
+        rel = ("重复数计数可靠" if hp.get("count_reliable", True)
+               else "峰压缩区，重复数计数可能不准，建议人工核对峰图")
+        if hp.get("peak_count") is not None:
+            rel += f"；峰图独立计数 {hp['peak_count']} 个"
+        out.append(
+            f"  ↳ {run_label(hp)} {hp['start']}-{hp['end']}："
+            f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
+            f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
+        )
+    return out

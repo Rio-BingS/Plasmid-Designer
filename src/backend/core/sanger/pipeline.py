@@ -48,7 +48,7 @@ from core.sanger.aligner import (
     check_unaligned_hq_segment,
 )
 from core.sanger.annotator import annotate_variants
-from core.sanger import render_mixed, render_site
+from core.sanger import render_cds, render_mixed, render_site
 from core.sanger.crosscheck import MIXED_STRETCH_MIN, mixed_summary as build_mixed_summary  # noqa: F401
 from core.seq_utils import revcomp as _seq_revcomp
 from core.sanger.signal import (
@@ -59,7 +59,8 @@ from core.sanger import conclusion_fold, indel_norm, peak_shape
 from core.sanger.zone_signal import TAIL_CLEAN_WIDTH_MAX, local_width_ratio
 from core.sanger.reliable_zone import (
     zone_class, core_zone,
-    DEFAULT_ZONE, ZoneParams, compute_reliable_zone, in_zone, zone_reason, zone_text,
+    DEFAULT_ZONE, ZoneParams, compute_reliable_zone, custom_zone_params, in_zone,
+    zone_reason, zone_text,
 )
 
 # 同聚物判读簇已迁至 core/sanger/homopolymer.py（纯搬运）；此处 re-export
@@ -74,8 +75,8 @@ from core.sanger.homopolymer import (  # noqa: F401
     _clean_cover_reads, _clean_cover_reads_sub, _corroborate_mixed,
     _mixed_check_phrase, _poly_anchor_notes, _poly_peak_amplitude_ratio,
     _poly_peak_count, _read_ref_maps, _read_run_verdict, _region_ok,
-    _unit_run, _overlapping_run, find_homopolymers, find_repeat_runs,
-    mixed_sample_confirmed,
+    _unit_run, _overlapping_run, collect_post_poly_dropouts, find_homopolymers,
+    find_repeat_runs, mixed_sample_confirmed,
     peak_verdict_phrase, pos_ranges_str, region_quality_text, run_label,
 )
 from core.sanger.resolved_regions import (
@@ -1029,17 +1030,18 @@ def _build_cds_reports(
             # 抛弃列表，位点丢失
             unresolved_sites.append(
                 suspect_site(feat_start, feat_end, f.get("name") or "CDS"))
+        # 读框注（S7 第 4 片：结构化，文案在 render_cds.frame_note_text）
         if orf and (start, end) != (feat_start, feat_end):
-            shift = f"起点相差 {abs(start - feat_start)} bp" if start != feat_start \
-                else f"终点相差 {abs(end - feat_end)} bp"
-            frame_note = (
-                f"（特征标注 {_rp(feat_start)}-{_rp(feat_end)} 与实际编码区 "
-                f"{_rp(start)}-{_rp(end)} {shift}，已按编码区翻译）"
-            )
+            frame = {"kind": "orf_shift",
+                     "feat_start": int(_rp(feat_start)), "feat_end": int(_rp(feat_end)),
+                     "start": int(_rp(start)), "end": int(_rp(end)),
+                     "shift_side": "start" if start != feat_start else "end",
+                     "shift_bp": int(abs(start - feat_start) if start != feat_start
+                                     else abs(end - feat_end))}
         elif (end - start + 1) % 3:
-            frame_note = f"（注意：该特征长度 {end - start + 1} bp 不是 3 的倍数，翻译按参考阅读框截断）"
+            frame = {"kind": "len_not_mult3", "length": end - start + 1}
         else:
-            frame_note = ""
+            frame = None
         cov_pct = _span_coverage(start, end)
         # verified 口径（goal T3；B P0-4）：verified/trusted 覆盖随报告下发
         # （verified_percent 字段 + coverage 区块 + 导出小写标注），full 判定
@@ -1080,7 +1082,7 @@ def _build_cds_reports(
                 "consequences": [],
                 "synonymous_count": 0,
                 "pending_low_confidence": 0,
-                "verdict": "未测：不参与判读（覆盖区外按设计序列对待——部分测序是常规策略，无需测全）",
+                "verdict": render_cds.uncovered_text(),
             })
             continue
 
@@ -1182,107 +1184,54 @@ def _build_cds_reports(
         if synonymous:
             consequences.append("synonymous_variant")
 
-        # 结论主句：一句话因果链（哪个位置的什么变异 → 什么后果），面向实验员可直接行动
-        name = base["name"]
-        if protein_identical is None:
-            pos_txt = pos_ranges_str(sorted(int(u["ref_pos"]) for u in n_sites))
-            main = (f"{name} 蛋白判定待定：CDS 内 {n_in_cds} 处 N/模糊调用"
-                    f"（参考位置 {pos_txt}）未读清——需核对峰图或换引物补测后再判")
-            if aa_diffs:
-                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
-                main += f"；已确证 {len(aa_diffs)} 处氨基酸替换（{preview}）"
-        elif protein_identical:
-            main = (
-                f"已测区域蛋白与设计一致（{len(ref_prot)} aa）" if cov_pct < 99
-                else f"{name} 蛋白与设计一致（{len(ref_prot)} aa）"
-            )
-            if synonymous:
-                main += f"；另有 {synonymous} 处同义突变（DNA 变、蛋白不变）"
-        else:
-            fs0 = frameshifts[0] if frameshifts else None
-            if fs0 is not None:
-                kind = "插入" if fs0.get("type") == "insertion" else "缺失"
-                vlen = int(fs0.get("length") or 1)
-                main = f"{_rp(fs0['ref_pos'])} 处的{kind}{'' if vlen == 1 else f' {vlen}bp'}使阅读框自第 {first_diff + 1} 位起移码"
-                if stop_idx >= 0:
-                    main += f"，翻译在第 {stop_idx + 1} 位提前终止（产物 {len(alt_prot)} aa，设计为 {len(ref_prot)} aa）"
-                else:
-                    main += "，其后氨基酸序列与设计不再对应"
-                if len(frameshifts) > 1:
-                    main += f"（共 {len(frameshifts)} 处移码）"
-            elif stop_idx >= 0:
-                main = f"翻译在第 {stop_idx + 1} 位提前终止（产物 {len(alt_prot)} aa，设计为 {len(ref_prot)} aa）"
-            elif start_lost:
-                main = f"起始密码子改变（{ref_o[:3]} → {alt_o[:3]}），翻译可能无法正常起始"
-            elif stop_lost:
-                main = "终止密码子丢失，翻译将读穿至下游"
-            elif inframe_ins or inframe_del:
-                n_bp = sum(int(v.get("length") or 1) for v in indels
-                           if int(v.get("length") or 1) % 3 == 0)
-                main = f"阅读框内{'插入' if inframe_ins else '缺失'} {n_bp} bp，自第 {first_diff + 1} 位起氨基酸序列改变"
-            elif aa_diffs:
-                preview = "、".join(aa_diffs[:5]) + ("等" if len(aa_diffs) > 5 else "")
-                main = f"{len(aa_diffs)} 处氨基酸替换（{preview}）"
-            else:
-                main = f"翻译产物与设计不同（长度 {len(ref_prot)} → {len(alt_prot)} aa）"
-            if synonymous and (aa_diffs or inframe_ins or inframe_del):
-                main += f"；另有 {synonymous} 处同义突变（蛋白不变）"
-            # 移码/提前终止下蛋白层面的比对不再可靠，但确证的碱基替换仍需列出——
-            # 它们是真实存在的序列差异（如重新挑克隆时需要一并确认）
-            if frameshifts or stop_idx >= 0:
-                confirmed_subs = [
-                    v for v in confirmed
-                    if v.get("type") == "substitution" and start <= v["ref_pos"] <= end
-                ]
-                if confirmed_subs:
-                    preview = "、".join(
-                        f"{_rp(v['ref_pos'])} {v.get('ref_base', '')}>{v.get('alt_base', '')}"
-                        for v in confirmed_subs[:4]
-                    ) + ("等" if len(confirmed_subs) > 4 else "")
-                    main += f"；另有 {len(confirmed_subs)} 处确证的碱基替换（{preview}）"
-            main = f"{name} 蛋白与设计不一致：{main}"
-        # 待复核提示：低置信变异未计入以上判定，告知其潜在影响。
-        # 互检矛盾（单 read 报告 indel、其他 read 干净跨过同一位点）单独
-        # 点名——它与"疑似测序噪声"不同：另一条 read 已给出反向证据，
-        # 更可能是伪影而非漏检，人工核对有明确抓手
+        # S7 第 4 片：结论句所需的结构化事实（位置已映射回原参考坐标），
+        # 文案在 render_cds.verdict_text 生成
+        def _pv(v: Dict) -> Dict:
+            d = {k: v[k] for k in ("type", "length", "ref_base", "alt_base",
+                                   "low_reason") if k in v}
+            d["ref_pos"] = int(_rp(v["ref_pos"]))
+            return d
+
         pending_impact = None
+        pending_plain: List[Dict] = []
+        pending_conflicted: List[Dict] = []
         if pending:
-            conflicted = [v for v in pending if v.get("cross_read_conflict")]
-            plain = [v for v in pending if not v.get("cross_read_conflict")]
             would_change = _translate(_rebuild_from_variants(start, end, in_cds), strand) != alt_prot_raw
             pending_impact = "would_change" if would_change else "no_effect"
-            if plain:
-                detail = "；".join(
-                    f"{_rp(v['ref_pos'])} {variant_type_text(v)}"
-                    + (f"（{v['low_reason']}）" if v.get("low_reason") else "")
-                    for v in plain[:3]) + ("等" if len(plain) > 3 else "")
-                if would_change:
-                    main += (
-                        f"。另有 {len(plain)} 处低置信差异未计入判定：{detail}"
-                        "——若为真蛋白还会改变，建议核对峰图"
-                    )
-                else:
-                    main += f"。另有 {len(plain)} 处低置信差异，不影响以上判定：{detail}"
-            if conflicted:
-                parts = []
-                for v in conflicted[:2]:
-                    kind = {"insertion": "插入", "deletion": "缺失"}.get(
-                        v.get("type"), "替换")
-                    rd = (v.get("cross_read_conflict") or {}).get("reads") or []
-                    reads = "、".join(rd[:2]) + ("等" if len(rd) > 2 else "")
-                    parts.append(f"{_rp(v['ref_pos'])} 处的{kind}（{reads} 跨过同一位点未见差异）")
-                head = (f"等 {len(conflicted)} 处" if len(conflicted) > 2
-                        else f"{len(conflicted)} 处")
-                main += (
-                    f"。另有 {head}互检矛盾差异未计入判定：{'；'.join(parts)}"
-                    "——真实变异应被覆盖该位的每条 read 独立报出，如需确认请核对峰图或换引物复测"
-                )
-        verdict = (
-            f"CDS 覆盖 {cov_pct}%（未覆盖部分按参考填充、未验证）。{main}"
-            if cov_pct < 99
-            else f"CDS 已完整覆盖。{main}"
-        )
-        verdict += frame_note
+            pending_plain = [_pv(v) for v in pending if not v.get("cross_read_conflict")]
+            pending_conflicted = [
+                {**_pv(v), "reads": list((v.get("cross_read_conflict") or {}).get("reads") or [])}
+                for v in pending if v.get("cross_read_conflict")]
+        confirmed_subs = []
+        if frameshifts or stop_idx >= 0:
+            confirmed_subs = [_pv(v) for v in confirmed
+                              if v.get("type") == "substitution" and start <= v["ref_pos"] <= end]
+        cds_facts = {
+            "name": base["name"],
+            "cov_pct": cov_pct,
+            "frame": frame,
+            "protein_identical": protein_identical,
+            "n_in_cds": n_in_cds,
+            "n_positions": sorted(int(u["ref_pos"]) for u in n_sites),
+            "aa_diffs": list(aa_diffs),
+            "ref_len": len(ref_prot),
+            "alt_len": len(alt_prot),
+            "frameshifts": [_pv(v) for v in frameshifts],
+            "first_diff": int(first_diff),
+            "stop_idx": int(stop_idx),
+            "start_lost": [ref_o[:3], alt_o[:3]] if start_lost else None,
+            "stop_lost": bool(stop_lost),
+            "inframe_ins": inframe_ins,
+            "inframe_del": inframe_del,
+            "inframe_bp": sum(int(v.get("length") or 1) for v in indels
+                              if int(v.get("length") or 1) % 3 == 0),
+            "synonymous": synonymous,
+            "confirmed_subs": confirmed_subs,
+            "pending_impact": pending_impact,
+            "pending_plain": pending_plain,
+            "pending_conflicted": pending_conflicted,
+        }
+        verdict = render_cds.verdict_text(cds_facts)
         reports.append({
             **base,
             "coverage_status": "full" if cov_ok else "partial",
@@ -1298,6 +1247,7 @@ def _build_cds_reports(
             # N/模糊调用位点的机器字段（goal T1；B P0-2）：待定判定与前端渲染用
             "n_in_cds": n_in_cds,
             "pending_impact": pending_impact,
+            "cds_facts": cds_facts,
             "verdict": verdict,
         })
     return reports
@@ -2032,7 +1982,7 @@ def _cds_reports_safe(ref: str, features: List[Dict], variants: List[Dict],
             "consequences": [],
             "synonymous_count": 0,
             "pending_low_confidence": 0,
-            "verdict": f"CDS 判读失败（内部异常：{type(e).__name__}），变体明细见突变表，可核对峰图或反馈日志",
+            "verdict": render_cds.failed_text(type(e).__name__),
         }]
 
 
@@ -2048,6 +1998,7 @@ def _build_conclusion(
     verdict: Optional[Dict] = None,
     poly_calls: Optional[List[Dict]] = None,
     mixed_summary: Optional[Dict] = None,
+    dropouts: Optional[List[Dict]] = None,
 ) -> Tuple[str, List[Dict], Dict]:
     """结论文本组装：互检定案行、CDS 判读、dropout/mixed/可信区提示与
     自动结论（编码区结论放最前）。返回 (conclusion, cds_reports,
@@ -2068,25 +2019,11 @@ def _build_conclusion(
         cds_reports = _cds_reports_safe(ref, features, shown_variants, consensus,
                                         unresolved_sites=unresolved_sites)
 
-    # B5：poly 下游信号骤降注记（end_truncation 属 read 末端正常下降，不算）。
-    # 与"未覆盖"明确区分：覆盖区内的骤降段碱基判读不可信，不是没测到
-    dropout_notes: List[str] = []
-    seen_drop: set = set()
-    for r in read_results:
-        for d in r.get("post_poly_dropouts") or []:
-            if d.get("end_truncation"):
-                continue
-            key = (d["base"], d["ref_start"], d["ref_end"])
-            if key in seen_drop:
-                continue
-            seen_drop.add(key)
-            ratio_txt = f"{round((d['ratio'] or 0) * 100)}%" if d.get("ratio") is not None else "?"
-            rec = "" if d.get("recovered") else "且未见恢复"
-            dropout_notes.append(
-                f"  ↳ poly({d['base']}) 同聚物 {d['ref_start']}-{d['ref_end']} 下游检测到信号骤降"
-                f"（降至约 {ratio_txt}{rec}）：该段碱基判读不可信（区别于未覆盖），"
-                "建议人工核对峰图或换引物复测"
-            )
+    # B5：poly 下游信号骤降注记（S7 第 4 片：汇总在 homopolymer，
+    # 文案在 render_poly.dropout_lines）
+    if dropouts is None:
+        dropouts = collect_post_poly_dropouts(read_results)
+    dropout_notes: List[str] = render_poly.dropout_lines(dropouts)
 
     # 双峰（疑似混合样品）结论行：read 级分级后给可行动的提示。
     # 混合样品影响整份判读（主峰序列只是多数克隆），必须显式写出——此前
@@ -2113,16 +2050,7 @@ def _build_conclusion(
     # read 可信区提示（2026-11-06 用户定稿）：默认边界的「首尾不可信区按低置信
     # 处理」教育行删——差异该标低置信的已在变体表标注，结论里这句话是噪声；
     # 只有用户自定义了边界时才说明边界（此时 Read 表数字与直觉可能不符）
-    _zparams = ((read_results[0].get("reliable_zone") or {}).get("params")
-                if read_results else None)
-    zp = _zparams or DEFAULT_ZONE.as_dict()
-    end_note = ""
-    if _zparams and (_zparams != DEFAULT_ZONE.as_dict()):
-        end_note = (
-            f"read 可信区为自定义边界（首端 {zp['front_hard']}bp 硬区、"
-            f"{zp['front_hard'] + 1}–{zp['front_gray']}bp 按 Q 值与峰型判定，"
-            f"{zp['tail_gray']}bp 之后不可信），区外差异按低置信处理"
-        )
+    end_note = render_site.custom_zone_note(custom_zone_params(read_results))
 
     # 互检定案 → 区间裁决行（2026-11-05 用户定稿结构）：文本行与结构化
     # resolved_regions 同源产出，构建在 resolved_regions 模块（T0 拆分）
@@ -2130,10 +2058,7 @@ def _build_conclusion(
         resolved_variants, read_results, features)
 
     # 自动结论（编码区结论放最前，直接回答“整段 CDS 有没有问题”）
-    cds_lines = [
-        f"【{cr['name']} CDS】{cr['verdict']}"
-        for cr in cds_reports if cr["coverage_status"] != "uncovered"
-    ]
+    cds_lines = render_cds.conclusion_lines(cds_reports)
     if not read_results:
         conclusion = "没有可分析的测序文件"
     elif not shown_variants:
@@ -2149,20 +2074,7 @@ def _build_conclusion(
         # 按 PolyCall 状态分措辞（render_poly.warning_lines）
         poly_warnings = render_poly.warning_lines(poly_calls)
         # 端点歧义按 PolyCall 豁免：已确证计数时端点滑动不影响判定
-        _verdict_ok0 = render_poly.confirmed_keys(poly_calls)
-        edge_notes0 = [x for x in edge_ambiguous_reads
-                       if not any((h["base"], h["start"]) in _verdict_ok0
-                                  for h in x["hits"])]
-        if edge_notes0:
-            names = "、".join(x["filename"] for x in edge_notes0[:3])
-            more = f" 等 {len(edge_notes0)} 条" if len(edge_notes0) > 3 else ""
-            first = edge_notes0[0]["hits"][0]
-            run_txt = (f"poly({first['base']}) {first['start']}-{first['end']}"
-                       if first["base"] else f"{first['start']}-{first['end']}")
-            poly_warnings.append(
-                f"注意：{names}{more} 的比对端点落在同聚物区内部"
-                f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
-                "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        poly_warnings.extend(render_poly.edge_lines(edge_ambiguous_reads, poly_calls))
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
         poly_warnings.extend(render_poly.anchor_notes(poly_calls))
         body_lines.extend(poly_warnings)
@@ -2173,8 +2085,8 @@ def _build_conclusion(
         # 有确认差异：区间裁决行 → 差异摘要 → CDS 行（确认差异是主要事件，
         # 但被排除的区间行依然靠前——它们是 read 质量信息，不是待办）
         lines = list(resolved_lines)  # 区间裁决行紧跟头行（2026-11-05 定稿结构）
-        lines.append(f"共检出 {len(shown_variants)} 处差异（覆盖 {consensus['coverage_percent']:.1f}%"
-                     f"{_coverage_ranges_text(coverage_ranges)}）：")
+        lines.append(render_site.diff_header(
+            len(shown_variants), consensus["coverage_percent"], coverage_ranges))
         # 疑似混合样品影响整份判读，紧跟首行（⚠ 汇总行 + ↳ 逐 read 明细）
         lines.extend(mixed_lines)
         lines.extend(mixed_signal_lines)
@@ -2185,56 +2097,24 @@ def _build_conclusion(
         # poly 判读（合并口径，C2）：峰图计数与调用不一致的 poly 结构只出一条
         # 线——变体锚点 + 峰图实测 + 逐 read 调用/峰数。此前变体行与峰图判读
         # 行两条 ↳ 各说一遍，同一事件在结论里出现两次
-        emitted_runs = render_poly.detail_keys(poly_calls)
-
-        # poly 判读：计数可靠的重复区 indel 单列重复数变化（实验员关心的
-        # “多了/少了几个”）；峰图矛盾的结构由下面的峰图判读行统一覆盖
-        for v in shown_variants:
-            hp = v.get("homopolymer")
-            if not (hp and v.get("type") in ("insertion", "deletion")):
-                continue
-            if (hp.get("base"), hp.get("unit"), hp.get("start")) in emitted_runs:
-                continue
-            kind = "插入" if v["type"] == "insertion" else "缺失"
-            rel = ("重复数计数可靠" if hp.get("count_reliable", True)
-                   else "峰压缩区，重复数计数可能不准，建议人工核对峰图")
-            if hp.get("peak_count") is not None:
-                rel += f"；峰图独立计数 {hp['peak_count']} 个"
-            lines.append(
-                f"  ↳ {run_label(hp)} {hp['start']}-{hp['end']}："
-                f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
-                f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
-            )
+        # 计数可靠的重复区 indel 单列重复数变化（实验员关心的“多了/少了几个”）；
+        # 峰图矛盾的结构由下面的峰图判读行统一覆盖
+        lines.extend(render_poly.repeat_variant_lines(shown_variants, poly_calls))
         # 峰图判读行（PolyCall 状态分措辞，同一 run 只出一条，逐 read 证据随行）
         lines.extend(render_poly.detail_lines(poly_calls))
         lines.extend(dropout_notes)
         # 端点歧义行按 verdict 豁免（Step B）：run 已有可分辨 read 互证出
         # 确定重复数（accepted）时，端点滑动不再影响判定——只有无判决或
         # 判决存疑的 run 才提示定位偏差
-        _verdict_ok = render_poly.confirmed_keys(poly_calls)
-        edge_notes = [x for x in edge_ambiguous_reads
-                      if not any((h["base"], h["start"]) in _verdict_ok
-                                 for h in x["hits"])]
-        if edge_notes:
-            names = "、".join(x["filename"] for x in edge_notes[:3])
-            more = f" 等 {len(edge_notes)} 条" if len(edge_notes) > 3 else ""
-            first = edge_notes[0]["hits"][0]
-            run_txt = f"poly({first['base']}) {first['start']}-{first['end']}" if first["base"] else f"{first['start']}-{first['end']}"
-            lines.append(
-                f"注意：{names}{more} 的比对端点落在同聚物区内部"
-                f"（如 {run_txt}）——同聚物内的比对落点存在歧义，覆盖边界与"
-                "互检定位可能有数 bp 偏差，建议对照图谱核对")
+        lines.extend(render_poly.edge_lines(edge_ambiguous_reads, poly_calls))
         # accepted 但锚不可靠的 run：计数确证 ≠ 定位确证，须显式写明
         lines.extend(render_poly.anchor_notes(poly_calls))
         lines.append(end_note)
         # 覆盖 % 首行已有；「部分测序是常规策略」安抚话术删（2026-11-05 用户
         # 定稿）——只保留未覆盖缺口的位置提示（判断是否补引物用得上）
-        if consensus["coverage_percent"] < 95 and coverage_gaps:
-            g = coverage_gaps[0]
-            lines.append(
-                f"注意：共 {len(coverage_gaps)} 段未覆盖缺口"
-                f"（最大 {_gap_span_text(g)}，{g['length']}bp），未测区域按设计序列对待"
-            )
+        gap_line = render_site.gap_note(consensus["coverage_percent"], coverage_gaps)
+        if gap_line:
+            lines.append(gap_line)
         conclusion = "\n".join(lines)
 
     # 结论头部一句话总结：✓/✗/△ 先给判读结果，区间裁决行紧跟其后
@@ -2574,6 +2454,8 @@ def analyze(
     # 引物校验（goal T17；A 1.5）：方向/结合位点/3′ 端距离逐 read 校验，
     # mismatch 由 verdict 判 fail（默认），无法确定引物只记 info
     primer_checks = check_reads(primer, read_results, ref)
+    # S7 第 4 片：poly 下游信号骤降的 run 级汇总（结构化，文案在 render_poly）
+    poly_dropouts = collect_post_poly_dropouts(read_results)
     verdict = judge({
         "variants": variants, "unresolved_sites": unresolved_sites,
         "primer_checks": primer_checks,
@@ -2590,7 +2472,7 @@ def analyze(
         consensus, coverage_ranges, coverage_gaps, homopolymer_report,
         ref, features, unresolved_sites=unresolved_sites, errors=errors,
         cds_reports=cds_reports, mixed_profiles=mixed_profiles, verdict=verdict,
-        poly_calls=poly_calls, mixed_summary=mixed_summary)
+        poly_calls=poly_calls, mixed_summary=mixed_summary, dropouts=poly_dropouts)
     # 混合样品提示：检出疑似混合位点时建议人工复核或使用 tracy decompose 解卷积
     mixed_reads = [r for r in read_results if r["mixed_positions"]]
     any_tracy = any(r.get("cross_variants") is not None for r in read_results)  # tracy 实际运行过
@@ -2631,6 +2513,7 @@ def analyze(
         "read_calls": read_calls.to_list(),
         "poly_calls": poly_calls,
         "mixed_summary": mixed_summary,
+        "poly_dropouts": poly_dropouts,
         "reads": [
             {k: v for k, v in r.items()
              if k not in ("trace", "peak_indices", "cross_variants", "tracy_calls", "_sigmaps", "_width_cache",
