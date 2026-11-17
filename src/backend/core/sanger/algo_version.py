@@ -28,7 +28,7 @@ SWITCHES = {
 
 
 def enabled() -> bool:
-    return os.environ.get("SANGER_ALGO_VERSION_COMPOSITE", "1") == "1"
+    return os.environ.get("SANGER_ALGO_VERSION_COMPOSITE", "0") == "1"  # 用户 2026-11-18：版本号变更不进云端，默认关
 
 
 def parts(base: str) -> Dict:

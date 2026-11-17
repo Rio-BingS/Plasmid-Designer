@@ -41,7 +41,7 @@ def test_design_enzymes_levels():
     d = build_design_enzymes(ref, [], False, [(210, 400)])
     assert d["level"] == "flank" and {e["name"] for e in d["enzymes"]} >= {"EcoRI", "BamHI"}
     d = build_design_enzymes(ref, [], False, None)
-    assert d["level"] == "plasmid"
+    assert d["level"] is None and d["enzymes"] == []   # 用户 2026-11-18：无全质粒兜底
     assert avoid_from_comment("pd_design_enzymes: avoid=BsaI, ecori") == ["BsaI", "EcoRI"]
 
 

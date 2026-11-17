@@ -6,7 +6,7 @@
    （本项目构建导出写入的 misc_feature /note="pd_enzyme role=…"）。
 2. 插入片段 / 声明范围两端的单切酶（source="flank"）：常用酶菜单中在全质粒
    只切一次、且位点落在范围边界外 FLANK_OUT bp 到内 FLANK_IN bp 内的酶。
-3. 全质粒单切酶（source="plasmid"）：常用酶菜单中在全质粒只切一次的酶。
+3. （已取消，用户 2026-11-18）不再以全质粒单切酶兜底；前两级都没有时设计酶为空。
 
 另：参考文件级 COMMENT「pd_design_enzymes: avoid=A,B」给出的避开酶（无位点），
 不论哪一级都并入 avoid；变异新引入 avoid 酶位点判 P2（IMP_ENZYME_CREATED）。
@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-DESIGN_ENZYMES_VERSION = "d2"
+DESIGN_ENZYMES_VERSION = "d3"
 FLANK_OUT = 100
 FLANK_IN = 20
 
@@ -115,8 +115,7 @@ def build_design_enzymes(ref: str, features: Optional[Sequence[Dict]] = None,
                         break
             if flank:
                 level, chosen = "flank", flank
-        if level is None and single:
-            level, chosen = "plasmid", single
+        # 用户 2026-11-18 00:34：不要「全质粒单切酶」兜底——没有就没有
         roles = {n: level for n in chosen}
     return {
         "level": level,

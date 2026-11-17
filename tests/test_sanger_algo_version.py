@@ -7,7 +7,7 @@ from core.sanger.pipeline import SANGER_ALGO_VERSION  # noqa: E402
 
 
 def test_default_off_returns_base(monkeypatch):
-    # 二期 f 自 2026-11-17 起默认开：显式关时回基础版本号
+    # 用户 2026-11-18：组合版本号默认关，显式关同样回基础版本号
     for k in av.SWITCHES:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SANGER_ALGO_VERSION_COMPOSITE", "0")

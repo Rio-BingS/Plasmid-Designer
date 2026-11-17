@@ -75,7 +75,7 @@ def test_unified_enzyme_single_cut_matches_map():
     from core.plasmid_map.enzymes import scan_enzyme
     from core.sanger.design_enzymes import build_design_enzymes
     ref = ("AT" * 50) + "GAATTC" + ("CG" * 60) + "GGATCC" + ("TA" * 50) + "GGATCC" + "AT" * 20
-    d = build_design_enzymes(ref, circular=True)
+    d = build_design_enzymes(ref, circular=True, scope_ranges=[(130, 200)])
     names = {e["name"] for e in d["enzymes"]}
     assert "EcoRI" in names and "BamHI" not in names
     assert scan_enzyme(ref.upper(), "EcoRI", True)["cut_count"] == 1
