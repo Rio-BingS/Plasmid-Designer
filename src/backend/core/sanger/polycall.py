@@ -21,7 +21,6 @@ from typing import Dict, List, Optional
 
 from core.sanger.homopolymer import _ANCHOR_RANK
 
-POLYCALL_VERSION = "p4-1"
 
 
 def poly_missing_min_enabled() -> bool:
@@ -271,7 +270,6 @@ def poly_call(entry: Dict) -> Dict:
             "called_count", "peak_count", "resolution")} for x in reads],
         "covered_ranges": covered,
         "reasons": reasons,
-        "stage_version": POLYCALL_VERSION,
         # Step B 之前的旧存档：无 run_verdict 但单 read 判计数不可靠——
         # 状态记 CALLER_ONLY（不作未决位点），呈现仍按「不可靠/存疑」
         **({"legacy_unreliable": True}
@@ -290,7 +288,6 @@ def not_covered(run: Dict) -> Dict:
         "missing_max": None, "inserted_max": None, "peak_measured": None,
         "anchor_grade": None, "site": None, "width_est": None, "width_ci": None,
         "per_read": [], "covered_ranges": [], "reasons": [],
-        "stage_version": POLYCALL_VERSION,
     }
 
 

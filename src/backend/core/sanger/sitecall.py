@@ -30,7 +30,6 @@ from typing import Dict, Iterable, List, Optional
 
 from core.sanger.scoring import load_params, p_real_for
 
-SITECALL_VERSION = "s4-2"
 
 CONFIRMED = "CONFIRMED"
 MIXED = "MIXED"
@@ -181,7 +180,6 @@ def call_variant(v: Dict, params=None,
         "support": {"read": v.get("read"), "support_reads": v.get("support_reads")},
         "action": action,
         "review": review,
-        "stage_version": SITECALL_VERSION,
     }
 
 
@@ -254,7 +252,6 @@ def call_mixed(m: Dict) -> Dict:
         "support": {"reads": list(m.get("reads") or [])},
         "action": "exclude" if art else "report",
         "review": None,
-        "stage_version": SITECALL_VERSION,
     }
 
 

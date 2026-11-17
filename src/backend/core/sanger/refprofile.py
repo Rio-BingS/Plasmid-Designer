@@ -12,7 +12,6 @@ from typing import Dict, List, Optional
 from core.sanger.homopolymer import find_repeat_runs
 from core.sanger.scope import resolve_scope
 
-REFPROFILE_VERSION = "r2"  # r2：10e 元件补全 + 设计酶集合
 
 
 def normalize_reference(reference: str) -> str:
@@ -40,5 +39,4 @@ def build_reference_profile(reference: str, features: Optional[List[Dict]] = Non
         "poly_runs": find_repeat_runs(ref),
         "scope": scope_obj,
         "scope_error": scope_err,
-        "stage_version": REFPROFILE_VERSION,
     }
