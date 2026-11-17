@@ -40,6 +40,9 @@ class ExportData:
     description: str = ""
     is_circular: bool = True
     created_at: datetime = None
+    # 10e③：文件级 COMMENT（GenBank）。设计酶的「避开」清单写在这里：
+    # 「pd_design_enzymes: avoid=A,B」，Sanger 分析读回作为用户指定
+    comment: str = ""
     
     def __post_init__(self):
         if self.created_at is None:
@@ -77,6 +80,11 @@ class GenBankExporter:
         
         # VERSION
         lines.append(f"VERSION     {locus_name}.1")
+
+        # COMMENT（10e③ 设计酶避开清单等）
+        if data.comment:
+            for i, ln in enumerate(data.comment.splitlines()):
+                lines.append(("COMMENT     " if i == 0 else "            ") + ln)
         
         # SOURCE
         lines.append("SOURCE      synthetic DNA construct")
@@ -369,13 +377,52 @@ def create_export_data_from_design(design_result: Dict) -> ExportData:
             description=f"Tm: {primer.get('tm', 0):.1f}°C"
         ))
     
+    sequence = design_result.get("optimized_sequence", "") or ""
+    enz_feats, comment = design_enzyme_annotations(design_result, sequence, True)
+    features.extend(enz_feats)
     return ExportData(
         name=design_result.get("design_id", "design"),
-        sequence=design_result.get("optimized_sequence", ""),
+        sequence=sequence,
         features=features,
         description=f"Designed with Plasmid Designer - {design_result.get('vector_name', '')}",
-        is_circular=True
+        is_circular=True,
+        comment=comment,
     )
+
+
+def design_enzyme_annotations(design_result: Dict, sequence: str,
+                              circular: bool = True):
+    """10e③（用户 2026-11-17 拍板）：构建导出写入设计酶标注，供 Sanger
+    分析读回作为「用户指定」的设计酶集合。
+
+    - 克隆酶 / 线性化酶在导出序列上的每个位点写一条 misc_feature：
+      /label=酶名，/note="pd_enzyme role=cloning|linearize"；
+    - 避开的酶（设计时排除的酶，序列上不应有位点）写文件级 COMMENT
+      「pd_design_enzymes: avoid=A,B」。
+    返回 (features, comment)。"""
+    from core.enzyme_sites import canonical_enzyme_name, find_enzyme_sites
+    feats: List[SequenceFeature] = []
+    method = str(design_result.get("cloning_method") or "").lower()
+    role = "linearize" if "gibson" in method else "cloning"
+    names = [canonical_enzyme_name(e) for e in (design_result.get("cloning_enzymes") or []) if e]
+    if names and sequence:
+        seen = set()
+        for site in find_enzyme_sites(sequence, names, circular):
+            key = (site["name"], site["position"])
+            if key in seen:
+                continue
+            seen.add(key)
+            L = len(site.get("recognition") or "") or 1
+            start = int(site["position"])
+            feats.append(SequenceFeature(
+                name=site["name"], feature_type="misc_feature",
+                start=start, end=min(len(sequence), start + L - 1), strand="+",
+                color="#B0B0B0", description=f"pd_enzyme role={role}"))
+    req = design_result.get("request") or {}
+    avoid = [canonical_enzyme_name(e) for e in
+             (design_result.get("exclude_enzymes") or req.get("exclude_enzymes") or []) if e]
+    comment = f"pd_design_enzymes: avoid={','.join(avoid)}" if avoid else ""
+    return feats, comment
 
 
 def create_export_data_from_vector(vector: Dict) -> ExportData:

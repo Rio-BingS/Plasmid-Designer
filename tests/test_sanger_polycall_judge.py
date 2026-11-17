@@ -79,7 +79,9 @@ def test_rejudge_keeps_body_and_replaces_headline(monkeypatch):
 from core.sanger import render_poly as rp
 
 
-def test_render_phrase_matches_legacy():
+def test_render_phrase_matches_legacy(monkeypatch):
+    # 旧口径（取 max）；二期 b 默认开后取 min，见 test_missing_min_switch_default_off
+    monkeypatch.setenv("SANGER_POLY_MISSING_MIN", "0")
     e = _entry([_rd("f", "full", [101, 130], 28, 28, "resolvable"),
                 _rd("r", "full", [101, 130], 30, 30, "resolvable", "-")])
     call = pc.poly_call(e)
@@ -105,7 +107,7 @@ def test_missing_min_switch_default_off(monkeypatch):
     reads = [_rd("f", "full", [101, 130], 25, 25, "partial_merge"),
              _rd("r", "full", [101, 130], 10, 10, "partial_merge", "-"),
              _rd("p", "partial", [101, 115], 5, 5, "partial_merge")]
-    monkeypatch.delenv("SANGER_POLY_MISSING_MIN", raising=False)
+    monkeypatch.setenv("SANGER_POLY_MISSING_MIN", "0")   # 2026-11-17 起默认开
     e = _entry([dict(x) for x in reads])
     assert e["peak_missing"] == 20 and e["peak_measured"] == 10
     monkeypatch.setenv("SANGER_POLY_MISSING_MIN", "1")

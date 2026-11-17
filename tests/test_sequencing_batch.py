@@ -920,7 +920,8 @@ def test_batch_mixed_sample_routes_to_uncertain_bucket(client):
     assert it["conclusion"].startswith("疑似混合 ·")
     # X3：结论串 = headline 去符号——「无法自动判定」这类动作提示在正文，
     # 结论列只说状态与证据（分拣桶仍由 verdict.status 驱动）
-    assert "read 检出双峰" in it["conclusion"]
+    # 二期 a 默认开（2026-11-17）：证据段改「双峰判混（N 处）」
+    assert "read 检出双峰" in it["conclusion"] or "双峰判混" in it["conclusion"]
 
     zf = _open_zip(client.get(f"/api/sequencing/batches/{data['batch_id']}/report", headers=_tok_header(resp)))
     names = zf.namelist()

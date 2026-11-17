@@ -622,7 +622,11 @@ def test_recompute_updates_conclusion_and_persists(client, _mem_store):
     lines = data["conclusion"].split("\n")
     old_lines = old_conclusion.split("\n")
     assert lines[0] == data["verdict"]["headline"]   # 头行重建
-    assert lines[1:] == old_lines[1:]                # 正文保留
+    # 正文保留；10e 影响分级行（附带发现/未评估）随范围重算，单独比
+    from core.sanger.render_impact import _PREFIXES
+    def _body(ls):
+        return [ln for ln in ls[1:] if not ln.startswith(_PREFIXES)]
+    assert _body(lines) == _body(old_lines)
     # 落库：内存淘汰后仍能回读（load_record 从库里取）
     from app import sequencing_store as st
     rec = st.load_record(aid)

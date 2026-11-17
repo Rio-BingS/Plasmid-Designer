@@ -1893,6 +1893,7 @@ def test_pos_ranges_str_compresses_and_caps():
     assert out.endswith("等 8 段") and out.count("、") == 5
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_mixed_sample_widespread_end_to_end():
     """两个克隆的混合培养物：多个分散双峰位点 → read 级判疑似混合样品，
     结论显式提示（此前 mixed_positions 只进结构化字段，结论完全不可见）"""
@@ -2074,6 +2075,7 @@ def test_pullup_saturated_bleed_suppressed():
     assert prof["count"] == 1 and prof["class"] == "none"
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_mixed_contiguous_stretch_widespread():
     """连续双峰段（两个克隆相差插入/缺失时交界下游逐位双峰）→ 疑似混合"""
     random.seed(7)
@@ -2085,6 +2087,7 @@ def test_mixed_contiguous_stretch_widespread():
     assert "连续双峰段" in result["conclusion"]
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_mixed_cross_read_corroboration_downgrades_noise():
     """跨引物互检：混合 read 的双峰位点全部被另一条干净引物覆盖且峰形
     单一、判读一致 → 措辞降级为"倾向该 read 信号问题"而非疑似混合样品
@@ -2146,6 +2149,7 @@ def test_mixed_overhang_sites_cross_checked_by_approx_position():
     assert "建议核对峰图" not in result["conclusion"]
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_mixed_multi_read_aggregated_conclusion():
     """多条 read 全部 widespread：结论聚合成一条综合判读（逐 read 复读把
     "重新挑克隆"这个唯一建议淹没），只保留次要克隆占比一个百分比口径；

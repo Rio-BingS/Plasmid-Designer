@@ -55,6 +55,24 @@ def parse_reference_topology(filename: str, data: bytes
         raise ReferenceParseError(f"参考文件解析失败（{filename}）: {e}") from e
 
 
+_PD_ENZYME_RE = __import__("re").compile(r"pd_enzyme\s+role=([A-Za-z_|]+)")
+
+
+def parse_reference_meta(filename: str, data: bytes) -> Dict:
+    """10e③：参考文件级元数据。GenBank COMMENT 里的
+    「pd_design_enzymes: avoid=A,B」→ {"design_comment": 原文}；其他格式为空。"""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in GENBANK_EXTS:
+        return {}
+    text = data.decode("utf-8", errors="ignore")
+    import re as _re
+    # COMMENT 段（续行以空格开头）
+    m = _re.search(r"^COMMENT\s+(.*?)(?=^\S)", text, _re.M | _re.S)
+    if not m or "pd_design_enzymes" not in m.group(1):
+        return {}
+    return {"design_comment": " ".join(m.group(1).split())}
+
+
 def _clean(text: str) -> str:
     import re
     return re.sub(r"\s+", " ", (text or "").strip())
@@ -125,6 +143,11 @@ def _from_genbank(data: bytes) -> Tuple[str, List[Dict], Optional[bool]]:
                     "transl_table": transl_table,
                 "codon_start": codon_start,
             }
+            _pd = _PD_ENZYME_RE.search(" ".join(str(x) for x in quals.get("note") or []))
+            if _pd:
+                # 10e③：本项目构建导出写入的设计酶标注（/label=酶名，
+                # /note="pd_enzyme role=cloning|linearize"）
+                rec["pd_enzyme_role"] = _pd.group(1).lower()
             if len(segments) > 1:
                 # 多段特征的分组键：同一 feature_id 的各段共享名称/类型/方向，
                 # segment_index 为编码方向上的顺序（CDS 拼接与 UI 图例去重用）

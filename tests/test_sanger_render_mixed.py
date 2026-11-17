@@ -57,7 +57,7 @@ def test_readcall_switch_default_off(monkeypatch):
     rc = ReadCalls([ReadCall(filename="a.ab1"),
                     ReadCall(filename="b.ab1", state=MIXED_TEMPLATE)])
     corr = {"by_read": {}, "total": 0, "multi_sites": []}
-    monkeypatch.delenv("SANGER_MIXED_LINES_READCALL", raising=False)
+    monkeypatch.setenv("SANGER_MIXED_LINES_READCALL", "0")   # 2026-11-17 起默认开
     ms = mixed_summary(rr, corr, rc)
     assert [w["filename"] for w in ms["wide"]] == ["a.ab1"]
     monkeypatch.setenv("SANGER_MIXED_LINES_READCALL", "1")

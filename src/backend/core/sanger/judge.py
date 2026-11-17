@@ -32,6 +32,8 @@ def compose_conclusion(headline: str, body_lines: List[str],
     if verdict is not None:
         from core.sanger.render_poly import with_large_deletion_lines
         body_lines = with_large_deletion_lines(verdict, list(body_lines))
+        from core.sanger.render_impact import with_impact_lines
+        body_lines = with_impact_lines(verdict, body_lines)
     return "\n".join([headline] + list(body_lines))
 
 

@@ -65,6 +65,7 @@ async def analyze_sequencing_upload(
     cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
     scope: str = Form(default="", description="需测范围（W10，可选）：元件名 / 301-900 / 多段(;) / 「全质粒」「插入片段」「接合区」；声明后结论只对范围负责"),
     primer: str = Form(default="", description='引物校验（T17，可选）：JSON {"name": "M13F", "seq"?: "ACGT...", "direction"?: "+"}；seq 省略时按 name 查 data/primers/*.yaml 引物库'),
+    enzymes: str = Form(default="", description="设计用酶（二期 10e，可选）：逗号分隔酶名，如 EcoRI,BamHI；留空时依次用参考里的 pd_enzyme 标注、范围两端单切酶、全质粒单切酶"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传参考序列文件 + .ab1 测序文件（可来自同一文件夹），全自动测序验证。
@@ -75,7 +76,7 @@ async def analyze_sequencing_upload(
     序列为比对参考——坐标即 CDS 内坐标，蛋白结论由 cds_reports 按伪全长
     特征自动产出。
     """
-    from core.sanger.reference_parser import ReferenceParseError
+    from core.sanger.reference_parser import ReferenceParseError, parse_reference_meta
     from core.sanger import cds_extract
 
     zone = parse_zone_form(reliable_zone)
@@ -162,7 +163,9 @@ async def analyze_sequencing_upload(
                                    circular=_reference_circular(topology), zone=zone,
                                    primer=primer_dict, scope=scope_obj,
                                    full_ref=full_ref, full_circular=full_circular,
-                                   poly_thresholds=poly_th)
+                                   poly_thresholds=poly_th,
+                                   enzymes=enzymes.strip() or None,
+                                   reference_meta=parse_reference_meta(ref_name, ref_bytes))
 
 
 @router.post(

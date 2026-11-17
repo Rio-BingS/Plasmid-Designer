@@ -315,6 +315,56 @@ def _read_mixing_text(c) -> str:
     return ""
 
 
+def impact_enabled() -> bool:
+    """二期 10e 开关（默认开，用户 2026-11-17 21:39 拍板元件补全与影响分级）：
+    范围外元件差异按 ImpactItem 分级进第二层「附带发现」，确证 P1/P2 出醒目
+    提醒（advisory，不改状态）；范围外关键元件差异不再判 pending。
+    SANGER_IMPACT=0 回旧口径。"""
+    return os.environ.get("SANGER_IMPACT", "1") == "1"
+
+
+def _impact_layers(oos_variants, elements, design, host, verified_ranges,
+                   scope_ranges, declared, poly_spans=()) -> Dict:
+    """第二层（附带发现）与第三层（未评估）的结构化结果（文案在 render_impact）"""
+    from core.sanger.impact import build_impact_items
+    # 结构级 poly 由 PolyCall 进主结论，不产生 ImpactItem（impact_contract）
+    oos_variants = [v for v in oos_variants
+                    if not any(int(p["start"]) <= int(v.get("ref_pos") or 0) <= int(p["end"])
+                               for p in poly_spans)]
+    items = build_impact_items(oos_variants, elements, design, host=host)
+    for it in items:
+        t = it["target"]
+        if "start" in t and "end" in t:
+            c = _ranges_cover(verified_ranges, int(t["start"]), int(t["end"]))
+            it["coverage"] = ("verified" if c >= 99 else "partial" if c > 0 else "none")
+    shown = [it for it in items if it["level"] in ("P1", "P2")
+             or it["certainty"] == "confirmed"]
+    advisories = [it for it in items if it["certainty"] == "confirmed"
+                  and it["level"] in ("P1", "P2")]
+
+    def _out_of_scope(e) -> bool:
+        if not scope_ranges:
+            return True
+        return not any(e["start"] <= b and a <= e["end"] for a, b in scope_ranges)
+
+    hit = {(it["target"].get("name"), it["target"].get("start")) for it in shown}
+    full_ok, unassessed = 0, []
+    for e in elements:
+        if e["source"] == "inferred" or not _out_of_scope(e):
+            continue
+        if (e["name"], e["start"]) in hit:
+            continue
+        c = _ranges_cover(verified_ranges, e["start"], e["end"])
+        if c >= 99:
+            full_ok += 1
+        elif declared or c > 0:
+            unassessed.append({"name": e["name"], "category": e["category"],
+                               "source": e["source"], "coverage": round(c, 1)})
+    return {"items": items, "shown": [it["item_id"] for it in shown],
+            "advisories": [it["item_id"] for it in advisories],
+            "full_ok": full_ok, "unassessed": unassessed}
+
+
 def build_verdict(result: Dict, ref_length: int, scope=None,
                   synonymous_action: str = "ok",
                   review_decisions: Optional[List[Dict]] = None,
@@ -422,6 +472,10 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         return (any(s_ <= v_end and rp <= e_ for s_, e_ in scope_ranges)
                 or any(s_ <= v_end and rp <= e_ for s_, e_ in junction_windows))
 
+    # 10e 影响分级（SANGER_IMPACT，默认开）：需要 S0a 元件（旧存档无 → 旧口径）
+    _elements = (result.get("elements") or {}).get("elements")
+    _impact_on = impact_enabled() and _elements is not None
+    _oos_variants: List[Dict] = []
     for v in variants:
         st = _vstatus(v)
         if st == "rejected":
@@ -446,6 +500,14 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                      "范围外）——载体-基因接合处差异直接影响插入正确性",
                      "核对峰图；必要时换引物覆盖接合区",
                      fail_impact=st == "confirmed", site=rp)
+            elif ce and _impact_on and (st == "confirmed" or _unres_blocks(v)):
+                # 10e（spec §107）：范围外关键元件差异不再阻断——由影响分级
+                # 进第二层；确证 P1/P2 另出醒目提醒（advisory，不改状态）
+                _oos_variants.append(v)
+                _info("out_of_scope_variant", feats,
+                      f"{rp} {v.get('type')}"
+                      f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，见附带发现",
+                      ref_start=rp, ref_end=v_end)
             elif ce and (st == "confirmed" or _unres_blocks(v)):
                 _blk("critical_element_variant", int(ce["start"]), int(ce["end"]),
                      ce.get("name"),
@@ -454,6 +516,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                      "功能元件差异，虽在需测范围外仍应关注",
                      "扩大验证范围复测，或单独核对该元件")
             else:
+                if _impact_on:
+                    _oos_variants.append(v)
                 _info("out_of_scope_variant", feats,
                       f"{rp} {v.get('type')}"
                       f"（{'确证' if st == 'confirmed' else '未决'}）——在需测范围外，未评估",
@@ -1044,6 +1108,16 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     # W12 起作为三出口唯一文案来源（本阶段随 verdict 下发，出口尚各自措辞）。
     # 范围段：声明范围用「元件名（起–止）」（元件数与段数对应时）或区间；
     # 未声明范围只说「已测 x–y…；范围外未评估」（goal §0.1 禁整参考主张）
+    # 10e：第二层/第三层（只描述范围外，不改 status）
+    impact = None
+    if _impact_on:
+        impact = _impact_layers(
+            _oos_variants, _elements, result.get("design_enzymes"),
+            (result.get("elements") or {}).get("host", "unknown"),
+            verified_ranges, scope_ranges, declared,
+            poly_spans=[{"start": p["ref_start"], "end": p["ref_end"]}
+                        for p in _poly_calls_of(result)
+                        if p.get("ref_start") is not None and p.get("ref_end") is not None])
     sym_, word_ = status_symbol(status), STATUS_HEAD_WORDS[status]
     range_part = _range_text(scope_obj, scope_ranges, ref_length,
                              verified_ranges)
@@ -1114,6 +1188,8 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         "status": status,
         "blocking": blocking,
         "info": info,
+        # 10e：影响分级（ImpactItem 列表 + 第二/三层归类）；旧口径为 None
+        "impact": impact,
         # ROI（goal T5）：设计记录插入区间（T22 对接）> CDS 特征并集 > 整条参考
         "roi": {
             "start": roi_start,

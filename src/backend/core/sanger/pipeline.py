@@ -2289,6 +2289,8 @@ def analyze(
     full_circular: bool = False,
     batch_control: Optional[Dict] = None,
     poly_thresholds: Optional[Dict] = None,
+    enzymes=None,
+    reference_meta: Optional[Dict] = None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2322,7 +2324,9 @@ def analyze(
     features = features or []
     zone_params = zone_params or DEFAULT_ZONE
     # S0a/S0b：参考画像（归一参考、重复结构、声明范围）一次算好，下游只读
-    ref_profile = build_reference_profile(reference, features, circular, scope)
+    ref_profile = build_reference_profile(
+        reference, features, circular, scope, enzymes=enzymes,
+        design_comment=(reference_meta or {}).get("design_comment"))
     ref = ref_profile["ref"]
     if not ref:
         raise ValueError("参考序列为空，无法进行比对分析")
@@ -2494,6 +2498,8 @@ def analyze(
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
         "coverage": coverage, "features": features or [],
         "poly_calls": poly_calls,
+        "elements": ref_profile.get("elements"),
+        "design_enzymes": ref_profile.get("design_enzymes"),
         "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
         **_algo_version.extra_fields(SANGER_ALGO_VERSION),
     }, len(ref), scope=scope_obj,
@@ -2597,6 +2603,9 @@ def analyze(
         # result 重算 scope（元件名/区间解析）与 element_verdicts 不再
         # 依赖调用方另行传 features
         "features": features or [],
+        # 10e S0a：元件补全（标注/自动识别/推定）与设计酶集合（方案 C）
+        "elements": ref_profile.get("elements"),
+        "design_enzymes": ref_profile.get("design_enzymes"),
         "mixed_detected": {r["filename"]: r["mixed_positions"] for r in mixed_reads},
         "mixed_profiles": mixed_profiles,
         "mixed_variants": mixed_variants,   # 单点双峰次等位（goal T7；AF=次等位丰度）

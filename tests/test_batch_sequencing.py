@@ -563,7 +563,10 @@ def test_offline_cli_matches_web_endpoint_package(tmp_path, monkeypatch, web_cli
     assert by_file["M1.ab1"] == _EXPECTED_CONCLUSIONS["MX"]
     assert by_file["P1.ab1"] == by_file["P2.ab1"] == _EXPECTED_CONCLUSIONS["PX"]
     assert by_file["Q1.ab1"] == _EXPECTED_CONCLUSIONS["NOREF"]
-    assert by_file["X1.ab1"].startswith("疑似混合 ·") and "read 检出双峰" in by_file["X1.ab1"]
+    # 二期 a（SANGER_MIXED_LINES_READCALL 默认开，2026-11-17）：证据口径改读
+    # ReadCall，证据段为「双峰判混（N 处）」；旧口径为「N 条 read 检出双峰」
+    assert by_file["X1.ab1"].startswith("疑似混合 ·") and (
+        "read 检出双峰" in by_file["X1.ab1"] or "双峰判混" in by_file["X1.ab1"])
 
     # 6) 批次总览：除生成时间外逐字一致
     o_txt = off["批次总览.txt"].decode("utf-8").splitlines()

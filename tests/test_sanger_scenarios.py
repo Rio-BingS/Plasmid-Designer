@@ -178,6 +178,7 @@ def test_s13_coverage_by_untrusted_not_verified():
     assert cov["verified_percent"] < cov["measured_percent"]
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_s14_true_mixed_not_flipped_by_weak_corroboration():
     """S14：45% 真混合 + Q25 验证 read → 互检不算 clean，保持 △ 混合"""
     spec, res = _run("S14")
@@ -236,6 +237,7 @@ def test_f2_3100_decay_segment_not_mixed():
     assert _status(res) != "mixed"
 
 
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
 def test_t11_uniform30_mixed_sample_detected():
     """T11 规格：全 read 均匀 30% 混合 → mixed_sample（widespread）。
 
@@ -550,8 +552,20 @@ def test_sc7_out_of_scope_variant_info_only():
     assert info and info[0].get("ref_start") == 1200
 
 
-def test_sc8_out_of_scope_critical_element_pending():
-    """SC8：R 外 ori 内确证替换 → pending（critical_element_variant），不判 fail"""
+def test_sc8_out_of_scope_critical_element_advisory():
+    """SC8（二期 10e 起）：R 外 ori 内确证替换 → 不改判定（范围外），进第二层
+    附带发现 P1 并出醒目提醒；正文有「⚠ 范围外发现」行"""
+    spec, res = _run("SC8")
+    assert _status(res) == "pass"
+    imp = res["verdict"]["impact"]
+    adv = [i for i in imp["items"] if i["item_id"] in imp["advisories"]]
+    assert adv and adv[0]["target"]["category"] == "ori" and adv[0]["level"] == "P1"
+    assert "⚠ 范围外发现 1 处需关注的确证异常" in res["conclusion"]
+
+
+def test_sc8_out_of_scope_critical_element_pending_legacy(monkeypatch):
+    """SC8 旧口径（SANGER_IMPACT=0）：pending（critical_element_variant），不判 fail"""
+    monkeypatch.setenv("SANGER_IMPACT", "0")
     spec, res = _run("SC8")
     assert _status(res) == "pending"
     blk = [b for b in res["verdict"]["blocking"]

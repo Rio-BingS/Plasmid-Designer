@@ -85,6 +85,16 @@ def test_queue_drops_confirmed_sites():
 # （critical_element_variant，非 fail）；其 ref_start 动态取自 blocking
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _legacy_impact(monkeypatch):
+    """本组用 SC8 的 pending 条目做人工确认夹具，固定旧口径（SANGER_IMPACT=0）；
+    10e 起范围外关键元件差异改为附带发现，不再进 blocking"""
+    monkeypatch.setenv("SANGER_IMPACT", "0")
+
+
 def _sc8_record():
     spec, res = _run("SC8")
     assert res["verdict"]["status"] == "pending"

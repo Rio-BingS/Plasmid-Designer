@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from core.sanger.homopolymer import find_repeat_runs
 from core.sanger.scope import resolve_scope
 
-REFPROFILE_VERSION = "r1"
+REFPROFILE_VERSION = "r2"  # r2：10e 元件补全 + 设计酶集合
 
 
 def normalize_reference(reference: str) -> str:
@@ -20,11 +20,20 @@ def normalize_reference(reference: str) -> str:
 
 
 def build_reference_profile(reference: str, features: Optional[List[Dict]] = None,
-                            circular: bool = False, scope=None) -> Dict:
+                            circular: bool = False, scope=None, *,
+                            enzymes=None, design_comment: Optional[str] = None) -> Dict:
     ref = normalize_reference(reference)
     features = features or []
     scope_obj, scope_err = resolve_scope(scope, features, len(ref))
+    from core.sanger.elements import complete_elements
+    from core.sanger.design_enzymes import build_design_enzymes
+    els = complete_elements(ref, features, circular)
+    rngs = list(getattr(scope_obj, "ranges", None) or []) if scope_obj is not None else []
+    design = build_design_enzymes(ref, features, circular, rngs or None,
+                                  user_enzymes=enzymes, comment=design_comment)
     return {
+        "elements": els,
+        "design_enzymes": design,
         "ref": ref,
         "length": len(ref),
         "circular": bool(circular),

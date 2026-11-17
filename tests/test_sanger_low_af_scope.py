@@ -20,7 +20,7 @@ def _mv_info(v):
 
 
 def test_low_af_scope_only(monkeypatch):
-    monkeypatch.delenv("SANGER_LOW_AF_SCOPE_ONLY", raising=False)
+    monkeypatch.setenv("SANGER_LOW_AF_SCOPE_ONLY", "0")
     off = build_verdict(_res(), 1000, scope="100-300")
     assert len(_mv_info(off)) == 2
     monkeypatch.setenv("SANGER_LOW_AF_SCOPE_ONLY", "1")
