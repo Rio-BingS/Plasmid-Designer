@@ -166,7 +166,7 @@ def _range_text(scope_obj, ranges, ref_length: int,
       「名称（3701–300，跨原点）」（HC2）；
     - 未声明范围：只说已测区段，且区间取 **verified**（实测含首尾不可信
       区，不构成验证；measured 只在明细列出现，goal §3.3），无 verified
-      时退回实测区段。
+      时退回实测区段；两者都没有（read 全部失败）写「无可用测序区段」。
     """
     _MAX = 3
     if scope_obj is not None and scope_obj.declared and ranges:
@@ -188,6 +188,11 @@ def _range_text(scope_obj, ranges, ref_length: int,
             rng_txt = "、".join(f"{a}–{b}" for a, b in ranges[:_MAX])
         return f"范围：{rng_txt}"
     spans_src = verified_ranges or ranges
+    if not spans_src:
+        # 全部 read 失败/未比对上时既无 verified 也无实测区段：此前拼出
+        # 「已测 ；范围外未评估」（KNOWN_ISSUES 未解决第 8 条，
+        # FP_Yeast_PEST_1_E07_F），改为明说没有可用区段
+        return "无可用测序区段"
     spans = "、".join(f"{a}–{b}" for a, b in spans_src[:_MAX])
     more = f" 等 {len(spans_src)} 段" if len(spans_src) > _MAX else ""
     return f"已测 {spans}{more}；范围外未评估"

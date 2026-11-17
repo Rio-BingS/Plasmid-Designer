@@ -14,11 +14,18 @@
 | 1 | ↳ 逐 read 双峰位点 / poly 逐 run 明细 | `mixed_detail` |
 | 2 | 区间裁决行（互检已排除的差异） | `resolved` |
 | 3 | 「注意：」测量与覆盖说明 | `notes` |
-| 4 | ⚠ 混合汇总行（X2 起由 read 级队列项承载） | `mixed_detail` |
+| 4 | 非 ⚠ 级的混合汇总行（X2 起由 read 级队列项承载） | `mixed_detail` |
+| 5 | 差异摘要行「共检出 N 处差异（覆盖…）」（仅为 ⚠ 汇总行腾位，见 apply_budget） | `notes` |
 
-**永不折叠**：确证差异行、差异摘要行、变异注记行（↳ 酶切位点）、CDS 结论——
-它们是判读要点，不是核对素材。预算内的短结论（常规单样品、MX）不触发折叠，
-明细照旧直接可读。
+**永不折叠**：确证差异行、变异注记行（↳ 酶切位点）、CDS 结论、
+⚠ 级混合汇总行（「⚠ 疑似混合样品」「⚠ 测序套峰」「⚠ N 处参考位点被多条引物
+同报双峰」等，2026-11-18 起）——它们是判读要点，不是核对素材。此前 ⚠ 汇总行
+排在第 4 级，正文里 poly 大量缺失等置顶要点占满名额后会被折进 `mixed_detail`
+（KNOWN_ISSUES 未解决第 9 条，实测 DEMO1/ALL、S00025/ALL）；现在超预算时先挤
+第 0–4 级素材；正文留有 ⚠ 汇总行、且再挤掉差异摘要行就能回到预算内时，才挤
+第 5 级差异摘要行（差异明细与覆盖仍在变体表、覆盖图与折叠组里）；要点行合计
+仍超过预算时正文按要点实数展示。
+预算内的短结论（常规单样品、MX）不触发折叠，明细照旧直接可读。
 
 `conclusion_detail`（全量正文，原顺序）由调用方另存：报告与导出按它逐条列，
 折叠只影响网页正文的展示。
@@ -36,12 +43,14 @@ _TIER_GROUP = {
     2: "resolved",
     3: "notes",
     4: "mixed_detail",
+    5: "notes",
 }
 
 
 def fold_tier(line: str, groups: Dict[str, List[str]],
               mixed_lines: Sequence[str],
-              mixed_signal_lines: Sequence[str]) -> Optional[Tuple[int, str]]:
+              mixed_signal_lines: Sequence[str],
+              summary_lines: Sequence[str] = ()) -> Optional[Tuple[int, str]]:
     """该行可否折叠 → `(优先级, 目标组)`；判读要点返回 None。
 
     `groups` 是构建端给出的结构化分组（`low`/`resolved`/…），`mixed_lines`
@@ -62,14 +71,21 @@ def fold_tier(line: str, groups: Dict[str, List[str]],
     if stripped.startswith("注意："):
         return (3, _TIER_GROUP[3])
     if line in set(mixed_lines) or line in set(mixed_signal_lines):
+        # ⚠ 级混合汇总行是判读要点，永不折叠（混合行的归属仍按对象身份认定，
+        # ⚠ 只区分同一归属内的级别，与上面的「↳」「注意：」同一做法）
+        if stripped.startswith("⚠"):
+            return None
         return (4, _TIER_GROUP[4])
+    if line in set(summary_lines):
+        return (5, _TIER_GROUP[5])
     return None
 
 
 def apply_budget(conclusion: str, groups: Dict[str, List[str]],
                  mixed_lines: Sequence[str] = (),
                  mixed_signal_lines: Sequence[str] = (),
-                 budget: int = CONCLUSION_BUDGET) -> str:
+                 budget: int = CONCLUSION_BUDGET,
+                 summary_lines: Sequence[str] = ()) -> str:
     """按预算把明细行移入折叠组，返回新的正文（就地更新 `groups`）。
 
     只移动超出预算的行数，且按 `fold_tier` 的优先级从低到高挑；要点行
@@ -81,12 +97,22 @@ def apply_budget(conclusion: str, groups: Dict[str, List[str]],
         return conclusion
     candidates: List[Tuple[int, str, str]] = []
     for ln in lines:
-        tier = fold_tier(ln, groups, mixed_lines, mixed_signal_lines)
+        tier = fold_tier(ln, groups, mixed_lines, mixed_signal_lines, summary_lines)
         if tier is not None:
             candidates.append((tier[0], ln, tier[1]))
     candidates.sort(key=lambda c: c[0])
+    # 第 5 级（差异摘要行）只为给 ⚠ 级混合汇总行腾位：正文里有 ⚠ 汇总行、
+    # 且挤完 0–4 级后剩余超额 ≤ 第 5 级行数（挤掉就能回到预算内）才动用；
+    # 否则不动，正文照旧按要点实数展示
+    mixed_all = set(mixed_lines) | set(mixed_signal_lines)
+    has_warn = any(ln in mixed_all and ln.strip().startswith("⚠") for ln in lines)
+    low = [c for c in candidates if c[0] < 5]
+    top = [c for c in candidates if c[0] >= 5]
+    rest = over - len(low)
+    if not (has_warn and 0 < rest <= len(top)):
+        top = []
     moved: Set[str] = set()
-    for _prio, ln, target in candidates:
+    for _prio, ln, target in low + top:
         if over <= 0:
             break
         groups.setdefault(target, []).append(ln)

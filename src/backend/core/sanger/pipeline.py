@@ -2046,6 +2046,9 @@ def _build_conclusion(
     # 跨引物互检汇总：只保留「多引物同报双峰」（真实混合的最强信号）；
     # R6：⚠ 信号行不进折叠组（前端正文常驻）
     mixed_signal_lines: List[str] = render_mixed.signal_lines(mixed_summary)
+    # 差异摘要行（「共检出 N 处差异…」）：按对象身份交给折叠预算，作为第 5 级
+    # 可挤行——只在给 ⚠ 级混合汇总行（永不折叠）腾位、且挤掉就回到预算内时移走
+    summary_lines: List[str] = []
 
     # read 可信区提示（2026-11-06 用户定稿）：默认边界的「首尾不可信区按低置信
     # 处理」教育行删——差异该标低置信的已在变体表标注，结论里这句话是噪声；
@@ -2085,8 +2088,10 @@ def _build_conclusion(
         # 有确认差异：区间裁决行 → 差异摘要 → CDS 行（确认差异是主要事件，
         # 但被排除的区间行依然靠前——它们是 read 质量信息，不是待办）
         lines = list(resolved_lines)  # 区间裁决行紧跟头行（2026-11-05 定稿结构）
-        lines.append(render_site.diff_header(
-            len(shown_variants), consensus["coverage_percent"], coverage_ranges))
+        _diff_header = render_site.diff_header(
+            len(shown_variants), consensus["coverage_percent"], coverage_ranges)
+        summary_lines.append(_diff_header)
+        lines.append(_diff_header)
         # 疑似混合样品影响整份判读，紧跟首行（⚠ 汇总行 + ↳ 逐 read 明细）
         lines.extend(mixed_lines)
         lines.extend(mixed_signal_lines)
@@ -2158,7 +2163,7 @@ def _build_conclusion(
         # 按优先级进折叠组。优先级与判读要点的白名单见 conclusion_fold。
         conclusion = conclusion_fold.apply_budget(
             conclusion, conclusion_groups, mixed_lines, mixed_signal_lines,
-            budget=_CONCLUSION_BUDGET)
+            budget=_CONCLUSION_BUDGET, summary_lines=summary_lines)
 
     return (conclusion, cds_reports, mixed_profiles, resolved_regions,
             conclusion_groups, conclusion_detail)
