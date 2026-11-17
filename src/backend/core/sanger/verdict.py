@@ -27,6 +27,7 @@ T5：
   否则 pending）。
 """
 
+import os
 import re
 import hashlib
 from typing import Dict, List, Optional, Tuple
@@ -275,6 +276,13 @@ def _mixed_site_artifact(m: Dict, profiles: Dict, reads: List[Dict]) -> str:
         return (f"落在染料团区（{a['channel']} 通道宽峰，read 第 {a['start']}–{a['end']} 位，"
                 f"峰宽 {a['width_spacings']} 个碱基间距）")
     return ""
+
+
+def low_af_scope_only_enabled() -> bool:
+    """二期开关 c（默认关）：AF < MINOR_AF_MIN(0.15) 的单点双峰只在声明
+    范围内进 verdict（pending 或 info）；范围外与未声明范围时不再记 info。
+    SANGER_LOW_AF_SCOPE_ONLY=1 开启。"""
+    return os.environ.get("SANGER_LOW_AF_SCOPE_ONLY", "0") == "1"
 
 
 def _read_mixing_text(c) -> str:
@@ -588,8 +596,15 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
     mixed_vars = result.get("mixed_variants") or []
     _declared_scope = bool(scope_obj is not None and scope_obj.declared)
     _mixed_pos: set = set()
+    _low_af_scope_only = low_af_scope_only_enabled()
     for m in mixed_vars:
         rp, af = int(m["ref_pos"]), float(m.get("af") or 0)
+        if (_low_af_scope_only and af < MINOR_AF_MIN
+                and not (declared and any(a <= rp <= b for a, b in req_ranges))):
+            # 二期开关 c：AF<0.15 的双峰只在声明范围内保留（含 info 记录）；
+            # 范围外 / 未声明范围时不进 verdict。result.mixed_variants 照常
+            # 全量收录，换 scope 重算仍可复现（goal v3 §0.6）
+            continue
         if m.get("noise_evidence") and af >= MINOR_AF_SOFT and _in_scope(rp):
             # 2026-11-11：报该位点的每条 read 都有反证——其他引物在该位点
             # 高质量单峰读出设计碱基（互检否决同一口径），或批内同引物其他
