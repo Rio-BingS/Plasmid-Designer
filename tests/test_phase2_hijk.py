@@ -79,3 +79,14 @@ def test_unified_enzyme_single_cut_matches_map():
     names = {e["name"] for e in d["enzymes"]}
     assert "EcoRI" in names and "BamHI" not in names
     assert scan_enzyme(ref.upper(), "EcoRI", True)["cut_count"] == 1
+
+
+def test_h_b_wording_when_length_differs(monkeypatch):
+    from core.sanger.render_poly import repeat_variant_lines
+    monkeypatch.delenv("SANGER_REPEAT_FROM_POLYCALL", raising=False)
+    v = _variant(True)
+    v["length"] = 38
+    pc = _pc("COUNT_CONFIRMED", 68)
+    pc.update(delta=-39, peak_measured=68, per_read=[{}, {}])
+    line = repeat_variant_lines([v], [pc])[0]
+    assert "缺失 39bp" in line and "综合 2 条 read" in line and "比对报出的是 38bp" in line

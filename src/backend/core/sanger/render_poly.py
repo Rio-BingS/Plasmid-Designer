@@ -209,6 +209,12 @@ def repeat_variant_lines(shown_variants: List[Dict], pcs: Optional[List[Dict]]) 
                 length = abs(int(d))
         if peak is not None:
             rel += f"；峰图独立计数 {peak} 个"
+        orig_len = int(v.get("length") or 1)
+        if num_pc and length != orig_len:
+            # 用户 2026-11-18 00:23 选 B：poly 综合计数与比对报出的 indel 长度不同时写明来源
+            n = len(num_pc.get("per_read") or []) or 1
+            rel += (f"；此为综合 {n} 条 read 的 poly 计数，比对报出的是 {orig_len}bp"
+                    if n > 1 else f"；此为 poly 计数，比对报出的是 {orig_len}bp")
         out.append(
             f"  ↳ {run_label(hp)} {hp['start']}-{hp['end']}："
             f"参考 {hp['ref_repeat_count']} 个，测得 {observed} 个"
