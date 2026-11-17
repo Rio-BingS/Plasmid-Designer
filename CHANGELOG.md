@@ -134,6 +134,74 @@
 
 ## [Unreleased]
 
+### Sanger 分阶段重构与口径调整（2026-11-10 至 2026-11-18）
+
+> 分支 `fix/critical-name-re`。判定口径锚点 `SANGER_ALGO_VERSION="v17"`；
+> 本节的结构重构与二期口径调整都在 v17 下进行，未再递增版本号。
+> 架构与逐项口径对照见 `docs/SANGER_ALGORITHM_REPORT.md` 第 1、2.7、7 节。
+
+#### 升级注意
+- **SANGER_ALGO_VERSION v15→v16→v17**：v16 为 v3.2 回归修复，v17 引入
+  read 级套峰判定，均属口径变更，缓存/重放按版本区分。
+- **「疑似混合样品」会变少、「待定」会变多**：只有一条 read 套峰时改报
+  `seq_overlap_peaks`（待定，正文「⚠ 测序套峰」）；不同 read 同区段都
+  套峰才报 `mixed_template`（疑似混合模板）。只有零散双峰的样品判定
+  不变，但措辞改为提示「仍可能是两种克隆混合，建议挑单克隆复测」。
+- **poly 大量缺失不再能判合格**：确证缺失 ≥5 个碱基或 ≥该段参考长度
+  15% 时新增阻断 `poly_large_deletion`。真实数据中有少数样品因此由
+  「合格」改为「不合格/待定」。
+- **范围外发现不改状态**：主结论只由声明范围与接合区决定；范围外关键
+  元件的确证异常进第二层「附带发现」醒目提示（前端红字），不再把整体
+  拉成待定。
+- **API**：`/api/sequencing/analyze` 与批量入口新增可选 `enzymes`（设计
+  用酶）；`verdict` 新增 `impact`、`poly_thresholds`；结果新增
+  `read_calls`、`poly_calls`。旧记录读取时即时推导，不需迁移。
+- 多数口径可用环境变量回旧口径（`SANGER_READ_MIXED_CALL`、
+  `SANGER_POLY_MISSING_MIN`、`SANGER_MIXED_LINES_READCALL`、
+  `SANGER_LOW_AF_SCOPE_ONLY`、`SANGER_REPEAT_FROM_POLYCALL`、
+  `SANGER_IMPACT` 等），默认值与作用见算法报告第 7 节。
+
+#### 新增
+- **read 级套峰判定（ReadCall）**：先看整条 read 是全程套峰、某点后整体
+  套峰还是局部双峰集中，套峰段内的差异与 split-read 断点不作确证。
+- **元件补全**：参考标注 > 图谱元件库自动识别 > 从 CDS 推定 SD/Kozak 与
+  上游调控区，报告注明来源。
+- **影响分级与三层报告**：范围外异常按 P1/P2/P3 排序合并；「另有 N 处
+  范围外未决」一句收尾。
+- **设计酶**：用户填写的酶 + 参考 `pd_enzyme` 标注的酶；都没有时取插入
+  片段两侧 flank 内的单切酶；再没有就为空（不以全质粒单切酶兜底）。
+  设计酶位点被破坏判 P1，新引入设计酶/避开酶位点判 P2。
+- **酶标注导出**：构建导出 GenBank 时写 `pd_enzyme` 标注与 COMMENT，
+  Sanger 分析读回后当作用户指定。前端单样品/批量高级参数新增「设计
+  用酶」输入。
+- **poly 大量缺失阈值可调**：`params.py` 默认 < 环境变量 < 单次请求；
+  分析页可改，结果页可「重新判定」。
+- **Excel 新列**：「套峰 read 数」「零散双峰数」。
+
+#### 变更
+- **分阶段流水线**：参考画像/范围（refprofile、scope）→ read → 合并 →
+  证据 → ReadCall/SiteCall/PolyCall → 影响分级 → 唯一判定（judge）→
+  呈现层（render_*）。各阶段为纯函数；判定只在 sitecall/judge，文案只在
+  render_*，参数集中在 `params.py`。删除若干兼容入口（见算法报告）。
+- poly 缺失数改为在完整覆盖、非 noisy 的 read 之间取最小值（插入仍取
+  最大）；变体重复数行改读 PolyCall 综合计数，与比对 indel 长度不同时
+  注明来源。
+- AF<0.15 的单点双峰只在声明范围内进 verdict，`mixed_variants` 照常全量
+  收录。
+- 位点三态统一走 `sitecall.site_status`（CDS / 批量 / verdict / 证据包）。
+- 设计酶扫描改用图谱同一酶库（`plasmid_map.scan_enzyme`）。
+- 前端结论卡补齐阻断类型中文标签，新增「附带发现」第二层块。
+
+#### 修复
+- v16 回归修复：可信区分核心区与尾端扩展区；单 read 区外低置信；未决
+  差异按分区进待核或只列出；孤立双峰按 AF 0.23 分流；低丰度双峰须两条
+  read 印证；ORF ≤12bp 同框校正。
+- poly 计数众数平票改按 read 顺序取，消除哈希随机化导致的跳变。
+- 旧存档 poly 计数不可靠的条目按「不可靠/存疑」报告，与改造前一致。
+
+#### 已知未修
+- 见 `docs/KNOWN_ISSUES.md` 未解决第 8–14 条（含 10 个 xfail 的口径差）。
+
 ### Sanger scope v3.1（2026-11-10，复审 b39b46a 后的三项 P0 修复）
 
 > 分支 `fix/sanger-scope-v3.1`，基线 `experiment/preview-visual-tuning@b39b46a`。
