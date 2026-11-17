@@ -28,27 +28,12 @@ from core.sanger.verdict import status_symbol
 from core.sanger.reliable_zone import core_zone, in_zone, zone_cause, zone_class
 
 
-def _variant_status(v: Dict) -> str:
-    """证据三态（goal T1；A 3.3 / B P0-1）：
-
-    - rejected：仅当有正面反证（跨引物互检干净读出设计碱基并定案）
-    - confirmed：有正证据（中/高置信，峰级证据与多 read 支持达标）
-    - unresolved：证据不足（低置信：可信区外、低 Q、混合背景、poly 压缩等）。
-      「证据不足」不再等于「疑似伪影」——它不参与判定且使 ✓ 失去资格
-    """
-    if v.get("cross_read_resolved"):
-        return "rejected"
-    if v.get("confidence") in ("medium", "high"):
-        return "confirmed"
-    return "unresolved"
-
-
 def _vstatus_of(v: Dict) -> str:
-    """三态（读显式 status——T21 分歧降级等后处理写回的字段；旧记录无
-    status 时按置信推导，与 verdict._vstatus 同口径）"""
-    if v.get("status"):
-        return v["status"]
-    return _variant_status(v)
+    """三态读取（二期 i）：统一走 sitecall.site_status——与 verdict、batch 同一入口。
+    旧版本地另有推导（无 confidence 的旧记录判 unresolved），与 site_status
+    （判 confirmed）不一致，已删除"""
+    from core.sanger.sitecall import site_status
+    return site_status(v)
 
 
 def _variant_reason_codes(v: Dict, evidence: Optional[Dict],

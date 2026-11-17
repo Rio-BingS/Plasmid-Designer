@@ -462,7 +462,7 @@ def merge_result_cell(old, concl: str) -> str:
 # W12（goal）：信息表追加的范围与覆盖列——结论句不再带「测序覆盖 x%」，
 # 覆盖/缺口/补测细节由这些列与整理包明细报告承载
 _SCOPE_COL_TITLES = ["验证范围", "范围来源", "范围内验证覆盖", "缺口原因",
-                     "范围外差异", "补测建议"]
+                     "范围外差异", "补测建议", "套峰 read 数", "零散双峰数"]
 _SCOPE_SOURCE_ZH = {
     "user": "用户指定", "design_insert": "设计插入", "cds_target": "目的基因",
     "filename_match": "文件名匹配", "primer_window": "引物窗口",
@@ -477,7 +477,7 @@ def _scope_cells(record: Optional[Dict]) -> tuple:
     范围外差异/补测建议）。无 verdict 的旧记录给空串（不编造）"""
     vd = (record or {}).get("verdict") or {}
     if not vd:
-        return ("", "", "", "", "", "")
+        return ("", "", "", "", "", "", "", "")
     sc = vd.get("scope") or {}
     src = _SCOPE_SOURCE_ZH.get(sc.get("source") or "measured",
                                sc.get("source") or "")
@@ -509,7 +509,25 @@ def _scope_cells(record: Optional[Dict]) -> tuple:
         if a and a not in seen:
             seen.add(a)
             acts.append(a)
-    return (rng_txt, src, cov_txt, gap_txt, oos_txt, "；".join(acts[:2]))
+    return (rng_txt, src, cov_txt, gap_txt, oos_txt, "；".join(acts[:2]),
+            *_mixed_count_cells(record))
+
+
+def _mixed_count_cells(record: Dict) -> tuple:
+    """二期 j（用户 2026-11-18 00:03 选 A）：双峰拆两列，与网页同口径。
+    套峰 read 数：ReadCall 判全程/某点后套峰的 read 条数；
+    零散双峰数：未判套峰的 read 上的双峰位点数之和。旧记录无 read_calls
+    时由 reads[].read_mixing 重建（ReadCalls.from_result）"""
+    from core.sanger.readcall import ReadCalls
+    rcs = ReadCalls.from_result(record)
+    profiles = record.get("mixed_profiles") or {}
+    over = {fn for fn in profiles if rcs.overlapping(fn)}
+    for c in rcs:
+        if c.overlapping:
+            over.add(c.filename)
+    scattered = sum(int(p.get("count") or 0) for fn, p in profiles.items()
+                    if fn not in over)
+    return (str(len(over)) if over else "0", str(scattered))
 
 
 def _ensure_scope_columns(ws, cols: Dict) -> Dict[str, int]:

@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-DESIGN_ENZYMES_VERSION = "d1"
+DESIGN_ENZYMES_VERSION = "d2"
 FLANK_OUT = 100
 FLANK_IN = 20
 
@@ -69,11 +69,17 @@ def avoid_from_comment(comment: Optional[str]) -> List[str]:
 
 
 def _sites(ref: str, names: Optional[Iterable[str]], circular: bool) -> Dict[str, List[int]]:
-    from core.enzyme_sites import find_enzyme_sites
-    by: Dict[str, set] = {}
-    for s in find_enzyme_sites(ref, list(names) if names else None, circular):
-        by.setdefault(s["name"], set()).add(int(s["position"]))
-    return {k: sorted(v) for k, v in by.items()}
+    """统一酶库（二期，2026-11-18）：与图谱同一扫描口径（plasmid_map.scan_enzyme：
+    回文位点只报一次、线性分子末端外切点不算切割），保证「单切」与用户在
+    图谱上看到的切点数一致。未点名时用 DEFAULT_ENZYMES（图谱 common 集）"""
+    from core.enzyme_sites import DEFAULT_ENZYMES
+    from core.plasmid_map.enzymes import scan_enzyme
+    out: Dict[str, List[int]] = {}
+    for n in dict.fromkeys(names or DEFAULT_ENZYMES):
+        e = scan_enzyme(ref, n, circular)
+        if e and e["cut_count"]:
+            out[n] = sorted({int(x["position"]) for x in e["sites"]})
+    return out
 
 
 def build_design_enzymes(ref: str, features: Optional[Sequence[Dict]] = None,

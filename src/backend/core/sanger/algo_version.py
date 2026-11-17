@@ -23,6 +23,7 @@ SWITCHES = {
     "SANGER_POLY_MISSING_MIN": ("pmin", "1"),
     "SANGER_MIXED_LINES_READCALL": ("mrc", "1"),
     "SANGER_LOW_AF_SCOPE_ONLY": ("laf", "1"),
+    "SANGER_REPEAT_FROM_POLYCALL": ("rpc", "1"),
 }
 
 

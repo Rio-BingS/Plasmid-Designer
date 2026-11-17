@@ -109,14 +109,14 @@ from core.sanger.evidence import (  # noqa: F401
     _IUPAC_MERGE, _collect_unresolved_sites, _conclusion_summary,
     _insertion_peak_ratio, _iupac_merge,
     low_confidence_cause,
-    _variant_peak_evidence, _variant_reason_codes, _variant_status,
+    _variant_peak_evidence, _variant_reason_codes,
     attach_evidence_by_read, covering_not_supporting, variant_type_text,
 )
 
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v18"  # v18: 2026-11-17 二期拍板默认开启——疑似混合头行与⚠行统一改读 ReadCall（局部套峰只给复测提示）、poly 缺失数完整覆盖 read 取 min（排除 noisy）、AF<0.15 双峰只在声明范围内保留、版本号组合化、poly 大量缺失报警（≥5 个或 ≥15%，可调）；v17: 2026-11-12 二期 ReadCall——read 级套峰判定（全程/某点后/局部，readcall.py），套峰段内差异与 split-read 断点不作确证、不逐位记 mixed_variant；单条 read 套峰报 seq_overlap_peaks 待定，不同 read 同区段套峰才报 mixed_template 疑似混合模板；SANGER_READ_MIXED_CALL=0 回旧口径；v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
+SANGER_ALGO_VERSION = "v19"  # v19: 2026-11-18 二期收尾——变体重复数行改读 PolyCall（h）、旧记录三态统一 site_status（i）、设计酶单切与图谱同口径（统一酶库）；v18: 2026-11-17 二期拍板默认开启——疑似混合头行与⚠行统一改读 ReadCall（局部套峰只给复测提示）、poly 缺失数完整覆盖 read 取 min（排除 noisy）、AF<0.15 双峰只在声明范围内保留、版本号组合化、poly 大量缺失报警（≥5 个或 ≥15%，可调）；v17: 2026-11-12 二期 ReadCall——read 级套峰判定（全程/某点后/局部，readcall.py），套峰段内差异与 split-read 断点不作确证、不逐位记 mixed_variant；单条 read 套峰报 seq_overlap_peaks 待定，不同 read 同区段套峰才报 mixed_template 疑似混合模板；SANGER_READ_MIXED_CALL=0 回旧口径；v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -1632,9 +1632,21 @@ _CONCLUSION_BUDGET = conclusion_fold.CONCLUSION_BUDGET
 
 def _variant_confidence_pass(variants: List[Dict], read_results: List[Dict],
                              poly_local_ratio: bool,
-                             read_calls: Optional[ReadCalls] = None) -> None:
+                             read_calls: Optional[ReadCalls] = None) -> List[Dict]:
+    """二期 k：S3 置信阶段的纯函数入口——不改上游传入的 variants，返回标注
+    后的新列表（逐条深拷贝后在副本上标注；判定逻辑与旧版逐字相同）"""
+    import copy
+    out = [copy.deepcopy(v) for v in variants]
+    _annotate_confidence(out, read_results, poly_local_ratio, read_calls)
+    return out
+
+
+def _annotate_confidence(variants: List[Dict], read_results: List[Dict],
+                         poly_local_ratio: bool,
+                         read_calls: Optional[ReadCalls] = None) -> None:
     """变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持），
-    含跨 read 干净覆盖反证与互检定案、合并压缩区降级（就地修改 variants）。
+    含跨 read 干净覆盖反证与互检定案、合并压缩区降级（只在
+    _variant_confidence_pass 生成的副本上标注）。
     """
     # 变异置信度（Mutation Surveyor 式：峰强比 + 信噪比 + Q 值 + 多 read 支持）
     by_read = {r["filename"]: r for r in read_results}
@@ -2382,7 +2394,7 @@ def analyze(
     mixed_corroboration = _corroborate_mixed(
         read_results, batch_bg=_bc_background_positions(batch_control))
 
-    _variant_confidence_pass(variants, read_results, poly_local_ratio, read_calls)
+    variants = _variant_confidence_pass(variants, read_results, poly_local_ratio, read_calls)
     # 单点双峰次等位（goal T7）：映射到参考，verdict 按 AF/判定范围分流；
     # 套峰段内的双峰由 read 级结论报出，不逐位记
     mixed_variants = collect_mixed_variants(read_results, ref,

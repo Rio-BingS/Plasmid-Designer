@@ -163,26 +163,56 @@ def edge_lines(edge_ambiguous_reads: List[Dict], pcs: Optional[List[Dict]]) -> L
             "互检定位可能有数 bp 偏差，建议对照图谱核对"]
 
 
+def repeat_from_polycall() -> bool:
+    """二期 h：变体重复数行改读 PolyCall（默认开；SANGER_REPEAT_FROM_POLYCALL=0 回旧口径）"""
+    import os
+    return os.environ.get("SANGER_REPEAT_FROM_POLYCALL", "1") != "0"
+
+
 def repeat_variant_lines(shown_variants: List[Dict], pcs: Optional[List[Dict]]) -> List[str]:
     """重复区 indel 的重复数变化行（峰图判读行已覆盖的 run 不重复出）"""
     from core.sanger.homopolymer import run_label
+    from core.sanger.polycall import count_ok
     emitted = detail_keys(pcs)
+    # 二期 h（SANGER_REPEAT_FROM_POLYCALL，默认开）：重复数与可信度读 PolyCall，
+    # 与 poly 行同源；找不到对应 PolyCall（旧存档）时退回变体级 hp
+    by_key = ({(pc.get("base"), pc.get("unit"), pc.get("ref_start")): pc for pc in pcs or []}
+              if repeat_from_polycall() else {})
     out = []
     for v in shown_variants:
         hp = v.get("homopolymer")
         if not (hp and v.get("type") in ("insertion", "deletion")):
             continue
-        if (hp.get("base"), hp.get("unit"), hp.get("start")) in emitted:
+        key = (hp.get("base"), hp.get("unit"), hp.get("start"))
+        if key in emitted:
             continue
         kind = "插入" if v["type"] == "insertion" else "缺失"
-        rel = ("重复数计数可靠" if hp.get("count_reliable", True)
+        pc = by_key.get(key)
+        reliable = count_ok(pc) if pc else hp.get("count_reliable", True)
+        # 数字只在 PolyCall 已定案计数（COUNT_CONFIRMED）时改读聚合值；其余状态
+        # 的 measured/peak 是峰数法估计，与变体观测不同源，仍用变体级数字
+        num_pc = pc if pc and pc.get("state") == "COUNT_CONFIRMED" else None
+        observed = (num_pc.get("observed") if num_pc and num_pc.get("observed") is not None
+                    else hp["observed_repeat_count"])
+        rel = ("重复数计数可靠" if reliable
                else "峰压缩区，重复数计数可能不准，建议人工核对峰图")
-        if hp.get("peak_count") is not None:
-            rel += f"；峰图独立计数 {hp['peak_count']} 个"
+        peak = hp.get("peak_count")
+        length = int(v.get("length") or 1)
+        if num_pc:
+            pc = num_pc
+            # 同一行内的数字全部同源（PolyCall 聚合多 read），避免「测得 68、
+            # 峰图 69、缺失 38bp」这类自相矛盾
+            if pc.get("peak_measured") is not None:
+                peak = pc["peak_measured"]
+            d = pc.get("delta")
+            if d and (d < 0) == (v["type"] == "deletion"):
+                length = abs(int(d))
+        if peak is not None:
+            rel += f"；峰图独立计数 {peak} 个"
         out.append(
             f"  ↳ {run_label(hp)} {hp['start']}-{hp['end']}："
-            f"参考 {hp['ref_repeat_count']} 个，测得 {hp['observed_repeat_count']} 个"
-            f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
+            f"参考 {hp['ref_repeat_count']} 个，测得 {observed} 个"
+            f"（位置 {v['ref_pos']} {kind} {length}bp，{rel}）"
         )
     return out
 
