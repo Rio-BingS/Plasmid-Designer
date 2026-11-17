@@ -360,9 +360,14 @@ def _impact_layers(oos_variants, elements, design, host, verified_ranges,
         elif declared or c > 0:
             unassessed.append({"name": e["name"], "category": e["category"],
                                "source": e["source"], "coverage": round(c, 1)})
+    shown_ids = {it["item_id"] for it in shown}
+    # 规格 §2 第二层：范围外未决（未单列的 P3）合成一句「另有 N 处未决」
+    pending_more = sum(len(it["consequences"]) for it in items
+                       if it["item_id"] not in shown_ids)
     return {"items": items, "shown": [it["item_id"] for it in shown],
             "advisories": [it["item_id"] for it in advisories],
-            "full_ok": full_ok, "unassessed": unassessed}
+            "full_ok": full_ok, "unassessed": unassessed,
+            "pending_more": pending_more}
 
 
 def build_verdict(result: Dict, ref_length: int, scope=None,

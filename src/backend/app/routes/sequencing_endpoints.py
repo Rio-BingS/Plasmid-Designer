@@ -235,6 +235,7 @@ async def analyze_sequencing_batch(
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
     poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
+    enzymes: str = Form(default="", description="设计用酶（二期 10e，可选）：逗号分隔酶名，整批共用；留空时各组依次用参考里的 pd_enzyme 标注、范围两端单切酶、全质粒单切酶"),
     user: Optional[User] = Depends(get_current_user),
 ):
     """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
@@ -271,7 +272,7 @@ async def analyze_sequencing_batch(
             _batch_pipeline, reads, refs, ignored, min_q,
             (excel.filename or "信息表.xlsx") if excel is not None else None,
             excel_bytes, user.id if user else None, batch_token, read_limits,
-            zone=zone, poly_thresholds=poly_th)
+            zone=zone, poly_thresholds=poly_th, enzymes=enzymes.strip() or None)
 
 @router.get(
     "/sequencing/batches/{batch_id}/report",

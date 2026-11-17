@@ -25,6 +25,7 @@ import ReviewQueuePanel from '@/components/sequencing/ReviewQueuePanel.vue'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
 import PolyThresholdInputs from '@/components/sequencing/PolyThresholdInputs.vue'
 import type { PolyThresholds } from '@/utils/polyThresholds'
+import { designEnzymes, saveDesignEnzymes, normalizeEnzymes } from '@/utils/designEnzymes'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 import { cdsCoverageSummary, findCdsTarget } from '@/utils/cdsMode'
 
@@ -572,6 +573,9 @@ async function downloadConsensus(format: string) {
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
         <label><input type="checkbox" v-model="allowDecompose" /> 混合样品自动解卷积（需 tracy）</label>
         <ReliableZoneInputs v-model="reliableZone" />
+        <label>设计用酶（可选，逗号分隔，如 EcoRI,BamHI；留空自动推断）
+          <input type="text" :value="designEnzymes" placeholder="留空：参考标注 → 插入片段两端单切酶 → 全质粒单切酶"
+                 @change="saveDesignEnzymes(normalizeEnzymes(($event.target as HTMLInputElement).value))" /></label>
       </details>
       <PolyThresholdInputs />
       <button class="analyze-btn" :disabled="!canAnalyze || analyzing" @click="runAnalysis">

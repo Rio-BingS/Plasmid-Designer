@@ -3,6 +3,7 @@
 
 import { api, saveBlobResponse } from './client'
 import { appendPolyThresholds, type PolyThresholds } from '@/utils/polyThresholds'
+import { appendDesignEnzymes } from '@/utils/designEnzymes'
 import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
 export interface AlignmentView {
@@ -488,6 +489,7 @@ export async function analyzeSequencingFiles(
   }
   if (scope) form.append('scope', scope)
   appendPolyThresholds(form)
+  appendDesignEnzymes(form)
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   const data = response.data as SequencingAnalysis
   // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
@@ -717,6 +719,7 @@ export async function analyzeSequencingBatch(
   form.append('min_q', String(minQ))
   if (reliableZone) form.append('reliable_zone', reliableZone)
   appendPolyThresholds(form)
+  appendDesignEnzymes(form)
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
   return rememberBatchTokens(response.data as SequencingBatchResult)
 }
@@ -766,6 +769,7 @@ export const batchSessionTransport: ChunkedTransport<SequencingBatchResult> = {
     form.append('min_q', String(minQ))
     if (reliableZone) form.append('reliable_zone', reliableZone)
     appendPolyThresholds(form)
+    appendDesignEnzymes(form)
     // 服务器最多等 60 秒，仍未完成返回 202 转轮询（Cloudflare 源站超时 100 秒）
     const response = await api.post(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}/finalize`, form, {
       timeout: 95000,

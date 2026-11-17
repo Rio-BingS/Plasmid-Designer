@@ -105,3 +105,34 @@ def test_export_writes_enzyme_annotations_and_reads_back():
     d = build_design_enzymes(s, feats, True, None, comment=meta.get("design_comment"))
     assert d["level"] == "user" and d["enzymes"][0]["name"] == "EcoRI"
     assert d["avoid"] == ["BsaI"]
+
+
+def test_batch_groups_pass_enzymes_and_reference_meta(monkeypatch):
+    """10e：批量入口把整批设计酶与组参考的文件级元数据传进 analyze"""
+    import app.sequencing_batch as sb
+
+    seen = {}
+
+    def fake_analyze(ab1s, ref_seq, features, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(sb, "analyze", fake_analyze)
+    monkeypatch.setattr(sb, "_parse_group_reference",
+                        lambda ref_file, max_ref_bp: ("ACGT" * 100, [], True))
+    gb = (b"LOCUS       P1 400 bp DNA circular\nCOMMENT     pd_design_enzymes: avoid=NotI\n"
+          b"ORIGIN\n//\n")
+    group = {"plasmid": "P1", "clone": "",
+             "reference": {"file": {"name": "P1.gb", "bytes": gb}},
+             "reads": [{"file": {"name": "P1_w.ab1", "bytes": b"x"}}]}
+    sb.run_batch_groups([group], min_q=20, register=lambda *a: ("aid", {}),
+                        enzymes="EcoRI,BamHI")
+    assert seen.get("enzymes") == "EcoRI,BamHI"
+    assert "reference_meta" in seen
+
+
+def test_pending_more_line():
+    from core.sanger.render_impact import impact_lines
+    lines = impact_lines({"impact": {"items": [], "shown": [], "advisories": [],
+                                     "full_ok": 2, "unassessed": [], "pending_more": 3}})
+    assert lines == ["注意：另有 3 处范围外未决（P3，可展开复核队列）；另有 2 个元件完整覆盖，未见异常"]

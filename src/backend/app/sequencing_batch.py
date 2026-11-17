@@ -154,6 +154,23 @@ def rescue_references_by_features(groups: List[Dict], unmatched: List[Dict],
     return remaining
 
 
+def _group_reference_meta(ref_file: Optional[Dict]) -> Optional[Dict]:
+    """10e③：组参考的文件级元数据（GenBank COMMENT 里的避开酶）；失败不阻断"""
+    if not ref_file:
+        return None
+    f = ref_file.get("file") or {}
+    data = f.get("bytes")
+    if data is None and f.get("path"):
+        data = _read_ref_bytes(f.get("path"))
+    if not data:
+        return None
+    try:
+        from core.sanger.reference_parser import parse_reference_meta
+        return parse_reference_meta(f.get("name") or "", data) or None
+    except Exception:
+        return None
+
+
 def _parse_group_reference(ref_file: Dict, max_ref_bp: Optional[int]):
     """解析一个分组的参考图谱 → (ref_seq, features, circular)；失败返回异常对象"""
     try:
@@ -206,6 +223,7 @@ def run_batch_groups(
     zone=None,
     batch_controls: Optional[List[Optional[Dict]]] = None,
     poly_thresholds: Optional[Dict] = None,
+    enzymes=None,
 ) -> Tuple[List[Dict], Dict[str, Dict]]:
     """逐组跑管线并给出一句话结论，返回 (items, records_by_id)
 
@@ -301,7 +319,8 @@ def run_batch_groups(
                             "direction": _pr["direction"]}
                 _kw = dict(min_q=min_q, circular=circular, zone_params=zone,
                            primer=(_pmap or None), scope=scope_obj,
-                           poly_thresholds=poly_thresholds)
+                           poly_thresholds=poly_thresholds, enzymes=enzymes,
+                           reference_meta=_group_reference_meta(ref_file))
                 res = analyze(ab1s, ref_seq, features, **_kw)
                 # 批内同引物对照（2026-11-11）：登记与结论推迟到全部分组
                 # 第一遍分析完成之后（_finalize_batch_controls）

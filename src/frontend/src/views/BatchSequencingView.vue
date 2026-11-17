@@ -6,6 +6,7 @@
  * 全自动管线，一句话结论速览；详情深链到 /sequencing?history=<analysis_id>
  */
 import { ref, computed } from 'vue'
+import { designEnzymes, saveDesignEnzymes, normalizeEnzymes } from '@/utils/designEnzymes'
 import { useRouter } from 'vue-router'
 import { analyzeSequencingBatchChunked, downloadBatchSequencingReport, formatApiError, type SequencingBatchItem, type SequencingBatchResult } from '@/api'
 import { UploadCancelledError, type ChunkedProgress } from '@/utils/chunkedUpload'
@@ -344,6 +345,9 @@ async function downloadReport() {
         <summary>高级参数</summary>
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
         <ReliableZoneInputs v-model="reliableZone" />
+        <label>设计用酶（可选，整批共用，逗号分隔；留空各组自动推断）
+          <input type="text" :value="designEnzymes" placeholder="如 EcoRI,BamHI"
+                 @change="saveDesignEnzymes(normalizeEnzymes(($event.target as HTMLInputElement).value))" /></label>
       </details>
       <PolyThresholdInputs />
       <button class="analyze-btn" :disabled="!canAnalyze" @click="runBatch">

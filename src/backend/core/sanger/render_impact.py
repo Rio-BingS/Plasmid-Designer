@@ -57,6 +57,8 @@ def impact_lines(verdict: Optional[Dict]) -> List[str]:
         lines.append(f"  ↳ 附带发现 {it['level']} · {_target_text(it)}："
                      f"{RULE_TEXT.get(it['rule'], it['rule'])}{cov}{cap}——{_sites_text(it)}")
     tail = []
+    if imp.get("pending_more"):
+        tail.append(f"另有 {imp['pending_more']} 处范围外未决（P3，可展开复核队列）")
     if imp.get("full_ok"):
         tail.append(f"另有 {imp['full_ok']} 个元件完整覆盖，未见异常")
     ua = imp.get("unassessed") or []

@@ -577,7 +577,7 @@ def _run_batch(
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
     access_token: Optional[str] = None, read_limits: Optional[Dict] = None,
     max_files=_DEFAULT_MAX_FILES, zone: Optional[ZoneParams] = None,
-    poly_thresholds: Optional[Dict] = None,
+    poly_thresholds: Optional[Dict] = None, enzymes=None,
 ) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -609,7 +609,7 @@ def _run_batch(
     items, records_by_id = run_batch_groups(
         groups, min_q, _register, max_ref_bp=MAX_REF_BP, ref_cache=ref_cache,
         soft_timeout=BATCH_SOFT_TIMEOUT or None, zone=zone,
-        poly_thresholds=poly_thresholds)
+        poly_thresholds=poly_thresholds, enzymes=enzymes)
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
@@ -802,6 +802,7 @@ def _batch_pipeline(
     read_limits: Optional[Dict] = None, max_files=_DEFAULT_MAX_FILES,
     zone: Optional[ZoneParams] = None,
     poly_thresholds: Optional[Dict] = None,
+    enzymes=None,
 ) -> Dict:
     """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
     excel_pack = None
@@ -813,7 +814,8 @@ def _batch_pipeline(
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
         owner_id=owner_id, access_token=batch_token, read_limits=read_limits,
-        max_files=max_files, zone=zone, poly_thresholds=poly_thresholds)
+        max_files=max_files, zone=zone, poly_thresholds=poly_thresholds,
+        enzymes=enzymes)
     if batch_token:
         payload["access_token"] = batch_token
 
