@@ -52,6 +52,39 @@ def test_infer_scope_design_insert_beats_filename():
     assert scope.source == "design_insert"
 
 
+# ---------- resolve_scope 唯一入口（推断并入其内部一步，2026-11-18） ----------
+
+
+def test_resolve_scope_infer_matches_infer_scope():
+    """resolve_scope(None, infer=True) 与兼容入口 infer_scope 逐字段一致"""
+    from core.sanger.scope import resolve_scope
+    cases = [
+        ("GeneX.gb", ["GeneX_F.ab1"], (801, 900), 3000),
+        ("GeneX.gb", ["S1-GeneX-F.ab1"], None, 0),
+        ("GeneX.gb", ["S1-GeneX-F.ab1"], None, 3000),
+        ("nothing", ["x.ab1"], None, 3000),
+    ]
+    for stem, reads, ins, n in cases:
+        got, err = resolve_scope(None, _FEATS, n, insert_range=ins, infer=True,
+                                 ref_stem=stem, read_names=reads)
+        old = infer_scope(stem, reads, _FEATS, insert_range=ins, ref_length=n)
+        assert err is None
+        assert (got.to_dict() if got else None) == (old.to_dict() if old else None)
+
+
+def test_resolve_scope_no_infer_by_default():
+    """不带 infer 时 None 仍是 None（显式入参路径行为不变）"""
+    from core.sanger.scope import resolve_scope
+    assert resolve_scope(None, _FEATS, 3000, insert_range=(801, 900)) == (None, None)
+
+
+def test_resolve_scope_explicit_beats_infer():
+    """显式范围优先：scope 非空时不推断"""
+    from core.sanger.scope import resolve_scope
+    sc, err = resolve_scope("AmpR", _FEATS, 3000, insert_range=(801, 900), infer=True)
+    assert err == "" and sc.source == "user" and sc.ranges == [(1501, 2100)]
+
+
 # ---------- parse_scope_cell（W1 实现，W10 锁关键口径） ----------
 
 

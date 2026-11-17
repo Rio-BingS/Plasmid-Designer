@@ -367,9 +367,9 @@ async def analyze_design_sequencing(
     scope_obj = None
     _is, _ie = getattr(result, "insert_start", None), getattr(result, "insert_end", None)
     if _is and _ie and not (_is == 1 and _ie == len(reference)):
-        from core.sanger.scope import infer_scope
-        scope_obj = infer_scope("", [], [], insert_range=(int(_is), int(_ie)),
-                                ref_length=len(reference))
+        from core.sanger.scope import resolve_scope
+        scope_obj, _ = resolve_scope(None, [], len(reference),
+                                     insert_range=(int(_is), int(_ie)), infer=True)
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,

@@ -173,7 +173,7 @@ annotator（变体特征注释 + CDS 氨基酸级注释）
 | **影响分级与三层报告** | 范围外关键元件出现差异 → 待定 | 第一层：主结论（只看声明范围 + 接合区），状态只由这一层决定。第二层「附带发现」：范围外异常按 P1/P2/P3 排序，同一元件合并取最高级；确证 P1/P2 单出一行「⚠ 范围外发现 N 处需关注的确证异常」，**不改状态**（前端红字）；其余未决合成一句「另有 N 处范围外未决」。第三层：范围外未完整覆盖、未评估的元件一句话带过 |
 | **设计酶** | 无 | 用户填写的酶 + 参考里 `pd_enzyme` 标注的酶；都没有时取声明范围（插入片段）两端 flank 内（边界外 100bp 到内 20bp）、全质粒只切一次的酶；再没有就为空，**不再用全质粒单切酶兜底**。参考 COMMENT「pd_design_enzymes: avoid=…」给出要避开的酶。位点被破坏判 P1，新引入设计酶/避开酶位点判 P2 |
 | **酶标注导出** | 无 | 本项目构建导出 GenBank 时，克隆/线性化用酶写 `misc_feature`（`/label=酶名`，`/note="pd_enzyme role=cloning\|linearize"`），避开的酶写文件级 COMMENT；Sanger 分析读回后当作用户指定。单样品与批量入口都接了 `enzymes` 参数 |
-| **统一酶库** | 设计酶与图谱各扫各的 | 设计酶改用 `plasmid_map.scan_enzyme` 扫描，与图谱同口径；酶菜单用 `core.enzyme_sites.DEFAULT_ENZYMES` |
+| **统一酶库** | 设计酶与图谱各扫各的 | 设计酶改用 `plasmid_map.scan_enzyme` 扫描，与图谱同口径；酶菜单用 `core.enzyme_sites.DEFAULT_ENZYMES`；2026-11-18 起酶集合、单酶属性/详情、厂商表也只在 `core.enzyme_sites` 维护，`plasmid_map.enzymes` 原名 re-export |
 | **Excel 新列** | — | 「套峰 read 数」（ReadCall 判全程/某点后套峰的 read 条数）、「零散双峰数」（未判套峰的 read 上的双峰位点数之和）；旧记录无 `read_calls` 时即时推导 |
 
 ## 3. 不足之处（按影响排序）
@@ -233,7 +233,8 @@ annotator（变体特征注释 + CDS 氨基酸级注释）
 | declared（声明） | 用户选了范围（预设/元件/区间/Excel 列） | 范围内逐 bp 负责：✓/✗/△ 都有牙齿 |
 | measured（未声明） | 没选范围，只说测了哪里 | 「已测 x–y」如实报告；范围外一律「未评估」，禁整参考一致性主张 |
 
-**范围来源优先级**（`scope.py infer_scope`）：user（显式输入）>
+**范围来源优先级**（`scope.resolve_scope(..., infer=True)` 内部一步 `_infer_scope`；
+`infer_scope` 为兼容包装）：user（显式输入）>
 design_insert（设计流插入区间）> cds_target（目的基因模式目标 CDS）>
 filename_match（参考文件名命中）> primer_window（引物理论窗）>
 measured。同一参考再次分析时按指纹带出上次声明范围（范围记忆，

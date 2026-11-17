@@ -8,6 +8,10 @@ sequence_analysis.RESTRICTION_ENZYMES、clone_strategy 的回退扫描）曾多�
 
 Bio.Restriction 首次导入会构建全部 REBASE 酶类（约 6 MB RSS / 0.1 s），
 因此只在第一次真正需要酶参数时才导入，模块导入本身不触发。
+
+酶数据唯一数据源（2026-11-18）：默认酶菜单、图谱酶集合（enzyme_sets）、单酶
+属性与详情（enzyme_info / enzyme_detail）、厂商表（suppliers）都在本模块；
+core/plasmid_map/enzymes 只做图谱契约形状的扫描，并原名 re-export 这些数据接口。
 """
 
 import re
@@ -397,6 +401,8 @@ def golden_gate_geometry(name: str) -> Optional[Dict]:
 
 # Golden Gate 首选酶（文献/试剂盒最常用），其余可用酶按名称排在后面
 GOLDEN_GATE_PREFERRED: Tuple[str, ...] = ("BsaI", "BsmBI", "BbsI")
+# 图谱「Golden Gate」酶集合的候选：首选三把 + 其余常用 Type IIS
+GOLDEN_GATE_CANDIDATES: Tuple[str, ...] = GOLDEN_GATE_PREFERRED + ("SapI", "Esp3I", "PaqCI")
 
 
 @lru_cache(maxsize=1)
@@ -457,3 +463,171 @@ def backbone_recut_warnings(
                    "改用骨架上只有唯一位点的酶对。" if other else
                    "若非有意利用多切点，请改用骨架上只有唯一位点的酶对。"))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 酶集合、单酶属性/详情与厂商表（原在 core/plasmid_map/enzymes，2026-11-18 合入
+# 本模块作为唯一数据源；plasmid_map.enzymes 原名 re-export，接口不变）
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _commercial_names() -> Tuple[str, ...]:
+    """REBASE 中有商业来源、单切割对、切点已知的全部酶（get_enzyme 认可），
+    排除修饰依赖型酶（AbaSI / MspJI / FspEI 等，见 is_modification_dependent）"""
+    from Bio import Restriction as _R
+
+    names = sorted({e.__name__ for e in _R.CommOnly})
+    out = []
+    for n in names:
+        spec = get_enzyme(n)
+        if spec is not None and not is_modification_dependent(spec):
+            out.append(n)
+    return tuple(out)
+
+
+def _specific_bases(site: str) -> int:
+    return sum(1 for ch in site if ch != "N")
+
+
+@lru_cache(maxsize=1)
+def enzyme_sets() -> Tuple[Dict, ...]:
+    """GET /api/map/enzyme-sets 的内容（按 id 稳定排序）"""
+    commercial = _commercial_names()
+    unique6 = tuple(n for n in commercial
+                    if _specific_bases(get_enzyme(n)["site"]) >= 6)
+    golden = tuple(n for n in GOLDEN_GATE_CANDIDATES if get_enzyme(n) is not None)
+    return (
+        {"id": "common", "name": "常用酶",
+         "description": f"站内默认酶菜单（{len(DEFAULT_ENZYMES)} 种常用克隆酶）",
+         "enzymes": list(DEFAULT_ENZYMES)},
+        {"id": "unique6", "name": "6+ 碱基识别酶",
+         "description": "全部可商购、识别 ≥6 个确定碱基的酶；前端按 cut_count==1 筛选单切位点",
+         "enzymes": list(unique6)},
+        {"id": "commercial", "name": "全部商品酶",
+         "description": "REBASE（Bio.Restriction）中全部可商购、切点已知的单切割对酶"
+                        "（不含只切修饰 DNA 的修饰依赖型酶）",
+         "enzymes": list(commercial)},
+        {"id": "golden_gate", "name": "Golden Gate（Type IIS）",
+         "description": "Golden Gate 组装常用 Type IIS 酶",
+         "enzymes": list(golden)},
+        {"id": "type_iis", "name": "全部商品 Type IIS 酶",
+         "description": "REBASE 中全部可商购的 Type IIS 酶（非回文识别序列、在位点之外切割）",
+         "enzymes": list(type_iis_enzymes())},
+    )
+
+
+def enzyme_set_names(set_id: str) -> Optional[List[str]]:
+    for s in enzyme_sets():
+        if s["id"] == set_id:
+            return list(s["enzymes"])
+    return None
+
+
+@lru_cache(maxsize=1024)  # key 含用户可控酶名，有界防缓存撑内存
+def enzyme_info(name: str) -> Optional[Dict]:
+    """单把酶的静态属性：recognition 记法、末端类型、突出端序列"""
+    spec = get_enzyme(name)
+    if spec is None:
+        return None
+    from Bio import Restriction as _R
+    from core.plasmid_map.methylation import methylation_kinds  # 惰性：避免包级循环导入
+
+    enz = getattr(_R, name)
+    site = spec["site"]
+    size = len(site)
+    c1, c2 = spec["cut"]
+    if spec["overhang"] == "5prime":
+        ends = "5'"
+    elif spec["overhang"] == "3prime":
+        ends = "3'"
+    else:
+        ends = "blunt"
+    overhang = None
+    if ends != "blunt":
+        ov = str(enz.ovhgseq or "").upper()
+        overhang = ov or None
+    return {
+        "name": name,
+        "recognition": _recognition(site, c1, c2),
+        "ends": ends,
+        "overhang": overhang,
+        "methylation": methylation_kinds(name),
+        "spec": spec,
+    }
+
+
+@lru_cache(maxsize=1)
+def _supplier_table() -> Dict[str, str]:
+    """REBASE 厂商代码 → 名称（Bio.Restriction.Restriction_Dictionary.suppliers）"""
+    from Bio.Restriction.Restriction_Dictionary import suppliers as _sup
+
+    out = {}
+    for code, info in _sup.items():
+        out[code] = str(info[0]) if isinstance(info, (tuple, list)) and info else str(code)
+    return out
+
+
+@lru_cache(maxsize=1)
+def suppliers() -> Tuple[Dict, ...]:
+    """GET /api/map/suppliers：每个厂商及其可用酶（仅 get_enzyme 认可的商品酶），
+    按酶数从多到少"""
+    from Bio import Restriction as _R
+
+    table = _supplier_table()
+    by_code: Dict[str, List[str]] = {c: [] for c in table}
+    for n in _commercial_names():
+        for c in getattr(_R, n).suppl or ():
+            by_code.setdefault(c, []).append(n)
+    rows = [{"code": c, "name": table.get(c, c), "enzymes": sorted(v, key=str.lower)}
+            for c, v in by_code.items() if v]
+    rows.sort(key=lambda r: (-len(r["enzymes"]), r["code"]))
+    return tuple(rows)
+
+
+def _commercial_relatives(enz, method: str) -> List[str]:
+    names = {e.__name__ for e in getattr(enz, method)() if e.is_comm()}
+    names.discard(enz.__name__)
+    return sorted(names, key=str.lower)
+
+
+@lru_cache(maxsize=1024)
+def enzyme_detail(name: str) -> Optional[Dict]:
+    """单把酶的详情（GET /api/map/enzymes/{name}）；未知/不支持的酶返回 None"""
+    info = enzyme_info(name)
+    if info is None:
+        return None
+    from Bio import Restriction as _R
+
+    enz = getattr(_R, name)
+    spec = info["spec"]
+    table = _supplier_table()
+    codes = sorted(enz.suppl or ())
+    out = {
+        "name": name,
+        "site": spec["site"],
+        "recognition": info["recognition"],
+        "ends": info["ends"],
+        "overhang": info["overhang"],
+        "type_iis": is_type_iis(spec),
+        "modification_dependent": is_modification_dependent(spec),
+        "golden_gate": golden_gate_geometry(name) is not None,
+        "suppliers": [{"code": c, "name": table.get(c, c)} for c in codes],
+        # 同切酶：识别序列与切点都相同；新切酶：识别序列相同、切点不同
+        "isoschizomers": _commercial_relatives(enz, "equischizomers"),
+        "neoschizomers": _commercial_relatives(enz, "neoschizomers"),
+    }
+    if info["methylation"]:
+        out["methylation"] = list(info["methylation"])
+    return out
+
+
+def _recognition(site: str, c1: int, c2: int) -> str:
+    """NEB 习惯记法：位点内切 'G^AATTC'；位点外切 'GGTCTC(1/5)' / '(8/12)SITE'"""
+    size = len(site)
+    if 0 <= c1 <= size and 0 <= c2 <= size:
+        return site[:c1] + "^" + site[c1:]
+    if c1 > size and c2 > size:
+        return f"{site}({c1 - size}/{c2 - size})"
+    if c1 < 0 and c2 < 0:
+        return f"({-c1}/{-c2}){site}"
+    return f"{site}({c1 - size}/{c2 - size})"

@@ -182,10 +182,10 @@ def junction_ranges(features: List[Dict]) -> List[Tuple[int, int, str]]:
     return out
 
 
-def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
-                insert_range: Optional[Tuple[int, int]] = None,
-                ref_length: int = 0) -> Optional["Scope"]:
-    """按 §3.1 来源优先级推断需测范围（goal v3 W10，PL §C1/§C2）。
+def _infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
+                 insert_range: Optional[Tuple[int, int]] = None) -> Optional["Scope"]:
+    """resolve_scope 内部一步：按 §3.1 来源优先级推断需测范围（goal v3 W10，
+    PL §C1/§C2）。返回未归一的 Scope（归一由 resolve_scope 统一做）。
 
     user 由调用方显式给出不走这里；cds_target 由目的基因模式直接构造。
     本函数覆盖中间两级：
@@ -196,8 +196,7 @@ def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
       唯一命中 CDS/gene 时以其为需测范围（+ 接合区）。
 
     primer_window 需引物结合窗（W7 映射产出、E 的并集），接线在批量/
-    前端侧，这里不推断。都取不到 → None（调用方退回未声明 measured 口径）。
-    ref_length>0 时输出已 normalized。"""
+    前端侧，这里不推断。都取不到 → None（调用方退回未声明 measured 口径）。"""
     if insert_range:
         s, e = int(insert_range[0]), int(insert_range[1])
         scope = Scope(
@@ -206,7 +205,7 @@ def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
                        (e - JUNCTION_HALF_WIDTH, e + JUNCTION_HALF_WIDTH)],
             source=SOURCE_DESIGN_INSERT,
             reason="设计记录插入边界（两端 ±30 接合区）")
-        return scope.normalized(ref_length) if ref_length else scope
+        return scope
 
     from core.sanger.cds_extract import cds_candidates, resolve_auto
     cands = cds_candidates(features)
@@ -223,8 +222,19 @@ def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
                           source=SOURCE_FILENAME_MATCH,
                           elements=[cand["name"]],
                           reason=f"文件名匹配目标 CDS（{how}）")
-            return scope.normalized(ref_length) if ref_length else scope
+            return scope
     return None
+
+
+def infer_scope(ref_stem: str, read_names: List[str], features: List[Dict],
+                insert_range: Optional[Tuple[int, int]] = None,
+                ref_length: int = 0) -> Optional["Scope"]:
+    """兼容入口（旧调用与冻结场景用）：等价于
+    ``resolve_scope(None, features, ref_length, insert_range, infer=True,
+    ref_stem=..., read_names=...)[0]``。新代码请直接调 resolve_scope。"""
+    return resolve_scope(None, features, ref_length, insert_range,
+                         infer=True, ref_stem=ref_stem,
+                         read_names=read_names)[0]
 
 
 def _match_element(token: str, features: List[Dict]) -> Optional[Tuple[int, int, str]]:
@@ -322,16 +332,26 @@ def parse_scope_cell(text: str, features: List[Dict], ref_length: int = 0,
 
 def resolve_scope(scope, features: List[Dict], ref_length: int = 0,
                   insert_range: Optional[Tuple[int, int]] = None,
-                  normalize: bool = True
+                  normalize: bool = True, *, infer: bool = False,
+                  ref_stem: str = "", read_names: Optional[List[str]] = None
                   ) -> Tuple[Optional[Scope], Optional[str]]:
     """S0b 唯一范围入口：None / Scope / dict / str → (Scope | None, 错误说明)。
+
+    infer=True 且 scope 为 None 时，先按来源优先级推断（内部一步
+    _infer_scope：design_insert → filename_match，ref_stem / read_names
+    供文件名匹配）；推断不到仍返回 (None, None)。
 
     str 按 parse_scope_cell 解析；解析失败返回 (None, 错误)，由调用方决定
     报 400 / 回填备注 / 退回未声明口径。normalize=True 时按参考长度归一
     （analyze、build_verdict 口径）；Form/批量表格入口沿用解析原样
     （normalize=False），与改造前逐字一致。"""
     if scope is None:
-        return None, None
+        if not infer:
+            return None, None
+        scope = _infer_scope(ref_stem, list(read_names or []), features,
+                             insert_range)
+        if scope is None:
+            return None, None
     err: Optional[str] = None
     if isinstance(scope, Scope):
         out = scope
