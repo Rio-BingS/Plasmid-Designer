@@ -205,6 +205,7 @@ def run_batch_groups(
     soft_timeout: Optional[float] = None,
     zone=None,
     batch_controls: Optional[List[Optional[Dict]]] = None,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Tuple[List[Dict], Dict[str, Dict]]:
     """逐组跑管线并给出一句话结论，返回 (items, records_by_id)
 
@@ -299,7 +300,8 @@ def run_batch_groups(
                             "name": _pr["name"], "seq": _pr["seq"],
                             "direction": _pr["direction"]}
                 _kw = dict(min_q=min_q, circular=circular, zone_params=zone,
-                           primer=(_pmap or None), scope=scope_obj)
+                           primer=(_pmap or None), scope=scope_obj,
+                           poly_thresholds=poly_thresholds)
                 res = analyze(ab1s, ref_seq, features, **_kw)
                 # 批内同引物对照（2026-11-11）：登记与结论推迟到全部分组
                 # 第一遍分析完成之后（_finalize_batch_controls）

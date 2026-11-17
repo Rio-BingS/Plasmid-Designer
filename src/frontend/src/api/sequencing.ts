@@ -2,6 +2,7 @@
 // 新代码请直接从 '@/api/<域>' 导入。
 
 import { api, saveBlobResponse } from './client'
+import { appendPolyThresholds, type PolyThresholds } from '@/utils/polyThresholds'
 import { runChunkedBatch, type ChunkedOptions, type ChunkedTransport } from '@/utils/chunkedUpload'
 
 export interface AlignmentView {
@@ -382,6 +383,8 @@ export interface Verdict {
   /** 人工确认计数（goal v3 W14）：headline 自带「人工确认 N 处」 */
   reviewed_count?: number
   algo_version?: string
+  /** 本次判定所用的 poly 大量缺失阈值（二期 10d） */
+  poly_thresholds?: PolyThresholds
 }
 
 /** 复核队列项（goal v3 W14，PL §F）：确证差异 / 范围内缺口 / 未决位点；
@@ -482,6 +485,7 @@ export async function analyzeSequencingFiles(
     if (cdsOptions.name) form.append('cds_name', cdsOptions.name)
   }
   if (scope) form.append('scope', scope)
+  appendPolyThresholds(form)
   const response = await api.post('/sequencing/analyze', form, { timeout: 120000 })
   const data = response.data as SequencingAnalysis
   // 终审 B-02：匿名创建的记录需凭令牌访问——创建响应下发的 token 存入会话
@@ -527,6 +531,19 @@ export async function recomputeVerdict(
   const response = await api.post(
     `/sequencing/analyses/${encodeURIComponent(analysisId)}/verdict`,
     { scope },
+    { headers: analysisTokenHeaders(analysisId) },
+  )
+  return response.data
+}
+
+/** 按新的 poly 大量缺失阈值重新判定（二期 10d）：只重跑判定，范围与人工确认沿用 */
+export async function rejudgePolyThresholds(
+  analysisId: string,
+  thresholds: PolyThresholds,
+): Promise<{ verdict: Verdict; conclusion: string; poly_thresholds: PolyThresholds }> {
+  const response = await api.post(
+    `/sequencing/analyses/${encodeURIComponent(analysisId)}/poly-thresholds`,
+    thresholds,
     { headers: analysisTokenHeaders(analysisId) },
   )
   return response.data
@@ -697,6 +714,7 @@ export async function analyzeSequencingBatch(
   if (excel) form.append('excel', excel, excel.name)
   form.append('min_q', String(minQ))
   if (reliableZone) form.append('reliable_zone', reliableZone)
+  appendPolyThresholds(form)
   const response = await api.post('/sequencing/analyze-batch', form, { timeout: 600000 })
   return rememberBatchTokens(response.data as SequencingBatchResult)
 }
@@ -745,6 +763,7 @@ export const batchSessionTransport: ChunkedTransport<SequencingBatchResult> = {
     const form = new FormData()
     form.append('min_q', String(minQ))
     if (reliableZone) form.append('reliable_zone', reliableZone)
+    appendPolyThresholds(form)
     // 服务器最多等 60 秒，仍未完成返回 202 转轮询（Cloudflare 源站超时 100 秒）
     const response = await api.post(`/sequencing/batch-sessions/${encodeURIComponent(sessionId)}/finalize`, form, {
       timeout: 95000,

@@ -35,6 +35,7 @@ trace 峰图原始数据体积大，只保留最近若干条——更早的分�
 GET /sequencing/batches/{batch_id}/report 重复下载，超时自动清理。
 """
 
+import json
 import asyncio
 import os
 import secrets
@@ -90,6 +91,22 @@ def parse_zone_form(text: Optional[str]) -> Optional[ZoneParams]:
         return ZoneParams.parse(text)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"可信区参数无效：{e}")
+
+def parse_poly_thresholds_form(text: Optional[str]) -> Optional[Dict]:
+    """表单 poly_thresholds（JSON：{"count":5,"pct":15,"count_enabled":true,
+    "pct_enabled":true}，二期 10d「大量缺失」阈值，UI 可改）→ dict；
+    留空 = 部署默认；非法 422"""
+    if text is None or not str(text).strip():
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="大量缺失阈值参数格式错误（应为 JSON 对象）")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="大量缺失阈值参数格式错误（应为 JSON 对象）")
+    from core.sanger.params import resolve_poly_thresholds
+    return resolve_poly_thresholds(data)
+
 
 router = APIRouter(prefix="/api", tags=["sequencing"])
 
@@ -373,13 +390,15 @@ def _run_full_analysis(
     scope=None,
     full_ref: Optional[str] = None,
     full_circular: bool = False,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Dict:
     """同步执行全自动分析（调用方负责移交线程池）；primer 为可选引物（T17）；
     scope/full_ref 为 goal v3 W8 内部入参（cds_target 范围与裁剪路径的
     完整质粒重定位），非 Form 字段"""
     result = analyze(ab1_blobs, reference, features, min_q=min_q, circular=circular,
                      zone_params=zone, primer=primer, scope=scope,
-                     full_ref=full_ref, full_circular=full_circular)
+                     full_ref=full_ref, full_circular=full_circular,
+                     poly_thresholds=poly_thresholds)
 
     # 解卷积只对 read 级「疑似混合样品」（widespread）执行（tracy 可用时）
     # ——scattered 多为噪声，decompose 只会产出无意义等位
@@ -413,7 +432,8 @@ def _run_full_analysis(
             # S6：经唯一判定入口重算，结论头行同步（此前只换 verdict、结论
             # 头行仍是 decompose 前的旧判定）
             result["verdict"], result["conclusion"] = rejudge(
-                {**result, "features": features or []}, len(reference), scope)
+                {**result, "features": features or []}, len(reference), scope,
+                poly_thresholds=poly_thresholds)
     return result
 
 
@@ -482,12 +502,14 @@ def _analyze_and_register(
     scope=None,
     full_ref: Optional[str] = None,
     full_circular: bool = False,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Tuple[Dict, Optional[str]]:
     """同步：全自动分析 + 登记落库 + 摘要（调用方负责并发闸与线程池）"""
     result = _run_full_analysis(reference, sample_name, features, ab1_blobs,
                                 min_q, allow_decompose, circular, zone,
                                 primer=primer, scope=scope, full_ref=full_ref,
-                                full_circular=full_circular)
+                                full_circular=full_circular,
+                                poly_thresholds=poly_thresholds)
     _aid, access_token, record = _register_analysis(
         sample_name, reference, features, result, owner_id=owner_id)
     return _summary(record), access_token
@@ -507,6 +529,7 @@ async def _analyze_endpoint(
     scope=None,
     full_ref: Optional[str] = None,
     full_circular: bool = False,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Dict:
     if not reference or len(reference) < 50:
         raise HTTPException(status_code=400, detail="参考序列缺失或过短，无法比对")
@@ -525,7 +548,7 @@ async def _analyze_endpoint(
         summary, access_token = await run_in_threadpool(
             _analyze_and_register, reference, sample_name, features, ab1_blobs,
             min_q, allow_decompose, circular, user.id if user else None, zone,
-            primer, scope, full_ref, full_circular)
+            primer, scope, full_ref, full_circular, poly_thresholds)
     if access_token:
         # 匿名创建：令牌只随创建响应下发一次（前端存会话供后续读取/导出/删除）
         summary["access_token"] = access_token
@@ -545,6 +568,7 @@ def _run_batch(
     ignored: List[str], min_q: int, owner_id: Optional[str] = None,
     access_token: Optional[str] = None, read_limits: Optional[Dict] = None,
     max_files=_DEFAULT_MAX_FILES, zone: Optional[ZoneParams] = None,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Tuple[Dict, List[Dict], List[Dict], Dict[str, Dict]]:
     """同步执行批量分析（调用方负责移交线程池）：归组 → 逐组跑管线 → 一句话结论
 
@@ -575,7 +599,8 @@ def _run_batch(
     _check_batch_compute_budget(estimate_batch_cost(groups, ref_cache))
     items, records_by_id = run_batch_groups(
         groups, min_q, _register, max_ref_bp=MAX_REF_BP, ref_cache=ref_cache,
-        soft_timeout=BATCH_SOFT_TIMEOUT or None, zone=zone)
+        soft_timeout=BATCH_SOFT_TIMEOUT or None, zone=zone,
+        poly_thresholds=poly_thresholds)
     payload = batch_payload(items, unmatched, min_q, rows is not None,
                             clone_mode, ignored)
     return payload, groups, unmatched, records_by_id
@@ -767,6 +792,7 @@ def _batch_pipeline(
     owner_id: Optional[str], batch_token: Optional[str],
     read_limits: Optional[Dict] = None, max_files=_DEFAULT_MAX_FILES,
     zone: Optional[ZoneParams] = None,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Dict:
     """同步：信息表解析 → 批量分析 → 整理包打包（调用方负责并发闸与线程池）"""
     excel_pack = None
@@ -778,7 +804,7 @@ def _batch_pipeline(
     payload, groups, raw_unmatched, records_by_id = _run_batch(
         reads, refs, excel_rows, ignored, min_q,
         owner_id=owner_id, access_token=batch_token, read_limits=read_limits,
-        max_files=max_files, zone=zone)
+        max_files=max_files, zone=zone, poly_thresholds=poly_thresholds)
     if batch_token:
         payload["access_token"] = batch_token
 

@@ -252,7 +252,7 @@ def _set_running(sid: str) -> None:
 
 
 def _finalize_sync(sid: str, min_q: int, owner_id: Optional[str],
-                   read_limits: Dict, zone=None) -> Dict:
+                   read_limits: Dict, zone=None, poly_thresholds=None) -> Dict:
     """同步：暂存文件 → 与单请求入口相同的归类与批量管线。
 
     测序/图谱文件不整批读入内存：条目内容按需从磁盘读取（逐组比对、
@@ -267,7 +267,7 @@ def _finalize_sync(sid: str, min_q: int, owner_id: Optional[str],
     batch_token = secrets.token_urlsafe(16) if owner_id is None else None
     return sr._batch_pipeline(reads, refs, ignored, min_q, excel_name, excel_bytes,
                               owner_id, batch_token, read_limits, max_files=None,
-                              zone=zone)
+                              zone=zone, poly_thresholds=poly_thresholds)
 
 
 def _finish(sid: str, outcome: Dict) -> None:
@@ -285,13 +285,13 @@ def _finish(sid: str, outcome: Dict) -> None:
 
 
 async def _finalize_job(sid: str, min_q: int, owner_id: Optional[str],
-                        read_limits: Dict, zone=None) -> None:
+                        read_limits: Dict, zone=None, poly_thresholds=None) -> None:
     outcome: Dict
     try:
         async with sr._heavy_slot(timeout=FINALIZE_QUEUE_TIMEOUT):
             await run_in_threadpool(_set_running, sid)
             payload = await run_in_threadpool(_finalize_sync, sid, min_q, owner_id,
-                                              read_limits, zone)
+                                              read_limits, zone, poly_thresholds)
         outcome = {"state": store.DONE, "result": payload}
     except HTTPException as e:
         outcome = {"state": store.FAILED,
@@ -324,11 +324,13 @@ async def finalize_batch_session(
     request: Request,
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（bp），留空用默认 30,60,700,900"),
+    poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
     user: Optional[User] = Depends(get_current_user),
 ):
     """提交分析。限时内完成 → 200 + 与 /sequencing/analyze-batch 相同的响应体；
     仍在运行 → 202 {"session_id", "state"}，经 GET 轮询取结果。"""
     zone = sr.parse_zone_form(reliable_zone)
+    poly_th = sr.parse_poly_thresholds_form(poly_thresholds)
     token = sr._request_access_token(request)
     # read 上限按提交者当下的生效值解析（管理员中途调整即时生效）
     read_limits = sr._batch_read_limits_for(user)
@@ -337,7 +339,8 @@ async def finalize_batch_session(
     except store.SessionError as e:
         raise _http(e)
     task = asyncio.create_task(
-        _finalize_job(session_id, min_q, user.id if user else None, read_limits, zone))
+        _finalize_job(session_id, min_q, user.id if user else None, read_limits, zone,
+                     poly_th))
     _JOBS[session_id] = task
     task.add_done_callback(lambda _t, sid=session_id: _JOBS.pop(sid, None))
     try:

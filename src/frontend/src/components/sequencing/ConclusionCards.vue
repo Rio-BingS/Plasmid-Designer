@@ -130,6 +130,7 @@ const KIND_LABELS: Record<string, string> = {
   allele_mismatch: '等位基因不符',
   // 步骤 8（2026-11-17）：补齐 verdict 产出但此前无标签的 kind
   seq_overlap_peaks: '单 read 套峰',
+  poly_large_deletion: 'poly 大量缺失',
   mixed_template: '疑似混合模板',
   structural_breakpoint_unconfirmed: '结构断点（未印证）',
   minor_af_site: '低丰度双峰',

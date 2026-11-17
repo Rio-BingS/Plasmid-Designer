@@ -185,3 +185,28 @@ def repeat_variant_lines(shown_variants: List[Dict], pcs: Optional[List[Dict]]) 
             f"（位置 {v['ref_pos']} {kind} {int(v.get('length') or 1)}bp，{rel}）"
         )
     return out
+
+
+# ── 二期 10d：poly 大量缺失行（呈现层；数据来自 verdict.blocking） ──
+LARGE_DEL_PREFIX = "⚠ poly 大量缺失："
+
+
+def large_deletion_lines(verdict) -> list:
+    """verdict 中每条 poly_large_deletion 阻断 → 一行正文"""
+    out = []
+    for b in (verdict or {}).get("blocking") or []:
+        if b.get("kind") == "poly_large_deletion":
+            out.append(f"{LARGE_DEL_PREFIX}{b.get('detail')}——{b.get('action')}")
+    return out
+
+
+def with_large_deletion_lines(verdict, body_lines: list) -> list:
+    """去掉正文里旧的大量缺失行，再按本次 verdict 置顶（重新判定换阈值时
+    正文与头行保持一致）。无旧行、无新行时原样返回。"""
+    new = large_deletion_lines(verdict)
+    flat = "\n".join(body_lines).split("\n") if body_lines else []
+    had = any(ln.startswith(LARGE_DEL_PREFIX) for ln in flat)
+    if not new and not had:
+        return list(body_lines)
+    kept = [ln for ln in flat if not ln.startswith(LARGE_DEL_PREFIX)]
+    return new + kept

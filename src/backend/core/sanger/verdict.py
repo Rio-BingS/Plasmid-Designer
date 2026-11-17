@@ -34,6 +34,8 @@ from typing import Dict, List, Optional, Tuple
 
 from core.sanger.batch import MIN_VERDICT_COVERED_BP
 from core.sanger.homopolymer import mixed_sample_confirmed
+from core.sanger.params import poly_large_deletion, resolve_poly_thresholds
+from core.sanger.polycall import COUNT_CONFIRMED as _PC_CONFIRMED, poly_calls_of as _poly_calls_of
 from core.sanger import readcall as _rc
 from core.sanger.mixed_call import MINOR_AF_MIN, MINOR_AF_SOFT, MIXED_AF_MIN
 from core.sanger.overlap import (
@@ -211,6 +213,22 @@ def _fail_site_count(blocking: List[Dict]) -> int:
         else:
             spans.append(b)
     n = len(pts)
+    # poly 大量缺失（10d）与落在同一 poly 内的确证 indel 是同一处差异：
+    # 与另一条「局部」确证条目（长度不超过 poly 两倍，排除 CDS 整段条目）
+    # 相交即不另计
+    for b in [x for x in spans if x.get("kind") == "poly_large_deletion"]:
+        s_, e_ = int(b["ref_start"]), int(b["ref_end"])
+        lim = 2 * (e_ - s_ + 1)
+        dup = any(s_ <= p <= e_ for p in pts)
+        for o in blocking:
+            if (o is b or not o.get("fail_impact")
+                    or o.get("ref_start") is None or o.get("ref_end") is None):
+                continue
+            os_, oe_ = int(o["ref_start"]), int(o["ref_end"])
+            if os_ <= e_ and s_ <= oe_ and (oe_ - os_ + 1) <= lim:
+                dup = True
+        if dup:
+            spans.remove(b)
     for b in spans:
         s_, e_ = b.get("ref_start"), b.get("ref_end")
         if s_ is None or e_ is None:
@@ -299,7 +317,8 @@ def _read_mixing_text(c) -> str:
 
 def build_verdict(result: Dict, ref_length: int, scope=None,
                   synonymous_action: str = "ok",
-                  review_decisions: Optional[List[Dict]] = None) -> Dict:
+                  review_decisions: Optional[List[Dict]] = None,
+                  poly_thresholds: Optional[Dict] = None) -> Dict:
     """从 analyze 结果组装 Verdict（只读，不改 result 内其他键）。
 
     goal v3 W1：build_verdict 是纯函数——除 result/scope/ref_length 外不读
@@ -871,6 +890,32 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
              "单链覆盖区域未经对侧验证",
              "补测对侧链引物，或在设置中关闭双链覆盖强制")
 
+    # poly 大量缺失（二期 10d，用户 2026-11-17 拍板，默认开启）：结构级
+    # poly 计数已确证（COUNT_CONFIRMED，整段覆盖）且确证缺失 ≥N 个或 ≥P%
+    # （「或」，各自可停用）→ 确证差异（✗）。范围闸与变体同口径。
+    _poly_th = resolve_poly_thresholds(poly_thresholds)
+    for _pc in _poly_calls_of(result):
+        if (_pc.get("tier") != "poly" or _pc.get("state") != _PC_CONFIRMED
+                or _pc.get("legacy_unreliable")
+                or "PARTIAL_COVERAGE" in (_pc.get("reasons") or [])):
+            continue
+        _d = _pc.get("delta")
+        if _d is None or _d >= 0:
+            continue
+        _miss, _rl = -int(_d), _pc.get("ref_len")
+        if not poly_large_deletion(_miss, _rl, _poly_th):
+            continue
+        _ps, _pe = int(_pc.get("ref_start") or 0), int(_pc.get("ref_end") or 0)
+        if not _scope_hit(_ps, _pe):
+            continue
+        _unit = _pc.get("unit") or _pc.get("base") or ""
+        _pct = f"{_miss * 100.0 / float(_rl):.0f}%" if _rl else "—"
+        _blk("poly_large_deletion", _ps, _pe, f"poly({_unit})",
+             f"poly({_unit}) {_ps}–{_pe} 大量缺失 {_miss} 个（参考 {_rl}，"
+             f"实测 {_pc.get('measured')}，缺失占 {_pct}，确证）",
+             "核对峰图；如确为缺失，需重新挑克隆", fail_impact=True,
+             poly_id=_pc.get("poly_id"), missing=_miss)
+
     # 人工确认（goal v3 W14，PL F3）：按位点回填复核决定——伪影移出
     # blocking（info 留痕，不再阻断），突变升级确证（fail_impact，按 fail
     # 口径收口）。留痕条目带 by/at（复决可审计），N 进 headline。
@@ -1094,4 +1139,6 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
         # 时随参数传入——同一份 result+decisions 重算可复现）
         "reviewed_count": _reviewed_n,
         "algo_version": result.get("algo_version"),
+        # 本次判定所用的大量缺失阈值（可复现；UI 可改）
+        "poly_thresholds": _poly_th,
     }

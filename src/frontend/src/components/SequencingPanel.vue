@@ -7,7 +7,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import {
   analyzeSequencingFiles, confirmReview, exportConsensus, formatApiError,
-  deleteScopeMemory, parseSequencingReference, recomputeVerdict,
+  deleteScopeMemory, parseSequencingReference, recomputeVerdict, rejudgePolyThresholds,
   type SequencingAnalysis, type SequencingReferenceParse
 } from '@/api'
 import { downloadTextFile } from '@/utils/download'
@@ -23,6 +23,8 @@ import MatchMap from '@/components/sequencing/MatchMap.vue'
 import EvidencePackPanel from '@/components/sequencing/EvidencePackPanel.vue'
 import ReviewQueuePanel from '@/components/sequencing/ReviewQueuePanel.vue'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
+import PolyThresholdInputs from '@/components/sequencing/PolyThresholdInputs.vue'
+import type { PolyThresholds } from '@/utils/polyThresholds'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 import { cdsCoverageSummary, findCdsTarget } from '@/utils/cdsMode'
 
@@ -298,6 +300,23 @@ async function clearScopeMemory() {
   }
 }
 
+// poly 大量缺失阈值（二期 10d）：改阈值后只重跑判定（不重新比对）
+const polyBusy = ref(false)
+const polyError = ref('')
+async function onPolyRejudge(t: PolyThresholds) {
+  if (!analysis.value?.analysis_id || polyBusy.value) return
+  polyBusy.value = true
+  polyError.value = ''
+  try {
+    const r = await rejudgePolyThresholds(analysis.value.analysis_id, t)
+    analysis.value = { ...analysis.value, verdict: r.verdict, conclusion: r.conclusion }
+  } catch (e: any) {
+    polyError.value = formatApiError(e, '重新判定失败')
+  } finally {
+    polyBusy.value = false
+  }
+}
+
 // 复核队列（goal v3 W14，PL §F）：确证差异/范围内缺口/未决位点——
 // 一键确认留痕（by/at）并重算 verdict；「证据」复用证据包面板出峰图
 const reviewBusy = ref(false)
@@ -554,6 +573,7 @@ async function downloadConsensus(format: string) {
         <label><input type="checkbox" v-model="allowDecompose" /> 混合样品自动解卷积（需 tracy）</label>
         <ReliableZoneInputs v-model="reliableZone" />
       </details>
+      <PolyThresholdInputs />
       <button class="analyze-btn" :disabled="!canAnalyze || analyzing" @click="runAnalysis">
         {{ analyzing ? '分析中…' : '开始自动分析' }}
       </button>
@@ -598,6 +618,18 @@ async function downloadConsensus(format: string) {
         <span v-if="scopeBusy" class="stage-note">重算中…（等待期间展示当前结果）</span>
         <span v-else-if="scopeBarError" class="error-msg">{{ scopeBarError }}</span>
       </div>
+      <details v-if="analysis.verdict && analysis.analysis_id" class="poly-th-result">
+        <summary>poly 大量缺失阈值
+          <template v-if="analysis.verdict.poly_thresholds">（本次：{{
+            [analysis.verdict.poly_thresholds.count_enabled ? `≥${analysis.verdict.poly_thresholds.count} 个` : '',
+             analysis.verdict.poly_thresholds.pct_enabled ? `≥${analysis.verdict.poly_thresholds.pct}%` : '']
+              .filter(Boolean).join(' 或 ') || '不报警' }}）</template>
+        </summary>
+        <PolyThresholdInputs :analysis-id="analysis.analysis_id" :busy="polyBusy"
+                             :applied="analysis.verdict.poly_thresholds ?? null"
+                             @rejudge="onPolyRejudge" />
+        <p v-if="polyError" class="error-msg">{{ polyError }}</p>
+      </details>
 
       <!-- 结论总览 + CDS 结论卡（子组件；低置信折叠态与突变表共享） -->
       <ConclusionCards v-model:show-low-conf="showLowConf" :analysis="analysis" />

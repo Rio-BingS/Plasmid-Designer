@@ -18,13 +18,20 @@ from core.sanger.verdict import build_verdict
 
 def judge(result: Dict, ref_length: int, scope=None,
           synonymous_action: str = "ok",
-          review_decisions: Optional[List[Dict]] = None) -> Dict:
+          review_decisions: Optional[List[Dict]] = None,
+          poly_thresholds: Optional[Dict] = None) -> Dict:
     return build_verdict(result, ref_length, scope,
                          synonymous_action=synonymous_action,
-                         review_decisions=review_decisions)
+                         review_decisions=review_decisions,
+                         poly_thresholds=poly_thresholds)
 
 
-def compose_conclusion(headline: str, body_lines: List[str]) -> str:
+def compose_conclusion(headline: str, body_lines: List[str],
+                       verdict: Optional[Dict] = None) -> str:
+    """头行 + 正文。传入 verdict 时，poly 大量缺失行按本次判定置顶（10d）"""
+    if verdict is not None:
+        from core.sanger.render_poly import with_large_deletion_lines
+        body_lines = with_large_deletion_lines(verdict, list(body_lines))
     return "\n".join([headline] + list(body_lines))
 
 
@@ -37,12 +44,14 @@ def conclusion_body(record: Dict) -> List[str]:
 
 def rejudge(record: Dict, ref_length: int, scope=None,
             synonymous_action: str = "ok",
-            review_decisions: Optional[List[Dict]] = None) -> Tuple[Dict, str]:
+            review_decisions: Optional[List[Dict]] = None,
+            poly_thresholds: Optional[Dict] = None) -> Tuple[Dict, str]:
     """返回 (verdict, conclusion)，不改 record"""
     verdict = judge(record, ref_length, scope, synonymous_action=synonymous_action,
-                    review_decisions=review_decisions)
+                    review_decisions=review_decisions,
+                    poly_thresholds=poly_thresholds)
     head = verdict.get("headline") or ""
     conclusion = record.get("conclusion") or ""
     if head:
-        conclusion = compose_conclusion(head, conclusion_body(record))
+        conclusion = compose_conclusion(head, conclusion_body(record), verdict)
     return verdict, conclusion

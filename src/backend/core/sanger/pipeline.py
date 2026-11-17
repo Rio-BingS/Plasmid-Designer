@@ -2131,7 +2131,7 @@ def _build_conclusion(
         # 三出口逐字同源；else 支是「旧记录无 verdict」的降级路径（旧文案）
         _head = (verdict or {}).get("headline") or ""
         if _head:
-            conclusion = compose_conclusion(_head, [conclusion])
+            conclusion = compose_conclusion(_head, [conclusion], verdict)
         else:
             conclusion = (_conclusion_summary(
                 shown_variants, cds_reports, has_mixed,
@@ -2288,6 +2288,7 @@ def analyze(
     full_ref: Optional[str] = None,
     full_circular: bool = False,
     batch_control: Optional[Dict] = None,
+    poly_thresholds: Optional[Dict] = None,
 ) -> Dict:
     """全自动分析入口
 
@@ -2492,10 +2493,11 @@ def analyze(
         "mixed_profiles": mixed_profiles, "mixed_variants": mixed_variants,
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
         "coverage": coverage, "features": features or [],
+        "poly_calls": poly_calls,
         "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
         **_algo_version.extra_fields(SANGER_ALGO_VERSION),
     }, len(ref), scope=scope_obj,
-    synonymous_action=synonymous_action)
+    synonymous_action=synonymous_action, poly_thresholds=poly_thresholds)
     (conclusion, cds_reports, mixed_profiles, resolved_regions,
      conclusion_groups, conclusion_detail) = _build_conclusion(
         read_results, variants, mixed_corroboration, edge_ambiguous_reads,

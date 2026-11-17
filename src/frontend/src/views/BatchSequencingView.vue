@@ -11,6 +11,7 @@ import { analyzeSequencingBatchChunked, downloadBatchSequencingReport, formatApi
 import { UploadCancelledError, type ChunkedProgress } from '@/utils/chunkedUpload'
 import { useAuthStore } from '@/stores/auth'
 import ReliableZoneInputs from '@/components/sequencing/ReliableZoneInputs.vue'
+import PolyThresholdInputs from '@/components/sequencing/PolyThresholdInputs.vue'
 import { DEFAULT_RELIABLE_ZONE, reliableZoneFormValue, validateReliableZone, type ReliableZone } from '@/utils/reliableZone'
 
 const router = useRouter()
@@ -344,6 +345,7 @@ async function downloadReport() {
         <label>末端修剪 Q 阈值（0-60，默认 20）<input type="number" v-model.number="minQ" min="0" max="60" @change="normalizeMinQ" /></label>
         <ReliableZoneInputs v-model="reliableZone" />
       </details>
+      <PolyThresholdInputs />
       <button class="analyze-btn" :disabled="!canAnalyze" @click="runBatch">
         {{ analyzing ? (progressText || '准备上传…') : '开始批量分析' }}
       </button>

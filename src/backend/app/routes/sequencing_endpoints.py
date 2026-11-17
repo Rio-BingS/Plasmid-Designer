@@ -30,7 +30,7 @@ from app.filename import content_disposition
 from app.routes import sequencing_routes
 from app.routes.sequencing_routes import (
     _ANALYSES, _STORE_LOCK,
-    _aget_analysis, _analyze_endpoint, _batch_pipeline, _batch_read_limits_for,
+    _aget_analysis, _analyze_endpoint, _batch_pipeline, parse_poly_thresholds_form, _batch_read_limits_for,
     _can_access, _heavy_slot, _read_batch_uploads, _read_limited, _reference_circular,
     _request_access_token, _run_heavy, _sweep_expired, _sweep_reports, _summary,
     _token_hash_matches, parse_zone_form, parse_reference_topology,
@@ -60,6 +60,7 @@ async def analyze_sequencing_upload(
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
+    poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
     cds_mode: bool = Form(default=False, description="目的基因模式：按文件名识别参考图谱内的目的 CDS，以其+接合区为需测范围分析（W8 起全质粒比对、不裁参考）"),
     cds_name: str = Form(default="", description="显式指定的目的 CDS 名称（前端下拉选择时传入）；留空按文件名自动匹配"),
     scope: str = Form(default="", description="需测范围（W10，可选）：元件名 / 301-900 / 多段(;) / 「全质粒」「插入片段」「接合区」；声明后结论只对范围负责"),
@@ -78,6 +79,7 @@ async def analyze_sequencing_upload(
     from core.sanger import cds_extract
 
     zone = parse_zone_form(reliable_zone)
+    poly_th = parse_poly_thresholds_form(poly_thresholds)
     ref_name = reference.filename or "reference.gb"
     ref_bytes = await _read_limited(reference)
     if not ref_bytes:
@@ -159,7 +161,8 @@ async def analyze_sequencing_upload(
                                    allow_decompose, user=user,
                                    circular=_reference_circular(topology), zone=zone,
                                    primer=primer_dict, scope=scope_obj,
-                                   full_ref=full_ref, full_circular=full_circular)
+                                   full_ref=full_ref, full_circular=full_circular,
+                                   poly_thresholds=poly_th)
 
 
 @router.post(
@@ -228,6 +231,7 @@ async def analyze_sequencing_batch(
     excel: Optional[UploadFile] = File(None, description="信息表 .xlsx（表头含质粒名称/测序引物/测序结果，可含克隆号列）；缺省时按图谱文件名包含关系归组"),
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
+    poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
     user: Optional[User] = Depends(get_current_user),
 ):
     """批量测序分析（独立于单样品 /sequencing/analyze 的入口）。
@@ -243,6 +247,7 @@ async def analyze_sequencing_batch(
     响应 report_ready=False 表示本次体积超上限未打包。
     """
     zone = parse_zone_form(reliable_zone)
+    poly_th = parse_poly_thresholds_form(poly_thresholds)
     if not files:
         raise HTTPException(status_code=400, detail="请上传测序结果文件")
     # 文件数上限在读取任何字节之前生效：否则超限请求会把全部文件读进内存
@@ -263,7 +268,7 @@ async def analyze_sequencing_batch(
             _batch_pipeline, reads, refs, ignored, min_q,
             (excel.filename or "信息表.xlsx") if excel is not None else None,
             excel_bytes, user.id if user else None, batch_token, read_limits,
-            zone=zone)
+            zone=zone, poly_thresholds=poly_th)
 
 @router.get(
     "/sequencing/batches/{batch_id}/report",
@@ -327,6 +332,7 @@ async def analyze_design_sequencing(
     min_q: int = Form(default=20, ge=0, le=60, description="末端修剪质量阈值（0-60）"),
     allow_decompose: bool = Form(default=True, description="允许对混合样品执行 tracy 解卷积"),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
+    poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对设计结果（构建体序列）做全自动测序验证"""
@@ -334,6 +340,7 @@ async def analyze_design_sequencing(
     from app.routes.models import DesignStatus
 
     zone = parse_zone_form(reliable_zone)
+    poly_th = parse_poly_thresholds_form(poly_thresholds)
     # _load 走存储层（SQLite/PG），移交线程池避免阻塞事件循环（KNOWN_ISSUES 2.1 口径）
     result = _ensure_design_access(await run_in_threadpool(_load, design_id), user)
 
@@ -362,7 +369,7 @@ async def analyze_design_sequencing(
     return await _analyze_endpoint(
         reference, result.vector_name or "Construct",
         list(result.construct_features or []), files, min_q, allow_decompose, user=user,
-        circular=circular, zone=zone, scope=scope_obj,
+        circular=circular, zone=zone, scope=scope_obj, poly_thresholds=poly_th,
     )
 
 @router.post(
@@ -375,10 +382,12 @@ async def analyze_vector_sequencing(
     min_q: int = Form(default=20, ge=0, le=60),
     allow_decompose: bool = Form(default=True),
     reliable_zone: str = Form(default="", description="read 可信区边界：首端硬区,首端灰区,尾端灰区,尾端硬区（read 坐标 bp），留空用默认 30,60,700,900"),
+    poly_thresholds: str = Form(default="", description='大量缺失阈值（二期 10d，可选）：JSON {"count":5,"pct":15,"count_enabled":true,"pct_enabled":true}；留空用默认'),
     user: Optional[User] = Depends(get_current_user),
 ):
     """上传 AB1 文件，对载体库中有序列的载体做全自动测序验证"""
     zone = parse_zone_form(reliable_zone)
+    poly_th = parse_poly_thresholds_form(poly_thresholds)
     library = get_vector_library()
     vector = library.get_vector(vector_id)
     if not vector:
@@ -392,7 +401,7 @@ async def analyze_vector_sequencing(
     # 载体库条目均为环状质粒
     return await _analyze_endpoint(
         vector.sequence, vector.name, features, files, min_q, allow_decompose, user=user,
-        circular=True, zone=zone,
+        circular=True, zone=zone, poly_thresholds=poly_th,
     )
 
 @router.get("/sequencing/analyses")
@@ -483,7 +492,8 @@ async def recompute_verdict(analysis_id: str, request: Request,
         # S6 唯一判定入口：重算 Verdict 并重新拼装结论（judge.rejudge）
         verdict, record["conclusion"] = rejudge(
             record, len(reference), scope_obj,
-            review_decisions=_decisions or None)
+            review_decisions=_decisions or None,
+            poly_thresholds=(record.get("verdict") or {}).get("poly_thresholds"))
         record["verdict"] = verdict
         record["review_queue"] = build_queue(record, _decisions or None)
         hist = list(record.get("scope_history") or [])
@@ -551,7 +561,8 @@ async def confirm_review(analysis_id: str, request: Request,
         scope_obj = (_Scope.from_dict(_scope_d)
                      if _scope_d and _scope_d.get("declared") else None)
         verdict, record["conclusion"] = rejudge(
-            record, len(reference), scope_obj, review_decisions=decisions)
+            record, len(reference), scope_obj, review_decisions=decisions,
+            poly_thresholds=(record.get("verdict") or {}).get("poly_thresholds"))
         record["verdict"] = verdict
         record["review_decisions"] = decisions
         record["review_queue"] = build_queue(record, decisions)
@@ -562,6 +573,53 @@ async def confirm_review(analysis_id: str, request: Request,
     return {"verdict": verdict, "conclusion": record.get("conclusion"),
             "review_decisions": record.get("review_decisions"),
             "review_queue": record.get("review_queue")}
+
+
+class PolyThresholdsRequest(BaseModel):
+    """大量缺失阈值重新判定（二期 10d，用户 2026-11-17：UI 可改）。
+
+    两条阈值是「或」关系：确证缺失 ≥count 个，或占该 poly 参考长度 ≥pct%；
+    *_enabled=False 停用该条，都停用则不报警。字段缺省 = 部署默认。"""
+    count: Optional[int] = None
+    pct: Optional[float] = None
+    count_enabled: Optional[bool] = None
+    pct_enabled: Optional[bool] = None
+
+
+@router.post("/sequencing/analyses/{analysis_id}/poly-thresholds")
+async def rejudge_poly_thresholds(analysis_id: str, request: Request,
+                                  body: PolyThresholdsRequest,
+                                  user: Optional[User] = Depends(get_current_user)):
+    """按新阈值重新判定（只重跑 S6–S7；范围与人工确认沿用存档）"""
+    record = await _aget_analysis(analysis_id, user,
+                                  _request_access_token(request))
+    reference = record.get("reference") or ""
+    if len(reference) < 50:
+        raise HTTPException(status_code=400, detail="存档记录缺参考序列，无法重算")
+    _scope_d = ((record.get("verdict") or {}).get("scope")) or None
+    th = {k: v for k, v in body.model_dump().items() if v is not None} \
+        if hasattr(body, "model_dump") else {k: v for k, v in body.dict().items()
+                                             if v is not None}
+
+    def _run():
+        from core.sanger.scope import Scope as _Scope
+        from core.sanger.judge import rejudge
+        from core.sanger.params import resolve_poly_thresholds
+        from core.sanger.review import build_queue
+        decisions = list(record.get("review_decisions") or [])
+        scope_obj = (_Scope.from_dict(_scope_d)
+                     if _scope_d and _scope_d.get("declared") else None)
+        verdict, record["conclusion"] = rejudge(
+            record, len(reference), scope_obj, review_decisions=decisions or None,
+            poly_thresholds=resolve_poly_thresholds(th))
+        record["verdict"] = verdict
+        record["review_queue"] = build_queue(record, decisions or None)
+        sequencing_store.persist_record(record)
+        return verdict
+
+    verdict = await run_in_threadpool(_run)
+    return {"verdict": verdict, "conclusion": record.get("conclusion"),
+            "poly_thresholds": verdict.get("poly_thresholds")}
 
 
 @router.get("/sequencing/analyses/{analysis_id}/trace/{read_index}")
