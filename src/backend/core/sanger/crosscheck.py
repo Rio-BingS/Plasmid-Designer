@@ -249,7 +249,21 @@ def _corroborate_mixed(read_results: List[Dict],
 MIXED_STRETCH_MIN = 8      # 连续双峰 ≥ 此数（indel 介导的混合：交界下游逐位双峰）也算疑似混合
 
 
-def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict) -> Dict:
+def mixed_lines_readcall_enabled() -> bool:
+    """二期开关 a（默认关）：「疑似混合样品」⚠ 行改由 ReadCall 判定。
+
+    旧口径按 mixed_profile 分级（class == widespread，比值一致性为主）；
+    新口径按 ReadCall（全程套峰 MIXED_TEMPLATE / 某点后套峰
+    SHIFT_AFTER_POINT，局部密度判定），与 verdict 的 seq_overlap_peaks /
+    mixed_template 同一来源。分级为 widespread 但 ReadCall 不套峰的 read
+    不再出 ⚠ 汇总行，仍按待核子行处理。SANGER_MIXED_LINES_READCALL=1 开启。
+    """
+    import os
+    return os.environ.get("SANGER_MIXED_LINES_READCALL", "0") == "1"
+
+
+def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict,
+                  read_calls=None) -> Dict:
     """S7 第 3 片：结论里双峰（疑似混合）几类行所需的结构化判定（纯函数）。
 
     判断都在这里做完（互检主导的 noise_like、连续双峰段阈值、哪些 read 要
@@ -263,10 +277,17 @@ def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict) -> Dict:
         return {k: c.get(k, 0) for k in ("multi", "clean", "batch", "uncovered")} | {
             "uncovered_ref": sorted(c.get("uncovered_ref") or [])}
 
+    use_rc = read_calls is not None and mixed_lines_readcall_enabled()
+
+    def _is_wide(r: Dict) -> bool:
+        if use_rc:
+            return read_calls.overlapping(r["filename"])
+        return r["mixed_profile"]["class"] == "widespread"
+
     wide = []
     for r in read_results:
         p = r["mixed_profile"]
-        if p["class"] != "widespread":
+        if not _is_wide(r):
             continue
         chk_raw = by_read.get(r["filename"]) or {}
         span = p.get("span")
@@ -282,7 +303,7 @@ def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict) -> Dict:
     pending = []
     for r in read_results:
         p = r["mixed_profile"]
-        if p["class"] not in ("widespread", "local", "noise"):
+        if p["class"] not in ("widespread", "local", "noise") and not _is_wide(r):
             continue
         uncov = sorted((by_read.get(r["filename"]) or {}).get("uncovered_ref") or [])
         if crossable and not uncov:

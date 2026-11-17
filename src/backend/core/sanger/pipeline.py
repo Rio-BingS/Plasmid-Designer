@@ -2450,7 +2450,8 @@ def analyze(
     # S4 PolyCall：全部结构级 poly 的结构化判定（含未覆盖的 NOT_COVERED）
     poly_calls = build_poly_calls(poly_runs, homopolymer_report)
     # S7：双峰结论行所需的结构化判定（呈现层只读它）
-    mixed_summary = build_mixed_summary(read_results, mixed_corroboration)
+    mixed_summary = build_mixed_summary(read_results, mixed_corroboration,
+                                        read_calls)
     # measured/verified 双覆盖口径（goal T3；B P0-4）：verified = measured ∩
     # 可信区 − N/模糊调用列；注入共识供 CDS 判定切 verified 口径
     coverage = compute_coverage(read_results, len(ref), coverage_ranges,

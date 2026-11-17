@@ -48,3 +48,21 @@ def test_multi_wide_aggregate():
         "⚠ 2 条 read 均疑似混合样品（每条双峰位点 8–15 处，估计次要克隆占比约 20–35%）"
         "——样品为两种质粒的混合，主峰序列按多数碱基判读，建议重新挑单克隆划线培养后复测"
         "；a.ab1 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）")
+
+
+def test_readcall_switch_default_off(monkeypatch):
+    """二期开关 a：⚠ 汇总行改由 ReadCall（全程/某点后套峰）判定，默认关"""
+    from core.sanger.readcall import ReadCall, ReadCalls, MIXED_TEMPLATE
+    rr = [_r("a.ab1", "widespread", 12), _r("b.ab1", "noise", 40)]
+    rc = ReadCalls([ReadCall(filename="a.ab1"),
+                    ReadCall(filename="b.ab1", state=MIXED_TEMPLATE)])
+    corr = {"by_read": {}, "total": 0, "multi_sites": []}
+    monkeypatch.delenv("SANGER_MIXED_LINES_READCALL", raising=False)
+    ms = mixed_summary(rr, corr, rc)
+    assert [w["filename"] for w in ms["wide"]] == ["a.ab1"]
+    monkeypatch.setenv("SANGER_MIXED_LINES_READCALL", "1")
+    ms = mixed_summary(rr, corr, rc)
+    assert [w["filename"] for w in ms["wide"]] == ["b.ab1"]
+    assert ms["pending"] == []           # 可互检且无待核位点
+    # 未传 read_calls（旧存档重算）时保持旧口径
+    assert [w["filename"] for w in mixed_summary(rr, corr)["wide"]] == ["a.ab1"]
