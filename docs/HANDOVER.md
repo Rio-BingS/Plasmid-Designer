@@ -1,7 +1,9 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-11-10（`v2.37.0-alpha.4`：**Sanger scope v3 W0–W16 收口**——
+> **更新**：2026-11-18（**Sanger 分析分阶段重构收口**：一期 S0–S7 结构拆分 +
+> 二期口径调整 + 统一酶库，结果口径版本仍 `v17`，见 §1 首段与 §3 末段）。
+> 上一次：2026-11-10（`v2.37.0-alpha.4`：**Sanger scope v3 W0–W16 收口**——
 > 三态范围模型/范围重算端点与记忆/三出口统一/Excel 新六列/范围条与三层
 > 色带/复核队列与一键确认/p_real 三档/真实 AB1 子集基准，变更明细见
 > CHANGELOG 2.37.0-alpha.4；上一版 2026-11-08 `v2.37.0-alpha.3` 复审修复）
@@ -18,6 +20,19 @@
 > 下面凡与这些文档冲突处，以代码与实测为准，并顺手修正对应文档。
 
 ## 1. 一句话现状
+
+**2026-11-18 现状（Sanger 分析重构）**：`core/sanger/` 已按「S0 参考画像/范围 →
+S1 read → S2 合并 → S3 证据 → S4 ReadCall/SiteCall/PolyCall → 影响分级 →
+S6 judge 唯一判定 → S7 呈现层」拆成分阶段流水线（架构图与各阶段职责见
+[SANGER_ALGORITHM_REPORT.md](SANGER_ALGORITHM_REPORT.md) 第 1 节）。一期只改结构、
+行为等价；二期改了一批口径并默认打开：read 级套峰判定、poly 缺失数取 min、
+poly 大量缺失报警、低 AF 双峰只看范围内、零散双峰措辞、元件补全与影响分级
+（三层报告）、设计酶、位点三态统一、Excel 新增「套峰 read 数」「零散双峰数」两列、
+设计酶与图谱统一酶库（逐项见该报告第 2.7 节）。结果口径版本 `SANGER_ALGO_VERSION`
+仍是 `v17`。2026-11-18 实测：全量 pytest 2342 通过、13 跳过、10 xfail
+（xfail 都是已知口径差，见 KNOWN_ISSUES「未解决」第 14 条）。未解决问题清单见
+KNOWN_ISSUES「未解决」第 8–14 条。下面各段是 2026-11-10 之前的状态，
+仍然有效的部分照旧参考。
 
 单用户 / 小团队**自托管**的质粒构建设计与 Sanger 测序验证平台，当前分支
 `experiment/preview-visual-tuning` 上 **v2.37.0-alpha.4**（2026-11-10 scope v3 收口；
@@ -96,7 +111,7 @@ read 与参考等长，序列上等价于替换而非插入；修它必须改 X0
 | 运行时 | Python **3.12**（仓库根 `.venv`）+ Node 22+；FastAPI + Vue3/Vite |
 | 本机后端启动前提 | **没有 `src/backend/.env`**：起服务前必须自己在环境变量里给 `SECRET_KEY`（`openssl rand -hex 32`），低熵值会被拒绝启动 |
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
-| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v15"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）、v3.1 v14→v15（峰形门控、队列三级聚合、头行唯一来源、indel 双坐标、范围记忆按用户隔离）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
+| 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v17"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）、v3.1 v14→v15（峰形门控、队列三级聚合、头行唯一来源、indel 双坐标、范围记忆按用户隔离）、v15→v16（可信区分核心区/尾端扩展区、单 read 区外低置信、孤立双峰按 AF 分流等回归修复）、v16→v17（read 级套峰判定 ReadCall；2026-11-12 起的分阶段重构与二期口径调整都在 v17 下，没有再递增）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
 | 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
@@ -125,12 +140,34 @@ read 与参考等长，序列上等价于替换而非插入；修它必须改 X0
 操作体验。新增功能少、改行为多，所以**每次动口径都要同时处理缓存版本与回归断言**；
 而「搜得到、导不进」这类问题的共性是**两条路径的校验口径不一致**（[snapgene 留档](postmortems/2026-10-18-snapgene-search-import-mismatch.md)）。
 
+**Sanger 判读主线（v2.37.0-alpha.4 之后，尚未发版）**：
+
+| 时间 | 主题 | 做了什么 |
+|---|---|---|
+| 2026-11-10 | 回归修复（结果口径 v16） | 可信区分核心区与尾端扩展区、单 read 区外低置信、孤立双峰按 AF 分流、低丰度双峰须两条 read 印证 |
+| 2026-11-12 | read 级套峰（结果口径 v17） | 新增 ReadCall：整条 read 全程/某点后/局部套峰分开判；单条 read 套峰报待定，不同 read 同区段套峰才报疑似混合模板 |
+| 2026-11-12 至 11-17 | 一期：分阶段重构（行为等价） | SiteCall 成为唯一判定方（先双跑比对 0 差异再切换）；PolyCall 独立；judge 成为 verdict 唯一调用点；文案全部移到 `render_*`；S0 参考画像与唯一范围入口；S1/S2 阶段函数与 `params.py`；硬阻断显式列表；删除一批兼容入口。验收：结论全文、Excel 列逐字 0 差异 |
+| 2026-11-17 至 11-18 | 二期：口径调整（默认开） | read 级套峰行与头行同源、poly 缺失取 min、poly 大量缺失报警（阈值 UI 可改）、低 AF 双峰只看范围内、零散双峰措辞、元件补全 + 影响分级 + 三层报告、设计酶与酶标注导出、变体重复数改读 PolyCall、位点三态统一、S3 置信改纯函数、Excel 两列、统一酶库 |
+
+这一轮刻意**没有递增结果口径版本**：`SANGER_ALGO_VERSION` 保持 `v17`。二期的
+每项口径都可用环境变量回旧口径对照（开关表见 [SANGER_ALGORITHM_REPORT.md](SANGER_ALGORITHM_REPORT.md) 第 7 节）。
+
 ## 4. 代码从哪看起（按任务选入口）
 
 1. **设计流水线**：`app/design_service.py`（单条与批量共用：密码子优化 → 引物/oligo → 组装 → 存储）
 2. **密码子与引物算法**：`core/codon_optimizer.py`、`core/primer_designer.py`（口径与暂缓项见 `docs/ALGORITHM_ROADMAP.md`）
 3. **质粒图谱**：后端 `core/plasmid_map/` + `app/routes/map_routes.py`（缓存键在 `map_routes.py`），前端 `src/map/`（契约 `plasmid-map/1`，见 `docs/MAP.md`）
-4. **Sanger 测序**：`core/sanger/`（`pipeline` 主流程、`reliable_zone` 可信区、`aligner` 双向判向与环状折回、`annotator`、`batch` 归组），网页端点与离线脚本共用
+4. **Sanger 测序**：`core/sanger/`，网页端点、批量与离线脚本共用。按阶段找入口：
+   - 总编排：`pipeline.analyze`（S1 `read_stage`、S2 `merge_variants_stage` 也在这里）
+   - S0：`refprofile.build_reference_profile`（参考画像）、`elements.complete_elements`（元件补全）、
+     `design_enzymes.build_design_enzymes`（设计酶）、`scope.resolve_scope`（唯一范围入口）
+   - S4 裁决：`readcall.build_read_calls`、`sitecall.decide_variant` / `site_status` / `HARD_BLOCKS`、
+     `polycall.build_poly_calls` / `poly_calls_of`
+   - 影响分级：`impact.build_impact_items`
+   - S6 判定：`judge.judge` / `judge.rejudge`（唯一调用 `verdict.build_verdict` 的地方）
+   - S7 呈现：`render_site`、`render_poly`、`render_mixed`、`render_cds`、`render_impact`、`conclusion_fold`
+   - 参数与缓存：`params.py`（按阶段分组）、`stage_cache.py`（S1 缓存，默认关）
+   - 底层：`reliable_zone` 可信区、`aligner` 双向判向与环状折回、`annotator`、`batch` 归组
 5. **载体库与外部导入**：`core/vector_library.py` + `app/vector_import.py`（落盘形状**唯一入口**）+ `app/online_import.py`（来源清单/许可/缓存）+ 两个路由模块（载体库侧 `online_source_routes`、图谱侧 `map_online_routes`）
 6. **在线来源取字节层**：`core/online_sources.py`（限速 + 体积上限 + https 主机白名单 + 逐跳校验；ID 校验在这里，见 [snapgene 留档](postmortems/2026-10-18-snapgene-search-import-mismatch.md)）
 7. **横切**：`app/gating.py`（功能开关）、`app/rate_limit.py`（按「方法 + 路由模板」分档）、`app/cache.py`（内存/Redis 自动降级）、`app/auth/`（httpOnly Cookie + CSRF）
@@ -221,7 +258,7 @@ run upgrade head          # 只跑新增的那一条
   主键没变」，多用户范围记忆互相覆盖。
 - 迁移做完整轮 up→down→up 演练（v3.1 已在真实备份副本上跑过 3 轮）。
 
-## 6. 一碰就容易出事的约束（Top 9）
+## 6. 一碰就容易出事的约束（Top 10）
 
 1. **改结果口径必须递增缓存版本**：`ANALYSIS_ENZYMES_VERSION`（分析/酶表，现 `v3`）、
    `MAP_ALGO_VERSION`（图谱，现 `8`，在 `map_routes.py`）、`CODON_OPT_ALGO`（现 `v2.3`）。
@@ -247,6 +284,12 @@ run upgrade head          # 只跑新增的那一条
    `src/map/api.ts`），否则表现为「点了没反应」。
 9. **Windows 上的测试红先怀疑测试自己**：权限位断言（POSIX 才有）、用 `/` 拆路径、
    `--reload` 没开导致「改了没生效」。三条都已踩过，见 [windows-test-reds 留档](postmortems/2026-10-18-windows-test-reds.md) 与 AGENTS「已知坑」。
+10. **Sanger 分阶段的分工不能混**：判定只在 `sitecall`（位点状态、硬阻断）与
+    `judge`（verdict 唯一调用点）里做，其他模块只读 `site_status` / `poly_calls_of` /
+    verdict；**文案只在 `render_*`**，分析阶段只产结构化字段（`low_cause`、
+    `mixed_summary`、`cds_facts`、`poly_dropouts` 等），不拼中文；**参数集中在
+    `params.py`**，新阈值按阶段登记到 `STAGE_PARAMS`，别散落在各模块。改口径时
+    按「做了什么、口径怎么变」写提交说明，并加环境变量开关便于回旧口径对照。
 
 ## 7. 已修问题留档（索引）
 
@@ -269,6 +312,9 @@ run upgrade head          # 只跑新增的那一条
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
+| **P1** | **Sanger 重构遗留问题**（KNOWN_ISSUES「未解决」第 8–14 条）：E07 头行「已测」后为空、6 行预算挤掉「疑似混合样品」汇总行、两份酶库合并、`infer_scope` 并入 `resolve_scope` | 都是 2026-11-18 收口时已知、范围清楚的小问题，先修显示类（前两条），再做两处收敛 |
+| **P1** | **10 个 xfail 的口径差逐个定案**：零散双峰合成混合例（7 项）、poly 大量缺失的真实回归例（1 项）、CM3 构造与相邻反向单 read 插入（2 项较早遗留） | 现行口径已定，旧期望要么改成新口径断言、要么确认保留 xfail 并写明理由 |
+| **P2** | **补样本**：二、三核苷酸 poly 的真实数据 | 现有对照样本里没有，PolyCall 对这类 poly 的计数与报警只靠单元测试兜底 |
 | **P2** | **拆分 BatchDesignView.vue**（1318 行）：预览表/载体池/参数区各自成组件 | 体积已大但不是痛点；推进期不做（2026-11-10 解除行数门禁），留到维护期与 pipeline.py/design_service.py 一起集中重构 |
 | **P0** | **Sanger 审计修复**（[SANGER_AUDIT_2026-11-06.md](SANGER_AUDIT_2026-11-06.md)）：P0×5 全部已复现——证据三态化+✓资格门 → verified 覆盖口径 → errors 进批量结论 → 混合互检对齐 `_region_ok` → `resolved_regions` 进 API 下发 | 5 项 P0 都是直接漏报（N 隐身、坏 read 判合格、真混合翻 ✓、低置信=伪影预判决、覆盖虚高），先固化探针为回归用例再修；改口径按 §6 约束 5 的纪律：先按旧口径取证、再改断言并递增结果版本 |
 | **已解除** | 尺寸预算纪律（2026-11-10） | 项目处于**推进期**：为过行数门禁而先拆分，把资源花在结构调整上，反而拖慢功能推进。门禁改为**只提示不阻断**（`check_file_size.py` 永远退出码 0，`--top N` 看最大的几个）。大文件（pipeline.py 2871、design_service.py 2328、BatchDesignView.vue 1318 等）重构留到维护期集中做 |

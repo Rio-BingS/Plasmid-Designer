@@ -43,13 +43,46 @@
 
    | 文件 | 行数 | 建议切分线 |
    |---|---|---|
-   | `core/sanger/pipeline.py` | ~2870 | 比对编排 / 共识构建 / 结论组装 三段 |
+   | `core/sanger/pipeline.py` | ~2630 | 2026-11 分阶段重构已拆出 S0/S4/S6/S7 各模块；剩下的比对编排 / 共识构建 / CDS 判读可继续按阶段外移 |
    | `app/design_service.py` | ~2330 | 载体组装 / 引物 / 校验 三段 |
    | `views/BatchDesignView.vue` | ~1320 | 预览表 / 载体池 / 参数区 |
    | `views/DesignView.vue` | ~1260 | 同上 |
    | `core/clone_strategy.py`、`core/primer_designer.py` | ~1050 | 策略与评分分开 |
 
    重构时以「职责边界 + 现有测试不改」为准，不为凑行数而拆。
+
+**2026-11-18 Sanger 分阶段重构收口时的已知问题**（8–14；架构与口径见
+SANGER_ALGORITHM_REPORT.md 第 1 节、第 2.7 节）：
+
+8. **个别样品头行「已测」后为空**：FP_Yeast_PEST_1_E07_F 的结论头行写到「已测」
+   就没有下文（区间描述缺失）。属显示问题，判定本身不受影响；需要查头行
+   拼装在这种覆盖形态下拿到的区间为什么是空的。
+9. **正文 6 行预算会把「疑似混合样品」汇总行挤进折叠组**：poly 大量缺失行
+   （「⚠ poly 大量缺失：…」）在折叠预算之外置顶，占掉名额后，「⚠ 疑似混合样品」
+   汇总行可能被折叠（实测 DEMO1/ALL、S00025/ALL）。修法方向：大量缺失行计入
+   预算，或把混合汇总行列为永不折叠。
+10. **主变异行与 poly 子行的 indel 长度可能不同**：变体重复数行改读 PolyCall 后，
+    子行写的是综合多条 read 的 poly 计数，主变异行写的是比对报出的 indel 长度，
+    两者可能不一致（如一个写缺 39bp、一个写比对报出的长度）。目前已在子行注明
+    「此为综合 N 条 read 的 poly 计数，比对报出的是 Xbp」，数字本身未统一。
+11. **酶库仍有两份**：`core/enzyme_sites`（酶菜单 `DEFAULT_ENZYMES`）与
+    `core/plasmid_map/enzymes`（扫描 `scan_enzyme`）并存。设计酶的位点扫描已改用
+    图谱同一口径，但酶的数据源还是两份，以后增删酶要两边同改；应合成一份。
+12. **`infer_scope` 独立于 `resolve_scope`**：范围归一已统一走 `scope.resolve_scope`，
+    但按文件名/设计插入推断范围来源的 `scope.infer_scope` 还是单独一条路径，
+    两者的口径变化需要手工保持一致。
+13. **样本不足：二、三核苷酸 poly**：现有对照样本里没有这类重复结构的真实数据，
+    PolyCall 对它们的计数、缺失数取 min、大量缺失报警目前只靠单元测试兜底。
+14. **10 个 xfail 是已知口径差**（2026-11-18 全量 pytest 2342 通过、13 跳过、
+    10 xfail）：
+    - 7 项「只有零散双峰、未形成套峰的合成混合样品」（基准集 S14、场景库 2 项、
+      pipeline 4 项）：read 级套峰口径下改判待定而非疑似混合，正文提示「仍可能是
+      两种克隆混合」；旧期望保留为 strict xfail 记录口径差。
+    - 1 项真实数据回归：poly(A) 4081–4187 缺失约 36%，新的大量缺失报警判 ✗
+      （数据不在场时不执行），是否按此锁新断言待定。
+    - 2 项较早遗留：场景 CM3 的构造 off-by-one（场景构造已冻结，见防回潮约束
+      第 19 条）；相邻 4bp 的两条 read 各报不同单 read 插入时两处都被确证
+      （应判重叠分歧待核，修法待定）。
 
 ---
 
@@ -155,6 +188,21 @@ API 前先逐条对照）：
     实现做不到时停下汇报，不得为过测试放宽断言或改构造。自检：
     `git log -p 628e3b1..HEAD -- tests/sanger_scenarios.py` 应只有注释改动。
 
+**分阶段重构新增（2026-11-18；改 `core/sanger/` 前逐条对照）**
+
+20. **判定只在 SiteCall 与 judge**：位点状态只由 `sitecall.decide_variant` 定，硬阻断
+    只登记在 `sitecall.HARD_BLOCKS`；verdict 只由 `judge.judge` 调用 `build_verdict`
+    （范围重算、人工复核、decompose 后重建都走 `judge.rejudge`）。下游读状态一律经
+    `sitecall.site_status`、`polycall.poly_calls_of`、`ReadCalls.from_result`，不得
+    各自从旧字段推导。
+21. **文案只在 `render_*`**：分析阶段只产结构化字段（`low_cause`、`mixed_summary`、
+    `cds_facts`、`poly_dropouts`、`verdict.impact` 等），中文结论行只在
+    `render_site` / `render_poly` / `render_mixed` / `render_cds` / `render_impact`
+    里生成；`_build_conclusion` 只排序与折叠。
+22. **参数集中在 `params.py`**：新阈值按阶段登记到 `STAGE_PARAMS`；只有 S1–S3 参数
+    进缓存键，S6 阈值（如 poly 大量缺失）不进。口径调整要带环境变量开关，便于回旧
+    口径对照（开关表见 SANGER_ALGORITHM_REPORT.md 第 7 节）。
+
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并
   `invalidate_cache()`，否则污染同进程后续模块（设计端点会 403）。
@@ -230,6 +278,39 @@ API 前先逐条对照）：
 ---
 
 ## 修复历史 ✅
+### 2026-11-12 至 11-18 Sanger 分析分阶段重构（一期结构 + 二期口径 + 统一酶库）
+
+结果口径版本保持 `v17`。一期每一步都做到「结论全文、Excel 列、verdict 逐字
+0 差异」才往下走；二期每项口径先加开关、出新旧对照，确认后才改默认。架构
+与口径细节见 SANGER_ALGORITHM_REPORT.md 第 1 节、第 2.7 节、第 7 节。
+
+| 项 | 一句话 | 提交 |
+|---|---|---|
+| poly 计数平票 | 宽度法众数平票改按 read 顺序取先出现者，消除哈希随机导致的跳变 | 56e35d9 |
+| SiteCall 双跑 | 位点唯一判定表先影子双跑，适配层反写旧字段，0 差异 | d5ec2de |
+| read 级套峰 | ReadCall：全程/某点后/局部套峰分开判，套峰段内差异不作确证 | b085135 |
+| SiteCall 判定方 | SiteCall 成为判定方，ReadCall 解耦为独立阶段 | 741056d |
+| PolyCall + 唯一判定入口 | PolyCall 独立阶段；`judge` 成为 verdict 唯一调用点，修复「重算只换头行」两处缺陷 | e1ddea9 |
+| 呈现层四片 | poly、位点低置信原因、双峰行、CDS 判读与 dropout 文案移到 `render_*`，分析侧只产结构化字段 | b7e36e8 / d7eebf1 / edbcf09 / 9bd9ff9 |
+| 兼容入口清理 + 定向单测 | 删除旧文案入口，补互检矛盾、合并压缩、Excel poly 尾注等定向测试 | d23ea67 / 74d1829 |
+| S5 只读 S4 | poly 下游统一 `poly_calls_of`，位点三态统一 `site_status`；旧存档兼容 | 46dae6c / ac40b0d |
+| S0 参考画像与范围 | `build_reference_profile` 纯函数；`resolve_scope` 唯一范围入口 | feb42f7 |
+| S1/S2 阶段与参数 | `read_stage` / `merge_variants_stage`；`params.py` 按阶段集中；S1 阶段缓存（默认关） | 1728e08 |
+| 硬阻断显式化 | 合并压缩区、跨 read 互检矛盾、染料团进 `HARD_BLOCKS` | 4355e9c |
+| 前端阻断标签 | 结论卡补齐 19 项阻断类型中文标签 | 3e061bf |
+| 二期：poly 缺失取 min | 完整覆盖、非 noisy 的 read 之间取 min | 033631c |
+| 二期：混合行读 ReadCall | 「疑似混合」行与头行改读 ReadCall；单条 read 套峰写「测序套峰」、头行待定 | fa4f10a / 3b2d7a3 |
+| 二期：低 AF 只看范围内 | AF<0.15 单点双峰只在声明范围内进 verdict | e9e05e8 |
+| 二期：poly 大量缺失报警 | ≥5 个或 ≥15% 判 ✗，阈值 UI 可改、可重新判定 | 9c05a29 |
+| 二期：元件补全 + 影响分级 | 三级元件补全、P1/P2/P3、三层报告、设计酶与酶标注导出 | 13f2d03 / 0d061b7 |
+| 二期：零散双峰措辞 | 判定不变，提示仍可能两克隆混合、建议挑单克隆复测；前端「附带发现」块 | a8edbd1 |
+| 二期收尾 | 变体重复数改读 PolyCall、位点三态全统一、Excel「套峰 read 数」「零散双峰数」两列、S3 置信改纯函数、设计酶与图谱统一扫描口径 | 245e706 |
+| poly 子行注明来源 | 综合计数与比对 indel 长度不同时写明来源 | 033cdd2 |
+| 设计酶去兜底 | 只取用户/`pd_enzyme` 标注的酶，没有则取范围两端 flank 内单切酶，再没有就为空 | 1e8c03e |
+
+验证（2026-11-18）：全量 pytest 2342 通过、13 跳过、10 xfail（口径差见「未解决」
+第 14 条）。
+
 
 ### 2025 功能完整性核查（原 docs/FIXPLAN.md）
 

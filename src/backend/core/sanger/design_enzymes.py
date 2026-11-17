@@ -18,7 +18,6 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-DESIGN_ENZYMES_VERSION = "d3"
 FLANK_OUT = 100
 FLANK_IN = 20
 
@@ -122,7 +121,6 @@ def build_design_enzymes(ref: str, features: Optional[Sequence[Dict]] = None,
         "enzymes": [{"name": n, "role": roles.get(n), "sites": chosen[n]}
                     for n in sorted(chosen)],
         "avoid": avoid,
-        "version": DESIGN_ENZYMES_VERSION,
     }
 
 

@@ -35,7 +35,6 @@ from core.sanger.scoring import confidence_tier as _variant_confidence
 from core.sanger.sitecall import (
     apply_overlap_discordance, build_site_calls, decide_variant, dual_run_diffs)
 from core.sanger.readcall import ReadCalls, build_read_calls
-from core.sanger import algo_version as _algo_version
 from core.sanger.polycall import aggregate_run, build_poly_calls, poly_call
 from core.sanger import render_poly
 from core.sanger.split_read import classify_segment
@@ -116,7 +115,7 @@ from core.sanger.evidence import (  # noqa: F401
 TRACY_BIN = os.environ.get("TRACY_BIN", "tracy")
 # 结果口径版本（goal_sanger_full_fix_v2 §2）：写入每次分析 result["algo_version"]，
 # 任何改变结论口径的提交都要递增并在 HANDOVER §2 登记
-SANGER_ALGO_VERSION = "v17"  # 用户 2026-11-18：v18/v19 版本号只在本地记录（见项目文档），云端保持 v17；v17: 2026-11-12 二期 ReadCall——read 级套峰判定（全程/某点后/局部，readcall.py），套峰段内差异与 split-read 断点不作确证、不逐位记 mixed_variant；单条 read 套峰报 seq_overlap_peaks 待定，不同 read 同区段套峰才报 mixed_template 疑似混合模板；SANGER_READ_MIXED_CALL=0 回旧口径；v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
+SANGER_ALGO_VERSION = "v17"  # v17: 2026-11-12 二期 ReadCall——read 级套峰判定（全程/某点后/局部，readcall.py），套峰段内差异与 split-read 断点不作确证、不逐位记 mixed_variant；单条 read 套峰报 seq_overlap_peaks 待定，不同 read 同区段套峰才报 mixed_template 疑似混合模板；SANGER_READ_MIXED_CALL=0 回旧口径；v16: 2026-11-10 v3.2 回归修复——可信区分核心区(≤700)/尾端扩展区(计覆盖、单 read 不确证、双峰不计分级)、单 read 区外低置信、未决差异按分区进待核或只列出、孤立双峰按 AF 0.23 分流、低丰度双峰须 2 read 印证、删 mutual_support、ORF ≤12bp 同框校正；v15: goal v3.1——峰形门控（peak_shape）、复核队列三级聚合+结论行预算、头行唯一来源 verdict.headline、indel 双坐标(左对齐+HGVS 3′)+consequence、范围记忆按用户隔离；v14: goal v3 W10——scope 来源推断 infer_scope（design_insert/filename_match）、parse-reference 预设、Form scope、批量「验证范围」列；v13: W9——resolve_auto 参考名×read 名歧义判别、显式选择未去重（嵌套可选/重名报错）、变体 coords 双坐标（质粒+c./p.）
 # tracy basecall -f json 的 primarySeq/secondarySeq 字段自 v0.3.10 起已稳定
 # （gear-genomics/tracy src/json.h）；更早版本或无法解析的输出只用 primary
 TRACY_JSON_MIN_VERSION = (0, 3, 10)
@@ -2512,8 +2511,7 @@ def analyze(
         "poly_calls": poly_calls,
         "elements": ref_profile.get("elements"),
         "design_enzymes": ref_profile.get("design_enzymes"),
-        "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
-        **_algo_version.extra_fields(SANGER_ALGO_VERSION),
+        "algo_version": SANGER_ALGO_VERSION,
     }, len(ref), scope=scope_obj,
     synonymous_action=synonymous_action, poly_thresholds=poly_thresholds)
     (conclusion, cds_reports, mixed_profiles, resolved_regions,
@@ -2602,8 +2600,7 @@ def analyze(
         # verified_bp 供 CDS/闸门/结论切口径，coverage_percent 保留实测语义
         "coverage": coverage,
         # 算法版本（goal §2 约束 6）：口径变更时递增并在 HANDOVER §2 登记
-        "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
-        **_algo_version.extra_fields(SANGER_ALGO_VERSION),
+        "algo_version": SANGER_ALGO_VERSION,
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
         "resolved_regions": resolved_regions,
         # 结构化判定（goal T2；A 5.1/5.5）：status/blocking/roi/reads，

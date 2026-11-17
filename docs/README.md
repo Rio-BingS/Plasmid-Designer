@@ -12,6 +12,7 @@
 | [CACHE.md](CACHE.md) | 缓存后端（Redis / 内存自动降级）、已接入缓存的业务、TTL 与管理端点 | 调整缓存或排查「结果没更新」时 |
 | [MAP.md](MAP.md) | 质粒图谱契约 plasmid-map/1、`/api/map` 端点、自动注释元件库、限制与缓存 | 改动 `core/plasmid_map/`、图谱端点或元件库前 |
 | [ALGORITHM_ROADMAP.md](ALGORITHM_ROADMAP.md) | 密码子优化与合成 oligo 算法：已实现清单 + 暂缓项（短期不做） | 改动 `core/codon_optimizer.py` / `core/primer_designer.py` 前 |
+| [SANGER_ALGORITHM_REPORT.md](SANGER_ALGORITHM_REPORT.md) | Sanger 测序分析：分阶段流水线架构（S0–S7）、能力与不足、二期口径变化、环境变量开关表 | 改动 `core/sanger/` 前；想知道「哪个阶段管什么、某个开关做什么」时 |
 | [SANGER_CALIBRATION.md](SANGER_CALIBRATION.md) | Sanger 判读校准：基准集指标、p_real ROC 形态、T11/T15 拟合结论与复验方式 | 调整 Sanger 评分/双峰参数或复核判定阈值前 |
 
 ## 其他位置的文档

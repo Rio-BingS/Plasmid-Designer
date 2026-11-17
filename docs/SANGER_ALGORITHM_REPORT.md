@@ -1,23 +1,83 @@
 # Sanger 测序对比算法能力报告
 
-> **范围**：单样品全自动分析管线（`core/sanger/`：pipeline 2900 行 + aligner /
-> signal / homopolymer / reliable_zone / annotator / batch）与刚上线的目的基因模式
+> **范围**：单样品全自动分析管线（`core/sanger/`）与目的基因模式
 > （`core/sanger/cds_extract.py`）。**目的**：完整回答「这套对比算法能准确判读什么、
 > 判不准什么」。所有能力点均标注代码依据，所有不足均为实测/挂账确认，无推测成分。
-> **日期**：2026-11-05（对应 v2.37.0-alpha.1 后工作区状态，含结论瘦身未发版改动）。
+> **日期**：初版 2026-11-05；2026-11-18 按分阶段重构（一期结构拆分 + 二期口径调整 +
+> 统一酶库）更新第 1 节、补 §2.7 二期口径变化与 §7 环境变量开关。
+> 结果口径版本仍是 `SANGER_ALGO_VERSION = "v17"`（`core/sanger/pipeline.py`），
+> 下文按「做了什么、口径怎么变」描述，不另起版本号。
 
 ---
 
 ## 1. 算法总体架构
 
+### 1.1 分阶段流水线（2026-11-12 至 11-18 重构后）
+
+整条链路拆成一串**阶段**，每个阶段只读上一阶段的产物、产出新的结构化对象，
+不回头改上游。判定只在 S4/S6 做，文字只在 S7 的 `render_*` 里写——中间任何
+一层都不靠拼出来的中文串做判断。
+
 ```
-.ab1 (ABIF) ─→ abif_reader（碱基/Q值/四通道峰形提取）
-            ─→ reliable_zone（read 可信区逐条判定：位置先验 + Q值 + 峰型）
-            ─→ aligner（双向局部比对：k-mer 种子定位 + PairwiseAligner 延伸）
-            ─→ signal（峰级证据：突变峰占比/信噪比/插入峰强度/poly 峰计数）
-            ─→ pipeline 主流程（变体检出 → 置信分层 → 跨引物互检 → CDS 蛋白判定 → 结论）
-            ─→ homopolymer（同聚物结构识别 + 滑移/压缩判读）
-            ─→ annotator（变体特征注释 + CDS 氨基酸级注释）
+参考 + 请求参数
+  └─ S0a 参考画像  refprofile.build_reference_profile
+  │      归一参考、拓扑、重复结构（poly）清单、元件补全（elements）、设计酶集合（design_enzymes）
+  └─ S0b 范围      scope.resolve_scope（唯一范围入口；Form / 批量表格 / coerce_scope 都经它）
+.ab1 ─→ S1 read 阶段  pipeline.read_stage（逐条 read：解码修复 → 可信区 → 双向比对 → 端部/split-read）
+            （可按阶段缓存：stage_cache，见 §7）
+     ─→ S2 合并        pipeline.merge_variants_stage（各 read 差异按参考位点汇总）
+     ─→ S3 证据        跨引物互检、置信分层（_variant_confidence_pass 已改纯函数：拷贝后标注、返回新列表）
+     ─→ S4 三种裁决（全系统只在这里定状态）
+            ReadCall  readcall.build_read_calls   → result.read_calls（read 级：正常 / 全程套峰 / 某点后套峰 / 局部双峰集中）
+            SiteCall  sitecall.decide_variant     → 每个差异位点的唯一状态 + 原因码；site_status 统一读三态
+            PolyCall  polycall.build_poly_calls   → result.poly_calls（每段 poly 的计数结论，6 种状态）
+     ─→ S5 派生        共识、覆盖、缺口、CDS 后果（cds_facts）——只读 S4
+     ─→ 影响分级       impact.build_impact_items（范围外元件/设计酶位点/骨架，P1/P2/P3；与范围无关）
+     ─→ S6 判定        judge.judge → verdict.build_verdict（全系统唯一调用点）
+            按范围把条目分三层，给出 status / blocking / advisories / headline
+     ─→ S7 呈现        render_site / render_poly / render_mixed / render_cds / render_impact
+            网页结论、Excel、批量结论、整理包都从同一份结构化条目渲染
+```
+
+各阶段的要点：
+
+| 阶段 | 模块 | 产出 | 说明 |
+|---|---|---|---|
+| S0a 参考画像 | `refprofile.py`、`elements.py`、`design_enzymes.py` | 参考画像 dict | 纯函数，只看参考与注释，不读 read |
+| S0b 范围 | `scope.py resolve_scope` | 范围对象 | 唯一范围入口；范围只在 S6 起作用 |
+| S1 read | `pipeline.read_stage` | 每条 read 的信号、可信区、比对 | 参数见 `params.py` 的 S1 组 |
+| S2 合并 | `pipeline.merge_variants_stage` | 位点级差异表 | — |
+| S3 证据 | `crosscheck.py`、`evidence.py`、`scoring.py` | 互检、置信、低置信原因（`low_cause` 结构化码） | 只测量、只记证据 |
+| S4 裁决 | `readcall.py`、`sitecall.py`、`polycall.py` | ReadCall / SiteCall / PolyCall | 状态与原因码；不含范围字段 |
+| S5 派生 | `coverage.py`、`homopolymer.py`、pipeline 的 CDS 部分 | 覆盖、缺口、`cds_facts`、`poly_dropouts` | 只读 S4 |
+| 影响分级 | `impact.py` | ImpactItem 列表 | 一个对象一条，取最高级 |
+| S6 判定 | `judge.py`（调 `verdict.build_verdict`） | verdict | 唯一调用点；`rejudge` 供范围重算、人工复核、decompose 后重建共用 |
+| S7 呈现 | `render_*.py`、`conclusion_fold.py` | 结论行、Excel 列 | 只拼字，不判定 |
+
+几条规矩（改代码前看一眼）：
+
+- **各阶段尽量是纯函数**：不改入参，换范围或改 poly 阈值只需重跑 S6–S7
+  （`judge.rejudge`），不重新比对。
+- **判定只在 SiteCall / judge 里**：SiteCall 的硬阻断显式列在
+  `sitecall.HARD_BLOCKS`（正反向重叠区分歧、不同 read 同区段套峰、合并压缩区、
+  跨 read 互检矛盾、染料团）；下游只读 `site_status` / `poly_calls_of` / verdict。
+- **文案只在 `render_*`**：结论行、低置信原因、双峰行、CDS 判读、poly 行、
+  附带发现都由呈现层从结构化字段生成；`_build_conclusion` 只负责排序与折叠。
+- **参数集中在 `params.py`**：按阶段分组（`STAGE_PARAMS`），pipeline 以旧名
+  re-export；只有 S1–S3 的参数进缓存键，S6 阈值（如 poly 大量缺失）不进。
+- **旧记录兼容**：旧存档没有 `read_calls` / `poly_calls` / `low_cause` 时，
+  `poly_calls_of`、`ReadCalls.from_result`、`site_status` 按旧字段即时推导，
+  不重算。
+
+### 1.2 底层模块（各阶段内部用到）
+
+```
+abif_reader（碱基/Q值/四通道峰形提取）
+reliable_zone（read 可信区逐条判定：位置先验 + Q值 + 峰型）
+aligner（双向局部比对：k-mer 种子定位 + PairwiseAligner 延伸）
+signal（峰级证据：突变峰占比/信噪比/插入峰强度/poly 峰计数）
+homopolymer（同聚物结构识别 + 滑移/压缩判读）
+annotator（变体特征注释 + CDS 氨基酸级注释）
 可选：tracy 解卷积（疑似混合样品时，检出 tracy 可执行文件才启用）
 ```
 
@@ -59,6 +119,9 @@
 - **跨引物互检兜底**：多数双峰位点被其他引物测过且峰形单一 → 倾向该 read
   自身信号问题而非真实混合（真实 MX 批次 22 处双峰 → 互检后仅 4 处待核）。
 - 可选 tracy decompose 解卷积（需安装 tracy，未装时自动跳过不报错）。
+- **2026-11 起**：「疑似混合」改由 read 级 ReadCall 判定（看整条 read 是否套峰，
+  而不是数双峰位点），上面「≥5 处 → widespread」的分级只作为证据保留在
+  `mixed_summary` 里；新口径见 §2.7。
 
 ### 2.4 同聚物（poly）结构判读
 
@@ -67,6 +130,10 @@
 - 「缺第几个碱基」定位：信息论不可解（KNOWN_ISSUES 挂账 #1），正确输出
   「计数确证但定位存疑」注记而非编造位置。
 - 比对端点落在 poly 内部的歧义显式提示（覆盖边界可能有数 bp 偏差）。
+- **2026-11 起**：每段 poly 的计数结论由 PolyCall 统一给出（6 种状态：确证计数 /
+  疑似缺失 / 各 read 矛盾 / 不可判定 / 只有调用数 / 未覆盖），报告、Excel、
+  GenBank/FASTA 导出、批量结论都经 `polycall.poly_calls_of` 读取；
+  确证的大量缺失会挡住 ✓（§2.7）。
 
 ### 2.5 CDS 蛋白级判定
 
@@ -86,6 +153,28 @@
 - 覆盖缺口、poly 存疑、端点歧义、混合提示各归其位（2026-11-05 瘦身后
   结论只留判读+汇总，逐条证据进变体表/Read 表）。
 - 匿名记录 access_token、批次整理包等报告安全机制另见 KNOWN_ISSUES 审计索引。
+
+### 2.7 二期口径变化（2026-11-17 至 11-18）
+
+结构重构完成后，下列口径做了调整（默认都已打开，多数可用环境变量回旧口径，见 §7）：
+
+| 项 | 以前 | 现在 |
+|---|---|---|
+| **read 级套峰** | 双峰逐位点统计，≥5 处就算「疑似混合样品」 | ReadCall 先看整条 read：全程套峰、某点后整体套峰、局部双峰集中分开判。套峰段内的差异和 split-read 断点不作确证 |
+| **疑似混合的门槛** | 一条 read 双峰多就写「疑似混合样品」 | 只有一条 read 套峰 → 头行「待定」，正文「⚠ 测序套峰：…仅此一条 read，未经其他引物印证」；不同 read 同区段都套峰才写「疑似混合样品」。头行和正文同源（都读 ReadCall） |
+| **局部双峰集中** | 混在双峰计数里 | 不判混合，单出一行「△ read 第 x–y 位双峰集中…建议复测」 |
+| **零散双峰** | 「↳ 双峰 N 处」子行 | 判定不变（可以是合格），措辞改为「注意：…零散双峰，未形成套峰；若各处次峰比例一致，仍可能是两种克隆混合——建议挑单克隆复测，并核对峰图」 |
+| **poly 缺失数** | 各 read 取最大值 | 完整覆盖、且不是 noisy（峰数多于调用数）的 read 之间取最小值；没有这样的 read 时仍取最大值。插入数仍取最大值 |
+| **poly 大量缺失报警** | 确证缺失多少都不影响状态 | 确证缺失 ≥5 个碱基 **或** ≥ 该段参考长度的 15%（任一达到）→ 新阻断 `poly_large_deletion`，不能判 ✓。两个阈值各自可停用；优先级：`params.py` 默认 < 环境变量 < 单次请求（分析页可改，结果页可「重新判定」）；所用阈值写进 `verdict.poly_thresholds` |
+| **变体重复数行** | 读单条 read 的峰图计数 | PolyCall 已确证计数时，同一行的测得数、峰图计数、indel 长度都取 PolyCall 的综合值；和比对报出的 indel 长度不同时注明「此为综合 N 条 read 的 poly 计数，比对报出的是 Xbp」 |
+| **低 AF 双峰（AF<0.15）** | 全部进 verdict 的 info | 只有落在声明范围内的才进 verdict（未声明范围视为范围外）；`result.mixed_variants` 照常全量收录，换范围重算可复现 |
+| **位点三态** | CDS、批量、verdict、evidence 各自推导 | 统一走 `sitecall.site_status`（confirmed / unresolved / rejected），旧存档按同一规则推导 |
+| **元件补全** | 只认参考里的标注 | 三级补全：参考标注 > 自动识别（图谱元件库，一致度 ≥90% 且覆盖 ≥80%）> 从 CDS 推定（SD/Kozak 窗口、上游 150bp 调控区）；按宿主（T7/lac 用 SD，CMV/EF1a 用 Kozak）取舍；报告注明来源 |
+| **影响分级与三层报告** | 范围外关键元件出现差异 → 待定 | 第一层：主结论（只看声明范围 + 接合区），状态只由这一层决定。第二层「附带发现」：范围外异常按 P1/P2/P3 排序，同一元件合并取最高级；确证 P1/P2 单出一行「⚠ 范围外发现 N 处需关注的确证异常」，**不改状态**（前端红字）；其余未决合成一句「另有 N 处范围外未决」。第三层：范围外未完整覆盖、未评估的元件一句话带过 |
+| **设计酶** | 无 | 用户填写的酶 + 参考里 `pd_enzyme` 标注的酶；都没有时取声明范围（插入片段）两端 flank 内（边界外 100bp 到内 20bp）、全质粒只切一次的酶；再没有就为空，**不再用全质粒单切酶兜底**。参考 COMMENT「pd_design_enzymes: avoid=…」给出要避开的酶。位点被破坏判 P1，新引入设计酶/避开酶位点判 P2 |
+| **酶标注导出** | 无 | 本项目构建导出 GenBank 时，克隆/线性化用酶写 `misc_feature`（`/label=酶名`，`/note="pd_enzyme role=cloning\|linearize"`），避开的酶写文件级 COMMENT；Sanger 分析读回后当作用户指定。单样品与批量入口都接了 `enzymes` 参数 |
+| **统一酶库** | 设计酶与图谱各扫各的 | 设计酶改用 `plasmid_map.scan_enzyme` 扫描，与图谱同口径；酶菜单用 `core.enzyme_sites.DEFAULT_ENZYMES` |
+| **Excel 新列** | — | 「套峰 read 数」（ReadCall 判全程/某点后套峰的 read 条数）、「零散双峰数」（未判套峰的 read 上的双峰位点数之和）；旧记录无 `read_calls` 时即时推导 |
 
 ## 3. 不足之处（按影响排序）
 
@@ -116,6 +205,9 @@
 - 批量页「疑似混合样品」判定是真实判定（MX 批次实证），但 scattered 级
   （2–4 处双峰）只提示不升级——低置信混合可能被轻描淡写（有意取舍：
   MX 实测 22 处双峰多数为互检可排除的信号噪声）。
+- 零散双峰（未形成套峰）不判混合：两个点突变克隆混在一起时峰图恰好也是零散
+  双峰，所以正文提示「仍可能是两种克隆混合，建议挑单克隆复测」，但状态不变
+  （可能是合格）。这一取舍与旧测试期望不同，相关测试以 xfail 记录口径差。
 
 ### 3.4 性能与规模边界
 
@@ -192,3 +284,29 @@ DEMO1 3 处真实确证变异敏感度锁定）。已知的物理边界不变
 准确且假阴性风险被系统性压低；不准的场景集中在三类：低比例混合（<30% 峰形
 不可见）、特殊结构（poly 滑移定位、压缩区计数）、覆盖区外事件——三者都是
 Sanger 技术本身的物理边界，算法已做到「如实标出不确定」而非掩盖。**
+
+## 7. 环境变量开关（2026-11-18，默认值以代码为准）
+
+二期口径都已默认打开；下表的开关用于回旧口径对照或排查。改了开关会改变结果，
+仅在排查时临时用，不要在生产上长期设成非默认值。
+
+| 环境变量 | 作用 | 默认 | 代码位置 |
+|---|---|---|---|
+| `SANGER_READ_MIXED_CALL` | read 级套峰判定（ReadCall）；设 `0` 回逐位点双峰口径 | 开（非 `0` 即开） | `readcall.py` |
+| `SANGER_MIXED_LINES_READCALL` | 「疑似混合 / 测序套峰」行与头行改读 ReadCall | `1` | `crosscheck.py` |
+| `SANGER_POLY_MISSING_MIN` | poly 缺失数在完整覆盖、非 noisy 的 read 之间取最小值 | `1` | `polycall.py` |
+| `SANGER_LOW_AF_SCOPE_ONLY` | AF<0.15 的单点双峰只在声明范围内进 verdict | `1` | `verdict.py` |
+| `SANGER_REPEAT_FROM_POLYCALL` | 变体重复数行改读 PolyCall 综合计数 | 开（非 `0` 即开） | `render_poly.py` |
+| `SANGER_IMPACT` | 元件影响分级与三层报告（附带发现 / 未评估） | `1` | `verdict.py` |
+| `SANGER_ELEMENTS_AUTO` | 元件补全时启用图谱元件库自动识别 | `1` | `elements.py` |
+| `SANGER_POLY_LARGE_DEL_COUNT` | poly 大量缺失阈值：确证缺失碱基数 | `5`（`params.py`） | `params.py` |
+| `SANGER_POLY_LARGE_DEL_PCT` | poly 大量缺失阈值：缺失占该段参考长度百分比 | `15`（`params.py`） | `params.py` |
+| `SANGER_POLY_LARGE_DEL_COUNT_ENABLED` / `_PCT_ENABLED` | 单独停用上面某一个阈值（两个都停则不报警） | 都开 | `params.py` |
+| `SANGER_STAGE_CACHE` | S1 read 阶段进程内缓存（同 read、同参考、同参数复用） | `0`（关） | `stage_cache.py` |
+| `SANGER_STAGE_CACHE_MAX` | 上面缓存的条目上限 | `64` | `stage_cache.py` |
+| `SANGER_SITECALL_SHADOW` | 结果里附带 SiteCall 双跑明细（`site_calls` / `site_call_diffs`），排查用，结果体积会翻倍 | 关 | `pipeline.py` |
+| `TRACY_BIN` | tracy 可执行文件路径 | `tracy` | `pipeline.py` |
+
+poly 阈值的优先级：`params.py` 默认 < 环境变量 < 单次请求参数 `poly_thresholds`
+（分析页设置，或 `POST /sequencing/analyses/{id}/poly-thresholds` 重新判定）。
+
