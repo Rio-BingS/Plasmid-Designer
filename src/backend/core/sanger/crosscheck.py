@@ -302,6 +302,13 @@ def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict,
             "noise_like": mixed_noise_like(chk_raw, p["count"], len(read_results)),
             "chk": _chk(r["filename"]),
         })
+        if use_rc:
+            # 用户 2026-11-17 22:36（选 A）：单条 read 套峰、未经其他 read
+            # 印证 → 正文写「测序套峰」，与头行 seq_overlap_peaks 待定一致
+            c = read_calls.get(r["filename"])
+            wide[-1]["rc_state"] = c.state
+            wide[-1]["breakpoint"] = c.breakpoint
+            wide[-1]["corroborated"] = c.corroborated
     pending = []
     for r in read_results:
         p = r["mixed_profile"]
@@ -311,6 +318,10 @@ def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict,
         if crossable and not uncov:
             continue
         row = {"filename": r["filename"], "count": p["count"]}
+        if use_rc and not _is_wide(r) and p["class"] == "widespread":
+            # 用户 2026-11-17 22:36（选 A）：双峰多但 ReadCall 不判套峰 →
+            # 不构成混合，出「注意：零散双峰」轻提示，不再留无标题的 ↳ 子行
+            row["scattered_only"] = True
         if crossable:
             row["uncovered_ref"] = uncov
         else:

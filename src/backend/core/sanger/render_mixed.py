@@ -67,9 +67,28 @@ def _single_wide(w: Dict, crossable: bool) -> str:
     return line
 
 
+def _seq_overlap(w: Dict) -> bool:
+    """ReadCall 口径下未经其他 read 印证的单条 read 套峰（头行判待定）"""
+    return "rc_state" in w and not w.get("corroborated")
+
+
+def _seq_overlap_line(w: Dict) -> str:
+    if w["rc_state"] == "SHIFT_AFTER_POINT" and w.get("breakpoint") is not None:
+        how, act = (f"自 read 第 {w['breakpoint']} 位起整体套峰",
+                    "建议从另一侧引物测序确认；若复现，可能是该点附近的 indel 杂合")
+    else:
+        how, act = ("全程套峰",
+                    "建议重测；若复现，检查引物特异性（多位点结合、二聚体）与模板纯度")
+    return (f"⚠ 测序套峰：{w['filename']} {how}（{w['count']} 处双峰），"
+            f"仅此一条 read，未经其他引物印证——{act}")
+
+
 def read_lines(ms: Dict) -> List[str]:
     lines: List[str] = []
-    wide = ms["wide"]
+    for w in ms["wide"]:
+        if _seq_overlap(w):
+            lines.append(_seq_overlap_line(w))
+    wide = [w for w in ms["wide"] if not _seq_overlap(w)]
     if len(wide) == 1:
         lines.append(_single_wide(wide[0], ms["crossable"]))
     elif wide:
@@ -91,6 +110,15 @@ def read_lines(ms: Dict) -> List[str]:
         lines.append(f"△ {lc['filename']}：read 第 {rng} 位双峰集中（{lc['n_sites']} 处），"
                      "不判为混合样品，可能是该区段测序质量问题——建议复测")
     for row in ms["pending"]:
+        if row.get("scattered_only"):
+            u = row.get("uncovered_ref")
+            tail = (f"，其中 {len(u)} 处无其他引物覆盖（参考位置 {pos_ranges_str(u)}）"
+                    if u else "")
+            if "positions" in row:
+                tail = f"（read 位置 {pos_ranges_str(row['positions'])}）"
+            lines.append(f"注意：{row['filename']} 有 {row['count']} 处零散双峰{tail}，"
+                         "未形成套峰，不构成混合——供核对峰图")
+            continue
         if "uncovered_ref" in row:
             u = row["uncovered_ref"]
             lines.append(
