@@ -256,10 +256,12 @@ def mixed_lines_readcall_enabled() -> bool:
     新口径按 ReadCall（全程套峰 MIXED_TEMPLATE / 某点后套峰
     SHIFT_AFTER_POINT，局部密度判定），与 verdict 的 seq_overlap_peaks /
     mixed_template 同一来源。分级为 widespread 但 ReadCall 不套峰的 read
-    不再出 ⚠ 汇总行，仍按待核子行处理。SANGER_MIXED_LINES_READCALL=1 开启。
+    不再出 ⚠ 汇总行，仍按待核子行处理。用户 2026-11-17 拍板默认开启
+    （与 verdict 的 mixed_sample 一并改读 ReadCall）；=0 回旧口径。
+    局部套峰（LOCAL_MIXED）不判疑似混合，另出一行「双峰集中，建议复测」。
     """
     import os
-    return os.environ.get("SANGER_MIXED_LINES_READCALL", "0") == "1"
+    return os.environ.get("SANGER_MIXED_LINES_READCALL", "1") == "1"
 
 
 def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict,
@@ -319,5 +321,11 @@ def mixed_summary(read_results: List[Dict], mixed_corroboration: Dict,
     multi = []
     if crossable and mixed_corroboration.get("total", 0) > 0:
         multi = [rp for rp, _fs in mixed_corroboration.get("multi_sites") or []]
+    local = []
+    if use_rc:
+        # 局部套峰（用户 2026-11-17：不判疑似混合，给一行轻提示建议复测）
+        for c in read_calls.local_reads():
+            local.append({"filename": c.filename, "n_sites": c.n_sites,
+                          "segments": [list(s[:2]) for s in c.segments[:3]]})
     return {"crossable": crossable, "wide": wide, "pending": pending,
-            "multi_sites": multi}
+            "multi_sites": multi, "local": local}

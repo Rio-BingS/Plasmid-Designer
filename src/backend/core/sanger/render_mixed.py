@@ -86,6 +86,10 @@ def read_lines(ms: Dict) -> List[str]:
         if stretchy:
             line += f"；{'、'.join(stretchy[:2])} 存在连续双峰段（两个克隆相差插入/缺失时的典型形态）"
         lines.append(line)
+    for lc in ms.get("local") or []:
+        rng = "、".join(f"{a}–{b}" for a, b in lc["segments"])
+        lines.append(f"△ {lc['filename']}：read 第 {rng} 位双峰集中（{lc['n_sites']} 处），"
+                     "不判为混合样品，可能是该区段测序质量问题——建议复测")
     for row in ms["pending"]:
         if "uncovered_ref" in row:
             u = row["uncovered_ref"]

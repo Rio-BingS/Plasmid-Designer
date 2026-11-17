@@ -299,8 +299,8 @@ def _mixed_site_artifact(m: Dict, profiles: Dict, reads: List[Dict]) -> str:
 def low_af_scope_only_enabled() -> bool:
     """二期开关 c（默认关）：AF < MINOR_AF_MIN(0.15) 的单点双峰只在声明
     范围内进 verdict（pending 或 info）；范围外与未声明范围时不再记 info。
-    SANGER_LOW_AF_SCOPE_ONLY=1 开启。"""
-    return os.environ.get("SANGER_LOW_AF_SCOPE_ONLY", "0") == "1"
+    用户 2026-11-17 拍板默认开启；SANGER_LOW_AF_SCOPE_ONLY=0 回旧口径。"""
+    return os.environ.get("SANGER_LOW_AF_SCOPE_ONLY", "1") == "1"
 
 
 def _read_mixing_text(c) -> str:
@@ -717,7 +717,10 @@ def build_verdict(result: Dict, ref_length: int, scope=None,
                  + "；".join(f"{c.filename} {_read_mixing_text(c)}" for c in _sq),
                  _act, refs=[c.filename for c in _sq])
     wide = [p for p in profiles.values() if p.get("class") == "widespread"]
-    if (wide and not _tmpl
+    # 二期 a（默认开）：头行「疑似混合」与正文 ⚠ 行同源，只看 ReadCall——
+    # 分级为 widespread 但 ReadCall 未判全程/某点后套峰的 read 不再升 mixed
+    from core.sanger.crosscheck import mixed_lines_readcall_enabled as _mrc_on
+    if (wide and not _tmpl and not _mrc_on()
             and mixed_sample_confirmed(reads, result.get("mixed_corroboration"))):
         counts = sorted(int(p.get("count") or 0) for p in wide)
         cr = str(counts[0]) if counts[0] == counts[-1] else f"{counts[0]}-{counts[-1]}"

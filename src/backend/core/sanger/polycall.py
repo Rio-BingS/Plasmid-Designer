@@ -33,9 +33,9 @@ def poly_missing_min_enabled() -> bool:
     不再是上界，不参与 min（DEMO1 A107：noisy 105 峰 vs 可分辨 68 峰）。
     无可用的完整覆盖 read 时，各 read / 分段之间仍取 max（旧口径）。
     插入数是下界（峰只会少不会多），仍取 max。
-    SANGER_POLY_MISSING_MIN=1 开启；默认 0 为旧口径（各 read 取 max）。
+    用户 2026-11-17 拍板默认开启；SANGER_POLY_MISSING_MIN=0 回旧口径（各 read 取 max）。
     """
-    return os.environ.get("SANGER_POLY_MISSING_MIN", "0") == "1"
+    return os.environ.get("SANGER_POLY_MISSING_MIN", "1") == "1"
 
 COUNT_CONFIRMED = "COUNT_CONFIRMED"
 DEFICIT_SUSPECTED = "DEFICIT_SUSPECTED"

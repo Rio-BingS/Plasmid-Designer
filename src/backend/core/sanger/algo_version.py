@@ -1,4 +1,5 @@
-"""二期开关 f：SANGER_ALGO_VERSION 组合化（默认关）
+"""二期开关 f：SANGER_ALGO_VERSION 组合化（用户 2026-11-17 拍板默认开启；
+SANGER_ALGO_VERSION_COMPOSITE=0 回单一版本号）
 
 规格 §6：算法版本改为各阶段版本 + 口径开关的组合，并随记录落库。
 SANGER_ALGO_VERSION_COMPOSITE=1 开启后，result["algo_version"] 写成
@@ -19,14 +20,14 @@ from core.sanger.sitecall import SITECALL_VERSION
 # 口径开关：环境变量 → (短名, 部署默认值)
 SWITCHES = {
     "SANGER_READ_MIXED_CALL": ("rmix", "1"),
-    "SANGER_POLY_MISSING_MIN": ("pmin", "0"),
-    "SANGER_MIXED_LINES_READCALL": ("mrc", "0"),
-    "SANGER_LOW_AF_SCOPE_ONLY": ("laf", "0"),
+    "SANGER_POLY_MISSING_MIN": ("pmin", "1"),
+    "SANGER_MIXED_LINES_READCALL": ("mrc", "1"),
+    "SANGER_LOW_AF_SCOPE_ONLY": ("laf", "1"),
 }
 
 
 def enabled() -> bool:
-    return os.environ.get("SANGER_ALGO_VERSION_COMPOSITE", "0") == "1"
+    return os.environ.get("SANGER_ALGO_VERSION_COMPOSITE", "1") == "1"
 
 
 def parts(base: str) -> Dict:
