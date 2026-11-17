@@ -58,7 +58,11 @@ const conclusionParts = computed(() => {
     return { main: lines.filter((l) => l.trim() !== '').join('\n'), low: [], mixed: [], resolved: [] }
   }
   const grouped = new Set([...(g.low ?? []), ...(g.mixed_detail ?? []), ...(g.resolved ?? [])])
-  const main = lines.filter((l) => l.trim() !== '' && !grouped.has(l)).join('\n')
+  // 二期 10e：有结构化 impact 时，范围外附带发现/未评估改由下方专块渲染
+  // （确证的关键元件异常标红），正文不再重复这些行
+  const impactLine = (l: string) =>
+    !!props.analysis.verdict?.impact && IMPACT_PREFIXES.some((p) => l.startsWith(p))
+  const main = lines.filter((l) => l.trim() !== '' && !grouped.has(l) && !impactLine(l)).join('\n')
   return { main, low: g.low ?? [], mixed: g.mixed_detail ?? [], resolved: g.resolved ?? [] }
 })
 
@@ -150,6 +154,34 @@ const KIND_LABELS: Record<string, string> = {
   primer_unverified: '引物未验证',
 }
 
+// 与后端 render_impact._PREFIXES 一致
+const IMPACT_PREFIXES = ['⚠ 范围外发现 ', '  ↳ 附带发现 ', '注意：另有 ', '注意：范围外未完整覆盖']
+const IMPACT_CAT: Record<string, string> = {
+  ori: '复制原点', resistance: '抗性基因', marker: '筛选标记', promoter: '启动子', rbs: 'SD/Kozak',
+  recomb: '重组位点', cds: 'CDS', terminator: '终止子', polya: 'polyA 信号', tag: '标签',
+  primer_bind: '引物结合区', regulatory_inferred: '推定调控区', other: '元件', enzyme: '设计酶位点',
+  backbone: '骨架',
+}
+const impact = computed(() => props.analysis.verdict?.impact ?? null)
+const impactRows = computed(() => {
+  const imp = impact.value
+  if (!imp) return []
+  const adv = new Set(imp.advisories)
+  const byId = new Map(imp.items.map((i) => [i.item_id, i]))
+  return imp.shown.map((id) => byId.get(id)).filter((i): i is NonNullable<typeof i> => !!i).map((i) => ({
+    key: i.item_id,
+    level: i.level,
+    // 范围外关键元件确证出错 → 红字（用户 2026-11-17 23:27）
+    red: adv.has(i.item_id),
+    name: i.target.name,
+    cat: IMPACT_CAT[i.target.category] ?? i.target.category,
+    sites: i.consequences.slice(0, 3).map((c) =>
+      `位置 ${c.ref_pos}${c.consequence ? ' ' + c.consequence : ''}（${c.status === 'confirmed' ? '确证' : '未决'}）`,
+    ).join('；') + (i.consequences.length > 3 ? ` 等 ${i.consequences.length} 处` : ''),
+    note: [i.coverage === 'partial' ? '部分覆盖' : '', i.cap_applied ? '来源未确证，封顶 P2' : ''].filter(Boolean).join('，'),
+  }))
+})
+
 const blockingPos = (b: VerdictItem) =>
   b.ref_start ? (b.ref_end && b.ref_end !== b.ref_start ? `${b.ref_start}–${b.ref_end}` : `${b.ref_start}`) : ''
 
@@ -236,6 +268,21 @@ function soLevel(t: string): string {
       </template>
     </div>
     <p class="conclusion-text">{{ conclusionParts.main }}</p>
+    <div v-if="impactRows.length || impact?.full_ok || impact?.unassessed?.length" class="impact-layer">
+      <p class="impact-title">附带发现（需测范围外，不影响本次判定）</p>
+      <ul v-if="impactRows.length" class="impact-list">
+        <li v-for="r in impactRows" :key="r.key" class="impact-item" :class="{ red: r.red }">
+          <span class="impact-level">{{ r.level }}</span>
+          <span class="impact-name">{{ r.name }}（{{ r.cat }}）</span>
+          <span class="impact-sites">{{ r.sites }}</span>
+          <span v-if="r.note" class="impact-note">{{ r.note }}</span>
+        </li>
+      </ul>
+      <p v-if="impact?.full_ok" class="impact-tail">另有 {{ impact.full_ok }} 个元件完整覆盖，未见异常</p>
+      <p v-if="impact?.unassessed?.length" class="impact-tail">
+        未评估（范围外、未完整覆盖）：{{ impact.unassessed.map((u) => u.name).join('、') }}
+      </p>
+    </div>
     <button v-if="conclusionParts.low.length" class="lowconf-toggle" @click="showLowConf = !showLowConf">
       {{ showLowConf ? '▾ 收起未决差异' : `▸ ${conclusionParts.low.filter((l) => !l.trimStart().startsWith('↳')).length} 处未决差异已折叠（需人工核对峰图，展开逐条核对）` }}
     </button>
@@ -327,6 +374,15 @@ function soLevel(t: string): string {
   background: #FFFFFF; border: 1px solid #E8E8E8; border-radius: 10px; padding: 1rem 1.25rem;
 }
 .conclusion-card.fail { background: #FDF3F3; border-color: #F2C6C6; }
+.impact-layer { margin: 0.25rem 0 0.6rem; padding: 0.4rem 0.6rem; border-left: 3px solid #D0D4DA; background: #FAFBFC; }
+.impact-title { font-size: 0.85rem; color: #555; margin: 0 0 0.3rem; }
+.impact-list { list-style: none; margin: 0; padding: 0; }
+.impact-item { font-size: 0.88rem; margin: 0.15rem 0; color: #333; }
+.impact-item.red { color: #C0392B; font-weight: 600; }
+.impact-level { display: inline-block; min-width: 1.8rem; margin-right: 0.3rem; font-weight: 700; }
+.impact-sites { margin-left: 0.3rem; }
+.impact-note { margin-left: 0.4rem; color: #888; font-weight: 400; }
+.impact-tail { font-size: 0.82rem; color: #777; margin: 0.2rem 0 0; }
 .conclusion-text { font-weight: 600; white-space: pre-wrap; margin-bottom: 0.5rem; }
 .conclusion-head { font-weight: 700; font-size: 1.02rem; white-space: pre-wrap; margin: 0 0 0.5rem; }
 .conclusion-head.ok { color: #1F7A33; }

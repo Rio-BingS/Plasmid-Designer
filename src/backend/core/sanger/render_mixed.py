@@ -117,7 +117,8 @@ def read_lines(ms: Dict) -> List[str]:
             if "positions" in row:
                 tail = f"（read 位置 {pos_ranges_str(row['positions'])}）"
             lines.append(f"注意：{row['filename']} 有 {row['count']} 处零散双峰{tail}，"
-                         "未形成套峰，不构成混合——供核对峰图")
+                         "未形成套峰；若各处次峰比例一致，仍可能是两种克隆混合"
+                         "——建议挑单克隆复测，并核对峰图")
             continue
         if "uncovered_ref" in row:
             u = row["uncovered_ref"]

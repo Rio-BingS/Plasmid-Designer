@@ -19,7 +19,7 @@ from scripts.sanger_benchmark import load_truth, metrics, run_corpus  # noqa: E4
 import pytest  # noqa: E402
 
 
-@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的S14 真混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的S14 真混合样品不再判疑似混合（改判待定）——用户 2026-11-17 23:27 选 B：判定保持待定，正文提示「仍可能是两种克隆混合，建议挑单克隆复测」；旧期望保留为 xfail 记录口径差")
 def test_benchmark_verdict_and_sites():
     truth = load_truth()
     corpus = run_corpus(truth)

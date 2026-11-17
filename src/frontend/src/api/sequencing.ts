@@ -385,6 +385,8 @@ export interface Verdict {
   algo_version?: string
   /** 本次判定所用的 poly 大量缺失阈值（二期 10d） */
   poly_thresholds?: PolyThresholds
+  /** 二期 10e：范围外影响分级（第二层附带发现 / 第三层未评估）；旧口径为 null */
+  impact?: ImpactLayers | null
 }
 
 /** 复核队列项（goal v3 W14，PL §F）：确证差异 / 范围内缺口 / 未决位点；
@@ -808,4 +810,26 @@ export async function downloadBatchSequencingReport(batchId: string): Promise<vo
     headers: analysisTokenHeaders(batchId)
   })
   await saveBlobResponse(response, `测序整理_${batchId.slice(-6)}.zip`)
+}
+
+/** 二期 10e：一个对象（元件 / 设计酶位点 / 骨架）的影响条目（impact_contract v1.1） */
+export interface ImpactItem {
+  item_id: string
+  target: { kind: 'element' | 'enzyme_site' | 'backbone'; name: string; category: string; start?: number; end?: number }
+  source: string
+  coverage: 'verified' | 'partial' | 'none' | null
+  site_ids: number[]
+  consequences: { ref_pos: number; type?: string; status?: string; consequence?: string | null; level: string; rule: string }[]
+  level: 'P1' | 'P2' | 'P3'
+  rule: string
+  cap_applied: boolean
+  certainty: 'confirmed' | 'suspected'
+}
+
+export interface ImpactLayers {
+  items: ImpactItem[]
+  shown: string[]
+  advisories: string[]
+  full_ok: number
+  unassessed: { name: string; category: string; source: string; coverage: number }[]
 }

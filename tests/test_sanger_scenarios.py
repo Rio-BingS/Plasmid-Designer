@@ -178,7 +178,7 @@ def test_s13_coverage_by_untrusted_not_verified():
     assert cov["verified_percent"] < cov["measured_percent"]
 
 
-@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——用户 2026-11-17 23:27 选 B：判定保持待定，正文提示「仍可能是两种克隆混合，建议挑单克隆复测」；旧期望保留为 xfail 记录口径差")
 def test_s14_true_mixed_not_flipped_by_weak_corroboration():
     """S14：45% 真混合 + Q25 验证 read → 互检不算 clean，保持 △ 混合"""
     spec, res = _run("S14")
@@ -237,7 +237,7 @@ def test_f2_3100_decay_segment_not_mixed():
     assert _status(res) != "mixed"
 
 
-@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——待用户确认，见 decisions_log 23:10")
+@pytest.mark.xfail(strict=True, reason="二期 a 默认开（2026-11-17）：只有零散双峰、未形成套峰的合成混合样品不再判疑似混合（改判待定）——用户 2026-11-17 23:27 选 B：判定保持待定，正文提示「仍可能是两种克隆混合，建议挑单克隆复测」；旧期望保留为 xfail 记录口径差")
 def test_t11_uniform30_mixed_sample_detected():
     """T11 规格：全 read 均匀 30% 混合 → mixed_sample（widespread）。
 
