@@ -16,11 +16,26 @@ PARTIAL_COVERAGE，covered_ranges 给出已覆盖段。
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from core.sanger.homopolymer import _ANCHOR_RANK
 
 POLYCALL_VERSION = "p4-1"
+
+
+def poly_missing_min_enabled() -> bool:
+    """二期开关 b（默认关）：整段缺失数在完整覆盖 read 之间取 min。
+
+    每条 read 的「参考段长 − 可分辨峰」是该段缺失的上界（峰被压缩合并会
+    多算缺失，不会少算）。完整覆盖 read 各自给出整段缺失的上界，取 min
+    最紧。noisy read（峰数 > 调用数，疑似滑移肩峰）的峰数会多算，缺失
+    不再是上界，不参与 min（DEMO1 A107：noisy 105 峰 vs 可分辨 68 峰）。
+    无可用的完整覆盖 read 时，各 read / 分段之间仍取 max（旧口径）。
+    插入数是下界（峰只会少不会多），仍取 max。
+    SANGER_POLY_MISSING_MIN=1 开启；默认 0 为旧口径（各 read 取 max）。
+    """
+    return os.environ.get("SANGER_POLY_MISSING_MIN", "0") == "1"
 
 COUNT_CONFIRMED = "COUNT_CONFIRMED"
 DEFICIT_SUSPECTED = "DEFICIT_SUSPECTED"
@@ -175,8 +190,14 @@ def aggregate_run(run: Dict, run_reads: List[Dict]) -> Dict:
     usable = [x for x in run_reads if x["peak_count"] and x.get("covered_span")]
     if usable:
         seg_len = lambda x: x["covered_span"][1] - x["covered_span"][0] + 1
-        out["peak_missing"] = max(0, max(seg_len(x) - x["peak_count"]
-                                           for x in usable))
+        full_use = [x for x in usable if x["coverage"] == "full"
+                    and x.get("resolution") != "noisy"]
+        if poly_missing_min_enabled() and full_use:
+            out["peak_missing"] = max(0, min(seg_len(x) - x["peak_count"]
+                                               for x in full_use))
+        else:
+            out["peak_missing"] = max(0, max(seg_len(x) - x["peak_count"]
+                                               for x in usable))
         out["peak_inserted"] = max(0, max(x["peak_count"] - seg_len(x)
                                             for x in usable))
         out["peak_measured"] = (run["repeat_count"] - out["peak_missing"]

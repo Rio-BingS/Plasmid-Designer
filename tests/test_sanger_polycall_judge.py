@@ -98,3 +98,25 @@ def test_render_anchor_notes_match_legacy():
         "注意：poly(A) 同聚物 101-130 重复数已由峰图计数确证（30 个），但该 run的锚定路标不可靠"
         "（路标落在信号异常区）——计数确证但定位存疑，run 起止可能整体偏移数 bp，建议对照图谱核对边界"]
     assert rp.confirmed_keys([call]) == {("A", 101)}
+
+
+def test_missing_min_switch_default_off(monkeypatch):
+    """二期开关 b：完整覆盖 read 之间缺失取 min；默认关为旧口径 max"""
+    reads = [_rd("f", "full", [101, 130], 25, 25, "partial_merge"),
+             _rd("r", "full", [101, 130], 10, 10, "partial_merge", "-"),
+             _rd("p", "partial", [101, 115], 5, 5, "partial_merge")]
+    monkeypatch.delenv("SANGER_POLY_MISSING_MIN", raising=False)
+    e = _entry([dict(x) for x in reads])
+    assert e["peak_missing"] == 20 and e["peak_measured"] == 10
+    monkeypatch.setenv("SANGER_POLY_MISSING_MIN", "1")
+    e = _entry([dict(x) for x in reads])
+    assert e["peak_missing"] == 5 and e["peak_measured"] == 25
+    # 无完整覆盖 read：部分覆盖分段之间仍取 max
+    parts = [_rd("a", "partial", [101, 115], 12, 12, "partial_merge"),
+             _rd("b", "partial", [116, 130], 8, 8, "partial_merge", "-")]
+    e = _entry(parts)
+    assert e["peak_missing"] == 7
+    # noisy read（峰数>调用数）峰数多算，不参与 min（DEMO1 A107 形态）
+    e = _entry([_rd("n", "full", [101, 130], 20, 29, "noisy"),
+                _rd("g", "full", [101, 130], 18, 18, "resolvable", "-")])
+    assert e["peak_missing"] == 12 and e["peak_measured"] == 18
