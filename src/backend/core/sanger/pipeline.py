@@ -35,6 +35,7 @@ from core.sanger.scoring import confidence_tier as _variant_confidence
 from core.sanger.sitecall import (
     apply_overlap_discordance, build_site_calls, decide_variant, dual_run_diffs)
 from core.sanger.readcall import ReadCalls, build_read_calls
+from core.sanger import algo_version as _algo_version
 from core.sanger.polycall import aggregate_run, build_poly_calls, poly_call
 from core.sanger import render_poly
 from core.sanger.split_read import classify_segment
@@ -2491,7 +2492,8 @@ def analyze(
         "mixed_profiles": mixed_profiles, "mixed_variants": mixed_variants,
         "mixed_corroboration": mixed_corroboration, "consensus": consensus,
         "coverage": coverage, "features": features or [],
-        "algo_version": SANGER_ALGO_VERSION,
+        "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
+        **_algo_version.extra_fields(SANGER_ALGO_VERSION),
     }, len(ref), scope=scope_obj,
     synonymous_action=synonymous_action)
     (conclusion, cds_reports, mixed_profiles, resolved_regions,
@@ -2580,7 +2582,8 @@ def analyze(
         # verified_bp 供 CDS/闸门/结论切口径，coverage_percent 保留实测语义
         "coverage": coverage,
         # 算法版本（goal §2 约束 6）：口径变更时递增并在 HANDOVER §2 登记
-        "algo_version": SANGER_ALGO_VERSION,
+        "algo_version": _algo_version.compose(SANGER_ALGO_VERSION),
+        **_algo_version.extra_fields(SANGER_ALGO_VERSION),
         # 区间裁决行（互检排除差异的 read×区段 聚合，前端高亮展示）
         "resolved_regions": resolved_regions,
         # 结构化判定（goal T2；A 5.1/5.5）：status/blocking/roi/reads，
