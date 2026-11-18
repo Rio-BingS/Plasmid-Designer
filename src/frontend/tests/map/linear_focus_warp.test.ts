@@ -48,3 +48,27 @@ describe('分段比例尺（突出 read 覆盖）', () => {
     expect(xOf(lin)(2300) - xOf(lin)(1799)).toBeLessThan(200) // 线性下约 183px
   })
 })
+
+describe('匹配简图结果位点标注', () => {
+  it('判定条目与未决位点在主轴上方逐点标注，与差异同位点合并，read 上画位点圆点', async () => {
+    const MatchMap = (await import('@/components/sequencing/MatchMap.vue')).default
+    const read = (i: number, fn: string, dir: string, s: number, e: number) => ({ index: i, filename: fn, direction: dir, ref_start: s, ref_end: e, identity: 0.99, wraps_origin: false, alignment_view: null })
+    const w = mount(MatchMap, { props: {
+      reads: [read(0, 'a.ab1', '+', 1000, 1900), read(1, 'b.ab1', '-', 1100, 2000)] as never,
+      variants: [{ ref_pos: 1500, type: 'substitution', ref_base: 'C', alt_base: 'A', length: 1, aa_change: 'X:P1Q' }] as never,
+      features: [], coverageRanges: [[1000, 2000]], referenceLength: 6000, circular: true,
+      verdict: { status: 'mixed', info: [{ kind: 'unresolved_site', ref_start: 1950, ref_end: 1950, detail: '弱双峰', refs: ['b.ab1'] }],
+        blocking: [{ kind: 'mixed_variant', ref_start: 1500, ref_end: 1500, detail: '1500 双峰', refs: ['a.ab1', 'b.ab1'] },
+                   { kind: 'unresolved_site', ref_start: 1050, ref_end: 1050, detail: '无法互检', refs: ['a.ab1'] }] } as never,
+      unresolvedSites: [{ ref_pos: 1200, kind: 'mixed_uncorroborated', reads: ['a.ab1'], detail: 'x' }] as never,
+    } })
+    const labels = w.findAll('.lmap-mark-label').map((t) => t.text())
+    expect(labels).toContain('1500 C>A P1Q · 疑似混合')
+    expect(labels).toContain('1050 双峰待核')
+    expect(labels).toContain('1950 双峰待核')
+    expect(labels).toContain('1200 双峰')
+    expect(w.findAll('.map-var-tick').length).toBe(1)
+    expect(w.findAll('.map-site-tick').length).toBe(3)
+    expect(w.findAll('.lmap-dot2').length).toBe(5) // a: 1050,1200,1500；b: 1500,1950
+  })
+})

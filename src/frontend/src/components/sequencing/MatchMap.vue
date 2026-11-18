@@ -10,7 +10,7 @@
  * 点击 read / 变异只上报事件，峰图联动留在父组件。特征去重开关是纯 UI 状态。
  */
 import { computed, ref } from 'vue'
-import type { ScopeInfo, SequencingAnalysis } from '@/api'
+import type { ScopeInfo, SequencingAnalysis, Verdict } from '@/api'
 import type { FeatureType, MapDocument, MapFeature } from '@/map/types'
 import type { MapTrack } from '@/map/tracks'
 import LinearMap from '@/map/components/LinearMap.vue'
@@ -38,11 +38,17 @@ const props = withDefaults(defineProps<{
   verifiedRanges?: [number, number][]
   /** 覆盖缺口（W6 起带 cause：beyond_primer/read_shortfall/unknown） */
   coverageGaps?: GapRow[]
-}>(), { circular: undefined, scope: null, expectedRanges: () => [], verifiedRanges: () => [], coverageGaps: () => [] })
+  /** 结构化判定：blocking/info 中带参考坐标的条目在图上逐点标注（用户 2026-11-18） */
+  verdict?: Verdict | null
+  /** 未决位点（无法互检双峰、N 调用等）：按 read 画到 read 箭头上 */
+  unresolvedSites?: NonNullable<SequencingAnalysis['unresolved_sites']>
+}>(), { circular: undefined, scope: null, expectedRanges: () => [], verifiedRanges: () => [], coverageGaps: () => [], verdict: null, unresolvedSites: () => [] })
 
 const emit = defineEmits<{
   (e: 'open-read', index: number): void
   (e: 'jump-variant', v: Variant): void
+  /** 点击结果位点刻块/标注：跳峰图到该位点（read = 涉及该位点的第一条 read） */
+  (e: 'jump-site', s: { ref_pos: number; read?: string }): void
   /** 点击元件加入/移出需测范围（goal W13；父组件重组 scope 文本重算） */
   (e: 'toggle-feature-scope', name: string): void
   /** 坐标轴拖拽框选后把区间加入范围 */
@@ -118,17 +124,39 @@ const doc = computed<MapDocument>(() => ({
 const alignedReads = computed(() => props.reads.filter((r) => readSegments(r).length > 0))
 
 // ==================== 突出 read 覆盖（分段比例尺） ====================
-/** read 覆盖区段两侧各外扩 max(30bp, 5%) 作为焦点：全长仍显示，覆盖区占约 60% 宽，
- *  其余区段压缩；覆盖本已占全长 ≥60% 时 LinearMap 自动退回线性比例尺 */
+/**
+ * 焦点 = read 覆盖段 ∪ 紧邻 read 的元件（用户 2026-11-18：突出覆盖是为了更好地呈现
+ * 测序结果，不能牺牲标注）。read 两端各外扩 max(30bp, 5%)；与 read 重叠或距 read
+ * 端点 ≤ FLANK_BP 的元件整体并入焦点（启动子/操纵子/RBS/终止子等侧翼元件
+ * 放大到能在箭头内写名字），过长元件（> 焦点核心长度）只并入与核心重叠的部分，
+ * 避免一个大 CDS 把焦点稀释回全长。焦点约占 60% 宽，其余区段压缩；
+ * 焦点本已占全长 ≥60% 时 LinearMap 自动退回线性比例尺。
+ */
 const FOCUS_SHARE = 0.6
+const FLANK_BP = 200
 const focusReads = ref(true)
 const focusRanges = computed(() => {
   if (!focusReads.value) return []
   const L = props.referenceLength
-  return alignedReads.value.flatMap((r) => readSegments(r)).map(([s, e]) => {
+  const core = alignedReads.value.flatMap((r) => readSegments(r)).map(([s, e]) => {
     const pad = Math.max(30, Math.round((e - s + 1) * 0.05))
     return { start: Math.max(1, s - pad), end: Math.min(L, e + pad) }
   })
+  if (!core.length) return []
+  const coreLen = core.reduce((t, c) => t + c.end - c.start + 1, 0)
+  const extra: { start: number; end: number }[] = []
+  for (const f of shownFeatures.value) {
+    const fs = Math.min(f.start, f.end)
+    const fe = Math.max(f.start, f.end)
+    if (fe - fs + 1 >= L) continue
+    for (const c of core) {
+      const near = fe >= c.start - FLANK_BP && fs <= c.end + FLANK_BP
+      if (!near) continue
+      if (fe - fs + 1 <= coreLen) extra.push({ start: fs, end: fe })
+      else if (fe >= c.start && fs <= c.end) extra.push({ start: Math.max(fs, c.start), end: Math.min(fe, c.end) })
+    }
+  }
+  return [...core, ...extra]
 })
 const unalignedCount = computed(() => props.reads.length - alignedReads.value.length)
 
@@ -192,6 +220,64 @@ const verifiedBand = computed(() => {
   return items
 })
 
+// ==================== 结果位点标注（用户 2026-11-18：图要呈现测序结果） ====================
+/** 判定条目 kind → 图上短标签 */
+const SITE_KIND_LABEL: Record<string, string> = {
+  mixed_variant: '疑似混合', mixed_sample: '疑似混合', unresolved_site: '双峰待核', confirmed_variant: '确证差异',
+  critical_element_unverified: '未完全验证', critical_element_variant: '元件差异', orf_annotation_suspect: 'ORF 边界待核',
+  dye_blob: '染料团', poly_undetermined: 'poly 待定', scope_read_shortfall: '应测未测', scope_beyond_primer: '引物未覆盖',
+}
+const UNRESOLVED_KIND_LABEL: Record<string, string> = {
+  mixed_uncorroborated: '双峰', corroboration_conflict: '互检冲突', n_call: 'N', iupac: '简并碱基',
+  out_of_zone_diff: '可信区外差异', poly_undetermined: 'poly 待定', dropout: '信号缺失',
+}
+const SEV_COLOR = { blocking: '#c0392b', warn: '#d97706', info: '#9ca3af' } as const
+interface SiteMark { start: number; end: number; label: string; sev: keyof typeof SEV_COLOR; lines: string[]; reads: string[] }
+/** 每个参考位点/区段一条：blocking 优先；同位点多条合并说明 */
+const siteMarks = computed<SiteMark[]>(() => {
+  const by = new Map<string, SiteMark>()
+  const add = (start: number, end: number, label: string, sev: SiteMark['sev'], line: string, reads: string[]) => {
+    const k = `${start}-${end}`
+    const cur = by.get(k)
+    const rank = { blocking: 2, warn: 1, info: 0 }
+    if (!cur) { by.set(k, { start, end, label, sev, lines: [line], reads: [...reads] }); return }
+    if (!cur.lines.includes(line)) cur.lines.push(line)
+    for (const r of reads) if (!cur.reads.includes(r)) cur.reads.push(r)
+    if (rank[sev] > rank[cur.sev]) { cur.sev = sev; cur.label = label }
+  }
+  const v = props.verdict
+  for (const [list, sev] of [[v?.blocking ?? [], 'blocking'], [v?.info ?? [], 'info']] as const) {
+    for (const it of list) {
+      if (it.ref_start == null || it.ref_start < 1) continue
+      if (it.kind === 'primer_unverified') continue
+      const s = it.ref_start
+      const e = it.ref_end ?? s
+      const name = SITE_KIND_LABEL[it.kind] ?? it.kind
+      const where = s === e ? `${s}` : (it.element ? String(it.element) : `${s}–${e}`)
+      add(s, e, `${where} ${name}`, sev === 'blocking' ? 'blocking' : 'info', it.detail, it.refs ?? [])
+    }
+  }
+  for (const u of props.unresolvedSites) {
+    const k = `${u.ref_pos}-${u.ref_pos}`
+    if (by.has(k)) { const c = by.get(k)!; for (const r of u.reads) if (!c.reads.includes(r)) c.reads.push(r); continue }
+    add(u.ref_pos, u.ref_pos, `${u.ref_pos} ${UNRESOLVED_KIND_LABEL[u.kind] ?? u.kind}`, 'info', u.detail, u.reads)
+  }
+  return [...by.values()].sort((a, b) => a.start - b.start)
+})
+/** 与差异刻块同位点的结果条目并入差异刻块（不重复画） */
+const variantPos = computed(() => new Set(props.variants.map((v) => v.ref_pos)))
+const siteAt = computed(() => new Map(siteMarks.value.filter((m) => m.start === m.end).map((m) => [m.start, m])))
+/** read 上的结果位点圆点：该 read 参与的结果位点（双峰/未决等），blocking 实心红、其余空心 */
+function readSiteDots(r: ReadRow, diffs: number[]): { pos: number; color: string; filled?: boolean }[] {
+  const out: { pos: number; color: string; filled?: boolean }[] = []
+  for (const m of siteMarks.value) {
+    if (m.start !== m.end || !m.reads.includes(r.filename) || diffs.includes(m.start)) continue
+    // 箭头本身是深红：阻断位点用黄色实心点，提示位点用灰圈
+    out.push({ pos: m.start, color: m.sev === 'blocking' ? '#facc15' : SEV_COLOR[m.sev], filled: m.sev === 'blocking' })
+  }
+  return out
+}
+
 const tracks = computed<MapTrack[]>(() => [
   {
     id: 'reads', kind: 'arrows', height: 22,
@@ -210,6 +296,7 @@ const tracks = computed<MapTrack[]>(() => [
           color: '#b03a2e',
           stroke: '#7e251c',
           marks: readDiffPositions(r),
+          dots: readSiteDots(r, readDiffPositions(r)),
           className: fwd ? 'map-arrow-fwd' : 'map-arrow-rev',
           tooltip: {
             title: r.filename,
@@ -240,19 +327,39 @@ const tracks = computed<MapTrack[]>(() => [
   },
   {
     id: 'variants', kind: 'marks',
-    items: props.variants.map((v, i) => ({
-      id: String(i), start: v.ref_pos, end: v.ref_pos, color: '#c0392b', className: 'map-var-tick',
-      tooltip: {
-        title: `${v.ref_pos} ${v.ref_base}→${v.alt_base}`,
-        lines: [`${v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失'}，${v.support_reads || 1} 条 read`, '点击在比对峰图中查看'],
-      },
+    items: props.variants.map((v, i) => {
+      const site = siteAt.value.get(v.ref_pos)
+      const change = v.type === 'substitution' ? `${v.ref_base}>${v.alt_base}` : v.type === 'insertion' ? `ins${v.alt_base}` : `del${v.ref_base}`
+      const aa = v.aa_change ? ` ${String(v.aa_change).split(':').pop()}` : ''
+      return {
+        id: String(i), start: v.ref_pos, end: v.ref_pos, color: '#c0392b', className: 'map-var-tick',
+        markLabel: `${v.ref_pos} ${change}${aa}${site ? ` · ${site.label.replace(/^\S+\s/, '')}` : ''}`,
+        priority: 100,
+        tooltip: {
+          title: `${v.ref_pos} ${v.ref_base}→${v.alt_base}`,
+          lines: [`${v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失'}，${v.support_reads || 1} 条 read`,
+                  ...(site ? site.lines : []), '点击在比对峰图中查看'],
+        },
+      }
+    }),
+  },
+  {
+    // 结果位点（判定 blocking/info + 未决位点）：刻块 + 文字标注；与差异同位点的已并入上一轨
+    id: 'sites', kind: 'marks',
+    items: siteMarks.value.filter((m) => !(m.start === m.end && variantPos.value.has(m.start))).map((m, i) => ({
+      id: String(i), start: m.start, end: m.end, color: SEV_COLOR[m.sev], className: `map-site-tick map-site-${m.sev}`,
+      markLabel: m.label, priority: m.sev === 'blocking' ? 50 : 10,
+      tooltip: { title: m.label, lines: [...m.lines, ...(m.start === m.end ? ['点击在比对峰图中查看'] : [])] },
     })),
   },
 ])
 
 function onTrackClick(trackId: string, itemId: string) {
   if (trackId === 'reads') emit('open-read', Number(itemId))
-  else if (trackId === 'variants') {
+  else if (trackId === 'sites') {
+    const m = siteMarks.value.filter((x) => !(x.start === x.end && variantPos.value.has(x.start)))[Number(itemId)]
+    if (m) emit('jump-site', { ref_pos: m.start, read: m.reads[0] })
+  } else if (trackId === 'variants') {
     const v = props.variants[Number(itemId)]
     if (v) emit('jump-variant', v)
   }
@@ -300,7 +407,7 @@ defineExpose({ tracks, doc })
       </label>
       <span v-if="dedupMergedCount > 0" class="map-sub">已合并 {{ dedupMergedCount }} 条重复注释</span>
       <label class="map-dedup-toggle"
-             title="read 覆盖区放大显示（约占图宽 60%），未覆盖区段按比例压缩但保留，主轴上以断裂符标出；关闭则全长等比例显示">
+             title="read 覆盖区及其两侧元件放大显示（约占图宽 60%），其余区段按比例压缩但保留，主轴上以断裂符标出；关闭则全长等比例显示">
         <input v-model="focusReads" type="checkbox" /> 突出 read 覆盖
       </label>
     </h4>
@@ -320,6 +427,7 @@ defineExpose({ tracks, doc })
       <span class="lg-gap">▮ 缺口按原因着色（橙=引物够不到、红=应测到未测到、紫=归因不明）</span> ·
       <span class="lg-read">▬ 测序 read（箭头=方向）</span> ·
       <span class="lg-dot">○ 差异位点</span> ·
+      <span v-if="siteMarks.length"><span style="color:#c0392b">▮ 阻断位点</span>（read 上为黄点）/ <span style="color:#9ca3af">▮ 提示位点</span>（read 上为灰圈）；双峰、未决等结果文字标注在主轴上方</span> ·
       <span v-if="focusRanges.length">⫽ 断裂符 = 未覆盖区段压缩显示</span> ·
       <span class="lg-var">▮</span> 变异（点击跳峰图）
       <template v-if="unalignedCount"> · {{ unalignedCount }} 条 read 未比对到参考（见下方 read 表）</template>

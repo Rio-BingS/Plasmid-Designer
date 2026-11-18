@@ -600,7 +600,10 @@ async function downloadConsensus(format: string) {
                 :expected-ranges="analysis.coverage?.expected_ranges ?? []"
                 :verified-ranges="analysis.coverage?.verified_ranges ?? []"
                 :coverage-gaps="analysis.coverage_gaps ?? []"
+                :verdict="analysis.verdict ?? null"
+                :unresolved-sites="analysis.unresolved_sites ?? []"
                 @open-read="openReadInSeqviz" @jump-variant="jumpToVariant"
+                @jump-site="(s) => jumpToVariant(s as never)"
                 @toggle-feature-scope="toggleFeatureScope"
                 @add-scope-range="addScopeRange" />
 

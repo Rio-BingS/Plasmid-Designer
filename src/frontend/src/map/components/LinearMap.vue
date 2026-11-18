@@ -161,7 +161,7 @@ function longestFreeGap(a: number, b: number, marks: number[], r: number): [numb
 }
 interface TrackGeom {
   track: MapTrack; y: number; height: number; laneH: number
-  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[] }[]
+  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[]; dots: { x: number; color: string; filled: boolean }[] }[]
 }
 function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
   const h = t.height ?? 18
@@ -178,8 +178,10 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const longest = geomSegs.reduce((m, s) => (s.x2 - s.x1 > m.x2 - m.x1 ? s : m), geomSegs[0])
     const lw = it.label ? textWidth(it.label, FONT) + 10 : 0
     const marks = (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5))
+    const dots = (it.dots ?? []).filter((d) => d.pos - 1 >= vp.value.from && d.pos <= vp.value.to)
+      .map((d) => ({ x: X(d.pos - 0.5), color: d.color, filled: !!d.filled }))
     // 名字放在条内最长的、不压标记圆点的空当里（否则变异圆点会盖住 read 名）
-    const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), marks, 6)
+    const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), [...marks, ...dots.map((d) => d.x)], 6)
     const inside = !!it.label && gap[1] - gap[0] >= lw
     let labelX = inside ? (gap[0] + gap[1]) / 2 : (longest.x1 + longest.x2) / 2
     let labelRight = true
@@ -200,7 +202,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     rows[lane].push(...iv)
     items.push({
       item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX, labelRight,
-      marks,
+      marks, dots,
     })
   }
   return { track: t, y: y0, height: Math.max(1, rows.length) * laneH, laneH, items }
@@ -219,6 +221,8 @@ const layout = computed(() => {
     y += g.height
   }
   const hasMarks = props.tracks.some((t) => t.kind === 'marks')
+  const markLabelTop = y + (markLabels.value.rows ? 4 : 0)
+  y += markLabels.value.rows ? markLabels.value.rows * MARK_LABEL_ROW + 8 : 0
   const marksY = y
   if (hasMarks) y += 14
   const cutTop = y
@@ -230,7 +234,7 @@ const layout = computed(() => {
   const showBases = scale.value >= 7 && !!store.doc.value.sequence
   const basesY = y + 10
   if (showBases) y += 16
-  return { enzLabelTop, above, hasMarks, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
+  return { enzLabelTop, above, hasMarks, markLabelTop, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
 })
 
 const featLanes = computed(() => stackLanes(
@@ -415,6 +419,19 @@ const markGeoms = computed(() => props.tracks.filter((t) => t.kind === 'marks').
   t.items.filter((it) => it.start - 1 <= vp.value.to && it.end >= vp.value.from).map((it) => ({
     key: `t:${t.id}:${it.id}`, x: X(it.start - 0.5), color: it.color ?? '#c0392b', cls: it.className,
   }))))
+
+/** marks 轨道文字标注（如测序结果位点）：与特征标签同一避让布局，放在刻块上方，引线连回刻块 */
+const MARK_LABEL_ROW = 13
+const markLabelInputs = computed(() => props.tracks.filter((t) => t.kind === 'marks').flatMap((t) =>
+  t.items.filter((it) => it.markLabel && it.start - 1 <= vp.value.to && it.end >= vp.value.from).map((it) => ({
+    id: `t:${t.id}:${it.id}`, text: it.markLabel as string, x: X((it.start + it.end) / 2 - 0.5), priority: it.priority ?? 0,
+    color: it.color ?? '#c0392b',
+  }))))
+const markLabels = computed(() => {
+  if (!markLabelInputs.value.length) return { placed: [], hidden: [] as string[], rows: 0 }
+  return layoutLinearLabels(markLabelInputs.value, { width: W.value - 2, fontSize: 10.5, maxRows: 4, gap: 6, left: 2, maxShift: 120, rowCost: 20 })
+})
+const markLabelColor = computed(() => new Map(markLabelInputs.value.map((m) => [m.id, m.color])))
 
 const tickGeoms = computed(() => {
   const w = warp.value
@@ -633,9 +650,21 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
                 :class="it.labelInside ? 'lmap-track-name' : 'lmap-track-label'" pointer-events="none">{{ it.item.label }}</text>
           <circle v-for="(mx, k) in it.marks" :key="'m' + k" :cx="mx" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
                   fill="#ffffff" stroke="#c0392b" stroke-width="1.5" class="lmap-dot" pointer-events="none" />
+          <circle v-for="(d, k) in it.dots" :key="'d' + k" :cx="d.x" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
+                  :fill="d.filled ? d.color : '#ffffff'" stroke="#ffffff" stroke-width="1.2" class="lmap-dot2" pointer-events="none" />
+          <circle v-for="(d, k) in it.dots.filter((q) => !q.filled)" :key="'dr' + k" :cx="d.x" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="3.2"
+                  fill="#ffffff" :stroke="d.color" stroke-width="1.8" pointer-events="none" />
         </g>
       </template>
 
+      <!-- 刻块文字标注（测序结果位点等）：最底行贴近刻块，引线连回刻块中心 -->
+      <g v-for="l in markLabels.placed" :key="'ml' + l.id" :data-hit="l.id" class="lmap-mark-label-g">
+        <line :x1="l.cx" :x2="l.x + l.w / 2" :y1="layout.marksY + 2" :y2="layout.markLabelTop + (markLabels.rows - 1 - l.row) * MARK_LABEL_ROW + MARK_LABEL_ROW - 2"
+              :stroke="markLabelColor.get(l.id)" stroke-opacity="0.55" stroke-width="0.8" />
+        <text :x="l.x" :y="layout.markLabelTop + (markLabels.rows - 1 - l.row) * MARK_LABEL_ROW + 9.5" font-size="10.5"
+              :fill="markLabelColor.get(l.id)" class="lmap-mark-label"
+              stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">{{ l.text }}</text>
+      </g>
       <!-- 主轴上方小刻块（如变异） -->
       <rect v-for="m in markGeoms" :key="m.key" :data-hit="m.key" :x="m.x - 3.5" :y="layout.marksY + 2" width="7" height="10" rx="1"
             :fill="m.color" :class="['lmap-mark', m.cls]" />

@@ -13,6 +13,12 @@ export interface TrackItem {
   stroke?: string
   /** 箭头上的标记位点（如差异碱基），画成空心圆 */
   marks?: number[]
+  /** 箭头上带样式的标记位点（如双峰/未决位点）：color 描边，filled 实心 */
+  dots?: { pos: number; color: string; filled?: boolean }[]
+  /** marks 轨道：刻块上方的文字标注（与特征标签同一套避让布局，引线连回刻块） */
+  markLabel?: string
+  /** marks 轨道：标注优先级（空间不足时先保高优先级） */
+  priority?: number
   tooltip?: { title: string; lines: string[] }
   className?: string
 }
