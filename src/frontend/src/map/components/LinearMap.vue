@@ -6,7 +6,7 @@
  * 交互：拖拽 = 选区；Ctrl+滚轮 = 以指针为中心缩放；Shift+滚轮/横向滚动 = 平移；
  * Shift+拖拽 = 平移。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
 import type { MapDocument, Range } from '../types'
 import { useMapStore } from '../store'
@@ -36,6 +36,8 @@ const props = withDefaults(defineProps<{
   focusShare?: number
 }>(), { tracks: () => [], interactive: true, showEnzymes: true, focus: () => [], focusShare: 0.6 })
 
+/** 本实例 SVG defs id 前缀（多图并存时 pattern/clipPath 不串） */
+const uid = `lm${useId().replace(/[^\w-]/g, '')}`
 const emit = defineEmits<{
   (e: 'track-click', trackId: string, itemId: string): void
   /** 点击主轴特征（goal v3 W13）：测序简图用它把元件加入/移出需测范围 */
@@ -161,7 +163,9 @@ function longestFreeGap(a: number, b: number, marks: number[], r: number): [numb
 }
 interface TrackGeom {
   track: MapTrack; y: number; height: number; laneH: number
-  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[]; dots: { x: number; color: string; filled: boolean }[] }[]
+  items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[]; dots: { x: number; color: string; filled: boolean }[]
+    bands: { x: number; w: number; color: string; opacity: number; hatch: boolean }[]; ticks: { x: number; color: string; width: number }[]
+    badge: { x: number; right: boolean } | null }[]
 }
 function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
   const h = t.height ?? 18
@@ -180,8 +184,12 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     const marks = (it.marks ?? []).filter((p) => p - 1 >= vp.value.from && p <= vp.value.to).map((p) => X(p - 0.5))
     const dots = (it.dots ?? []).filter((d) => d.pos - 1 >= vp.value.from && d.pos <= vp.value.to)
       .map((d) => ({ x: X(d.pos - 0.5), color: d.color, filled: !!d.filled }))
+    const bands = (it.bands ?? []).flatMap((b) => visSegs({ start: b.start, end: b.end }).map((v) => ({
+      x: v.x1, w: Math.max(0.6, v.x2 - v.x1), color: b.color, opacity: b.opacity ?? 1, hatch: !!b.hatch })))
+    const ticks = (it.ticks ?? []).filter((t) => t.pos - 1 >= vp.value.from && t.pos <= vp.value.to)
+      .map((t) => ({ x: X(t.pos - 0.5), color: t.color, width: t.width ?? 1.6 }))
     // 名字放在条内最长的、不压标记圆点的空当里（否则变异圆点会盖住 read 名）
-    const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), [...marks, ...dots.map((d) => d.x)], 6)
+    const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), [...marks, ...dots.map((d) => d.x), ...ticks.map((t) => t.x)], 6)
     const inside = !!it.label && gap[1] - gap[0] >= lw
     let labelX = inside ? (gap[0] + gap[1]) / 2 : (longest.x1 + longest.x2) / 2
     let labelRight = true
@@ -197,12 +205,23 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     }
     const iv: [number, number][] = geomSegs.map((s) => [s.x1, s.x2])
     if (it.label && !inside) iv.push([labelRight ? labelX : labelX - lw, labelRight ? labelX + lw : labelX])
+    // 摘要小字：箭头右端外侧，放不下放左端外侧，再不行不画
+    let badge: { x: number; right: boolean } | null = null
+    if (it.badge) {
+      const bw = textWidth(it.badge, 10) + 6
+      const xr = Math.max(...geomSegs.map((s) => s.x2)) + 4
+      const xl = Math.min(...geomSegs.map((s) => s.x1)) - 4
+      const busy = (a: number, b: number) => iv.some(([c, d]) => c < b && a < d)
+      if (xr + bw <= W.value && !busy(xr, xr + bw)) badge = { x: xr, right: true }
+      else if (xl - bw >= 0 && !busy(xl - bw, xl)) badge = { x: xl, right: false }
+      if (badge) iv.push(badge.right ? [badge.x, badge.x + bw] : [badge.x - bw, badge.x])
+    }
     let lane = rows.findIndex((r) => !r.some(([a, b]) => iv.some(([c, d]) => c < b + 3 && a < d + 3)))
     if (lane === -1) { rows.push([]); lane = rows.length - 1 }
     rows[lane].push(...iv)
     items.push({
       item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX, labelRight,
-      marks, dots,
+      marks, dots, bands, ticks, badge,
     })
   }
   return { track: t, y: y0, height: Math.max(1, rows.length) * laneH, laneH, items }
@@ -220,6 +239,11 @@ const layout = computed(() => {
     above.push(g)
     y += g.height
   }
+  const strips: { track: MapTrack; y: number }[] = []
+  for (const t of props.tracks.filter((t) => t.kind === 'strip')) {
+    strips.push({ track: t, y: y + 2 })
+    y += 14
+  }
   const hasMarks = props.tracks.some((t) => t.kind === 'marks')
   const markLabelTop = y + (markLabels.value.rows ? 4 : 0)
   y += markLabels.value.rows ? markLabels.value.rows * MARK_LABEL_ROW + 8 : 0
@@ -234,7 +258,7 @@ const layout = computed(() => {
   const showBases = scale.value >= 7 && !!store.doc.value.sequence
   const basesY = y + 10
   if (showBases) y += 16
-  return { enzLabelTop, above, hasMarks, markLabelTop, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
+  return { enzLabelTop, above, strips, hasMarks, markLabelTop, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
 })
 
 const featLanes = computed(() => stackLanes(
@@ -415,6 +439,13 @@ const orfGeoms = computed(() => store.orfs.value.flatMap((o, i) => {
 // 主轴上的色段（axis 轨道）与小刻块（marks 轨道）
 const axisBlocks = computed(() => props.tracks.filter((t) => t.kind === 'axis').flatMap((t) =>
   t.items.flatMap((it) => visSegs(it).map((s, i) => ({ k: `${t.id}-${it.id}-${i}`, x: s.x1, w: Math.max(1.5, s.x2 - s.x1), color: it.color ?? '#58b368', cls: it.className })))))
+/** 色带说明文字：放在色带左端外侧，放不下时贴图左边 */
+function stripLabelX(t: MapTrack): { x: number; anchor: 'start' | 'end' } {
+  const xs = t.items.flatMap((it) => visSegs({ start: it.start, end: it.end }).map((v) => v.x1))
+  const x0 = xs.length ? Math.min(...xs) : 0
+  const w = textWidth(t.label ?? '', 9.5) + 6
+  return x0 - w >= 0 ? { x: x0 - 4, anchor: 'end' } : { x: 2, anchor: 'start' }
+}
 const markGeoms = computed(() => props.tracks.filter((t) => t.kind === 'marks').flatMap((t) =>
   t.items.filter((it) => it.start - 1 <= vp.value.to && it.end >= vp.value.from).map((it) => ({
     key: `t:${t.id}:${it.id}`, x: X(it.start - 0.5), color: it.color ?? '#c0392b', cls: it.className,
@@ -624,6 +655,12 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
       @pointercancel="onPointerCancel" @lostpointercapture="onPointerCancel"
       @pointerleave="onLeave" @wheel="onWheel"
     >
+      <defs>
+        <pattern :id="`${uid}-hatch`" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <rect width="5" height="5" fill="#d1d5db" />
+          <line x1="0" y1="0" x2="0" y2="5" stroke="#9ca3af" stroke-width="2" />
+        </pattern>
+      </defs>
       <rect v-for="r in hoverRects" :key="'h' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#f59e0b" fill-opacity="0.1" />
       <rect v-for="r in selRects" :key="'sel' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#4f46e5" fill-opacity="0.13" class="lmap-selection" />
 
@@ -644,6 +681,19 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
           <path v-for="(s, k) in it.segs" :key="k" :d="barArrowPath(s.x1, s.x2, g.y + it.lane * g.laneH, g.laneH - 6, it.item.strand ?? 0, s.head)"
                 :fill="it.item.color ?? '#b03a2e'" :stroke="it.item.stroke ?? darken(it.item.color ?? '#b03a2e')" stroke-width="0.8"
                 :class="it.item.className" />
+          <template v-if="it.bands.length">
+            <clipPath :id="`${uid}-clip-${it.key.replace(/[^\w-]/g, '_')}`">
+              <path v-for="(s, k) in it.segs" :key="k" :d="barArrowPath(s.x1, s.x2, g.y + it.lane * g.laneH, g.laneH - 6, it.item.strand ?? 0, s.head)" />
+            </clipPath>
+            <g :clip-path="`url(#${uid}-clip-${it.key.replace(/[^\w-]/g, '_')})`" class="lmap-bands" pointer-events="none">
+              <rect v-for="(b, k) in it.bands" :key="'b' + k" :x="b.x" :y="g.y + it.lane * g.laneH" :width="b.w" :height="g.laneH - 6"
+                    :fill="b.hatch ? `url(#${uid}-hatch)` : b.color" :fill-opacity="b.opacity" :class="b.hatch ? 'lmap-band-hatch' : 'lmap-band'" />
+            </g>
+          </template>
+          <line v-for="(t, k) in it.ticks" :key="'tk' + k" :x1="t.x" :x2="t.x" :y1="g.y + it.lane * g.laneH + 1" :y2="g.y + it.lane * g.laneH + g.laneH - 7"
+                :stroke="t.color" :stroke-width="t.width" class="lmap-read-tick" pointer-events="none" />
+          <text v-if="it.badge && it.item.badge" :x="it.badge.x" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
+                :text-anchor="it.badge.right ? 'start' : 'end'" font-size="10" fill="#6b7280" class="lmap-track-badge" pointer-events="none">{{ it.item.badge }}</text>
           <text v-if="it.item.label" :x="it.labelX" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
                 :text-anchor="it.labelInside ? 'middle' : (it.labelRight ? 'start' : 'end')" :font-size="FONT"
                 :fill="it.labelInside ? '#ffffff' : '#374151'" :font-weight="it.labelInside ? 700 : 400"
@@ -656,6 +706,19 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
                   fill="#ffffff" :stroke="d.color" stroke-width="1.8" pointer-events="none" />
         </g>
       </template>
+
+      <!-- 细色带轨道（如共识/双向确认），左端说明 -->
+      <g v-for="st in layout.strips" :key="'st' + st.track.id" :class="['lmap-strip', `lmap-strip-${st.track.id}`]">
+        <template v-for="it in st.track.items" :key="it.id">
+          <!-- 短区段（如单个情况位点）至少 3px 宽，居中，保证一眼可见 -->
+          <rect v-for="(v, k) in visSegs({ start: it.start, end: it.end })" :key="k" :data-hit="`t:${st.track.id}:${it.id}`"
+                :x="v.x2 - v.x1 < 3 ? (v.x1 + v.x2) / 2 - 1.5 : v.x1" :y="st.y" :width="Math.max(3, v.x2 - v.x1)" height="8"
+                :fill="it.color" :class="it.className" />
+        </template>
+        <text v-if="st.track.label" :x="stripLabelX(st.track).x" :y="st.y + 4" dominant-baseline="central" font-size="9.5" fill="#6b7280"
+              :text-anchor="stripLabelX(st.track).anchor"
+              stroke="#ffffff" stroke-width="3" paint-order="stroke" pointer-events="none">{{ st.track.label }}</text>
+      </g>
 
       <!-- 刻块文字标注（测序结果位点等）：最底行贴近刻块，引线连回刻块中心 -->
       <g v-for="l in markLabels.placed" :key="'ml' + l.id" :data-hit="l.id" class="lmap-mark-label-g">

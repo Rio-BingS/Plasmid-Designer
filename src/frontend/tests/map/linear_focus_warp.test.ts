@@ -72,3 +72,30 @@ describe('匹配简图结果位点标注', () => {
     expect(w.findAll('.lmap-dot2').length).toBe(5) // a: 1050,1200,1500；b: 1500,1950
   })
 })
+
+describe('匹配简图 read 测序情况', () => {
+  it('read 内按质量分档着色、可信区外斜线、双峰/indel 竖线、摘要小字、测序确认色带', async () => {
+    const MatchMap = (await import('@/components/sequencing/MatchMap.vue')).default
+    const ref = 'ACGTACGTAC'.repeat(10)
+    const q = Array.from({ length: 100 }, (_, i) => (i < 10 ? 10 : i < 20 ? 25 : 50))
+    const readSeq = ref.slice(0, 50) + 'T' + ref.slice(51)   // 51 错配（参考 C→T? 任意不同即可）
+    const fwd = { index: 0, filename: 'f.ab1', direction: '+', ref_start: 1001, ref_end: 1100, query_start: 0, identity: 0.99,
+      wraps_origin: false, grade: 'A', q20_ratio: 0.9, mixed_count: 1,
+      reliable_zone: { start: 5, end: 95 }, mixed_detail: [{ pos: 60, ratio: 0.45 }],
+      alignment_view: { ref_start: 1001, ref_aligned: ref, read_aligned: readSeq, q_aligned: q } }
+    const rev = { index: 1, filename: 'r.ab1', direction: '-', ref_start: 1041, ref_end: 1100, query_start: 0, identity: 1,
+      wraps_origin: false, alignment_view: { ref_start: 1041, ref_aligned: ref.slice(40), read_aligned: ref.slice(40), q_aligned: Array(60).fill(50) } }
+    const w = mount(MatchMap, { props: {
+      reads: [fwd, rev] as never, variants: [], features: [], coverageRanges: [[1001, 1100]], referenceLength: 5000, circular: true,
+    } })
+    expect(w.findAll('.lmap-band').length).toBeGreaterThanOrEqual(2)        // Q<20 与 Q20–29 两档
+    expect(w.findAll('.lmap-band-hatch').length).toBeGreaterThanOrEqual(2)  // 两端可信区外
+    expect(w.findAll('.lmap-read-tick').length).toBe(1)                     // 1060 双峰
+    expect(w.find('.lmap-track-badge').text()).toBe('A · Q20 90% · 一致 99.0% · 双峰 1')
+    const cls = w.findAll('rect.map-confirm').map((r) => r.classes().find((c) => c.startsWith('map-confirm-')))
+    expect(cls).toContain('map-confirm-both')
+    expect(cls).toContain('map-confirm-single')
+    expect(cls).toContain('map-confirm-low')
+    expect(cls).toContain('map-confirm-conflict')
+  })
+})

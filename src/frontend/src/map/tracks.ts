@@ -15,6 +15,12 @@ export interface TrackItem {
   marks?: number[]
   /** 箭头上带样式的标记位点（如双峰/未决位点）：color 描边，filled 实心 */
   dots?: { pos: number; color: string; filled?: boolean }[]
+  /** 箭头内部的分段着色（如逐碱基质量）：裁剪在箭头形状内；hatch = 斜线灰（不可信区） */
+  bands?: { start: number; end: number; color: string; opacity?: number; hatch?: boolean }[]
+  /** 箭头上的竖线标记（错配/插入缺失/双峰等），贯穿箭头高度 */
+  ticks?: { pos: number; color: string; width?: number; title?: string }[]
+  /** 箭头外侧的小字摘要（如等级/Q20/一致性） */
+  badge?: string
   /** marks 轨道：刻块上方的文字标注（与特征标签同一套避让布局，引线连回刻块） */
   markLabel?: string
   /** marks 轨道：标注优先级（空间不足时先保高优先级） */
@@ -25,8 +31,11 @@ export interface TrackItem {
 
 export interface MapTrack {
   id: string
-  /** arrows = 分道箭头；axis = 叠在主轴上的色段；marks = 主轴上方的小刻块 */
-  kind: 'arrows' | 'axis' | 'marks'
+  /** arrows = 分道箭头；axis = 叠在主轴上的色段；marks = 主轴上方的小刻块；
+   *  strip = 箭头轨道下方的一条细色带（如共识/双向确认状态），label 写在左端 */
+  kind: 'arrows' | 'axis' | 'marks' | 'strip'
+  /** strip：左端说明文字 */
+  label?: string
   position?: 'above' | 'below'
   /** 箭头高度（px） */
   height?: number

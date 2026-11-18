@@ -278,6 +278,119 @@ function readSiteDots(r: ReadRow, diffs: number[]): { pos: number; color: string
   return out
 }
 
+// ==================== read 测序情况（用户 2026-11-18：一眼看出哪里有情况） ====================
+/** 逐碱基质量分档：≥30 实色；20–29 半淡；<20 很淡；可信区外斜线灰 */
+const Q_HI = 30
+const Q_LO = 20
+/** 比对列 → 参考坐标（环状折回）+ 质量 + 是否错配/插入缺失 */
+function readColumns(r: ReadRow): { pos: number; q: number; mismatch: boolean; indel: boolean }[] {
+  const av = r.alignment_view as (ReadRow['alignment_view'] & { q_aligned?: number[] }) | null | undefined
+  if (!av) return []
+  const L = props.referenceLength
+  const fold = (p: number) => (L > 0 && p > L ? p - L : p)
+  const out: { pos: number; q: number; mismatch: boolean; indel: boolean }[] = []
+  let pos = av.ref_start
+  for (let i = 0; i < av.ref_aligned.length; i++) {
+    const rb = av.ref_aligned[i]
+    const qb = av.read_aligned[i]
+    const q = Number(av.q_aligned?.[i] ?? 40)
+    if (rb !== '-') {
+      out.push({ pos: fold(pos), q, mismatch: qb !== '-' && qb !== rb, indel: qb === '-' })
+      pos++
+    } else if (qb !== '-' && out.length) {
+      out[out.length - 1].indel = true
+    }
+  }
+  return out
+}
+/** read 坐标 → 参考坐标（忽略 indel 的线性换算；反向 read 坐标按原始方向计） */
+function readToRef(r: ReadRow, p: number): number {
+  const qs = (r as { query_start?: number }).query_start ?? 0
+  const L = props.referenceLength
+  const v = r.direction === '+' ? r.ref_start + (p - qs) : r.ref_end - (p - qs)
+  return L > 0 ? ((v - 1 + L) % L) + 1 : v
+}
+/** 可信区（reliable_zone，修剪后坐标）换到参考坐标 */
+function reliableRef(r: ReadRow): [number, number] | null {
+  const z = (r as { reliable_zone?: { start: number; end: number } | null }).reliable_zone
+  if (!z) return null
+  const a = readToRef(r, z.start)
+  const b = readToRef(r, z.end)
+  return [Math.min(a, b), Math.max(a, b)]
+}
+function inZone(zone: [number, number] | null, p: number) {
+  return !zone || (p >= zone[0] && p <= zone[1])
+}
+type QClass = 'hi' | 'mid' | 'lo' | 'out'
+function readQuality(r: ReadRow): { start: number; end: number; cls: QClass }[] {
+  const zone = reliableRef(r)
+  const runs: { start: number; end: number; cls: QClass }[] = []
+  for (const c of readColumns(r)) {
+    const cls: QClass = !inZone(zone, c.pos) ? 'out' : c.q >= Q_HI ? 'hi' : c.q >= Q_LO ? 'mid' : 'lo'
+    const last = runs[runs.length - 1]
+    if (last && last.cls === cls && c.pos === last.end + 1) last.end = c.pos
+    else runs.push({ start: c.pos, end: c.pos, cls })
+  }
+  return runs
+}
+const Q_BAND: Record<Exclude<QClass, 'hi'>, { color: string; opacity: number; hatch?: boolean }> = {
+  mid: { color: '#ffffff', opacity: 0.38 },
+  lo: { color: '#ffffff', opacity: 0.68 },
+  out: { color: '#d1d5db', opacity: 1, hatch: true },
+}
+type MixedRow = { pos: number; ratio: number }
+function readTicks(r: ReadRow): { pos: number; color: string; width: number }[] {
+  const ticks: { pos: number; color: string; width: number }[] = []
+  for (const m of ((r as { mixed_detail?: MixedRow[] }).mixed_detail ?? [])) {
+    // 双峰：次峰占比 ≥0.3 橙色粗线，其余黄色细线
+    ticks.push({ pos: readToRef(r, m.pos), color: m.ratio >= 0.3 ? '#f97316' : '#facc15', width: m.ratio >= 0.3 ? 2.2 : 1.4 })
+  }
+  for (const c of readColumns(r)) if (c.indel) ticks.push({ pos: c.pos, color: '#111827', width: 2.4 })
+  return ticks
+}
+function readBadge(r: ReadRow): string {
+  const x = r as { grade?: string; q20_ratio?: number; mixed_count?: number }
+  const parts: string[] = []
+  if (x.grade) parts.push(x.grade)
+  if (x.q20_ratio != null) parts.push(`Q20 ${(x.q20_ratio * 100).toFixed(0)}%`)
+  parts.push(`一致 ${(r.identity * 100).toFixed(1)}%`)
+  if (x.mixed_count) parts.push(`双峰 ${x.mixed_count}`)
+  return parts.join(' · ')
+}
+
+/** 测序确认色带：逐参考位点看高质量（可信区内且 Q≥20）的 read 方向与一致性 */
+type ConfClass = 'conflict' | 'both' | 'single' | 'low'
+const CONF_COLOR: Record<ConfClass, string> = { conflict: '#dc2626', both: '#15803d', single: '#86efac', low: '#fcd34d' }
+const CONF_TEXT: Record<ConfClass, string> = { conflict: '有差异/双峰待核', both: '双向高质量确认', single: '单向高质量', low: '仅低质量覆盖' }
+const confirmRuns = computed(() => {
+  const per = new Map<number, { fwd: boolean; rev: boolean; any: boolean; bad: boolean }>()
+  const get = (p: number) => { let v = per.get(p); if (!v) { v = { fwd: false, rev: false, any: false, bad: false }; per.set(p, v) } return v }
+  for (const r of alignedReads.value) {
+    const zone = reliableRef(r)
+    for (const c of readColumns(r)) {
+      const v = get(c.pos)
+      v.any = true
+      const hq = inZone(zone, c.pos) && c.q >= Q_LO
+      if (hq) { if (r.direction === '+') v.fwd = true; else v.rev = true }
+      if (hq && (c.mismatch || c.indel)) v.bad = true
+    }
+    for (const m of ((r as { mixed_detail?: MixedRow[] }).mixed_detail ?? [])) {
+      const p = readToRef(r, m.pos)
+      if (m.ratio >= 0.3 && inZone(zone, p)) get(p).bad = true
+    }
+  }
+  for (const m of siteMarks.value) if (m.sev === 'blocking' && m.start === m.end && per.has(m.start)) get(m.start).bad = true
+  const runs: { start: number; end: number; cls: ConfClass }[] = []
+  for (const p of [...per.keys()].sort((a, b) => a - b)) {
+    const v = per.get(p)!
+    const cls: ConfClass = v.bad ? 'conflict' : v.fwd && v.rev ? 'both' : v.fwd || v.rev ? 'single' : 'low'
+    const last = runs[runs.length - 1]
+    if (last && last.cls === cls && p === last.end + 1) last.end = p
+    else runs.push({ start: p, end: p, cls })
+  }
+  return runs
+})
+
 const tracks = computed<MapTrack[]>(() => [
   {
     id: 'reads', kind: 'arrows', height: 22,
@@ -293,10 +406,13 @@ const tracks = computed<MapTrack[]>(() => [
           segments: segs.length > 1 ? segs : undefined,
           strand: (fwd ? 1 : -1) as 1 | -1,
           label: shortName(r.filename),
-          color: '#b03a2e',
-          stroke: '#7e251c',
+          color: '#475569',
+          stroke: '#1e293b',
           marks: readDiffPositions(r),
           dots: readSiteDots(r, readDiffPositions(r)),
+          bands: readQuality(r).filter((b) => b.cls !== 'hi').map((b) => ({ start: b.start, end: b.end, ...Q_BAND[b.cls as Exclude<QClass, 'hi'>] })),
+          ticks: readTicks(r),
+          badge: readBadge(r),
           className: fwd ? 'map-arrow-fwd' : 'map-arrow-rev',
           tooltip: {
             title: r.filename,
@@ -342,6 +458,13 @@ const tracks = computed<MapTrack[]>(() => [
         },
       }
     }),
+  },
+  {
+    id: 'confirm', kind: 'strip', label: '测序确认',
+    items: confirmRuns.value.map((c, i) => ({
+      id: String(i), start: c.start, end: c.end, color: CONF_COLOR[c.cls], className: `map-confirm map-confirm-${c.cls}`,
+      tooltip: { title: CONF_TEXT[c.cls], lines: [c.start === c.end ? `${c.start}` : `${c.start}–${c.end}（${c.end - c.start + 1} bp）`] },
+    })),
   },
   {
     // 结果位点（判定 blocking/info + 未决位点）：刻块 + 文字标注；与差异同位点的已并入上一轨
@@ -420,13 +543,27 @@ defineExpose({ tracks, doc })
                :focus="focusRanges" :focus-share="FOCUS_SHARE"
                @track-click="onTrackClick" @feature-click="onFeatureClick"
                @range-select="onRangeSelect" />
+    <p class="map-legend hint lg-reads">
+      <b>read</b>
+      <span class="lg-sw" style="background:#475569"></span>Q≥30
+      <span class="lg-sw" style="background:#475569;opacity:.62"></span>Q20–29
+      <span class="lg-sw" style="background:#475569;opacity:.32"></span>Q&lt;20
+      <span class="lg-sw lg-hatch"></span>可信区外 ·
+      <span class="lg-dot">○</span> 错配
+      <span class="lg-tick" style="background:#f97316"></span>双峰（次峰≥30%）
+      <span class="lg-tick" style="background:#facc15"></span>弱双峰
+      <span class="lg-tick" style="background:#111827"></span>插入/缺失 ·
+      <b>测序确认</b>
+      <span class="lg-sw" style="background:#15803d"></span>双向
+      <span class="lg-sw" style="background:#86efac"></span>单向
+      <span class="lg-sw" style="background:#fcd34d"></span>仅低质量
+      <span class="lg-sw" style="background:#dc2626"></span>有情况
+    </p>
     <p class="map-legend hint">
       <span class="lg-req">▬ 蓝段 = 需测范围（点击元件增删；灰段 = 范围外未评估）</span> ·
       <span class="lg-exp">▬ 黄段 = 引物理论覆盖</span> ·
       <span class="lg-cov">▬ 绿段 = 验证覆盖</span> ·
       <span class="lg-gap">▮ 缺口按原因着色（橙=引物够不到、红=应测到未测到、紫=归因不明）</span> ·
-      <span class="lg-read">▬ 测序 read（箭头=方向）</span> ·
-      <span class="lg-dot">○ 差异位点</span> ·
       <span v-if="siteMarks.length"><span style="color:#c0392b">▮ 阻断位点</span>（read 上为黄点）/ <span style="color:#9ca3af">▮ 提示位点</span>（read 上为灰圈）；双峰、未决等结果文字标注在主轴上方</span> ·
       <span v-if="focusRanges.length">⫽ 断裂符 = 未覆盖区段压缩显示</span> ·
       <span class="lg-var">▮</span> 变异（点击跳峰图）
@@ -449,6 +586,10 @@ defineExpose({ tracks, doc })
 }
 .lg-read { color: #b03a2e; font-weight: 600; }
 .lg-dot { color: #c0392b; font-weight: 600; }
+.lg-reads { margin-bottom: 0; }
+.lg-sw { display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin: 0 3px 0 8px; vertical-align: 0; }
+.lg-hatch { background: repeating-linear-gradient(45deg, #d1d5db 0 2px, #9ca3af 2px 4px); }
+.lg-tick { display: inline-block; width: 3px; height: 11px; margin: 0 3px 0 8px; vertical-align: -1px; }
 .lg-var { color: #c0392b; font-weight: 700; }
 .lg-cov { color: #58b368; font-weight: 700; }
 .lg-req { color: #4a90d9; font-weight: 700; }
