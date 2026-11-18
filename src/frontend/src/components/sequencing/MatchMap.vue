@@ -267,19 +267,11 @@ const siteMarks = computed<SiteMark[]>(() => {
 /** 与差异刻块同位点的结果条目并入差异刻块（不重复画） */
 const variantPos = computed(() => new Set(props.variants.map((v) => v.ref_pos)))
 const siteAt = computed(() => new Map(siteMarks.value.filter((m) => m.start === m.end).map((m) => [m.start, m])))
-/** read 上的结果位点圆点：该 read 参与的结果位点（双峰/未决等），blocking 实心红、其余空心 */
-function readSiteDots(r: ReadRow, diffs: number[]): { pos: number; color: string; filled?: boolean }[] {
-  const out: { pos: number; color: string; filled?: boolean }[] = []
-  for (const m of siteMarks.value) {
-    if (m.start !== m.end || !m.reads.includes(r.filename) || diffs.includes(m.start)) continue
-    // 箭头本身是深红：阻断位点用黄色实心点，提示位点用灰圈
-    out.push({ pos: m.start, color: m.sev === 'blocking' ? '#facc15' : SEV_COLOR[m.sev], filled: m.sev === 'blocking' })
-  }
-  return out
-}
 
 // ==================== read 测序情况（用户 2026-11-18：一眼看出哪里有情况） ====================
 /** 逐碱基质量分档：≥30 实色；20–29 半淡；<20 很淡；可信区外斜线灰 */
+const READ_FWD = '#5b86c9'   // 正向：柔和蓝
+const READ_REV = '#8476c9'   // 反向：柔和紫
 const Q_HI = 30
 const Q_LO = 20
 /** 比对列 → 参考坐标（环状折回）+ 质量 + 是否错配/插入缺失 */
@@ -326,6 +318,7 @@ function readQuality(r: ReadRow): { start: number; end: number; cls: QClass }[] 
   const zone = reliableRef(r)
   const runs: { start: number; end: number; cls: QClass }[] = []
   for (const c of readColumns(r)) {
+    // 可信区外整体淡化（仍画出位置，不加斜线，不抢眼；其中的双峰/错配不标）
     const cls: QClass = !inZone(zone, c.pos) ? 'out' : c.q >= Q_HI ? 'hi' : c.q >= Q_LO ? 'mid' : 'lo'
     const last = runs[runs.length - 1]
     if (last && last.cls === cls && c.pos === last.end + 1) last.end = c.pos
@@ -334,18 +327,20 @@ function readQuality(r: ReadRow): { start: number; end: number; cls: QClass }[] 
   return runs
 }
 const Q_BAND: Record<Exclude<QClass, 'hi'>, { color: string; opacity: number; hatch?: boolean }> = {
-  mid: { color: '#ffffff', opacity: 0.38 },
-  lo: { color: '#ffffff', opacity: 0.68 },
-  out: { color: '#d1d5db', opacity: 1, hatch: true },
+  mid: { color: '#ffffff', opacity: 0.35 },
+  lo: { color: '#ffffff', opacity: 0.65 },
+  out: { color: '#ffffff', opacity: 0.72 },
 }
 type MixedRow = { pos: number; ratio: number }
 function readTicks(r: ReadRow): { pos: number; color: string; width: number }[] {
   const ticks: { pos: number; color: string; width: number }[] = []
+  const zone = r.wraps_origin ? null : reliableRef(r)
   for (const m of ((r as { mixed_detail?: MixedRow[] }).mixed_detail ?? [])) {
-    // 双峰：次峰占比 ≥0.3 橙色粗线，其余黄色细线
-    ticks.push({ pos: readToRef(r, m.pos), color: m.ratio >= 0.3 ? '#f97316' : '#facc15', width: m.ratio >= 0.3 ? 2.2 : 1.4 })
+    // 只画可信区内的明显双峰（次峰 ≥30%）；弱双峰留给结果位点/峰图，不在 read 上堆线
+    const p = readToRef(r, m.pos)
+    if (m.ratio >= 0.3 && inZone(zone, p)) ticks.push({ pos: p, color: '#f59e0b', width: 2.4 })
   }
-  for (const c of readColumns(r)) if (c.indel) ticks.push({ pos: c.pos, color: '#111827', width: 2.4 })
+  for (const c of readColumns(r)) if (c.indel && inZone(zone, c.pos)) ticks.push({ pos: c.pos, color: '#111827', width: 2.4 })
   return ticks
 }
 function readBadge(r: ReadRow): string {
@@ -368,9 +363,10 @@ const confirmRuns = computed(() => {
   for (const r of alignedReads.value) {
     const zone = reliableRef(r)
     for (const c of readColumns(r)) {
+      if (!inZone(zone, c.pos)) continue
       const v = get(c.pos)
       v.any = true
-      const hq = inZone(zone, c.pos) && c.q >= Q_LO
+      const hq = c.q >= Q_LO
       if (hq) { if (r.direction === '+') v.fwd = true; else v.rev = true }
       if (hq && (c.mismatch || c.indel)) v.bad = true
     }
@@ -406,10 +402,9 @@ const tracks = computed<MapTrack[]>(() => [
           segments: segs.length > 1 ? segs : undefined,
           strand: (fwd ? 1 : -1) as 1 | -1,
           label: shortName(r.filename),
-          color: '#475569',
-          stroke: '#1e293b',
-          marks: readDiffPositions(r),
-          dots: readSiteDots(r, readDiffPositions(r)),
+          color: fwd ? READ_FWD : READ_REV,
+          stroke: fwd ? '#3d64a8' : '#5b4fa3',
+          marks: readDiffPositions(r).filter((p) => inZone(r.wraps_origin ? null : reliableRef(r), p)),
           bands: readQuality(r).filter((b) => b.cls !== 'hi').map((b) => ({ start: b.start, end: b.end, ...Q_BAND[b.cls as Exclude<QClass, 'hi'>] })),
           ticks: readTicks(r),
           badge: readBadge(r),
@@ -471,7 +466,8 @@ const tracks = computed<MapTrack[]>(() => [
     id: 'sites', kind: 'marks',
     items: siteMarks.value.filter((m) => !(m.start === m.end && variantPos.value.has(m.start))).map((m, i) => ({
       id: String(i), start: m.start, end: m.end, color: SEV_COLOR[m.sev], className: `map-site-tick map-site-${m.sev}`,
-      markLabel: m.label, priority: m.sev === 'blocking' ? 50 : 10,
+      // 只给阻断项写字；提示级只留灰色刻块（悬停看说明），避免满屏文字
+      markLabel: m.sev === 'blocking' ? m.label : undefined, priority: 50,
       tooltip: { title: m.label, lines: [...m.lines, ...(m.start === m.end ? ['点击在比对峰图中查看'] : [])] },
     })),
   },
@@ -545,28 +541,27 @@ defineExpose({ tracks, doc })
                @range-select="onRangeSelect" />
     <p class="map-legend hint lg-reads">
       <b>read</b>
-      <span class="lg-sw" style="background:#475569"></span>Q≥30
-      <span class="lg-sw" style="background:#475569;opacity:.62"></span>Q20–29
-      <span class="lg-sw" style="background:#475569;opacity:.32"></span>Q&lt;20
-      <span class="lg-sw lg-hatch"></span>可信区外 ·
+      <span class="lg-sw" :style="{ background: READ_FWD }"></span>正向
+      <span class="lg-sw" :style="{ background: READ_REV }"></span>反向（颜色越浅质量越低，两端最浅为可信区外，不参与判定）
       <span class="lg-dot">○</span> 错配
-      <span class="lg-tick" style="background:#f97316"></span>双峰（次峰≥30%）
-      <span class="lg-tick" style="background:#facc15"></span>弱双峰
+      <span class="lg-tick" style="background:#f59e0b"></span>双峰
       <span class="lg-tick" style="background:#111827"></span>插入/缺失 ·
       <b>测序确认</b>
       <span class="lg-sw" style="background:#15803d"></span>双向
       <span class="lg-sw" style="background:#86efac"></span>单向
-      <span class="lg-sw" style="background:#fcd34d"></span>仅低质量
+      <span class="lg-sw" style="background:#fcd34d"></span>低质量
       <span class="lg-sw" style="background:#dc2626"></span>有情况
+      <template v-if="siteMarks.length"> ·
+        <span class="lg-tick" style="background:#c0392b"></span>阻断位点
+        <span class="lg-tick" style="background:#9ca3af"></span>提示位点（悬停看说明）
+      </template>
     </p>
     <p class="map-legend hint">
-      <span class="lg-req">▬ 蓝段 = 需测范围（点击元件增删；灰段 = 范围外未评估）</span> ·
-      <span class="lg-exp">▬ 黄段 = 引物理论覆盖</span> ·
-      <span class="lg-cov">▬ 绿段 = 验证覆盖</span> ·
-      <span class="lg-gap">▮ 缺口按原因着色（橙=引物够不到、红=应测到未测到、紫=归因不明）</span> ·
-      <span v-if="siteMarks.length"><span style="color:#c0392b">▮ 阻断位点</span>（read 上为黄点）/ <span style="color:#9ca3af">▮ 提示位点</span>（read 上为灰圈）；双峰、未决等结果文字标注在主轴上方</span> ·
-      <span v-if="focusRanges.length">⫽ 断裂符 = 未覆盖区段压缩显示</span> ·
-      <span class="lg-var">▮</span> 变异（点击跳峰图）
+      <span class="lg-req">▬ 需测范围</span> ·
+      <span class="lg-exp">▬ 引物理论覆盖</span> ·
+      <span class="lg-cov">▬ 验证覆盖</span> ·
+      <span class="lg-gap">▮ 缺口</span>（橙=引物够不到、红=应测未测、紫=不明）
+      <template v-if="focusRanges.length"> · ⫽ 压缩显示的区段</template>
       <template v-if="unalignedCount"> · {{ unalignedCount }} 条 read 未比对到参考（见下方 read 表）</template>
       <template v-if="legendTypes.length"> · 特征
         <span v-for="t in legendTypes" :key="t.type" class="lg-type"><i :style="{ background: t.color }"></i>{{ t.type }}</span>

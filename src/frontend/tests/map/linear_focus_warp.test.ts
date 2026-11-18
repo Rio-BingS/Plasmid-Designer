@@ -65,16 +65,16 @@ describe('匹配简图结果位点标注', () => {
     const labels = w.findAll('.lmap-mark-label').map((t) => t.text())
     expect(labels).toContain('1500 C>A P1Q · 疑似混合')
     expect(labels).toContain('1050 双峰待核')
-    expect(labels).toContain('1950 双峰待核')
-    expect(labels).toContain('1200 双峰')
+    expect(labels).not.toContain('1950 双峰待核')   // 提示级只留刻块不写字
+    expect(labels).not.toContain('1200 双峰')
     expect(w.findAll('.map-var-tick').length).toBe(1)
     expect(w.findAll('.map-site-tick').length).toBe(3)
-    expect(w.findAll('.lmap-dot2').length).toBe(5) // a: 1050,1200,1500；b: 1500,1950
+    expect(w.findAll('.lmap-dot2').length).toBe(0) // read 上不再叠结果圆点（2026-11-19 去杂）
   })
 })
 
 describe('匹配简图 read 测序情况', () => {
-  it('read 内按质量分档着色、可信区外斜线、双峰/indel 竖线、摘要小字、测序确认色带', async () => {
+  it('read 按质量分档着色、可信区外淡化、明显双峰竖线、摘要小字、测序确认色带', async () => {
     const MatchMap = (await import('@/components/sequencing/MatchMap.vue')).default
     const ref = 'ACGTACGTAC'.repeat(10)
     const q = Array.from({ length: 100 }, (_, i) => (i < 10 ? 10 : i < 20 ? 25 : 50))
@@ -89,13 +89,13 @@ describe('匹配简图 read 测序情况', () => {
       reads: [fwd, rev] as never, variants: [], features: [], coverageRanges: [[1001, 1100]], referenceLength: 5000, circular: true,
     } })
     expect(w.findAll('.lmap-band').length).toBeGreaterThanOrEqual(2)        // Q<20 与 Q20–29 两档
-    expect(w.findAll('.lmap-band-hatch').length).toBeGreaterThanOrEqual(2)  // 两端可信区外
+    expect(w.findAll('.lmap-band-hatch').length).toBe(0)                    // 不再斜线重点标出
+    expect(w.findAll('.lmap-band').filter((b) => b.attributes('fill-opacity') === '0.72').length).toBeGreaterThanOrEqual(2) // 两端可信区外淡化
     expect(w.findAll('.lmap-read-tick').length).toBe(1)                     // 1060 双峰
     expect(w.find('.lmap-track-badge').text()).toBe('A · Q20 90% · 一致 99.0% · 双峰 1')
     const cls = w.findAll('rect.map-confirm').map((r) => r.classes().find((c) => c.startsWith('map-confirm-')))
     expect(cls).toContain('map-confirm-both')
     expect(cls).toContain('map-confirm-single')
-    expect(cls).toContain('map-confirm-low')
     expect(cls).toContain('map-confirm-conflict')
   })
 })
