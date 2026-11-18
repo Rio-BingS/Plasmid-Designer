@@ -623,6 +623,13 @@ describe('SequencingPanel', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.map-box').exists()).toBe(true)
+    // 默认「突出 read 覆盖」（分段比例尺）：覆盖区撑宽，两条 read 名都画得进箭头，主轴有断裂符
+    expect(wrapper.findAll('.lmap-track-name').length).toBe(2)
+    expect(wrapper.findAll('.lmap-break').length).toBeGreaterThan(0)
+    // 以下断言针对等比例全长视图：关闭「突出 read 覆盖」
+    const focusBox = wrapper.findAll('.map-dedup-toggle input').find(i => i.element.parentElement?.textContent?.includes('突出 read 覆盖'))!
+    await focusBox.setValue(false)
+    expect(wrapper.findAll('.lmap-break').length).toBe(0)
     // read 箭头一正一反；长 read 名字画进箭头内，短 read 画在箭头旁
     expect(wrapper.findAll('path.map-arrow-fwd').length).toBe(1)
     expect(wrapper.findAll('path.map-arrow-rev').length).toBe(1)

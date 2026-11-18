@@ -591,6 +591,19 @@ async function downloadConsensus(format: string) {
     </div>
 
     <template v-if="analysis">
+      <!-- 匹配简图置顶（用户 2026-11-18：先看 read 覆盖全貌；子组件，点击 read/变异红块回传给峰图联动） -->
+      <MatchMap v-if="analysis.reads.length"
+                :reads="analysis.reads" :variants="analysis.variants"
+                :features="analysis.features" :coverage-ranges="analysis.coverage_ranges"
+                :reference-length="analysis.reference_length" :circular="analysis.circular"
+                :scope="analysis.verdict?.scope ?? null"
+                :expected-ranges="analysis.coverage?.expected_ranges ?? []"
+                :verified-ranges="analysis.coverage?.verified_ranges ?? []"
+                :coverage-gaps="analysis.coverage_gaps ?? []"
+                @open-read="openReadInSeqviz" @jump-variant="jumpToVariant"
+                @toggle-feature-scope="toggleFeatureScope"
+                @add-scope-range="addScopeRange" />
+
       <!-- 范围条（goal v3 W13）：改范围 → W11 重算端点（不重跑比对） -->
       <div v-if="analysis.verdict" class="scope-bar">
         <span class="scope-bar-label">验证范围</span>
@@ -647,19 +660,6 @@ async function downloadConsensus(format: string) {
 
       <!-- poly 同聚物/重复结构（子组件，含阈值筛选与逐 read 判读） -->
       <PolyCard :homopolymers="analysis.homopolymers ?? []" />
-
-      <!-- 匹配简图（子组件；点击 read/变异红块回传给峰图联动） -->
-      <MatchMap v-if="analysis.reads.length"
-                :reads="analysis.reads" :variants="analysis.variants"
-                :features="analysis.features" :coverage-ranges="analysis.coverage_ranges"
-                :reference-length="analysis.reference_length" :circular="analysis.circular"
-                :scope="analysis.verdict?.scope ?? null"
-                :expected-ranges="analysis.coverage?.expected_ranges ?? []"
-                :verified-ranges="analysis.coverage?.verified_ranges ?? []"
-                :coverage-gaps="analysis.coverage_gaps ?? []"
-                @open-read="openReadInSeqviz" @jump-variant="jumpToVariant"
-                @toggle-feature-scope="toggleFeatureScope"
-                @add-scope-range="addScopeRange" />
 
       <!-- Read 摘要（子组件；查看按钮回传给峰图联动）。
            目的基因模式下额外展示 read↔CDS 覆盖关系（匹配引物） -->

@@ -116,6 +116,20 @@ const doc = computed<MapDocument>(() => ({
 }))
 
 const alignedReads = computed(() => props.reads.filter((r) => readSegments(r).length > 0))
+
+// ==================== 突出 read 覆盖（分段比例尺） ====================
+/** read 覆盖区段两侧各外扩 max(30bp, 5%) 作为焦点：全长仍显示，覆盖区占约 60% 宽，
+ *  其余区段压缩；覆盖本已占全长 ≥60% 时 LinearMap 自动退回线性比例尺 */
+const FOCUS_SHARE = 0.6
+const focusReads = ref(true)
+const focusRanges = computed(() => {
+  if (!focusReads.value) return []
+  const L = props.referenceLength
+  return alignedReads.value.flatMap((r) => readSegments(r)).map(([s, e]) => {
+    const pad = Math.max(30, Math.round((e - s + 1) * 0.05))
+    return { start: Math.max(1, s - pad), end: Math.min(L, e + pad) }
+  })
+})
 const unalignedCount = computed(() => props.reads.length - alignedReads.value.length)
 
 // ==================== R/E/V 三层色带（goal v3 W13） ====================
@@ -285,6 +299,10 @@ defineExpose({ tracks, doc })
         <input v-model="dedupMapFeats" type="checkbox" /> 特征去重
       </label>
       <span v-if="dedupMergedCount > 0" class="map-sub">已合并 {{ dedupMergedCount }} 条重复注释</span>
+      <label class="map-dedup-toggle"
+             title="read 覆盖区放大显示（约占图宽 60%），未覆盖区段按比例压缩但保留，主轴上以断裂符标出；关闭则全长等比例显示">
+        <input v-model="focusReads" type="checkbox" /> 突出 read 覆盖
+      </label>
     </h4>
     <p v-if="selectionText" class="scope-selection-bar">
       {{ selectionText }}
@@ -292,6 +310,7 @@ defineExpose({ tracks, doc })
       <button type="button" class="scope-btn sm ghost" @click="selectionRange = null">取消</button>
     </p>
     <LinearMap :doc="doc" :tracks="tracks" :show-enzymes="false"
+               :focus="focusRanges" :focus-share="FOCUS_SHARE"
                @track-click="onTrackClick" @feature-click="onFeatureClick"
                @range-select="onRangeSelect" />
     <p class="map-legend hint">
@@ -301,6 +320,7 @@ defineExpose({ tracks, doc })
       <span class="lg-gap">▮ 缺口按原因着色（橙=引物够不到、红=应测到未测到、紫=归因不明）</span> ·
       <span class="lg-read">▬ 测序 read（箭头=方向）</span> ·
       <span class="lg-dot">○ 差异位点</span> ·
+      <span v-if="focusRanges.length">⫽ 断裂符 = 未覆盖区段压缩显示</span> ·
       <span class="lg-var">▮</span> 变异（点击跳峰图）
       <template v-if="unalignedCount"> · {{ unalignedCount }} 条 read 未比对到参考（见下方 read 表）</template>
       <template v-if="legendTypes.length"> · 特征

@@ -16,6 +16,7 @@ import { enzymePriority, featurePriority, fitsInside, layoutLinearLabels } from 
 import { cutStyle, overviewCuts } from '../core/enzymes'
 import { darken, featureColor, textOn } from '../core/palette'
 import { formatBp, ticks } from '../core/ticks'
+import { buildWarp } from '../core/warp'
 import { MAP_FONT, textWidth } from '../core/text'
 import { PRIMER_FWD, PRIMER_REV, isRevPrimer } from '../core/primer_style'
 import { hitKeyOf, resolveHit, setHoverFromEvent } from '../hits'
@@ -29,7 +30,11 @@ const props = withDefaults(defineProps<{
   interactive?: boolean
   /** 隐藏酶切（如测序简图） */
   showEnzymes?: boolean
-}>(), { tracks: () => [], interactive: true, showEnzymes: true })
+  /** 分段比例尺焦点区段（1-based 闭区间，如测序 read 覆盖）：焦点占 focusShare 宽度，
+   *  其余区段压缩但保留；不传或焦点本已够宽时为普通线性比例尺 */
+  focus?: { start: number; end: number }[]
+  focusShare?: number
+}>(), { tracks: () => [], interactive: true, showEnzymes: true, focus: () => [], focusShare: 0.6 })
 
 const emit = defineEmits<{
   (e: 'track-click', trackId: string, itemId: string): void
@@ -52,8 +57,14 @@ const L = computed(() => store.L.value)
 const vp = computed(() => store.viewport.value)
 const span = computed(() => Math.max(1e-6, vp.value.to - vp.value.from))
 const scale = computed(() => (W.value - 2 * PAD) / span.value)
-const X = (b: number) => PAD + (b - vp.value.from) * scale.value
-const toB = (x: number) => vp.value.from + (x - PAD) / scale.value
+/** 分段比例尺（焦点 + 上下文）；null = 线性 */
+const warp = computed(() => buildWarp(vp.value.from, vp.value.to, props.focus, PAD, W.value - 2 * PAD, props.focusShare))
+/** 最小局部比例（px/bp）：车道间隙等按最挤的一段算，压缩区也不重叠 */
+const minScale = computed(() => warp.value?.minScale ?? scale.value)
+const X = (b: number) => (warp.value ? warp.value.X(b) : PAD + (b - vp.value.from) * scale.value)
+const toB = (x: number) => (warp.value ? warp.value.toB(x) : vp.value.from + (x - PAD) / scale.value)
+/** 压缩区段（主轴上淡化 + 两端断裂符） */
+const compressedSegs = computed(() => (warp.value?.segs ?? []).filter((s) => !s.focus))
 
 function setViewport(from: number, to: number) {
   const minSpan = Math.min(L.value, Math.max(10, (W.value - 2 * PAD) / 14))
@@ -224,7 +235,7 @@ const layout = computed(() => {
 
 const featLanes = computed(() => stackLanes(
   store.features.value.map((f) => ({ id: f.id, start: f.start, end: f.end })), L.value,
-  { circular: store.circular.value, gap: 4 / scale.value, maxLanes: 10 },
+  { circular: store.circular.value, gap: 4 / minScale.value, maxLanes: 10 },
 ))
 const FEAT_H = 14
 const FEAT_LANE = 18
@@ -406,9 +417,23 @@ const markGeoms = computed(() => props.tracks.filter((t) => t.kind === 'marks').
   }))))
 
 const tickGeoms = computed(() => {
-  const target = Math.max(3, Math.round(W.value / 110))
-  const t = ticks(Math.ceil(vp.value.from) + 1, Math.floor(vp.value.to), target)
-  return t.positions.map((p) => ({ p, x: X(p - 0.5), label: formatBp(p) }))
+  const w = warp.value
+  if (!w) {
+    const target = Math.max(3, Math.round(W.value / 110))
+    const t = ticks(Math.ceil(vp.value.from) + 1, Math.floor(vp.value.to), target)
+    return t.positions.map((p) => ({ p, x: X(p - 0.5), label: formatBp(p) }))
+  }
+  // 分段比例尺：每段按自身像素宽单独取刻度，压缩段不挤成一团；相邻过近的刻度去掉
+  const out: { p: number; x: number; label: string }[] = []
+  for (const s of w.segs) {
+    const target = Math.floor((s.x2 - s.x1) / 90)
+    if (target < 1) continue
+    for (const p of ticks(Math.ceil(s.from) + 1, Math.floor(s.to), target).positions) {
+      const x = X(p - 0.5)
+      if (!out.some((o) => Math.abs(o.x - x) < 44)) out.push({ p, x, label: formatBp(p) })
+    }
+  }
+  return out.sort((a, b) => a.x - b.x)
 })
 const bases = computed(() => {
   if (!layout.value.showBases) return []
@@ -513,7 +538,7 @@ function onPointerMove(e: PointerEvent) {
     return
   }
   const b = toB(localX(e))
-  if (Math.abs(b - anchor) * scale.value >= 3) {
+  if (Math.abs(X(b) - X(anchor)) >= 3) {
     moved = true
     store.select(rangeFromBoundaries(anchor, b, L.value, false))
   }
@@ -563,7 +588,7 @@ function onPointerCancel() {
   store.hover.value = null
 }
 
-defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
+defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
 </script>
 
 <template>
@@ -624,6 +649,13 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport })
       <rect :x="X(Math.max(0, vp.from))" :y="layout.axisY - 4" :width="Math.max(0, X(Math.min(L, vp.to)) - X(Math.max(0, vp.from)))" height="8" rx="3" fill="#d5d9de" class="lmap-axis-bg" />
       <rect v-for="b in axisBlocks" :key="b.k" :x="b.x" :y="layout.axisY - 4" :width="b.w" height="8" :fill="b.color" :class="b.cls" />
       <line :x1="X(Math.max(0, vp.from))" :x2="X(Math.min(L, vp.to))" :y1="layout.axisY" :y2="layout.axisY" stroke="#3a3f45" stroke-width="1.4" />
+      <!-- 分段比例尺：压缩区段主轴淡化 + 与焦点区交界处画断裂符 -->
+      <g v-for="(c, i) in compressedSegs" :key="'cz' + i" class="lmap-compressed" pointer-events="none">
+        <rect :x="c.x1" :y="layout.axisY - 4" :width="Math.max(0, c.x2 - c.x1)" height="8" fill="#ffffff" fill-opacity="0.45" />
+        <path v-for="bx in [c.x1, c.x2].filter((v) => v > PAD + 1 && v < W - PAD - 1)" :key="bx"
+              :d="`M${bx - 4},${layout.axisY + 6} L${bx},${layout.axisY - 6} M${bx},${layout.axisY + 6} L${bx + 4},${layout.axisY - 6}`"
+              stroke="#6b7280" stroke-width="1.2" fill="none" class="lmap-break" />
+      </g>
       <rect v-for="r in searchRects" :key="r.k" :data-hit="r.key" :x="r.x" :y="layout.axisY - 6" :width="r.w" height="12"
             :fill="r.current ? '#f97316' : '#facc15'" fill-opacity="0.85" class="lmap-search" />
       <g v-for="t in tickGeoms" :key="'t' + t.p">
