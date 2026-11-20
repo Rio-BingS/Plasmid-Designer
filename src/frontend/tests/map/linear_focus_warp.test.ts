@@ -49,27 +49,70 @@ describe('分段比例尺（突出 read 覆盖）', () => {
   })
 })
 
-describe('匹配简图结果位点标注', () => {
-  it('判定条目与未决位点在主轴上方逐点标注，与差异同位点合并，read 上画位点圆点', async () => {
+describe('匹配简图问题编号（设计稿 v6）', () => {
+  const read = (i: number, fn: string, dir: string, s: number, e: number, extra = {}) => ({ index: i, filename: fn, direction: dir, ref_start: s, ref_end: e, identity: 0.99, wraps_origin: false, alignment_view: null, ...extra })
+  const mountMap = async (extra: Record<string, unknown> = {}) => {
     const MatchMap = (await import('@/components/sequencing/MatchMap.vue')).default
-    const read = (i: number, fn: string, dir: string, s: number, e: number) => ({ index: i, filename: fn, direction: dir, ref_start: s, ref_end: e, identity: 0.99, wraps_origin: false, alignment_view: null })
-    const w = mount(MatchMap, { props: {
-      reads: [read(0, 'a.ab1', '+', 1000, 1900), read(1, 'b.ab1', '-', 1100, 2000)] as never,
+    return mount(MatchMap, { props: {
+      reads: [read(0, 'a.ab1', '+', 1000, 1900, { query_start: 4, reliable_zone: { start: 34, end: 880 } }), read(1, 'b.ab1', '-', 1100, 2000)] as never,
       variants: [{ ref_pos: 1500, type: 'substitution', ref_base: 'C', alt_base: 'A', length: 1, aa_change: 'X:P1Q' }] as never,
-      features: [], coverageRanges: [[1000, 2000]], referenceLength: 6000, circular: true,
+      features: [{ name: 'GENE1', type: 'CDS', start: 1060, end: 1800, strand: '+' }, { name: 'His', type: 'CDS', start: 1805, end: 1822, strand: '+' }] as never,
+      coverageRanges: [[1000, 2000]], referenceLength: 6000, circular: true,
       verdict: { status: 'mixed', info: [{ kind: 'unresolved_site', ref_start: 1950, ref_end: 1950, detail: '弱双峰', refs: ['b.ab1'] }],
-        blocking: [{ kind: 'mixed_variant', ref_start: 1500, ref_end: 1500, detail: '1500 双峰', refs: ['a.ab1', 'b.ab1'] },
-                   { kind: 'unresolved_site', ref_start: 1050, ref_end: 1050, detail: '无法互检', refs: ['a.ab1'] }] } as never,
+        blocking: [{ kind: 'unresolved_site', ref_start: 1043, ref_end: 1043, detail: '无法互检', action: '核对峰图或换引物补测', refs: ['a.ab1'] },
+                   { kind: 'orf_annotation_suspect', ref_start: 1060, ref_end: 1060, detail: 'ORF 偏差', action: '核对峰图或换引物补测', refs: [] },
+                   { kind: 'critical_element_unverified', ref_start: 1020, ref_end: 1042, element: 'RBS1', detail: '部分验证', action: '补测覆盖该元件的引物', refs: [] },
+                   { kind: 'mixed_variant', ref_start: 1500, ref_end: 1500, detail: '1500 双峰', action: '重新挑单克隆复测', refs: ['a.ab1', 'b.ab1'] }],
+        element_verdicts: [{ name: 'RBS1', type: 'RBS', start: 1020, end: 1042, status: 'issue', coverage: 56.5, issues: 1, in_scope: true }] } as never,
       unresolvedSites: [{ ref_pos: 1200, kind: 'mixed_uncorroborated', reads: ['a.ab1'], detail: 'x' }] as never,
+      ...extra,
     } })
-    const labels = w.findAll('.lmap-mark-label').map((t) => t.text())
-    expect(labels).toContain('1500 C>A P1Q · 疑似混合')
-    expect(labels).toContain('1050 双峰待核')
-    expect(labels).not.toContain('1950 双峰待核')   // 提示级只留刻块不写字
-    expect(labels).not.toContain('1200 双峰')
-    expect(w.findAll('.map-var-tick').length).toBe(1)
-    expect(w.findAll('.map-site-tick').length).toBe(3)
-    expect(w.findAll('.lmap-dot2').length).toBe(0) // read 上不再叠结果圆点（2026-11-19 去杂）
+  }
+
+  it('按严重程度编号：混合在前，参考注释为灰色 i 且不计入需处理', async () => {
+    const w = await mountMap()
+    expect(w.findAll('.lmap-pin-text').map((t) => t.text())).toEqual(['3', '2', 'i', '1'])  // 按位置排列，编号按严重度
+    const rows = w.findAll('.mp-row')
+    expect(rows.map((r) => r.find('.mp-no').text())).toEqual(['1', '2', '3', 'i'])
+    expect(rows[0].find('.mp-title').text()).toBe('1500 C>A P1Q 疑似混合')
+    expect(rows[1].find('.mp-title').text()).toBe('1043 双峰待核')
+    expect(rows[2].find('.mp-title').text()).toBe('1020–1042 RBS1 RBS 仅验证 56%')
+    expect(rows[3].find('.mp-title').text()).toBe('1060 参考注释：GENE1 起点存疑')
+    expect(rows[3].text()).toContain('核对参考文件的 CDS 标注')
+    expect(w.find('.mp-head').text()).toBe('需处理 3 处 · 参考注释 1 处')
+    expect(w.findAll('.map-var-tick').length).toBe(0)        // 已编号的差异不重复画刻块
+    expect(w.findAll('.lmap-mark-label').length).toBe(0)
+  })
+
+  it('紧贴或越出可信区时括号写出 read 上的位置', async () => {
+    const w = await mountMap()
+    const rows = w.findAll('.mp-row')
+    expect(rows[1].text()).toContain('（a.ab1 第 47 位，可信区从第 34 位起）')
+    expect(rows[2].text()).toContain('a.ab1 第 24–33 位（10 bp）在可信区外，可信区从第 34 位起')
+  })
+
+  it('提示级默认收起，展开后列出并在图上画灰色刻块', async () => {
+    const w = await mountMap()
+    expect(w.find('.mp-hint').text()).toContain('另有 2 处提示级')
+    expect(w.findAll('.map-site-tick').length).toBe(0)
+    await w.find('.mp-toggle').trigger('click')
+    expect(w.findAll('.mp-hint-row').length).toBe(2)
+    expect(w.findAll('.map-site-tick').length).toBe(2)
+  })
+
+  it('与 read 重叠的 CDS 画贯穿底带，短 CDS（标签）另色；分层底色与层名', async () => {
+    const w = await mountMap()
+    const labels = w.findAll('.lmap-region-label').map((t) => t.text())
+    expect(w.findAll('.lmap-region').length).toBe(2)
+    expect(labels).toContain('CDS GENE1 · 1060–1800')
+    expect(labels).toContain('His 1805–1822')
+    expect(w.findAll('.lmap-lane-title').map((t) => t.text())).toEqual(['测序 read', '参考序列'])
+  })
+
+  it('点击问题行跳到峰图位点', async () => {
+    const w = await mountMap()
+    await w.findAll('.mp-row')[0].trigger('click')
+    expect(w.emitted('jump-site')?.[0]).toEqual([{ ref_pos: 1500, read: 'a.ab1' }])
   })
 })
 
@@ -92,7 +135,7 @@ describe('匹配简图 read 测序情况', () => {
     expect(w.findAll('.lmap-band-hatch').length).toBe(0)                    // 不再斜线重点标出
     expect(w.findAll('.lmap-band').filter((b) => b.attributes('fill-opacity') === '0.72').length).toBeGreaterThanOrEqual(2) // 两端可信区外淡化
     expect(w.findAll('.lmap-read-tick').length).toBe(1)                     // 1060 双峰
-    expect(w.find('.lmap-track-badge').text()).toBe('A · Q20 90% · 一致 99.0% · 双峰 1')
+    expect(w.find('.lmap-track-badge').text()).toBe('A · Q20 90%')   // 一致性/双峰数移到悬停说明（v6）
     const cls = w.findAll('rect.map-confirm').map((r) => r.classes().find((c) => c.startsWith('map-confirm-')))
     expect(cls).toContain('map-confirm-both')
     expect(cls).toContain('map-confirm-single')

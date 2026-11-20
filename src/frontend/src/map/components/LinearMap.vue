@@ -34,7 +34,9 @@ const props = withDefaults(defineProps<{
    *  其余区段压缩但保留；不传或焦点本已够宽时为普通线性比例尺 */
   focus?: { start: number; end: number }[]
   focusShare?: number
-}>(), { tracks: () => [], interactive: true, showEnzymes: true, focus: () => [], focusShare: 0.6 })
+  /** 分层底色与层名（测序简图：read 层在上、参考层在下，用户 2026-11-19 设计稿 v6） */
+  lanes?: { reads?: string; reference?: string } | null
+}>(), { tracks: () => [], interactive: true, showEnzymes: true, focus: () => [], focusShare: 0.6, lanes: null })
 
 /** 本实例 SVG defs id 前缀（多图并存时 pattern/clipPath 不串） */
 const uid = `lm${useId().replace(/[^\w-]/g, '')}`
@@ -165,7 +167,7 @@ interface TrackGeom {
   track: MapTrack; y: number; height: number; laneH: number
   items: { item: TrackItem; key: string; lane: number; segs: { x1: number; x2: number; head: boolean }[]; labelInside: boolean; labelX: number; labelRight: boolean; marks: number[]; dots: { x: number; color: string; filled: boolean }[]
     bands: { x: number; w: number; color: string; opacity: number; hatch: boolean }[]; ticks: { x: number; color: string; width: number }[]
-    badge: { x: number; right: boolean } | null }[]
+    badge: { x: number; right: boolean } | null; badgeInside: boolean }[]
 }
 function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
   const h = t.height ?? 18
@@ -191,7 +193,10 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     // 名字放在条内最长的、不压标记圆点的空当里（否则变异圆点会盖住 read 名）
     const gap = longestFreeGap(longest.x1 + (it.strand === -1 ? h * 0.8 : 0), longest.x2 - (it.strand === 1 ? h * 0.8 : 0), [...marks, ...dots.map((d) => d.x), ...ticks.map((t) => t.x)], 6)
     const inside = !!it.label && gap[1] - gap[0] >= lw
-    let labelX = inside ? (gap[0] + gap[1]) / 2 : (longest.x1 + longest.x2) / 2
+    // 摘要能和名字一起放进条内时写在名字后面（名字左对齐），读一眼就够，不用往外找
+    const bwIn = it.badge ? textWidth(it.badge, 10) + 8 : 0
+    const badgeInside = inside && !!it.badge && gap[1] - gap[0] >= lw + bwIn
+    let labelX = badgeInside ? gap[0] + 6 : inside ? (gap[0] + gap[1]) / 2 : (longest.x1 + longest.x2) / 2
     let labelRight = true
     if (it.label && !inside) {
       // 名字放不下：依次尝试最长段右侧、左侧，再试其余段，放不下就贴边
@@ -207,7 +212,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     if (it.label && !inside) iv.push([labelRight ? labelX : labelX - lw, labelRight ? labelX + lw : labelX])
     // 摘要小字：箭头右端外侧，放不下放左端外侧，再不行不画
     let badge: { x: number; right: boolean } | null = null
-    if (it.badge) {
+    if (it.badge && !badgeInside) {
       const bw = textWidth(it.badge, 10) + 6
       const xr = Math.max(...geomSegs.map((s) => s.x2)) + 4
       const xl = Math.min(...geomSegs.map((s) => s.x1)) - 4
@@ -221,7 +226,7 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
     rows[lane].push(...iv)
     items.push({
       item: it, key: `t:${t.id}:${it.id}`, lane, segs: geomSegs, labelInside: inside, labelX, labelRight,
-      marks, dots, bands, ticks, badge,
+      marks, dots, bands, ticks, badge, badgeInside,
     })
   }
   return { track: t, y: y0, height: Math.max(1, rows.length) * laneH, laneH, items }
@@ -229,21 +234,32 @@ function layoutArrowTrack(t: MapTrack, y0: number): TrackGeom {
 
 // ---------------- 纵向布局 ----------------
 const ENZ_ROW = 13
+const PIN_ROW = 26
+const LANE_HEAD = 18
 const layout = computed(() => {
   let y = 6
   const enzLabelTop = y
   y += enzLabels.value.rows * ENZ_ROW + (enzLabels.value.rows ? 4 : 0)
+  const hasPins = props.tracks.some((t) => t.kind === 'pins' && t.items.length)
+  const pinY = y
+  if (hasPins) y += PIN_ROW
+  const hasRegions = props.tracks.some((t) => t.kind === 'regions' && t.items.length)
+  const readsTop = y
+  if (props.lanes?.reads || hasRegions) y += LANE_HEAD
   const above: TrackGeom[] = []
   for (const t of props.tracks.filter((t) => t.kind === 'arrows' && t.position !== 'below')) {
     const g = layoutArrowTrack(t, y)
     above.push(g)
     y += g.height
   }
+  const readsBottom = y + 2
   const strips: { track: MapTrack; y: number }[] = []
   for (const t of props.tracks.filter((t) => t.kind === 'strip')) {
     strips.push({ track: t, y: y + 2 })
     y += 14
   }
+  const refTop = y + 6
+  if (props.lanes?.reference) y += 6 + LANE_HEAD
   const hasMarks = props.tracks.some((t) => t.kind === 'marks')
   const markLabelTop = y + (markLabels.value.rows ? 4 : 0)
   y += markLabels.value.rows ? markLabels.value.rows * MARK_LABEL_ROW + 8 : 0
@@ -258,7 +274,7 @@ const layout = computed(() => {
   const showBases = scale.value >= 7 && !!store.doc.value.sequence
   const basesY = y + 10
   if (showBases) y += 16
-  return { enzLabelTop, above, strips, hasMarks, markLabelTop, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
+  return { enzLabelTop, pinY, hasPins, readsTop, readsBottom, refTop, above, strips, hasMarks, markLabelTop, marksY, cutTop, axisY, tickY, showBases, basesY, afterAxis: y }
 })
 
 const featLanes = computed(() => stackLanes(
@@ -464,6 +480,51 @@ const markLabels = computed(() => {
 })
 const markLabelColor = computed(() => new Map(markLabelInputs.value.map((m) => [m.id, m.color])))
 
+// ---------------- 分层底色 / 区段底带 / 编号圆标 ----------------
+/** 参考层底边：特征外置标签之下 */
+const refBottom = computed(() => below.value.labelTop + featLabels.value.rows * 14 + (featLabels.value.rows ? 4 : 0))
+const laneTitleEnd = computed(() => PAD + 6 + (props.lanes?.reads ? textWidth(props.lanes.reads, 11) + 12 : 0))
+const regionGeoms = computed(() => {
+  const out: { key: string; x1: number; x2: number; color: string; label: string; lx: number | null }[] = []
+  const used: [number, number][] = [[0, laneTitleEnd.value]]
+  for (const t of props.tracks.filter((t) => t.kind === 'regions')) {
+    for (const it of t.items) {
+      const vs = visSegs({ start: it.start, end: it.end })
+      if (!vs.length) continue
+      const x1 = Math.min(...vs.map((v) => v.x1))
+      const x2 = Math.max(...vs.map((v) => v.x2))
+      const label = it.label ?? ''
+      const lw = textWidth(label, 10) + 4
+      // 标签依次试：区段内左端、区段右侧外、区段左侧外；都撞就不写（悬停仍有说明）
+      const free = (a: number) => a >= 0 && a + lw <= W.value && !used.some(([c, d]) => c < a + lw + 6 && a < d + 6)
+      const lx = !label ? null : [x1 + 5, x2 + 4, x1 - 4 - lw].find((c) => free(c)) ?? null
+      if (lx !== null) used.push([lx, lx + lw])
+      out.push({ key: `t:${t.id}:${it.id}`, x1, x2, color: it.color ?? '#2563eb', label, lx })
+    }
+  }
+  return out
+})
+const PIN_GAP = 22
+const pinGeoms = computed(() => {
+  const out: { key: string; cx: number; bx: number; x1: number; x2: number; text: string; color: string; small: boolean; range: boolean }[] = []
+  for (const t of props.tracks.filter((t) => t.kind === 'pins')) {
+    for (const it of t.items) {
+      if (it.end < vp.value.from || it.start - 1 > vp.value.to) continue
+      const range = it.end > it.start
+      const x1 = X(Math.max(vp.value.from, it.start - 1))
+      const x2 = X(Math.min(vp.value.to, it.end))
+      const cx = range ? (x1 + x2) / 2 : X(it.start - 0.5)
+      const text = it.markLabel ?? ''
+      out.push({ key: `t:${t.id}:${it.id}`, cx, bx: cx, x1, x2, text, color: it.color ?? '#dc2626', small: text.length === 1 && !/\d/.test(text), range })
+    }
+  }
+  // 圆标按位置排开，相距 < PIN_GAP 时向右错开（引导线仍落在真实位置）
+  out.sort((a, b) => a.cx - b.cx)
+  for (let i = 1; i < out.length; i++) if (out[i].bx - out[i - 1].bx < PIN_GAP) out[i].bx = out[i - 1].bx + PIN_GAP
+  return out
+})
+const pinGuideBottom = computed(() => lower.value.featTop + (featLanes.value.laneCount ? FEAT_H : 0))
+
 const tickGeoms = computed(() => {
   const w = warp.value
   if (!w) {
@@ -664,6 +725,26 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
       <rect v-for="r in hoverRects" :key="'h' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#f59e0b" fill-opacity="0.1" />
       <rect v-for="r in selRects" :key="'sel' + r.k" :x="r.x" y="0" :width="r.w" :height="H" fill="#4f46e5" fill-opacity="0.13" class="lmap-selection" />
 
+      <!-- 分层底色 + 层名 -->
+      <template v-if="lanes">
+        <rect v-if="lanes.reads" x="2" :y="layout.readsTop" :width="W - 4" :height="layout.readsBottom - layout.readsTop" rx="6" fill="#f8fafc" class="lmap-lane lmap-lane-reads" />
+        <rect v-if="lanes.reference" x="2" :y="layout.refTop" :width="W - 4" :height="refBottom - layout.refTop" rx="6" fill="#f1f5f9" class="lmap-lane lmap-lane-ref" />
+        <text v-if="lanes.reads" :x="PAD + 4" :y="layout.readsTop + 13" font-size="11" font-weight="600" fill="#475569" class="lmap-lane-title">{{ lanes.reads }}</text>
+        <text v-if="lanes.reference" :x="PAD + 4" :y="layout.refTop + 13" font-size="11" font-weight="600" fill="#475569" class="lmap-lane-title">{{ lanes.reference }}</text>
+      </template>
+      <!-- 区段底带（如 CDS）：贯穿 read 层到参考层，实线边界 -->
+      <g v-for="r in regionGeoms" :key="r.key" :data-hit="r.key" class="lmap-region">
+        <rect :x="r.x1" :y="layout.readsTop" :width="Math.max(1, r.x2 - r.x1)" :height="refBottom - layout.readsTop" :fill="r.color" fill-opacity="0.08" />
+        <line v-for="ex in [r.x1, r.x2]" :key="ex" :x1="ex" :x2="ex" :y1="layout.readsTop" :y2="refBottom" :stroke="r.color" stroke-opacity="0.7" stroke-width="1.2" class="lmap-region-edge" />
+        <text v-if="r.lx !== null" :x="r.lx" :y="layout.readsTop + 13" font-size="10" font-weight="600" :fill="r.color" class="lmap-region-label">{{ r.label }}</text>
+      </g>
+      <!-- 编号圆标的引导线 / 区段竖条（画在 read 之下） -->
+      <g v-for="p in pinGeoms" :key="'pg' + p.key" class="lmap-pin-guide" pointer-events="none">
+        <rect v-if="p.range" :x="p.x1" :y="layout.pinY + 20" :width="Math.max(2, p.x2 - p.x1)" :height="pinGuideBottom - layout.pinY - 20" :fill="p.color" fill-opacity="0.09" />
+        <line v-else :x1="p.cx" :x2="p.cx" :y1="layout.pinY + 20" :y2="pinGuideBottom" :stroke="p.color" stroke-opacity="0.45" stroke-width="1.2" />
+        <path v-if="Math.abs(p.bx - p.cx) > 1" :d="`M${p.bx} ${layout.pinY + 20} L${p.cx} ${layout.pinY + 26}`" :stroke="p.color" stroke-opacity="0.45" fill="none" />
+      </g>
+
       <!-- 刻度网格 -->
       <line v-for="t in tickGeoms" :key="'g' + t.p" :x1="t.x" :x2="t.x" y1="0" :y2="H" stroke="#eceef0" stroke-dasharray="3 4" />
 
@@ -692,12 +773,13 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
           </template>
           <line v-for="(t, k) in it.ticks" :key="'tk' + k" :x1="t.x" :x2="t.x" :y1="g.y + it.lane * g.laneH + 1" :y2="g.y + it.lane * g.laneH + g.laneH - 7"
                 :stroke="t.color" :stroke-width="t.width" class="lmap-read-tick" pointer-events="none" />
-          <text v-if="it.badge && it.item.badge" :x="it.badge.x" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
+          <text v-if="it.badge && it.item.badge && !it.badgeInside" :x="it.badge.x" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
                 :text-anchor="it.badge.right ? 'start' : 'end'" font-size="10" fill="#6b7280" class="lmap-track-badge" pointer-events="none">{{ it.item.badge }}</text>
           <text v-if="it.item.label" :x="it.labelX" :y="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" dominant-baseline="central"
-                :text-anchor="it.labelInside ? 'middle' : (it.labelRight ? 'start' : 'end')" :font-size="FONT"
+                :text-anchor="it.badgeInside ? 'start' : it.labelInside ? 'middle' : (it.labelRight ? 'start' : 'end')" :font-size="FONT"
                 :fill="it.labelInside ? '#ffffff' : '#374151'" :font-weight="it.labelInside ? 700 : 400"
-                :class="it.labelInside ? 'lmap-track-name' : 'lmap-track-label'" pointer-events="none">{{ it.item.label }}</text>
+                :class="it.labelInside ? 'lmap-track-name' : 'lmap-track-label'" pointer-events="none">{{ it.item.label }}<tspan v-if="it.badgeInside"
+                font-size="10" font-weight="400" fill-opacity="0.85" class="lmap-track-badge lmap-track-badge-in" dx="6">{{ it.item.badge }}</tspan></text>
           <circle v-for="(mx, k) in it.marks" :key="'m' + k" :cx="mx" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
                   fill="#ffffff" stroke="#c0392b" stroke-width="1.5" class="lmap-dot" pointer-events="none" />
           <circle v-for="(d, k) in it.dots" :key="'d' + k" :cx="d.x" :cy="g.y + it.lane * g.laneH + (g.laneH - 6) / 2" r="4"
@@ -790,6 +872,12 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
                 :fill="it.item.color ?? '#6b7280'" :class="it.item.className" />
         </g>
       </template>
+      <!-- 编号圆标（最上层） -->
+      <g v-for="p in pinGeoms" :key="p.key" :data-hit="p.key" class="lmap-pin">
+        <circle :cx="p.bx" :cy="layout.pinY + 11" :r="p.small ? 7 : 9" :fill="p.color" />
+        <text :x="p.bx" :y="layout.pinY + 11" dominant-baseline="central" text-anchor="middle" :font-size="p.small ? 10 : 11"
+              font-weight="700" fill="#ffffff" pointer-events="none" class="lmap-pin-text">{{ p.text }}</text>
+      </g>
     </svg>
     <MapTooltip v-if="own" :store="store" />
   </div>
@@ -798,7 +886,7 @@ defineExpose({ svgEl, zoomBy, zoomStep, fitAll, setViewport, warp })
 <style scoped>
 .lmap { position: relative; width: 100%; }
 .lmap-svg { display: block; width: 100%; height: auto; touch-action: pan-y; user-select: none; cursor: crosshair; }
-.lmap-feat, .lmap-cut, .lmap-orf, .lmap-primer, .lmap-enz-label, .lmap-feat-out-g, .lmap-track-item, .lmap-mark, .lmap-search { cursor: pointer; }
+.lmap-feat, .lmap-cut, .lmap-orf, .lmap-primer, .lmap-enz-label, .lmap-feat-out-g, .lmap-track-item, .lmap-mark, .lmap-search, .lmap-pin { cursor: pointer; }
 .lmap-feat:hover path, .lmap-track-item:hover path { filter: brightness(1.08); }
 .lmap-controls { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
 .lmap-controls button {

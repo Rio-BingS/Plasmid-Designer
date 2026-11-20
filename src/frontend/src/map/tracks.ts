@@ -32,8 +32,10 @@ export interface TrackItem {
 export interface MapTrack {
   id: string
   /** arrows = 分道箭头；axis = 叠在主轴上的色段；marks = 主轴上方的小刻块；
-   *  strip = 箭头轨道下方的一条细色带（如共识/双向确认状态），label 写在左端 */
-  kind: 'arrows' | 'axis' | 'marks' | 'strip'
+   *  strip = 箭头轨道下方的一条细色带（如共识/双向确认状态），label 写在左端；
+   *  regions = 贯穿 read 层到参考层的底色区段（如 CDS），实线边界，label 写在 read 层顶部；
+   *  pins = 顶部编号圆标（markLabel = 编号），竖向引导线贯穿到参考元件层；区段画淡色竖条 */
+  kind: 'arrows' | 'axis' | 'marks' | 'strip' | 'regions' | 'pins'
   /** strip：左端说明文字 */
   label?: string
   position?: 'above' | 'below'

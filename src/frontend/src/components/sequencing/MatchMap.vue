@@ -232,18 +232,33 @@ const UNRESOLVED_KIND_LABEL: Record<string, string> = {
   out_of_zone_diff: '可信区外差异', poly_undetermined: 'poly 待定', dropout: '信号缺失',
 }
 const SEV_COLOR = { blocking: '#c0392b', warn: '#d97706', info: '#9ca3af' } as const
-interface SiteMark { start: number; end: number; label: string; sev: keyof typeof SEV_COLOR; lines: string[]; reads: string[] }
+interface SiteMark {
+  start: number; end: number; label: string; sev: keyof typeof SEV_COLOR; lines: string[]; reads: string[]
+  /** 决定该位点编号排序的判定种类（同位点多条时取最严重的） */
+  kind: string; element?: string | null; action?: string
+}
+/** 问题排序：决定结论的在前（混合 > 确证差异 > 双峰待核 > 元件未验证 > 覆盖缺口），同级按位置 */
+const KIND_RANK: Record<string, number> = {
+  mixed_variant: 0, mixed_sample: 0, confirmed_variant: 1, critical_element_variant: 1, unresolved_site: 2,
+  critical_element_unverified: 3, scope_read_shortfall: 4, scope_beyond_primer: 5,
+}
+const kindRank = (k: string) => KIND_RANK[k] ?? 6
+/** 参考注释类（与测序无关）：灰色 i，不计入需处理 */
+const ANNOTATION_KINDS = new Set(['orf_annotation_suspect'])
 /** 每个参考位点/区段一条：blocking 优先；同位点多条合并说明 */
 const siteMarks = computed<SiteMark[]>(() => {
   const by = new Map<string, SiteMark>()
-  const add = (start: number, end: number, label: string, sev: SiteMark['sev'], line: string, reads: string[]) => {
+  const add = (start: number, end: number, label: string, sev: SiteMark['sev'], line: string, reads: string[],
+    kind: string, element?: string | null, action?: string) => {
     const k = `${start}-${end}`
     const cur = by.get(k)
     const rank = { blocking: 2, warn: 1, info: 0 }
-    if (!cur) { by.set(k, { start, end, label, sev, lines: [line], reads: [...reads] }); return }
+    if (!cur) { by.set(k, { start, end, label, sev, lines: [line], reads: [...reads], kind, element, action }); return }
     if (!cur.lines.includes(line)) cur.lines.push(line)
     for (const r of reads) if (!cur.reads.includes(r)) cur.reads.push(r)
-    if (rank[sev] > rank[cur.sev]) { cur.sev = sev; cur.label = label }
+    if (rank[sev] > rank[cur.sev] || (rank[sev] === rank[cur.sev] && kindRank(kind) < kindRank(cur.kind))) {
+      Object.assign(cur, { sev, label, kind, element, action })
+    }
   }
   const v = props.verdict
   for (const [list, sev] of [[v?.blocking ?? [], 'blocking'], [v?.info ?? [], 'info']] as const) {
@@ -254,13 +269,13 @@ const siteMarks = computed<SiteMark[]>(() => {
       const e = it.ref_end ?? s
       const name = SITE_KIND_LABEL[it.kind] ?? it.kind
       const where = s === e ? `${s}` : (it.element ? String(it.element) : `${s}–${e}`)
-      add(s, e, `${where} ${name}`, sev === 'blocking' ? 'blocking' : 'info', it.detail, it.refs ?? [])
+      add(s, e, `${where} ${name}`, sev === 'blocking' ? 'blocking' : 'info', it.detail, it.refs ?? [], it.kind, it.element, it.action)
     }
   }
   for (const u of props.unresolvedSites) {
     const k = `${u.ref_pos}-${u.ref_pos}`
     if (by.has(k)) { const c = by.get(k)!; for (const r of u.reads) if (!c.reads.includes(r)) c.reads.push(r); continue }
-    add(u.ref_pos, u.ref_pos, `${u.ref_pos} ${UNRESOLVED_KIND_LABEL[u.kind] ?? u.kind}`, 'info', u.detail, u.reads)
+    add(u.ref_pos, u.ref_pos, `${u.ref_pos} ${UNRESOLVED_KIND_LABEL[u.kind] ?? u.kind}`, 'info', u.detail, u.reads, u.kind)
   }
   return [...by.values()].sort((a, b) => a.start - b.start)
 })
@@ -348,8 +363,7 @@ function readBadge(r: ReadRow): string {
   const parts: string[] = []
   if (x.grade) parts.push(x.grade)
   if (x.q20_ratio != null) parts.push(`Q20 ${(x.q20_ratio * 100).toFixed(0)}%`)
-  parts.push(`一致 ${(r.identity * 100).toFixed(1)}%`)
-  if (x.mixed_count) parts.push(`双峰 ${x.mixed_count}`)
+  // 一致性与双峰数在悬停说明里；条内只留等级与 Q20（设计稿 v6）
   return parts.join(' · ')
 }
 
@@ -386,6 +400,100 @@ const confirmRuns = computed(() => {
   }
   return runs
 })
+
+// ==================== 问题编号与清单（用户 2026-11-19 设计稿 v6） ====================
+function varChange(v: Variant): string {
+  const change = v.type === 'substitution' ? `${v.ref_base}>${v.alt_base}` : v.type === 'insertion' ? `ins${v.alt_base}` : `del${v.ref_base}`
+  const aa = v.aa_change ? ` ${String(v.aa_change).split(':').pop()}` : ''
+  return `${change}${aa}`
+}
+/** 参考坐标 → read 坐标（与 readToRef 互逆，忽略 indel） */
+function refToRead(r: ReadRow, ref: number): number {
+  const qs = (r as { query_start?: number }).query_start ?? 0
+  return r.direction === '+' ? qs + (ref - r.ref_start) : qs + (r.ref_end - ref)
+}
+const NEAR_EDGE_BP = 30
+/** 位点/区段落在哪条 read 的第几位、与可信区的关系（贴近或越出可信区时才写） */
+function readNote(m: SiteMark): string {
+  const notes: string[] = []
+  const rs = alignedReads.value.filter((r) => !r.wraps_origin
+    && (m.reads.length ? m.reads.includes(r.filename) : r.ref_start <= m.end && r.ref_end >= m.start))
+  for (const r of rs) {
+    const z = (r as { reliable_zone?: { start: number; end: number } | null }).reliable_zone
+    if (!z) continue
+    const a = refToRead(r, m.start)
+    const b = refToRead(r, m.end)
+    const lo = Math.min(a, b)
+    const hi = Math.max(a, b)
+    const nm = shortName(r.filename)
+    if (lo === hi) {
+      if (lo < z.start || lo > z.end) notes.push(`${nm} 第 ${lo} 位，在可信区 ${z.start}–${z.end} 外`)
+      else if (lo - z.start <= NEAR_EDGE_BP) notes.push(`${nm} 第 ${lo} 位，可信区从第 ${z.start} 位起`)
+      else if (z.end - lo <= NEAR_EDGE_BP) notes.push(`${nm} 第 ${lo} 位，可信区到第 ${z.end} 位止`)
+    } else {
+      if (lo < z.start) { const e = Math.min(hi, z.start - 1); notes.push(`${nm} 第 ${lo}–${e} 位（${e - lo + 1} bp）在可信区外，可信区从第 ${z.start} 位起`) }
+      if (hi > z.end) { const s0 = Math.max(lo, z.end + 1); notes.push(`${nm} 第 ${s0}–${hi} 位（${hi - s0 + 1} bp）在可信区外，可信区到第 ${z.end} 位止`) }
+    }
+  }
+  return notes.length ? `（${notes.join('；')}）` : ''
+}
+function problemTitle(m: SiteMark): string {
+  const pos = m.start === m.end ? `${m.start}` : `${m.start}–${m.end}`
+  const v = m.start === m.end ? props.variants.find((x) => x.ref_pos === m.start) : undefined
+  if (m.kind === 'mixed_variant' || m.kind === 'mixed_sample') return `${pos}${v ? ` ${varChange(v)}` : ''} 疑似混合`
+  if (m.kind === 'confirmed_variant' && v) return `${pos} ${varChange(v)} 确证差异`
+  if (m.kind === 'critical_element_unverified') {
+    const ev = (props.verdict?.element_verdicts ?? []).find((e) => e.name === m.element)
+    const nm = `${m.element ?? ''}${ev?.type ? ` ${ev.type}` : ''}`
+    return ev?.coverage != null ? `${pos} ${nm} 仅验证 ${Math.floor(ev.coverage)}%` : `${pos} ${nm} 未完全验证`
+  }
+  if (m.kind === 'orf_annotation_suspect') {
+    const f = props.features.find((x) => x.start === m.start || x.end === m.start)
+    return `${pos} 参考注释：${f ? `${f.name} ` : 'CDS '}${f && f.end === m.start && f.start !== m.start ? '终点' : '起点'}存疑`
+  }
+  return `${pos} ${SITE_KIND_LABEL[m.kind] ?? m.kind}`
+}
+interface Problem { no: string; mark: SiteMark; title: string; reason: string; action: string; color: string; annotation: boolean }
+const problems = computed<Problem[]>(() => {
+  const blocking = siteMarks.value.filter((m) => m.sev === 'blocking')
+  const real = blocking.filter((m) => !ANNOTATION_KINDS.has(m.kind))
+    .sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || a.start - b.start)
+  const ann = blocking.filter((m) => ANNOTATION_KINDS.has(m.kind))
+  return [
+    ...real.map((m, i) => ({
+      no: String(i + 1), mark: m, title: problemTitle(m), reason: `${m.lines.join('；')}${readNote(m)}`,
+      action: m.action ?? '核对峰图', color: kindRank(m.kind) <= 2 ? '#dc2626' : '#d97706', annotation: false,
+    })),
+    ...ann.map((m) => ({
+      no: 'i', mark: m, title: problemTitle(m), reason: `与测序无关；${m.lines.join('；')}`,
+      action: '核对参考文件的 CDS 标注', color: '#94a3b8', annotation: true,
+    })),
+  ]
+})
+const problemCount = computed(() => problems.value.filter((p) => !p.annotation).length)
+const annotationCount = computed(() => problems.value.length - problemCount.value)
+/** 提示级（未计入判定）：默认收起，展开后图上画灰色刻块 */
+const hints = computed(() => siteMarks.value.filter((m) => m.sev !== 'blocking'))
+const showHints = ref(false)
+const pinnedPos = computed(() => new Set(problems.value.filter((p) => p.mark.start === p.mark.end).map((p) => p.mark.start)))
+
+/** 区段底带：与 read 重叠的 CDS（短 CDS 如标签另用紫色），贯穿 read 层到参考层 */
+const regionItems = computed(() => {
+  const segs = alignedReads.value.flatMap((r) => readSegments(r))
+  return shownFeatures.value
+    .filter((f) => normType(f.type) === 'cds' && f.start <= f.end && segs.some(([s, e]) => f.end >= s && f.start <= e))
+    .map((f, i) => {
+      const short = f.end - f.start + 1 < 90
+      return {
+        id: String(i), start: f.start, end: f.end, color: short ? '#7c3aed' : '#2563eb',
+        label: short ? `${f.name} ${f.start}–${f.end}` : `CDS ${f.name} · ${f.start}–${f.end}`,
+        className: 'map-region-cds', tooltip: { title: f.name, lines: [`${f.start}–${f.end}（${f.end - f.start + 1} bp）`] },
+      }
+    })
+})
+function jumpTo(m: SiteMark) {
+  emit('jump-site', { ref_pos: m.start, read: m.reads[0] })
+}
 
 const tracks = computed<MapTrack[]>(() => [
   {
@@ -438,20 +546,20 @@ const tracks = computed<MapTrack[]>(() => [
   },
   {
     id: 'variants', kind: 'marks',
-    items: props.variants.map((v, i) => {
+    // 已有问题编号的差异不再重复画刻块（同一信息只编码一次，设计稿 v6）
+    items: props.variants.flatMap((v, i) => {
+      if (pinnedPos.value.has(v.ref_pos)) return []
       const site = siteAt.value.get(v.ref_pos)
-      const change = v.type === 'substitution' ? `${v.ref_base}>${v.alt_base}` : v.type === 'insertion' ? `ins${v.alt_base}` : `del${v.ref_base}`
-      const aa = v.aa_change ? ` ${String(v.aa_change).split(':').pop()}` : ''
-      return {
+      return [{
         id: String(i), start: v.ref_pos, end: v.ref_pos, color: '#c0392b', className: 'map-var-tick',
-        markLabel: `${v.ref_pos} ${change}${aa}${site ? ` · ${site.label.replace(/^\S+\s/, '')}` : ''}`,
+        markLabel: `${v.ref_pos} ${varChange(v)}${site ? ` · ${site.label.replace(/^\S+\s/, '')}` : ''}`,
         priority: 100,
         tooltip: {
           title: `${v.ref_pos} ${v.ref_base}→${v.alt_base}`,
           lines: [`${v.type === 'substitution' ? '替换' : v.type === 'insertion' ? '插入' : '缺失'}，${v.support_reads || 1} 条 read`,
                   ...(site ? site.lines : []), '点击在比对峰图中查看'],
         },
-      }
+      }]
     }),
   },
   {
@@ -462,22 +570,35 @@ const tracks = computed<MapTrack[]>(() => [
     })),
   },
   {
-    // 结果位点（判定 blocking/info + 未决位点）：刻块 + 文字标注；与差异同位点的已并入上一轨
-    id: 'sites', kind: 'marks',
-    items: siteMarks.value.filter((m) => !(m.start === m.end && variantPos.value.has(m.start))).map((m, i) => ({
-      id: String(i), start: m.start, end: m.end, color: SEV_COLOR[m.sev], className: `map-site-tick map-site-${m.sev}`,
-      // 只给阻断项写字；提示级只留灰色刻块（悬停看说明），避免满屏文字
-      markLabel: m.sev === 'blocking' ? m.label : undefined, priority: 50,
-      tooltip: { title: m.label, lines: [...m.lines, ...(m.start === m.end ? ['点击在比对峰图中查看'] : [])] },
+    // 问题编号（设计稿 v6）：顶部圆标 + 竖向引导线，编号按严重程度；参考注释为灰色 i
+    id: 'sites', kind: 'pins',
+    items: problems.value.map((p, i) => ({
+      id: String(i), start: p.mark.start, end: p.mark.end, color: p.color, markLabel: p.no,
+      className: `map-pin ${p.annotation ? 'map-pin-ann' : 'map-pin-issue'}`,
+      tooltip: { title: `${p.no === 'i' ? 'ⓘ' : p.no} ${p.title}`, lines: [p.reason, `→ ${p.action}`, '点击在比对峰图中查看'] },
     })),
+  },
+  {
+    id: 'regions', kind: 'regions', items: regionItems.value,
+  },
+  {
+    // 提示级位点：展开时才画灰色刻块（不写字）
+    id: 'hints', kind: 'marks',
+    items: showHints.value ? hints.value.filter((m) => !variantPos.value.has(m.start)).map((m, i) => ({
+      id: String(i), start: m.start, end: m.end, color: SEV_COLOR.info, className: 'map-site-tick map-site-info',
+      tooltip: { title: m.label, lines: [...m.lines, '点击在比对峰图中查看'] },
+    })) : [],
   },
 ])
 
 function onTrackClick(trackId: string, itemId: string) {
   if (trackId === 'reads') emit('open-read', Number(itemId))
   else if (trackId === 'sites') {
-    const m = siteMarks.value.filter((x) => !(x.start === x.end && variantPos.value.has(x.start)))[Number(itemId)]
-    if (m) emit('jump-site', { ref_pos: m.start, read: m.reads[0] })
+    const p = problems.value[Number(itemId)]
+    if (p) jumpTo(p.mark)
+  } else if (trackId === 'hints') {
+    const m = hints.value.filter((x) => !variantPos.value.has(x.start))[Number(itemId)]
+    if (m) jumpTo(m)
   } else if (trackId === 'variants') {
     const v = props.variants[Number(itemId)]
     if (v) emit('jump-variant', v)
@@ -537,6 +658,7 @@ defineExpose({ tracks, doc })
     </p>
     <LinearMap :doc="doc" :tracks="tracks" :show-enzymes="false"
                :focus="focusRanges" :focus-share="FOCUS_SHARE"
+               :lanes="{ reads: '测序 read', reference: '参考序列' }"
                @track-click="onTrackClick" @feature-click="onFeatureClick"
                @range-select="onRangeSelect" />
     <p class="map-legend hint lg-reads">
@@ -551,10 +673,6 @@ defineExpose({ tracks, doc })
       <span class="lg-sw" style="background:#86efac"></span>单向
       <span class="lg-sw" style="background:#fcd34d"></span>低质量
       <span class="lg-sw" style="background:#dc2626"></span>有情况
-      <template v-if="siteMarks.length"> ·
-        <span class="lg-tick" style="background:#c0392b"></span>阻断位点
-        <span class="lg-tick" style="background:#9ca3af"></span>提示位点（悬停看说明）
-      </template>
     </p>
     <p class="map-legend hint">
       <span class="lg-req">▬ 需测范围</span> ·
@@ -567,6 +685,22 @@ defineExpose({ tracks, doc })
         <span v-for="t in legendTypes" :key="t.type" class="lg-type"><i :style="{ background: t.color }"></i>{{ t.type }}</span>
       </template>
     </p>
+    <div v-if="problems.length || hints.length" class="map-problems">
+      <p v-if="problems.length" class="mp-head">需处理 {{ problemCount }} 处<template v-if="annotationCount"> · 参考注释 {{ annotationCount }} 处</template></p>
+      <ol class="mp-list">
+        <li v-for="p in problems" :key="p.no + p.mark.start" :class="['mp-row', { 'mp-ann': p.annotation }]" @click="jumpTo(p.mark)">
+          <span class="mp-no" :style="{ background: p.color }">{{ p.no }}</span>
+          <span class="mp-text"><b class="mp-title">{{ p.title }}</b><span class="mp-why"> · {{ p.reason }} → {{ p.action }}</span></span>
+        </li>
+      </ol>
+      <p v-if="hints.length" class="mp-hint">
+        另有 {{ hints.length }} 处提示级（弱双峰/近端噪声，未计入判定），
+        <button type="button" class="mp-toggle" @click="showHints = !showHints">{{ showHints ? '收起' : '展开' }}</button>
+      </p>
+      <ul v-if="showHints" class="mp-hints">
+        <li v-for="m in hints" :key="m.start + '-' + m.end" class="mp-hint-row" @click="jumpTo(m)">{{ m.label }} · {{ m.lines[0] }}</li>
+      </ul>
+    </div>
   </div>
 </template>
 
@@ -596,5 +730,21 @@ defineExpose({ tracks, doc })
   padding: 0.3rem 0.6rem; margin: 0 0 0.4rem; font-size: 0.85rem; color: #2c5f8a;
 }
 .lg-type { margin-left: 6px; white-space: nowrap; }
+.map-problems { border-top: 1px solid #e2e8f0; margin-top: 0.4rem; padding-top: 0.4rem; font-size: 0.85rem; }
+.mp-head { margin: 0 0 0.3rem; color: #475569; font-weight: 600; }
+.mp-list { list-style: none; margin: 0; padding: 0; }
+.mp-row { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.2rem 0; cursor: pointer; line-height: 1.5; }
+.mp-row:hover .mp-title { text-decoration: underline; }
+.mp-row.mp-ann { margin-top: 0.3rem; color: #475569; }
+.mp-row.mp-ann .mp-title { font-weight: 400; }
+.mp-no { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  color: #fff; font-size: 11px; font-weight: 700; transform: translateY(3px); }
+.mp-title { color: #0f172a; }
+.mp-ann .mp-title { color: #475569; }
+.mp-why { color: #64748b; }
+.mp-hint { margin: 0.3rem 0 0 26px; color: #94a3b8; }
+.mp-toggle { border: none; background: none; color: #2563eb; cursor: pointer; padding: 0; font-size: inherit; }
+.mp-hints { margin: 0.2rem 0 0 26px; padding: 0; list-style: none; color: #94a3b8; }
+.mp-hint-row { cursor: pointer; padding: 0.1rem 0; }
 .lg-type i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
 </style>
