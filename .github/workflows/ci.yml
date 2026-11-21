@@ -25,6 +25,11 @@ jobs:
           # CHANGELOG [Unreleased] 的 compare 目标，浅克隆默认无 tag
           fetch-depth: 0
 
+      # 阻断：真实测序数据（含脱敏件）及其衍生测试信息一律不入库
+      #（2026-11-21 政策）；真实数据回归在本机 gitignored 目录跑
+      - name: Check real-data absence
+        run: python scripts/check_real_data_absence.py
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
