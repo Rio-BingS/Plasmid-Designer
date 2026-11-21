@@ -67,9 +67,12 @@ show("degraded tail x3.0, undeclared",
      analyze([("F.ab1", make_trace_ab1(ref3[200:1101], q=50, tail_width=(400, 3.0)))], ref3, f3, circular=True))
 
 # --- 真实子集：未声明 vs 声明范围，minor_af_site / 复核量
+# （2026-11-21 政策：真实数据不入仓库，本探针读本机 gitignored 副本，
+#   文件名从目录内取，不在脚本里硬编码）
 from core.sanger.reference_parser import parse_reference_topology
 D = R / "tests" / "data" / "real_ab1"
-rs_, fs_, topo = parse_reference_topology("DEMO1.dna", (D / "DEMO1.dna").read_bytes())
+_dna = next(D.glob("*.dna"), None)
+rs_, fs_, topo = parse_reference_topology(_dna.name, _dna.read_bytes())
 ab = [(p.name, p.read_bytes()) for p in sorted(D.glob("*.ab1"))]
 print("real feats:", [(f["name"], f["type"], f["start"], f["end"]) for f in fs_ if f["type"] in ("CDS", "gene", "rep_origin", "promoter")][:12])
 from collections import Counter

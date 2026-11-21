@@ -8,30 +8,45 @@
 
 ## [Unreleased]
 
-> 2026-11-21：真实测序数据（含脱敏件）彻底移出仓库。
+> 2026-11-21：真实测序数据（含脱敏件）及其衍生测试信息彻底移出仓库。
 
 ### 升级注意
 
-- **真实测序数据不再入库（含脱敏件）**：`tests/data/real_ab1/`（DEMO1 图谱
-  + S00001 五条 read）已从当前分支与全部 git 历史移除——git filter-repo
-  重写 `feat/matchmap-focus` 并 force push（72 个提交改写，指向含数据谱系
-  的 tag 同步重写）。2.37.0-alpha.2 起「入库脱敏子集供 CI 回归」的 W16
+- **真实测序数据不再入库（含脱敏件）**：`tests/data/real_ab1/`（脱敏真实
+  测序子集）已从当前分支与全部 git 历史移除——git filter-repo
+  重写 `feat/matchmap-focus` 并 force push（两轮历史改写：第一轮移除数据
+  目录 72 个提交，第二轮剥离含真实样本断言的整文件并清洗混合文件 hunks，
+  约 800 个提交重写）。2.37.0-alpha.2 起「入库脱敏子集供 CI 回归」的 W16
   决策废止：脱敏件同属真实数据，不再入库。**已有部署克隆需重新拉取**
-  （分支历史已重写、提交哈希全变）。CI 上真实数据回归一律 skip；本机把
-  本地副本放回 `tests/data/real_ab1/`（已 gitignore）即可恢复真跑，母本在
-  仓库外 `plasmid-designer V/real_ab1_subset_master/`。
+  （分支历史已重写、提交哈希全变）。CI 不跑真实数据回归；本机把回归
+  测试与本地副本放回 `tests/data/real_ab1/`（gitignored，pytest 自动
+  收集）即可真跑，母本在仓库外
+  `plasmid-designer V/real_ab1_subset_master/`。
+- **真实数据衍生测试信息同批出库（2026-11-21 追加定策）**：仓库内引用
+  真实样本代号、真实位点坐标、真实基线的测试断言与文档记录一并清除或
+  泛化为「见本机基准」；真实数据专用测试（真实子集复核、真实批次回归、
+  RQ1/RQ2、abif 结构修复真实件、v32 真实锁）整体迁出仓库与数据同放。
+  新增涉及真实数据的文档/测试一律写泛化表述——CI 第一步由
+  `scripts/check_real_data_absence.py` 阻断（路径 + 内容词边界匹配，
+  白名单：脚本自身、公共载体 fixture）。
 
 ### 变更
 
-- **RQ1/RQ2 场景测试补 skip-if-missing 守卫**：真实子集不在场时与
-  test_real_ab1_subset 同款自动跳过（此前会 FileNotFoundError 红灯）。
+- **真实数据专用测试迁出仓库**：三个本地专用测试文件与数据同放
+  `tests/data/real_ab1/`（gitignored，pytest 自动收集，本机在场即跑、
+  CI 完全无感）；仓库内 `tests/sanger_scenarios.py` 只留 RQ3 及以下的
+  合成场景。
+- **新增守卫 `scripts/check_real_data_absence.py` 并接入 CI 第一步**：
+  扫描 git 跟踪文件，发现真实数据路径（`tests/data/real_ab1/`、
+  sanger_bench 之外的 `*.ab1`/`*.dna`）或真实标识/位点内容即退出码 1。
+- **sanger 模块注释与文档泛化**：abif_repair/batch_control/orf_guard/
+  cds_extract/conclusion_fold/polycall 的真实数据出处描述改为「本机
+  基准」级表述；CHANGELOG/HANDOVER/KNOWN_ISSUES/NAMING/
+  SANGER_ALGORITHM_REPORT/ALGORITHM_ROADMAP 及 audit 报告同步清洗。
 - **`.gitignore` 恢复 `tests/data/real_ab1/` 规则**，防止真实数据（含
   脱敏件）再次入库。
 - **仓库内 `plasmid-designer V1.01` 硬编码路径更正为 `plasmid-designer V`**
   （目录 2026-11-18 改名后 5 处断链，本机真实数据回归此前一直静默 skip）。
-  test_real_data_regression 另补「信息表与文件名不同步」守卫——2026-11-18
-  重脱敏后文件已换 S00067 新码而 测序.xlsx 未同步，对不上时 skip 并说明
-  （清单同步待办见 KNOWN_ISSUES）。
 
 ## [2.37.0-alpha.3] - 2026-11-08
 
@@ -235,8 +250,8 @@
   「无可用测序区段」（如 FP_Yeast_PEST_1_E07_F；293 例中 9 例头行变化，
   状态不变）。
 - 结论正文 6 行预算不再把「⚠ 疑似混合样品 / ⚠ 测序套峰」等 ⚠ 级混合汇总
-  行折进折叠组；需要腾位时改挤「共检出 N 处差异」摘要行（DEMO1/ALL、
-  S00025/ALL 等 5 例正文变化，状态不变）。
+  行折进折叠组；需要腾位时改挤「共检出 N 处差异」摘要行（真实基准形态
+  验证等 5 例正文变化，状态不变）。
 
 #### 已知未修
 - 见 `docs/KNOWN_ISSUES.md` 未解决第 10、13、14 条（含 10 个 xfail 的口径差）；
@@ -312,8 +327,9 @@
   位点）与一键确认留痕（人工确认 N 处）；结果页范围条可切换范围并
   秒级重算（不重跑比对）；p_real 展示改高/中/低三档（未校准不当概率）；
   匹配简图三层色带（需测/预期/已验证）与缺口按原因着色；变体表双坐标。
-- 基准：`tests/data/real_ab1/` 入库脱敏真实测序子集（DEMO1 图谱 +
-  5 条 read，含 3 处真实确证变异）——CI 真实敏感度回归不再依赖本机数据。
+- 基准：`tests/data/real_ab1/` 入库脱敏真实测序子集（含 3 处真实确证
+  变异）——CI 真实敏感度回归不再依赖本机数据（该决策 2026-11-21 废止，
+  见 [Unreleased]）。
 
 ## [2.37.0-alpha.1] - 2026-11-05
 

@@ -35,7 +35,7 @@ def real_mx_case():
     if not REAL_DIR.is_dir():
         return None
     mx_ref = REAL_DIR / "MX.dna"
-    reads = sorted(REAL_DIR.glob("SZ00002*.ab1"))
+    reads = sorted(REAL_DIR.glob("*.ab1"))
     if not mx_ref.is_file() or len(reads) < 3:
         return None
     from core.sanger.reference_parser import parse_reference_topology

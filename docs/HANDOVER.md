@@ -24,19 +24,24 @@
 
 ## 1. 一句话现状
 
-**2026-11-21 现状（真实测序数据彻底出库 + 工作区整理）**：政策变更——
-**真实测序数据一律不入库（含脱敏件）**，W16「入库脱敏子集供 CI 回归」决策
+**2026-11-21 现状（真实测序数据彻底出库 + 工作区整理 + 衍生测试信息出库）**：政策变更——
+**真实测序数据一律不入库（含脱敏件），其衍生测试信息（真实样本代号、真实位点
+坐标、真实基线）同样不入库不入推送**，W16「入库脱敏子集供 CI 回归」决策
 废止：`tests/data/real_ab1/` 6 文件已用 git filter-repo 从 `feat/matchmap-focus`
 全部历史移除并 force push（临时克隆操作，72 个提交改写、指向含数据谱系的
-tag 同步重写，分支 cf5b976→acfc3f9），`.gitignore` 防回潮，RQ1/RQ2 补
-skip-if-missing 守卫（CI 无数据全 skip，本机有本地副本则照跑）。本地同步
+tag 同步重写），`.gitignore` 防回潮。同日第二轮（政策延伸「防推送」）：真实
+数据专用测试整体移出仓库与数据同放本机 gitignored 目录（pytest 自动收集，
+仓库内只留合成场景）；sanger 模块注释、测试、audit 报告与各文档里的真实
+标识/坐标/基线全部泛化为「本机基准」级表述；新增守卫
+`scripts/check_real_data_absence.py`（路径 + 内容词边界匹配）接入 CI 第一步
+阻断（约束第 23 条）。本地同步
 处置：旧线 3 分支 bundle 归档到仓库外后删除 + reflog/gc（**12 个数据 blob
 SHA——6 个未脱敏原件 + 6 个脱敏件——已实测全部不在本地对象库**）；2026-11-18
-审核修复 stash 重挂到新线 `stash@{0}`（适配云端 S00001 命名，patch 另存仓库
-外 `_audit_fixes_20261118.patch`，全量 2310 测试绿）；仓库内 5 处
+审核修复 stash 重挂到新线 `stash@{0}`（适配云端命名，patch 另存仓库
+外 `_audit_fixes_20261118.patch`，全量测试绿）；仓库内 5 处
 `plasmid-designer V1.01` 硬编码修正为 `plasmid-designer V`（目录改名断链，
-含 test_real_data_regression 的清单一致性守卫）。**待办**：MX 批次交付清单
-（测序.xlsx 仍是 SZ15674 旧码）与重脱敏后文件名（S00067 系）待同步，同步前
+含本机回归的清单一致性守卫）。**待办**：MX 批次交付清单
+（测序.xlsx 仍是旧码）与重脱敏后文件名（新码）待同步，同步前
 本机 5 项真实回归 skip（KNOWN_ISSUES 新条目）。VPS 仍跑旧线 `1e4efb6`，
 下次部署**必须重新 clone**（旧哈希已不存在于远端）。
 
@@ -91,8 +96,8 @@ Excel/前端卡片全部由 verdict.status 导出）、Excel 回填新六列（�
 范围来源/范围内验证覆盖/缺口原因/范围外差异/补测建议）、范围预设条与
 MatchMap 三层色带（W13 前端）、复核队列三类收口与一键确认留痕（W14，
 headline「人工确认 N 处」）、p_real 三档展示（W15）、KNOWN_ISSUES 防回潮
-约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，DEMO1
-3 处真实确证变异敏感度锁定）。场景库 72 场景全绿（xfail 清零）；Windows
+约束 15 条（W15）、真实 AB1 子集入仓（W16，`tests/data/real_ab1/`，3 处
+真实确证变异敏感度锁定；该决策 2026-11-21 废止，见 §1 首段）。场景库 72 场景全绿（xfail 清零）；Windows
 全量 2070 passed / 0 failed / 46 skipped；SANGER_ALGO_VERSION 保持 v14
 （W11–W16 未改判定阈值/真值）。逐阶段数字与刻意未做事项见
 docs/audit/PROGRESS_v3.md 与 goal 终版汇报。
@@ -296,7 +301,8 @@ run upgrade head          # 只跑新增的那一条
    搜索/列表路径与导入路径的口径必须一致，否则又是「搜得到、点不开」（[snapgene 留档](postmortems/2026-10-18-snapgene-search-import-mismatch.md)）。
 5. **测序口径不可随手改**：可靠区默认 `30/60/700/900`、次要克隆 = r/(1+r)、共识只取实测
    覆盖区、单 read indel 降级、MX 批次「疑似混合样品」是真实判定。改口径必须同时更新
-   `tests/test_real_data_regression.py` 的断言（先按旧口径跑一遍取证，再改）。
+   本机真实回归测试的断言（与数据同放本机 gitignored 目录，不入仓库；先按旧口径
+   跑一遍取证，再改）。
 6. **测试隔离**：`tests/test_config_cors.py` 会 `reload(app.config)` → 打桩要同时打
    `app.config.settings` 与 `app.design_service.settings`，并清 `cache.backend.clear_pattern("vector:*")`；
    改 `site_settings` 必须用真实 `app.database.SessionLocal` 并在结束时恢复。
@@ -334,8 +340,8 @@ run upgrade head          # 只跑新增的那一条
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
-| **P0** | **2026-11-18 审核修复落地收尾**：修复在 `stash@{0}`（重挂净化新线、适配 S00001 命名、全量测试绿），用户确认后按 git-commit-style 落地提交 → scp 重部署 VPS | 修复已验证但未入库；VPS 还跑旧线 `1e4efb6`（带 batch_control P1），且旧哈希已不在远端，重部署须重新 clone |
-| **P2** | **MX 批次交付清单同步**：`测序.xlsx`（SZ15674 旧码）按 sanitize_mapping.csv 同步到重脱敏后的 S00067 新码，并更新 test_real_data_regression 硬编码 read 名，重跑 5 项回归重新标定 | 2026-11-18 重脱敏只洗了文件没洗 xlsx 旁证，清单与文件脱节，本机真实回归只能 skip |
+| **P0** | **2026-11-18 审核修复落地收尾**：修复在 `stash@{0}`（重挂净化新线、适配云端命名、全量测试绿），用户确认后按 git-commit-style 落地提交 → scp 重部署 VPS | 修复已验证但未入库；VPS 还跑旧线 `1e4efb6`（带 batch_control P1），且旧哈希已不在远端，重部署须重新 clone |
+| **P2** | **MX 批次交付清单同步**：`测序.xlsx`（旧码）按 sanitize_mapping.csv 同步到重脱敏后的新码，并更新本机专用回归硬编码 read 名，重跑 5 项回归重新标定 | 2026-11-18 重脱敏只洗了文件没洗 xlsx 旁证，清单与文件脱节，本机真实回归只能 skip |
 | **已完成** | ~~**Sanger 重构遗留问题**（KNOWN_ISSUES「未解决」第 8、9、11、12 条）：E07 头行「已测」后为空、6 行预算挤掉「疑似混合样品」汇总行、两份酶库合并、`infer_scope` 并入 `resolve_scope`~~ | 2026-11-18 收尾已修，见 KNOWN_ISSUES 修复历史「Sanger 重构收尾」；剩余第 10 条（主变异行与 poly 子行 indel 长度不同）仍挂账 |
 | **P1** | **10 个 xfail 的口径差逐个定案**：零散双峰合成混合例（7 项）、poly 大量缺失的真实回归例（1 项）、CM3 构造与相邻反向单 read 插入（2 项较早遗留） | 现行口径已定，旧期望要么改成新口径断言、要么确认保留 xfail 并写明理由 |
 | **P2** | **补样本**：二、三核苷酸 poly 的真实数据 | 现有对照样本里没有，PolyCall 对这类 poly 的计数与报警只靠单元测试兜底 |

@@ -56,11 +56,14 @@ src/frontend/               Vue3+TS+Vite 8+Pinia（dev 端口 3000，代理 /api
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML，带 data_provenance)
 deploy/                     docker-compose / bare(Ubuntu systemd)
 tests/                      后端 pytest（tests/abif_utils.py 合成 ab1 生成器；
-                            真实 ab1 回归 skip-if-missing——真实测序数据一律
-                            不入库（含脱敏件，2026-11-21 政策），本地副本
-                            tests/data/real_ab1/ 已 gitignore，母本在仓库外
-                            plasmid-designer V/real_ab1_subset_master/；
-                            验证策略=本机回归+VPS 实测，CI 不跑真实数据回归）
+                            真实 ab1 回归 skip-if-missing——真实测序数据及其
+                            衍生测试信息一律不入库（含脱敏件，2026-11-21 政策，
+                            防回潮约束第 23 条），本地回归测试与数据同放
+                            tests/data/real_ab1/（gitignored，pytest 自动收集），
+                            母本在仓库外 plasmid-designer V/real_ab1_subset_master/；
+                            验证策略=本机回归+VPS 实测，CI 不跑真实数据回归；
+                            守卫 scripts/check_real_data_absence.py 已接入 CI
+                            第一步阻断——新增文档/测试涉及真实数据时写泛化表述）
 src/frontend/tests/         前端 vitest
 ```
 
@@ -88,8 +91,8 @@ vue-tsc **0**、build/npm audit/文档同步门禁全绿。Windows 的 46 skippe
 需 bash/sh（Linux 上真跑）+ 1 snapgene-reader 分支不可触发 + 3 契约测试显式登记
 （M5/M8/M11 不经 analyze）；Sanger 场景库 67 个场景 / 88 个测试函数 = 87 passed +
 1 xfailed（CM3，构造 off-by-one，待裁决）。真实数据回归
-（`test_real_data_regression`）
-只在本机有 ab1 数据时跑、CI 上 skip。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
+（与数据同放本机 gitignored 目录 `tests/data/real_ab1/`，2026-11-21 政策）
+只在本机有 ab1 数据时跑、CI 上不跑。此前长期挂账的 5 项红灯已于 2026-10-18 清账，
 病因与修法见 `docs/HANDOVER.md` §7（[postmortems 索引](docs/HANDOVER.md#7-已修问题留档索引)）；v2.18.0→v2.29.2 的 CI 红灯链也已清零（[ci-red-chain 留档](docs/postmortems/2026-10-26-ci-red-chain-and-backup.md)）。
 CI（`.github/workflows/ci.yml`）：push main / PR 跑 pytest + pip-audit、vue-tsc + vitest + build + npm audit，
 另有**文件尺寸统计** `scripts/check_file_size.py`——2026-11-10 起**只提示、不阻断**

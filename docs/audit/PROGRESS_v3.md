@@ -485,12 +485,12 @@
 ## W16 基准与文档收尾（PL G5；goal W16）
 
 - **真实 AB1 子集入仓**（goal「必须包含真实变异」）：`tests/data/
-  real_ab1/`（1.5 MB）——40001 DEMO1 图谱（35 KB .dna）+ S00001 克隆
+  real_ab1/`（1.5 MB）——脱敏真实图谱（.dna）+ 克隆
   5 条 read（M13F/M13R/seqF/CseqR1/40002，~280 KB each）。来源：V1.01
   交付的实验数据（用户自有、无第三方许可问题——判断依据：数据随项目
   交付、HANDOVER/KNOWN_ISSUES 已作为回归基线语境存在；未停下询问）。
-  真值：status=fail，确证变异 ins@335（high）/ins@440（medium）/
-  del@4081（high），覆盖 ~63%，未声明范围（measured 口径）。
+  真值：status=fail，3 处真实确证变异（位置/类型/档位见本机基准真值
+  锁），覆盖 ~63%，未声明范围（measured 口径）。
 - `test_real_ab1_subset.py` 2 测：敏感度（3 处真实变异的位置/类型/
   档位逐一锁定）+ 判定形状（fail、measured、覆盖带宽 50-75%）。
   真值先于断言由探针跑固定，后续实现改动不得改真值凑绿（口径变更

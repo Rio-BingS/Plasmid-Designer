@@ -101,7 +101,7 @@ L ≈ 1 周以上。
 | # | 项 | 用户价值 | 工作量（触达） | 依赖 / 许可 | 运行时风险 | 测试策略 |
 |---|---|---|---|---|---|---|
 | 5 | oligo 交叉杂交主动规避 | 高：直接影响全基因合成组装成功率，当前只给告警、用户无法自行消解 | **S-M**：`core/primer_designer.py`（`_tm_homogenize_boundaries` + `cross_hybridization_count`）、`app/design_service.py` 告警文案、`tests/test_primer_designer.py` | 无新依赖 | 中：v2.8.0 的坐标下降已同时搜索边界与重叠长度，再内嵌交叉杂交评分会进一步放大搜索开销，需对 12mer 建索引并缓存，必要时设迭代上限 | 构造已知冲突序列断言计数降为 0；保留现有重叠 Tm 极差 ≤5°C 与「片数恒偶、无完全互补对」回归断言 |
-| 6 | 密码子使用数据源更新 | 高：CAI/评分的输入质量，影响全部优化结果；Kazusa 数据停在 2007 | **S**：`data/codon_tables/*.yaml`、`tests/test_codon_tables_data.py`、导出脚本 | 仅数据（CoCoPUTs / HIVE-CUTs 公开下载）；需在 `data_provenance` 注明来源与抓取日期 | 低：纯数据替换，无运行时开销 | 频率和归一化校验（每个氨基酸家族和为 1）、与现表的差异报告、`tests/test_real_data_regression.py` 固定序列 CAI 基线更新 |
+| 6 | 密码子使用数据源更新 | 高：CAI/评分的输入质量，影响全部优化结果；Kazusa 数据停在 2007 | **S**：`data/codon_tables/*.yaml`、`tests/test_codon_tables_data.py`、导出脚本 | 仅数据（CoCoPUTs / HIVE-CUTs 公开下载）；需在 `data_provenance` 注明来源与抓取日期 | 低：纯数据替换，无运行时开销 | 频率和归一化校验（每个氨基酸家族和为 1）、与现表的差异报告、本机真实回归（仓库外，2026-11-21 政策）固定序列 CAI 基线更新 |
 | 3 | 完整 mRNA 折叠（MFE） | 中-高：把 5' 发夹计数近似升级为全序列能量，报告可信度明显提升 | **M**：新增 `core/rna_fold.py` 可选封装、`core/codon_optimizer.py::_optimization_score`、报告/导出层 | ViennaRNA（自定义许可，禁收费再分发）→ 只能可选安装，不进 `requirements.txt` | 中：O(n³) 时间 / O(n²) 内存，1-2 kb 量级在单核上约亚秒到数秒、内存十 MB 级可接受；必须只在终评调用一次，禁止进迭代热路径，并对超长序列设长度上限 | 未安装 ViennaRNA 时走降级分支的用例（CI 默认环境）；安装后对已知序列断言 MFE 落在参考区间 |
 | 4 | 密码子对偏好 CPB / 上下文 CC | 中：独立于 CAI 的评分维度，但对普通用户是「分数多一项」，不改变主序列质量感知 | **M**：新增 `data/codon_pairs/<species>.yaml`（3721 对/物种）、`core/codon_optimizer.py`（`_window_score` / `_optimization_score`）、新测试 | 仅数据（CoCoPUTs 提供 codon pair 表） | 中：滑窗精修已是 CPU 热点，窗口评分再加一项需保持 O(1) 查表，评分权重重标定会牵动既有基线 | 人工构造高/低 CPS 序列断言排序正确；综合 score 权重变更需同步刷新回归基线 |
 | 2 | Codon harmonization / harmony index | 中：对难表达蛋白（共翻译折叠敏感）有价值，但收益需湿实验才能验证，离线无法证伪 | **L**：`data/codon_tables` schema 扩列 + tRNA GCN 导入、`core/codon_optimizer.py` 优化目标重写（`_initial_optimization` / `_iterative_optimization` / 评分） | GtRNAdb（Release 22, 2024-09）tRNA 基因拷贝数，免费可下载 | 中-高：目标函数从「最大 CAI」改为「曲线拟合」，会推翻现有全部分数基线与缓存键语义 | 先做零数据近似（滑窗 CAI 平滑）并以「局部速度曲线方差下降」为可测指标；全量回归 + 缓存失效验证 |
@@ -168,7 +168,7 @@ L ≈ 1 周以上。
 | 目的基因模式不裁参考 | `core/sanger/pipeline.py`（cds_mode） | 全质粒比对+scope=CDS±接合区；junctions 入需测范围；变体双坐标（c./p.） |
 | 复核队列与一键确认 | `core/sanger/review.py` + 端点 | 确证差异/范围内缺口/未决位点三类；artifact/mutation 留痕 by/at；headline「人工确认 N 处」 |
 | 范围可视化 | 前端 MatchMap/Panel/BatchView | 三层色带（需测/预期/已验证）+缺口着色+范围条重算；批量页需复核汇总 |
-| 真实 AB1 子集基准 | `test_real_ab1_subset.py`（数据不入库：本地副本 `tests/data/real_ab1/` 已 gitignore，母本在仓库外 `plasmid-designer V/real_ab1_subset_master/`） | DEMO1 3 处真实确证变异敏感度锁定（ins335/ins440/del4081） |
+| 真实 AB1 子集基准 | 本机专用测试（随数据放 gitignored 的 `tests/data/real_ab1/`，pytest 自动收集；母本在仓库外 `plasmid-designer V/real_ab1_subset_master/`） | 3 处真实确证变异敏感度锁定（位点见本机基准） |
 
 ### 暂缓项（按需启动）
 

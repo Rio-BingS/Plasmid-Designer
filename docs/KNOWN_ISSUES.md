@@ -71,17 +71,17 @@ SANGER_ALGORITHM_REPORT.md 第 1 节、第 2.7 节）：
     - 7 项「只有零散双峰、未形成套峰的合成混合样品」（基准集 S14、场景库 2 项、
       pipeline 4 项）：read 级套峰口径下改判待定而非疑似混合，正文提示「仍可能是
       两种克隆混合」；旧期望保留为 strict xfail 记录口径差。
-    - 1 项真实数据回归：poly(A) 4081–4187 缺失约 36%，新的大量缺失报警判 ✗
+    - 1 项真实数据回归：某真实样本 poly(A) 大段缺失约 36%，新的大量缺失报警判 ✗
       （数据不在场时不执行），是否按此锁新断言待定。
     - 2 项较早遗留：场景 CM3 的构造 off-by-one（场景构造已冻结，见防回潮约束
       第 19 条）；相邻 4bp 的两条 read 各报不同单 read 插入时两处都被确证
       （应判重叠分歧待核，修法待定）。
 15. **MX 批次交付清单与重脱敏文件名脱节**（2026-11-21 发现）：
     `plasmid-designer V\sequencing results\` 的文件已于 2026-11-18 重脱敏为
-    S00067 系新码，而交付信息表 `测序.xlsx` 仍写 SZ15674 旧码（脱敏工具按
-    设计不清洗 xlsx 旁证文件）。test_real_data_regression 已对「清单与文件
+    新码，而交付信息表 `测序.xlsx` 仍写旧码（脱敏工具按
+    设计不清洗 xlsx 旁证文件）。本机专用回归已对「清单与文件
     对不上」显式 skip（reason 里写明）；恢复真跑需：①按 sanitize_mapping.csv
-    同步 xlsx 引物名 → ②更新测试硬编码 read 名（SZ00002-* → 新码）→
+    同步 xlsx 引物名 → ②更新本机回归硬编码 read 名（旧码 → 新码）→
     ③重跑 5 项回归、按新基线复核断言（沿 2026-10-07 批次「先取证再改口径」
     纪律）。
 
@@ -203,6 +203,15 @@ API 前先逐条对照）：
 22. **参数集中在 `params.py`**：新阈值按阶段登记到 `STAGE_PARAMS`；只有 S1–S3 参数
     进缓存键，S6 阈值（如 poly 大量缺失）不进。口径调整要带环境变量开关，便于回旧
     口径对照（开关表见 SANGER_ALGORITHM_REPORT.md 第 7 节）。
+23. **真实测序数据及其衍生信息一律不入库**（2026-11-21 政策，CI 阻断）：真实数据
+    **含脱敏件**同属真实数据，连同其衍生测试信息（真实样本代号、真实位点坐标、
+    真实基线数字）一律不进 git 仓库，文档里只许写「见本机基准」级别的泛化表述；
+    真实数据回归测试文件与数据同放本机 gitignored 目录（`tests/data/real_ab1/`，
+    pytest 自动收集），GitHub CI 不跑真实数据回归。守卫
+    `scripts/check_real_data_absence.py` 扫描 git 跟踪文件（路径 + 内容词边界
+    匹配），违规退出码 1，已接入 CI 第一步；白名单只有脚本自身与公共载体 fixture
+    目录。新增涉及真实数据的文档/测试时写泛化表述，不要把守卫当过滤网往里塞
+    真实信息，更不要绕过守卫。
 
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并
@@ -213,8 +222,9 @@ API 前先逐条对照）：
   （v2.6.0 起，4e769ae；不要改回公开）。
 - 前端 read↔ref 映射用 `query_start/query_end`（比对块绝对坐标，终审 A-20），
   不要回退到 `L-1-qi` 镜像式。
-- 真实 .ab1 回归集（`tests/test_real_data_regression.py`，skip-if-missing）
-  中 MX 批次的「疑似混合样品」是该批数据的真实判定，不是误报，勿按理想断言改。
+- 真实 .ab1 回归集随 2026-11-21 政策迁到本机 gitignored 目录（与数据同放，
+  不在仓库）；其中 MX 批次的「疑似混合样品」是该批数据的真实判定，不是误报，
+  勿按理想断言改。
 - **PLOC 是 0 基峰心采样点索引，解析端不要减 1**（T24.1，2026-11-07 实测
   3730/3100/310 三个真实 ab1：原值即落在峰心，减 1 反而系统性偏左一格）。
   合成器 `tests/abif_utils.py`（make_ab1/make_trace_ab1）同口径直写峰心
@@ -281,8 +291,8 @@ API 前先逐条对照）：
 ## 修复历史 ✅
 ### 2026-11-21 真实测序数据彻底出库（政策变更：含脱敏件一律不入库）
 
-- **背景**：云端重构（11-18~20）按 W16 决策把脱敏真实子集（DEMO1 图谱 +
-  S00001 五条 read，1.5MB）重新入库供 CI 回归；用户 2026-11-21 定策——
+- **背景**：云端重构（11-18~20）按 W16 决策把脱敏真实子集（约 1.5MB）
+  重新入库供 CI 回归；用户 2026-11-21 定策——
   脱敏件同属真实数据，一律不入库（CHANGELOG [Unreleased] 有升级注意）。
 - **处置**：临时克隆 + git filter-repo 从 `feat/matchmap-focus` 全部历史移除
   `tests/data/real_ab1/` 并 force push（72 提交改写、指向含数据谱系的 tag
@@ -300,9 +310,25 @@ API 前先逐条对照）：
   （real_ab1 改名移走）92 通过 / 11 skip / 0 ERROR。
 - **关联**：2026-11-18 审核修复（批控 `_same_primer` 线性参考、chunkedUpload
   轮询、delete_user 级联、缓存竞态等 P1×2+P2 批量）原 stash 挂在旧线上，已
-  重挂到净化新线 `stash@{0}` 并适配 S00001 命名（补丁另存
+  重挂到净化新线 `stash@{0}` 并适配云端命名（补丁另存
   `plasmid-designer V/_audit_fixes_20261118.patch`），全量测试绿；落地待用户
   确认（HANDOVER §8 P0）。
+
+### 2026-11-21（续） 真实数据衍生测试信息同批出库（政策延伸：防推送）
+
+- **背景**：数据出库后用户追加定策——**防止相关测试信息被推送**：仓库里引用
+  真实样本代号、真实位点坐标、真实基线的测试断言与文档记录，同属真实数据
+  衍生信息，一并清除（上文防回潮约束第 23 条由此而来）。
+- **处置**：
+  - 真实数据专用测试（真实子集复核、真实批次回归、RQ1/RQ2、abif_repair
+    真实损坏件、v32 真实锁）整体移出仓库，与数据同放本机 gitignored 目录，
+    pytest 自动收集（仓库内留 RQ3 及以下的合成场景，不受影响）；
+  - sanger 六个模块与测试、audit 报告、CHANGELOG/HANDOVER/NAMING/ROADMAP
+    里所有真实标识与坐标泛化为「本机基准」级表述；
+  - 新增守卫 `scripts/check_real_data_absence.py`（路径 + 内容词边界匹配，
+    白名单：脚本自身、公共载体 fixture），接入 CI checkout 后第一步阻断。
+- **验证**：守卫自检 OK；本地真实回归（数据在场）10 通过 / 1 xfail /
+  5 skip（本机 xlsx 旁证与重脱敏件名不同步，见未解决第 15 条）。
 
 ### 2026-11-12 至 11-18 Sanger 分析分阶段重构（一期结构 + 二期口径 + 统一酶库）
 
@@ -346,7 +372,7 @@ API 前先逐条对照）：
 | 原条目 | 原问题 | 修法 |
 |---|---|---|
 | 8 | FP_Yeast_PEST_1_E07_F 等「唯一 read 读取失败」的样品头行写成「已测 ；范围外未评估」 | 原因：read 全部失败时既无 verified 区间也无实测区段，`verdict._range_text` 拼出空区间。改为写「无可用测序区段」。共 9 例头行与 verdict.excel_conclusion 变化（sh 2、toad 1、geno 6） |
-| 9 | 6 行预算把「⚠ 疑似混合样品 / ⚠ 测序套峰」汇总行折进 `mixed_detail`（DEMO1/ALL、S00025/ALL） | `conclusion_fold`：⚠ 级混合汇总行改为永不折叠；正文有 ⚠ 汇总行、且再挤掉「共检出 N 处差异」摘要行就能回到预算内时，摘要行（第 5 级）移入 `notes`。DEMO1/ALL、S00025/ALL 正文仍 6 行、两条 ⚠ 都在；toad/Fully_albino_1/ALL、geno/AcGFP_M1/ALL、geno/ECFP_M1/ALL 本就超预算，补回 ⚠ 行各多 1 行 |
+| 9 | 6 行预算把「⚠ 疑似混合样品 / ⚠ 测序套峰」汇总行折进 `mixed_detail`（真实基准形态，本机验证） | `conclusion_fold`：⚠ 级混合汇总行改为永不折叠；正文有 ⚠ 汇总行、且再挤掉「共检出 N 处差异」摘要行就能回到预算内时，摘要行（第 5 级）移入 `notes`。真实基准形态正文仍 6 行、两条 ⚠ 都在；toad/Fully_albino_1/ALL、geno/AcGFP_M1/ALL、geno/ECFP_M1/ALL 本就超预算，补回 ⚠ 行各多 1 行 |
 | 11 | 酶数据两份 | 酶菜单、图谱酶集合、单酶属性/详情、厂商表统一放在 `core/enzyme_sites`；`core/plasmid_map/enzymes` 只保留图谱契约形状的扫描，原名 re-export 这些接口，对外不变 |
 | 12 | `infer_scope` 独立于 `resolve_scope` | 推断（design_insert / filename_match）成为 `resolve_scope(..., infer=True, ref_stem, read_names)` 的内部一步；调用方（设计记录测序端点）改走 `resolve_scope`；`infer_scope` 保留为兼容包装（冻结场景仍在用） |
 
