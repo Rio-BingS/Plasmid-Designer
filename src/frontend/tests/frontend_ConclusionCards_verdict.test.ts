@@ -102,8 +102,8 @@ describe('ConclusionCards 阻断项截断（P0-1）', () => {
     kind: 'unresolved_variant', ref_start: 100 + i, ref_end: 100 + i,
     detail: `${100 + i} substitution`, action: '核对峰图或补测',
   }))
-  const withFail = [...many, { kind: 'confirmed_variant', ref_start: 4081, ref_end: 4081,
-    detail: '4081 deletion（置信 high）', action: '核对', fail_impact: true }]
+  const withFail = [...many, { kind: 'confirmed_variant', ref_start: 4321, ref_end: 4321,
+    detail: '4321 deletion（置信 high）', action: '核对', fail_impact: true }]
   const a: SequencingAnalysis = {
     ...baseAnalysis,
     verdict: { ...baseAnalysis.verdict!, status: 'fail', blocking: withFail },

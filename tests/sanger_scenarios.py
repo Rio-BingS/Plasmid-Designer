@@ -865,29 +865,8 @@ def _cm9():
                 kwargs=dict(circular=True), ref_name="GeneX.gb", cds_mode=True)
 
 
-def _rq_real_files():
-    """真实子集（tests/data/real_ab1）：DEMO1 图谱 + S00001 5 条 read"""
-    from core.sanger.reference_parser import parse_reference_topology
-    d = Path(__file__).parent / "data" / "real_ab1"
-    ref, feats, topo = parse_reference_topology(
-        "DEMO1.dna", (d / "DEMO1.dna").read_bytes())
-    files = [(p.name, p.read_bytes()) for p in sorted(d.glob("*.ab1"))]
-    return ref, feats, topo, files
-
-
-def _rq1():
-    """真实子集，不声明范围 → 复核队列 ≤15 项、结论 ≤6 行、
-    3 处确证变异（335 ins/440 ins/4081 del）全在队列中、status=fail"""
-    ref, feats, topo, files = _rq_real_files()
-    return dict(ab1_files=files, reference=ref, features=feats,
-                kwargs=dict(circular=topo is not False))
-
-
-def _rq2():
-    """真实子集，声明全质粒范围 → 队列 ≤25 项、3 处确证变异全在队列"""
-    ref, feats, topo, files = _rq_real_files()
-    return dict(ab1_files=files, reference=ref, features=feats,
-                kwargs=dict(scope="全质粒", circular=topo is not False))
+# RQ1/RQ2（真实子集复核队列）随 2026-11-21 政策迁往本机专用测试
+# （tests/data/real_ab1/，不入仓库）；RQ3 及以下全部合成，留在仓库。
 
 
 def _rq3():
@@ -975,7 +954,6 @@ SCENARIOS: List[Scenario] = [
     Scenario("SC6b", "goal v3.1 §4", "X1", "峰展宽 ×2.0/2.5/3.0 不判 mixed；未声明组 pass", _sc6b),
     Scenario("SC6c", "goal v3.1 §4", "X1", "退化区段外的真实次峰 AF0.35 → 判 mixed", _sc6c),
     Scenario("CM9", "goal v3.1 §4", "X4", "微同源边界 1bp 插入仍为 insertion（3′ 规则）", _cm9),
-    Scenario("RQ1", "goal v3.1 §4", "X2", "真实子集未声明范围：队列≤15、结论≤6 行", _rq1),
-    Scenario("RQ2", "goal v3.1 §4", "X2", "真实子集全质粒范围：队列≤25", _rq2),
+    # RQ1/RQ2（真实子集）已迁本机专用测试，不入仓库；RQ3 保留
     Scenario("RQ3", "goal v3.1 §4", "X2", "单 read 40 双峰 → 只 1 项 read 问题", _rq3),
 ]

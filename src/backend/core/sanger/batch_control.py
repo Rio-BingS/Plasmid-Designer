@@ -3,9 +3,9 @@
 问题：单条 read 上的孤立双峰（AF 0.15-0.3）在真实单克隆里很常见，单 read
 无法区分「上下文噪声」与「低频亚群」。Sanger 背景次峰主要由序列上下文和
 在 read 中的位置决定——同一质粒、同一引物的不同克隆在同一参考位点会重复
-出现同一个次峰。DEMO7 实测（work/pair_control.py）：同引物两克隆次峰比
-r 的跨克隆 Spearman 0.76-0.85；S00024-40007 被判「疑似混合」所依据的
-2915 C/T，在另一克隆同位点同次碱基 r=0.13，主峰未降。
+出现同一个次峰。真实批次实测（work/pair_control.py，本机基准）：同引物
+两克隆次峰比 r 的跨克隆 Spearman 0.76-0.85；某克隆被判「疑似混合」所依据
+的孤立双峰，在另一克隆同位点同次碱基 r=0.13，主峰未降。
 
 做法（只用分析结果里已有的 traces 与 read↔参考映射，不重跑比对）：
 1. 对照 read：同一批次、同一参考序列、**不同克隆**、同方向、read 原点
@@ -68,7 +68,7 @@ class _ReadView:
         self.direction = aln.get("direction", "+")
         self.ref_start = int(aln.get("ref_start") or 0)
         # read 原点（未修剪第 1 个碱基）在参考上的外推位置：同一引物的 read
-        # 原点相同，而修剪起点随各 read 质量不同（DEMO7 M13F 两克隆修剪后
+        # 原点相同，而修剪起点随各 read 质量不同（真实基准两克隆修剪后
         # 起点差 40bp 以上），不能直接比较比对起点
         _off = int(tr.get("trim_start") or 0) + int(aln.get("query_start") or 1) - 1
         self.origin = (self.ref_start - _off if self.direction == "+"

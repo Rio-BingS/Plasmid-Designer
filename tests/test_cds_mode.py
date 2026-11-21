@@ -1,8 +1,8 @@
 """目的基因模式（CDS 对比）测试：候选去重、名称匹配、CDS 提取与端点集成
 
 匹配口径与批量归组同源（batch._match_ref_name，label 参数化）；真实数据的
-候选形状与匹配路径（MX.dna→「MX」、40001 DEMO1 read 名兜底）由
-test_real_data_regression 的 CDS 模式断言真跑，本文件用合成 GenBank 锁口径。
+候选形状与匹配路径由本机专用回归真跑（tests/data/real_ab1/，随 2026-11-21
+政策不入仓库），本文件用合成 GenBank 锁口径。
 """
 
 import json
@@ -109,7 +109,7 @@ def test_match_by_reference_stem():
 
 def test_match_by_read_token_fallback():
     """参考名未命中时 read 文件名兜底：组成段一致
-    （真实原型：改名后 S00000-40001-seqF1 ⊇ CDS「40001 DEMO1」的 40001）"""
+    （真实原型形态见本机专用回归，不入仓库）"""
     cand, note = cds_extract.resolve_auto(_cands(), "测序验证", ["S00000-TARGET-seqF1.ab1"])
     assert cand["name"] == "TARGET"
     assert "read 文件名匹配" in note

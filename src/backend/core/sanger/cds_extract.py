@@ -97,9 +97,9 @@ def _stem_hits(stem: str, names: set) -> Dict[str, str]:
     """一个文件主干对候选名集合的命中：全名多级匹配 + 组成 token 多级匹配。
 
     token 级兜底覆盖「主干包含 CDS 名的某个组成段」的真实形态——
-    S00000-40001-seqF1 里的 40001 ↔ CDS「40001 DEMO1」：全串双向包含比不上
-    （两边 squash 都比对方长），按分隔符拆 token 后 40001 与名称段一致才命中。
-    多 token 命中不同候选时返回多项，由调用方判歧义。"""
+    read 名 REF1-20001-seqF1 里的 20001 ↔ CDS 名「20001 REF1」：全串双向
+    包含比不上（两边 squash 都比对方长），按分隔符拆 token 后 20001 与
+    名称段一致才命中。多 token 命中不同候选时返回多项，由调用方判歧义。"""
     out: Dict[str, str] = {}
     name, how = _match_ref_name(stem, names, label="CDS")
     if name:
@@ -119,7 +119,7 @@ def resolve_auto(candidates: List[Dict], ref_stem: str,
 
     来源优先级：参考文件名 > read 文件名。参考名命中唯一候选直接采用
     （MX.dna → CDS「MX」）；参考名未命中时 read 文件名兜底（
-    S00000-40001-seqF1 ⊇ CDS「40001 DEMO1」的组成段 40001）。
+    read 名 REF1-20001-seqF1 ⊇ CDS 名「20001 REF1」的组成段 20001）。
     W9（CM P2-G）：参考名命中与 read 名命中**指向不同候选**时判歧义不猜
     （GFP_backbone × mCherry_F 探针——旧实现参考名唯一即静默采用）；
     read 命中是参考命中的子集或反之（同一候选收敛）不冲突。read 名命中

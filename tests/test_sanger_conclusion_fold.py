@@ -1,7 +1,8 @@
 """结论正文 6 行预算（conclusion_fold）与头行范围段的定向单测（2026-11-18）。
 
 - ⚠ 级混合汇总行永不折叠：此前排第 4 级，poly 大量缺失等置顶要点占满名额后会被
-  折进 mixed_detail（KNOWN_ISSUES 未解决第 9 条，实测 DEMO1/ALL、S00025/ALL）。
+  折进 mixed_detail（KNOWN_ISSUES 未解决第 9 条，形态实测于本机真实基准，
+  不入仓库）。
 - 差异摘要行只在需要给 ⚠ 汇总行腾位、且挤掉就能回到预算内时才折叠。
 - 头行范围段：read 全部失败时不再拼出「已测 ；范围外未评估」（未解决第 8 条）。
 """
@@ -15,13 +16,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.sanger import conclusion_fold as cf  # noqa: E402
 
 HEAD = "✗ 不合格 · 已测 1–428；范围外未评估 · 证据：1 处确证差异"
-POLY = "⚠ poly 大量缺失：poly(A) 4081–4187 大量缺失 39 个"
+POLY = "⚠ poly 大量缺失：poly(A) 5201–5307 大量缺失 39 个"
 SUMMARY = "共检出 12 处差异（覆盖 63.2%）："
 WARN1 = "⚠ 测序套峰：r1.ab1 自 read 第 169 位起整体套峰"
 DET1 = "  ↳ r1.ab1：双峰 227 处中 215 处无其他引物覆盖待核"
 WARN2 = "⚠ 2 处参考位点被多条引物同报双峰——建议重新挑单克隆复测"
 LOW = "位置 65 G>A（非编码区），未决"
-CONF = "位置 4081 缺失 38bp 导致移码"
+CONF = "位置 5201 缺失 38bp 导致移码"
 CDS = "【CDS】CDS 已完整覆盖。蛋白与设计一致"
 NOTE = "注意：共 1 段未覆盖缺口"
 
@@ -34,7 +35,7 @@ def _run(lines, mixed, summary=(SUMMARY,), low=(LOW,)):
 
 
 def test_warn_mixed_summary_kept_when_key_lines_fill_budget():
-    """DEMO1/ALL 形态：⚠ 汇总行两条都留在正文，挤掉的是差异摘要行，正文 ≤6 行"""
+    """真实基准形态（本机）：⚠ 汇总行两条都留在正文，挤掉的是差异摘要行，正文 ≤6 行"""
     body, groups = _run([HEAD, POLY, SUMMARY, WARN1, DET1, WARN2, LOW, CONF, CDS, NOTE],
                         mixed=[WARN1, DET1, WARN2])
     assert WARN1 in body and WARN2 in body

@@ -1,4 +1,5 @@
-"""v3.2 本地回归修复（algo v16，2026-11-10）的场景与真实数据锁。
+"""v3.2 本地回归修复（algo v16，2026-11-10）的场景锁（真实数据锁部分
+2026-11-21 起迁往本机专用测试 tests/data/real_ab1/，不入仓库）。
 
 本轮不是「退回 main」：保留 T1（证据不足≠一致）、T12（好 read 的 700bp
 之后不白丢）、W4（低丰度双峰不静默）、v3.1 复核队列的原意，只把与真实
@@ -11,12 +12,9 @@
   M13 锁）；同区单 read 插入只进待核，不确证也不静默。
 - 低丰度双峰：单 read AF 0.15-0.23 列出不阻断（真实单克隆普遍存在）；
   两条 read 同位点印证 → minor_af_site 待核（W4 原意）。
-- 真实数据：DEMO1 5 条 read 逐条结论与 main(v2.36.0) 一致，且锁住本版
-  verified 覆盖（T12 的覆盖收益保留）。
 """
 import os
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -26,8 +24,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.sanger.pipeline import analyze  # noqa: E402
 from tests.abif_utils import make_trace_ab1  # noqa: E402
 from tests.sanger_scenarios import _rand_seq, _rng, _read_from_ref  # noqa: E402
-
-DATA_DIR = Path(__file__).resolve().parent / "data" / "real_ab1"
 
 
 def _status(res):
@@ -129,48 +125,5 @@ def test_low_af_corroborated_by_two_reads_blocks():
     assert _status(res) == "pending"
 
 
-# ---------- 真实数据锁（DEMO1 / S00001，tests/data/real_ab1） ----------
-
-_real = pytest.mark.skipif(
-    not DATA_DIR.is_dir() or not list(DATA_DIR.glob("*.ab1")),
-    reason="真实 AB1 子集不在场（tests/data/real_ab1）")
-
-# 结论 = main(v2.36.0, bd5dff4) 逐条结论（work/cmp_variants.py 实测）；
-# 覆盖下限 = 本版实测 verified 碱基数减 20bp——锁住 T12 尾端扩展区带来的
-# 覆盖收益（main 对 M13R 只主张 2169–2837）
-_MAIN = {
-    "S00001-40003-1CseqR1.ab1": ("pass", 755),    # 本版 3190–3964 = 775bp
-    "S00001-40001-seqF1.ab1": ("pass", 910),      # 本版 2862–3791 = 930bp
-    "S00001-M13F-75.ab1": ("pass", 100),          # 本版 4123–4232 = 110bp
-    "S00001-M13R-88.ab1": ("pass", 1019),         # 本版 2169–3207 = 1039bp；main 669bp
-}
-
-
-def _real_one(fn):
-    from core.sanger.reference_parser import parse_reference_topology
-    ref, feats, topo = parse_reference_topology(
-        "DEMO1.dna", (DATA_DIR / "DEMO1.dna").read_bytes())
-    p = DATA_DIR / fn
-    return analyze([(p.name, p.read_bytes())], ref, feats, circular=topo is not False)
-
-
-@_real
-@pytest.mark.parametrize("fn", sorted(_MAIN))
-def test_real_clean_reads_pass_like_main(fn):
-    if fn == "S00001-M13F-75.ab1":
-        pytest.xfail("10d 大量缺失报警（默认开，2026-11-17）：polyA 4081–4187 缺 36% → ✗，待用户确认是否接受")
-    res = _real_one(fn)
-    want, min_cov = _MAIN[fn]
-    assert _status(res) == want, res["verdict"]["headline"]
-    assert not res["verdict"]["blocking"], res["verdict"]["blocking"][:3]
-    assert not [v for v in res["variants"] if v.get("status") == "confirmed"]
-    vr = (res.get("coverage") or {}).get("verified_ranges") or []
-    assert sum(e - s + 1 for s, e in vr) >= min_cov, vr
-
-
-@_real
-def test_real_40002_only_4081_confirmed():
-    res = _real_one("S00001-40002-1seqF1.ab1")
-    assert _status(res) == "fail"
-    conf = sorted(v["ref_pos"] for v in res["variants"] if v.get("status") == "confirmed")
-    assert conf == [4081], conf
+# 真实数据锁（真实子集五条 read）随 2026-11-21 政策迁往本机专用
+# 测试（tests/data/real_ab1/，不入仓库），本文件仅保留合成数据用例。

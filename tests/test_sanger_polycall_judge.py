@@ -118,7 +118,7 @@ def test_missing_min_switch_default_off(monkeypatch):
              _rd("b", "partial", [116, 130], 8, 8, "partial_merge", "-")]
     e = _entry(parts)
     assert e["peak_missing"] == 7
-    # noisy read（峰数>调用数）峰数多算，不参与 min（DEMO1 A107 形态）
+    # noisy read（峰数>调用数）峰数多算，不参与 min（真实基准形态，本机）
     e = _entry([_rd("n", "full", [101, 130], 20, 29, "noisy"),
                 _rd("g", "full", [101, 130], 18, 18, "resolvable", "-")])
     assert e["peak_missing"] == 12 and e["peak_measured"] == 18

@@ -4,7 +4,7 @@
     python scripts/capture_sanger_baseline.py work/baseline_before_T1.json
 
 对 `plasmid-designer V/sequencing results` 的真实 MX 批次按
-test_real_data_regression 同款归组跑全管线，把「口径可变的一切结论形状」
+本机真实回归测试同款归组跑全管线，把「口径可变的一切结论形状」
 （结论文本、变体清单、双峰/互检、覆盖、CDS 判读、区间裁决、poly 判读）
 逐项转储成 JSON。改口径前跑一次保存，改完再跑一次，diff 逐条解释。
 

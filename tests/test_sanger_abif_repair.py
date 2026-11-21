@@ -1,10 +1,12 @@
-"""ab1 结构损坏识别与修复（2026-11-11，DEMO7 M13R 真实损坏样本）
+"""ab1 结构损坏识别与修复（2026-11-11；损坏形态发现于真实样本，
+真实样本用例随 2026-11-21 政策迁往本机专用测试 tests/data/real_ab1/，
+不入仓库——本文件以合成数据复现同一损坏形态）
 
-损坏形态：改名工具把 MCHN「SEQLAB-0000-002」与 RUNN「Run_SEQLAB_…」改短
-（各少 2 字节）而不更新偏移——目录失配、PBAS/PLOC/PCON 错位 2 字节。
-旧行为：Biopython 读出 0 碱基（碱基数过少）或按乱码峰位报 477 处双峰
-（△疑似混合）。期望：能修则修复后与原文件读数逐一致并告警；修不了则
-明确报「文件结构损坏」，绝不按乱码分析。
+损坏形态：改名工具把 MCHN 与 RUNN 元数据串改短（各少 2 字节）而不更新
+偏移——目录失配、PBAS/PLOC/PCON 错位 2 字节。旧行为：Biopython 读出
+0 碱基（碱基数过少）或按乱码峰位报大量双峰（△疑似混合）。期望：能修则
+修复后与原文件读数逐一致并告警；修不了则明确报「文件结构损坏」，绝不按
+乱码分析。
 """
 
 import struct
@@ -17,43 +19,10 @@ from core.sanger.abif_repair import base_peak_agreement, repair_abif, structure_
 from core.sanger.pipeline import analyze
 from tests.abif_utils import make_trace_ab1
 
-REAL = Path(__file__).parent / "data" / "real_ab1"
 DATA = Path(__file__).parent / "data"
 
 
-def _simulate_rename_tool(blob: bytes) -> bytes:
-    """复现脱敏改名工具：SEQLAB→DEMO（每处少 2 字节），偏移一概不改"""
-    return blob.replace(b"SEQLAB-0000", b"DEMO-0000").replace(b"Run_SEQLAB", b"Run_DEMO")
-
-
-@pytest.mark.skipif(not (REAL / "S00001-M13R-88.ab1").exists(), reason="真实子集未入库")
-def test_真实损坏件修复后与原文件逐字段一致():
-    orig = (REAL / "S00001-M13R-88.ab1").read_bytes()
-    bad = _simulate_rename_tool(orig)
-    assert bad != orig and len(bad) == len(orig) - 4
-    a, b = extract_read(bad), extract_read(orig)
-    assert a.get("abif_repair") and a["abif_repair"]["dir_shift"] == -4
-    for k in ("bases", "quality", "peak_indices", "trace"):
-        assert a[k] == b[k], k
-    assert "abif_repair" not in b
-
-
-@pytest.mark.skipif(not (REAL / "S00001-M13R-88.ab1").exists(), reason="真实子集未入库")
-def test_真实损坏件分析结论与原文件一致且告警():
-    orig = (REAL / "S00001-M13R-88.ab1").read_bytes()
-    ref_file = REAL / "DEMO1.dna"
-    from core.sanger.reference_parser import parse_reference_topology
-    ref, feats, _t = parse_reference_topology("DEMO1.dna", ref_file.read_bytes())
-    r0 = analyze([("x.ab1", orig)], ref, feats, circular=True)
-    r1 = analyze([("x.ab1", _simulate_rename_tool(orig))], ref, feats, circular=True)
-    assert r1["verdict"]["status"] == r0["verdict"]["status"]
-    assert not r1["errors"]
-    assert not any(b["kind"] in ("mixed_sample", "mixed_variant")
-                   for b in r1["verdict"]["blocking"])
-    assert any("结构损坏" in w and "已自动修复" in w for w in r1["warnings"])
-
-
-def _relayout_dir_at_end(blob: bytes, insert_after_tag=b"DATA", meta=b"\x0fSEQLAB-0000-002"):
+def _relayout_dir_at_end(blob: bytes, insert_after_tag=b"DATA", meta=b"\x0fDEVICE-0000-002"):
     """把合成 ab1（目录在 128）改成真实布局：数据块在前、目录在末尾，
     并在 DATA 块之后插入一个 MCHN pString 元数据块"""
     nel = struct.unpack(">I", blob[18:22])[0]
@@ -88,7 +57,7 @@ def test_合成件_元数据改短导致整体平移可修复():
     good = _relayout_dir_at_end(make_trace_ab1("ACGT" * 60 + "GATTACA" * 20, q=40))
     ref = extract_read(good)
     assert structure_problem(ref) is None
-    bad = good.replace(b"SEQLAB-0000", b"DEMO-0000")
+    bad = good.replace(b"DEVICE-0000", b"DEMO-0000")
     assert len(bad) == len(good) - 2
     got = extract_read(bad)
     assert got.get("abif_repair")

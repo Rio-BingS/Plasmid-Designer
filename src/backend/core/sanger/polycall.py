@@ -29,7 +29,7 @@ def poly_missing_min_enabled() -> bool:
     每条 read 的「参考段长 − 可分辨峰」是该段缺失的上界（峰被压缩合并会
     多算缺失，不会少算）。完整覆盖 read 各自给出整段缺失的上界，取 min
     最紧。noisy read（峰数 > 调用数，疑似滑移肩峰）的峰数会多算，缺失
-    不再是上界，不参与 min（DEMO1 A107：noisy 105 峰 vs 可分辨 68 峰）。
+    不再是上界，不参与 min（真实基准 noisy read 形态，本机实测）。
     无可用的完整覆盖 read 时，各 read / 分段之间仍取 max（旧口径）。
     插入数是下界（峰只会少不会多），仍取 max。
     用户 2026-11-17 拍板默认开启；SANGER_POLY_MISSING_MIN=0 回旧口径（各 read 取 max）。

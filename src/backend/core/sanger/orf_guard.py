@@ -23,7 +23,7 @@ from core.seq_utils import revcomp as _seq_revcomp
 
 MAX_ANNOT_SHIFT = 3   # 任意读框下允许的边界偏差
 # 2026-11-10 回归修复：同读框（偏移为 3 的倍数）内允许更大的起止点校正。
-# 真实参考 DEMO1 的 CDS 标注 2273-3934、实际 ORF 2279-3931（起点 +6）；
+# 真实参考的 CDS 标注与实际 ORF 起点可差 +6bp（本机基准实测）；
 # ±3bp 护栏下不再校正，导致按错框翻译、报假提前终止。换读框的偏差
 # （如 128bp）仍按 suspect 处理。
 MAX_INFRAME_SHIFT = 12

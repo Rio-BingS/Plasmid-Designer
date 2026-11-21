@@ -6,7 +6,6 @@ xfail(strict=True, reason=<task>) 标注——由对应任务实现后移除标�
 """
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -17,12 +16,6 @@ from tests.sanger_scenarios import SCENARIOS, _af1_make
 from tests.abif_utils import make_trace_ab1
 
 S = {sc.id: sc for sc in SCENARIOS}
-
-# 真实子集（不入库，本地/CI 缺席时 RQ1/RQ2 自动 skip，见 test_sanger_v32_regression
-# 同款模式）：目录在场且有标定的 S00001 五条 read 才跑
-_REAL_AB1_DIR = Path(__file__).parent / "data" / "real_ab1"
-_real_subset_ready = (_REAL_AB1_DIR.is_dir()
-                      and bool(list(_REAL_AB1_DIR.glob("S00001-*.ab1"))))
 
 
 def _run(sid):
@@ -959,46 +952,8 @@ def test_cm9_microhomology_insert_stays_insertion():
 
 
 # ---------- X2：复核队列聚合（RB P0-2） ----------
-
-
-@pytest.mark.skipif(not _real_subset_ready,
-                    reason="真实 AB1 子集不在场（tests/data/real_ab1/S00001-*）")
-def test_rq1_real_subset_queue_bounded():
-    """RQ1：真实子集未声明范围 → 队列 ≤15 项、结论 ≤6 行、3 处确证
-    变异全在队列中、status=fail"""
-    _spec, res = _run("RQ1")
-    q = _queue(res)
-    assert len(q) <= 15, f"复核队列 {len(q)} 项超上限：{[(x['kind'], x['ref_start']) for x in q]}"
-    assert len(res["conclusion"].split("\n")) <= 6, \
-        f"结论 {len(res['conclusion'].split(chr(10)))} 行超上限"
-    assert _status(res) == "fail"
-    _assert_real_335_440_4081(res, q)
-
-
-def _assert_real_335_440_4081(res, q):
-    """真实子集三处位点的口径（2026-11-10 改，【335/440 待峰图确认】）：
-    4081 del38 核心区高置信 → 确证、进队列首项；335 ins 位于 40002 尾端
-    扩展区（read 725bp）、单 read → 未决，随判混 read 折叠进 read 项；440 ins
-    位于信号区外（read 831bp，Q12）→ 只列出。依据：main 两处均未报出；
-    同 read 700bp 后 Q45-57 仍出现成串次峰（work/local_signal.py）"""
-    positions = {x.get("ref_start") for x in q}
-    assert 4081 in positions, sorted(positions)
-    by = {v["ref_pos"]: v for v in res["variants"]}
-    assert by[4081]["status"] == "confirmed"
-    assert by[335]["status"] == "unresolved" and by[335]["zone_class"] == "tail_ext"
-    assert by[440]["status"] == "unresolved" and by[440]["zone_class"] == "outside"
-    read_items = [x for x in q if x.get("level") == "read"]
-    assert read_items and any("40002" in (x.get("detail") or "") for x in read_items)
-
-
-@pytest.mark.skipif(not _real_subset_ready,
-                    reason="真实 AB1 子集不在场（tests/data/real_ab1/S00001-*）")
-def test_rq2_real_subset_full_plasmid_queue_bounded():
-    """RQ2：真实子集声明全质粒 → 队列 ≤25 项、3 处确证变异全在队列"""
-    _spec, res = _run("RQ2")
-    q = _queue(res)
-    assert len(q) <= 25, f"队列 {len(q)} 项超上限"
-    _assert_real_335_440_4081(res, q)
+# RQ1/RQ2（真实子集队列聚合）随 2026-11-21 政策迁往本机专用测试
+# （tests/data/real_ab1/，不入仓库）；RQ3 及以下用合成数据留在仓库。
 
 
 def test_rq3_mixed_read_folds_into_one_item():
