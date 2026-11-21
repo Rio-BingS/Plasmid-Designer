@@ -59,7 +59,8 @@ tests/                      后端 pytest（tests/abif_utils.py 合成 ab1 生�
                             真实 ab1 回归 skip-if-missing——真实测序数据一律
                             不入库（含脱敏件，2026-11-21 政策），本地副本
                             tests/data/real_ab1/ 已 gitignore，母本在仓库外
-                            plasmid-designer V/real_ab1_subset_master/）
+                            plasmid-designer V/real_ab1_subset_master/；
+                            验证策略=本机回归+VPS 实测，CI 不跑真实数据回归）
 src/frontend/tests/         前端 vitest
 ```
 
