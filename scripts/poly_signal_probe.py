@@ -9,8 +9,8 @@
 
 用法：
   python scripts/poly_signal_probe.py \
-      --data-dir "../plasmid-designer V1.01/sequencing results" \
-      --data-dir "../plasmid-designer V1.01/sequencing results/1/1/wrong/M/1"
+      --data-dir "../plasmid-designer V/sequencing results" \
+      --data-dir "../plasmid-designer V/sequencing results/1/1/wrong/M/1"
 """
 
 import argparse

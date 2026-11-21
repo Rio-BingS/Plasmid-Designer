@@ -12,8 +12,8 @@
 
 用法：
   python scripts/poly_baseline.py \
-      --data-dir "../plasmid-designer V1.01/sequencing results" \
-      --data-dir "../plasmid-designer V1.01/sequencing results/1/1/wrong/M/1" \
+      --data-dir "../plasmid-designer V/sequencing results" \
+      --data-dir "../plasmid-designer V/sequencing results/1/1/wrong/M/1" \
       [--out ../docs/baseline-20260912.json] [--legacy]
 
 优化各步（A1–B5）完成后用同一命令重跑（--out 换新文件名），与上一份 diff：

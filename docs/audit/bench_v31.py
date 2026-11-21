@@ -27,7 +27,7 @@ REPS = 7
 # 真实数据（V1.01 交付，不入库；不在场时跳过）。基线用 worktree 跑时
 # 仓库根不在项目目录下，用 PD_REAL_DIR 指过去
 REAL_DIR = Path(os.environ.get("PD_REAL_DIR")
-                or R.parent / "plasmid-designer V1.01" / "sequencing results")
+                or R.parent / "plasmid-designer V" / "sequencing results")
 
 
 def real_mx_case():
