@@ -6,6 +6,33 @@
 或 API 调用方动手处理、或会改变既有结果的变化，升级前请先读这一节。
 逐条提交见 `git log <上一标签>..<本标签>`。
 
+## [Unreleased]
+
+> 2026-11-21：真实测序数据（含脱敏件）彻底移出仓库。
+
+### 升级注意
+
+- **真实测序数据不再入库（含脱敏件）**：`tests/data/real_ab1/`（DEMO1 图谱
+  + S00001 五条 read）已从当前分支与全部 git 历史移除——git filter-repo
+  重写 `feat/matchmap-focus` 并 force push（72 个提交改写，指向含数据谱系
+  的 tag 同步重写）。2.37.0-alpha.2 起「入库脱敏子集供 CI 回归」的 W16
+  决策废止：脱敏件同属真实数据，不再入库。**已有部署克隆需重新拉取**
+  （分支历史已重写、提交哈希全变）。CI 上真实数据回归一律 skip；本机把
+  本地副本放回 `tests/data/real_ab1/`（已 gitignore）即可恢复真跑，母本在
+  仓库外 `plasmid-designer V/real_ab1_subset_master/`。
+
+### 变更
+
+- **RQ1/RQ2 场景测试补 skip-if-missing 守卫**：真实子集不在场时与
+  test_real_ab1_subset 同款自动跳过（此前会 FileNotFoundError 红灯）。
+- **`.gitignore` 恢复 `tests/data/real_ab1/` 规则**，防止真实数据（含
+  脱敏件）再次入库。
+- **仓库内 `plasmid-designer V1.01` 硬编码路径更正为 `plasmid-designer V`**
+  （目录 2026-11-18 改名后 5 处断链，本机真实数据回归此前一直静默 skip）。
+  test_real_data_regression 另补「信息表与文件名不同步」守卫——2026-11-18
+  重脱敏后文件已换 S00067 新码而 测序.xlsx 未同步，对不上时 skip 并说明
+  （清单同步待办见 KNOWN_ISSUES）。
+
 ## [2.37.0-alpha.3] - 2026-11-08
 
 > 实验分支预发布；基于 2.37.0-alpha.2。本版为 2026-11-08 复审（8 条）修复：

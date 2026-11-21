@@ -76,6 +76,14 @@ SANGER_ALGORITHM_REPORT.md 第 1 节、第 2.7 节）：
     - 2 项较早遗留：场景 CM3 的构造 off-by-one（场景构造已冻结，见防回潮约束
       第 19 条）；相邻 4bp 的两条 read 各报不同单 read 插入时两处都被确证
       （应判重叠分歧待核，修法待定）。
+15. **MX 批次交付清单与重脱敏文件名脱节**（2026-11-21 发现）：
+    `plasmid-designer V\sequencing results\` 的文件已于 2026-11-18 重脱敏为
+    S00067 系新码，而交付信息表 `测序.xlsx` 仍写 SZ15674 旧码（脱敏工具按
+    设计不清洗 xlsx 旁证文件）。test_real_data_regression 已对「清单与文件
+    对不上」显式 skip（reason 里写明）；恢复真跑需：①按 sanitize_mapping.csv
+    同步 xlsx 引物名 → ②更新测试硬编码 read 名（SZ00002-* → 新码）→
+    ③重跑 5 项回归、按新基线复核断言（沿 2026-10-07 批次「先取证再改口径」
+    纪律）。
 
 ---
 
@@ -271,6 +279,31 @@ API 前先逐条对照）：
 ---
 
 ## 修复历史 ✅
+### 2026-11-21 真实测序数据彻底出库（政策变更：含脱敏件一律不入库）
+
+- **背景**：云端重构（11-18~20）按 W16 决策把脱敏真实子集（DEMO1 图谱 +
+  S00001 五条 read，1.5MB）重新入库供 CI 回归；用户 2026-11-21 定策——
+  脱敏件同属真实数据，一律不入库（CHANGELOG [Unreleased] 有升级注意）。
+- **处置**：临时克隆 + git filter-repo 从 `feat/matchmap-focus` 全部历史移除
+  `tests/data/real_ab1/` 并 force push（72 提交改写、指向含数据谱系的 tag
+  同步重写，分支 cf5b976→acfc3f9）；本地旧线 3 分支 bundle 归档到仓库外
+  （`plasmid-designer V/old-line-history-20261121.bundle`）后删除 + reflog/gc，
+  12 个数据 blob SHA（6 个未脱敏原件 + 6 个脱敏件）实测全部不在本地对象库。
+  GitHub 服务端对历史 force-push 残留对象仍可按 SHA 取回，彻底清除需联系
+  GitHub Support 请求 GC（用户后续自行决定）。
+- **代码**：`.gitignore` 恢复 `tests/data/real_ab1/`；RQ1/RQ2 场景测试补
+  skip-if-missing（此前数据缺席会 FileNotFoundError 红灯）；仓库内 5 处
+  `plasmid-designer V1.01` 硬编码修正为 `plasmid-designer V`（11-18 目录改名
+  断链，本机真实回归此前一直静默 skip）+ test_real_data_regression 补
+  「清单与文件名不同步」守卫（见未解决第 15 条）。
+- **验证**：全量 pytest 2310 通过 / 55 跳过 / 10 xfail；隐藏数据模拟 CI
+  （real_ab1 改名移走）92 通过 / 11 skip / 0 ERROR。
+- **关联**：2026-11-18 审核修复（批控 `_same_primer` 线性参考、chunkedUpload
+  轮询、delete_user 级联、缓存竞态等 P1×2+P2 批量）原 stash 挂在旧线上，已
+  重挂到净化新线 `stash@{0}` 并适配 S00001 命名（补丁另存
+  `plasmid-designer V/_audit_fixes_20261118.patch`），全量测试绿；落地待用户
+  确认（HANDOVER §8 P0）。
+
 ### 2026-11-12 至 11-18 Sanger 分析分阶段重构（一期结构 + 二期口径 + 统一酶库）
 
 结果口径版本保持 `v17`。一期每一步都做到「结论全文、Excel 列、verdict 逐字

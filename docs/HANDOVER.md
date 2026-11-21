@@ -1,9 +1,12 @@
 # 交接文档
 
 > **谁该读**：接手本项目的工程师、下一次 AI 会话、以及过一段时间回来的自己。
-> **更新**：2026-11-18（**Sanger 分析分阶段重构收口**：一期 S0–S7 结构拆分 +
-> 二期口径调整 + 统一酶库，结果口径版本仍 `v17`，见 §1 首段与 §3 末段）。
-> 上一次：2026-11-10（`v2.37.0-alpha.4`：**Sanger scope v3 W0–W16 收口**——
+> **更新**：2026-11-21（**真实测序数据彻底出库**：含脱敏件一律不入库，
+> filter-repo 清历史 + force push，旧线归档清除，审核修复 stash 重挂新线，
+> 见 §1 首段与 §8）。
+> 上一次：2026-11-18（**Sanger 分析分阶段重构收口**：一期 S0–S7 结构拆分 +
+> 二期口径调整 + 统一酶库，结果口径版本仍 `v17`，见 §1 第二段与 §3 末段）。
+> 再往前：2026-11-10（`v2.37.0-alpha.4`：**Sanger scope v3 W0–W16 收口**——
 > 三态范围模型/范围重算端点与记忆/三出口统一/Excel 新六列/范围条与三层
 > 色带/复核队列与一键确认/p_real 三档/真实 AB1 子集基准，变更明细见
 > CHANGELOG 2.37.0-alpha.4；上一版 2026-11-08 `v2.37.0-alpha.3` 复审修复）
@@ -20,6 +23,22 @@
 > 下面凡与这些文档冲突处，以代码与实测为准，并顺手修正对应文档。
 
 ## 1. 一句话现状
+
+**2026-11-21 现状（真实测序数据彻底出库 + 工作区整理）**：政策变更——
+**真实测序数据一律不入库（含脱敏件）**，W16「入库脱敏子集供 CI 回归」决策
+废止：`tests/data/real_ab1/` 6 文件已用 git filter-repo 从 `feat/matchmap-focus`
+全部历史移除并 force push（临时克隆操作，72 个提交改写、指向含数据谱系的
+tag 同步重写，分支 cf5b976→acfc3f9），`.gitignore` 防回潮，RQ1/RQ2 补
+skip-if-missing 守卫（CI 无数据全 skip，本机有本地副本则照跑）。本地同步
+处置：旧线 3 分支 bundle 归档到仓库外后删除 + reflog/gc（**12 个数据 blob
+SHA——6 个未脱敏原件 + 6 个脱敏件——已实测全部不在本地对象库**）；2026-11-18
+审核修复 stash 重挂到新线 `stash@{0}`（适配云端 S00001 命名，patch 另存仓库
+外 `_audit_fixes_20261118.patch`，全量 2310 测试绿）；仓库内 5 处
+`plasmid-designer V1.01` 硬编码修正为 `plasmid-designer V`（目录改名断链，
+含 test_real_data_regression 的清单一致性守卫）。**待办**：MX 批次交付清单
+（测序.xlsx 仍是 SZ15674 旧码）与重脱敏后文件名（S00067 系）待同步，同步前
+本机 5 项真实回归 skip（KNOWN_ISSUES 新条目）。VPS 仍跑旧线 `1e4efb6`，
+下次部署**必须重新 clone**（旧哈希已不存在于远端）。
 
 **2026-11-18 现状（Sanger 分析重构）**：`core/sanger/` 已按「S0 参考画像/范围 →
 S1 read → S2 合并 → S3 证据 → S4 ReadCall/SiteCall/PolyCall → 影响分级 →
@@ -116,7 +135,7 @@ read 与参考等长，序列上等价于替换而非插入；修它必须改 X0
 | 依赖 | 只改 `requirements*.in`，再 `bash scripts/lock_requirements.sh` 生成 `--require-hashes` 锁文件 |
 | 缓存版本常量 | `CODON_OPT_ALGO="v2.3"`、`ANALYSIS_ENZYMES_VERSION="v3"`（`app/cache.py`）、`MAP_ALGO_VERSION="8"`（`app/routes/map_routes.py`）、`SANGER_ALGO_VERSION="v17"`（`core/sanger/pipeline.py`，T1 起 v1→v2、T11 v2→v3、T12 v3→v4、T15 v4→v5、T24 v5→v6、T25 v6→v7、复审 R1-R4 v7→v8、goal v3 W1/W2 v8→v9、W3-W5 v9→v10（pass 契约、af 分带、同义可配、headline/element_verdicts）、W6/W7 v10→v11（缺口 cause 归因、scope_* 拆分、引物逐 read 映射）、W8 v11→v12（cds_mode 全质粒+scope、junctions 入需测范围）、W9 v12→v13（resolve_auto 歧义、显式选择未去重、变体 coords 双坐标）、W10 v13→v14（scope 来源推断 infer_scope、parse-reference 预设、Form scope、批量验证范围列）、v3.1 v14→v15（峰形门控、队列三级聚合、头行唯一来源、indel 双坐标、范围记忆按用户隔离）、v15→v16（可信区分核心区/尾端扩展区、单 read 区外低置信、孤立双峰按 AF 分流等回归修复）、v16→v17（read 级套峰判定 ReadCall；2026-11-12 起的分阶段重构与二期口径调整都在 v17 下，没有再递增）写入 result `algo_version`，口径变更递增）；与代码的一致性由 `scripts/check_docs_sync.py` 门禁校验 |
 | 业务数据 | `data/vectors/` 载体 YAML（带 `data_provenance`）、`data/codon_tables/` 4 物种、`data/features/common_features.json`（图谱元件库） |
-| 真实测序数据 | 仓库外 `..\plasmid-designer V1.01\sequencing results`（不入库；本机在场 → 5 项回归真跑） |
+| 真实测序数据 | **一律不入库（含脱敏件，2026-11-21 政策）**。MX 批次在仓库外 `..\plasmid-designer V\sequencing results`；real_ab1 子集母本在 `..\plasmid-designer V\real_ab1_subset_master\`（worktree 本地副本放 `tests/data/real_ab1/`，gitignored，在场则回归真跑）；旧线历史归档与审核修复补丁也在 V 目录根。清单同步待办见 KNOWN_ISSUES |
 | CI | `.github/workflows/ci.yml`（push main / PR 触发）：文件尺寸**统计**（`scripts/check_file_size.py`，2026-11-10 起只提示不阻断）→ `pytest tests -q` → pip-audit；前端 `vue-tsc` + `vitest` + **build** + `npm audit` ×2 全阻断。**本地只跑测试不够，动代码后要把门禁本地预演一遍**（[ci-red-chain 留档](postmortems/2026-10-26-ci-red-chain-and-backup.md) 教训） |
 | 线上部署 | **Docker Compose on VPS**（`ssh vps-direct`，`/opt/plasmid-designer`）：`git fetch --tags && git reset --hard <tag>` → `cd deploy/docker && docker compose build backend frontend` → `up -d --force-recreate backend frontend`（前端必须 force-recreate）；四容器 plasmid-backend(127.0.0.1:18000)/frontend(80)/db/redis，版本横幅 `🧬 Plasmid Designer API vX.Y.Z`（`docker logs plasmid-backend`）。cron 备份 `deploy/scripts/backup.sh`（v2.29.4 修复后恢复正常退出）。**有迁移的版本要先迁移再重建容器**，见下方「数据库迁移」 |
 | 远程仓库 | `https://github.com/Rio-BingS/Plasmid-Designer.git`（2026-10 用户改了 GitHub 用户名，旧地址 `gui123a1/...` 已失效，勿再引用） |
@@ -315,6 +334,8 @@ run upgrade head          # 只跑新增的那一条
 
 | 优先 | 事项 | 为什么 |
 |---|---|---|
+| **P0** | **2026-11-18 审核修复落地收尾**：修复在 `stash@{0}`（重挂净化新线、适配 S00001 命名、全量测试绿），用户确认后按 git-commit-style 落地提交 → scp 重部署 VPS | 修复已验证但未入库；VPS 还跑旧线 `1e4efb6`（带 batch_control P1），且旧哈希已不在远端，重部署须重新 clone |
+| **P2** | **MX 批次交付清单同步**：`测序.xlsx`（SZ15674 旧码）按 sanitize_mapping.csv 同步到重脱敏后的 S00067 新码，并更新 test_real_data_regression 硬编码 read 名，重跑 5 项回归重新标定 | 2026-11-18 重脱敏只洗了文件没洗 xlsx 旁证，清单与文件脱节，本机真实回归只能 skip |
 | **已完成** | ~~**Sanger 重构遗留问题**（KNOWN_ISSUES「未解决」第 8、9、11、12 条）：E07 头行「已测」后为空、6 行预算挤掉「疑似混合样品」汇总行、两份酶库合并、`infer_scope` 并入 `resolve_scope`~~ | 2026-11-18 收尾已修，见 KNOWN_ISSUES 修复历史「Sanger 重构收尾」；剩余第 10 条（主变异行与 poly 子行 indel 长度不同）仍挂账 |
 | **P1** | **10 个 xfail 的口径差逐个定案**：零散双峰合成混合例（7 项）、poly 大量缺失的真实回归例（1 项）、CM3 构造与相邻反向单 read 插入（2 项较早遗留） | 现行口径已定，旧期望要么改成新口径断言、要么确认保留 xfail 并写明理由 |
 | **P2** | **补样本**：二、三核苷酸 poly 的真实数据 | 现有对照样本里没有，PolyCall 对这类 poly 的计数与报警只靠单元测试兜底 |

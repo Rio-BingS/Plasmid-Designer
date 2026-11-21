@@ -41,3 +41,8 @@ data/batch_uploads/
 # 备份产物（backup.sh 默认输出到 data/backups/，含全库明文数据，严禁入库）
 data/backups/
 work/
+
+# 真实测序数据（含脱敏件）一律不入库（2026-11-21 政策，W16 入库决策废止）：
+# 本地副本放 tests/data/real_ab1/（缺数据时回归测试自动 skip），
+# 母本在仓库外 ../plasmid-designer V/real_ab1_subset_master/
+tests/data/real_ab1/

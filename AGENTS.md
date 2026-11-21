@@ -56,7 +56,10 @@ src/frontend/               Vue3+TS+Vite 8+Pinia（dev 端口 3000，代理 /api
 data/                       codon_tables(4物种 YAML) + vectors(9 载体 YAML，带 data_provenance)
 deploy/                     docker-compose / bare(Ubuntu systemd)
 tests/                      后端 pytest（tests/abif_utils.py 合成 ab1 生成器；
-                            test_real_data_regression 真实 ab1 回归，skip-if-missing）
+                            真实 ab1 回归 skip-if-missing——真实测序数据一律
+                            不入库（含脱敏件，2026-11-21 政策），本地副本
+                            tests/data/real_ab1/ 已 gitignore，母本在仓库外
+                            plasmid-designer V/real_ab1_subset_master/）
 src/frontend/tests/         前端 vitest
 ```
 
