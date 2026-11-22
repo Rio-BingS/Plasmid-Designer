@@ -46,3 +46,9 @@ work/
 # 本地副本放 tests/data/real_ab1/（缺数据时回归测试自动 skip），
 # 母本在仓库外 ../plasmid-designer V/real_ab1_subset_master/
 tests/data/real_ab1/
+# 测序文件格式全局忽略：数据文件哪怕被复制到别的路径，add 阶段就挡住
+# （守卫 scripts/check_real_data_absence.py 的路径规则在推送/CI 环节再拦）。
+# sanger_bench 的 310/3100/3730.ab1 是 Biopython 公开测试集，已在跟踪中，
+# gitignore 不作用于已跟踪文件，无需豁免
+*.ab1
+*.dna
