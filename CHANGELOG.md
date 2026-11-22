@@ -37,17 +37,22 @@
   CI 完全无感）；仓库内 `tests/sanger_scenarios.py` 只留 RQ3 及以下的
   合成场景。
 - **新增守卫 `scripts/check_real_data_absence.py` 并接入 CI 第一步**：
-  扫描 git 跟踪文件，发现真实数据路径（`tests/data/real_ab1/`、
-  sanger_bench 之外的 15 种测序交付格式——AB 系原始/导出、Sanger
-  文本序列、Chromas、Phred、SnapGene、交付压缩包、交付清单/报告，
-  另加 ABIF 文件头嗅探防改名绕过）或真实标识/位点内容即退出码 1。
-- **守卫扩为三层拦截（2026-11-22，跨 agent/跨机器遵循）**：
+  扫描 git 跟踪文件，违规退出码 1。规则：①**扩展名白名单准入**
+  （2026-11-22 反转策略）——仓库合法格式 = 全量盘点 23 种，白名单外
+  （.bg/.fastq 及一切未列举形态）commit/push/CI 三处全拦，新格式须
+  显式登记；②路径——`tests/data/real_ab1/` 下任何文件、15 种测序交付
+  格式（AB 系原始/导出、Sanger 文本序列、Chromas、Phred、SnapGene、
+  交付压缩包、交付清单/报告）在 sanger_bench 之外任何位置、fasta 仅限
+  tests/fixtures/；③内容——真实标识/位点词边界匹配 + ABIF 文件头
+  嗅探防改名绕过。
+- **守卫扩为四层拦截（2026-11-22，跨 agent/跨机器遵循）**：
+  本机 commit 前 `githooks/pre-commit` + 推送前 `githooks/pre-push`
+  （新克隆跑 `python scripts/setup_hooks.py` 一条命令两者都启用，
+  AGENTS.md「Git 工作流」已登记为初始化步骤；CLAUDE.md 同步政策指针）；
   `.github/workflows/guard.yml` 对**所有分支/tag 推送与 PR** 跑同一守卫
-  （主 CI 只覆盖 main/PR，特性分支直推此前无检出）；本机
-  `githooks/pre-push` 在推送前逐新提交拦截（守卫新增 `--tree` 模式：
-  路径规则查全部提交树、内容规则查 tip）；新克隆跑
-  `python scripts/setup_hooks.py` 一条命令启用（AGENTS.md「Git 工作流」
-  已登记为初始化步骤；CLAUDE.md 同步政策指针）。
+  （主 CI 只覆盖 main/PR，特性分支直推此前无检出）；
+  ci.yml 主流程第一步再查一遍。守卫新增 `--tree` 模式：路径规则查全部
+  提交树、内容规则查 tip。
 - **sanger 模块注释与文档泛化**：abif_repair/batch_control/orf_guard/
   cds_extract/conclusion_fold/polycall 的真实数据出处描述改为「本机
   基准」级表述；CHANGELOG/HANDOVER/KNOWN_ISSUES/NAMING/

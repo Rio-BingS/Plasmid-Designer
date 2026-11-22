@@ -210,15 +210,20 @@ API 前先逐条对照）：
     pytest 自动收集），GitHub CI 不跑真实数据回归。守卫
     `scripts/check_real_data_absence.py` 扫描 git 跟踪文件（路径 + 内容词边界
     匹配 + ABIF 文件头嗅探防改名，`--tree` 模式供钩子逐提交扫描），违规
-    退出码 1；三层拦截：`.github/workflows/guard.yml` 对**所有分支/tag
-    推送**与 PR 阻断、ci.yml 主流程第一步再查一遍、本机 `githooks/pre-push`
-    （新克隆跑 `python scripts/setup_hooks.py` 启用）在推送前拦截。路径规则
-    覆盖 15 种测序交付格式（2026-11-22 全量盘点仓库零使用，与 .gitignore
-    全局忽略清单对齐：AB 系原始/导出、Sanger 文本序列、Chromas、Phred、
-    SnapGene、交付压缩包、交付清单/报告）；FASTA 等通用序列格式不纳入
-    内容无法区分真实与合成，靠 real_ab1 整目录忽略 + 政策约束。白名单
-    只有脚本自身与公共载体 fixture 目录。新增涉及真实数据的文档/测试时写
-    泛化表述，不要把守卫当过滤网往里塞真实信息，更不要绕过守卫。
+    退出码 1；四层拦截：commit 前 `githooks/pre-commit`、推送前
+    `githooks/pre-push`（新克隆跑 `python scripts/setup_hooks.py` 一条命令
+    两者都启用）、`.github/workflows/guard.yml` 对**所有分支/tag 推送**
+    与 PR 阻断、ci.yml 主流程第一步再查一遍。规则三层：
+    ①**扩展名白名单准入**（2026-11-22 反转策略）——真实数据格式开放
+    （.bg/.fastq/及一切未列举形态）黑名单枚举不完，反为准入制：仓库合法
+    格式 = 全量盘点 23 种（ALLOWED_EXTENSIONS），白名单外一律拦，加新格式
+    必须显式登记并说明理由；②路径：`tests/data/real_ab1/` 下任何文件 +
+    15 种测序交付格式（与 .gitignore 清单对齐）在 sanger_bench 之外任何
+    位置 + **fasta 只许 tests/fixtures/**（tracy 合成 fixture；真实序列
+    常见交付形态之一，其它位置一律拦）；③内容：真实标识/位点词边界匹配
+    + ABIF 文件头嗅探防改名。白名单只有脚本自身与公共载体 fixture 目录。
+    新增涉及真实数据的文档/测试时写泛化表述，不要把守卫当过滤网往里塞
+    真实信息，更不要绕过守卫。
 
 - **测试里改 site_settings 状态必须用 `app.database.SessionLocal`**（真实
   文件库），不是测试模块自己的内存库；用例结束必须恢复默认设置并

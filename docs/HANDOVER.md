@@ -25,16 +25,18 @@
 ## 1. 一句话现状
 
 **2026-11-22 现状（数据政策跨 agent/跨机器遵循加固）**：政策不再只靠
-「读文档的 agent 自觉」，守卫扩为**三层独立拦截、随仓库分发**：
+「读文档的 agent 自觉」，守卫扩为**四层独立拦截、随仓库分发**：本机
+`githooks/pre-commit`（commit 前）+ `githooks/pre-push`（推送前逐新提交，
+守卫 `--tree` 模式：路径查全部树、内容查 tip）、
 `.github/workflows/guard.yml` 对**所有分支/tag 推送与 PR** 跑守卫
-（主 ci.yml 只覆盖 main/PR；首跑已 success）、本机 `githooks/pre-push`
-推送前逐新提交拦截（守卫新增 `--tree` 模式：路径查全部树、内容查 tip），
+（主 ci.yml 只覆盖 main/PR；首跑已 success）+ ci.yml 第一步；
 新克隆跑 `python scripts/setup_hooks.py` 一条命令启用（AGENTS.md「Git
-工作流」登记为初始化步骤，CLAUDE.md 补政策指针）。格式规则不只
-`*.ab1`：15 种测序交付格式全局忽略 + 守卫路径规则（仓库零使用格式
-全量盘点，与 gitignore 清单对齐），另有 ABIF 文件头嗅探防改名绕过。
-端到端验证：泄漏
-提交 push 被拦（含 ABIF 伪装 .bin 的 magic 命中）、清除后放行。另核实：远端 81 个 tag 挂在**独立的旧
+工作流」登记为初始化步骤，CLAUDE.md 补政策指针）。规则三层：扩展名
+**白名单准入**（23 种盘点全集，白名单外 .bg/.fastq 等一切格式
+commit/push/CI 全拦，加新格式须显式登记；fasta 只许 tests/fixtures/）+
+路径（real_ab1 目录 + 15 种测序交付格式 + ABIF 文件头嗅探防改名）+
+内容（真实标识/位点词边界）。端到端验证：泄漏
+提交 commit/push 双拦（含 ABIF 伪装 .bin 的 magic 命中）、清除后放行。另核实：远端 81 个 tag 挂在**独立的旧
 main 重写谱系**（云端重构时 main 压扁，与 feat 分支线是两条线），
 该谱系同样经两轮 filter-repo 处理——两个真实断言测试文件与真实数据
 文件在全部远端可达谱系 0 命中，只有 sanger_bench 公开三件。
