@@ -17,11 +17,18 @@
 
 发现以下任一情况退出码 1：
 
-1. 路径：`tests/data/real_ab1/` 下的任何文件；`tests/data/sanger_bench/`
-   之外的 `*.ab1` / `*.dna`（sanger_bench 的 310/3100/3730.ab1 是
-   Biopython 官方公开测试集，Biopython License 允许再分发，允许入库）。
-2. 内容：真实样本/参考标识与真实位点标识（词边界匹配——requirements
-   哈希串、公共载体 pET-28a 坐标等数字误报由 `\\b` 规避）。
+1. 格式：扩展名白名单外的任何文件（白名单 = 2026-11-22 全量盘点 23 种，
+   见 ALLOWED_EXTENSIONS——真实数据格式开放、黑名单枚举不完，反转为准入）；
+   fasta 仅限 tests/fixtures/（tracy 合成 fixture），仓库其它位置的
+   fasta 同样拦截。
+2. 路径：`tests/data/real_ab1/` 下的任何文件；15 种测序交付格式
+   （AB 系原始/导出、Sanger 文本序列、Chromas、Phred、SnapGene、交付
+   压缩包、交付清单/报告）在 sanger_bench 之外的任何位置
+   （sanger_bench 的 310/3100/3730.ab1 是 Biopython 官方公开测试集，
+   Biopython License 允许再分发，允许入库）。
+3. 内容：真实样本/参考标识与真实位点标识（词边界匹配——requirements
+   哈希串、公共载体 pET-28a 坐标等数字误报由 `\\b` 规避）；任何扩展名
+   的文件以 ABIF magic 开头（改名也躲不过）。
 
 白名单：本脚本自身（含 token 字面量）。
 
@@ -54,6 +61,24 @@ SUFFIX_ALLOWLIST_DIRS = ("tests/data/sanger_bench/", "tests\\data\\sanger_bench\
 # ABIF 文件头（ab1/abi 系原始格式 magic）：扩展名改名也躲不过的兜底。
 # 豁免 sanger_bench（公开三件本身即 ABIF 格式）。
 ABIF_MAGIC = b"ABIF"
+
+# 扩展名白名单准入（2026-11-22 反转策略）：真实数据的格式是开放的
+# （.bg/.fastq/将来的任何新形态），黑名单永远枚举不全；反过来仓库
+# 合法需要的格式是有限的——2026-11-22 全量盘点 23 种。**白名单外的
+# 任何格式一律拦截**，确属合法新格式时在此登记并说明理由（这次
+# 显式决策就是防回潮闸门）。ab1 仅限 sanger_bench 公开三件（路径
+# 规则兜底），fasta 仅限 tests/fixtures/（tracy 合成 fixture）——
+# 真实序列数据不能以 fasta 形态进仓库其它位置。
+ALLOWED_EXTENSIONS = frozenset((
+    "ab1", "backend", "conf", "css", "dockerignore", "example", "fasta",
+    "frontend", "gitignore", "html", "in", "ini", "json", "mako", "md",
+    "ps1", "py", "service", "sh", "ts", "txt", "vue", "yaml", "yml",
+))
+# 无扩展名的合法文件（按 basename 放行）
+ALLOWED_BASENAMES = frozenset(("license", "makefile", "pre-push", "pre-commit"))
+# fasta（合成序列 fixture 的合法格式，也是真实数据的常见交付形态）
+# 只许出现在合成 fixture 目录
+FASTA_ALLOWED_DIRS = ("tests/fixtures/", "tests\\fixtures\\")
 
 # 内容规则：真实样本代号 / 真实参考名 / 真实位点标识（词边界）
 BANNED_STRINGS = (
@@ -126,6 +151,25 @@ def tree_blobs(treeish: str) -> dict[str, bytes]:
     return blobs
 
 
+def extension_violations(files: list[str]) -> list[str]:
+    """扩展名白名单准入：白名单外格式一律违规（黑名单打地鼠打不完，
+    仓库合法需要的格式是有限集合——见 ALLOWED_EXTENSIONS 注释）。"""
+    bad = []
+    for f in files:
+        norm = f.replace("\\", "/")
+        base = norm.rsplit("/", 1)[-1].lower()
+        if "." in base:
+            ext = base.rsplit(".", 1)[-1]
+            if ext not in ALLOWED_EXTENSIONS:
+                bad.append(f"格式（扩展名白名单外）: {f}")
+            elif ext == "fasta" and not any(
+                    d in norm for d in FASTA_ALLOWED_DIRS):
+                bad.append(f"路径（fasta 只许 tests/fixtures/）: {f}")
+        elif base not in ALLOWED_BASENAMES:
+            bad.append(f"格式（扩展名白名单外）: {f}")
+    return bad
+
+
 def path_violations(files: list[str]) -> list[str]:
     bad = []
     for f in files:
@@ -188,6 +232,7 @@ def main() -> int:
         bad = []
         for i, t in enumerate(args.tree):
             files = tree_files(t)
+            bad += [f"[{t}] {x}" for x in extension_violations(files)]
             bad += [f"[{t}] {x}" for x in path_violations(files)]
             if i == 0:  # 内容规则只查 tip
                 blobs = tree_blobs(t)
@@ -196,8 +241,8 @@ def main() -> int:
         scope = "提交树 x%d" % len(args.tree)
     else:
         files = working_tree_files()
-        bad = path_violations(files) + content_violations(
-            files, lambda f: _read_working(REPO / f))
+        bad = (extension_violations(files) + path_violations(files)
+               + content_violations(files, lambda f: _read_working(REPO / f)))
         scope = "工作树"
 
     if bad:
@@ -206,8 +251,8 @@ def main() -> int:
             print(f"  - {x}")
         print("\n政策（2026-11-21）：真实测序数据含脱敏件及其衍生测试信息一律"
               "不入库；\n真实数据回归在本机 tests/data/real_ab1/（gitignored）跑。"
-              "\n如认为命中属误报，请在 scripts/check_real_data_absence.py 的"
-              "白名单/词边界\n处说明后调整，不要绕过守卫。")
+              "\n白名单外新格式确属合法时，在 scripts/check_real_data_absence.py"
+              "\n的 ALLOWED_EXTENSIONS 登记并说明理由；不要绕过守卫。")
         return 1
     print(f"check_real_data_absence: OK（{scope}，无真实测序数据/衍生信息入库）")
     return 0

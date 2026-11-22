@@ -70,3 +70,10 @@ tests/data/real_ab1/
 *.xlsx
 *.xls
 *.pdf
+# fasta 属受限格式：真实序列数据的常见交付形态之一，默认忽略；
+# 仅 tests/fixtures/ 的合成 fixture 合法（tracy allele 两件已跟踪，
+# gitignore 不作用于已跟踪文件；新增 fixture 用 `!tests/fixtures/...`
+# 豁免并确认守卫 FASTA_ALLOWED_DIRS 允许其路径）。FASTQ/.bg 及一切
+# 其它格式交给守卫的扩展名白名单准入（ALLOWED_EXTENSIONS）——白名单
+# 外格式 commit/push/CI 三处全拦，枚举不完就反转成准入制
+*.fasta

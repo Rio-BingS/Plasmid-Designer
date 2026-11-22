@@ -1,0 +1,14 @@
+#!/bin/sh
+# 真实数据防入库守卫——commit 阶段拦截（比 pre-push 更早一步，留 amend 机会）。
+# 同一守卫实现：scripts/check_real_data_absence.py（工作树模式扫 git 跟踪
+# 文件，含刚 staged 的新文件）。政策见 docs/KNOWN_ISSUES.md 约束第 23 条。
+# 启用：python scripts/setup_hooks.py（AGENTS.md「新克隆/换机器初始化」）。
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+if ! python scripts/check_real_data_absence.py; then
+    echo "" >&2
+    echo "✗ pre-commit 守卫拦截：上述内容禁止入库（政策见 docs/KNOWN_ISSUES.md 约束第 23 条）。" >&2
+    echo "  白名单外新格式确属合法时，在 scripts/check_real_data_absence.py 的" >&2
+    echo "  ALLOWED_EXTENSIONS 登记并说明理由；不要绕过守卫。" >&2
+    exit 1
+fi
