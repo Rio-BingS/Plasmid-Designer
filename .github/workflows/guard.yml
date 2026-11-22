@@ -1,0 +1,28 @@
+name: Real-data guard
+
+# 2026-11-21 政策（KNOWN_ISSUES 约束第 23 条）：真实测序数据及其衍生信息
+# 一律不入库不入推送。主 CI（ci.yml）只触发 main/PR；本工作流在**所有
+# 分支与 tag 推送**上先跑同一守卫，补上特性分支直推的检出缺口。
+# 本机推送前拦截由 githooks/pre-push 负责（scripts/setup_hooks.py 启用），
+# 两者共用 scripts/check_real_data_absence.py 一个实现。
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-data-absence:
+    name: Check real-data absence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check real-data absence
+        run: python scripts/check_real_data_absence.py
