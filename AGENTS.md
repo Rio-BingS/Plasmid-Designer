@@ -106,6 +106,9 @@ Python 依赖：只改源清单 `src/backend/requirements.in` / `deploy/docker/r
 
 ## Git 工作流（长期指令，优先于默认保守边界）
 
+- **新克隆 / 换机器初始化**（先于一切提交推送动作）：`python scripts/setup_hooks.py`
+  启用 pre-push 真实数据守卫；再把本机真实数据与回归测试放回
+  `tests/data/real_ab1/`（gitignored，见下方数据政策与 KNOWN_ISSUES 约束第 23 条）
 - 一轮修复/功能**完成且验证通过后，主动按 git-commit-style skill 提交并推送**，
   不必等用户每次说「提交一下/推上去」；仅当用户明确说「先不要提交」时才停住。
   skill 本身是按任务意图触发的——没有提交动作时不会自动加载，所以这里显式授权
