@@ -38,7 +38,9 @@
   合成场景。
 - **新增守卫 `scripts/check_real_data_absence.py` 并接入 CI 第一步**：
   扫描 git 跟踪文件，发现真实数据路径（`tests/data/real_ab1/`、
-  sanger_bench 之外的 `*.ab1`/`*.dna`）或真实标识/位点内容即退出码 1。
+  sanger_bench 之外的 15 种测序交付格式——AB 系原始/导出、Sanger
+  文本序列、Chromas、Phred、SnapGene、交付压缩包、交付清单/报告，
+  另加 ABIF 文件头嗅探防改名绕过）或真实标识/位点内容即退出码 1。
 - **守卫扩为三层拦截（2026-11-22，跨 agent/跨机器遵循）**：
   `.github/workflows/guard.yml` 对**所有分支/tag 推送与 PR** 跑同一守卫
   （主 CI 只覆盖 main/PR，特性分支直推此前无检出）；本机

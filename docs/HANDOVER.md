@@ -30,8 +30,11 @@
 （主 ci.yml 只覆盖 main/PR；首跑已 success）、本机 `githooks/pre-push`
 推送前逐新提交拦截（守卫新增 `--tree` 模式：路径查全部树、内容查 tip），
 新克隆跑 `python scripts/setup_hooks.py` 一条命令启用（AGENTS.md「Git
-工作流」登记为初始化步骤，CLAUDE.md 补政策指针）。端到端验证：泄漏
-提交 push 被拦、清除后放行。另核实：远端 81 个 tag 挂在**独立的旧
+工作流」登记为初始化步骤，CLAUDE.md 补政策指针）。格式规则不只
+`*.ab1`：15 种测序交付格式全局忽略 + 守卫路径规则（仓库零使用格式
+全量盘点，与 gitignore 清单对齐），另有 ABIF 文件头嗅探防改名绕过。
+端到端验证：泄漏
+提交 push 被拦（含 ABIF 伪装 .bin 的 magic 命中）、清除后放行。另核实：远端 81 个 tag 挂在**独立的旧
 main 重写谱系**（云端重构时 main 压扁，与 feat 分支线是两条线），
 该谱系同样经两轮 filter-repo 处理——两个真实断言测试文件与真实数据
 文件在全部远端可达谱系 0 命中，只有 sanger_bench 公开三件。
