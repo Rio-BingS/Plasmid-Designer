@@ -43,12 +43,30 @@ data/backups/
 work/
 
 # 真实测序数据（含脱敏件）一律不入库（2026-11-21 政策，W16 入库决策废止）：
-# 本地副本放 tests/data/real_ab1/（缺数据时回归测试自动 skip），
-# 母本在仓库外 ../plasmid-designer V/real_ab1_subset_master/
+# 本地副本放 tests/data/real_ab1/（缺数据时回归测试自动 skip，整目录忽略
+# ——数据不论什么格式放对地方都进不来），母本在仓库外
+# ../plasmid-designer V/real_ab1_subset_master/
 tests/data/real_ab1/
-# 测序文件格式全局忽略：数据文件哪怕被复制到别的路径，add 阶段就挡住
-# （守卫 scripts/check_real_data_absence.py 的路径规则在推送/CI 环节再拦）。
+# 测序交付场景专属格式全局忽略：数据文件哪怕被复制到别的路径，add 阶段
+# 就挡住（守卫 scripts/check_real_data_absence.py 的路径规则 + ABIF 文件头
+# 嗅探在推送/CI 环节再拦，改名也躲不过）。清单 = 仓库零使用的测序格式
+# （2026-11-22 全量盘点）：AB 系原始/导出、Sanger 文本序列、Chromas、
+# Phred、SnapGene、交付压缩包、交付清单/报告文档。
 # sanger_bench 的 310/3100/3730.ab1 是 Biopython 公开测试集，已在跟踪中，
-# gitignore 不作用于已跟踪文件，无需豁免
+# gitignore 不作用于已跟踪文件，无需豁免；将来如需某格式白名单文件，
+# 用 `!路径` 豁免并在守卫 SUFFIX_ALLOWLIST_DIRS 登记说明，不要删规则
 *.ab1
+*.abi
+*.ab
 *.dna
+*.scf
+*.ced
+*.seq
+*.chromas
+*.phd*
+*.zip
+*.7z
+*.rar
+*.xlsx
+*.xls
+*.pdf

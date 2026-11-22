@@ -41,8 +41,19 @@ SELF = "scripts/check_real_data_absence.py"
 
 # 路径规则
 BANNED_PATH_PARTS = ("tests/data/real_ab1/", "tests\\data\\real_ab1\\")
-BANNED_SUFFIXES = (".ab1", ".dna")
+# 测序交付场景专属格式（2026-11-22 与 .gitignore 全局忽略清单对齐：
+# AB 系原始/导出、Sanger 文本序列、Chromas、Phred、SnapGene、交付
+# 压缩包、交付清单/报告文档）。FASTA 等通用序列格式不在列——合成
+# fixture（如 tracy allele）与真实序列无法从内容区分，靠 real_ab1
+# 目录忽略 + 政策约束（KNOWN_ISSUES 第 23 条）。
+BANNED_SUFFIXES = (
+    ".ab1", ".abi", ".ab", ".dna", ".scf", ".ced", ".seq", ".chromas",
+    ".phd.1", ".zip", ".7z", ".rar", ".xlsx", ".xls", ".pdf",
+)
 SUFFIX_ALLOWLIST_DIRS = ("tests/data/sanger_bench/", "tests\\data\\sanger_bench\\")
+# ABIF 文件头（ab1/abi 系原始格式 magic）：扩展名改名也躲不过的兜底。
+# 豁免 sanger_bench（公开三件本身即 ABIF 格式）。
+ABIF_MAGIC = b"ABIF"
 
 # 内容规则：真实样本代号 / 真实参考名 / 真实位点标识（词边界）
 BANNED_STRINGS = (
@@ -140,6 +151,12 @@ def content_violations(files, read_blob) -> list[str]:
             continue
         data = read_blob(f)
         if data is None:
+            continue
+        # ABIF 文件头嗅探：真实测序原始文件改名（.bin/.dat/无扩展名）
+        # 也拦下；sanger_bench 公开三件按路径豁免
+        if data[:4] == ABIF_MAGIC and not any(
+                d in norm for d in SUFFIX_ALLOWLIST_DIRS):
+            bad.append(f"内容（ABIF 测序文件头）: {f}")
             continue
         text = data.decode("utf-8", "replace")
         for s in BANNED_STRINGS:
